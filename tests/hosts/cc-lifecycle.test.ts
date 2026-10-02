@@ -27,8 +27,9 @@ const sdkPrompt = (promptId: string) => ({ promptId, promptSource: "sdk", userTy
 function fixture(label = "lifecycle") {
   vi.stubEnv("CLAUDE_PID", String(process.pid));
   const dir = mkdtempSync(join(tmpdir(), `tm-cc-${label}-`)); dirs.push(dir);
+  const stateDir = mkdtempSync(join(tmpdir(), "tmcc-s-")); dirs.push(stateDir);
   const transcriptPath = join(dir, "native.jsonl"), nativeSessionId = `native-${label}`;
-  const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "s"), baseline: "2025-01-01T00:00:00.000Z",
+  const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
     pollIntervalMs: 10, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2 });
   const records: CcNativeRecord[] = [
     { uuid: "u1", parentUuid: null, type: "user", timestamp: now, ...sdkPrompt("p1"), message: { role: "user", content: "question" } },
@@ -356,7 +357,7 @@ test("fork source observation returns frozen batch identities without scheduling
 
 test("CC final admission uses the selected compaction boundary, frozen batch and checkpoint (110)", async () => {
   const f = fixture("boundary-admission"); enableSyntheticWorker(f); f.write();
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-110-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-110-")); dirs.push(f.config.stateDir);
   f.records.unshift({ uuid: "initial-boundary", parentUuid: null, type: "system", subtype: "compact_boundary",
     timestamp: "2025-12-31T23:59:59.000Z" });
   f.records[1]!.parentUuid = "initial-boundary"; f.write();
@@ -407,7 +408,7 @@ test("CC final admission uses the selected compaction boundary, frozen batch and
 
 test.each(["hook", "transcript"] as const)("accepted CC scan race preserves turn-end dedup and published Raw (%s; imposed order)", async mode => {
   const f = fixture(`queued-user-${mode}`); enableSyntheticWorker(f);
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-scan-race-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-scan-race-")); dirs.push(f.config.stateDir);
   (f.records[1]!.message as Record<string, unknown>).stop_reason = "tool_use";
   f.config.coreConfig.noting.triggerTokens = 1;
   f.write();
@@ -826,7 +827,7 @@ test("owner-token stop uses the facade's owned task path and leaves another exec
 
 test("registered fork watcher receives done on terminal and stop on external stop/off", async () => {
   const f = fixture("fork-stop-channel"); f.write();
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-fork-stop-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-fork-stop-")); dirs.push(f.config.stateDir);
   const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "must not run" }));
@@ -938,7 +939,7 @@ test("native terminal arriving through control before spawn registration waits f
 
 test("control socket routes catchup to the live executor and never creates an operator worker", async () => {
   const f = fixture("control-catchup"); f.write();
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-catchup-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-catchup-")); dirs.push(f.config.stateDir);
   const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "must not run" }));
@@ -959,7 +960,7 @@ test("control socket routes catchup to the live executor and never creates an op
 
 test("off fences again after a contended disable before acknowledging", async () => {
   const f = fixture("off-disable-window"); f.write();
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-off-window-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-off-window-")); dirs.push(f.config.stateDir);
   const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "must not run" }));
@@ -990,7 +991,7 @@ test("off fences again after a contended disable before acknowledging", async ()
 
 test("control stop fences catchup while coordinator reconciliation is blocked", async () => {
   const f = fixture("catchup-stop-race"); f.write();
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-race-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-race-")); dirs.push(f.config.stateDir);
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
@@ -1020,7 +1021,7 @@ test("control stop fences catchup while coordinator reconciliation is blocked", 
 
 test("stop also fences the first attach opportunity while initial import is in flight", async () => {
   const f = fixture("initial-reconcile-stop");
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-initial-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-initial-")); dirs.push(f.config.stateDir);
   f.config.pollIntervalMs = 100_000;
   enableSyntheticWorker(f);
   f.records[0]!.message = { role: "user", content: "pending ".repeat(12_000) }; f.write();
@@ -1047,7 +1048,7 @@ test("stop also fences the first attach opportunity while initial import is in f
 
 test("stop during import does not create an automatic checkpoint; a later turn end remains eligible", async () => {
   const f = fixture("reconcile-stop-epoch"); f.write();
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-epoch-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-epoch-")); dirs.push(f.config.stateDir);
   f.config.pollIntervalMs = 100_000;
   enableSyntheticWorker(f);
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
@@ -1092,7 +1093,7 @@ test("stop during import does not create an automatic checkpoint; a later turn e
 
 test("separate-process same-session contenders publish one live executor and losing cleanup preserves its socket", async () => {
   const f = fixture("control-race"); f.write();
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-owner-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-owner-")); dirs.push(f.config.stateDir);
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const children: ChildProcess[] = [];
@@ -1133,7 +1134,7 @@ test("separate-process same-session contenders publish one live executor and los
 
 test("live provisional off survives the allocation transition and cannot be revived by reconciliation", async () => {
   const f = fixture("provisional-off"); f.write();
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-off-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-off-")); dirs.push(f.config.stateDir);
   const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "cancelled" as const, output: null }));
@@ -1151,7 +1152,7 @@ test("live provisional off survives the allocation transition and cannot be revi
 
 test("off and executor startup serialize through the binding lock without reviving provisional enrollment", async () => {
   const f = fixture("off-start-race"); f.write();
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-off-race-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-off-race-")); dirs.push(f.config.stateDir);
   const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const mutex = new DatabaseSync(bindingMutexPath(f.config, f.nativeSessionId), { timeout: 0 }); mutex.exec("BEGIN IMMEDIATE");
@@ -1337,7 +1338,7 @@ test("stdio MCP stays protocol-clean and only prompt_input_exit confirms close a
 
 test("SIGINT registered before startup cancels an attach held by the SQLite mutex and finalizes after release", async () => {
   const f = fixture("startup-race"); f.write();
-  const shortState = mkdtempSync("/tmp/tmcc-race-"); dirs.push(shortState); f.config.stateDir = shortState;
+  const shortState = mkdtempSync(join(tmpdir(), "tmcc-race-")); dirs.push(shortState); f.config.stateDir = shortState;
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
   const mutex = new DatabaseSync(bindingMutexPath(f.config, f.nativeSessionId), { timeout: 0 }); mutex.exec("BEGIN IMMEDIATE");
   const configPath = join(f.dir, "cc.json"); writeFileSync(configPath, JSON.stringify(f.config));
@@ -1375,7 +1376,7 @@ test("unrelated files in the transcript directory do not request transcript reco
 
 test("live control follows a provisional binding through ordinary core allocation", async () => {
   const f = fixture("control-allocation");
-  f.config.stateDir = mkdtempSync("/tmp/tmcc-allocation-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-allocation-")); dirs.push(f.config.stateDir);
   writeFileSync(f.transcriptPath, [
     { uuid: "u1", parentUuid: null, type: "user", timestamp: now, promptId: "p1", promptSource: "typed", userType: "external", message: { role: "user", content: "question" } },
     { uuid: "a1", parentUuid: "u1", type: "assistant", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "assistant", content: [{ type: "text", text: "answer" }] } },
@@ -1586,7 +1587,7 @@ test("86: SessionEnd needs no executor and never guesses a missing native proces
 
 test("86: a still-running coordinator cannot undo SessionEnd by polling or final shutdown", async () => {
   const f = fixture("end-live"); f.write();
-  f.config.stateDir = mkdtempSync("/tmp/tm86-close-"); dirs.push(f.config.stateDir);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tm86-close-")); dirs.push(f.config.stateDir);
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId);

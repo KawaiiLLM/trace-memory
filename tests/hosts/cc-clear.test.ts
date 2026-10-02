@@ -38,7 +38,7 @@ const exchange = (id: string, parentUuid: string | null, minute: number): CcNati
 
 function fixture(label: string, overrides: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), `tm-cc-clear-${label}-`)); dirs.push(dir);
-  const stateDir = mkdtempSync("/tmp/tmcc-clr-"); dirs.push(stateDir);
+  const stateDir = mkdtempSync(join(tmpdir(), "tmcc-clr-")); dirs.push(stateDir);
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir, baseline: "2025-01-01T00:00:00.000Z",
     pollIntervalMs: 10, finalSyncTimeoutMs: 300, finalSyncStablePolls: 2, ...overrides });
   const parentId = `parent-${label}`, childId = `child-${label}`;
@@ -85,11 +85,13 @@ async function link(f: ReturnType<typeof fixture>, parent: CcSessionBinding): Pr
 test("102: /clear ends the cleared session like an exit, and the executor follows the process into the new one as at startup", async () => {
   const f = fixture("follow");
   const parent = await startParent(f);
-  const coordinator = new CcCoordinator(f.config, f.parentId, () => {});
+  const diagnostics: string[] = [];
+  const coordinator = new CcCoordinator(f.config, f.parentId, message => diagnostics.push(message));
   try {
     await coordinator.start();
-    const before = readBinding(f.config, f.parentId)!.executor!;
-    expect(before.pid).toBe(process.pid);
+    const before = readBinding(f.config, f.parentId)!.executor;
+    expect(before, diagnostics.join("\n")).not.toBeNull();
+    expect(before!.pid).toBe(process.pid);
     expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.parentId,
       transcript_path: f.parentTranscriptPath, reason: "clear" })).toMatchObject({ confirmed: true });
     // A row the executor has not imported when it leaves: only its final sync, as on exit, can import it.
@@ -112,7 +114,7 @@ test("102: /clear ends the cleared session like an exit, and the executor follow
       await until(() => readBinding(f.config, f.childId)!.coreSessionId !== null);
       const child = readBinding(f.config, f.childId)!;
       expect(child.executor).toMatchObject({ pid: process.pid });
-      expect(child.executor!.executorId).not.toBe(before.executorId);
+      expect(child.executor!.executorId).not.toBe(before!.executorId);
       expect(child.coreSessionId).not.toBe(core);
       expect(store.getSession(child.coreSessionId!)).toMatchObject({ host: `cc:${f.childId}`, closedAt: null });
       await until(() => store.findSourceEntry(child.coreSessionId!, f.childId, "ca") !== null);
