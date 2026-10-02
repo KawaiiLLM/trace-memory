@@ -47,6 +47,7 @@ const setup = () => {
   const added = editedCcConfig(f.text, "dreaming.model", "claude-new", "180000");
   expect(added).toContain('"custom": { "unrelated": [1, 2] }');
   expect(added).toContain('"claude-opus-5-5": 250000');
+  expect(added).toContain('"claude-new": 180000');
   expect(resolveCcHostConfig(JSON.parse(added)).worker!.contextWindows["claude-new"]).toBe(180000);
   expect(resolveCcHostConfig(JSON.parse(added)).worker!.phases.dreaming.model).toBe("claude-new");
   expect(added).toContain('"claudeExecutable": "/usr/bin/false",\n    "claudeVersion"');
