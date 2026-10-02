@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { Store } from "../../src/core/store/index.ts";
 import { DatabaseSync } from "node:sqlite";
@@ -56,7 +57,7 @@ function seedKnowledge(db: string, due: boolean) {
 
 // Work bounds are independent of machine speed. Timings are diagnostics, not production claims.
 async function fullChain(entries: number, due: boolean) {
-  const dir = mkdtempSync("/tmp/tm67-perf-");
+  const dir = mkdtempSync(join(tmpdir(), "tm67-perf-"));
   const transcriptPath = join(dir, "native.jsonl"), nativeSessionId = "performance";
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "s"),
     baseline: "2025-01-01T00:00:00Z", pollIntervalMs: 60_000, finalSyncTimeoutMs: 100, finalSyncStablePolls: 2,
@@ -135,7 +136,7 @@ async function fullChain(entries: number, due: boolean) {
     }, 10);
     const result = await coordinator.requestReconcile("startup");
     const bootstrapMs = performance.now() - start, completedAt = Date.now();
-    expect(result?.state).toBe("ready");
+    expect(result?.state, diagnostics.join("\n")).toBe("ready");
     expect(result?.selectedEntryIds).toHaveLength(entries);
     expect(result?.appendedEntryIds).toHaveLength(entries);
     expect(result?.bootstrap).toBe(true);
@@ -211,7 +212,7 @@ test("3k/30k full CC chain preserves fixed eligibility work and WAL writer progr
 }, 120_000);
 
 test("Hook-first bootstrap and fresh resume validate known records without per-record write transactions", async () => {
-  const dir = mkdtempSync("/tmp/tm67-resume-");
+  const dir = mkdtempSync(join(tmpdir(), "tm67-resume-"));
   const transcriptPath = join(dir, "native.jsonl"), nativeSessionId = "resume";
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "s"),
     baseline: "2025-01-01T00:00:00Z", finalSyncTimeoutMs: 100, finalSyncStablePolls: 2 });
