@@ -6992,7 +6992,7 @@ function readFacade(store, config3, prepare = () => {
     const remaining = knowledgeCap - (visible.knowledgeTokens ?? unaccountedCost());
     if (remaining <= 0) return empty();
     const guide = readingGuide(id, toolNames);
-    const buildStates = (count3) => injectionText({ knowledge: [], receipts: [], readingGuide: guide }, states.slice(0, count3).map((state) => state.text));
+    const buildStates = (count3, includeGuide = true) => injectionText({ knowledge: [], receipts: [], ...includeGuide ? { readingGuide: guide } : {} }, states.slice(0, count3).map((state) => state.text));
     const longest = (high, fits) => {
       let low = 0;
       while (low < high) {
@@ -7011,14 +7011,14 @@ function readFacade(store, config3, prepare = () => {
         address: `K${from.knowledgeId}@v${store.versionOrdinal(from.knowledgeId, from.id)}`
       };
     };
-    const stateCount = longest(states.length, (count3) => tokens(buildStates(count3)) <= remaining);
+    const stateCount = longest(states.length, (count3) => tokens(buildStates(count3, false)) <= remaining);
     if (stateCount < states.length) {
       if (!stateCount) return empty();
       const material2 = { knowledge: [], receipts: [], readingGuide: guide };
       const rendered2 = measuredMemory(buildStates(stateCount), material2);
       return {
         ...rendered2,
-        knowledgeTokens: tokens(rendered2.text),
+        knowledgeTokens: tokens(buildStates(stateCount, false)),
         knowledgeAllowance: remaining,
         knowledgeCommitIds: [],
         knowledgeStates: states.slice(0, stateCount).map((state) => state.receipt),
@@ -7035,15 +7035,17 @@ function readFacade(store, config3, prepare = () => {
         knowledgeNotice: notice,
         readingGuide: guide
       };
-      return { selected: selected2, material: material2, text: injectionText(material2, selectedStates.map((state) => state.text)) };
+      const text2 = injectionText(material2, selectedStates.map((state) => state.text));
+      const windowText2 = injectionText({ ...material2, readingGuide: "" }, selectedStates.map((state) => state.text));
+      return { selected: selected2, material: material2, text: text2, windowText: windowText2 };
     };
-    const count2 = longest(ordered.length, (count3) => tokens(build(count3).text) <= remaining);
-    const { selected, material, text } = build(count2);
-    if (tokens(text) > remaining || !selected.commits.length && !selectedStates.length) return empty();
+    const count2 = longest(ordered.length, (count3) => tokens(build(count3).windowText) <= remaining);
+    const { selected, material, text, windowText } = build(count2);
+    if (tokens(windowText) > remaining || !selected.commits.length && !selectedStates.length) return empty();
     const rendered = measuredMemory(text, material);
     return {
       ...rendered,
-      knowledgeTokens: tokens(rendered.text),
+      knowledgeTokens: tokens(windowText),
       knowledgeAllowance: remaining,
       knowledgeCommitIds: selected.commits,
       ...transport ? { transportItems: [
@@ -7332,14 +7334,7 @@ function readFacade(store, config3, prepare = () => {
       const receiptCharge = (receipts) => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
       const view = (entry) => renderEntry(entry, config3.render, resultText);
       const guide = options.readingGuide === false ? "" : readingGuide(sessionId, options.toolNames ?? canonicalToolNames);
-      const guideCost = guide ? charge([guide]) : 0;
-      const knowledgeEnvelope = caps.knowledge + sharedAllowance - guideCost;
-      if (knowledgeEnvelope < 0) return {
-        text: "",
-        supplied: { entries: [], factIds: [], knowledgeCommitIds: [], knowledgeTokens: 0 },
-        charged: { knowledge: 0, facts: 0, raw: 0, envelope },
-        ...pending.length ? { truncated: { raw: { entries: pending.length } } } : {}
-      };
+      const knowledgeEnvelope = caps.knowledge + sharedAllowance;
       const allNotes = options.knowledge === false ? [] : knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, void 0, void 0, true).sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit);
       const noteReceipt = (omitted) => omitted ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base plus shared allowance is full`] : [];
       const noteTextCost = (kept) => kept ? charge([KNOWLEDGE_STATUS_TITLE, ...allNotes.slice(0, kept).map((note) => note.text)]) : 0;
@@ -7364,7 +7359,7 @@ function readFacade(store, config3, prepare = () => {
         void 0,
         notice
       );
-      const knowledgeUsed = guideCost + knowledgeNoticeCost + active.cost;
+      const knowledgeUsed = knowledgeNoticeCost + active.cost;
       const sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
       const candidates = sourced.filter((e) => pendingIds.has(e.id) || options.processedRawRefill !== false && !retained.has(e.nativeId));
       const rawSteps = [];
@@ -7438,7 +7433,7 @@ function readFacade(store, config3, prepare = () => {
         ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
         material,
         // Transport may repeat K framing, but cannot borrow bases reserved for facts/Raw.
-        knowledgeAllowance: knowledgeEnvelope + guideCost - Math.max(0, rawCharged - caps.raw) - Math.max(0, factsWindowCost(finalFacts.length, finalFactReceipts) - caps.facts),
+        knowledgeAllowance: knowledgeEnvelope - Math.max(0, rawCharged - caps.raw) - Math.max(0, factsWindowCost(finalFacts.length, finalFactReceipts) - caps.facts),
         ...transport ? { transportItems: [
           ...knowledge.filter((item) => active.commits.includes(item.revision.id)).map((item) => ({
             kind: "knowledge",
@@ -7481,8 +7476,7 @@ function readFacade(store, config3, prepare = () => {
           knowledgeTokens: tokens(injectionText({
             knowledge: active.groups,
             receipts: [...active.receipts, ...noteOmittedReceipt],
-            knowledgeNotice: notice,
-            readingGuide: guide
+            knowledgeNotice: notice
           }, notes)),
           ...noteKept ? { knowledgeStates: allNotes.slice(0, noteKept).map((note) => note.receipt) } : {}
         },
@@ -44785,7 +44779,6 @@ function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinit
       ...members.filter((item) => item.kind !== "state" && item.kind !== "knowledge").map((item) => [itemText(item)])
     ];
     const knowledgeSections = [
-      ...index === 0 ? [guide] : [],
       ...members.filter((item) => item.kind === "state").map(itemText),
       ...knowledge.length ? [knowledge.join("")] : [],
       ...members.filter((item) => item.kind === "receipt" && item.knowledge !== false).map(itemText)

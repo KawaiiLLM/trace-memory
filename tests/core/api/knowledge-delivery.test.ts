@@ -2,6 +2,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { TraceMemory, memoryFiles, knowledgeStateKey, noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
 import { budgetKnowledge, renderEntry, renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { injectionText } from "../../../src/core/render/material.ts";
+import { readingGuide } from "../../../src/core/render/reading-guide.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -43,6 +45,15 @@ function coldGraph(f: { memory: ReturnType<typeof TraceMemory> }) {
 }
 
 const view = (over: Partial<VisibleView> = {}): VisibleView => ({ ...noVisibility(), ...over });
+
+/** Price actual emitted window bytes independently of the publication's accounting metadata. */
+function windowCost(sessionId: number, publication: { text: string; knowledgeTokens?: number }): number {
+  const prefix = `${readingGuide(sessionId, canonicalToolNames)}\n\n`;
+  expect(publication.text.startsWith(prefix)).toBe(true);
+  const cost = tokens(publication.text.slice(prefix.length));
+  expect(publication.knowledgeTokens).toBe(cost);
+  return cost;
+}
 
 async function maintain(f: ReturnType<typeof fixture>, operation: Record<string, unknown>, addresses: string[], needsTrigger = true) {
   const tag = (address: string) => address.replace(/^K(\d+)@(\d+)$/, (_, id, commit) => `K${id}#${f.memory.store.versionTag(Number(id), Number(commit))}`);
@@ -173,7 +184,7 @@ test("34c remaining rendered allowance counts retained historical bodies and exa
     return injectionText({ knowledge: budgeted.groups, receipts: [] });
   };
   const oldCost = tokens(rendered(old.commit));
-  const exact = oldCost + tokens(full.text);
+  const exact = oldCost + windowCost(f.session.id, full);
   setKnowledgeCapacity(f.memory, exact);
   expect(f.memory.injection(f.target, visible).knowledgeCommitIds).toEqual([newer.commit]);
   setKnowledgeCapacity(f.memory, exact - 1);
@@ -258,7 +269,7 @@ test("34c a retained state-only receipt consumes allowance without granting body
   if (!archive.ok) throw new Error(archive.problems.join());
   f.create("remaining candidate ".repeat(6_000), [f.facts[1]!.id]);
   const candidate = f.memory.injection(f.target);
-  setKnowledgeCapacity(f.memory, tokens(candidate.text));
+  setKnowledgeCapacity(f.memory, windowCost(f.session.id, candidate));
   const state = { fromCommit: parent.commit, toCommits: [archive.committed[0]!.commit] };
   expect(f.memory.injection(f.target, view({ knowledgeStates: new Set([knowledgeStateKey(state)]) })).text).toBe("");
 });
@@ -281,7 +292,8 @@ test("34c state transitions are whole deterministic prefix items and only select
     return { knowledge: f.memory.store.getKnowledge(parent.knowledgeId)!, revision };
   });
   const visibleCost = tokens(injectionText({ knowledge: budgetKnowledge(visibleValues, Infinity, renderKnowledge).groups, receipts: [] }));
-  setKnowledgeCapacity(f.memory, visibleCost + tokens(firstOnly.text));
+  const firstCost = windowCost(f.session.id, firstOnly);
+  setKnowledgeCapacity(f.memory, visibleCost + firstCost);
 
   const first = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents }));
   expect(first.knowledgeCommitIds).toEqual([]);
@@ -301,7 +313,7 @@ test("34c state transitions are whole deterministic prefix items and only select
   expect(second.text).toContain(`K${parents[1]!.knowledgeId}@v1 is archived`);
   expect(second.text).toContain(`K${parents[2]!.knowledgeId}@v1 is archived`);
 
-  setKnowledgeCapacity(f.memory, visibleCost + tokens(firstOnly.text) - 1);
+  setKnowledgeCapacity(f.memory, visibleCost + firstCost - 1);
   const unfit = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents }));
   expect(unfit).toMatchObject({ text: "", knowledgeCommitIds: [] });
   expect(unfit.knowledgeStates).toBeUndefined();
@@ -322,7 +334,7 @@ test("34c state-prefix budgeting shares exact framing with bodies without acknow
   const parentRevision = f.memory.store.knowledgeRevision(parent.commit)!;
   const parentValue = { knowledge: f.memory.store.getKnowledge(parent.knowledgeId)!, revision: parentRevision };
   const visibleCost = tokens(injectionText({ knowledge: budgetKnowledge([parentValue], Infinity, renderKnowledge).groups, receipts: [] }));
-  const exact = visibleCost + tokens(full.text);
+  const exact = visibleCost + windowCost(f.session.id, full);
   setKnowledgeCapacity(f.memory, exact);
   expect(f.memory.injection(f.target, visible)).toMatchObject({ knowledgeCommitIds: [body.commit], knowledgeStates: full.knowledgeStates });
   setKnowledgeCapacity(f.memory, exact - 1);

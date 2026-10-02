@@ -50,11 +50,10 @@ test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary unde
   } finally { await h.dispose(); }
 });
 
-test("73: many tiny entries over the Raw window truncate to the newest span rather than delegate, and compact starts no worker", async () => {
-  // Many tiny entries: their bounded views together exceed the Raw window plus its (zeroed) shared
-  // allowance. 73: there is no fallback any more — compact keeps the newest contiguous span and
-  // receipts the rest, and the failing Noter below is irrelevant to that (compact never runs a worker
-  // of its own, with or without recovery).
+test("73/118: no room for a Raw omission receipt leaves all entries pending, without delegation or worker", async () => {
+  // Many bounded views exceed the tiny Raw window and its shared allowance. A /tm receipt also
+  // exceeds that window, so none of its entries or receipts appear in the replacement; compaction
+  // still starts no worker. The failing Noter below only keeps its own entries pending.
   const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "dreaming.triggerTokens": 1,
     "compaction.factsTokens": 50, "compaction.rawTokens": 50, "compaction.sharedAllowanceTokens": 1 });
   try {
@@ -70,7 +69,10 @@ test("73: many tiny entries over the Raw window truncate to the newest span rath
     const runsBefore = h.memory.store.listRuns(1).length;
     const pendingBefore = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
-    expect(result.compaction.summary).toContain("earlier entries omitted from the Raw window");
+    // Fifty tokens cannot fit this multi-path omission receipt; an empty Raw window emits no receipt.
+    expect(result.compaction.summary).toContain("Memory is at /tm:");
+    expect(result.compaction.summary).not.toContain("earlier entries omitted from the Raw window");
+    expect(result.compaction.summary).not.toContain("\nRaw:\n");
     expect(h.notices.some(n => n.includes("compaction preparing bounded entry views"))).toBe(true);
     // The foreground truncation warning comes once Pi appends the carrier: what was omitted, and
     // that it stays pending.

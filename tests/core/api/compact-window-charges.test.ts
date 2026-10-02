@@ -6,6 +6,8 @@ import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
 import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { tokens } from "../../../src/core/render/index.ts";
+import { readingGuide } from "../../../src/core/render/reading-guide.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 
 const at = "2026-09-23T00:00:00Z";
@@ -32,8 +34,12 @@ test("73: the Raw window's receipt leaves the shared allowance with it, so facts
     const result = memory.compact(session.id, "main", turn.id);
     if ("native" in result) throw new Error("native");
     expect(result.truncated?.raw?.entries).toBeGreaterThan(0); // the Raw window emitted an omission receipt
-    expect(tokens(result.text)).toBeLessThanOrEqual(result.charged!.envelope); // was 186 of 170
-    expect(tokens(result.text)).toBeLessThanOrEqual(windows(result.charged!));
+    const guide = readingGuide(session.id, canonicalToolNames);
+    expect(result.text.startsWith(`${guide}\n\n`)).toBe(true);
+    const windowText = result.text.slice(guide.length + 2); // exact emitted bytes after fixed framing
+    expect(windowText).toContain("earlier entries omitted from the Raw window");
+    expect(tokens(windowText)).toBeLessThanOrEqual(result.charged!.envelope);
+    expect(tokens(windowText)).toBeLessThanOrEqual(windows(result.charged!));
     expect(windows(result.charged!)).toBeLessThanOrEqual(result.charged!.envelope);
   } finally { memory.close(); }
 });
@@ -57,7 +63,7 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
     Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, sharedAllowanceTokens: 1 });
     const result = memory.compact(session.id, "main", turn.id, visible);
     if ("native" in result) throw new Error("native");
-    expect(result.text).toBe(""); // was 39 tokens: empty titles, the episodic tag and a notices receipt
+    expect(result.text).toBe(readingGuide(session.id, canonicalToolNames)); // fixed framing, no window titles, tags or receipts
     expect(result.charged).toMatchObject({ knowledge: 0, facts: 0, raw: 0 });
   } finally { memory.close(); }
 });

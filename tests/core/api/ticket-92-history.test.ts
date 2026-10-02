@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import type { KnowledgePath, KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 
-test("92/03: branch history owns stable ordinals, membership/status follows the reader, and exact reads grant no write scope", () => {
+test("92/118: all-branch history owns stable ordinals, current selection follows the reader, and exact reads grant no write scope", () => {
   const memory = sourceSeededMemory(":memory:", async () => ({ outcome: "failure" as const, output: "unused" }));
   const store = memory.store;
   try {
@@ -49,10 +49,14 @@ test("92/03: branch history owns stable ordinals, membership/status follows the 
     expect(current).not.toContain("Right body");
     expect(current).not.toContain("Initial body");
     const history = read(paths[1]!, `K${id}`, "history");
+    expect(history).toContain("history (all branches):");
     expect(history).toContain(`[K${id}#${store.versionTag(id, initial.commit)}]`);
     expect(history).toContain(`[K${id}#${store.versionTag(id, first.commit)}]`);
-    expect(history).not.toContain("Right body");
-    expect(history).toContain("superseded");
+    expect(history).toContain(`[K${id}#${store.versionTag(id, second.commit)}]`);
+    expect(history.indexOf("Initial body")).toBeLessThan(history.indexOf("Left body"));
+    expect(history.indexOf("Left body")).toBeLessThan(history.indexOf("Right body"));
+    // An explicit history includes inapplicable sibling bodies; only bare K resolves the reader's path.
+    expect(read(paths[1]!, `K${id}`)).not.toContain("Right body");
     const all = read(paths[1]!, `K${id}@v3`);
     expect(all).toContain("Right body");
     expect(all).not.toMatch(/K\d+@\d+/);

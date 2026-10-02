@@ -6,6 +6,8 @@ import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
 import { fact as seedFact } from "../../support/seed.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
+import { readingGuide } from "../../../src/core/render/reading-guide.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { tokens } from "../../../src/core/render/tokens.ts";
 
 const roots: string[] = [];
@@ -83,7 +85,9 @@ test("92 actual retained costs, including obsolete bodies and repeated carriers,
   const f = fixture(), old = f.create("Retained original body"), next = f.create("New body");
   const offered = f.memory.injection(f.target, { ...noVisibility(), knowledgeCommitIds: new Set([old.commit]), knowledgeTokens: 0 });
   const cost = offered.knowledgeTokens!;
-  expect(cost).toBe(tokens(offered.text));
+  const prefix = `${readingGuide(f.session.id, canonicalToolNames)}\n\n`;
+  expect(offered.text.startsWith(prefix)).toBe(true);
+  expect(cost).toBe(tokens(offered.text.slice(prefix.length)));
   setKnowledgeCapacity(f.memory, 5000);
   const retained = { ...noVisibility(), knowledgeCommitIds: new Set([old.commit]), knowledgeTokens: 5000 - cost };
   const tag = vi.spyOn(f.store, "versionTag");
