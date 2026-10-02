@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { TraceMemory, knowledgeStateKey, noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles, knowledgeStateKey, noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
 import { budgetKnowledge, renderEntry, renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { injectionText } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
@@ -8,11 +8,6 @@ import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-d
 
 const time = "2026-09-12T00:00:00Z";
 
-function fullRead(tool: { execute(input: unknown): string }, address: string) {
-  let page = tool.execute({ address, full: true, itemBudget: null });
-  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1])
-    page = tool.execute({ address: `cursor=${cursor}`, itemBudget: null });
-}
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { while (memories.length) memories.pop()!.close(); });
 
@@ -58,8 +53,8 @@ async function maintain(f: ReturnType<typeof fixture>, operation: Record<string,
   let committed: { knowledgeId: number; commit: number }[] = [];
   const result = await f.scenarios.run(f.memory, f.target, input => {
     input.reportRequest({ fixture: "knowledge delivery maintenance" });
-    const trace = input.tools.find(tool => tool.name === "trace")!;
-    for (const address of addresses) fullRead(trace, tag(address));
+    const files = memoryFiles(f.memory, input.reader!);
+    for (const address of addresses) expect(files.read(`/tm/${tag(address)}`).content).toContain(tag(address));
     const triggerAddress = trigger ? `K${trigger.knowledgeId}@${trigger.commit}` : null;
     const supplied = new Set(input.material.changed.match(/K\d+@v\d+/g) ?? []);
     if (triggerAddress) supplied.delete(history(triggerAddress)); for (const address of addresses) supplied.delete(history(address));
@@ -195,7 +190,7 @@ test("64c an oversized old body cannot displace a fitting newer body, and omissi
   const result = f.memory.injection(f.target);
   expect(result.knowledgeCommitIds).toEqual([latest.commit]);
   expect(result.text).toContain("small later");
-  expect(result.text).toContain(`omitted 1 constraint knowledge; expand: K${old.knowledgeId}`);
+  expect(result.text).toContain(`omitted 1 constraint knowledge; expand: /tm/K${old.knowledgeId}`);
   expect(result.text).not.toContain("large first");
 });
 
@@ -373,7 +368,7 @@ test("34c split notice names both children while partial budgeting grants body v
   expect(partial?.knowledgeCommitIds).toHaveLength(1);
   expect(partial?.knowledgeStates).toEqual([{ fromCommit: parent.commit, toCommits: split.map(item => item.commit) }]);
   expect(partial?.knowledgeCommitIds).toEqual([split[1]!.commit]);
-  expect(partial?.text).toContain(`omitted 1 constraint knowledge; expand: K${split[0]!.knowledgeId}`);
+  expect(partial?.text).toContain(`omitted 1 constraint knowledge; expand: /tm/K${split[0]!.knowledgeId}`);
   expect(partial?.text).not.toContain("first child");
   expect(partial?.text).toContain("second child");
 });

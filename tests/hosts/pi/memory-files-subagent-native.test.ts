@@ -41,8 +41,9 @@ test("a pi-subagents child reads /tm through the extension's read and grep; the 
       "Use pnpm, never npm.");
   } finally { memory.close(); }
 
-  const S = `/tm/S${seed!}`, sent: { kind: string; body: Body }[] = [];
-  const child = [call("child_read", "read", { path: `${S}/knowledge` }), call("child_grep", "grep", { pattern: "hashline", path: S }), say("CHILD-FINAL-ANSWER")];
+  const knowledgePath = `/tm/knowledge/S${seed!}`, rawPath = `/tm/raw/S${seed!}`;
+  const sent: { kind: string; body: Body }[] = [];
+  const child = [call("child_read", "read", { path: knowledgePath }), call("child_grep", "grep", { pattern: "hashline", path: rawPath }), say("CHILD-FINAL-ANSWER")];
   vi.stubGlobal("fetch", async (_url: unknown, init: RequestInit) => {
     const body = JSON.parse(String(init.body)) as Body;
     const first = textOf((body.messages ?? []).find((m: Body) => m.role === "user")?.content);
@@ -50,7 +51,7 @@ test("a pi-subagents child reads /tm through the extension's read and grep; the 
     sent.push({ kind, body });
     const turns = (body.messages ?? []).filter((m: Body) => m.role === "assistant").length;
     if (kind === "child") return child[turns] ?? say("CHILD-FINAL-ANSWER");
-    if (kind === "parent") return turns === 0 ? call("parent_spawn", "subagent", { prompt: `CHILD-TASK: read ${S}/knowledge and search ${S}.`,
+    if (kind === "parent") return turns === 0 ? call("parent_spawn", "subagent", { prompt: `CHILD-TASK: use Read on ${knowledgePath} and Grep on ${rawPath}.`,
       description: "read memory", subagent_type: "general-purpose" }) : say("PARENT-DONE");
     return say("OTHER");
   });
@@ -77,9 +78,9 @@ test("a pi-subagents child reads /tm through the extension's read and grep; the 
   const results = (kind: string) => new Map<string, string>(sent.filter(request => request.kind === kind).flatMap(request => (request.body.messages ?? [])
     .filter((m: Body) => m.role === "tool").map((m: Body): [string, string] => [m.tool_call_id as string, textOf(m.content)])));
   const inChild = results("child");
-  expect(inChild.get("child_read")).toContain(`Session S${seed!}: a subagent inherits this session's knowledge by reading ${S}/knowledge.`);
+  expect(inChild.get("child_read")).toContain(knowledgePath);
   expect(inChild.get("child_read")).toContain("Use pnpm, never npm.");
-  expect(inChild.get("child_grep")?.split("\n")).toEqual([expect.stringMatching(new RegExp(`^${S}/T\\d+$`)), expect.stringMatching(new RegExp(`^${S}/T\\d+/E1$`))]);
+  expect(inChild.get("child_grep")?.split("\n")).toEqual([expect.stringMatching(new RegExp(`^${rawPath}/T\\d+#E1$`))]);
   const answer = results("parent").get("parent_spawn");
   expect(answer).toContain("CHILD-FINAL-ANSWER");
   expect(answer).not.toContain("Use pnpm, never npm.");

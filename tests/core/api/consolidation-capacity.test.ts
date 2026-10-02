@@ -3,6 +3,8 @@ import { freezeNoting, NOTING_CAPACITY } from "../../../src/core/noting/index.ts
 import { renderKnowledge, renderKnowledgeBlock, sessionKnowledgeNotice, tokens, budgetKnowledge } from "../../../src/core/render/index.ts";
 import { recorded, seedSourceEntry, sourceSeededMemory } from "../../source-fixture.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
+import { pricedToolDefinitions, toolDefinitions } from "../../../src/core/api/tools.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 
 const memories: ReturnType<typeof sourceSeededMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -37,6 +39,31 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
     commits: created.committed.map(value => value.commit), pending: memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id) };
 }
 
+test("native Read description and schema count in fresh Noter capacity, but not again in a fork", () => {
+  const f = fixture([]);
+  // This boundary prices mandatory input only; optional history may legitimately shrink first.
+  f.memory.config.compaction.factsTokens = 0;
+  const nativeReadTool = { name: "Read", description: "Read native files and continue by line. ".repeat(50),
+    parameters: { type: "object", properties: { file_path: { type: "string", description: "Absolute source path." } }, required: ["file_path"] } };
+  const definitions = pricedToolDefinitions(toolDefinitions, canonicalToolNames);
+  const full = f.freeze();
+  const freshPrice = tokens(full.prompt!) + tokens(JSON.stringify([...definitions, nativeReadTool])) + tokens(full.prepared!.text);
+  expect(freshPrice).toBeGreaterThan(tokens(full.prompt!) + tokens(JSON.stringify(definitions)) + tokens(full.prepared!.text));
+  const input = { ...f.target, nativeReadTool, boundary: { exactEntryIds: f.pending } };
+  const exact = freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice, prefixTokens: 0 } }, f.memory.config);
+  expect(exact.prepared!.selectedEntryIds).toEqual(f.pending);
+  expect(() => freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice - 1, prefixTokens: 0 } }, f.memory.config))
+    .toThrow(NOTING_CAPACITY);
+
+  const fork = { ...input, mode: "fork" as const, effectiveMode: "fork" as const };
+  const inherited = freezeNoting(f.memory.store, fork, f.memory.config);
+  const prefixTokens = 20_000;
+  const forkPrice = prefixTokens + tokens(inherited.forkPrompt!) + tokens(inherited.prepared!.text);
+  expect(freezeNoting(f.memory.store, { ...fork, capacity: { inputTokens: forkPrice, prefixTokens } }, f.memory.config)
+    .prepared!.selectedEntryIds).toEqual(f.pending);
+  expect(f.memory.pendingEntries(f.target.sessionId, "main", f.target.headTurnId).map(entry => entry.id)).toEqual(f.pending);
+});
+
 test("45: a whole applicable pool fitting its exact rendered capacity has no omission receipt", () => {
   const f = fixture(["whole applicable rule " + "word ".repeat(5_100)]);
   // 101: the block N receives carries its session's header, so the exact capacity prices it.
@@ -53,7 +80,7 @@ test("45: a whole applicable pool fitting its exact rendered capacity has no omi
   setKnowledgeCapacity(f.memory, exact - 1);
   const omitted = f.freeze();
   expect(omitted.prepared!.supplied.knowledgeCommitIds).toEqual([]);
-  expect(omitted.prepared!.material.receipts).toContain("omitted 1 constraint knowledge; expand: K1");
+  expect(omitted.prepared!.material.receipts).toContain("omitted 1 constraint knowledge; expand: /tm/K1");
   expect(omitted.prepared!.text).not.toContain(`K1#${f.memory.store.versionTag(1, f.commits[0]!)}`);
 });
 
@@ -69,9 +96,9 @@ test("92: N keeps knowledge omissions and exact pending membership under hard mo
   expect(full.prepared!.selectedEntryIds).toEqual(f.pending);
   expect(full.prepared!.material.knowledge!.every(group => !group.text)).toBe(true);
   expect(full.prepared!.material.receipts).toEqual([
-    "omitted 1 constraint knowledge; expand: K1",
-    "omitted 1 open knowledge; expand: K2",
-    "omitted 1 reference knowledge; expand: K3",
+    "omitted 1 constraint knowledge; expand: /tm/K1",
+    "omitted 1 open knowledge; expand: /tm/K2",
+    "omitted 1 reference knowledge; expand: /tm/K3",
   ]);
   expect(full.prepared!.text).not.toContain(`K1#${f.memory.store.versionTag(1, f.commits[0]!)}`);
   const fitted = f.freeze(100_000);

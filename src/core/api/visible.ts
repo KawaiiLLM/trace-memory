@@ -21,7 +21,7 @@ export interface SuppliedMaterial {
   knowledgeCommitIds: number[];
   /** Fully rendered state notices. They establish neither body coverage nor a complete-read handle. */
   knowledgeStates?: KnowledgeStateReceipt[];
-  /** Full Knowledge-window rendering at publication, including notices and framing. */
+  /** Full Knowledge-window rendering at publication, including notices and framing, excluding the fixed reading guide. */
   knowledgeTokens?: number;
 }
 

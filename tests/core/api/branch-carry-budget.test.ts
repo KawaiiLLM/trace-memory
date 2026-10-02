@@ -3,6 +3,8 @@ import { TraceMemory } from "../../../src/core/api/index.ts";
 import { charge, renderEntry, tokens } from "../../../src/core/render/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import * as render from "../../../src/core/render/index.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { ccWorkerToolNames } from "../../../src/hosts/cc/tool-names.ts";
 
 function fixture(texts: string[], normalized = false) {
   const memory = TraceMemory(":memory:", async () => { throw new Error("No provider expected"); }, {}, undefined, normalized ? piSourceBlocks : undefined);
@@ -17,16 +19,17 @@ function fixture(texts: string[], normalized = false) {
   const raw = () => carry().split("Pending raw:\n")[1]!.replace(/\n?<\/branch_carry>$/, "");
   return { memory, session, turn, entries, carry, raw };
 }
-const receipt = (n: number) => `[... ${n} earlier pending entries omitted from the carry budget; read them with trace]`;
+const receipt = (n: number) => `[... ${n} earlier pending entries omitted from the carry budget] /tm/raw/S1/T1`;
 
-test("carry prices the supplied host's omission hint before fitting its window", () => {
+// 118 replaces host-specific trace hints with path-only receipts, charged inside the same cap.
+test("carry charges its path-only omission receipt identically on both hosts", () => {
   const f = fixture(["older source", "newer source"]);
   try {
-    f.memory.config.render.episodicBlockTokens = charge(["Pending raw:", receipt(2).replace("with trace]", "with mcp__trace_memory__trace]")]) + 3;
-    const hosted = f.memory.branchSummary(f.session.id, "main", f.turn.id,
-      { trace: "mcp__trace_memory__trace", search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check" });
-    expect(hosted).toContain("read them with mcp__trace_memory__trace");
-    expect(hosted).not.toContain("read them with trace]");
+    f.memory.config.render.episodicBlockTokens = charge(["Pending raw:", receipt(2)]) + 3;
+    const plain = f.memory.branchSummary(f.session.id, "main", f.turn.id, canonicalToolNames);
+    const hosted = f.memory.branchSummary(f.session.id, "main", f.turn.id, ccWorkerToolNames);
+    expect(hosted).toBe(plain);
+    expect(hosted).toContain(receipt(2));
     expect(tokens(hosted.split("Pending raw:\n")[1]!.split("</branch_carry>")[0]!)).toBeLessThanOrEqual(f.memory.config.render.episodicBlockTokens);
   } finally { f.memory.close(); }
 });

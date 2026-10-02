@@ -2,11 +2,10 @@ import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";
-import { tokens } from "../../../src/core/render/index.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -36,40 +35,15 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
   expect(tag).toMatch(/^[a-z]{4,}$/);
   expect(memory.store.versionOrdinal(knowledgeId, commit)).toBe(1);
   expect(memory.store.resolveVersionTag(knowledgeId, tag)).toBe(commit);
-  const trace = memory.tools(context).find(tool => tool.name === "trace")!;
-  const read = trace.execute({ address: `K${knowledgeId}@v1`, pageBudget: 2000 });
+  const files = memoryFiles(memory, { sessionId: session.id, branch: "main", headTurnId: turn.id });
+  const read = files.read(`/tm/K${knowledgeId}@v1`).content;
   expect(read).toContain(`[K${knowledgeId}#${tag}]`);
   expect(read).not.toContain(`K${knowledgeId}@${commit}`);
-  const first = trace.execute({ address: `K${knowledgeId}@v1`, pageBudget: 65 });
-  expect(first).toContain("cursor=");
-  expect(first).not.toContain(`#${tag}`);
-  const pages = [first];
-  let cursor = /cursor=([0-9a-f-]+)/.exec(first)?.[1];
-  while (cursor) {
-    const next = trace.execute({ address: `cursor=${cursor}` });
-    pages.push(next);
-    cursor = /cursor=([0-9a-f-]+)/.exec(next)?.[1];
-    if (pages.length > 20) throw new Error("nonterminating knowledge pagination");
-  }
-  expect(pages.at(-1)).toContain(`version K${knowledgeId}#${tag}`);
-  expect(pages.slice(0, -1).join("\n")).not.toContain(`#${tag}`);
-  expect(pages.join("\n").match(new RegExp(`K${knowledgeId}#${tag}`, "g"))).toHaveLength(1);
   const second = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "create", text: "Second rule: " + "long body segment ".repeat(90), category: "reference", scope: "session", topics: [], reason: "second", supports: [`F${fact}`] }));
   const secondId = second.committed[0].knowledgeId;
   const secondVersion = `K${secondId}#${memory.store.versionTag(secondId, memory.store.resolveVersionOrdinal(secondId, 1))}`;
-  const both = trace.execute({ address: `K${knowledgeId}@v1,K${second.committed[0].knowledgeId}@v1`, pageBudget: 125 });
-  expect(both).toContain(`[K${knowledgeId}#${tag}]`);
-  expect(both).not.toContain(secondVersion);
-  let nextCursor = /cursor=([0-9a-f-]+)/.exec(both)?.[1];
-  const allPages = [both];
-  while (nextCursor) {
-    const next = trace.execute({ address: `cursor=${nextCursor}` });
-    allPages.push(next);
-    nextCursor = /cursor=([0-9a-f-]+)/.exec(next)?.[1];
-    if (allPages.length > 80) throw new Error("nonterminating multi-K pagination");
-  }
-  expect(allPages.join("\n").match(new RegExp(secondVersion, "g"))).toHaveLength(1);
-  expect(allPages.at(-1)).toContain(secondVersion);
+  expect(files.read(`/tm/K${secondId}@v1`).content).toContain(secondVersion);
+  expect(files.read(`/tm/K${knowledgeId}@v1`).content).not.toContain(secondVersion);
   expect(() => memory.store.resolveVersionTag(knowledgeId, tag.slice(0, 3))).toThrow();
   expect(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#xxxx`, reason: "bad", supports: [`F${fact}`] })).toContain("rejected:");
   const otherConnection = open();
@@ -88,7 +62,7 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
   } finally { reopened.close(); }
 });
 
-test("92/03: complete-body tags survive collection and history paging without leaking into partial bodies", () => {
+test("118: exact knowledge reads carry a complete tagged body; search previews remain tagless", () => {
   const memory = sourceSeededMemory(":memory:", async () => ({ outcome: "failure" as const, output: "unused" }));
   try {
     const project = memory.store.createProject({ name: "paged-project", declaredBy: "mark" });
@@ -102,62 +76,13 @@ test("92/03: complete-body tags survive collection and history paging without le
       category: "reference", scope: "project", topics: [], reason: "created", supports: [`F${fact}`] }));
     const { knowledgeId } = receipt.committed[0];
     const version = `K${knowledgeId}#${memory.store.versionTag(knowledgeId, memory.store.resolveVersionOrdinal(knowledgeId, 1))}`;
-    const trace = tools.find(t => t.name === "trace")!;
-    const collect = (address: string, extra: object, tool = trace) => {
-      const pages = [tool.execute({ address, itemBudget: null, ...extra })];
-      let cursor: string | undefined;
-      while ((cursor = /cursor=([0-9a-f-]+)/.exec(pages.at(-1)!)?.[1])) {
-        pages.push(tool.execute({ address: `cursor=${cursor}` }));
-        if (pages.length > 100) throw new Error("pagination did not terminate");
-      }
-      expect(pages.every(page => !page.startsWith("rejected:"))).toBe(true);
-      return pages;
-    };
-    for (const address of [`K${knowledgeId}`, project.name]) {
-      const pages = collect(address, { pageBudget: 130 });
-      const taggedIndex = pages.findIndex(page => page.includes(version));
-      expect(taggedIndex).toBeGreaterThan(0);
-      expect(pages.slice(0, taggedIndex).join("\n")).not.toContain(version);
-      expect(pages.join("\n").split(version)).toHaveLength(2);
-      expect(pages.every(page => tokens(page) <= 130)).toBe(true);
-      expect(pages.join("\n")).not.toMatch(/K\d+@\d+/);
-    }
-    const humanPage = memory.trace(`K${knowledgeId}@v1`, {
-      sessionId: session.id, branch: "main", headTurnId: turn.id, itemBudget: null, pageBudget: 130 });
-    const humanCursor = /cursor=([0-9a-f-]+)/.exec(humanPage)![1];
-    expect(trace.execute({ address: `cursor=${humanCursor}` })).toContain("another presentation surface");
-    expect(trace.execute({ address: `K${knowledgeId}`, modelFacing: false })).toContain("rejected:");
-    const limitedTrace = memory.tools({ ...context, maxReadChars: 600 }).find(t => t.name === "trace")!;
-    const charPages = collect(`K${knowledgeId}`, { pageBudget: 8000, versions: "all" }, limitedTrace);
-    expect(charPages.every(page => page.length <= 600)).toBe(true);
-    expect(charPages.slice(0, -1).join("\n")).not.toContain(version);
-    expect(charPages.at(-1)).toContain(version);
-    const capPages = collect(`K${knowledgeId}@v1`, { cap: 1, pageBudget: 8000 });
-    expect(capPages.slice(0, -1).join("\n")).not.toContain(version);
-    expect(capPages.at(-1)).toContain(version);
-    const full = trace.execute({ address: `K${knowledgeId}@v1`, itemBudget: null, pageBudget: 8000 });
-    for (let budget = tokens(full); budget < tokens(full) + 8; budget++) {
-      const pages = collect(`K${knowledgeId}@v1`, { pageBudget: budget });
-      expect(pages).toHaveLength(1);
-      expect(pages[0]).toContain(`[${version}]`);
-    }
-    for (const extra of [{ fields: ["supports"] }, { itemBudget: 60 }]) {
-      expect(trace.execute({ address: `K${knowledgeId}`, ...extra })).not.toContain(version);
-      expect(trace.execute({ address: project.name, ...extra })).not.toContain(version);
-    }
+    const files = memoryFiles(memory, { sessionId: session.id, branch: "main", headTurnId: turn.id });
+    const exact = files.read(`/tm/K${knowledgeId}@v1`).content;
+    expect(exact).toContain(body);
+    expect(exact.split(version)).toHaveLength(2);
+    expect(files.read(`/tm/knowledge/S${session.id}`).content).toContain(version);
+    expect(files.read("/tm/knowledge").content).not.toContain(version);
     expect(tools.find(t => t.name === "search")!.execute({ query: "Mixed body", layer: "knowledge", itemBudget: null })).not.toContain(version);
-    // A queued collection body retains its original identity even if version metadata is
-    // changed outside the supported writer while its cursor is live.
-    const first = trace.execute({ address: project.name, itemBudget: null, pageBudget: 130 });
-    memory.store.db.prepare("UPDATE knowledge_version_tags SET tag='zzzzzz' WHERE knowledge_id=?").run(knowledgeId);
-    const rest: string[] = [];
-    let cursor = /cursor=([0-9a-f-]+)/.exec(first)?.[1];
-    while (cursor) {
-      const page = trace.execute({ address: `cursor=${cursor}` }); rest.push(page);
-      cursor = /cursor=([0-9a-f-]+)/.exec(page)?.[1];
-    }
-    expect(rest.join("\n")).toContain(version);
-    expect(rest.join("\n")).not.toContain("#zzzzzz");
   } finally { memory.close(); }
 });
 

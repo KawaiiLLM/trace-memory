@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { host as createHost, reply, notingFact, noteHeld, usage, type Reply } from "./test-host.ts";
@@ -47,9 +48,7 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   const result = JSON.parse(accepted.content[0].text);
   expect(h.memory.store.getFact(result.factIds[0])!.roles).toEqual([{ role: "user" }]);
   expect(h.memory.store.getFact(result.factIds[0])!.title).toBe("Newer policy");
-  const trace = h.tools.get("trace")!;
-  await expect(trace.execute("tool-removed", { address: source, tool: 0 }, undefined, undefined, h.ctx))
-    .rejects.toThrow(/unexpected parameter|unexpected field/);
+  expect(h.tools.has("trace")).toBe(false);
   const write = h.tools.get("memory")!;
   const created = await write.execute("create", { op: "create", text: "Keep the chosen policy", category: "constraint", scope: "session",
     topics: [], supports: [`F${result.factIds[0]}`], reason: "policy" }, undefined, undefined, h.ctx);
@@ -78,7 +77,7 @@ test("legacy source-only fact without an entry binding fails as damaged data", a
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {
   const h = host();
   // 101: same-name read and grep serve /tm/ and hand every other path to Pi's own tools.
-  expect([...h.tools.keys()]).toEqual(["read", "grep", "trace", "search", "note", "memory"]);
+  expect([...h.tools.keys()]).toEqual(["read", "grep", "search", "note", "memory"]);
   for (const name of ["tool_call", "agent_settled", "session_before_compact", "before_agent_start", "message_update", "message_end", "tool_result", "session_start", "session_before_tree", "session_tree"]) expect(h.hooks.has(name)).toBe(true);
   await h.emit("session_start");
   await h.commands.get("trace").handler("", h.ctx);
@@ -119,7 +118,7 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   expect(String(h.conversations.at(-1)!.messages.at(-1)!.content)).toContain("Before publication, review this run once.");
   expect(h.conversations[0]!.systemPrompt).toBe(loadPrompt("noting.md"));
   expect(h.conversations[0]!.messages).toHaveLength(1);
-  expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
+  expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["search", "note", "memory", "read"]);
   // Usage is summed over every model call of the run, not the last reply's alone.
   const calls = h.conversations.length;
   expect(JSON.parse(run.response!).usage).toEqual({ ...usage, input: usage.input * calls, output: usage.output * calls, totalTokens: usage.totalTokens * calls });
@@ -234,7 +233,7 @@ test("29d case 22: a worker's commit reaches no later prompt, on the branch it r
   h.provider(async c => notingFact(c));
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect(await injected()).not.toContain("[F1]"); // settling confirms nothing; there is nothing queued
-  expect(h.memory.trace("F1")).toContain("[F1]"); // an explicit read still reaches it
+  expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: h.memory.store.currentPath(1).headTurnId }).read("/tm/F1").content).toContain("[F1]"); // an explicit read still reaches it
 });
 
 // 29d supersedes the 2026-09-07 ruling this test pinned ("deliveries and the first injection are
@@ -616,11 +615,13 @@ test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: "S1/T2", rangeTo: "S1/T3" });
 });
 
-test("spec overflow policy: a subagent noting fetches cut evidence through the trace tool; the run records the fetch and the last request", async () => {
+test("a subagent Noter reads omitted evidence through virtual Read and records its last request", async () => {
   const h = host({ "noting.triggerTokens": 1000, "noting.forkModeDefault": false, notingModel: "fake/noter" });
   await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
-  const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1#E1..E5", full: true } };
+  const source = h.memory.store.listSourceEntries(1).at(-1)!;
+  const path = `/tm/raw/S1/T1#E${source.entryOrdinal}`;
+  const call = { type: "toolCall" as const, id: "call-1", name: "read", arguments: { path } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.prompt("next main turn"); await h.answer("word ".repeat(1000)); await h.drain();
   expect(h.conversations).toHaveLength(4);
@@ -628,26 +629,35 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
   expect(JSON.stringify(h.conversations.at(-1)!.messages)).toContain("Before publication, review this run once.");
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
   expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
-  expect(result.content[0]!.text).toBe(h.memory.trace("T1#E1..E5", { full: true }));
+  expect(result.content[0]!.text).toBe(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(path).content);
   expect(result.content[0]!.text).toContain("x".repeat(5000));
-  expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
+  expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["search", "note", "memory", "read"]);
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1#E1..E5", input: { address: "T1#E1..E5", full: true }, content: h.memory.trace("T1#E1..E5", { full: true }) }]);
   expect(JSON.parse(run.request!)).toEqual(h.requests.at(-1));
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
 test("a noting tool call for a bad address returns an error result and N still completes", async () => {
   const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
-  const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "K999" } };
+  const call = { type: "toolCall" as const, id: "call-2", name: "read", arguments: { path: "/tm/K999" } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.turn();
-  const result = h.conversations[1]!.messages[2] as { isError: boolean; content: { text: string }[] };
-  expect(result.isError).toBe(true); expect(result.content[0]!.text).toContain("does not exist");
+  const result = h.conversations[1]!.messages[2] as { content: { text: string }[] };
+  expect(result.content[0]!.text).toContain("does not exist");
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
-  expect(h.conversations.every(c => c.tools!.map(t => t.name).join(",") === "trace,search,note,memory")).toBe(true);
-  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);
+  expect(h.conversations.every(c => c.tools!.map(t => t.name).join(",") === "search,note,memory,read")).toBe(true);
+  const runs = h.memory.store.listRuns(1);
+  expect(runs.map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);
+  // The OpenAI tool message transports text only. Check native status in Pi's own log,
+  // rather than reconstructing an isError flag from the HTTP result's wording.
+  const nativeLog = JSON.parse(runs[0]!.response!).nativeLog;
+  expect(typeof nativeLog).toBe("string");
+  const messages = readFileSync(nativeLog, "utf8").trim().split("\n")
+    .map(line => JSON.parse(line)).filter(entry => entry.type === "message").map(entry => entry.message);
+  const rejected = messages.find(message => message.role === "toolResult" && message.toolCallId === "call-2");
+  expect(rejected).toMatchObject({ toolName: "read", isError: true });
+  expect(JSON.stringify(rejected.content)).toContain("does not exist");
 });
 
 test("main facade tools bind each call to the current turn, commit immediately and record raw only at tool_result", async () => {
@@ -711,13 +721,14 @@ test("rejected manual writes throw for Pi to record one failed raw tool call", a
 });
 
 
-test("main trace can fetch historical rejected tool evidence without becoming a failed call", async () => {
+test("main virtual Read can fetch historical rejected tool evidence without becoming a failed call", async () => {
   const h = host(); await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "read", input: {}, content: [{ type: "text", text: "rejected: previous operation" }], isError: true });
-  const input = { address: "T1", full: true };
-  const result = await h.tools.get("trace").execute("read-old", input, undefined, undefined, h.ctx);
+  const source = h.memory.store.listSourceEntries(1).at(-1)!;
+  const input = { path: `/tm/raw/S1/T1#E${source.entryOrdinal}` };
+  const result = await h.tools.get("read").execute("read-old", input, undefined, undefined, h.ctx);
   expect(result.content[0].text).toContain("rejected: previous operation");
-  await h.emit("tool_result", { toolName: "trace", input, ...result, isError: false });
+  await h.emit("tool_result", { toolName: "read", input, ...result, isError: false });
   expect(h.memory.store.listToolCalls(1).map(c => c.status)).toEqual(["failure", "success"]);
 });
 
@@ -729,7 +740,7 @@ test("maxToolRounds is a budget: unlimited by default, and a run over an explici
   const unlimited = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
   let calls = 0;
   const looping = (c: Parameters<typeof notingFact>[0]) => c.messages.filter(m => m.role === "toolResult").length < 20
-    ? { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: `t${++calls}`, name: "trace", arguments: { address: "T1" } }] } : notingFact(c);
+    ? { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: `t${++calls}`, name: "read", arguments: { path: "/tm/facts/S1/T1" } }] } : notingFact(c);
   unlimited.provider(async c => looping(c)); await unlimited.turn();
   expect(unlimited.memory.store.listRuns(1)[0]!.outcome).toBe("success");
   expect(unlimited.conversations.length).toBeGreaterThan(20);
@@ -778,7 +789,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   const note = (text: string) => {
     const current = state(), tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: current.head, branch: current.branch,
       triggerEntryId: target().triggerEntryId });
-    const receipt = JSON.parse(tools[2]!.execute({ title: text, sources: `[T${current.head}#E1] ${text}` }));
+    const receipt = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: text, sources: `[T${current.head}#E1] ${text}` }));
     expect(receipt.results[0]).toMatch(/^ok:/);
     return receipt.factIds[0] as number;
   };
@@ -791,7 +802,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   h.entries.splice(0, h.entries.length, ...root); await h.emit("session_tree");
   const rootFact = note("Root rule");
   const rootTools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: 1, branch: state().branch, triggerEntryId: target().triggerEntryId });
-  const rootReceipt = JSON.parse(rootTools[3]!.execute({ op: "create", topics: [], reason: "Create from the root path.",
+  const rootReceipt = JSON.parse(rootTools.find(t => t.name === "memory")!.execute({ op: "create", topics: [], reason: "Create from the root path.",
     text: "Root rule", category: "constraint", scope: "project", supports: [`F${rootFact}`] }));
   const rootCommit = rootReceipt.committed[0].commit as number;
 
@@ -799,7 +810,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
     const path = target(); h.memory.store.setCurrentPath(1, path.branch, path.headTurnId, "pi-test");
     const current = h.memory.store.currentCommit(1, path)[0]!;
     const trigger = createDreamerTrigger(h.memory, path, factId, sequence);
-    const reader = h.memory.tools({ kind: "manual", sessionId: 1, branch: path.branch, currentTurnId: path.headTurnId });
+    const reader = (address: string) => memoryFiles(h.memory, path).read(address).content;
     const baseAddress = readHandle(reader, "K1"), triggerAddress = readHandle(reader, `K${trigger.knowledgeId}`);
     expect(h.memory.taskEligibility("dreaming", path)).toEqual({ due: true });
     expect(h.memory.store.getClaim(1, "dreaming")).toBeNull();
@@ -807,8 +818,8 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
     h.provider(async conversation => {
       expect(conversation.systemPrompt).toMatch(/^# Dreamer/);
       if (round++ === 0) return { ...reply(""), stopReason: "toolUse", content: [
-        { type: "toolCall", id: `read-base-${sequence}`, name: "trace", arguments: { address: baseAddress, itemBudget: null, pageBudget: 8000 } },
-        { type: "toolCall", id: `read-trigger-${sequence}`, name: "trace", arguments: { address: triggerAddress, itemBudget: null, pageBudget: 8000 } },
+        { type: "toolCall", id: `read-base-${sequence}`, name: "read", arguments: { path: `/tm/${baseAddress}` } },
+        { type: "toolCall", id: `read-trigger-${sequence}`, name: "read", arguments: { path: `/tm/${triggerAddress}` } },
       ] };
       if (round === 2) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `write-${sequence}`, name: "memory", arguments: {
         operations: [{ op: "update", id: baseAddress, text, category: "constraint", scope: "project", topics: [], supports: [`F${factId}`], reason: `Update from ${path.branch}.` },
@@ -977,7 +988,7 @@ test("a retry re-sends the same request: a stream error after a tool round does 
   let calls = 0;
   h.provider(async c => {
     calls++;
-    if (calls === 1) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "trace-1", name: "trace", arguments: { address: "T1" } }] };
+    if (calls === 1) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "/tm/raw/S1/T1" } }] };
     if (calls === 2) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" };
     return notingFact(c);
   }, { autoStop: true });
@@ -1023,5 +1034,5 @@ test("N jointly publishes a fact and knowledge; the next prompt delivers only th
   expect(carried).toContain("<knowledge>");
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect((await h.prompt("third"))?.message).toBeUndefined();
-  expect(h.memory.trace("F1")).toContain("[F1]");
+  expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: h.memory.store.currentPath(1).headTurnId }).read("/tm/F1").content).toContain("[F1]");
 });

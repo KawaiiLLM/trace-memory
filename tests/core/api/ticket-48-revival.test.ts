@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
@@ -48,8 +48,8 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
   if (!created.ok) throw new Error(created.problems.join("; "));
   old = created.committed[0]!;
 
+  expect(memoryFiles(memory, path).read(`/tm/K${old.knowledgeId}@v1`).content).toContain("Original widget state");
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
-  manual.find(tool => tool.name === "trace")!.execute({ address: `K${old.knowledgeId}@v1`, itemBudget: null });
   const archived = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget",
     id: `K${old.knowledgeId}#${store.versionTag(old.knowledgeId, old.commit)}`, supports: [`F${fact}`], reason: "Widget retired" }));
   expect(archived.committed[0]!.version).toBe(`K${old.knowledgeId}@v2`);

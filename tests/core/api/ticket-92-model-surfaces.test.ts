@@ -1,12 +1,12 @@
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { expect, test } from "vitest";
-import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import { fact as seedFact } from "../../support/seed.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 import { sliceCcInjection, CC_KNOWLEDGE_RECENCY_NOTICE } from "../../../src/hosts/cc/slices.ts";
 import { decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
 
-test("92/03: model lists and compact carriers use chronological tags; human reads keep commits; omissions carry only history addresses", () => {
+test("92/03: model lists and compact carriers use chronological tags; exact reads use ordinals; omissions carry only history addresses", () => {
   const memory = sourceSeededMemory(":memory:", async () => ({ outcome: "failure" as const, output: "unused" }));
   const store = memory.store;
   try {
@@ -34,7 +34,7 @@ test("92/03: model lists and compact carriers use chronological tags; human read
     const injected = memory.injection(target, noVisibility(), true);
     const compacted = memory.compact(session.id, "main", turn.id, [], true);
     if ("native" in compacted) throw new Error("unexpected native delegation");
-    for (const body of [injected.text, compacted.text, tools.find(t => t.name === "trace")!.execute({ address: project.name, pageBudget: 8000 })]) {
+    for (const body of [injected.text, compacted.text, memoryFiles(memory, target).read(`/tm/knowledge/S${session.id}`).content]) {
       expect(body).not.toMatch(/K\d+@\d+/);
       expect(body.indexOf(secondTag)).toBeLessThan(body.indexOf(firstTag));
       expect(body).not.toMatch(/<(constraint|open)>/);
@@ -42,7 +42,7 @@ test("92/03: model lists and compact carriers use chronological tags; human read
     const search = tools.find(t => t.name === "search")!.execute({ query: "Needle", layer: "knowledge", maxTokens: 8000 });
     expect(search.indexOf(`K${second.knowledgeId}@v1`)).toBeLessThan(search.indexOf(`K${first.knowledgeId}@v2`));
     expect(search).not.toContain(firstTag);
-    expect(memory.trace(`K${first.knowledgeId}@v2`)).toContain(`[K${first.knowledgeId}@${latest.commit}]`);
+    expect(memoryFiles(memory, target).read(`/tm/K${first.knowledgeId}@v2`).content).toContain(`[${firstTag}] [K${first.knowledgeId}@v${store.versionOrdinal(first.knowledgeId, latest.commit)}]`);
     const binding = { db: "92-surface", nativeSession: "native", coreSession: session.id };
     const slices = sliceCcInjection(binding, injected.transportItems!);
     const text = slices.filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext).join("\n");

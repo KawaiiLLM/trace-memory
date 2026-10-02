@@ -58,8 +58,8 @@ test.each(["budget", "new knowledge"] as const)("64c: publication reprices %s wi
     if (change === "budget") expect(result.compaction.summary).toContain("rule ".repeat(6_000));
     else {
       expect(result.compaction.summary).toContain("external-39 ".repeat(10)); // newer optional Knowledge is kept
-      expect(result.compaction.summary).toMatch(/omitted \d+ constraint knowledge; expand: K\d+/);
-      expect(result.compaction.summary).toContain("more up to K1"); // omission range includes K2
+      expect(result.compaction.summary).toMatch(/omitted \d+ constraint knowledge; expand: \/tm\/K\d+/);
+      expect(result.compaction.summary).toContain("more up to /tm/K1"); // omission range includes K2
       expect(result.compaction.summary).not.toContain("[K2@2]");
       expect(result.compaction.summary).not.toContain("external-0 ".repeat(300));
     }

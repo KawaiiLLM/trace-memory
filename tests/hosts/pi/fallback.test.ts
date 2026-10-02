@@ -34,8 +34,9 @@ import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { tokens } from "../../../src/core/render/tokens.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
+import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
 import { forkable, runNative } from "../../../src/hosts/pi/native.ts";
-import { toolDefinitions, type NotingAgentInput } from "../../../src/core/api/index.ts";
+import { toolDefinitions, memoryFiles, type NotingAgentInput } from "../../../src/core/api/index.ts";
 
 /** A provider rejection, at the status this fixture's wire uses for one: Pi does not treat it as
  * transient, so the scripted message is what decides — which is the point of every case below. */
@@ -277,7 +278,8 @@ test("27b 2026-09-10: a cancelled fork attempt launches no fallback work", async
       reportRequest: () => {}, reportProgress: () => {},
     } as unknown as NotingAgentInput;
     const binding: WorkerBinding = { model: f.model as never, checkCapacity: () => {},
-      tools: toolDefinitions.map(t => ({ ...t, execute: () => "committed" })), runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
+      tools: toolDefinitions.map(t => ({ ...t, execute: () => "committed" })),
+      read: memoryReadTool(f.h.dir, path => memoryFiles(f.h.memory, f.h.memory.store.currentPath(1)).read(path), { memoryOnly: true }), runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
       fork: { parentFile: f.manager().getSessionFile()!, parentSessionId: f.manager().getSessionId(), checkpoint: f.manager().getLeafId()!, captured },
       onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} };
     const result = await runWorker(task, binding);

@@ -1,5 +1,5 @@
-// 22c: an explicit read does the work the caller asked for. A full tool trace obtains the target
-// Turn's native occurrences once and reuses them across its tool ordinals; a knowledge search applies
+// 22c: an explicit read does the work the caller asked for. A full internal Turn renderer obtains
+// its native occurrences once and reuses them across its tool ordinals; a knowledge search applies
 // the page cap before it formats a hit and resolves the commit graph once per query, so a later page
 // still carries the labels that query established. Nothing here changes what the reads print.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -7,17 +7,15 @@ import * as render from "../../../src/core/render/index.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import { suppliedHandles } from "../../dreaming-skips.ts";
 import { countSourceReads, countGraphResolutions } from "../../perf/fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const time = "2026-09-09T00:00:00Z";
 
-function fullRead(tool: { execute(input: unknown): string }, address: string) {
-  let page = tool.execute({ address, full: true, itemBudget: null });
-  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1])
-    page = tool.execute({ address: `cursor=${cursor}`, itemBudget: null });
+function fullRead(sessionId: number, headTurnId: number, address: string) {
+  return memoryFiles(memory, { sessionId, branch: "main", headTurnId }).read(`/tm/${address}`).content;
 }
 let dir: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios;
 beforeEach(() => {
@@ -123,12 +121,12 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
   const trigger = createDreamerTrigger(memory, path, supports[0]!, knowledge + revisions, "session");
   const dreamed = await scenarios.run(memory, path, input => {
     const request = { fixture: "paged read corpus" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
     const consumed = new Set<string>();
     for (let i = 0; i < tips.length; i++) for (let j = 1; j < revisions; j++) {
       const tip = tips[i]!, address = `K${tip.knowledgeId}#${store.versionTag(tip.knowledgeId, tip.commit)}`;
       consumed.add(`K${tip.knowledgeId}@v${j}`);
-      fullRead(trace, address);
+      expect(fullRead(sessionId, headTurnId, address)).toContain(`K${tip.knowledgeId}#`);
       const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: address,
         text: `SEARCHNEEDLE conclusion ${i} revision ${j}`, category: "understanding", scope: "session", supports: supports.map(id => `F${id}`), reason: "corpus", topics: [] }], skipped: [] }));
       expect(updated.committed[0]!.version).toBe(`K${tip.knowledgeId}@v${j + 1}`);
@@ -200,9 +198,8 @@ test("22c: continuation is complete and stable, and a commit between pages moves
       const trigger = createDreamerTrigger(other, corpus.path, corpus.supports[0]!, 99, "session");
       const changed = await otherScenarios.run(other, corpus.path, input => {
         const request = { fixture: "between paged reads" }; input.reportRequest(request);
-        const trace = input.tools.find(tool => tool.name === "trace")!;
         const base = `K${last.knowledgeId}#${other.store.versionTag(last.knowledgeId, last.commit)}`;
-        fullRead(trace, base);
+        expect(memoryFiles(other, corpus.path).read(`/tm/${base}`).content).toContain(base);
         input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
           { op: "update", id: base, text: "SEARCHNEEDLE later conclusion",
             category: "understanding", scope: "session", supports: corpus.supports.map(id => `F${id}`), reason: "between pages", topics: [] },

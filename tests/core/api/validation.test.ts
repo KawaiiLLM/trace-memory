@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { hydrate, sourceSeededMemory, type NotingAgentInput, type DreamingAgentInput } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, memoryFiles, type NotingAgentInput, type DreamingAgentInput } from "../../source-fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
 
 // Exercise both explicit N tools and real terminal publication.
@@ -93,7 +93,7 @@ describe("checkMemoryBatch", async () => {
       expect(memory.store.getClaim(1, "dreaming")).not.toBeNull();
       expect(memory.store.openDreamingRange(1, "main")).not.toBeNull();
       const tag = `K1#${memory.store.versionTag(1, 1)}`;
-      expect(input.tools.find(tool => tool.name === "trace")!.execute({ address: "K1", itemBudget: null })).toContain(tag);
+      expect(memoryFiles(memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/K1").content).toContain(tag);
       const before = memory.store.listKnowledgeRevisions();
       const receipt = input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "merge", id: tag,
         absorb: ["not-an-id"], text: "Merged rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Merge duplicate." }], skipped: [] });
@@ -108,8 +108,8 @@ describe("checkMemoryBatch", async () => {
       const session = memory.store.createSession({ projectId: project.id, host: "pi:test", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
       const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", startedAt: "now" });
       const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
-      expect(tools[2]!.execute({ title: "Rule admission", sources: `[T${turn.id}#E1] Rule` })).toContain("F1");
-      expect(JSON.parse(tools[3]!.execute({ op: "create", text: "Rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Seed" })).committed).toHaveLength(1);
+      expect(tools.find(tool => tool.name === "note")!.execute({ title: "Rule admission", sources: `[T${turn.id}#E1] Rule` })).toContain("F1");
+      expect(JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ op: "create", text: "Rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Seed" })).committed).toHaveLength(1);
       const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id });
       expect(result.outcome, JSON.stringify(result)).toBe("failure");
       if (result.outcome !== "failure") throw new Error("expected refused D batch");

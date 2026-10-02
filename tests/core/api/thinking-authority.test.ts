@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
+import { memoryFiles } from "../../../src/core/api/files.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { resolveFactSource, sourceAddresses } from "../../../src/core/model/source.ts";
 import { renderEntryIndex } from "../../../src/core/render/index.ts";
@@ -23,16 +24,21 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
   try {
     const tools = f.m.tools(kind === "manual" ? { kind, sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }
       : { kind, sessionId: f.sessionId, branch: "main", entryIds: f.entries.map(e => e.id), range: { from: "S1/T1", to: "S1/T1" } });
-    const note = tools.find(t => t.name === "note")!, trace = tools.find(t => t.name === "trace")!;
+    const note = tools.find(t => t.name === "note")!;
+    const files = memoryFiles(f.m, { sessionId: f.sessionId, branch: "main", headTurnId: f.turnId });
     const fact = (address: string) => ({ title: "Evidence check", sources: `[${address}] An observation` });
     expect(note.execute(fact("T1#E1"))).toContain("invalid source");
     expect(f.m.store.listTurnFacts(1)).toHaveLength(0);
     expect(f.m.store.entryNoted(f.pure.id)).toBe(false);
     for (const address of ["T1#E1@thinking", "T1#E2@thinking"])
       expect(note.execute(fact(address))).toContain("rejected:");
-    expect(trace.execute({ address: "T1#E1" })).toContain("Private inference");
-    expect(trace.execute({ address: "T1#E2@assistant" })).toContain("Private inference");
-    expect(trace.execute({ address: "T1", full: true })).toContain("Private inference");
+    const raw = `/tm/raw/S${f.sessionId}/T${f.turnId}`;
+    const before = f.m.store.db.prepare("SELECT * FROM knowledge_deliveries").all();
+    expect(files.read(raw).content).not.toContain("Private inference");
+    expect(files.read(`${raw}@assistant`).content).not.toContain("Private inference");
+    expect(files.read(`${raw}#E1`).content).toContain("Private inference");
+    expect(files.read(`${raw}#E2@assistant`).content).toContain("Private inference");
+    expect(f.m.store.db.prepare("SELECT * FROM knowledge_deliveries").all()).toEqual(before);
     const carry = f.m.branchSummary(f.sessionId, "main", f.turnId);
     expect(carry).toContain("Public explanation");
     expect(carry).not.toContain("Private inference");

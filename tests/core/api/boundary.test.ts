@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -66,7 +67,7 @@ test.each([
   const run = memory.noting;
   const cancelled = run({ ...target, signal: controller.signal });
   const untouched = run({ ...target, sessionId: other, headTurnId: otherTurn.id });
-  expect(memory.tools({ kind: "manual", sessionId: own, branch: "main", currentTurnId: ownTurn.id })[3]!.execute({
+  expect(memory.tools({ kind: "manual", sessionId: own, branch: "main", currentTurnId: ownTurn.id }).find(tool => tool.name === "memory")!.execute({
     op: "create", text: "Own rule", category: "constraint", scope: "session", supports: ["F1"], topics: [], reason: "Seed independent D claim",
   })).toContain("committed");
   const oldClaim = memory.store.getClaim(own, phase)!;
@@ -89,7 +90,8 @@ test.each([
     expect(replacement.token).not.toBe(oldClaim.token);
     releaseOwn();
     expect((await cancelled).outcome).not.toBe("success");
-    expect(late).toEqual(Array(4).fill("rejected: run has finished"));
+    expect(calls.find(input => input.sessionId === own)!.tools.map(tool => tool.name)).toEqual(["search", "note", "memory"]);
+    expect(late).toEqual(Array(3).fill("rejected: run has finished"));
     // The stale task's finally must not release a new task, even under the same executor id.
     expect(memory.store.getClaim(own, phase)).toEqual(replacement);
     expect(memory.store.getClaim(own, otherPhase)).toEqual(phaseClaim);
@@ -123,7 +125,8 @@ test.each([
       expect(() => controller.abort()).not.toThrow();
       expect(calls[0]!.signal!.aborted).toBe(true);
       expect(calls[0]!.signal!.reason).toBe(controller.signal.reason);
-      expect(calls[0]!.tools.map(tool => tool.execute({}))).toEqual(Array(4).fill("rejected: run has finished"));
+      expect(calls[0]!.tools.map(tool => tool.name)).toEqual(["search", "note", "memory"]);
+      expect(calls[0]!.tools.map(tool => tool.execute({}))).toEqual(Array(3).fill("rejected: run has finished"));
     } else expect(calls).toEqual([]);
     expect(release).toHaveBeenCalledTimes(1);
     const claim = memory.store.getClaim(id, phase)!;
@@ -276,6 +279,17 @@ const overhead = () => tokens(notingPrompt) + tokens(JSON.stringify(pricedToolDe
  * definitions are not in it: a fork inherits them with the context its measure already covers. */
 const forkOverhead = (prefix: number) => tokens(notingPrompt) + prefix;
 
+/** Calibrate the artificial host window against the same frozen, rendered material Core prices.
+ * This only measures a boundary; the actual noting call below still admits the full pending path. */
+function calibratedNoting(sessionId: number, headTurnId: number, mode: "fork" | "subagent", prefixTokens: number, maxEntryId?: number) {
+  const frozen = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId, mode,
+    ...(maxEntryId === undefined ? {} : { boundary: { maxEntryId } }) }, memory.config);
+  if (!frozen.prepared) throw new Error("Expected pending Noting material for capacity calibration");
+  const fixed = mode === "fork" ? prefixTokens + tokens(frozen.forkPrompt)
+    : tokens(frozen.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, frozen.names)));
+  return { frozen, cost: fixed + tokens(frozen.prepared.text) };
+}
+
 test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the only model call, and the excluded tail stays pending and unwritable", async () => {
   const sessionId = session();
   const first = turn(sessionId, null, "first " + "word ".repeat(600), "reply one");
@@ -283,15 +297,20 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
   const views = hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store).map(e => renderEntry(e, memory.config.render).content);
   const owned = hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store).filter(e => e.turnId === first.id);
   expect(views.length).toBe(4);
-  // Below the 10,000-token material ceiling, but the reported budget holds only the first Turn. The
-  // slack covers what 20b charges beyond the entry views themselves: the block titles, the range line
-  // and the joining separators of the fresh text core prices.
+  // The batch ceiling admits both Turns; the host's artificial window admits exactly the first
+  // Turn's production-rendered material, including guide, range, titles and receipts.
   expect(tokens(views.join("\n\n"))).toBeLessThan(10_000);
-  const inputTokens = forkOverhead(50) + views.slice(0, 2).reduce((total, view) => total + tokens(view), 0) + 80;
+  const firstCost = calibratedNoting(sessionId, second.id, "fork", 50, owned.at(-1)!.id);
+  const fullCost = calibratedNoting(sessionId, second.id, "fork", 50);
+  expect(firstCost.frozen.entries.map(e => e.id)).toEqual(owned.map(e => e.id));
+  expect(fullCost.frozen.entries).toHaveLength(4);
+  const inputTokens = firstCost.cost;
+  expect(fullCost.cost).toBeGreaterThan(inputTokens);
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
     expect(input.material.entries.map(e => e.id)).toEqual(owned.map(e => e.id)); // oldest first, one Turn
     expect(input.range).toEqual({ from: `S${sessionId}/T${first.id}`, to: `S${sessionId}/T${first.id}` });
+    expect(50 + tokens(input.forkPrompt) + tokens(input.text)).toBeLessThanOrEqual(inputTokens);
     // Inherited context is not evidence permission: the excluded tail cannot be cited.
     expect(input.tools.find(tool => tool.name === "note")!.execute(fact(`T${second.id}#E1`))).toContain("rejected:");
     expect(input.tools.find(tool => tool.name === "note")!.execute({ ...fact(`T${first.id}#E1`), slot: "$1" })).toContain("held");
@@ -408,7 +427,12 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
   const pending = hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store);
   const views = pending.map(e => renderEntry(e, memory.config.render).content);
   const owned = pending.filter(e => e.turnId === first.id).map(e => e.id);
-  const inputTokens = overhead() + tokens(views.slice(0, 2).join("\n\n")) + 80;
+  const firstCost = calibratedNoting(sessionId, second.id, "subagent", 0, pending.filter(e => e.turnId === first.id).at(-1)!.id);
+  const fullCost = calibratedNoting(sessionId, second.id, "subagent", 0);
+  expect(firstCost.frozen.entries.map(e => e.id)).toEqual(owned);
+  expect(fullCost.frozen.entries).toHaveLength(4);
+  const inputTokens = firstCost.cost;
+  expect(fullCost.cost).toBeGreaterThan(inputTokens);
   let sent!: NotingAgentInput;
   runAgent = async raw => {
     sent = raw as NotingAgentInput;
@@ -423,7 +447,8 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
   if (result.outcome !== "success") throw new Error("expected success");
   expect(calls).toHaveLength(1); // one reduction, one freeze, one model call
   // What core priced is what it sends, and it fits the window the host reported.
-  expect(overhead() + tokens(sent.text)).toBeLessThanOrEqual(inputTokens);
+  expect(tokens(sent.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(sent.text))
+    .toBeLessThanOrEqual(inputTokens);
   // Evidence, frozen material, audit membership and the recorded range are the same reduced set.
   expect(sent.entryIds).toEqual(owned);
   expect(sent.material.entries.map(e => e.id)).toEqual(owned);

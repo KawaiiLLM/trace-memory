@@ -4779,6 +4779,25 @@ export class Store {
       .all(sessionId, entryIds.length, JSON.stringify(entryIds)) as { branch: string }[]).map(row => row.branch);
     return preferred && matches.includes(preferred) ? preferred : matches[0] ?? null;
   }
+  /** Ruling 8: source-path order is the prescribed HWM/id order, not a wall-clock write time.
+   * A headless Turn is covered by its recorded lineage head; other Turns follow the selected
+   * source tail's ancestry. No payload or knowledge rendering is needed to choose a branch. */
+  sourceBranchContainingTurn(sessionId: number, turnId: number): string | null {
+    const row = this.db.prepare(`WITH RECURSIVE heads(path_id, turn_id) AS (
+      SELECT p.id, e.turn_id FROM source_paths p JOIN source_entries e ON e.id = p.tail_entry_id
+        WHERE p.session_id = ?
+      UNION
+      SELECT p.id, c.head_turn_id FROM source_paths p JOIN session_lineage_cursors c
+        ON c.session_id = p.session_id AND c.branch = p.branch WHERE p.session_id = ?
+      UNION
+      SELECT h.path_id, t.parent_turn_id FROM heads h JOIN turns t ON t.id = h.turn_id
+        WHERE t.parent_turn_id IS NOT NULL AND t.session_id = ?
+    ) SELECT p.branch FROM source_paths p JOIN heads h ON h.path_id = p.id
+      WHERE p.session_id = ? AND h.turn_id = ?
+      ORDER BY p.hwm_entry_id DESC, p.id DESC LIMIT 1`)
+      .get(sessionId, sessionId, sessionId, sessionId, turnId) as { branch: string } | undefined;
+    return row?.branch ?? null;
+  }
   /** Publish source selection and its lineage cursor atomically, validating the supplied identities
    * once without writing and then reparsing the full path. Other lineage cursors remain untouched. */
   publishSourcePath(sessionId: number, branch: string, entryIds: number[], headTurnId: number, lineage: string): void {

@@ -86,7 +86,7 @@ test("25a 2026-09-09: the same task in subagent mode carries full history and ti
     expect(run.mode).toBe("subagent");
     // A fresh child: core's prompt as the system message, the whole fresh material as the task.
     expect(String(child.messages[0].content)).toBe(loadPrompt("noting.md"));
-    expect(child.tools.map((tool: Body) => tool.function.name)).toEqual(expect.arrayContaining(["trace", "search", "note", "memory"]));
+    expect(child.tools.map((tool: Body) => tool.function.name)).toEqual(expect.arrayContaining(["read", "search", "note", "memory"]));
     expect(String(child.messages[0].content)).toContain("`note({})`");
     const body = text(child.messages.at(-1)!);
     expect(body).toContain("Recent facts (by Turn):");

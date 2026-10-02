@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readingGuide } from "../render/reading-guide.ts";
 import { knowledgeReadSelection, KNOWLEDGE_REPRESENTATIVE_RECEIPT } from "./knowledge-read.ts";
 import { canonicalToolNames, renderToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import { parseKnowledgeAddress, publicTraceTargets } from "../model/address.ts";
@@ -25,7 +26,7 @@ export const SEARCH_DEFAULT_FIELDS: readonly ReadField[] = ["text"];
 export const SEARCH_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = ["text", "status"];
 export const SEARCH_PREVIEW_TOKENS = 80;
 export const MAX_PUBLIC_READ_TOKENS = 8000;
-export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; rawTurn?: boolean; factBacklinks?: ReadonlyMap<number, readonly string[]>; /** Internal frozen metadata for batched exact F reads. */ factReadSnapshot?: { ids: ReadonlySet<number>; relations: ReadonlyMap<number, FactRelation[]> }; profile?: EntryProfile; /** Internal presentation seam; never accepted from model input. */ modelFacing?: boolean; /** Internal host names for generated call hints, not evidence. */ toolNames?: ToolNames }
+export interface ListingOptions { /** Internal /tm projection: contributed segments plus uncovered entry paths, never Raw bodies. */ fileFacts?: boolean; itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; rawTurn?: boolean; factBacklinks?: ReadonlyMap<number, readonly string[]>; /** Internal frozen metadata for batched exact F reads. */ factReadSnapshot?: { ids: ReadonlySet<number>; relations: ReadonlyMap<number, FactRelation[]> }; profile?: EntryProfile; /** Internal presentation seam; never accepted from model input. */ modelFacing?: boolean; /** Internal host names for generated call hints, not evidence. */ toolNames?: ToolNames }
 /** Validate aliases and filters before rendering or touching cursor state. Null is only a
  * content-ceiling disable; pageBudget=null is reserved for internal assembled material reads. */
 export function validateBudgets(options: ListingOptions): void {
@@ -93,7 +94,8 @@ export interface TruncationReceipt { raw?: { entries: number }; facts?: { count:
 /** 28a item 6: what one custom replacement charged, window by window, beside the text it produced.
  * Diagnostics — nothing reads this to decide the outcome. `envelope` is the sum of the three bases
  * and the shared allowance (73: a fixed configuration value), the ceiling the three charges together
- * may never exceed. Nothing is required any more (73): every window is optional and truncates. */
+ * may never exceed. The fixed reading guide is outside these windows, but inside the delivered
+ * text and model-input capacity. Nothing is required any more (73): every window is optional and truncates. */
 export interface ChargedWindows { knowledge: number; facts: number; raw: number; envelope: number }
 /** Foreground Knowledge delivery and the exact body/state identities its carrier may persist. */
 export interface Injection { text: string; knowledgeTokens?: number; knowledgeAllowance?: number; knowledgeCommitIds: number[]; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
@@ -219,7 +221,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     if (saved && saved.modelFacing !== !!options.modelFacing) throw new Error("cursor belongs to another presentation surface");
-    if (saved?.origin === "trace" && origin === "search") throw new Error(`search cannot continue a trace cursor; use ${options.toolNames?.trace ?? canonicalToolNames.trace}`);
+    if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue an internal trace cursor: /tm");
     const defaults = { itemBudget: config.render.entryTokens, toolCallBudget: config.render.toolInputTokens,
       toolResultBudget: config.render.toolResultTokens };
     const content = (key: keyof typeof defaults): number | null => options[key] !== undefined ? options[key]!
@@ -396,7 +398,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
 
     // State transitions retain priority over optional bodies. Then the shared selector preserves
     // the newest commits and receipts omitted older items, without publishing a receipt alone.
-    const buildStates = (count: number) => injectionText({ knowledge: [], receipts: [] }, states.slice(0, count).map(state => state.text));
+    const guide = readingGuide(id, toolNames);
+    const buildStates = (count: number, includeGuide = true) => injectionText({ knowledge: [], receipts: [], ...(includeGuide ? { readingGuide: guide } : {}) }, states.slice(0, count).map(state => state.text));
     const longest = (high: number, fits: (count: number) => boolean) => {
       let low = 0;
       while (low < high) {
@@ -410,12 +413,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       return { kind: "state", text: state.text, receipt: state.receipt,
         address: `K${from.knowledgeId}@v${store.versionOrdinal(from.knowledgeId, from.id)}` };
     };
-    const stateCount = longest(states.length, count => tokens(buildStates(count)) <= remaining);
+    const stateCount = longest(states.length, count => tokens(buildStates(count, false)) <= remaining);
     if (stateCount < states.length) {
       if (!stateCount) return empty();
-      const material = { knowledge: [], receipts: [] };
+      const material = { knowledge: [], receipts: [], readingGuide: guide };
       const rendered = measuredMemory(buildStates(stateCount), material);
-      return { ...rendered, knowledgeTokens: tokens(rendered.text), knowledgeAllowance: remaining, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
+      return { ...rendered, knowledgeTokens: tokens(buildStates(stateCount, false)), knowledgeAllowance: remaining, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
         ...(transport ? { transportItems: states.slice(0, stateCount).map(transportState) } : {}) };
     }
     const selectedStates = states.slice(0, stateCount);
@@ -423,16 +426,18 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const build = (count: number) => {
       const selected = budgetKnowledge(ordered.slice(0, count), Infinity, line);
       const material = { knowledge: selected.groups,
-        receipts: count ? renderKnowledgeOmissions(ordered.slice(count)) : [], knowledgeNotice: notice };
-      return { selected, material, text: injectionText(material, selectedStates.map(state => state.text)) };
+        receipts: count ? renderKnowledgeOmissions(ordered.slice(count)) : [], knowledgeNotice: notice, readingGuide: guide };
+      const text = injectionText(material, selectedStates.map(state => state.text));
+      const windowText = injectionText({ ...material, readingGuide: "" }, selectedStates.map(state => state.text));
+      return { selected, material, text, windowText };
     };
     // Foreground allowance is charged to the exact rendered body, not the selector's conservative
     // cost estimate: retained context and state notices already consume part of the same window.
-    const count = longest(ordered.length, count => tokens(build(count).text) <= remaining);
-    const { selected, material, text } = build(count);
-    if (tokens(text) > remaining || (!selected.commits.length && !selectedStates.length)) return empty();
+    const count = longest(ordered.length, count => tokens(build(count).windowText) <= remaining);
+    const { selected, material, text, windowText } = build(count);
+    if (tokens(windowText) > remaining || (!selected.commits.length && !selectedStates.length)) return empty();
     const rendered = measuredMemory(text, material);
-    return { ...rendered, knowledgeTokens: tokens(rendered.text), knowledgeAllowance: remaining, knowledgeCommitIds: selected.commits,
+    return { ...rendered, knowledgeTokens: tokens(windowText), knowledgeAllowance: remaining, knowledgeCommitIds: selected.commits,
       ...(transport ? { transportItems: [
         ...delta.filter(item => selected.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
           text: knowledgeLine(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
@@ -457,7 +462,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     options = effectiveOptions(options);
     const targets = publicTraceTargets(address);
     if (targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
-    const historyFields = targets.some(target => options.versions !== "current" && /^K[1-9]\d*$/.test(target));
+    const historyFields = targets.some(target => /^K[1-9]\d*\.history$/.test(target)
+      || options.versions !== "current" && /^K[1-9]\d*$/.test(target));
     options = { ...options, fields: [...(options.fields ?? (historyFields ? TRACE_HISTORY_DEFAULT_FIELDS : TRACE_DEFAULT_FIELDS))] };
     options = { ...options, maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS,
       ...(options.pageBudget === null ? { cap: Number.MAX_SAFE_INTEGER } : {}) };
@@ -680,6 +686,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       transport = false, options: { endpointEntryId?: number; processedRawRefill?: boolean; knowledge?: boolean;
         /** Internal: the Noter's fresh material shows each body's token count against the worker cap. */
         showKnowledgeSize?: boolean;
+        /** Internal: Noter supplies the same guide as task instructions, outside its material windows. */
+        readingGuide?: boolean;
         /** Internal: views from this synchronous freeze under this exact profile/extractor. */
         renderedEntries?: ReadonlyMap<number, EntryView>;
         /** Internal: authoritative ordered metadata and processing state of this same freeze. */
@@ -727,6 +735,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const view = (entry: SourceEntry) => renderEntry(entry, config.render, resultText);
 
       // ---- 1. Knowledge first: required status notices, newest kept, then bodies newest-first. ----
+      const guide = options.readingGuide === false ? "" : readingGuide(sessionId, options.toolNames ?? canonicalToolNames);
       const knowledgeEnvelope = caps.knowledge + sharedAllowance;
       const allNotes = options.knowledge === false ? [] : knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, undefined, undefined, true)
         .sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit);
@@ -783,7 +792,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         }
       }
       const rawReceipt = (kept: number) => candidates.length - kept
-        ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window; read them with ${options.toolNames?.trace ?? canonicalToolNames.trace}]`] : [];
+        ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window] ${expandList([...new Set(candidates.slice(0, candidates.length - kept).map(entry => `/tm/raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
       // Exactly what the Raw window adds to the output: the `<episodic>` tag and title only when it
       // has entries, each kept entry's own view receipts, and its omission receipt.
       const rawWindowCost = (kept: number, receipt: string[]) => {
@@ -814,7 +823,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const factCandidates = applicable.filter(f => !visible.factIds.has(f.id));
       const coveredFactIds = store.factsCoveredByRaw(factCandidates, coverage);
       const eligibleFacts = factCandidates.filter(f => !coveredFactIds.has(f.id)); // already newest-first
-      const omission = (rest: Fact[]) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map(f => `F${f.id}`))}`] : [];
+      const omission = (rest: Fact[]) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map(f => `/tm/F${f.id}`))}`] : [];
       // Exactly what the facts window adds: its title only when it has facts, the `<episodic>` tag
       // only when the Raw window did not already open it, and its omission receipt.
       const factsWindowCost = (kept: number, receipt: string[]) => (kept
@@ -833,7 +842,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const material = { knowledge: active.groups, facts: lines(finalFacts),
         entries: suppliedRaw.map(s => ({ id: s.entry.id, view: s.content })),
         receipts: [...suppliedRaw.flatMap(s => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt],
-        knowledgeNotice: notice };
+        knowledgeNotice: notice, readingGuide: guide };
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material), material,
         // Transport may repeat K framing, but cannot borrow bases reserved for facts/Raw.
         knowledgeAllowance: knowledgeEnvelope - Math.max(0, rawCharged - caps.raw)
@@ -872,7 +881,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const pending = store.pendingEntries(sessionId, branch, headTurnId);
       const raw: ReturnType<typeof renderEntry>[] = [];
       let omitted = pending.length, used = charge([title]);
-      const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget; read them with ${toolNames.trace}]`] : [];
+      const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget] ${expandList([...new Set(pending.slice(0, omitted).map(entry => `/tm/raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
       // A whole suffix is monotone: after the first entry that cannot fit, no earlier
       // entry can join it. Do not render the history that will only be receipted.
       for (let i = pending.length - 1; i >= 0; i--) {

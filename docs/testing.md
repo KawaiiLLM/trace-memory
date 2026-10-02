@@ -6,7 +6,7 @@ What the long-term suite in `tests/` keeps, where a ticket's own evidence goes, 
 
 A long-term test protects one of these:
 
-- **Tool contracts.** What `note`, `memory`, `trace` and `search` accept, reject and return, by structure.
+- **Tool contracts.** What `note`, `memory` and `search` accept, reject and return; what `/tm` paths render before host-native pagination.
 - **Host delivery.** What reaches the model on each host: injection, compaction, carriers and their accounting.
 - **Storage.** Migrations, atomic publication and rollback, idempotence, and preservation of existing rows.
 - **Ruled performance bounds.** Tickets 79, 80, 87, 88 and 104, and Claude Code's 100 ms heartbeat gate.
@@ -22,7 +22,7 @@ A low-risk, reversible change does not get a new test only to have one.
 
 ## Rendered text
 
-Each view kind keeps one snapshot test: Turn, entry or entry range, fact, knowledge, search page and injection block. Every other test asserts structure: ids, order, roles, counts, token totals and rejection reasons. It reads the field it checks rather than comparing the whole string.
+Each view kind keeps one snapshot test: `/tm` facts, raw overview, full entry, fact, knowledge, search page and injection block. Ticket 118 retires public `trace` event ranges, comma lists and Core-owned `/tm` pagination; historical citation parsing remains. Every other test asserts structure: ids, order, roles, counts, token totals and rejection reasons. It reads the field it checks rather than comparing the whole string.
 
 ## Rulings
 

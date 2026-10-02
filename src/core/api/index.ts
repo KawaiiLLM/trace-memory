@@ -10,7 +10,7 @@ import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/sou
 import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
 export { memoryFiles, memoryPath, memoryGlob, MEMORY_ROOT, MEMORY_READ_ONLY } from "./files.ts";
-export type { MemoryReader, MemoryPage, MemoryGrepMode, MemoryGrepOptions, MemoryListing } from "./files.ts";
+export type { MemoryReader, MemoryFile, MemoryGrepMode, MemoryGrepOptions, MemoryGrepFile, MemoryListing } from "./files.ts";
 // 29a/53: core owns only the host-neutral visibility contract; each host reads its own envelopes.
 import type { VisibleView } from "./visible.ts";
 export { KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode } from "./fork.ts";
@@ -303,6 +303,8 @@ export const CANCELLED_BEFORE_FALLBACK = "cancelled before fallback";
  * Without either, selection uses the ordinary pending set. */
 export interface TaskBoundary { maxEntryId?: number; exactEntryIds?: number[] }
 export interface TaskOptions {
+  /** Native Read metadata supplied by the host, included in fresh-worker tool input estimates. */
+  nativeReadTool?: { name: string; description: string; parameters: object };
   /** Durable execution shared only with a refused attempt's fallback. */
   executionId?: string;
   borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary;
@@ -351,6 +353,8 @@ export interface TaskOptions {
   visible?: VisibleView;
 }
 export interface AgentControl {
+  /** The reader frozen by Core admission; hosts never substitute their current foreground path. */
+  reader?: import("./files.ts").MemoryReader;
   signal?: AbortSignal;
   reportProgress?: (progress: Partial<RunAgentResult>) => void;
   /** 26b: the level frozen at admission (`TaskOptions.thinkingLevel`), returned to the host with the
@@ -553,7 +557,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           descriptions.set(r.id, () => {
             const address = display.modelFacing ? (revision: typeof r) => revision.id === r.id
               ? `K${id}#${store.versionTag(id, r.id)}` : shown(revision) : undefined;
-            return renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, fields, historyLines, undefined, address, undefined, supportTitles);
+            return renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, fields, historyLines, undefined, address,
+              display.modelFacing && historyLines ? shown(r) : undefined, supportTitles);
           });
         }
       };
@@ -600,7 +605,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       return () => [path ? `K${id} path current: ${tips.map(shown).join(", ") || "none"}`
         : `K${id} tips (newest-created: ${tips.length ? shown(tips.reduce((a, b) => a.id > b.id ? a : b)) : "none"}):`,
         ...tips.map(r => (tips.length > 1 ? `Alternative ${shown(r)}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
-        ...archived.map(r => `  ${shown(r)}: ${selection.status(r)}; inspect ${display.toolNames?.trace ?? canonicalToolNames.trace}(K${id}, versions:history)`),
+        ...archived.map(r => `  ${shown(r)}: ${selection.status(r)}; /tm/K${id}.history`),
         ...(fields.has("links") ? links.map(l => `  ${l.kind}: ${display.modelFacing ? `K${l.toKnowledge}@v${store.versionOrdinal(l.toKnowledge, l.toCommit)}` : `K${l.toKnowledge}@${l.toCommit}`} (from ${display.modelFacing ? `K${l.fromKnowledge}@v${store.versionOrdinal(l.fromKnowledge, l.fromCommit)}` : `K${l.fromKnowledge}@${l.fromCommit}`})`) : []),
         ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable, fields, shown)]
           : ["Commit history:", renderCommitHistory(allHistory, fields, shown)]),
@@ -660,7 +665,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const turn = store.getTurn(parsed.turn);
     if (!turn) throw new Error(`turn ${target} does not exist`);
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
-    if (!parsed.entries && !parsed.selector && !display.rawTurn && turn.kind !== "compaction") {
+    if (!parsed.entries && !parsed.selector && !display.rawTurn && (turn.kind !== "compaction" || display.fileFacts)) {
       const meta = display.entryIds ? store.listSourceEntries(turn.sessionId, turn.id, display.branch)
         .filter(entry => display.entryIds!.includes(entry.id)) : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
       const selectedIds = new Set(meta.map(entry => entry.id));
@@ -672,6 +677,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const allBound = store.factSourceEntries(facts.map(fact => fact.id));
       const selected = facts.filter(fact => {
         if (!bindings.get(fact.id)?.some(id => selectedIds.has(id))) return false;
+        // 93: a facts file selects contributions made in this Turn, not complete-fact
+        // applicability. Segmented facts project this Turn; legacy bodies remain whole.
+        // Binding integrity was checked above, including sources in later Turns.
+        if (display.fileFacts) return true;
         return !path || store.factOnPath(fact, path, snapshot, undefined, undefined, allBound);
       });
       const relations = display.sessionId === undefined ? store.listFactRelationsOf(selected.map(f => f.id))
@@ -680,7 +689,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const noted = store.notedEntryIds(meta.map(entry => entry.id));
       const pending = meta.filter(entry => !noted.has(entry.id));
       const uncited = meta.filter(entry => noted.has(entry.id) && !cited.has(entry.id));
-      const raw = pending.length ? store.hydrateSourceEntries(pending.map(entry => entry.id)) : [];
+      const raw = !display.fileFacts && pending.length ? store.hydrateSourceEntries(pending.map(entry => entry.id)) : [];
       const profile = readProfile(display, display.profile ?? cfg.render);
       return () => {
         const lines = [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
@@ -697,13 +706,18 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         }
         if (raw.length) {
           // Ordinary Turn views omit thinking; explicit full reads retain the original Raw.
-          const rendered = renderTrace(turn, raw, profile, { full: display.full, includeThinking: display.full === true, traceName: display.toolNames?.trace }, display.full ? rawResultText : resultText);
+          const rendered = renderTrace(turn, raw, profile, { full: display.full, includeThinking: display.full === true }, display.full ? rawResultText : resultText);
           const heading = lines[0]! + "\n";
           if (!rendered.content.startsWith(heading)) throw new Error("Raw Turn heading does not match selected Turn");
           lines.push(finish({ ...rendered, content: rendered.content.slice(heading.length) }));
         }
-        if (uncited.length) lines.push(`Processed, not cited: ${uncited.map(entry => `T${turn.id}#E${entry.entryOrdinal}`).join(", ")}`);
-        if (meta.length) lines.push(`Raw: T${turn.id}#E${meta[0]!.entryOrdinal}..E${meta.at(-1)!.entryOrdinal}`);
+        if (display.fileFacts) {
+          const uncovered = meta.filter(entry => !cited.has(entry.id));
+          if (uncovered.length) lines.push(`Events without a fact: ${uncovered.map(entry => `/tm/raw/S${turn.sessionId}/T${turn.id}#E${entry.entryOrdinal}`).join(" ")}`);
+        } else {
+          if (uncited.length) lines.push(`Processed, not cited: ${uncited.map(entry => `T${turn.id}#E${entry.entryOrdinal}`).join(", ")}`);
+          if (meta.length) lines.push(`Raw: T${turn.id}#E${meta[0]!.entryOrdinal}..E${meta.at(-1)!.entryOrdinal}`);
+        }
         return lines.join("\n");
       };
     }
@@ -756,7 +770,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     const profile = readProfile(display, display.profile ?? cfg.render);
     const uncompressed = Object.values(profile).every(cap => cap === Infinity);
-    return () => finish(renderTrace(turn, occurrences, profile, { ...options, full: uncompressed, traceName: display.toolNames?.trace }, uncompressed ? rawResultText : resultText));
+    return () => finish(renderTrace(turn, occurrences, profile, { ...options, full: uncompressed, rawTurn: display.rawTurn,
+      ...(display.rawTurn ? { includeThinking: display.full === true || !!parsed.entries } : {}) }, uncompressed ? rawResultText : resultText));
   };
 
   const read = readFacade(store, cfg, prepareTrace, resultText);
@@ -963,7 +978,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
-      return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel, fallbackReason: input.fallbackReason, forkAttempt: input.forkAttempt, cancellation: generation,
+      return Promise.race([runAgent({ ...raw as object,
+        reader: { sessionId: target.sessionId, branch: target.branch, headTurnId: target.headTurnId, projectId, toolNames: { ...frozen!.names } },
+        signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel, fallbackReason: input.fallbackReason, forkAttempt: input.forkAttempt, cancellation: generation,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
     };
     let result: NotingResult | DreamingResult | undefined;

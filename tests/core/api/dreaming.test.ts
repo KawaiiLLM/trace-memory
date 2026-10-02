@@ -7,6 +7,7 @@ import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { dreamingToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -49,10 +50,38 @@ async function admitted(f: ReturnType<typeof fixture>, scenario: (input: Dreamin
   return { trigger, result: await f.scenarios.run(f.memory, f.target, input => scenario(input, trigger)) };
 }
 
+test("native Read description and schema count in Dreamer capacity before dispatch", async () => {
+  const f = fixture();
+  createDreamerTrigger(f.memory, f.target, f.fact, 1);
+  let base: DreamingAgentInput | undefined;
+  const stop = (task: DreamingAgentInput) => {
+    task.acknowledgeRequest();
+    return { outcome: "failure" as const, output: "capacity fixture stopped without writes", request: { exact: "capacity" } };
+  };
+  await f.scenarios.run(f.memory, f.target, task => { base = task; return stop(task); });
+  if (!base) throw new Error("missing baseline Dreamer dispatch");
+  const nativeReadTool = { name: "Read", description: "Read native files and continue by line. ".repeat(50),
+    parameters: { type: "object", properties: { file_path: { type: "string", description: "Absolute source path." } }, required: ["file_path"] } };
+  const definitions = pricedToolDefinitions(dreamingToolDefinitions(), canonicalToolNames);
+  const price = tokens(base.prompt) + tokens(JSON.stringify([...definitions, nativeReadTool])) + tokens(base.text);
+  expect(price).toBeGreaterThan(tokens(base.prompt) + tokens(JSON.stringify(definitions)) + tokens(base.text));
+  const bounded = { ...f.target, nativeReadTool, capacity: { inputTokens: price - 1, prefixTokens: 0 } };
+  const runs = f.store.listRuns(f.session.id).length;
+  await expect(f.scenarios.run(f.memory, bounded, () => { throw new Error("over-cap dispatch"); })).rejects.toThrow(/Dreaming capacity/);
+  expect(f.store.listRuns(f.session.id)).toHaveLength(runs);
+  const exact = { ...bounded, capacity: { inputTokens: price, prefixTokens: 0 } };
+  await f.scenarios.run(f.memory, exact, task => {
+    expect(tokens(task.prompt) + tokens(JSON.stringify([...definitions, nativeReadTool])) + tokens(task.text)).toBe(price);
+    return stop(task);
+  });
+  expect(f.store.listRuns(f.session.id)).toHaveLength(runs + 1);
+  expect(processed(f)).toEqual([]);
+});
+
 test("Dreamer instructions use its fresh host's exposed check, memory and read tools in the audited prompt", async () => {
   const f = fixture();
   createDreamerTrigger(f.memory, f.target, f.fact, 1);
-  const names = Object.fromEntries(Object.keys(canonicalToolNames).map(role => [role, `mcp__trace_memory__${role}`])) as unknown as typeof canonicalToolNames;
+  const names = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", grep: "Grep" };
   const rendered = loadPrompt("dreaming.md", names);
   const result = await f.scenarios.run(f.memory, { ...f.target, toolNames: names } as typeof f.target, task => {
     expect(task.prompt).toBe(rendered);
@@ -60,7 +89,7 @@ test("Dreamer instructions use its fresh host's exposed check, memory and read t
     expect(task.prompt).toContain("`mcp__trace_memory__memory({operations, skipped})`");
     expect(task.prompt).not.toContain("{{tool.");
     expect(task.promptHash).toBe(createHash("sha256").update(rendered).digest("hex"));
-    expect(task.tools.map(tool => tool.name)).toEqual(["trace", "search", "check", "memory"]);
+    expect(task.tools.map(tool => tool.name)).toEqual(["search", "check", "memory"]);
     task.acknowledgeRequest();
     return { outcome: "failure", output: "fixture stopped", request: { exact: "dream names" } };
   });
@@ -76,7 +105,7 @@ test("64c exact provider request and terminal audit are preserved while success 
     task.reportRequest(exact); task.acknowledgeRequest();
     expect(task.material.changed).toContain(history(f, base));
     expect(task.material.changed).toContain(history(f, trigger));
-    expect(task.tools.map(tool => tool.name)).toEqual(["trace", "search", "check", "memory"]);
+    expect(task.tools.map(tool => tool.name)).toEqual(["search", "check", "memory"]);
     task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [base, trigger]
       .map(item => ({ knowledge: history(f, item), because: "fixture reviewed unchanged" })) });
     return { outcome: "success", output: "audited", request: exact, nativeLog: "/tmp/dream.jsonl",

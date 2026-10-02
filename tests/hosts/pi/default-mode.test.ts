@@ -38,7 +38,7 @@ test.each(cases)("native Noter with saved $key=$value preserves user settings an
     else {
       expect(audit.verification).toBeUndefined();
       const child = f.sent.find(body => worker(body, "Noting"))!;
-      expect(child.tools.map((t: { function: { name: string } }) => t.function.name)).toEqual(["trace", "search", "note", "memory"]);
+      expect(child.tools.map((t: { function: { name: string } }) => t.function.name)).toEqual(["search", "note", "memory", "read"]);
       expect(JSON.parse(readFileSync(audit.nativeLog, "utf8").split("\n")[0]!).parentSession).toBeUndefined();
     }
     await f.h.emit("session_start"); // reopen preserves explicit choices, including the alias

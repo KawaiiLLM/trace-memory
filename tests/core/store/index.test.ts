@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { declarationContext } from "../project-declaration-context.ts";
-import { TraceMemory } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { entry as seedEntry } from "../../support/seed.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -273,7 +273,8 @@ describe("commitConsolidationRun: revision conflicts", () => {
     let updatedCommit = 0;
     const admitted = await runAdmittedStoreScenario(path, factId, 1, (input, trigger, memory, commit) => {
       const request = { fixture: "store stale-batch atomicity", trigger }; input.reportRequest(request);
-      const trace = input.tools[0]!, write = input.tools[3]!;
+      const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
+      const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
       const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: tag(knowledgeId, created.committed[0]!.commit),
         topics: [], reason: "Substantive correction of the recorded conclusion.", text: "The project uses pnpm exclusively.",
         category: "constraint", scope: "project", supports: [`F${factId}`] }],
@@ -297,8 +298,8 @@ describe("commitConsolidationRun: revision conflicts", () => {
       expect(memory.store.listKnowledgeLinks(second.committed[0]!.knowledgeId)).toEqual(linksBefore);
       expect(memory.store.currentCommit(second.committed[0]!.knowledgeId).map(revision => revision.id)).toEqual([second.committed[0]!.commit]);
       expect(memory.store.currentCommit(knowledgeId).map(revision => revision.id)).toEqual([updatedCommit]);
-      trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
-      trace.execute({ address: tag(second.committed[0]!.knowledgeId, second.committed[0]!.commit), itemBudget: null });
+      read(tag(trigger.knowledgeId, trigger.commit));
+      read(tag(second.committed[0]!.knowledgeId, second.committed[0]!.commit));
       const corrected = write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [{ knowledge: history(second.committed[0]!.knowledgeId, second.committed[0]!.commit), because: "The rejected archive rolled back." }] });
       expect(corrected).toContain('"committed"');
@@ -478,11 +479,12 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
     const admitted = await runAdmittedStoreScenario({ sessionId: peer.id, branch: "main", headTurnId: turn.id }, peerFact, 1,
-      (input, trigger) => {
+      (input, trigger, memory) => {
         const request = { fixture: "moved editor lineage", trigger }; input.reportRequest(request);
-        const trace = input.tools[0]!, write = input.tools[3]!;
-        trace.execute({ address: tag(id, made.committed[0]!.commit), itemBudget: null });
-        trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
+        const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
+        const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
+        read(tag(id, made.committed[0]!.commit));
+        read(tag(trigger.knowledgeId, trigger.commit));
         const receipt = write.execute({ operations: [
           { op: "update", id: tag(id, made.committed[0]!.commit), topics: [], reason: "Substantive correction of the recorded conclusion.",
             text: "private term", category: "understanding", scope: "session", supports: [`F${peerFact}`] },
@@ -512,11 +514,12 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const id = made.committed[0]!.knowledgeId;
     expect(store.getKnowledge(id)!.projectId).toBe(p.id);
     const admitted = await runAdmittedStoreScenario({ sessionId: s.id, branch: "main", headTurnId: t.id }, factId, 1,
-      (input, trigger) => {
+      (input, trigger, memory) => {
         const request = { fixture: "scope ownership movement", trigger }; input.reportRequest(request);
-        const trace = input.tools[0]!, write = input.tools[3]!;
-        trace.execute({ address: tag(id, made.committed[0]!.commit), itemBudget: null });
-        trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
+        const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
+        const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
+        read(tag(id, made.committed[0]!.commit));
+        read(tag(trigger.knowledgeId, trigger.commit));
         const receipt = write.execute({ operations: [
           { op: "update", id: tag(id, made.committed[0]!.commit), topics: [], reason: "Substantive correction of the recorded conclusion.",
             text: "Use pnpm here.", category: "constraint", scope: "project", supports: [`F${factId}`] },
@@ -546,7 +549,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const bId = b.committed[0]!.knowledgeId;
     const admitted = await runAdmittedStoreScenario(path, factId, 1, (input, trigger, memory, commit) => {
       const request = { fixture: "store merge cardinality", trigger }; input.reportRequest(request);
-      const write = input.tools[3]!, trace = input.tools[0]!;
+      const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
+      const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
       write.execute({ operations: [], skipped: [
         { knowledge: history(aId, a.committed[0]!.commit), because: "Hold unchanged while validating Store merge cardinality." },
         { knowledge: history(bId, b.committed[0]!.commit), because: "Hold unchanged while validating Store merge cardinality." },
@@ -564,7 +568,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
           { knowledgeId: bId, baseCommit: b.committed[0]!.commit }], ...common, text: "A and B" }] });
       expect(duplicate.ok).toBe(false);
       if (!duplicate.ok) expect(duplicate.problems.join(" ")).toContain("absorb as exactly one distinct other parent");
-      trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
+      read(tag(trigger.knowledgeId, trigger.commit));
       write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [] }); // The first call already recorded the untouched bases as skipped.
       return { outcome: "success", output: "cardinality checked", request };
@@ -590,11 +594,12 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     let olderUpdateCommit = 0, mergeCommit = 0;
     const admitted = await runAdmittedStoreScenario(path, factId, 1, (input, trigger, memory, commit) => {
       const request = { fixture: "store merge survivor and rollback", trigger }; input.reportRequest(request);
-      const write = input.tools[3]!, trace = input.tools[0]!;
+      const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
+      const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
       olderUpdateCommit = publishedCommit(JSON.parse(write.execute({ operations: [{ op: "update", id: tag(older.knowledgeId, older.commit),
         text: "older revised", category: "reference", scope: "project", supports: [`F${factId}`], reason: "change category", topics: ["identity"] }],
         skipped: [] })).committed[0]);
-      trace.execute({ address: tag(older.knowledgeId, olderUpdateCommit), itemBudget: null });
+      read(tag(older.knowledgeId, olderUpdateCommit));
       mergeCommit = publishedCommit(JSON.parse(write.execute({ operations: [{ op: "merge", id: tag(older.knowledgeId, olderUpdateCommit),
         absorb: [tag(newer.knowledgeId, newer.commit)], text: "combined", category: "reference", scope: "project",
         supports: [`F${factId}`], reason: "merge duplicate", topics: ["identity"] }],
@@ -618,10 +623,10 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       expect(memory.store.currentCommit(independent.knowledgeId).map(revision => revision.id)).toEqual([independent.commit]);
       expect(memory.store.currentCommit(older2.knowledgeId).map(revision => revision.id)).toEqual([older2.commit]);
       expect(memory.store.currentCommit(newer2.knowledgeId).map(revision => revision.id)).toEqual([newer2.commit]);
-      trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
-      trace.execute({ address: tag(older2.knowledgeId, older2.commit), itemBudget: null });
-      trace.execute({ address: tag(newer2.knowledgeId, newer2.commit), itemBudget: null });
-      trace.execute({ address: tag(independent.knowledgeId, independent.commit), itemBudget: null });
+      read(tag(trigger.knowledgeId, trigger.commit));
+      read(tag(older2.knowledgeId, older2.commit));
+      read(tag(newer2.knowledgeId, newer2.commit));
+      read(tag(independent.knowledgeId, independent.commit));
       const corrected = write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [
           { knowledge: history(older2.knowledgeId, older2.commit), because: "The reverse merge rolled back." },

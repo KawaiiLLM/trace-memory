@@ -2,14 +2,16 @@
 
 `src/core/` is host-agnostic: it must not import any host SDK.
 
-## Current facts and reads (93)
+## Current facts and reads (93/118)
 
 The [fact-slice and entry-reading contract](unified-entry.md) is the current public reference. It supersedes the historical source, rendering and address forms recorded in the numbered ticket sections below.
 
 - Each new `note` call writes one fact with a single-line `title` and one nonempty top-level `sources` string. Each source segment starts on a line with `[T12#E3@user] ` (the role suffix is optional) and may continue across lines; text before the first marker is rejected. Core parses the markers, trims each segment's trailing whitespace, orders segments by the selected path, joins their bodies, derives source roles and assigns the earliest source Turn. Duplicate resolved entries are rejected. N's 1,000-token cap applies to the body; windows charge the full rendering.
-- A bare Turn displays contributing fact segments, pending Raw and addresses of processed uncited entries. Whole-entry/range addresses read Raw. Exact facts include backlinks to reader-visible current knowledge identities, including historical citing versions. Trace/search knowledge supports show fact titles; injection does not.
+- Model reads use `/tm/<layer>/S<n>[/T<t>]`, with knowledge, compact, facts and raw layers. Facts show contributed segments and uncovered-entry paths; raw is the compressed overview, with raw-only `#E<k>` for one full entry and `@role` for filtering/checking. `/tm/S<n>` lists facts/raw path pairs, one Turn per line. Exact facts retain visible knowledge backlinks. Knowledge views and search show support titles; injection does not. Public trace registration, event ranges, comma lists and old path fallback are removed; internal source parsing remains.
 - Public `@` selectors are only role filters. Block selectors, E-list shorthand, fact intervals, negation walks, `K..`, `trace.layer` and `trace.tool` are removed. Knowledge versions use tags or `@v` ordinals, not global commit numbers. Search retains its `layer` parameter.
 - Legacy stored bodies, sources and metadata remain unchanged. Display normalizes sources to whole-entry addresses; missing bindings or inconsistent stored segments fail explicitly. New facts still reject thinking-only evidence. Ordinary Turn views omit thinking; explicit full or entry Raw reads retain it.
+
+Ordinary reads use host-native limits and immutable CC continuation snapshots. Session knowledge and exact entries are whole on main sessions and Pi children; CC fresh workers retain SDK Read limits. One shared guide (at most 200 Core-estimated tokens) is emitted once per injection/material, never once per knowledge block. It is fixed framing outside the Knowledge, facts, Raw and shared selection windows; its actual bytes still count toward delivered text and model capacity. Read records no delivery or state. Search pagination is unchanged.
 
 ## Noter publication (92/04)
 

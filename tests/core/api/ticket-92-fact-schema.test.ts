@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, memoryFiles, type NotingAgentInput } from "../../source-fixture.ts";
 import { factSources } from "../../support/seed.ts";
 import { renderFact, renderFactPreview, renderFactGroups } from "../../../src/core/render/index.ts";
 import { toolDefinitions, canonicalToolNames } from "../../../src/core/api/index.ts";
@@ -124,11 +124,11 @@ test("92: legacy knowledge is found as understanding in search and exact history
     assignVersionTag(f.memory.store.db, knowledgeId, commit);
     const options = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id, category: "understanding" as const };
     expect(f.memory.search("legacy mechanism needle", "knowledge", options)).toContain(`[K${knowledgeId}@${commit}] [understanding/session]`);
-    expect(f.memory.trace(`K${knowledgeId}@v1`, options)).toContain("[understanding/session]");
+    expect(memoryFiles(f.memory, options).read(`/tm/K${knowledgeId}@v1`).content).toContain("[understanding/session]");
     expect(f.memory.search("legacy mechanism needle", "knowledge", { ...options, category: "open" })).not.toContain(`[K${knowledgeId}@${commit}]`);
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, commit)!.category).toBe("mechanism");
     const tools = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" });
-    expect(tools.find(tool => tool.name === "trace")!.execute({ address: `K${knowledgeId}@v1` })).toContain("legacy mechanism needle");
+    expect(memoryFiles(f.memory, options).read(`/tm/K${knowledgeId}@v1`).content).toContain("legacy mechanism needle");
     const archived = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#${f.memory.store.versionTag(knowledgeId, commit)}`, supports: [`F${factId}`], reason: "Legacy item retired" }));
     expect(archived.committed).toHaveLength(1);
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, f.memory.store.resolveVersionOrdinal(knowledgeId, 2))!.category).toBe("mechanism");
@@ -163,10 +163,9 @@ test("92: CC adapter writes against the borrowed target and renders legacy categ
     const archived = await adapter.call("memory", { op: "archive", kind: "budget", id: tag, supports: [`F${id}`], reason: "retired" }, meta);
     expect(archived.isError).toBeUndefined();
     expect(JSON.parse(archived.content[0]!.text).committed[0].version).toBe(`K${knowledgeId}@v2`);
-    const unbound = new CcForegroundTools({ toolProjection: async () => ({ memory: f.memory }) } as unknown as CcCoordinator);
-    const historical = await unbound.call("trace", { address: `K${knowledgeId}@v1` }, null);
-    expect(historical.content[0]!.text).toContain(tag);
-    expect(historical.content[0]!.text).not.toMatch(/K\d+@\d+/);
+    const historical = memoryFiles(f.memory, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id }).read(`/tm/K${knowledgeId}@v1`).content;
+    expect(historical).toContain(tag);
+    expect(historical).not.toMatch(/K\d+@\d+/);
   } finally { f.memory.close(); }
 });
 
@@ -230,7 +229,7 @@ test("92: Store recalculates source roles; caller cannot supply borrowed or reor
     const selected = f.memory.store.commitNotingRun({ run, facts: [{ turnId: f.turn.id, text: "block source", source: [`${f.source[0]}@text`], entryIds: [f.entries[0]!.id], createdAt: "now" }] });
     expect(selected.ok).toBe(false);
     expect(f.memory.store.listTurnFacts(f.turn.id)).toEqual([]);
-    expect(f.memory.trace(`${f.source[0]}@user`)).toContain("User proposed A");
+    expect(memoryFiles(f.memory, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id }).read(`/tm/raw/S${f.session.id}/${f.source[0]}@user`).content).toContain("User proposed A");
     const malformed = f.memory.store.commitNotingRun({ run, facts: [{ turnId: f.turn.id, text: "not bound to citation", source: [f.source[1]!], entryIds: [f.entries[0]!.id], createdAt: "now" }] });
     expect(malformed.ok).toBe(false);
     const valid = f.memory.store.commitNotingRun({ run, facts: [{ turnId: f.turn.id, text: "actual user", source: [f.source[0]!], entryIds: [f.entries[0]!.id], createdAt: "now" }] });

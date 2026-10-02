@@ -12,7 +12,7 @@ for (const moved of [false, true]) {
   test(`ticket92material real SDK extension events ${moved ? "refuse moved parent once" : "fork stable parent between tool rounds"}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "trace-memory-material-"));
     const dbPath = join(dir, "trace.db");
-    const f = await piSession({ extensions: [extension], activeTools: ["evidence", "trace", "search", "note", "memory"],
+    const f = await piSession({ extensions: [extension], activeTools: ["evidence", "read", "search", "note", "memory"],
       env: { TRACE_MEMORY_CONFIG: JSON.stringify({ dbPath, "noting.forkModeDefault": true,
         "noting.triggerTokens": 30, "consolidation.triggerTokens": 1e9 }) },
       prepare: ({ agentDir }) => writeFileSync(join(agentDir, "trace-memory-baseline.json"), JSON.stringify("2000-01-01T00:00:00.000Z")),
@@ -30,7 +30,7 @@ for (const moved of [false, true]) {
       f.script(async body => {
         if (worker(body)) return emptyProtocol(body);
         if (++parentRounds === 1) {
-          expect(f.session.getAllTools().map(tool => tool.name)).toEqual(expect.arrayContaining(["trace", "search", "note", "memory"]));
+          expect(f.session.getAllTools().map(tool => tool.name)).toEqual(expect.arrayContaining(["read", "search", "note", "memory"]));
           return call("parent-evidence", "evidence", {});
         }
         return say("parent finished");

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { wholeTrace } from "../../trace-pages.ts";
+import { memoryFiles } from "../../source-fixture.ts";
 import { fact as seedFact, legacyFacts } from "../../support/seed.ts";
 import { readFileSync } from "node:fs";
-import { MEMORY_FILES_NOTICE } from "../../../src/core/render/index.ts";
+import { readingGuide } from "../../../src/core/render/reading-guide.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION , hydrate } from "../../source-fixture.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -78,7 +79,7 @@ const defaultWindows = () => {
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
   const { s, t } = populated();
   const next = turn(s.id, rawFixture[1].userPrompt, t.id);
-  const knowledge = `<knowledge>\nItems are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.\nSession S${s.id}: a subagent inherits this session's knowledge by reading /tm/S${s.id}/knowledge.\n${MEMORY_FILES_NOTICE}\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
+  const knowledge = `${readingGuide(s.id, canonicalToolNames)}\n\n<knowledge>\nItems are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.\nSession S${s.id}.\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
   expect(memory.inject(s.id)).toBe(knowledge);
   // The exact bound source is already supplied as Raw, so the Fact is not duplicated.
   const compact = memory.compact(s.id, "main");
@@ -88,6 +89,21 @@ test("injection and compaction match Chinese fixture goldens without a model cal
     memory.store.sourcePath(s.id, "main", next.id).map(entry => entry.id));
   expect(compacted(compact)).toContain("地形层和高度层需要一起读。");
   expect(calls).toBe(0);
+});
+
+test("118 foreground delivery charges its rendered Knowledge without charging the guide", () => {
+  const { s } = populated();
+  const baseline = memory.injection(s.id);
+  const windowText = baseline.text.split("\n\n").slice(1).join("\n\n");
+  const capacity = tokens(windowText);
+  setKnowledgeInjection(memory, capacity);
+  setSharedAllowance(memory, 0);
+  const fitted = memory.injection(s.id);
+  expect(fitted.knowledgeCommitIds).toEqual(baseline.knowledgeCommitIds);
+  expect(fitted.knowledgeTokens).toBe(capacity);
+  expect(tokens(fitted.text)).toBeGreaterThan(capacity);
+  expect(fitted.text.split(readingGuide(s.id, canonicalToolNames))).toHaveLength(2);
+  defaultWindows();
 });
 
 test("injection stays byte-identical across a zero-fact noting and has no XML attributes", async () => {
@@ -138,7 +154,7 @@ test("64c category display and commit recency retain whole newer items; lines ar
   expect(visibleIds.length).toBeGreaterThan(0);
   expect(new Set(visibleIds)).toEqual(new Set([1, ...ids, earlier].sort((a, b) => b - a).slice(0, visibleIds.length)));
   expect(partial).toContain("Receipts:"); // omitted bodies remain eligible and unacknowledged
-  for (const id of ids.slice(0, 4)) expect(memory.trace(`K${id}`)).toContain(`[K${id}@${id}]`);
+  for (const id of ids.slice(0, 4)) expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: memory.store.currentPath(s.id).headTurnId }).read(`/tm/K${id}`).content).toContain(`[K${id}@v${memory.store.versionOrdinal(id, id)}]`);
 });
 
 test("64c compaction is identical across scheduling records and large changed Knowledge is optional", () => {
@@ -222,8 +238,29 @@ test("20c/92: pending Raw and historical facts fit their independent windows wit
   Object.assign(memory.config.compaction, { factsTokens: Math.ceil(windows.facts * 0.8) });
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${second.id}]`); expect(limited).not.toContain("[F1]");
-  expect(limited).toContain("omitted 1 older facts; expand: F1");
+  expect(limited).toContain("omitted 1 older facts; expand: /tm/F1");
   expect(limited.indexOf("Receipts:")).toBeGreaterThan(limited.indexOf("</episodic>"));
+  defaultWindows();
+});
+
+test("118: the reading guide is fixed framing, not a Knowledge or shared-window charge", () => {
+  const { s, t } = populated();
+  const latest = turn(s.id, "pending raw", t.id);
+  setWindows(3, 5_000, 5_000);
+  const guided = memory.compact(s.id, "main", latest.id);
+  const bare = memory.compact(s.id, "main", latest.id, [], false, { readingGuide: false });
+  expect(guided.supplied).toEqual(bare.supplied);
+  expect(charged(guided)).toEqual(charged(bare));
+  expect(guided.supplied.entries.length).toBeGreaterThan(0);
+  expect(guided.text.split(readingGuide(s.id, canonicalToolNames))).toHaveLength(2);
+  expect(guided.text).toContain(bare.text);
+  expect(tokens(guided.text)).toBeGreaterThan(tokens(bare.text));
+  expect(charged(guided).knowledge).toBeLessThanOrEqual(3);
+  // With Raw disabled, the same tiny Knowledge window cannot consume the independent fact base.
+  memory.config.compaction.rawTokens = 0;
+  const factOnly = memory.compact(s.id, "main", latest.id);
+  expect(factOnly.supplied.factIds).toEqual([1]);
+  expect(charged(factOnly).facts).toBeGreaterThan(0);
   defaultWindows();
 });
 
@@ -275,21 +312,21 @@ test("20c/23 scenario 10, rescaled by 73: one bounded view of every entry under 
   if ("native" in delegated) throw new Error("unreachable");
   expect(delegated.truncated?.raw).toBeTruthy();
   expect(compacted(delegated)).toContain("earlier entries omitted from the Raw window");
-  const hosted = memory.compact(s.id, "main", next.id, [], false, { toolNames: { note: "host_note", memory: "host_memory", trace: "host_trace", search: "host_search", check: "host_check" } });
-  expect(compacted(hosted)).toContain("read them with host_trace");
+  const hosted = memory.compact(s.id, "main", next.id, [], false, { toolNames: { note: "host_note", memory: "host_memory", read: "Read", grep: "Grep", search: "host_search", check: "host_check" } });
+  expect(compacted(hosted)).toContain(`/tm/raw/S${s.id}/T`);
   expect(compacted(hosted)).not.toContain("read them with trace");
   expect(charged(hosted).raw).toBeLessThanOrEqual(memory.config.compaction.rawTokens);
   if ("native" in hosted) throw new Error(hosted.reason);
-  expect(charged(hosted).raw).toBeGreaterThanOrEqual(tokens(hosted.material!.receipts.find(line => line.includes("host_trace"))!));
+  expect(charged(hosted).raw).toBeGreaterThanOrEqual(tokens(hosted.material!.receipts.find(line => line.includes(`/tm/raw/S${s.id}/T`))!));
   expect(hydrate(memory.pendingEntries(s.id, "main", next.id), memory.store).map(e => e.id)).toEqual(pending.map(e => e.id));
   defaultWindows();
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
   // read without `full` (23b) is the same bounded view of the same entry, cut where the budgets bite.
-  expect(wholeTrace(memory, `T${next.id}#E1`, { full: true })).toContain(body);
-  expect(memory.trace(`T${next.id}#E1`)).toContain("USER_HEAD");
-  const full = wholeTrace(memory, `T${next.id}`, { full: true });
-  expect(full).toContain("SECRET_ARGUMENT");
-  expect(full).toContain("SECRET_RESULT");
+  const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: next.id });
+  expect(files.read(`/tm/raw/S${s.id}/T${next.id}#E1`).content).toContain(body);
+  expect(files.read(`/tm/raw/S${s.id}/T${next.id}`).content).toContain("USER_HEAD");
+  expect(files.read(`/tm/raw/S${s.id}/T${next.id}#E${call.entryOrdinal}`).content).toContain("SECRET_ARGUMENT");
+  expect(files.read(`/tm/raw/S${s.id}/T${next.id}#E${resultEntry.entryOrdinal}`).content).toContain("SECRET_RESULT");
 });
 
 /** 25c amended this acceptance on its own terms — its thresholds moved from `noting.batchTokens` to
@@ -383,7 +420,7 @@ test("73: when the bounded views miss the Raw window compact truncates to the ne
   expect(compacted(named)).not.toContain("raw ceiling");
   // Truncation is a receipt, not a summary: nothing was read differently, processed or erased.
   expect(hydrate(memory.pendingEntries(s.id, "main", parent), memory.store).map(e => e.id)).toEqual(pending);
-  expect(memory.trace(`T${parent}#E1@user`)).toContain("entry 39");
+  expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: parent }).read(`/tm/raw/S${s.id}/T${parent}#E1@user`).content).toContain("entry 39");
   expect(calls).toBe(0);
 });
 
@@ -427,7 +464,7 @@ test("64c/92: the independent facts window bounds history while Knowledge and Ra
   const text = compacted(crowded);
   for (const entry of pending) expect(text).toContain(renderEntry(entry, memory.config.render).content);
   for (const fact of facts) expect(text).not.toContain(`[F${fact.id}]`);
-  expect(text).toContain(`omitted ${facts.length} older facts; expand: F1`);
+  expect(text).toContain(`omitted ${facts.length} older facts; expand: /tm/F1`);
   expect(text.indexOf("Receipts:")).toBeGreaterThan(text.indexOf("</episodic>"));
   // Knowledge keeps its own baseline under that pressure: the block is still there.
   expect(text).toContain("<knowledge>");
@@ -584,8 +621,8 @@ test.each([
   expect(search.description).toContain("literal substring search");
 });
 
-test("opaque cursors continue search snapshots and trace session, comma, revision and negation listings", () => {
-  const { s, t, f, e } = populated();
+test("opaque cursors continue search snapshots; virtual files reject retired address forms", () => {
+  const { s, t, f } = populated();
   turn(s.id, "second turn", t.id);
   noting(s.id, t.id, fixture.base);
   const first = memory.search(fixture.base, "facts", { cap: 1 });
@@ -593,20 +630,9 @@ test("opaque cursors continue search snapshots and trace session, comma, revisio
   expect(cursor).not.toContain("{"); expect(first).toContain("[F1]");
   const last = memory.search("ignored", "all", { cursor });
   expect(last).toContain("[F2]"); expect(last).not.toContain("cursor="); expect(last).toContain("No hit does not mean absent");
-  expect(() => memory.trace(`cursor=${cursor}`)).toThrow("unknown or expired cursor");
-    expect(() => memory.trace(`F${f.id}..`)).toThrow(/invalid public trace address/);
-  for (const address of [`S${s.id}`, "mapC", `F${f.id},K${e}`, `K${e}`, `F${f.id},F2`]) {
-    const full = memory.trace(address), chunks: string[] = [];
-    let part = memory.trace(address, { cap: 1 });
-    for (;;) {
-      chunks.push(part.split("\n\nReceipts:")[0]!);
-      const next = /cursor=(\S+)/.exec(part)?.[1];
-      if (!next) break;
-      part = memory.trace(`cursor=${next}`);
-    }
-    expect(chunks.join("\n")).toBe(full.split("\n\nReceipts:")[0]);
-  }
-  expect(() => memory.trace(`S${s.id}`, { cap: 0 })).toThrow("positive integer");
+  const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id });
+  expect(() => files.read(`/tm/F${f.id}..`)).toThrow();
+  expect(() => files.read(`/tm/cursor=${cursor}`)).toThrow();
 });
 
 test("status reports attribution, counts, every watermark and last runs, and no delivery queue (29d)", () => {
@@ -678,9 +704,10 @@ test("search marks historical, merged and archived knowledge hits so they do not
   const trigger1 = createDreamerTrigger(memory, path, n.facts[0]!.id, 1);
   let updated!: { knowledgeId: number; commit: number }, merged!: { knowledgeId: number; commit: number };
   const maintained = await admittedScenarios.run(memory, path, input => {
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
-    for (const address of [tag(a, 1), tag(b, b), tag(c, c), tag(trigger1.knowledgeId, trigger1.commit)]) trace.execute({ address, itemBudget: null });
+    for (const address of [tag(a, 1), tag(b, b), tag(c, c), tag(trigger1.knowledgeId, trigger1.commit)])
+      expect(memoryFiles(memory, input.reader!).read(`/tm/${address}`).content).toContain(address);
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: tag(a, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: ["F1"] },
       { op: "merge", id: tag(b, b), absorb: [tag(c, c)], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: ["F1"] },
@@ -695,10 +722,10 @@ test("search marks historical, merged and archived knowledge hits so they do not
   expect(maintained.outcome, JSON.stringify(maintained)).toBe("success");
   const trigger2 = createDreamerTrigger(memory, path, n.facts[0]!.id, 2);
   const retired = await admittedScenarios.run(memory, path, input => {
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
-    trace.execute({ address: tag(b, merged.commit), itemBudget: null });
-    trace.execute({ address: tag(trigger2.knowledgeId, trigger2.commit), itemBudget: null });
+    for (const address of [tag(b, merged.commit), tag(trigger2.knowledgeId, trigger2.commit)])
+      expect(memoryFiles(memory, input.reader!).read(`/tm/${address}`).content).toContain(address);
     write.execute({ operations: [
       { op: "archive", kind: "budget", id: tag(b, merged.commit), supports: ["F1"], reason: "Retired: the cited evidence withdraws this conclusion." },
       { op: "archive", kind: "budget", id: tag(trigger2.knowledgeId, trigger2.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
@@ -723,10 +750,10 @@ test("reads resolve any existing address: another session's history, current rev
   const trigger = createDreamerTrigger(memory, path, n.facts[0]!.id, 1);
   let privateRevision!: { knowledgeId: number; commit: number };
   const scoped = await admittedScenarios.run(memory, path, input => {
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
-    trace.execute({ address: tag(k, 1), itemBudget: null });
-    trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
+    for (const address of [tag(k, 1), tag(trigger.knowledgeId, trigger.commit)])
+      expect(memoryFiles(memory, input.reader!).read(`/tm/${address}`).content).toContain(address);
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: tag(k, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
         category: "goal", scope: "session", supports: ["F1"] },
@@ -739,12 +766,12 @@ test("reads resolve any existing address: another session's history, current rev
   expect(scoped.outcome, JSON.stringify(scoped)).toBe("success");
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
-  const trace = memory.tools({ kind: "manual", sessionId: peer.id, branch: "main", currentTurnId: pt.id }).find((d) => d.name === "trace")!;
+  const files = memoryFiles(memory, { sessionId: peer.id, branch: "main", headTurnId: pt.id });
   expect(memory.search("shared-then-private", "knowledge", { sessionId: peer.id })).not.toContain(`[K${k}@`);
-  expect(trace.execute({ address: `K${k}@v1` })).toContain("shared-then-private goal");
-  expect(trace.execute({ address: `K${k}` })).not.toContain("shared-then-private goal");
-  expect(trace.execute({ address: `K${k}@v2` })).toContain("private goal now");
-  expect(trace.execute({ address: `K${k}@v999` })).toContain(`unknown knowledge history K${k}@v999`);
+  expect(files.read(`/tm/K${k}@v1`).content).toContain("shared-then-private goal");
+  expect(files.read(`/tm/K${k}`).content).not.toContain("shared-then-private goal");
+  expect(files.read(`/tm/K${k}@v2`).content).toContain("private goal now");
+  expect(() => files.read(`/tm/K${k}@v999`)).toThrow(`unknown knowledge history K${k}@v999`);
 });
 
 // ---- 21b 2026-09-08: topic grouping and literal label retrieval ----
@@ -845,7 +872,7 @@ test("73: knowledge borrows the shared allowance first, even when it leaves pend
   // oldest items past base plus allowance.
   expect(windows.knowledge).toBeGreaterThan(base);
   expect(windows.knowledge).toBeLessThanOrEqual(base + allowance);
-  expect(text).toContain("knowledge; expand: K");
+  expect(text).toContain("knowledge; expand: /tm/K");
   // Facts fit inside their own base with nothing left to borrow.
   for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
   // Raw cannot borrow what knowledge already took, so it truncates to its own base — the newest

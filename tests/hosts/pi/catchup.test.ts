@@ -16,8 +16,8 @@ function target(memory: Memory, options: { closed?: boolean; enabled?: boolean; 
   const path = { sessionId: session.id, branch: options.branch ?? "main", headTurnId: turn.id };
   memory.selectEntries(session.id, path.branch, [entry.id]);
   if (options.facts) {
-    const note = memory.tools({ kind: "manual", sessionId: session.id, branch: path.branch, currentTurnId: turn.id })[2]!;
-    for (let i = 0; i < options.facts; i++) expect(note.execute({ title: `Target claim ${i}`, sources: `[T${turn.id}#E1] Target claim ${i}` })).not.toContain("rejected:");
+    const note = memory.tools({ kind: "manual", sessionId: session.id, branch: path.branch, currentTurnId: turn.id }).find(tool => tool.name === "note")!;
+    for (let i = 0; i < options.facts; i++) expect(JSON.parse(note.execute({ title: `Target claim ${i}`, sources: `[T${turn.id}#E1] Target claim ${i}` })).factIds).toHaveLength(1);
   }
   if (options.noted) expect(memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: path.branch, createdAt: at }, facts: [], entryIds: [entry.id] }).ok).toBe(true);
   if (options.closed !== false) memory.store.closeSession(session.id);
@@ -160,9 +160,9 @@ test("an owned D pool uses a real pending version and keeps its global seat sepa
   const h = host({ "noting.triggerTokens": 1_000_000_000 });
   try {
     await h.turn();
-    const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
+    const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!
       .execute({ title: "Package choice", sources: "[T1#E1] User chose pnpm" });
-    expect(receipt).not.toContain("rejected:");
+    expect(JSON.parse(receipt).factIds).toHaveLength(1);
     const path = { sessionId: 1, branch: "main", headTurnId: 1 };
     const due = createDreamerTrigger(h.memory, path, 1, 1);
     expect(h.memory.taskEligibility("dreaming", path)).toEqual({ due: true });
@@ -203,8 +203,8 @@ test("N commit rejects a replaced borrowed claim token without publishing progre
     h.memory.store.invalidateExecutor(old.executorId);
     const replacement = h.memory.store.acquireClaim(t, "noting", old.executorId, true)!;
     expect(replacement.token).not.toBe(old.token);
-    input.tools[2]!.execute({ title: "Late", sources: `[T${t.headTurnId}#E1] Late` });
-    input.tools[3]!.execute({});
+    input.tools.find(tool => tool.name === "note")!.execute({ title: "Late", sources: `[T${t.headTurnId}#E1] Late` });
+    input.tools.find(tool => tool.name === "memory")!.execute({});
     finish(); expect((await pending).outcome).not.toBe("success");
     expect(h.memory.store.getClaim(t.sessionId, "noting")!.token).toBe(replacement.token);
     expect(h.memory.pendingEntries(t.sessionId, t.branch, t.headTurnId)).toHaveLength(1);
@@ -242,9 +242,9 @@ test("one shutdown deadline fences borrowed N and owned D even when both provide
   const h = host({ "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
-    const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!
+    const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!
       .execute({ title: "Package choice", sources: "[T1#E1] User chose pnpm" });
-    expect(receipt).not.toContain("rejected:");
+    expect(JSON.parse(receipt).factIds).toHaveLength(1);
     const due = createDreamerTrigger(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1, 1);
     const t = target(h.memory);
     h.provider(async () => new Promise<Reply>(() => {}), { ignoreAbort: true });
@@ -328,8 +328,8 @@ test("claim-release failure after terminal N publication does not roll back comm
   const worker = TraceMemory(h.dbPath, async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ phase: "noting" });
-    input.tools[2]!.execute({});
-    input.tools[3]!.execute({});
+    input.tools.find(tool => tool.name === "note")!.execute({});
+    input.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "", request: {} };
   });
   try {

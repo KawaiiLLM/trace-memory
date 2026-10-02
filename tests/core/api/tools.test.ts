@@ -23,8 +23,8 @@ for (const outcome of ["failure", "cancelled"] as const) test(`92: ${outcome} af
   agent = async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
-    expect(input.tools[2]!.execute(fact())).toContain("held");
-    expect(input.tools[3]!.execute({ op: "create", text: "Project rule", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" })).toContain("held");
+    expect(input.tools.find(tool => tool.name === "note")!.execute(fact())).toContain("held");
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ op: "create", text: "Project rule", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" })).toContain("held");
     expect(memory.store.listSessionFacts(1)).toEqual([]);
     expect(memory.store.getKnowledge(1)).toBeNull();
     return { outcome, output: "connection stopped", request: { round: 2 } };
@@ -40,8 +40,8 @@ for (const outcome of ["failure", "cancelled"] as const) test(`92: ${outcome} af
 for (const kind of ["Error", "AbortError"]) test(`92: thrown ${kind} after staging retains audit but publishes no facts`, async () => {
   agent = async raw => {
     const input = raw as NotingAgentInput; input.reportRequest({ actual: true });
-    expect(input.tools[2]!.execute(fact())).toContain("held");
-    input.tools[3]!.execute({});
+    expect(input.tools.find(tool => tool.name === "note")!.execute(fact())).toContain("held");
+    input.tools.find(tool => tool.name === "memory")!.execute({});
     const error = new Error("stopped"); error.name = kind; throw error;
   };
   expect((await record()).outcome).toBe(kind === "AbortError" ? "cancelled" : "failure");
@@ -52,12 +52,12 @@ for (const kind of ["Error", "AbortError"]) test(`92: thrown ${kind} after stagi
 
 test("116: one rejected Noter item can be corrected without resending an accepted sibling", async () => {
   agent = async raw => {
-    const input = raw as NotingAgentInput, note = input.tools[2]!;
+    const input = raw as NotingAgentInput, note = input.tools.find(tool => tool.name === "note")!;
     expect(note.execute(fact())).toContain("held: $1");
     expect(note.execute(fact("T1#E1", { support: [["$3", "strong"]] }))).toContain("rejected: $2");
     expect(memory.store.listSessionFacts(1)).toEqual([]);
     expect(note.execute(fact("T1#E2", { slot: "$2", support: [["$1", "weak"]] }))).toContain("held: $2");
-    input.tools[3]!.execute({});
+    input.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "done", request: { messages: ["request", "rejection", "correction"] } };
   };
   const completed = await record();
@@ -68,7 +68,7 @@ test("116: one rejected Noter item can be corrected without resending an accepte
 
 test("116: scalar drops, empty calls, and malformed calls retain publication blockers", () => {
   const tools = memory.tools({ kind: "noting", sessionId: 1, branch: "main", range: { from: "S1/T1", to: "S1/T1" } });
-  const note = tools[2]!, knowledge = tools[3]!;
+  const note = tools.find(tool => tool.name === "note")!, knowledge = tools.find(tool => tool.name === "memory")!;
   expect(note.execute(fact())).toContain("held: $1");
   expect(note.execute(fact("T1#E1", { support: [["$9", "strong"]] }))).toContain("rejected: $2");
   expect(note.execute({ slot: "$404", ...fact() })).toContain('"$2"');
@@ -89,21 +89,21 @@ test("116: scalar drops, empty calls, and malformed calls retain publication blo
 
 test("116: a refused legal empty call still counts as use but only that tool can clear its error", () => {
   const tools = memory.tools({ kind: "noting", sessionId: 1, branch: "main", range: { from: "S1/T1", to: "S1/T1" } });
-  tools[2]!.execute({});
+  tools.find(tool => tool.name === "note")!.execute({});
   memory.store.setEnrollment(1, false);
-  const refused = tools[3]!.execute({});
+  const refused = tools.find(tool => tool.name === "memory")!.execute({});
   expect(refused).toContain("Disabled");
   expect(refused).not.toContain("memory not called");
   memory.store.setEnrollment(1, true);
-  expect(tools[2]!.execute({})).toContain("Not publishable:");
-  expect(tools[3]!.execute({})).toContain("Publishable:");
+  expect(tools.find(tool => tool.name === "note")!.execute({})).toContain("Not publishable:");
+  expect(tools.find(tool => tool.name === "memory")!.execute({})).toContain("Publishable:");
 });
 
 test("116: native schema refusal invalidates only its addressed replacement slot", async () => {
   agent = async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
-    const note = input.tools[2]!, knowledge = input.tools[3]!;
+    const note = input.tools.find(tool => tool.name === "note")!, knowledge = input.tools.find(tool => tool.name === "memory")!;
     note.execute(fact());
     note.execute(fact());
     input.reportToolRejection("native-1", "note", { slot: "$2", title: "missing sources" }, "native schema rejected");
@@ -141,7 +141,7 @@ test("116: public schemas distinguish full items, scalar drops and empty calls; 
 
 test("manual input and result are audited; facts enter the branch without advancing Noting", () => {
   const input = fact();
-  const result = memory.tools(manual())[2]!.execute(input);
+  const result = memory.tools(manual()).find(tool => tool.name === "note")!.execute(input);
   const run = memory.store.listRuns(1)[0]!;
   expect(run).toMatchObject({ kind: "manual", sessionId: 1, branch: "main", rangeFrom: "S1/T1", rangeTo: "S1/T1", outcome: "success" });
   expect(JSON.parse(run.request!)).toEqual(input); expect(run.response).toBe(result);
@@ -153,8 +153,8 @@ test("manual input and result are audited; facts enter the branch without advanc
 
 test("116: manual memory commits one operation at a time and rejects Noter-only fields", () => {
   const tools = memory.tools(manual());
-  expect(tools[2]!.execute(fact())).toContain("F1");
-  const knowledge = tools[3]!;
+  expect(tools.find(tool => tool.name === "note")!.execute(fact())).toContain("F1");
+  const knowledge = tools.find(tool => tool.name === "memory")!;
   const create = { op: "create", text: "rule", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "evidence" };
   expect(knowledge.execute({ ...create, skipped: [] })).toContain("rejected:");
   expect(knowledge.execute({ ...create, supports: ["$1"] })).toContain("rejected:");
@@ -173,7 +173,7 @@ test("116: manual memory commits one operation at a time and rejects Noter-only 
 test("source time follows the first source, including tool sources; all sources are checked", () => {
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, assistantText: "later", startedAt: "later source time" });
   memory.store.appendToolCall({ turnId: 2, name: "bash", status: "success", result: "passed" });
-  const note = memory.tools(manual(1, 2))[2]!;
+  const note = memory.tools(manual(1, 2)).find(tool => tool.name === "note")!;
   const observation = hydrate(memory.store.listSourceEntries(1, 2), memory.store).find(entry => entry.role === "toolResult")!;
   const cited = `T2#E${observation.entryOrdinal}`;
   expect(note.execute(fact(cited, { source: [cited, "T1#E1"] }))).toContain("F1");
@@ -186,7 +186,7 @@ test("source time follows the first source, including tool sources; all sources 
 });
 
 test("116: malformed manual call rejects only itself; valid calls commit immediately", () => {
-  const note = memory.tools(manual())[2]!;
+  const note = memory.tools(manual()).find(tool => tool.name === "note")!;
   expect(note.execute(null)).toContain("rejected:");
   expect(note.execute(fact())).toContain("ok: F1");
   expect(note.execute(fact("T1#E1", { support: [[42, "weak"]] }))).toContain("rejected:");
@@ -197,7 +197,7 @@ test("tools freeze the N range, reject sibling sources, and keep no read ledger"
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, assistantText: "sibling", startedAt: "later" });
   const context: ToolContext = { kind: "noting", sessionId: 1, branch: "main",
     range: { from: "S1/T1", to: "S1/T1" }, entryIds: memory.store.sourcePath(1, "main", 1).map(entry => entry.id) };
-  const bound = memory.tools(context)[2]!;
+  const bound = memory.tools(context).find(tool => tool.name === "note")!;
   context.range.to = "S1/T2"; context.branch = "mutated";
   context.entryIds!.push(...memory.store.listSourceEntries(1).filter(entry => entry.turnId === 2).map(entry => entry.id));
   expect(bound.execute(fact("T2#E1"))).toContain("invalid source");
@@ -205,9 +205,9 @@ test("tools freeze the N range, reject sibling sources, and keep no read ledger"
   expect(memory.store.listSessionFacts(1)).toEqual([]); // standalone tools still hold privately
   agent = async raw => {
     const input = raw as NotingAgentInput;
-    expect(input.tools[2]!.execute(fact("T2#E1"))).toContain("rejected:");
-    expect(input.tools[2]!.execute(fact("T1#E1", { slot: "$1" }))).toContain("held");
-    input.tools[3]!.execute({});
+    expect(input.tools.find(tool => tool.name === "note")!.execute(fact("T2#E1"))).toContain("rejected:");
+    expect(input.tools.find(tool => tool.name === "note")!.execute(fact("T1#E1", { slot: "$1" }))).toContain("held");
+    input.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "corrected", request: {} };
   };
   expect((await record()).outcome).toBe("success");
@@ -216,37 +216,31 @@ test("tools freeze the N range, reject sibling sources, and keep no read ledger"
   expect(JSON.parse(memory.store.getRun(1)!.response!)).not.toHaveProperty("readKnowledgeCommits");
 });
 
-test("trace and search use parameter options, share scoped pagination, and reject obsolete address flags", () => {
+test("search keeps its parameters, scoped pagination and input validation after trace removal", () => {
   memory.store.appendToolCall({ turnId: 1, name: "bash", status: "success", result: "x".repeat(2000) });
-  memory.tools(manual())[2]!.execute(fact());
-  memory.tools(manual())[2]!.execute(fact());
-  const [trace, search] = memory.tools(manual());
-  expect(trace!.execute({ address: "T1#E4@observation", itemBudget: null, toolResultBudget: null })).toContain("x".repeat(2000));
-  expect(trace!.execute({ address: "T1" })).toContain("T1#E4");
-  for (const address of ["T1 tool=1 full", "T1 cap=0", "F1 cap=1"]) expect(trace!.execute({ address })).toContain("rejected:");
+  memory.tools(manual()).find(tool => tool.name === "note")!.execute(fact());
+  memory.tools(manual()).find(tool => tool.name === "note")!.execute(fact());
+  const [search] = memory.tools(manual());
   const first = search!.execute({ query: "project", layer: "facts", cap: 1 });
   const cursor = /cursor=(\S+)/.exec(first)![1];
   expect(search!.execute({ query: "project", layer: "facts", cursor })).toContain("[F2]");
   expect(search!.execute({ query: "project", scope: "facts" })).toContain("rejected:");
-  expect(trace!.execute({ address: "T1", cap: 0 })).toContain("rejected:");
+  expect(search!.execute({ query: "project", cap: 0 })).toContain("rejected:");
 });
 
-test("reads reach any project's evidence; write sources stay bound to the session; cursors to their owner", () => {
+test("search reaches other projects' evidence; write sources stay bound to the session", () => {
   const p = memory.store.createProject({ name: "other", declaredBy: "mark" });
   memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   memory.store.appendTurn({ sessionId: 2, kind: "turn", userPrompt: "private evidence", startedAt: "now" });
-  memory.tools(manual(2, 2))[2]!.execute(fact("T2#E1", { text: "private evidence" }));
+  memory.tools(manual(2, 2)).find(tool => tool.name === "note")!.execute(fact("T2#E1", { text: "private evidence" }));
   const tools = memory.tools(manual());
-  for (const address of ["F1", "T2", "S2", "S2/T2", "T1,T2"]) expect(tools[0]!.execute({ address })).not.toContain("rejected:");
-  expect(tools[1]!.execute({ query: "private", layer: "all", scope: "global" })).toContain("private evidence");
-  expect(tools[2]!.execute(fact("T2#E1"))).toContain("rejected:"); // a write may only cite its own session
-  const page = memory.tools(manual(2, 2))[0]!.execute({ address: "T2", cap: 1 });
-  expect(tools[0]!.execute({ address: "T1", cursor: /cursor=(\S+)/.exec(page)![1] })).toContain("rejected:");
+  expect(tools.find(tool => tool.name === "search")!.execute({ query: "private", layer: "all", scope: "global" })).toContain("private evidence");
+  expect(tools.find(tool => tool.name === "note")!.execute(fact("T2#E1"))).toContain("rejected:"); // a write may only cite its own session
 });
 
 
 test("manual facts belong to their turn on every branch containing that turn", async () => {
-  memory.tools(manual(1, 1, "A"))[2]!.execute(fact());
+  memory.tools(manual(1, 1, "A"))[1]!.execute(fact());
   await memory.noting({ sessionId: 1, branch: "B", headTurnId: 1 });
   expect(memory.store.listBranchFacts(1, "A").map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "B", 1).map(f => f.id)).toEqual([1]);
@@ -262,13 +256,12 @@ test("reads return every knowledge item while injection still applies the scope 
     memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
   }
   for (const sessionId of [1, 2, 3]) {
-    const note = memory.tools(manual(sessionId, sessionId))[2]!;
+    const note = memory.tools(manual(sessionId, sessionId))[1]!;
     note.execute(fact(`T${sessionId}#E1`));
     memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: "now" }, operations:
       (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "understanding" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
-  const [trace, search] = memory.tools(manual());
-  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(trace!.execute({ address: `K${id}@v1` })).toContain(`[K${id}#${memory.store.versionTag(id, id)}]`); // exact reads are unrestricted
+  const [search] = memory.tools(manual());
   const hits = search!.execute({ query: "knowledge", layer: "knowledge", versions: "all" });
   for (const id of [1, 2, 3, 4, 5, 7]) expect(hits).toContain(`[K${id}@`);
   for (const id of [6, 8, 9]) expect(hits).not.toContain(`[K${id}@`);
@@ -279,13 +272,13 @@ test("reads return every knowledge item while injection still applies the scope 
   memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "later" }, operations: [
     { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 3, baseCommit: 3, supports: [1], createdAt: "later" },
   ] });
-  expect(trace!.execute({ address: "K3@v1" })).toContain("owner 1 scope session");
-  expect(trace!.execute({ address: "K3", versions: "history" })).toContain("archive");
+  expect(memory.trace("K3@v1")).toContain("owner 1 scope session");
+  expect(memory.trace("K3", { versions: "history" })).toContain("archive");
 });
 
 test("branch facts apply the full-source path rule: a fact citing a turn off the path stays out", () => {
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, userPrompt: "second", startedAt: "now" });
-  memory.tools(manual(1, 2))[2]!.execute(fact("T1#E1", { source: ["T1#E1", "T2#E1"] }));
+  memory.tools(manual(1, 2))[1]!.execute(fact("T1#E1", { source: ["T1#E1", "T2#E1"] }));
   expect(memory.store.listBranchFacts(1, "main", 2).map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "main", 1)).toEqual([]); // T2 is not on the path that ends at T1
 });
@@ -294,8 +287,8 @@ test("one reading of the model-facing result: a `rejected:` receipt and a batch 
   // The wire format is unchanged; what is shared is its interpretation. Both Pi adapters and the
   // test host classify a tool result through this one function instead of re-deriving the format —
   // core produces both spellings here, so a change to either has one place to make it.
-  expect(toolRejected("trace", "rejected: unknown or expired cursor")).toBe(true);
-  expect(toolRejected("trace", "[F1] a fact line")).toBe(false);
+  expect(toolRejected("search", "rejected: unknown or expired cursor")).toBe(true);
+  expect(toolRejected("search", "[F1] a fact line")).toBe(false);
   // A batch writer answers with JSON: one rejected entry makes the whole call a refusal.
   expect(toolRejected("note", JSON.stringify({ results: ["ok: F1", "rejected: invalid source"] }))).toBe(true);
   expect(toolRejected("memory", JSON.stringify({ results: ["ok: K1@1"] }))).toBe(false);
@@ -303,8 +296,8 @@ test("one reading of the model-facing result: a `rejected:` receipt and a batch 
   expect(toolRejected("search", JSON.stringify({ results: ["rejected: not mine"] }))).toBe(false);
   expect(toolRejected("note", "not json at all")).toBe(false);
   // The real receipts a run produces, classified the same way.
-  const [trace, , note] = memory.tools(manual());
-  expect(toolRejected("trace", trace!.execute({ address: "F404" }))).toBe(true);
+  const [search, note] = memory.tools(manual());
+  expect(toolRejected("search", search!.execute({ query: "a", queries: ["b"] }))).toBe(true);
   expect(toolRejected("note", note!.execute(fact("T9#E1")))).toBe(true);
   expect(toolRejected("note", note!.execute(fact()))).toBe(false);
 });

@@ -7,6 +7,7 @@
 // Everything here uses the public SDK entry (`createAgentSession`, `SessionManager`,
 // `DefaultResourceLoader`, `SettingsManager`) plus the public `Agent` fields Pi itself sets.
 import { mkdirSync } from "node:fs";
+import { getCurrentTools } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
   type ExtensionAPI, type SessionEntry, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
 import { capturedSystemPrompt, capturedTools, hash, messageKey, serialize, stripCacheControl, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./fork.ts";
@@ -38,6 +39,8 @@ interface NativeCommon {
   /** The adapter-composed user prompt for this run (hosts/pi/compose.ts). */
   task: string;
   tools: ToolDefinition[];
+  /** Same frozen reader as this task's material; only /tm execution is exposed. */
+  read: ReturnType<typeof import("./memory-files.ts").memoryReadTool>;
   reportToolRejection?(id: string, name: "note" | "memory", input: unknown, reason: string): void;
   /** 0 = unlimited, as `maxToolRounds` has always meant. */
   maxToolRounds: number;
@@ -167,7 +170,8 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   const api = task.model.api;
   // --- Prepare the child. Failures before the first provider request are fallbacks, not run failures.
   mkdirSync(task.runsDir, { recursive: true });
-  let system: string, tools: { name: string; description: string; parameters: Body }[];
+  let system: string, tools: { name: string; description: string; parameters: Body;
+    constrainedSampling?: PiToolDefinition["constrainedSampling"] }[];
   let manager: SessionManager, nativeLog: string | undefined;
   if (task.mode === "fork") {
     try {
@@ -175,6 +179,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       tools = capturedTools(api, task.captured);
     } catch (error) { throw new NotForkable(String(error)); }
     if (!tools.length) throw new NotForkable("captured payload carries no tool definitions");
+    if (!tools.some(tool => tool.name === "read")) throw new NotForkable("captured payload omits the read tool");
     for (const definition of task.tools) {
       const captured = tools.find(t => t.name === definition.name);
       if (!captured) throw new NotForkable(`captured payload omits the ${definition.name} tool`);
@@ -198,13 +203,23 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     const parentId = manager.getSessionId();
     nativeLog = manager.createBranchedSession(task.checkpoint);
     if (manager.getSessionId() === parentId) throw new NotForkable("child session kept the parent id");
+    // Wire schemas have already been transformed for strict sampling. Re-register the original
+    // persisted declarations so Pi does not append a spurious tool delta or transform them twice.
+    // Captured order stays authoritative; the unchanged outgoing-prefix gate checks the result.
+    const declarations = new Map(getCurrentTools(manager.buildSessionContext().messages).map(tool => [tool.name, tool]));
+    tools = tools.map(tool => {
+      const declaration = declarations.get(tool.name);
+      return declaration ? { ...declaration, parameters: { ...declaration.parameters } } : tool;
+    });
   } else {
     // Fresh context (19b "Subagent parity"): Pi's own new-session constructor, in the runs directory,
     // with no parent file to inherit from. No gate applies because there is no parent body to match,
-    // so only the memory tools core bound for this run are registered at all.
+    // so only the bound memory tools and restricted native Read are registered.
     system = task.systemPrompt;
-    tools = task.tools.map(definition => ({ name: definition.name, description: definition.description, parameters: definition.parameters as Body }));
-    if (!tools.length) throw new NotForkable("no memory tools were bound for this run");
+    tools = [...task.tools.map(definition => ({ name: definition.name, description: definition.description, parameters: definition.parameters as Body })),
+      { name: task.read.name, description: task.read.description, parameters: { ...task.read.parameters },
+        constrainedSampling: task.read.constrainedSampling }];
+    if (!tools.length) throw new NotForkable("no tools were bound for this run");
     manager = SessionManager.create(task.cwd, task.runsDir);
     nativeLog = manager.getSessionFile();
   }
@@ -214,18 +229,20 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   const attempts = new Map<string, { name: "note" | "memory"; input: unknown; executed: boolean }>();
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
   // In fork mode the tool DEFINITIONS are the parent's, byte for byte, because the gate compares
-  // them; a fresh child registers only core's four. Tool EXECUTION is whitelisted to the memory
-  // tools core bound for this run either way, so anything else the copied history invites the model
-  // to call returns an error result and never runs.
+  // them; a fresh child registers bound memory tools plus restricted native Read. Tool EXECUTION
+  // allows these tools only, so any other copied parent tool returns an error without running.
   const definitions = tools.map(tool => ({
     name: tool.name, label: tool.name, description: tool.description, parameters: tool.parameters as never,
+    constrainedSampling: tool.constrainedSampling,
     executionMode: "sequential" as const,
     async execute(_id: string, raw: unknown) {
       const attempt = attempts.get(_id);
       if (attempt) attempt.executed = true;
       const bound = task.tools.find(t => t.name === tool.name);
-      calls.push({ name: tool.name, executed: !!bound && !exceeded });
+      const reading = tool.name === "read";
+      calls.push({ name: tool.name, executed: (reading || !!bound) && !exceeded });
       if (exceeded) throw new Error(`rejected: tool rounds exceeded (${task.maxToolRounds})`);
+      if (reading) return task.read.execute(_id, raw as never, task.signal, undefined, { cwd: task.cwd } as never);
       if (!bound) throw new Error(`rejected: ${tool.name} is not available to a Trace Memory worker`);
       let content: string;
       try { content = bound.execute(raw); }

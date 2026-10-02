@@ -4,7 +4,8 @@
 import { expect, test } from "vitest";
 import { sourceSeededMemory, tokens, renderEntry, type NotingAgentInput , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
-import { renderFact } from "../../../src/core/render/index.ts";
+import { renderFact, renderKnowledgeDiff } from "../../../src/core/render/index.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
 import { budgetMaterial, compactText, injectionText, notingText, rawWindowTokens, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -188,9 +189,9 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
     let updatedCommit = 0;
     const result = await f.scenarios.run(f.m, path, input => {
       const request = { fixture: "topic-set diff" }; input.reportRequest(request);
-      const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+      const write = input.tools.find(tool => tool.name === "memory")!;
       const base = `K1#${f.m.store.versionTag(1, 1)}`;
-      expect(trace.execute({ address: "K1@v1", itemBudget: null })).toContain(base);
+      expect(memoryFiles(f.m, input.reader!).read("/tm/K1@v1").content).toContain(base);
       const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: base, ...content, topics: ["a", "b"] }], skipped: [] }));
       expect(receipt.committed[0].version).toBe("K1@v2");
       updatedCommit = f.m.store.resolveVersionOrdinal(1, 2);
@@ -198,7 +199,10 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
       return { outcome: "success", output: "updated", request };
     });
     expect(result.outcome).toBe("success");
-    expect(f.m.trace(`K1@v1..v${f.m.store.versionOrdinal(1, updatedCommit)}`)).toContain('topics: ["a, b"] -> ["a","b"]');
-    expect(f.m.trace("K1@v1")).toContain('topics: ["a, b"]');
+    const files = memoryFiles(f.m, { sessionId: f.s.id, branch: "main", headTurnId: f.t.id });
+    expect(files.read("/tm/K1@v1").content).toContain('topics: ["a, b"]');
+    expect(files.read(`/tm/K1@v${f.m.store.versionOrdinal(1, updatedCommit)}`).content).toContain('topics: ["a","b"]');
+    expect(renderKnowledgeDiff(f.m.store.knowledgeRevision(1)!, f.m.store.knowledgeRevision(updatedCommit)!, []))
+      .toContain('topics: ["a, b"] -> ["a","b"]');
   } finally { f.m.close(); }
 });

@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory } from "../../../src/core/api/index.ts";
-import { drainTrace, wholeTrace } from "../../trace-pages.ts";
+import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { legacyFacts } from "../../support/seed.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
@@ -44,46 +43,38 @@ test("47: path-bound relations require both endpoints while an exact Fact read r
   expect(f.store.listFactRelationsOnPath(f.root.id, f.rootPath)).toEqual([]);
   expect(f.store.listFactRelationsOnPath(f.root.id, f.siblingPath)).toHaveLength(1);
 
-  const rootTools = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "root", currentTurnId: f.turn.id });
-  const trace = rootTools.find(tool => tool.name === "trace")!;
-  // 93 makes a bare Turn the fact view; 47's endpoint applicability rule still holds.
-  const collection = trace.execute({ address: `T${f.turn.id}`, itemBudget: null });
+  // Named node views prefer this session's selected branch under ruling 8.
+  f.store.setCurrentPath(f.session.id, "root", f.turn.id, "test-lineage");
+  const rootFiles = memoryFiles(f.memory, f.rootPath);
+  const collection = rootFiles.read(`/tm/facts/S${f.session.id}/T${f.turn.id}`).content;
   expect(collection).toContain(`[F${f.root.id}]`);
   expect(collection).not.toContain(`[F${f.sibling.id}]`);
   expect(collection).not.toContain(`inbound negate F${f.sibling.id}`);
-  const targetApplicable = trace.execute({ address: `F${f.root.id}`, itemBudget: null });
+  const targetApplicable = rootFiles.read(`/tm/F${f.root.id}`).content;
   expect(targetApplicable).toContain(`inbound negate F${f.sibling.id} strong`);
   expect(targetApplicable).toContain(`other endpoints not applicable on this path: F${f.sibling.id}`);
 
-  const targetInapplicable = trace.execute({ address: `F${f.sibling.id}`, itemBudget: null });
+  const targetInapplicable = rootFiles.read(`/tm/F${f.sibling.id}`).content;
   expect(targetInapplicable).toContain(`negate F${f.root.id} strong`);
   expect(targetInapplicable).toContain(`inbound negate F${f.third.id} weak`);
   expect(targetInapplicable).toContain(`other endpoints not applicable on this path: F${f.third.id}`);
   expect(targetInapplicable).not.toContain(`other endpoints not applicable on this path: F${f.root.id}`);
 
-  const siblingTools = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "sibling", currentTurnId: f.turn.id });
-  expect(siblingTools.find(tool => tool.name === "trace")!.execute({ address: `T${f.turn.id}`, itemBudget: null }))
-    .toContain(`inbound negate F${f.sibling.id} strong`);
-  const bothApplicable = siblingTools.find(tool => tool.name === "trace")!.execute({ address: `F${f.sibling.id}`, itemBudget: null });
+  f.store.setCurrentPath(f.session.id, "sibling", f.turn.id, "test-lineage");
+  const siblingFiles = memoryFiles(f.memory, f.siblingPath);
+  expect(siblingFiles.read(`/tm/facts/S${f.session.id}/T${f.turn.id}`).content).toContain(`inbound negate F${f.sibling.id} strong`);
+  const bothApplicable = siblingFiles.read(`/tm/F${f.sibling.id}`).content;
   expect(bothApplicable).not.toContain("other endpoints not applicable on this path");
 });
 
-test("47: exact Fact pagination freezes endpoint applicability until cursor completion", () => {
+test("47: exact Fact reads reflect current endpoint applicability", () => {
   const f = fixture();
-  const options = { ...f.rootPath, itemBudget: null, maxTokens: 100 };
-  const expected = wholeTrace(f.memory, `F${f.root.id}`, { ...options, maxTokens: 8_000 });
-  const first = f.memory.trace(`F${f.root.id}`, options);
-  let inserted = false;
-  const drained = drainTrace(f.memory, first, options, () => {
-    if (inserted) return;
-    inserted = true;
-    f.store.db.prepare("INSERT INTO fact_relations(from_fact,to_fact,kind,strength) VALUES (?,?,?,?)")
-      .run(f.fourth.id, f.root.id, "support", "weak");
-  });
-  expect(drained.pages).toBeGreaterThan(1);
-  expect(drained.joined).toBe(expected);
-  expect(drained.joined).not.toContain(`F${f.fourth.id}`);
-  expect(wholeTrace(f.memory, `F${f.root.id}`, { ...options, maxTokens: 8_000 })).toContain(`F${f.fourth.id}`);
+  const path = `/tm/F${f.root.id}`;
+  const read = () => memoryFiles(f.memory, f.rootPath).read(path).content;
+  expect(read()).not.toContain(`support F${f.fourth.id}`);
+  f.store.db.prepare("INSERT INTO fact_relations(from_fact,to_fact,kind,strength) VALUES (?,?,?,?)")
+    .run(f.fourth.id, f.root.id, "support", "weak");
+  expect(read()).toContain(`F${f.fourth.id}`);
 });
 
 test("47: compact rendering does not leak a sibling relation into the rewind path", () => {

@@ -7,6 +7,8 @@ import { visibleView } from "../../src/hosts/pi/visible.ts";
 import { visibility } from "../../src/hosts/pi/index.ts";
 import { decodeCcInjection, encodeCcInjection } from "../../src/hosts/cc/injection.ts";
 import { sliceCcInjection, ccKnowledgeHeader } from "../../src/hosts/cc/slices.ts";
+import { readingGuide } from "../../src/core/render/reading-guide.ts";
+import { ccPluginToolNames } from "../../src/hosts/cc/tool-names.ts";
 
 const pi = { db: "fixture", session: 1, pi: "native" };
 const cc = { db: "fixture", coreSession: 1, nativeSession: "native" };
@@ -25,7 +27,7 @@ test("92 CC envelope digest binds its Knowledge accounting and body", () => {
 test("92 each final CC slice charges its K framing and notices, not facts, Raw or other slices", () => {
   const state: TransportItem = { kind: "state", text: "K9@v1 is archived", address: "K9", receipt: { fromCommit: 9, toCommits: [10] } };
   const values: TransportItem[] = [state, knowledge(1, 6000), knowledge(2, 5000),
-    { kind: "receipt", text: "omitted 1 reference knowledge; expand: K3", knowledge: true },
+    { kind: "receipt", text: "omitted 1 reference knowledge; expand: /tm/K3", knowledge: true },
     { kind: "fact", factId: 20, pending: false, text: "[F20] " + "f".repeat(700) },
     { kind: "raw", entryId: 30, address: "T3#E1", pending: false, text: "[T3#E1] user: " + "r".repeat(700) }];
   const slices = sliceCcInjection(cc, values).filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext);
@@ -36,10 +38,11 @@ test("92 each final CC slice charges its K framing and notices, not facts, Raw o
       ...(header.states.length ? [`${KNOWLEDGE_STATUS_TITLE}\n${state.text}`] : []),
       renderKnowledgeBlock(values.filter(value => value.kind === "knowledge" && header.commits.includes(value.commitId))
         .map(value => ({ category: "reference", text: value.text })), ccKnowledgeHeader(cc)),
-      ...(header.slice![0] === 0 ? ["Receipts:\nomitted 1 reference knowledge; expand: K3"] : []),
+      ...(header.slice![0] === 0 ? ["Receipts:\nomitted 1 reference knowledge; expand: /tm/K3"] : []),
     ].filter(Boolean);
     expect(header.knowledgeTokens).toBe(tokens(parts.join("\n\n")));
   }
+  expect(slices.join("").split(readingGuide(cc.coreSession, ccPluginToolNames))).toHaveLength(2);
 });
 
 test("92 one-block exact fit does not permit repeated K segment framing to exceed the remaining allowance", () => {
@@ -60,6 +63,18 @@ test("92 one-block exact fit does not permit repeated K segment framing to excee
       expect([...output!.hookSpecificOutput.additionalContext.matchAll(/\[K(\d+)#aaaa\]/g)].map(match => Number(match[1]))).toEqual(header.commits);
     }
   }
+});
+
+test("118 CC segment zero delivers the guide even when the Knowledge allowance is zero", () => {
+  const fact: TransportItem = { kind: "fact", factId: 20, pending: false, text: "[F20] independent fact" };
+  const raw: TransportItem = { kind: "raw", entryId: 30, address: "T3#E1", pending: true, text: "[T3#E1] user: pending" };
+  const outputs = sliceCcInjection(cc, [fact, raw], undefined, 0).filter(Boolean);
+  const bodies = outputs.map(output => output!.hookSpecificOutput.additionalContext);
+  expect(bodies.join("").split(readingGuide(cc.coreSession, ccPluginToolNames))).toHaveLength(2);
+  expect(bodies.join(" ")).toContain(fact.text);
+  expect(bodies.join(" ")).toContain(raw.text);
+  expect(bodies.map(body => decodeCcInjection(body, cc)!.knowledgeTokens)).toEqual([0]);
+  expect(bodies[0]!.length).toBeLessThanOrEqual(10_000);
 });
 
 test("92 Pi memo appends incrementally, navigation rebuilds, and a frozen admission survives later appends", () => {

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -187,13 +187,14 @@ test("64b pilot: an admitted Dreamer child uses only its direct foreground suppo
     let child!: { knowledgeId: number; commit: number }, childCitingA!: { knowledgeId: number; commit: number };
     const dreamed = await scenarios.run(memory, target, input => {
       const request = { fixture: "64b recursive foreground applicability" }; input.reportRequest(request);
-      const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+      const write = input.tools.find(tool => tool.name === "memory")!;
+      const files = memoryFiles(memory, target);
       const parentTag = `K${parent.knowledgeId}#${store.versionTag(parent.knowledgeId, parent.commit)}`;
       const directTag = `K${parentForDirectA.knowledgeId}#${store.versionTag(parentForDirectA.knowledgeId, parentForDirectA.commit)}`;
       const triggerTag = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
-      expect(trace.execute({ address: parentTag, itemBudget: null })).toContain("parent claim");
-      expect(trace.execute({ address: directTag, itemBudget: null })).toContain("second parent claim");
-      expect(trace.execute({ address: triggerTag, itemBudget: null })).toContain("Fixture trigger 1");
+      expect(files.read(`/tm/${parentTag}`).content).toContain("parent claim");
+      expect(files.read(`/tm/${directTag}`).content).toContain("second parent claim");
+      expect(files.read(`/tm/${triggerTag}`).content).toContain("Fixture trigger 1");
       const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: parentTag,
         text: "child claim", category: "constraint", scope: "global", supports: [`F${childFact.id}`], topics: [], reason: "Child revision." },
       { op: "update", id: directTag,
@@ -261,11 +262,12 @@ test("64b validity pilot: later applicable commit wins independent of restore or
   let replacement!: { knowledgeId: number; commit: number };
   const dreamed = await scenarios.run(memory, bPath, input => {
     const request = { fixture: "64b validity replacement" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
+    const files = memoryFiles(memory, bPath);
     const baseTag = `K${base.knowledgeId}#${store.versionTag(base.knowledgeId, base.commit)}`;
     const triggerTag = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
-    expect(trace.execute({ address: baseTag, itemBudget: null })).toContain("base body");
-    trace.execute({ address: triggerTag, itemBudget: null, pageBudget: 8000 });
+    expect(files.read(`/tm/${baseTag}`).content).toContain("base body");
+    files.read(`/tm/${triggerTag}`);
     const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: baseTag,
       text: "B replacement", category: "constraint", scope: "global", supports: [`F${bFact.id}`], topics: [], reason: "Replace rewound base." },
     { op: "archive", kind: "budget", id: triggerTag, supports: [`F${bFact.id}`], reason: "Retire trigger." }], skipped: [] }));
@@ -336,9 +338,9 @@ test("64b scope visibility: global current hides older visible revisions, reject
       let changed!: { knowledgeId: number; commit: number };
       const dreamed = await scenarios.run(memory, ownerPath, input => {
         const request = { fixture: `64b scope ${scope}` }; input.reportRequest(request);
-        const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-        trace.execute({ address: tag(prior), itemBudget: null, pageBudget: 8000 });
-        trace.execute({ address: tag(trigger), itemBudget: null, pageBudget: 8000 });
+        const write = input.tools.find(tool => tool.name === "memory")!;
+        memoryFiles(memory, ownerPath).read(`/tm/${tag(prior)}`);
+        memoryFiles(memory, ownerPath).read(`/tm/${tag(trigger)}`);
         const receipt = JSON.parse(write.execute({ operations: [
           { op: "update", id: tag(prior), text, category: "constraint", scope,
             supports: [`F${ownerFact.id}`], reason: "Change current visibility.", topics: [] },
@@ -373,9 +375,9 @@ test("64b scope visibility: global current hides older visible revisions, reject
     const staleTrigger = createDreamerTrigger(memory, peerPath, peerFact.id, ++sequence, "project");
     const staleRun = await scenarios.run(memory, peerPath, input => {
       const request = { fixture: "64b hidden stale base" }; input.reportRequest(request);
-      const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-      trace.execute({ address: tag(base), itemBudget: null, pageBudget: 8000 });
-      trace.execute({ address: tag(staleTrigger), itemBudget: null, pageBudget: 8000 });
+      const write = input.tools.find(tool => tool.name === "memory")!;
+      memoryFiles(memory, peerPath).read(`/tm/${tag(base)}`);
+      memoryFiles(memory, peerPath).read(`/tm/${tag(staleTrigger)}`);
       expect(write.execute({ operations: [{ op: "update", id: tag(base), text: "stale peer edit",
         category: "constraint", scope: "project", supports: [`F${peerFact.id}`], reason: "Must remain stale.", topics: [] }], skipped: [] }))
         .toContain("base is not the latest effective applicable revision");
@@ -393,9 +395,9 @@ test("64b scope visibility: global current hides older visible revisions, reject
     const mergeTrigger = createDreamerTrigger(memory, ownerPath, ownerFact.id, ++sequence, "project");
     const mergeRun = await scenarios.run(memory, ownerPath, input => {
       const request = { fixture: "64b cross-scope merge" }; input.reportRequest(request);
-      const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+      const write = input.tools.find(tool => tool.name === "memory")!;
       for (const item of [widened, privateParent, mergeTrigger])
-        trace.execute({ address: tag(item), itemBudget: null, pageBudget: 8000 });
+        memoryFiles(memory, ownerPath).read(`/tm/${tag(item)}`);
       const before = store.listKnowledgeRevisions().length;
       expect(write.execute({ operations: [{ op: "merge", id: tag(widened),
         absorb: [tag(privateParent)], text: "illegal cross-scope merge",
@@ -414,9 +416,9 @@ test("64b scope visibility: global current hides older visible revisions, reject
     const resultScopeTrigger = createDreamerTrigger(memory, ownerPath, ownerFact.id, ++sequence, "project");
     const resultScopeRun = await scenarios.run(memory, ownerPath, input => {
       const request = { fixture: "64b merge result scope" }; input.reportRequest(request);
-      const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+      const write = input.tools.find(tool => tool.name === "memory")!;
       for (const item of [widened, projectParent, resultScopeTrigger])
-        trace.execute({ address: tag(item), itemBudget: null, pageBudget: 8000 });
+        memoryFiles(memory, ownerPath).read(`/tm/${tag(item)}`);
       expect(write.execute({ operations: [{ op: "merge", id: tag(widened),
         absorb: [tag(projectParent)], text: "illegal result scope",
         category: "constraint", scope: "session", supports: [`F${ownerFact.id}`], reason: "Must be refused.", topics: [] }], skipped: [] }))

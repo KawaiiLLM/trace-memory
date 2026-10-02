@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { skipRest } from "../../dreaming-skips.ts";
 import type { Store } from "../../../src/core/store/index.ts";
@@ -67,10 +67,10 @@ async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, s
   const currentTriggers = f.store.currentKnowledge(path).filter(item => item.revision.text.startsWith("Fixture trigger"));
   const result = await f.scenarios.run(f.memory, path, async input => {
     const request = { operation, branch, trigger }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
-    trace.execute({ address: tagged(f.store, f.base.knowledgeId, f.base.commit), itemBudget: null });
-    for (const item of currentTriggers) trace.execute({ address: tagged(f.store, item.knowledge.id, item.revision.id), itemBudget: null, pageBudget: 8_000 });
+    read(tagged(f.store, f.base.knowledgeId, f.base.commit));
+    for (const item of currentTriggers) read(tagged(f.store, item.knowledge.id, item.revision.id));
     const common = { text, category: "constraint", scope: "project", supports: [`F${f.branchFacts[branch]}`], topics: [], reason: `${operation} on ${branch}.` };
     let operationInput: Record<string, unknown>;
     if (operation === "archive") operationInput = { op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason };
@@ -78,11 +78,11 @@ async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, s
       children: [{ text: `${text} one`, category: "constraint", topics: [] }, { text: `${text} two`, category: "constraint", topics: [] }] };
     else if (operation === "merge-into") {
       const other = mergeOther ?? (() => { throw new Error("missing merge identity"); })();
-      trace.execute({ address: tagged(f.store, other.knowledgeId, other.commit), itemBudget: null });
+      read(tagged(f.store, other.knowledgeId, other.commit));
       operationInput = { op: "merge", id: tagged(f.store, f.base.knowledgeId, f.base.commit), absorb: [tagged(f.store, other.knowledgeId, other.commit)], ...common };
     } else if (operation === "merge-absorb") {
       const survivor = f.older ?? (() => { throw new Error("missing older survivor"); })();
-      trace.execute({ address: tagged(f.store, survivor.knowledgeId, survivor.commit), itemBudget: null });
+      read(tagged(f.store, survivor.knowledgeId, survivor.commit));
       operationInput = { op: "merge", id: tagged(f.store, survivor.knowledgeId, survivor.commit), absorb: [tagged(f.store, f.base.knowledgeId, f.base.commit)], ...common };
     } else operationInput = { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), ...common };
     const receipt = write.execute({ operations: [operationInput, ...currentTriggers.map(item => ({ op: "archive", kind: "budget",
@@ -106,7 +106,7 @@ test.each(["archive", "split", "merge-into", "merge-absorb"] as const)(
     await runOperation(f, "left", 1, operation, `${operation} result`);
     const leftPath = f.path("left");
     const stale = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "left", currentTurnId: f.turn.id, triggerEntryId: f.entries.left.id });
-    stale.find(tool => tool.name === "trace")!.execute({ address: tagged(f.store, f.base.knowledgeId, f.base.commit), itemBudget: null });
+    expect(memoryFiles(f.memory, { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id }).read(`/tm/${tagged(f.store, f.base.knowledgeId, f.base.commit)}`).content).toContain("base");
     expect(stale.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
       supports: [`F${f.fact}`], reason: "Probe the stale base." })).toContain("base is not the latest effective applicable revision");
     await runOperation(f, "right", 2, "update", `${operation} divergent result`);
@@ -132,10 +132,10 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
   f.store.setCurrentPath(f.session.id, "left", f.turn.id, "test-lineage");
   const trigger = createDreamerTrigger(f.memory, path, f.fact, 1);
   const result = await f.scenarios.run(f.memory, path, input => {
-    const trace = input.tools.find(tool => tool.name === "trace")!;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
-    trace.execute({ address: tagged(f.store, f.base.knowledgeId, f.base.commit), itemBudget: null });
-    trace.execute({ address: tagged(f.store, trigger.knowledgeId, trigger.commit), itemBudget: null, pageBudget: 8_000 });
+    read(tagged(f.store, f.base.knowledgeId, f.base.commit));
+    read(tagged(f.store, trigger.knowledgeId, trigger.commit));
     const first = JSON.parse(write.execute({ operations: [
       { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), text: "first successor", category: "constraint",
         scope: "project", supports: [], topics: [], reason: "First maintenance." },
@@ -148,7 +148,7 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
     expect(stale).not.toContain("skipped");
     if (!corrected) return success;
     const current = f.store.resolveVersionOrdinal(f.base.knowledgeId, Number(first.version.split("@v")[1]));
-    trace.execute({ address: first.version, itemBudget: null });
+    read(first.version);
     expect(write.execute({ operations: [{ op: "update", id: tagged(f.store, f.base.knowledgeId, current),
       text: "corrected successor", category: "constraint", scope: "project", supports: [], topics: [], reason: "Reread and correct." }], skipped: [] }))
       .toContain('"committed"');

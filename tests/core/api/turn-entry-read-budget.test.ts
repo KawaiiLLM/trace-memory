@@ -1,5 +1,5 @@
 // 79 acceptance, item 2 (Pi review of 5ee34b5): "Exact entry reads hydrate the whole Turn" --
-// `trace T<n>#E1` used to hydrate every occurrence of the Turn before picking the one requested
+// Exact `T<n>#E1` rendering used to hydrate every occurrence of the Turn before picking the one requested
 // ordinal. This pins the fix on a Turn with thousands of entries: an exact ordinal read hydrates
 // only that one row.
 import { mkdtempSync, rmSync } from "node:fs";
@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { countHydratedRows } from "../../perf/fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { TraceMemory } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 
 const branch = "main";
 let dir: string, dbPath: string, sessionId: number, turnId: number;
@@ -34,26 +34,16 @@ beforeAll(() => {
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-test("79 item 2 (Pi review of 5ee34b5): trace T#E1 on a 2,000-entry Turn hydrates one row", () => {
+test("79/118: exact /tm entry on a 2,000-entry Turn hydrates one row", () => {
   const memory = TraceMemory(dbPath, async () => { throw new Error("no model in this test"); });
   const counter = countHydratedRows();
   try {
-    const trace = memory.tools({ kind: "manual", sessionId, currentTurnId: turnId, branch })[0]!;
+    const files = memoryFiles(memory, { sessionId, branch, headTurnId: turnId });
     counter.reset();
-    const result = trace.execute({ address: `T${turnId}#E1` });
+    const result = files.read(`/tm/raw/S${sessionId}/T${turnId}#E1`).content;
     expect(result).toContain("entry 0");
     expect(counter.reads()).toBe(1);
   } finally { memory.close(); counter.restore(); }
 });
 
-test("79 item 2 (Pi review of 5ee34b5): trace T#E1..E5 on the same Turn hydrates exactly those five rows", () => {
-  const memory = TraceMemory(dbPath, async () => { throw new Error("no model in this test"); });
-  const counter = countHydratedRows();
-  try {
-    const trace = memory.tools({ kind: "manual", sessionId, currentTurnId: turnId, branch })[0]!;
-    counter.reset();
-    const result = trace.execute({ address: `T${turnId}#E1..E5` });
-    for (let i = 0; i < 5; i++) expect(result).toContain(`entry ${i}`);
-    expect(counter.reads()).toBe(5);
-  } finally { memory.close(); counter.restore(); }
-});
+// Ticket 118 rulings 6/7 remove public event-range reads; the exact-entry locality bound stays above.

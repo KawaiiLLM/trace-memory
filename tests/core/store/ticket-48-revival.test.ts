@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { skipRest } from "../../dreaming-skips.ts";
@@ -42,8 +42,8 @@ async function archive(f: ReturnType<typeof fixture>, item: { knowledgeId: numbe
   let archived!: { knowledgeId: number; commit: number };
   const result = await f.scenarios.run(f.memory, f.path, input => {
     const request = { fixture: "archive revival predecessor", sequence }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-    for (const value of [item, trigger]) trace.execute({ address: f.tag(value), itemBudget: null });
+    const write = input.tools.find(tool => tool.name === "memory")!;
+    for (const value of [item, trigger]) expect(memoryFiles(f.memory, f.path).read(`/tm/${f.tag(value)}`).content).toContain(f.tag(value));
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "archive", kind: "budget", id: f.tag(item), supports: [], reason: "Object ended" },
       { op: "archive", kind: "budget", id: f.tag(trigger), supports: [], reason: "Retire archive trigger" },
@@ -65,8 +65,8 @@ test("48: a trusted Dreamer revives an archived older identity through merge onl
   let revived!: { knowledgeId: number; commit: number };
   const result = await f.scenarios.run(f.memory, f.path, input => {
     const request = { fixture: "revive archived identity" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-    for (const value of [archived, returned, trigger]) trace.execute({ address: f.tag(value), itemBudget: null });
+    const write = input.tools.find(tool => tool.name === "memory")!;
+    for (const value of [archived, returned, trigger]) expect(memoryFiles(f.memory, f.path).read(`/tm/${f.tag(value)}`).content).toContain(f.tag(value));
     const operation = { op: "merge", id: f.tag(archived), absorb: [f.tag(returned)],
       text: "Object state after return", category: "constraint", scope: "project", supports: [], reason: "Object returned", topics: ["object"] };
     const receipt = JSON.parse(write.execute({ operations: [operation,
@@ -91,8 +91,8 @@ test("76: an archive base accepts a Dreamer revival through update as well as th
   const trigger = createDreamerTrigger(f.memory, f.path, f.fact, 2, "project");
   const result = await f.scenarios.run(f.memory, f.path, input => {
     const request = { fixture: "archive accepts update revival" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-    for (const value of [archived, active, trigger]) trace.execute({ address: f.tag(value), itemBudget: null });
+    const write = input.tools.find(tool => tool.name === "memory")!;
+    for (const value of [archived, active, trigger]) expect(memoryFiles(f.memory, f.path).read(`/tm/${f.tag(value)}`).content).toContain(f.tag(value));
     // 76: baseProblem's archived-base acceptance for a Dreamer revival now covers a plain update too,
     // not merge alone ("D reviews an archive... to revoke or adjust it, D updates the archived version").
     expect(write.execute({ operations: [{ op: "update", id: f.tag(archived),
@@ -112,8 +112,8 @@ test("64b/48: a later invalid operation rolls revival, links and revisions back 
   const trigger = createDreamerTrigger(f.memory, f.path, f.fact, 2, "project");
   const result = await f.scenarios.run(f.memory, f.path, input => {
     const request = { fixture: "atomic revival rollback" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-    for (const value of [archived, active, trigger]) trace.execute({ address: f.tag(value), itemBudget: null });
+    const write = input.tools.find(tool => tool.name === "memory")!;
+    for (const value of [archived, active, trigger]) expect(memoryFiles(f.memory, f.path).read(`/tm/${f.tag(value)}`).content).toContain(f.tag(value));
     const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(active.knowledgeId) };
     expect(write.execute({ operations: [
       { op: "merge", id: f.tag(archived), absorb: [f.tag(active)],

@@ -65,8 +65,9 @@ test("the main thread and its general-purpose and Explore subagents read /tm wit
 
   const S = `/tm/S${seed!}`;
   const subagent = (who: string) => [use(`${who}_read`, "Read", { file_path: "/tm/knowledge-all" }),
-    use(`${who}_grep`, "Grep", { pattern: "hashline", path: S }), use(`${who}_inherit`, "Read", { file_path: `${S}/knowledge` })];
-  const main = [use("main_read", "Read", { file_path: "/tm/K1" }), use("main_glob", "Glob", { pattern: "S*/T*/E*", path: "/tm" }),
+    use(`${who}_grep`, "Grep", { pattern: "hashline", path: S }), use(`${who}_inherit`, "Read", { file_path: `/tm/knowledge/S${seed!}` }),
+    use(`${who}_compact`, "Read", { file_path: `/tm/compact/S${seed!}` }), use(`${who}_item`, "Read", { file_path: "/tm/K1" })];
+  const main = [use("main_read", "Read", { file_path: "/tm/K1" }), use("main_glob", "Glob", { pattern: "S*/T*#E*", path: "/tm/raw" }),
     use("main_lines", "Grep", { pattern: "pnpm", path: "/tm/knowledge-all", output_mode: "content", "-i": true }),
     use("main_real", "Read", { file_path: join(cwd, "notes.txt") }), use("main_edit", "Edit", { file_path: "/tm/K1", old_string: "pnpm", new_string: "npm" }),
     use("main_gp", "Agent", { description: "memory read", subagent_type: "general-purpose", prompt: "GP-TASK: read Trace Memory under /tm.", run_in_background: false }),
@@ -124,22 +125,24 @@ test("the main thread and its general-purpose and Explore subagents read /tm wit
   const seen = results(requests);
   // Main thread: an exact knowledge read, a glob, content lines, and a real file through the real Read.
   expect(seen.get("main_read")?.text).toContain("Use pnpm, never npm.");
-  expect(seen.get("main_glob")?.text).toContain(`S${seed!}/T`);
+  expect(seen.get("main_glob")?.text).toContain(`/tm/raw/S${seed!}/T`);
   expect(seen.get("main_lines")?.text).toMatch(/\/tm\/K1@v1:1:.*Use pnpm, never npm\./);
   expect(seen.get("main_real")?.text).toContain("a real file in the working directory");
   expect(seen.get("main_edit")).toMatchObject({ isError: true, text: expect.stringContaining(MEMORY_READ_ONLY) });
   // Each subagent: the all-scope listing, a search reaching Raw, and the inheritance view.
   for (const who of ["gp", "explore"]) {
     expect(seen.get(`${who}_read`)?.text, who).toMatch(/\/tm\/K1@v1\s+\[constraint\/global\] Use pnpm, never npm\./);
-    expect(seen.get(`${who}_grep`)?.text, who).toContain(`${S}/T`);
-    expect(seen.get(`${who}_grep`)?.text, who).toMatch(/\/E1\b/);
-    expect(seen.get(`${who}_inherit`)?.text, who).toContain(`Session S${seed!}: a subagent inherits this session's knowledge by reading ${S}/knowledge.`);
+    expect(seen.get(`${who}_grep`)?.text, who).toContain(`/tm/raw/S${seed!}/T`);
+    expect(seen.get(`${who}_grep`)?.text, who).toMatch(/#E1\b/);
+    expect(seen.get(`${who}_inherit`)?.text, who).toContain("Use pnpm, never npm.");
+    expect(seen.get(`${who}_compact`)?.text, who).toContain("Use pnpm, never npm.");
+    expect(seen.get(`${who}_item`)?.text, who).toContain("Use pnpm, never npm.");
   }
   // The main thread received only each subagent's answer, never the files it read.
   const mainRequests = requests.filter(body => opening(body).includes("MAIN-PROMPT"));
   expect(seen.get("main_gp")?.text).toContain("GP-FINAL-ANSWER");
   expect(seen.get("main_explore")?.text).toContain("EXPLORE-FINAL-ANSWER");
-  expect(mainRequests.some(body => JSON.stringify(body.messages).includes(`${S}/knowledge.`))).toBe(false);
+  expect(mainRequests.some(body => JSON.stringify(body.messages).includes(`/tm/knowledge/S${seed!}`))).toBe(false);
   // No permission prompt for any /tm call; the real Read inside cwd needs none either.
   expect(prompts.filter(prompt => JSON.stringify(prompt.input).includes("/tm"))).toEqual([]);
   expect(result?.permission_denials ?? []).toEqual([]);

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory, type DreamingAgentInput, type NotingAgentInput } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles, type DreamingAgentInput, type NotingAgentInput } from "../../../src/core/api/index.ts";
 import type { KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -18,11 +18,6 @@ type Capture = {
   hasAbsorb?: boolean;
 };
 
-function completeRead(tool: { execute(input: unknown): string }, address: string) {
-  let page = tool.execute({ address, full: true, itemBudget: null });
-  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1])
-    page = tool.execute({ address: `cursor=${cursor}`, itemBudget: null });
-}
 
 test("47: head and rewind N material and eligibility ignore sibling-only and terminal-only state", async () => {
   const captures = new Map<string, Capture>();
@@ -134,11 +129,11 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
   const dreamed = await scenarios.run(memory, siblingPath, input => {
     const request = { fixture: "ticket-47 sibling maintenance" };
     input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!;
+    const read = (address: string) => memoryFiles(memory, input.reader!).read(`/tm/${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
     const addressed = [maintained, archived, survivor, victim, trigger]
       .map(item => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`);
-    for (const address of addressed) completeRead(trace, address);
+    for (const address of addressed) read(address);
     const change = { category: "open", scope: "project", topics: [] as string[], supports: [`F${siblingFact.id}`], reason: "sibling-only mutation" };
     maintenanceReceipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: addressed[0], ...change, text: "sibling-only update" },

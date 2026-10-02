@@ -53,6 +53,8 @@ export function parseTurnAddress(address: string): TurnAddress | null {
   return result;
 }
 export function parseKnowledgeAddress(address: string): { id: number; from?: number; to?: number; tag?: string; history: boolean; ordinal?: boolean } | null {
+  const history = /^K([1-9]\d*)\.history$/.exec(address);
+  if (history) return { id: positive(history[1]!), history: true };
   const tagged = /^K([1-9]\d*)#([a-z]{4,})$/.exec(address);
   if (tagged) return { id: positive(tagged[1]!), tag: tagged[2], history: false };
   const ordinal = /^K([1-9]\d*)@v([1-9]\d*)(?:\.\.v([1-9]\d*))?$/.exec(address);
@@ -109,7 +111,9 @@ export function publicTraceTargets(expression: string): string[] {
     }
     if (/^K\d/.test(target)) {
       const parsed = parseKnowledgeAddress(target);
-      if (!parsed || parsed.history || !parsed.tag && !parsed.ordinal && !/^K[1-9]\d*$/.test(target)) throw new Error(`invalid public trace address: ${target}`);
+      if (!parsed || parsed.history && !/^K[1-9]\d*\.history$/.test(target) ||
+          !parsed.history && !parsed.tag && !parsed.ordinal && !/^K[1-9]\d*$/.test(target))
+        throw new Error(`invalid public trace address: ${target}`);
       continue;
     }
     if (/^(?:F|R|S)[1-9]\d*$/.test(target)) continue;
@@ -119,9 +123,22 @@ export function publicTraceTargets(expression: string): string[] {
   return targets;
 }
 
+/** Layer-first exact reads; source citations continue to use parseTurnAddress. */
+export type MemoryViewPath = { layer: "knowledge" | "compact" | "facts" | "raw"; sessionId: number;
+  turnId?: number; entryOrdinal?: number; role?: "user" | "assistant" | "observation" };
+export function parseMemoryViewPath(path: string): MemoryViewPath | null {
+  const match = /^\/tm\/(knowledge|compact|facts|raw)\/S([1-9]\d*)(?:\/T([1-9]\d*))?(?:#E([1-9]\d*))?(?:@(user|assistant|observation))?$/.exec(path);
+  if (!match || (match[4] && !match[3]) || (match[1] !== "raw" && (match[4] || match[5]))) return null;
+  const ids = [match[2], match[3], match[4]].filter((id): id is string => id !== undefined).map(Number);
+  if (ids.some(id => !Number.isSafeInteger(id))) return null;
+  return { layer: match[1] as MemoryViewPath["layer"], sessionId: ids[0]!,
+    ...(match[3] ? { turnId: ids[1]! } : {}), ...(match[4] ? { entryOrdinal: ids[2]! } : {}),
+    ...(match[5] ? { role: match[5] as MemoryViewPath["role"] } : {}) };
+}
+
 /** 101: the root of Trace Memory's read-only virtual files, and what a write under it is told. */
 export const MEMORY_ROOT = "/tm";
-export const MEMORY_READ_ONLY = `${MEMORY_ROOT}/ is Trace Memory and read-only: record facts with the note tool and knowledge with the memory tool.`;
+export const MEMORY_READ_ONLY = `${MEMORY_ROOT}/ is read-only.`;
 
 /** 101: the `/tm` path a host tool argument names, or null for every other path. This is the one
  * prefix check a host runs before answering a tool call itself, which bypasses the host's own

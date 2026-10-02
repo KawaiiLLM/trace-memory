@@ -12,7 +12,7 @@ import { TEST_CC_VERSION } from "../support/cc-version.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
-for (const ending of ["success", "error", "cancel", "native rejection", "corrected native rejection", "direct rejection", "corrected direct rejection", "unreported rejection",
+for (const ending of ["success", "bare note", "error", "cancel", "native rejection", "corrected native rejection", "direct rejection", "corrected direct rejection", "unreported rejection",
   "native envelope rejection", "corrected native envelope rejection", "native memory envelope rejection", "corrected native memory envelope rejection"] as const)
   test(`04: real CC MCP/worker adapter holds note and memory through ${ending} terminal`, async () => {
     const directory = mkdtempSync(join(tmpdir(), "tm-92-cc-held-")); dirs.push(directory);
@@ -33,17 +33,26 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
         const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
         await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
         const client = new Client({ name: "atomic-test", version: "1" }); await client.connect(clientTransport);
+        const listed = await client.listTools();
+        expect(request.options.tools).toEqual(["Read"]);
+        expect(request.options.allowedTools).toEqual(["Read", ...listed.tools.map(tool => `mcp__trace_memory__${tool.name}`)]);
         try {
           yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
-            tools: ["mcp__trace_memory__note", "mcp__trace_memory__memory", "mcp__trace_memory__trace", "mcp__trace_memory__search"],
+            tools: request.options.allowedTools,
             plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+          if (ending === "bare note") {
+            yield { type: "assistant", message: { id: "unknown-response", content: [{ type: "tool_use", id: "unknown-note", name: "note",
+              input: { title: "Unregistered call", sources: "[T1#E1] User set a rule" } }] } };
+            yield { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "unknown-note", is_error: true,
+              content: "No such tool available: note" }] } };
+          }
           for (const [name, args] of [
             ["note", { title: "User rule", sources: "[T1#E1] User set a rule" }],
             ["memory", { op: "create", text: "Follow the rule", category: "constraint", scope: "session",
               topics: [], supports: ["$1"], reason: "User requirement" }],
           ] as const) {
             const id = `held-${name}`;
-            yield { type: "assistant", message: { id: `response-${name}`, content: [{ type: "tool_use", id, name, input: args }] } };
+            yield { type: "assistant", message: { id: `response-${name}`, content: [{ type: "tool_use", id, name: ccWorkerToolNames[name], input: args }] } };
             const result = await client.callTool({ name, arguments: args, _meta: { "claudecode/toolUseId": id } });
             replies.push(JSON.stringify(result));
             expect(result.isError).not.toBe(true);
@@ -64,7 +73,7 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
             }
             if (ending.includes("envelope")) {
               const inspect = {};
-              yield { type: "assistant", message: { id: "inspect-response", content: [{ type: "tool_use", id: "inspect", name: kind, input: inspect }] } };
+              yield { type: "assistant", message: { id: "inspect-response", content: [{ type: "tool_use", id: "inspect", name: ccWorkerToolNames[kind], input: inspect }] } };
               const inspected = await client.callTool({ name: kind, arguments: inspect, _meta: { "claudecode/toolUseId": "inspect" } });
               expect(JSON.stringify(inspected)).toContain(slot);
             }
@@ -72,7 +81,7 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
               const value = kind === "note" ? { title: "Corrected rule", sources: "[T1#E1] Corrected rule" }
                 : { op: "create", text: "Corrected rule", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "User requirement" };
               const corrected = { slot, ...value };
-              yield { type: "assistant", message: { id: "corrected-response", content: [{ type: "tool_use", id: "corrected-note", name: kind, input: corrected }] } };
+              yield { type: "assistant", message: { id: "corrected-response", content: [{ type: "tool_use", id: "corrected-note", name: ccWorkerToolNames[kind], input: corrected }] } };
               expect((await client.callTool({ name: kind, arguments: corrected, _meta: { "claudecode/toolUseId": "corrected-note" } })).isError).not.toBe(true);
             }
           }
@@ -107,8 +116,13 @@ for (const ending of ["success", "error", "cancel", "native rejection", "correct
       const result = await memory.noting({ ...path, model: "test", mode: "subagent", toolNames: ccWorkerToolNames });
       expect(replies, JSON.stringify(result)).toHaveLength(2);
       expect(replies[0]).toContain("held: $1"); expect(replies[1]).toContain("held: M1");
+      if (ending === "bare note") {
+        const receipt = JSON.parse(JSON.parse(replies[0]!).content[0].text);
+        expect(receipt.rejected).toEqual({});
+        expect(replies.join("\n")).not.toContain("drop");
+      }
       expect(reviewDelivered).toBe(ending !== "error" && ending !== "cancel");
-      const succeeds = ending === "success" || ending.startsWith("corrected");
+      const succeeds = ending === "success" || ending === "bare note" || ending.startsWith("corrected");
       expect(result.outcome).toBe(succeeds ? "success" : ending === "cancel" ? "cancelled"
         : ending === "error" || ending.startsWith("unreported") ? "failure" : "bounced");
       expect(memory.store.listSessionFacts(session.id)).toHaveLength(succeeds ? 1 : 0);

@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vitest";
-import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { runNative } from "../../../src/hosts/pi/native.ts";
+import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
 import { call, fixture, say } from "./native-fixture.ts";
 
 test("68: shared deadline fences a real Pi worker, releases its claim and permits the next run", async () => {
@@ -19,10 +20,13 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
   let task!: DreamingAgentInput;
   const memory = TraceMemory(":memory:", async input => {
     task = input as DreamingAgentInput;
+    if (!task.reader) throw new Error("Pi worker fixture requires the Core-frozen reader");
+    const files = memoryFiles(memory, task.reader);
     task.acknowledgeRequest();
     const work = runNative({ kind: "dreaming", mode: "subagent", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir,
       model: f.model as never, systemPrompt: task.prompt, task: task.text,
-      tools: task.tools, maxToolRounds: 0, signal: task.signal,
+      tools: task.tools, read: memoryReadTool(f.h.dir, path => files.read(path), { memoryOnly: true }),
+      maxToolRounds: 0, signal: task.signal,
       onRequest: () => {}, onProgress: () => {},
       passEnd: task.passEnd, reportRounds: task.reportRounds });
     nativeWork.push(work);

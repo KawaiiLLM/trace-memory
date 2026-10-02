@@ -400,7 +400,7 @@ function renderTraceSettings(input) {
 
 // src/core/model/address.ts
 var MEMORY_ROOT = "/tm";
-var MEMORY_READ_ONLY = `${MEMORY_ROOT}/ is Trace Memory and read-only: record facts with the note tool and knowledge with the memory tool.`;
+var MEMORY_READ_ONLY = `${MEMORY_ROOT}/ is read-only.`;
 function memoryPath(value) {
   if (typeof value !== "string" || !value.startsWith("/")) return null;
   const segments = [];
@@ -511,7 +511,7 @@ async function memoryFiles($, args) {
   return JSON.parse(run.stdout);
 }
 var failure = (error) => ({ deny: error instanceof Error ? error.message : String(error) });
-var listed = (listing) => listing.cut ? [...listing.lines, listing.cut] : listing.lines;
+var listed = (listing) => listing.lines;
 async function forkEvent($, session, verb, detail) {
   const result = await $.process.run(
     ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-fork", "--config", `${$.plugin.root}/cc.config.json`],
@@ -589,16 +589,17 @@ function watchNativeFork($, session, agent) {
 export const register = (on) => {
   on("tool.call", { tool: "Read" }, async ($, e, next) => {
     const path = memoryPath(e.file_path);
-    if (path === null) return next(e);
+    if (path === null || !/^\/tm\/(?:knowledge\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) return next(e);
     try {
-      const page = await memoryFiles($, ["read", path, String(e.offset ?? 1), ...e.limit === void 0 ? [] : [String(e.limit)]]);
-      const lines = listed(page);
+      const file = await memoryFiles($, ["read", path]);
+      if (!file.unbounded) throw new Error(`not a whole memory view: ${path}`);
+      const lines = file.content.split("\n");
       return { result: { type: "text", file: {
         filePath: e.file_path,
-        content: lines.join("\n"),
+        content: file.content,
         numLines: lines.length,
-        startLine: page.startLine,
-        totalLines: page.totalLines
+        startLine: 1,
+        totalLines: lines.length
       } } };
     } catch (error) {
       return failure(error);
@@ -610,22 +611,50 @@ export const register = (on) => {
     const mode = e.output_mode === "content" || e.output_mode === "count" ? e.output_mode : "files_with_matches";
     const context = e["-C"] ?? e.context;
     try {
+      if (e["-o"] || e.multiline || e.type) throw new Error(`unsupported virtual Grep input: ${path}`);
       const listing = await memoryFiles($, [
         "grep",
-        mode === "content" ? "-n" : mode === "count" ? "-c" : "-l",
+        mode === "content" ? e["-n"] === false ? "--no-line-numbers" : "-n" : mode === "count" ? "-c" : "-l",
         ...e["-i"] ? ["-i"] : [],
         ...context !== void 0 ? ["-C", String(context)] : [],
         ...e["-A"] !== void 0 ? ["-A", String(e["-A"])] : [],
         ...e["-B"] !== void 0 ? ["-B", String(e["-B"])] : [],
         ...e.glob ? ["--glob", e.glob] : [],
-        ...e.offset ? ["--offset", String(e.offset)] : [],
-        ...e.head_limit ? ["--limit", String(e.head_limit)] : [],
+        ...e.offset !== void 0 ? ["--offset", String(e.offset)] : [],
+        ...e.head_limit !== void 0 ? ["--limit", String(e.head_limit)] : [],
         "--",
         e.pattern,
         path
       ]);
       const lines = listed(listing);
-      return { result: mode === "files_with_matches" ? { mode, numFiles: listing.lines.length, filenames: lines } : { mode, numFiles: 0, filenames: [], content: lines.join("\n"), numLines: lines.length } };
+      const page = {
+        ...listing.appliedLimit !== void 0 && { appliedLimit: listing.appliedLimit },
+        ...listing.offset > 0 && { appliedOffset: listing.offset }
+      };
+      if (mode === "files_with_matches") return { result: {
+        mode,
+        numFiles: lines.length,
+        filenames: lines,
+        totalFiles: listing.total,
+        ...page
+      } };
+      if (mode === "count") return { result: {
+        mode,
+        numFiles: listing.countFiles,
+        filenames: [],
+        content: lines.join("\n"),
+        numMatches: listing.matches,
+        ...page
+      } };
+      return { result: {
+        mode,
+        numFiles: 0,
+        filenames: [],
+        content: lines.join("\n"),
+        numLines: lines.length,
+        totalLines: listing.total,
+        ...page
+      } };
     } catch (error) {
       return failure(error);
     }
@@ -635,7 +664,15 @@ export const register = (on) => {
     if (pattern === null) return next(e);
     try {
       const listing = await memoryFiles($, ["glob", pattern]);
-      return { result: { durationMs: 0, numFiles: listing.lines.length, filenames: listed(listing), truncated: !!listing.cut } };
+      const filenames = listing.lines.slice(0, 100);
+      return { result: {
+        durationMs: 0,
+        numFiles: filenames.length,
+        filenames,
+        truncated: listing.total > 100,
+        totalMatches: listing.total,
+        countIsComplete: true
+      } };
     } catch (error) {
       return failure(error);
     }

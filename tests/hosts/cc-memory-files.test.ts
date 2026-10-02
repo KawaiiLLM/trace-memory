@@ -4,7 +4,7 @@
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
@@ -25,7 +25,7 @@ beforeAll(async () => {
   register((name: string, ...args: any[]) => { if (name === "tool.call") hooks.set(args[0].tool, args.at(-1)); });
 });
 
-function host(reply: unknown = { lines: ["line one"], startLine: 1, totalLines: 1 }, exitCode = 0) {
+function host(reply: unknown = { content: "whole", unbounded: true }, exitCode = 0) {
   const run = vi.fn(async (_argv: string[]) => exitCode ? { exitCode, stdout: "", stderr: "Trace Memory CC: session S9 does not exist" }
     : { exitCode: 0, stdout: JSON.stringify(reply), stderr: "" });
   const next = vi.fn(async (_event: unknown) => ({ result: "native" }));
@@ -51,27 +51,47 @@ test("every path that is not exactly /tm reaches the real tool untouched and run
 });
 
 test("Read, Grep and Glob under /tm are answered by cc.cjs fs for this session, in their tools' own result shapes", async () => {
-  let h = host({ lines: ["a", "b"], startLine: 3, totalLines: 9, cut: "[lines 5-9 of 9 not shown; continue with offset=5]" });
-  expect(await hooks.get("Read")!(h.$, { tool: "Read", file_path: "/tm//K1/", offset: 3, limit: 2 }, h.next)).toEqual({ result: { type: "text",
-    file: { filePath: "/tm//K1/", content: "a\nb\n[lines 5-9 of 9 not shown; continue with offset=5]", numLines: 3, startLine: 3, totalLines: 9 } } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("read", "/tm/K1", "3", "2"));
+  let h = host();
+  const ordinary = { tool: "Read", file_path: "/tm//K1/", offset: 3, limit: 2 };
+  expect(await hooks.get("Read")!(h.$, ordinary, h.next)).toEqual({ result: "native" });
+  expect(h.next).toHaveBeenCalledExactlyOnceWith(ordinary);
+  expect(h.run).not.toHaveBeenCalled();
+  h = host({ content: "whole\nknowledge", unbounded: true });
+  expect(await hooks.get("Read")!(h.$, { tool: "Read", file_path: "/tm//knowledge/S2/T3" }, h.next)).toEqual({ result: { type: "text",
+    file: { filePath: "/tm//knowledge/S2/T3", content: "whole\nknowledge", numLines: 2, startLine: 1, totalLines: 2 } } });
+  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("read", "/tm/knowledge/S2/T3"));
   expect(h.next).not.toHaveBeenCalled();
+  h = host({ content: "whole\nentry", unbounded: true });
+  const exact = { tool: "Read", file_path: "/tm/raw/S2/T3#E4@assistant" };
+  expect(await hooks.get("Read")!(h.$, exact, h.next)).toMatchObject({ result: { file: { filePath: exact.file_path, content: "whole\nentry" } } });
+  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("read", exact.file_path));
 
-  h = host({ lines: ["/tm/S1/T2", "/tm/S1/T2/E4"] });
+  h = host({ lines: ["/tm/facts/S1/T2", "/tm/raw/S1/T2#E4"], total: 2, offset: 0 });
   expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "-hashline", path: "/tm/S1", "-i": true }, h.next))
-    .toEqual({ result: { mode: "files_with_matches", numFiles: 2, filenames: ["/tm/S1/T2", "/tm/S1/T2/E4"] } });
+    .toEqual({ result: { mode: "files_with_matches", numFiles: 2, totalFiles: 2, filenames: ["/tm/facts/S1/T2", "/tm/raw/S1/T2#E4"] } });
   expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "-l", "-i", "--", "-hashline", "/tm/S1"));
 
-  h = host({ lines: ["/tm/K1:1:x"], cut: "[more matching lines follow; continue with offset=1]" });
+  h = host({ lines: ["/tm/K1:1:x"], total: 11, offset: 4, appliedLimit: 10 });
   expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "x", path: "/tm", output_mode: "content", "-C": 2, "-A": 1,
     glob: "E*", offset: 4, head_limit: 10 }, h.next)).toEqual({ result: { mode: "content", numFiles: 0, filenames: [],
-    content: "/tm/K1:1:x\n[more matching lines follow; continue with offset=1]", numLines: 2 } });
+    content: "/tm/K1:1:x", numLines: 1, totalLines: 11, appliedLimit: 10, appliedOffset: 4 } });
   expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "-n", "-C", "2", "-A", "1", "--glob", "E*", "--offset", "4", "--limit", "10", "--", "x", "/tm"));
+  h = host({ lines: ["/tm/raw/S1/T2#E1:match"], total: 1 });
+  expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "match", path: "/tm/raw/S1", output_mode: "content", "-n": false }, h.next))
+    .toMatchObject({ result: { content: "/tm/raw/S1/T2#E1:match" } });
+  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "--no-line-numbers", "--", "match", "/tm/raw/S1"));
+  for (const unsupported of [{ "-o": true }, { multiline: true }, { type: "ts" }]) {
+    h = host();
+    expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "x", path: "/tm/raw/S1", ...unsupported }, h.next))
+      .toEqual({ deny: "unsupported virtual Grep input: /tm/raw/S1" });
+    expect(h.run).not.toHaveBeenCalled();
+  }
 
-  h = host({ lines: ["/tm/S1/T2", "/tm/S1/T3"] });
-  expect(await hooks.get("Glob")!(h.$, { tool: "Glob", pattern: "S1/T*", path: "/tm" }, h.next))
-    .toEqual({ result: { durationMs: 0, numFiles: 2, filenames: ["/tm/S1/T2", "/tm/S1/T3"], truncated: false } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("glob", "/tm/S1/T*"));
+  h = host({ lines: ["/tm/facts/S1/T2", "/tm/facts/S1/T3"], total: 2 });
+  expect(await hooks.get("Glob")!(h.$, { tool: "Glob", pattern: "S1/T*", path: "/tm/facts" }, h.next))
+    .toEqual({ result: { durationMs: 0, numFiles: 2, filenames: ["/tm/facts/S1/T2", "/tm/facts/S1/T3"], truncated: false,
+      totalMatches: 2, countIsComplete: true } });
+  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("glob", "/tm/facts/S1/T*"));
 });
 
 test("edits and writes under /tm are refused with a pointer to note and memory; a failed read is refused with its reason", async () => {
@@ -81,9 +101,9 @@ test("edits and writes under /tm are refused with a pointer to note and memory; 
     expect(await hooks.get(tool)!(h.$, { tool, ...event }, h.next)).toEqual({ deny: MEMORY_READ_ONLY });
     expect(h.next).not.toHaveBeenCalled();
   }
-  expect(MEMORY_READ_ONLY).toMatch(/note.*memory/);
+  expect(MEMORY_READ_ONLY).toContain("/tm/");
   const h = host(undefined, 1);
-  expect(await hooks.get("Read")!(h.$, { tool: "Read", file_path: "/tm/S9" }, h.next)).toEqual({ deny: "session S9 does not exist" });
+  expect(await hooks.get("Read")!(h.$, { tool: "Read", file_path: "/tm/knowledge/S9" }, h.next)).toEqual({ deny: "session S9 does not exist" });
   expect(h.next).not.toHaveBeenCalled();
 });
 
@@ -127,14 +147,22 @@ test("cc.cjs fs reads for the bound native session, accepts combined grep flags,
     return JSON.parse(written.join(""));
   };
   // The bound reader's own knowledge, and its session's Turns.
-  expect((await cli("read", "/tm/knowledge")).lines).toEqual([expect.stringMatching(/^\/tm\/K1  \[constraint\/project\] Hashline uses an LRU cache\.$/)]);
+  expect((await cli("read", "/tm/knowledge")).content).toMatch(/^\/tm\/K1  \[constraint\/project\] Hashline uses an LRU cache\.$/);
   const combined = await cli("grep", "-in", "HASHLINE", `/tm/S${core}`);
   expect(combined).toEqual(await cli("grep", "-n", "-i", "HASHLINE", `/tm/S${core}`));
   expect(combined.lines.length).toBeGreaterThan(1);
-  for (const line of combined.lines) expect(line).toMatch(new RegExp(`^/tm/S${core}/T\\d+(/E\\d+)?:\\d+:.*hashline`, "i"));
+  for (const line of combined.lines) expect(line).toMatch(new RegExp(`^/tm/(?:facts|raw)/S${core}/T\\d+(?:#E\\d+)?:\\d+:.*hashline`, "i"));
   expect((await cli("grep", "-ic", "hashline", `/tm/S${core}`)).lines.every((line: string) => /:\d+$/.test(line))).toBe(true);
-  expect((await cli("read", `/tm/S${core}/knowledge`)).lines).toContain(`Session S${core}: a subagent inherits this session's knowledge by reading /tm/S${core}/knowledge.`);
-  expect((await cli("glob", `/tm/S${core}/*/*`)).lines).toEqual([expect.stringMatching(new RegExp(`^/tm/S${core}/T\\d+/E1$`)), expect.stringMatching(/E2$/)]);
+  const withoutNumbers = await cli("grep", "--no-line-numbers", "-i", "hashline", `/tm/S${core}`);
+  expect(withoutNumbers.lines.length).toBeGreaterThan(0);
+  expect(withoutNumbers.lines.every((line: string) => !/:\d+:/.test(line))).toBe(true);
+  expect((await cli("read", `/tm/knowledge/S${core}`)).content).toContain("Hashline uses an LRU cache.");
+  const first = await cli("materialize", "/tm/K1");
+  const second = await cli("materialize", "/tm/K1");
+  expect(first.path).not.toBe(second.path);
+  expect(readFileSync(first.path, "utf8")).toBe(readFileSync(second.path, "utf8"));
+  expect(first.path.startsWith(join(config.stateDir, "rendered", native))).toBe(true);
+  expect((await cli("glob", `/tm/raw/S${core}/T*#E*`)).lines).toEqual([expect.stringMatching(new RegExp(`^/tm/raw/S${core}/T\\d+#E1$`)), expect.stringMatching(/#E2$/)]);
   await expect(cli("write", "/tm/K1")).rejects.toThrow(/read-only/);
   // A native session with no binding reads unbound: explicit addresses, and no visible knowledge.
   const unbound = async (...args: string[]) => {
@@ -143,7 +171,7 @@ test("cc.cjs fs reads for the bound native session, accepts combined grep flags,
     try { await runCcCommand(["fs", "--config", configPath, "--session", "never-bound", ...args]); } finally { spy.mockRestore(); }
     return JSON.parse(written.join(""));
   };
-  expect((await unbound("read", "/tm/knowledge")).lines).toEqual(["(empty)"]);
-  expect((await unbound("read", "/tm/K1")).lines.join("\n")).toContain("Hashline uses an LRU cache.");
+  expect((await unbound("read", "/tm/knowledge")).content).toBe("(empty)");
+  expect((await unbound("read", "/tm/K1")).content).toContain("Hashline uses an LRU cache.");
   expect(digest()).toBe(before);
 });

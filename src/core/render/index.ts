@@ -1,5 +1,6 @@
 import { diffArrays } from "diff";
-import { canonicalToolNames, renderToolNames, type ToolNames } from "../prompts/tool-names.ts";
+import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
+import { readingGuide } from "./reading-guide.ts";
 import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup } from "../model/index.ts";
 import type { KnowledgeCategory, KnowledgeRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
@@ -14,7 +15,7 @@ export { tokens, tokensJoined, JoinedTokens };
 /** The cap on one Fact or Knowledge body written by a worker, in `tokens()` units. */
 export const WORKER_ITEM_TOKENS = 1_000;
 
-export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean; includeThinking?: boolean; traceName?: string }
+export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean; includeThinking?: boolean; rawTurn?: boolean }
 export interface Rendered { content: string; receipts: string[] }
 
 /** Ticket 30 "One bounded Raw entry view": the three numbers of the one profile. `E` is the most one
@@ -391,7 +392,7 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
   const part = options.part;
   // A legacy summary is readable, but has no native entry or source address. Never route it
   // through Raw rendering, which would fabricate a citable-looking identity.
-  if (turn.kind === "compaction" && turn.assistantText !== null && !options.selector && !options.blocks
+  if (turn.kind === "compaction" && turn.assistantText !== null && !options.rawTurn && !options.selector && !options.blocks
     && (!part || part === "assistant")) return { content: renderSemantic(
       `[T${turn.id}] compaction summary (not Raw evidence): `, turn.assistantText, "", options.full ? Infinity : profile.entryTokens), receipts: [] };
   // The check agrees with the parts the assembly displays, not with what a fact may cite (finding 3).
@@ -415,7 +416,7 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
     }
   }
   const receipts = omittedCalls ? [`T${turn.id}: ${omittedCalls} omitted calls (including partial calls)`,
-    ...[...omitted].map(address => `expand: ${options.traceName ?? "trace"}(${JSON.stringify({ address, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)] : [];
+    ...[...omitted].map(address => `/tm/raw/S${turn.sessionId}/${address}`)] : [];
   return { content: lines.join("\n"), receipts };
 }
 
@@ -765,19 +766,15 @@ export const expandList = (addresses: string[]): string => addresses.length <= E
   : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 
 export const KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
-/** How a session's reader learns the /tm files exist. Ruled 2026-09-29: keep `trace` and only add
- * this hint; the agent picks whichever access is more convenient. */
-const MEMORY_FILES_TEMPLATE = "Memory is also readable as files with your read and grep tools: /tm/<address> shows what {{tool.trace}}(<address>) shows (e.g. /tm/K12, /tm/F123, /tm/T45#E2); grep over /tm searches full text beyond compressed views; /tm lists the layout.";
-export const MEMORY_FILES_NOTICE = renderToolNames(MEMORY_FILES_TEMPLATE, canonicalToolNames);
-/** 101 (ruled): a session's own knowledge header also names the session and the path a subagent
- * inherits its knowledge from, so a main agent can pass one line to a subagent. */
-export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE, toolNames: ToolNames = canonicalToolNames): string =>
-  `${recencyNotice}\nSession S${sessionId}: a subagent inherits this session's knowledge by reading /tm/S${sessionId}/knowledge.\n${renderToolNames(MEMORY_FILES_TEMPLATE, toolNames)}`;
+export const MEMORY_FILES_NOTICE = readingGuide(undefined, canonicalToolNames);
+/** Identity/recency framing only; the reading guide belongs to the complete injection once. */
+export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE, _toolNames: ToolNames = canonicalToolNames): string =>
+  `${recencyNotice}\nSession S${sessionId}.`;
 
 export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision[]): string[] =>
   KNOWLEDGE_CATEGORIES.flatMap(category => {
     const members = omitted.filter(value => knowledgeCategoryGroup(value.revision.category) === category);
-    return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map(value => `K${value.knowledge.id}`))}`] : [];
+    return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map(value => `/tm/K${value.knowledge.id}`))}`] : [];
   });
 
 interface RenderedKnowledgeItem { category: KnowledgeCategory; text: string; id: number; commit: number; size: number }
@@ -901,7 +898,7 @@ export function budgetFacts(facts: Fact[], line: (fact: Fact) => string, remaini
   const dropped = facts.length - selected.length;
   // 29a: `factIds` is read after the trim loop above, so it is what this block really carries.
   return { recent, factIds: selected.map((f) => f.id),
-    receipts: dropped ? [`omitted ${dropped} older facts; expand: ${expandList(facts.slice(selected.length).map((f) => `F${f.id}`))}`] : [] };
+    receipts: dropped ? [`omitted ${dropped} older facts; expand: ${expandList(facts.slice(selected.length).map((f) => `/tm/F${f.id}`))}`] : [] };
 }
 
 // Tags delimit blocks for the model; the lines inside are trace lines byte for byte, never escaped.

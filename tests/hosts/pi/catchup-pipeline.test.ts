@@ -3,6 +3,7 @@ import type { JsonObject } from "@earendil-works/pi-ai";
 import { host, reply, notingFact, type Reply } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
 
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const dreaming = (c: { systemPrompt?: string }) => c.systemPrompt?.startsWith("# Dreamer");
@@ -133,7 +134,7 @@ test("86: ordinary D partial write survives terminal failure without a completio
   let submitted = false, waiting = false;
   try {
     await h.turn(); const initial = seed(h), store = h.memory.store;
-    const initialHandle = readHandle(h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }), `K${initial.knowledgeId}`);
+    const initialHandle = readHandle(address => memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(address).content, `K${initial.knowledgeId}`);
     const eligible = vi.spyOn(h.memory, "taskEligibility");
     h.provider(async c => {
       if (!dreaming(c)) return notingFact(c);

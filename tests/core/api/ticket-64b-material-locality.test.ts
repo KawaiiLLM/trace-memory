@@ -3,8 +3,8 @@ import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-d
 import { skipRest } from "../../dreaming-skips.ts";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
-import { drainTrace } from "../../trace-pages.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
 
 const at = "2026-09-20T12:00:00Z";
 
@@ -70,12 +70,11 @@ async function diverge(f: Fixture, branch: "left" | "right", triggerEntryId: num
   const trigger = createDreamerTrigger(f.memory, path, f.fact, f.memory.store.listKnowledgeRevisions().length + 1, "project");
   const result = await f.scenarios.run(f.memory, path, input => {
     const request = { branch }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
-    drainTrace({ trace: (next, options) => trace.execute({ address: next, ...options }) },
-      trace.execute({ address: tag(f.base.knowledgeId, f.base.commit), full: true, itemBudget: null }));
-    trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null });
+    expect(read(tag(f.base.knowledgeId, f.base.commit))).toContain("current concise parent");
+    read(tag(trigger.knowledgeId, trigger.commit));
     const receipt = write.execute({ operations: [
       { op: "update", id: tag(f.base.knowledgeId, f.base.commit), text, category: "constraint", scope: "project",
         supports: [`F${f.branchFacts[branch]}`], topics: [], reason: `${branch} evidence-driven divergence.` },

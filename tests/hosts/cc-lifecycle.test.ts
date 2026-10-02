@@ -1690,7 +1690,7 @@ test("112: scheduler freezes actual Core Noter instructions and lifecycle emits 
     expect(frozen.forkPrompt).toContain(ccPluginToolNames.note);
     expect(frozen.forkPrompt).toContain(ccPluginToolNames.memory);
     expect(frozen.forkPrompt).toContain("ToolSearch");
-    expect(frozen.tools.map(tool => tool.name)).toEqual(["trace", "search", "note", "memory"]);
+    expect(frozen.tools.map(tool => tool.name)).toEqual(["search", "note", "memory"]); // 118 removes public trace.
     const pluginName = JSON.parse(readFileSync(new URL("../../plugin/.claude-plugin/plugin.json", import.meta.url), "utf8")).name;
     const serverName = Object.keys(JSON.parse(readFileSync(new URL("../../plugin/.mcp.json", import.meta.url), "utf8")))[0]!;
     const registered = new CcForegroundTools(coordinator).list();

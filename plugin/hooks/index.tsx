@@ -78,8 +78,8 @@ async function nativeCompaction($: any, e: any, next: any, session: string) {
   }
 }
 
-// 101: one `/tm` operation through `cc.cjs fs`, for this native session's reader. An answer made here
-// skips Claude Code's permission and path checks, so every caller first checks the exact `/tm` prefix.
+// Virtual grep/glob and the two whole-knowledge views use the bound native reader. Other Read
+// calls are rewritten by the command PreToolUse hook, then paged by Claude Code's own Read.
 async function memoryFiles($: any, args: string[]): Promise<any> {
   const root = $.plugin.root, session = await $.session.id();
   const run = await $.process.run(["node", `${root}/dist/cc.cjs`, "fs", "--config", `${root}/cc.config.json`, "--session", session, ...args]);
@@ -87,7 +87,7 @@ async function memoryFiles($: any, args: string[]): Promise<any> {
   return JSON.parse(run.stdout);
 }
 const failure = (error: unknown) => ({ deny: error instanceof Error ? error.message : String(error) });
-const listed = (listing: { lines: string[]; cut?: string }) => listing.cut ? [...listing.lines, listing.cut] : listing.lines;
+const listed = (listing: { lines: string[] }) => listing.lines;
 async function forkEvent($: any, session: string, verb: string, detail: Record<string, unknown>): Promise<boolean> {
   const result = await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-fork", "--config", `${$.plugin.root}/cc.config.json`],
     { stdin: JSON.stringify({ session_id: session, verb, ...detail }) });
@@ -150,16 +150,17 @@ function watchNativeFork($: any, session: string, agent: string): void {
 }
 
 export const register = (on: any) => {
-  // 101: Read, Grep and Glob under /tm are Trace Memory's read-only files; every other path reaches the
-  // real tool through `next` untouched. Edit, Write and NotebookEdit under /tm are refused.
+  // Knowledge inheritance and exact Raw entries are returned whole in the main session. Native
+  // Read owns every other /tm page and reads its own immutable backing-file snapshot.
   on("tool.call", { tool: "Read" }, async ($: any, e: any, next: any) => {
     const path = memoryPath(e.file_path);
-    if (path === null) return next(e);
+    if (path === null || !/^\/tm\/(?:knowledge\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) return next(e);
     try {
-      const page = await memoryFiles($, ["read", path, String(e.offset ?? 1), ...(e.limit === undefined ? [] : [String(e.limit)])]);
-      const lines = listed(page);
-      return { result: { type: "text", file: { filePath: e.file_path, content: lines.join("\n"), numLines: lines.length,
-        startLine: page.startLine, totalLines: page.totalLines } } };
+      const file = await memoryFiles($, ["read", path]);
+      if (!file.unbounded) throw new Error(`not a whole memory view: ${path}`);
+      const lines = file.content.split("\n");
+      return { result: { type: "text", file: { filePath: e.file_path, content: file.content,
+        numLines: lines.length, startLine: 1, totalLines: lines.length } } };
     } catch (error) { return failure(error); }
   });
   on("tool.call", { tool: "Grep" }, async ($: any, e: any, next: any) => {
@@ -168,13 +169,20 @@ export const register = (on: any) => {
     const mode = e.output_mode === "content" || e.output_mode === "count" ? e.output_mode : "files_with_matches";
     const context = e["-C"] ?? e.context;
     try {
-      const listing = await memoryFiles($, ["grep", mode === "content" ? "-n" : mode === "count" ? "-c" : "-l", ...(e["-i"] ? ["-i"] : []),
+      if (e["-o"] || e.multiline || e.type) throw new Error(`unsupported virtual Grep input: ${path}`);
+      const listing = await memoryFiles($, ["grep", mode === "content" ? e["-n"] === false ? "--no-line-numbers" : "-n" : mode === "count" ? "-c" : "-l", ...(e["-i"] ? ["-i"] : []),
         ...(context !== undefined ? ["-C", String(context)] : []), ...(e["-A"] !== undefined ? ["-A", String(e["-A"])] : []),
         ...(e["-B"] !== undefined ? ["-B", String(e["-B"])] : []), ...(e.glob ? ["--glob", e.glob] : []),
-        ...(e.offset ? ["--offset", String(e.offset)] : []), ...(e.head_limit ? ["--limit", String(e.head_limit)] : []), "--", e.pattern, path]);
+        ...(e.offset !== undefined ? ["--offset", String(e.offset)] : []), ...(e.head_limit !== undefined ? ["--limit", String(e.head_limit)] : []), "--", e.pattern, path]);
       const lines = listed(listing);
-      return { result: mode === "files_with_matches" ? { mode, numFiles: listing.lines.length, filenames: lines }
-        : { mode, numFiles: 0, filenames: [], content: lines.join("\n"), numLines: lines.length } };
+      const page = { ...(listing.appliedLimit !== undefined && { appliedLimit: listing.appliedLimit }),
+        ...(listing.offset > 0 && { appliedOffset: listing.offset }) };
+      if (mode === "files_with_matches") return { result: { mode, numFiles: lines.length, filenames: lines,
+        totalFiles: listing.total, ...page } };
+      if (mode === "count") return { result: { mode, numFiles: listing.countFiles, filenames: [],
+        content: lines.join("\n"), numMatches: listing.matches, ...page } };
+      return { result: { mode, numFiles: 0, filenames: [], content: lines.join("\n"),
+        numLines: lines.length, totalLines: listing.total, ...page } };
     } catch (error) { return failure(error); }
   });
   on("tool.call", { tool: "Glob" }, async ($: any, e: any, next: any) => {
@@ -182,7 +190,9 @@ export const register = (on: any) => {
     if (pattern === null) return next(e);
     try {
       const listing = await memoryFiles($, ["glob", pattern]);
-      return { result: { durationMs: 0, numFiles: listing.lines.length, filenames: listed(listing), truncated: !!listing.cut } };
+      const filenames = listing.lines.slice(0, 100);
+      return { result: { durationMs: 0, numFiles: filenames.length, filenames, truncated: listing.total > 100,
+        totalMatches: listing.total, countIsComplete: true } };
     } catch (error) { return failure(error); }
   });
   on("tool.call", { tool: "Edit" }, ($: any, e: any, next: any) => memoryPath(e.file_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });

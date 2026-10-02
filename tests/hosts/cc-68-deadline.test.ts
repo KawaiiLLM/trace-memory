@@ -78,8 +78,9 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
         await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
         client = new Client({ name: "deadline-test", version: "1" }); await client.connect(clientTransport);
         const listed = await client.listTools();
-        expect(request.options.allowedTools).toEqual(listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`));
-        expect(new Set(request.options.allowedTools)).toEqual(new Set([ccWorkerToolNames.trace, ccWorkerToolNames.search, ccWorkerToolNames.memory, ccWorkerToolNames.check]));
+        expect(request.options.tools).toEqual(["Read"]);
+        expect(request.options.allowedTools).toEqual(["Read", ...listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`)]);
+        expect(new Set(request.options.allowedTools)).toEqual(new Set(["Read", ccWorkerToolNames.search, ccWorkerToolNames.memory, ccWorkerToolNames.check]));
         expect(request.options.systemPrompt).toBe(loadPrompt("dreaming.md", ccWorkerToolNames));
         expect(listed.tools.find(tool => tool.name === "check")?.description).not.toContain("{{tool.");
         yield init(directory, request.options.allowedTools, "timed-child");
@@ -108,7 +109,7 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
 
   const worker = new CcAgentWorker(config, { query: fakeQuery });
   const providerRequest = { host: "cc-deadline-test" };
-  const memory = TraceMemory(":memory:", raw => {
+  const memory = TraceMemory(config.dbPath, raw => {
     const task = raw as CcAgentTask; task.reportRequest(providerRequest); task.reportProgress?.({ request: providerRequest });
     return worker.run(task, 0);
   }, config.coreConfig);
@@ -132,7 +133,8 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
     vi.useRealTimers();
     deadlineRun = false;
     const passEnd = vi.fn(() => "Review this run once.");
-    const nextTask = { kind: "noting", text: "next", prompt: "next", tools: [], acknowledgeRequest: vi.fn(), passEnd } as unknown as NotingAgentInput;
+    const nextTask = { kind: "noting", text: "next", prompt: "next", tools: [], acknowledgeRequest: vi.fn(), passEnd,
+      reader: { ...target, projectId: memory.store.getSession(session.id)!.projectId } } as unknown as NotingAgentInput;
     const next = await worker.run(nextTask, 0);
     expect(next).toMatchObject({ outcome: "success", output: "healthy" });
     expect(passEnd).toHaveBeenCalledTimes(1);

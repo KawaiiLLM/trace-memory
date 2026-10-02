@@ -48,7 +48,7 @@ test("29a case 3 (injection identity): the injected message carries exactly the 
     expect(carrierOf(result.message).supplied.knowledgeCommitIds).toEqual([commit]);
     const entry = customMessages(h)[0]!;
     expect(carrierOf(entry).db).toBe(h.dbPath);
-    expect(carrierOf(entry).supplied).toEqual({ entries: [], factIds: [], knowledgeCommitIds: [commit], knowledgeTokens: tokens(result.message.content) });
+    expect(carrierOf(entry).supplied).toEqual({ entries: [], factIds: [], knowledgeCommitIds: [commit], knowledgeTokens: tokens(result.message.content.split("\n\n").slice(1).join("\n\n")) });
     expect(view(h).raw.get(entry.id)).toBeUndefined(); // our own injection is not a source entry
     // The injection happens once: the next prompt returns no message and therefore no second carrier.
     await h.answer(); await h.emit("agent_settled"); await h.drain();

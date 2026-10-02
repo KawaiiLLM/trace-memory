@@ -3,6 +3,7 @@ import { expandList, knowledgeBlockParts, sessionKnowledgeNotice } from "../../c
 import { transportItemText, type TransportItem } from "../../core/render/material.ts";
 import { tokens } from "../../core/render/tokens.ts";
 import { ccPluginToolNames } from "./tool-names.ts";
+import { readingGuide } from "../../core/render/reading-guide.ts";
 
 export const CC_SLICE_COUNT = 24;
 export const CC_SLICE_LIMIT = 10_000;
@@ -13,9 +14,8 @@ export const CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segmen
 export const ccKnowledgeHeader = (binding: CcVisibleBinding): string => binding.coreSession === null
   ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE, ccPluginToolNames);
 
-const address = (item: TransportItem): string => item.kind === "knowledge" ? item.address
-  : item.kind === "fact" ? `F${item.factId}` : item.kind === "raw" ? item.address
-  : item.kind === "state" ? item.address : "";
+const address = (item: TransportItem, sessionId: number | null): string => item.kind === "knowledge" || item.kind === "state" ? `/tm/${item.address}`
+  : item.kind === "fact" ? `/tm/F${item.factId}` : item.kind === "raw" ? `/tm/raw/S${sessionId}/${item.address}` : "";
 
 /** Transport selection only: core has already selected and rendered whole items. Pack their
  * unchanged texts under the native per-hook limit; never identify members from arbitrary prose.
@@ -26,7 +26,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   const omitted: string[] = [];
   let pendingRaw = 0, pendingFacts = 0, pendingFactTokens = 0, omittedKnowledge = false;
   const omit = (item: TransportItem): void => {
-    omitted.push(address(item));
+    omitted.push(address(item, binding.coreSession));
     if (item.kind === "knowledge" || item.kind === "state") omittedKnowledge = true;
     if (item.kind === "raw" && item.pending) pendingRaw++;
     if (item.kind === "fact" && item.pending) { pendingFacts++; pendingFactTokens += tokens(item.text); }
@@ -43,6 +43,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     slice: [index, CC_SLICE_COUNT] as [number, number],
   });
   const header = ccKnowledgeHeader(binding);
+  const guide = readingGuide(binding.coreSession ?? undefined, ccPluginToolNames);
   const itemText = (item: TransportItem) => transportItemText(item, header);
   // One exact assembly for trial character size, Knowledge cost and emitted bytes. Trials do not
   // compute digests; each final carrier has one knowledge list with its own domain framing.
@@ -52,6 +53,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     const knowledge = knowledgeBlockParts(members.filter(item => item.kind === "knowledge")
       .map(item => ({ category: "items", text: item.text })), header);
     const sections = [
+      ...(index === 0 ? [[guide]] : []),
       ...members.filter(item => item.kind === "state").map(item => [itemText(item)]),
       ...(knowledge.length ? [knowledge] : []),
       ...members.filter(item => item.kind !== "state" && item.kind !== "knowledge").map(item => [itemText(item)]),
@@ -88,7 +90,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     if (tryPlace(item)) continue;
     const count = item.text.match(/omitted (\d+)/)?.[1];
     const expansion = item.text.split("expand: ")[1];
-    const addresses = expansion?.match(/(?:K\d+(?:@v\d+)?|F\d+|T\d+#E\d+)/g) ?? [];
+    const addresses = expansion?.match(/\/tm\/[^\s,]+/g) ?? [];
     const compact: TransportItem = { kind: "receipt", knowledge: item.knowledge,
       text: `omitted ${count ?? "1"} ${count ? "items" : "receipt"}; expand: ${expandList(addresses)}` };
     if (!addresses.length || !tryPlace(compact)) throw new Error("CC core omission receipt has no usable expansion address");
@@ -168,9 +170,9 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   return slots.map((slot, index) => {
     // The existing segment number plus local position establishes one logical chronology,
     // independent of native completion order. No later knowledge fills an earlier hole.
-    return slot.items.length || index === 0 && notice
+    return slot.items.length || index === 0 && (notice || slots.some(slot => slot.items.length))
       ? { hookSpecificOutput: { hookEventName: "SessionStart" as const,
-          additionalContext: slot.items.length ? encode(slot.items, index) : "" },
+          additionalContext: slot.items.length || index === 0 && slots.some(slot => slot.items.length) ? encode(slot.items, index) : "" },
           ...(index === 0 && notice ? { systemMessage: notice } : {}) }
       : null;
   });

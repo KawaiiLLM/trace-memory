@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, linkSync, unlinkSyn
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { createGrepToolDefinition, createReadToolDefinition, SettingsManager, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createGrepToolDefinition, createReadToolDefinition, SettingsManager, truncateHead, truncateLine, formatSize, DEFAULT_MAX_BYTES, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { checkpointReadiness } from "./native.ts";
 import { contextComposition } from "./context-composition.ts";
@@ -12,6 +12,7 @@ import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
 import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 import { agentDirectory, configuration, configuredMode, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
+import { memoryReadTool } from "./memory-files.ts";
 import { TraceMemory, cacheMissWarning, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
@@ -186,7 +187,7 @@ export default function (pi: ExtensionAPI) {
     // 24a review (2026-09-09): a worker's tool execution is the boundary at which its bound writer
     // commits (`note`, `memory`), so the footer is re-read after each one — the counts then show the
     // committed progress while the trailing reply is still in flight and the running indicator stays.
-    // Reads (`trace`, `search`) refresh too, cheaply; nothing polls and nothing decrements early.
+    // Searches refresh too, cheaply; nothing polls and nothing decrements early.
     const tools = input.tools.map(tool => ({ ...tool, execute: (raw: unknown) => { try { return tool.execute(raw); } finally { showSpend(callContext); } } }));
     // Everything the run needs, resolved now and frozen: the model, the runs directory, the tool
     // round cap and the fork launch cannot be re-read by a run already in flight, and this host
@@ -194,6 +195,10 @@ export default function (pi: ExtensionAPI) {
     return runWorker(input, {
       model: model as unknown as WorkerModel | undefined, checkCapacity, tools,
       runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
+      read: memoryReadTool(callContext.cwd, path => {
+        if (!input.reader) throw new Error("Memory worker read requires its frozen reader");
+        return memoryFiles(memory, input.reader).read(path);
+      }, { memoryOnly: true }),
       maxToolRounds: memory.config[input.kind].maxToolRounds,
       // 27b/27c: a task carrying a reason was admitted as a subagent — the configured model, that
       // model's capacity, fresh material — because something already refused its fork. It is offered
@@ -523,6 +528,10 @@ export default function (pi: ExtensionAPI) {
     if (base && typeof measure?.tokens !== "number")
       return reroute({ reason: `${phase} capacity: Pi reports an unknown context measure for this session, so this task has no fork base` });
     const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM, prefixTokens: measure?.tokens ?? 0 };
+    // Fresh Pi children expose the native Read definition via memoryReadTool. Price that same
+    // description and schema beside Core's memory tools; a fork already carries its captured Read.
+    const { name, description, parameters } = createReadToolDefinition(context.cwd);
+    const nativeReadTool = effective === "subagent" ? { name, description, parameters } : undefined;
     // 29b: the second half of a fork's initial state, beside the measure above — what this session's
     // selected context actually holds, read through the 29a memo and frozen with the task. Only a task
     // that will run with an inherited context gets one: an explicit subagent and a fork re-admitted as
@@ -533,6 +542,7 @@ export default function (pi: ExtensionAPI) {
       ...(inherited ? { visible: inherited } : {}),
       subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
+      ...(nativeReadTool ? { nativeReadTool } : {}),
       ...(options.boundary ? { boundary: options.boundary } : {}),
       // 27c: the refused attempt's gate result, for a refusal that recorded no run of its own.
       // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
@@ -1319,36 +1329,58 @@ export default function (pi: ExtensionAPI) {
   // reader, and hand every other path to Pi's own tool unchanged. Edits and writes under /tm/ are refused.
   const files = () => memoryFiles(memory, state.sessionId ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head ?? null,
     projectId: state.projectId } : { projectId: state.projectId });
-  const listed = (listing: { lines: string[]; cut?: string }) => listing.lines.length ? [...listing.lines, ...(listing.cut ? [listing.cut] : [])].join("\n") : "No matches found";
   // Same settings source Pi's own agent session builds its read tool from (`_buildRuntime` reads
   // `settingsManager.getImageAutoResize()`), so a delegated `/tm`-external read resizes images exactly
   // as Pi's own read would.
   const autoResizeImages = SettingsManager.create(process.cwd(), agentDir).getImageAutoResize();
-  const builtinRead = createReadToolDefinition(process.cwd(), { autoResizeImages }), builtinGrep = createGrepToolDefinition(process.cwd());
-  const memoryTools = new Map([["read", `${builtinRead.description} Paths under /tm/ are Trace Memory, read-only; read /tm for its layout.`],
-    ["grep", `${builtinGrep.description} Under /tm/ (Trace Memory, read-only) it lists matching files by default and searches Raw entries in full.`]]);
-  pi.registerTool({ ...builtinRead, description: memoryTools.get("read")!,
+  const builtinRead = memoryReadTool(process.cwd(), path => files().read(path), { autoResizeImages }), builtinGrep = createGrepToolDefinition(process.cwd());
+  pi.registerTool({ ...builtinRead,
     async execute(id: string, params: ReadToolInput, signal: AbortSignal | undefined, update: never, context: ExtensionContext) {
       const path = memoryPath(params.path);
       if (path === null) return builtinRead.execute(id, params, signal, update, context);
       ensure(context);
-      const page = files().read(path, params.offset, params.limit);
-      return result([...page.lines, ...(page.cut ? [page.cut] : [])].join("\n"));
+      return builtinRead.execute(id, params, signal, update, context);
     } } as ToolDefinition);
   const grepMode = { type: "string", enum: ["files_with_matches", "content", "count"],
     description: "Only under /tm/: files_with_matches (default) lists matching files; content shows path:line:text; count shows matches per file." };
   pi.registerTool({ ...builtinGrep,
-    description: memoryTools.get("grep")!,
-    // A plain JSON schema, as the memory tools use: Pi's own schema plus the two /tm/-only fields.
-    parameters: ((schema: { properties: Record<string, unknown> }) => ({ ...schema, properties: { ...schema.properties, output_mode: grepMode,
-      offset: { type: "number", description: "Only under /tm/: output lines to skip, to continue a cut result." } } }))(JSON.parse(JSON.stringify(builtinGrep.parameters))),
-    async execute(id: string, raw: GrepToolInput & { output_mode?: MemoryGrepMode; offset?: number }, signal: AbortSignal | undefined, update: never, context: ExtensionContext) {
-      const { output_mode: mode, offset, ...params } = raw;
+    // Pi's own schema plus the /tm-only output mode.
+    parameters: ((schema: { properties: Record<string, unknown> }) => ({ ...schema, properties: { ...schema.properties, output_mode: grepMode } }))(JSON.parse(JSON.stringify(builtinGrep.parameters))),
+    async execute(id: string, raw: GrepToolInput & { output_mode?: MemoryGrepMode }, signal: AbortSignal | undefined, update: never, context: ExtensionContext) {
+      const { output_mode: mode = "files_with_matches", ...params } = raw;
       const path = memoryPath(params.path);
       if (path === null) return builtinGrep.execute(id, params, signal, update, context);
       ensure(context);
-      return result(listed(files().grep(params.pattern, path, { mode, ignoreCase: params.ignoreCase, literal: params.literal,
-        before: params.context, after: params.context, glob: params.glob, limit: params.limit, offset })));
+      const effectiveLimit = Math.max(1, params.limit ?? 100);
+      const contextLines = Math.max(0, params.context ?? 0);
+      const lines: string[] = [];
+      let matches = 0, linesTruncated = false;
+      outer: for (const file of files().grep(params.pattern, path, { ignoreCase: params.ignoreCase, literal: params.literal, glob: params.glob })) {
+        signal?.throwIfAborted();
+        if (mode !== "content") {
+          lines.push(mode === "count" ? `${file.path}${file.mark ?? ""}:${file.hits.length}` : file.path + (file.mark ?? ""));
+          if (++matches >= effectiveLimit) break;
+          continue;
+        }
+        for (const hit of file.hits) {
+          // Pi's grep counts matching lines, then emits a separate context block per match.
+          for (let i = Math.max(0, hit - contextLines); i <= Math.min(file.lines.length - 1, hit + contextLines); i++) {
+            const { text, wasTruncated } = truncateLine(file.lines[i]!.replace(/\r/g, ""));
+            linesTruncated ||= wasTruncated;
+            lines.push(`${file.path}${i === hit ? ":" : "-"}${i + 1}${i === hit ? ": " : "- "}${text}`);
+          }
+          if (++matches >= effectiveLimit) break outer;
+        }
+      }
+      if (!matches) return result("No matches found");
+      const truncated = truncateHead(lines.join("\n"), { maxLines: Number.MAX_SAFE_INTEGER });
+      const notices: string[] = [];
+      if (matches >= effectiveLimit) notices.push(`${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`);
+      if (truncated.truncated) notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
+      if (linesTruncated) notices.push("Some lines truncated to 500 chars. Use read tool to see full lines");
+      return { content: [{ type: "text", text: truncated.content + (notices.length ? `\n\n[${notices.join(". ")}]` : "") }],
+        details: { ...(matches >= effectiveLimit ? { matchLimitReached: effectiveLimit } : {}),
+          ...(truncated.truncated ? { truncation: truncated } : {}), ...(linesTruncated ? { linesTruncated: true } : {}) } };
     } } as unknown as ToolDefinition);
   pi.on("tool_call", event => {
     if ((event.toolName === "edit" || event.toolName === "write") && memoryPath((event.input as { path?: unknown }).path) !== null)
@@ -1360,12 +1392,11 @@ export default function (pi: ExtensionAPI) {
     async execute(_id: string, raw: unknown, _signal: unknown, _update: unknown, context: ExtensionContext) {
       ensure(context); reconcile();
       const bound = state.sessionId && current?.id ? memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id, triggerEntryId: state.sourceHead }) : null;
-      if (definition.name === "trace" || definition.name === "search") {
-        const input = validateReadInput(definition.name, raw);
-        if (bound) return result(bound.find(t => t.name === definition.name)!.execute(input));
+      if (definition.name === "search") {
+        const input = validateReadInput("search", raw);
+        if (bound) return result(bound.find(t => t.name === "search")!.execute(input));
         const options = { ...input, modelFacing: true, sessionId: state.sessionId, headTurnId: state.head, branch: state.branch };
-        return result(definition.name === "trace" ? memory.trace(input.address as string, options)
-          : memory.search((input.queries ?? input.query) as string | string[], input.layer as import("../../core/api/index.ts").SearchScope, options));
+        return result(memory.search((input.queries ?? input.query) as string | string[], input.layer as import("../../core/api/index.ts").SearchScope, options));
       }
       if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
       if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");
@@ -1374,6 +1405,7 @@ export default function (pi: ExtensionAPI) {
       return result(content);
     } }) as unknown as ToolDefinition);
   for (const definition of definitions) pi.registerTool(definition);
+  const memoryTools = [builtinRead, builtinGrep].map(({ name, description }) => [name, description] as const);
   const toggle = (value: boolean) => {
     if (state.sessionId) memory.store.setEnrollment(state.sessionId, value);
     else { state.enrollment = { ...enrollment(), choice: value }; persistProvisional(state.enrollment, true); }

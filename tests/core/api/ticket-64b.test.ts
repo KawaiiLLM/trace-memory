@@ -3,6 +3,7 @@ import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-d
 import { skipRest } from "../../dreaming-skips.ts";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { tokens } from "../../../src/core/render/index.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
 
 const at = "2026-09-20T12:00:00Z";
 
@@ -56,12 +57,12 @@ async function maintain(f: ReturnType<typeof fixture>, branch: "left" | "right",
     item.knowledge.id !== trigger.knowledgeId && item.revision.text.startsWith("Fixture trigger"));
   const result = await f.scenarios.run(f.memory, path, input => {
     const request = { branch, sequence }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
-    trace.execute({ address: tag(f.base.knowledgeId, f.base.commit), itemBudget: null });
-    trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null, pageBudget: 8000 });
-    for (const item of olderTriggers) trace.execute({ address: tag(item.knowledge.id, item.revision.id), itemBudget: null, pageBudget: 8000 });
+    read(tag(f.base.knowledgeId, f.base.commit));
+    read(tag(trigger.knowledgeId, trigger.commit));
+    for (const item of olderTriggers) read(tag(item.knowledge.id, item.revision.id));
     const receipt = write.execute({ operations: [
       { op: "update", id: tag(f.base.knowledgeId, f.base.commit), text, category: "constraint", scope: "project",
         supports: evidence === undefined ? [] : [`F${evidence}`], topics: [], reason: `${branch} maintenance.` },
@@ -105,11 +106,11 @@ test("64b: global current selects one direct-fact branch and rejects the histori
   const result = await f.scenarios.run(f.memory, rightPath, input => {
     changed = input.material.changed;
     const request = { branch: "right", purpose: "global-current stale refusal" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
-    for (const revision of [leftTip, rightTip]) trace.execute({ address: tag(f.base.knowledgeId, revision.id), itemBudget: null });
-    trace.execute({ address: tag(trigger.knowledgeId, trigger.commit), itemBudget: null, pageBudget: 8000 });
+    for (const revision of [leftTip, rightTip]) read(tag(f.base.knowledgeId, revision.id));
+    read(tag(trigger.knowledgeId, trigger.commit));
     const before = f.memory.store.listKnowledgeRevisions().length;
     const refused = write.execute({ operations: [
       { op: "update", id: tag(f.base.knowledgeId, leftTip.id), text: "stale sibling edit", category: "constraint",
@@ -131,9 +132,8 @@ test("64b: global current selects one direct-fact branch and rejects the histori
   expect(changed).not.toContain(`K${f.base.knowledgeId}@v3`);
   expect(changed).not.toContain(`K${f.base.knowledgeId}@v2`);
   expect(tokens(changed)).toBeLessThanOrEqual(10000);
-  const trace = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "right", currentTurnId: f.turn.id })
-    .find(tool => tool.name === "trace")!;
-  const history = trace.execute({ address: `K${f.base.knowledgeId}`, versions: "all", itemBudget: null, pageBudget: 8000 });
+  const history = memoryFiles(f.memory, { sessionId: f.session.id, branch: "right", headTurnId: f.turn.id })
+    .read(`/tm/K${f.base.knowledgeId}.history`).content;
   expect(history).toContain("left knowledge");
   expect(history).toContain("right knowledge");
 });

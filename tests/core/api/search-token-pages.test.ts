@@ -139,9 +139,10 @@ test.each([64, 80, 96, 128])("tiny budget %s either rejects explicitly or keeps 
 
 test("model-facing schema and execution expose only search's token budget", () => {
   const { sessionId, turns } = corpus(["中文😀".repeat(2000)]);
-  const [trace, search] = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turns[0]!.id });
+  const tools = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turns[0]!.id });
+  const search = tools.find(tool => tool.name === "search")!;
   expect(search!.parameters.properties).toHaveProperty("maxTokens", { type: "integer", minimum: 1, maximum: 8000, default: 2000 });
-  expect(trace!.parameters.properties).not.toHaveProperty("maxTokens");
+  expect(tools.map(tool => tool.name)).not.toContain("trace");
   const first = search!.execute({ query: "needle", layer: "raw", maxTokens: 256 });
   expect(tokens(first)).toBeLessThanOrEqual(256);
   const cursor = cursorOf(first)!;
@@ -149,12 +150,12 @@ test("model-facing schema and execution expose only search's token budget", () =
   expect(search!.execute({ query: "", cursor, maxTokens: 256 })).not.toContain("rejected:");
 });
 
-test("search rejects trace-origin cursors without consumption; trace retains its default budget", () => {
+test("search rejects internal-renderer cursors without consumption",  () => {
   const { sessionId, turns } = corpus(["中文".repeat(4000), "second"]);
   expect(tokens(memory.trace(`T${turns[0]!.id}`))).toBeLessThanOrEqual(2000);
   const first = memory.trace(`S${sessionId}`, { cap: 1 });
   const cursor = cursorOf(first)!;
-  expect(() => memory.search("", "raw", { cursor })).toThrow(/search cannot continue a trace cursor/);
+  expect(() => memory.search("", "raw", { cursor })).toThrow(/search cannot continue an internal trace cursor/);
   const next = memory.trace(`cursor=${cursor}`);
   expect(tokens(next)).toBeLessThanOrEqual(2000);
   expect(() => memory.trace(`cursor=${cursor}`)).toThrow(/unknown or expired/);

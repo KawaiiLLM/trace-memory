@@ -7,7 +7,7 @@ export interface CcMcpToolResult {
   isError?: true;
 }
 
-const FOREGROUND = new Set<ToolDefinition["name"]>(["trace", "search", "note", "memory"]);
+const FOREGROUND = new Set<ToolDefinition["name"]>(["search", "note", "memory"]);
 /** Claude Code 2.1.257 applies this metadata limit to JavaScript UTF-16 string length. */
 export const CC_MAX_RESULT_CHARS = 500_000;
 const RESULT_SIZE_META = { "anthropic/maxResultSizeChars": CC_MAX_RESULT_CHARS } as const;
@@ -39,13 +39,12 @@ export class CcForegroundTools {
       maxReadChars: CC_MAX_RESULT_CHARS, toolNames: ccPluginToolNames });
   }
 
-  private read(projection: CcReadProjection, name: "trace" | "search", input: unknown): string {
+  private read(projection: CcReadProjection, name: "search", input: unknown): string {
     if (projection.binding) return this.boundTools({ memory: projection.memory, ...projection.binding })
       .find(candidate => candidate.name === name)!.execute(input);
     const value = validateReadInput(name, input);
     const options = { ...value, modelFacing: true, toolNames: ccPluginToolNames, maxChars: CC_MAX_RESULT_CHARS };
-    return name === "trace" ? projection.memory.trace(value.address as string, options)
-      : projection.memory.search(value.query as string, value.layer as SearchScope | undefined, options);
+    return projection.memory.search(value.query as string, value.layer as SearchScope | undefined, options);
   }
 
   async call(name: unknown, input: unknown, meta: unknown, signal?: AbortSignal): Promise<CcMcpToolResult> {
@@ -62,7 +61,7 @@ export class CcForegroundTools {
       fork?.signal?.throwIfAborted();
       const text = fork ? fork.tools.find(candidate => candidate.name === name)!.execute(input)
         : writeTool(name) ? this.boundTools(projection as CcToolProjection).find(candidate => candidate.name === name)!.execute(input)
-        : this.read(projection as CcReadProjection, name as "trace" | "search", input);
+        : this.read(projection as CcReadProjection, name as "search", input);
       return { content: [{ type: "text", text }], ...(toolRejected(name, text) ? { isError: true as const } : {}) };
     } catch (error) {
       const message = (error as { name?: string }).name === "AbortError" ? "tool call cancelled"

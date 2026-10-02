@@ -42,5 +42,5 @@ That's it — you spotted a real swap. Noting it:
 
 Receipts:
 T1: 1 omitted calls (including partial calls)
-expand: trace({"address":"T1#E4","itemBudget":null,"toolCallBudget":null,"toolResultBudget":null})
+/tm/raw/S1/T1#E4
 Raw: T1#E1..E5

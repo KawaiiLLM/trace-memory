@@ -5,6 +5,7 @@ import { host, reply, emptyNote, type Reply } from "./test-host.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
 
@@ -25,8 +26,7 @@ async function seeded(config: Record<string, unknown> = {}, text = "Keep the use
   if (!c.ok) throw Error(c.problems.join());
   const path = store.knowledgePath(1);
   const created = c.committed[0]!;
-  const item = { ...created, tagged: readHandle(h.memory.tools({ kind: "manual", sessionId: 1,
-    branch: "main", currentTurnId: path.headTurnId! }), `K${created.knowledgeId}`) };
+  const item = { ...created, tagged: readHandle(address => memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: path.headTurnId! }).read(address).content, `K${created.knowledgeId}`) };
   const renderedTokens = store.pendingVersions(`project:${store.getSession(1)!.projectId}`, path)
     .find(value => value.revisionId === item.commit)!.tokens;
   const pool = `project:${store.getSession(1)!.projectId}`;
@@ -87,7 +87,7 @@ test("32d native host: turn settlement starts a fresh Dreamer and records its fr
   const { h, store, item, pool } = await seeded({ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high", compaction: { enabled: true } });
   try {
     let requests = 0;
-    h.provider(async c => { expect(c.systemPrompt).toContain("# Dreamer"); expect(c.tools?.map(t => t.name)).toEqual(["trace", "search", "check", "memory"]);
+    h.provider(async c => { expect(c.systemPrompt).toContain("# Dreamer"); expect(c.tools?.map(t => t.name).sort()).toEqual(["check", "memory", "read", "search"]);
       return ++requests === 1 ? skip(`K${item.knowledgeId}@v1`) : reply("Reviewed without changes"); }, { autoStop: false });
     await h.turn();
     const run = await terminal(h);
@@ -115,7 +115,7 @@ test("32d native host: pass ends after all intermediate tool turns; first memory
       if (requests === 1) return call("archive", "memory", { operations: [{ op: "archive", kind: "budget", id: item.tagged, supports: [], reason: "Retire redundant active rule; history preserved" }], skipped: [] });
       expect(store.currentKnowledge(store.knowledgePath(1))).toEqual([]);
       expect(processedIn(store, pool, store.listKnowledgeRevisions().at(-1)!.id)).toBe(false);
-      if (requests === 2) return call("read", "trace", { address: `K${item.knowledgeId}` });
+      if (requests === 2) return call("read", "read", { path: `/tm/K${item.knowledgeId}` });
       return reply("Done");
     }, { autoStop: false });
     await h.turn();
@@ -131,7 +131,7 @@ test("64c native host: a reads-only first pass ends without a repair round; 104:
   try {
     // 6k changed body fits admission; 4.5k processed outside the family makes the pool over-cap.
     let requests = 0, tools = 0, transient = false;
-    let initialSystem: string | undefined;
+    let initialSystem: string | undefined, initialMaterial: string | undefined;
     const repairSystems: (string | undefined)[] = [], repairToolSets: (string[] | undefined)[] = [];
     let initialTools: string[] | undefined, repairHistory: { role: string; content?: unknown }[] | undefined;
     h.provider(async conversation => {
@@ -139,6 +139,7 @@ test("64c native host: a reads-only first pass ends without a repair round; 104:
       const isRepair = conversation.messages.some(m => JSON.stringify(m).includes("System-generated Dreamer completion check"));
       if (requests === 1) {
         initialSystem = conversation.systemPrompt;
+        initialMaterial = JSON.stringify(conversation.messages);
         initialTools = conversation.tools?.map(tool => tool.name);
       }
       if (isRepair) {
@@ -149,7 +150,7 @@ test("64c native host: a reads-only first pass ends without a repair round; 104:
       if (tools === 24 && !conversation.messages.some(m => JSON.stringify(m).includes("One repair,"))) return reply("Done first pass");
       if (tools === 26 && !transient) { transient = true; return { ...reply(""), stopReason: "error", errorMessage: "rate limit exceeded" }; }
       tools++;
-      return call(`read-${tools}`, "trace", { address: `K${item.knowledgeId}` });
+      return call(`read-${tools}`, "read", { path: `/tm/K${item.knowledgeId}` });
     }, { autoStop: false });
     await h.turn();
     const run = await terminal(h), audit = JSON.parse(run.response!);
@@ -161,7 +162,8 @@ test("64c native host: a reads-only first pass ends without a repair round; 104:
     const log = readFileSync(audit.nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     const repairMessages = log.filter(e => JSON.stringify(e).includes("System-generated Dreamer completion check"));
     expect(initialSystem).toContain("# Dreamer — bounded knowledge maintenance");
-    expect(initialSystem).toContain("Your tools are `trace`, `search`, `memory` and `check`.");
+    expect(initialMaterial).toContain("/tm/knowledge/S1");
+    expect(initialSystem).not.toContain("/tm/knowledge/S1");
     let priorStage = -1;
     for (const heading of workflowHeadings.filter(value => !value.includes("Intensity, set by the failed check"))) {
       const position = initialSystem!.indexOf(heading);
@@ -172,7 +174,7 @@ test("64c native host: a reads-only first pass ends without a repair round; 104:
     expect(initialSystem).not.toMatch(/global 4,000|project 10,000|session 1,000|applicable block within 15,000/);
     expect(repairSystems).toEqual([]); expect(repairToolSets).toEqual([]); expect(repairHistory).toBeUndefined();
     expect(repairMessages).toEqual([]);
-    expect(initialTools).toEqual(["trace", "search", "check", "memory"]);
+    expect(initialTools).toEqual(["search", "check", "memory", "read"]);
     expect(transient).toBe(false);
     expect(requests).toBe(25); // 24 tool rounds and one pass-ending text
   } finally { await h.dispose(); }

@@ -177,8 +177,8 @@ for (const sameProject of [false, true]) test(`independent sessions publish whil
 test("Raw progress failure inside terminal publication rolls back facts, knowledge and success audit", async () => {
   const evidence = fact();
   script.push(async input => {
-    expect(input.tools[2]!.execute({ title: "New episode", sources: `[T${evidence.turnId}#E1] New episode` })).toContain("held");
-    expect(input.tools[3]!.execute({ ...create(evidence.id), supports: ["$1"] })).toContain("held");
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ title: "New episode", sources: `[T${evidence.turnId}#E1] New episode` })).toContain("held");
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ ...create(evidence.id), supports: ["$1"] })).toContain("held");
     return success();
   });
   memory.store.db.exec(`CREATE TEMP TRIGGER reject_progress AFTER INSERT ON noted_entries

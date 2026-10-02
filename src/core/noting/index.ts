@@ -1,4 +1,5 @@
 import { loadPrompt } from "../prompts/load.ts";
+import { readingGuide } from "../render/reading-guide.ts";
 import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput, SourceEntry, SourceEntryMeta } from "../store/index.ts";
@@ -16,12 +17,13 @@ import type { NotingDiagnostic } from "./review.ts";
 // Pricing includes the launch's rendered names, not the canonical template. The lazy per-map cache
 // avoids repeatedly tokenizing static schemas through the source-selection loop.
 const fixed = new Map<string, { prompt: string; instructions: number; tools: number }>();
-const fixedCost = (names: ToolNames) => {
-  const key = JSON.stringify(names);
+const fixedCost = (names: ToolNames, nativeReadTool: TaskOptions["nativeReadTool"]) => {
+  const key = JSON.stringify([names, nativeReadTool]);
   let cost = fixed.get(key);
   if (!cost) {
     const prompt = loadPrompt("noting.md", names);
-    cost = { prompt, instructions: tokens(prompt), tools: tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, names))) };
+    const definitions = [...pricedToolDefinitions(toolDefinitions, names), ...(nativeReadTool ? [nativeReadTool] : [])];
+    cost = { prompt, instructions: tokens(prompt), tools: tokens(JSON.stringify(definitions)) };
     fixed.set(key, cost);
   }
   return cost;
@@ -189,7 +191,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // budget check inside the loop below is unchanged and still decides every freeze that passes here
   // (parent 22: "A fast preflight supplements the final guard; it does not replace it").
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
-  const { prompt, instructions, tools } = fixedCost(names);
+  const { prompt, instructions, tools } = fixedCost(names, input.nativeReadTool);
   const inheriting = (input.effectiveMode ?? mode) === "fork";
   const forkPrompt = input.forkGuidance ? `${prompt}\n\n${renderToolNames(input.forkGuidance, names)}` : prompt;
   const forkInstructions = input.forkGuidance ? tokens(forkPrompt) : instructions;
@@ -248,12 +250,12 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const assembled = readFacade(store, { ...config, compaction: { ...config.compaction,
       rawTokens: config.noting.batchTokens, factsTokens: history } }, undefined, resultText)
       .compact(session.id, input.branch, endpoint.turnId, [], false,
-        { endpointEntryId: endpoint.id, processedRawRefill: false, showKnowledgeSize: true, renderedEntries: rendered, preparedSources, toolNames: names });
+        { endpointEntryId: endpoint.id, processedRawRefill: false, showKnowledgeSize: true, readingGuide: false, renderedEntries: rendered, preparedSources, toolNames: names });
     if ("native" in assembled || !assembled.material) throw new Error("Noting material assembly produced no material");
     if (assembled.supplied.entries.length !== entries.length
       || assembled.supplied.entries.some((entry, index) => entry.id !== entries[index]!.id))
       throw new Error("Noting material Raw membership differs from its frozen processing batch; left pending");
-    const prepared = notingMaterial(frozen, entry => rendered.get(entry.id)!, assembled.material, assembled.supplied, initial, inheriting);
+    const prepared = notingMaterial(frozen, entry => rendered.get(entry.id)!, assembled.material, assembled.supplied, initial, inheriting, names);
     const capacity = input.capacity;
     // Gate 4 (ruling 2026-09-08), with ticket 20's "Capacity negotiation": the adapter reports its
     // available material budget before selection; core prices the domain text it prepared for this
@@ -301,7 +303,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
  * uses the common compact selection at the final selected entry.
  *
  * Entry views are rendered once per freeze and reused through capacity negotiation (22d). */
-function notingMaterial(frozen: { sessionId: number; harness: string; headEntryId?: number; entries: SourceEntry[]; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[] }, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, assembled: SharedMaterial, selected: SuppliedMaterial, initial: InitialContext, inheriting: boolean) {
+function notingMaterial(frozen: { sessionId: number; harness: string; headEntryId?: number; entries: SourceEntry[]; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[] }, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, assembled: SharedMaterial, selected: SuppliedMaterial, initial: InitialContext, inheriting: boolean, names: ToolNames) {
   const { sessionId, entries, turns } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
@@ -322,6 +324,7 @@ function notingMaterial(frozen: { sessionId: number; harness: string; headEntryI
   const receipts = inheriting ? raw.flatMap(r => r.receipts) : assembled.receipts;
   const material: NotingMaterial = {
     harness: frozen.harness,
+    readingGuide: readingGuide(sessionId, names),
     entries: supplied.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
     head,
     // Mandatory framing (parent 29 "Keep mandatory framing"): with a body withheld, the source index

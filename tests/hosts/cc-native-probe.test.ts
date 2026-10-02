@@ -15,6 +15,7 @@ import { homedir, tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { TraceMemory } from "../../src/core/api/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
 import { startLoopbackAnthropic } from "./cc-native-loopback.ts";
@@ -68,18 +69,32 @@ function workerConfig(cwd: string, executable = fencedClaude) {
     worker: { claudeExecutable: executable, contextWindows: { "sonnet": 200_000 }, cwd } });
 }
 
+function workerReader(cwd: string) {
+  const memory = TraceMemory(join(cwd, "memory.sqlite"), async () => { throw new Error("fixture never runs a model"); });
+  try {
+    const project = memory.store.createProject({ name: "native-worker", declaredBy: "mark" });
+    const session = memory.store.createSession({ host: "cc:native-worker", projectId: project.id,
+      startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+    const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "native worker evidence", startedAt: "now" });
+    const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "native-worker",
+      nativeId: "root", role: "user", text: "native worker evidence", raw: "native worker evidence", calls: [] });
+    memory.selectEntries(session.id, "main", [entry.id]);
+    return { sessionId: session.id, branch: "main", headTurnId: turn.id, projectId: project.id };
+  } finally { memory.close(); }
+}
+
 probe("native file: a real CC worker run writes its transcript under <config dir>/projects/<dir for cwd>/<session id>.jsonl, holding the worker's assistant messages, tool calls and results; claude-powerline counts it once", async () => {
   const cwd = tempDir("tm78-native-cwd-");
   const configDir = tempDir("tm78-native-config-");
+  const reader = workerReader(cwd);
   const loopback = await startLoopbackAnthropic((assistantTurns) => assistantTurns === 0
-    ? { blocks: [{ type: "tool_use", id: "toolu_1", name: "mcp__trace_memory__trace", input: {} }], stopReason: "tool_use" }
+    ? { blocks: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: `/tm/raw/S${reader.sessionId}/T${reader.headTurnId}#E1` } }], stopReason: "tool_use" }
     : { blocks: [{ type: "text", text: "done" }], stopReason: "end_turn" });
   try {
     await fence(cwd, [Number(new URL(loopback.url).port)]);
     const environment = loopbackEnvironment(configDir, loopback.url);
     const task = { kind: "noting", text: "material", prompt: "instructions",
-      tools: [{ name: "trace", description: "read", parameters: { type: "object", properties: {} },
-        execute: () => "tool result text" }], acknowledgeRequest: () => {},
+      tools: [], reader, acknowledgeRequest: () => {},
       passEnd: () => "Test host requests one final review." } as unknown as CcAgentTask;
     const journal: { event: string; details?: Record<string, unknown> }[] = [];
     const result = await new CcAgentWorker(workerConfig(cwd), { environment, journal: (event, details) => journal.push({ event, details }) }).run(task, 0);
@@ -103,10 +118,10 @@ probe("native file: a real CC worker run writes its transcript under <config dir
     expect(basename(sessionDir)).toBe(cwd.replace(/[^A-Za-z0-9]/g, "-"));
     expect(ccNativeTranscriptPath(environment, cwd, sessionId)).toBe(nativeLog);
 
-    // Content: the assistant's tool_use, the real MCP round trip's tool_result, and the final text.
+    // Content: the assistant's built-in Read, its SDK-hook-backed tool_result, and the final text.
     const assistantMessages = lines.filter(line => line.type === "assistant");
     expect(assistantMessages.some(line => line.message?.content?.some((block: { type?: string }) => block.type === "tool_use"))).toBe(true);
-    expect(held).toContain("tool result text");
+    expect(held).toContain("native worker evidence");
     expect(assistantMessages.some(line => line.message?.content?.some((block: { type?: string; text?: string }) =>
       block.type === "text" && block.text === "done"))).toBe(true);
 
@@ -142,7 +157,7 @@ probe("isolation: a SessionStart Hook configured for the config directory never 
   try {
     await fence(cwd, [Number(new URL(loopback.url).port)]);
     const environment = loopbackEnvironment(configDir, loopback.url);
-    const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: () => {},
+    const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], reader: workerReader(cwd), acknowledgeRequest: () => {},
       passEnd: () => "Test host requests one final review." } as unknown as CcAgentTask;
     const result = await new CcAgentWorker(workerConfig(cwd), { environment }).run(task, 0);
     expect(result.outcome, JSON.stringify(result)).toBe("success");

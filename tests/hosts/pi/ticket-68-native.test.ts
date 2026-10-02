@@ -2,12 +2,15 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { runNative, type NativeSubagentTask } from "../../../src/hosts/pi/native.ts";
+import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
 import { broken, call, fixture, say, toolResults } from "./native-fixture.ts";
 
 const nativeTask = (f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<NativeSubagentTask> = {}): NativeSubagentTask => ({
   kind: "dreaming", mode: "subagent", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, model: f.model as never,
   systemPrompt: "Offline native worker test.", task: "Complete the scripted task.", maxToolRounds: 0,
-  tools: [{ name: "trace", description: "Read synthetic material", parameters: { type: "object", properties: {} }, execute: () => "synthetic material" }],
+  read: memoryReadTool(f.h.dir, path => memoryFiles(f.h.memory, { projectId: f.h.memory.store.getSession(1)?.projectId }).read(path), { memoryOnly: true }),
+  tools: [{ name: "search", description: "Read synthetic material", parameters: { type: "object", properties: {} }, execute: () => "synthetic material" }],
   onRequest: () => {}, onProgress: () => {}, ...overrides,
 });
 
@@ -17,9 +20,9 @@ test("68: native Dreamer with an unlimited round count completes more than fifty
   try {
     const observed: number[] = [], passes: number[] = [];
     let writes = 0;
-    f.script(body => toolResults(body) < 55 ? call(`read-${toolResults(body)}`, "trace", {}) : say("Finished."));
+    f.script(body => toolResults(body) < 55 ? call(`read-${toolResults(body)}`, "search", {}) : say("Finished."));
     const result = await runNative(nativeTask(f, {
-      tools: [{ name: "trace", description: "Read synthetic material", parameters: { type: "object", properties: {} }, execute: () => { writes++; return "synthetic material"; } }],
+      tools: [{ name: "search", description: "Read synthetic material", parameters: { type: "object", properties: {} }, execute: () => { writes++; return "synthetic material"; } }],
       reportRounds: rounds => observed.push(rounds), passEnd: rounds => { passes.push(rounds); return undefined; },
     }));
     expect(result.outcome).toBe("success");
@@ -35,7 +38,7 @@ test("Noter gets one fixed review at the exact tool-round cap; the second normal
   try {
     const reviews: number[] = [], requests: unknown[] = [];
     let responses = 0;
-    f.script(() => ++responses === 1 ? call("first", "trace", {}) : say(responses === 2 ? "First pass done" : "Review done"));
+    f.script(() => ++responses === 1 ? call("first", "search", {}) : say(responses === 2 ? "First pass done" : "Review done"));
     const result = await runNative(nativeTask(f, { kind: "noting", maxToolRounds: 1,
       passEnd: rounds => { reviews.push(rounds); return "Before publication, review this run once."; },
       onRequest: body => { requests.push(body); } }));

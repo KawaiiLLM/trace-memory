@@ -14,6 +14,7 @@ import { isContextOverflow } from "@earendil-works/pi-ai";
 import { NotForkable, runNative, type NativeForkTask, type NativeResult, type ThinkingLevel, type Verification as NativeVerification } from "./native.ts";
 import type { Body } from "./fork.ts";
 import type { NotingAgentInput, DreamingAgentInput, RunAgentResult, ToolDefinition, CacheObservation } from "../../core/api/index.ts";
+import type { memoryReadTool } from "./memory-files.ts";
 
 type Task = NotingAgentInput | DreamingAgentInput;
 /** The model shape Pi's own child session takes, already resolved by the host's registry lookup. */
@@ -78,6 +79,7 @@ export interface WorkerBinding {
   checkCapacity?: (contextTokens: number | undefined) => void;
   /** The memory tools core bound for this run, as the host wrapped them. */
   tools: ToolDefinition[];
+  read: ReturnType<typeof memoryReadTool>;
   runsDir: string;
   cwd: string;
   agentDir: string;
@@ -140,7 +142,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       // later rounds nor its fallback. This is the *inherited* one, which the fork run below keeps
       // (26d): a fork's request prefix has to stay the captured parent's.
       thinkingLevel: task.thinkingLevel as ThinkingLevel | undefined,
-      tools: binding.tools, maxToolRounds: binding.maxToolRounds,
+      tools: binding.tools, read: binding.read, maxToolRounds: binding.maxToolRounds,
       signal: task.signal,
       ...(task.kind === "noting" ? { reportToolRejection: task.reportToolRejection } : {}),
       ...(task.kind === "dreaming" ? { passEnd: task.passEnd, reportRounds: task.reportRounds } : {}),

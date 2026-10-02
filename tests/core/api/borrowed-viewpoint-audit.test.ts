@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import { sourceSeededMemory, recorded, hydrate, type RunAgent, type NotingAgentInput } from '../../source-fixture.ts';
+import { memoryFiles } from '../../../src/core/api/index.ts';
 import { fact as seedFact } from '../../support/seed.ts';
 
 const at = '2026-09-01T00:00:00.000Z';
@@ -27,9 +28,9 @@ function fixture(agent: RunAgent) {
   const rootFact=fact(target.id,'old',root.id,'ROOT_COMMON_RULE');
   const liveFact=fact(target.id,'live',live.id,'SIBLING_MUST_NOT_LEAK');
   const exFact=fact(executor.id,'main',ex.id,'EXECUTOR_MUST_NOT_LEAK');
-  const rootKnowledge=memory.tools({kind:'manual',sessionId:target.id,branch:'old',currentTurnId:root.id})[3]!.execute({op:'create',category:'constraint',scope:'project',text:'ROOT_KNOWLEDGE',supports:[`F${rootFact.id}`],topics:[],reason:'seed shared knowledge'});
+  const rootKnowledge=memory.tools({kind:'manual',sessionId:target.id,branch:'old',currentTurnId:root.id}).find(tool=>tool.name==='memory')!.execute({op:'create',category:'constraint',scope:'project',text:'ROOT_KNOWLEDGE',supports:[`F${rootFact.id}`],topics:[],reason:'seed shared knowledge'});
   if(rootKnowledge.includes('rejected:'))throw Error(rootKnowledge);
-  const executorKnowledge=memory.tools({kind:'manual',sessionId:executor.id,branch:'main',currentTurnId:ex.id})[3]!.execute({op:'create',category:'constraint',scope:'session',text:'EXECUTOR_PRIVATE_KNOWLEDGE',supports:[`F${exFact.id}`],topics:[],reason:'seed executor-only knowledge'});
+  const executorKnowledge=memory.tools({kind:'manual',sessionId:executor.id,branch:'main',currentTurnId:ex.id}).find(tool=>tool.name==='memory')!.execute({op:'create',category:'constraint',scope:'session',text:'EXECUTOR_PRIVATE_KNOWLEDGE',supports:[`F${exFact.id}`],topics:[],reason:'seed executor-only knowledge'});
   if(executorKnowledge.includes('rejected:'))throw Error(executorKnowledge);
   recorded(memory,target.id,'old',root.id);
   // Both execution modes must be admitted on the active target. Dead-path admission is forbidden.
@@ -52,9 +53,8 @@ async function execute(borrowed:boolean,dead:boolean) {
     expect(input.text).not.toContain('SIBLING_MUST_NOT_LEAK');
     expect(input.text).not.toContain('EXECUTOR_MUST_NOT_LEAK');
     expect(input.text).not.toContain('EXECUTOR_PRIVATE_KNOWLEDGE');
-    const trace=input.tools.find(t=>t.name==='trace')!;
     // Exact fact reads stay legal, but must not turn a sibling into a valid citation.
-    const historical = trace.execute({address:`F${f.liveFact.id}`,itemBudget:null});
+    const historical = memoryFiles(f.memory, input.reader!).read(`/tm/F${f.liveFact.id}`).content;
     expect(historical, historical).toContain('SIBLING_MUST_NOT_LEAK');
     {
       const note=input.tools.find(t=>t.name==='note')!;
@@ -68,7 +68,7 @@ async function execute(borrowed:boolean,dead:boolean) {
     {
       const write=input.tools.find(t=>t.name==='memory')!;
       const base = `K1#${f.s.versionTag(1, 1)}`;
-      expect(trace.execute({address:'K1@v1',itemBudget:null,toolCallBudget:null,toolResultBudget:null})).toContain(base);
+      expect(memoryFiles(f.memory,input.reader!).read('/tm/K1@v1').content).toContain(base);
       const op={op:'update',id:base,category:'constraint',scope:'project',text:'OLD_BRANCH_RESULT',topics:[],reason:'target evidence changes the rule'};
       const bad=write.execute({...op,supports:[`F${f.liveFact.id}`]});
       expect(bad).toContain('rejected:');checks.push('sibling fact citation rejected');

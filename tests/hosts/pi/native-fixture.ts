@@ -8,10 +8,11 @@ import { join } from "node:path";
 import { expect, vi } from "vitest";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
-import { toolDefinitions } from "../../../src/core/api/index.ts";
+import { toolDefinitions, memoryFiles } from "../../../src/core/api/index.ts";
 import { renderToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import type { NativeForkTask, ThinkingLevel } from "../../../src/hosts/pi/native.ts";
+import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
 
 export type Body = Record<string, any>;
 export const sse = (events: unknown[]) => new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n",
@@ -181,9 +182,14 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
     },
     /** The same child the host builds, for the checks that need it without the host's scheduling. */
     task(captured: Body, overrides: Partial<NativeForkTask> = {}): NativeForkTask {
+      const path = h.memory.store.currentPath(1), session = h.memory.store.getSession(1)!;
+      const reader = memoryFiles(h.memory, { sessionId: session.id, projectId: session.projectId,
+        branch: path?.branch, headTurnId: path?.headTurnId });
       return { kind: "noting", mode: "fork", parentFile: manager!.getSessionFile()!, parentSessionId: manager!.getSessionId(),
         checkpoint: manager!.getLeafId()!, runsDir, cwd: h.dir, agentDir,
-        model: model as never, captured, task: "Range: S1/T1..S1/T1\n\nnote what happened", tools: [], maxToolRounds: 0,
+        model: model as never, captured, task: "Range: S1/T1..S1/T1\n\nnote what happened", tools: [],
+        read: memoryReadTool(h.dir, address => reader.read(address), { memoryOnly: true }),
+        maxToolRounds: 0,
         onRequest: () => {}, onProgress: () => {}, ...overrides };
     },
     async dispose() { session.dispose(); await h.dispose(); vi.unstubAllGlobals(); },

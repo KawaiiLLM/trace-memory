@@ -4,6 +4,8 @@ import { transportItemText } from "../../src/core/render/material.ts";
 import { sliceCcInjection, ccKnowledgeHeader, CC_SLICE_COUNT, CC_SLICE_LIMIT, CC_KNOWLEDGE_RECENCY_NOTICE } from "../../src/hosts/cc/slices.ts";
 import type { TransportItem } from "../../src/core/render/material.ts";
 import { renderKnowledgeBlock, tokens } from "../../src/core/render/index.ts";
+import { readingGuide } from "../../src/core/render/reading-guide.ts";
+import { ccPluginToolNames } from "../../src/hosts/cc/tool-names.ts";
 
 const binding: CcVisibleBinding = { db: "unit-db", nativeSession: "native-66", coreSession: 1 };
 const items: TransportItem[] = [
@@ -47,7 +49,7 @@ test("66 omitted pending Raw is not delivered and warns in slot one", () => {
   expect(slices[0]?.systemMessage).toBe("Trace Memory: inline transport omitted 1 pending Raw entry; omitted Raw remains pending for Noting.");
   expect(slices.filter(item => item?.systemMessage)).toHaveLength(1);
   expect(slices.filter(Boolean).flatMap(item => decodeCcInjection(item!.hookSpecificOutput.additionalContext, binding)?.entryIds ?? [])).toEqual([]);
-  expect(slices.filter(Boolean).map(item => item!.hookSpecificOutput.additionalContext).join(" ")).toContain("expand: T9#E1");
+  expect(slices.filter(Boolean).map(item => item!.hookSpecificOutput.additionalContext).join(" ")).toContain("expand: /tm/raw/S1/T9#E1");
 });
 
 test("92 fact-only transport omission preserves its count without promising extraction", () => {
@@ -59,11 +61,11 @@ test("92 fact-only transport omission preserves its count without promising extr
 });
 
 test("66 legacy oversized omission receipt keeps its actual bounded expansion", () => {
-  const receipt: TransportItem = { kind: "receipt", text: `omitted 120 older facts; expand: ${Array.from({ length: 120 }, (_, i) => `F${i + 1}`).join(", ")}${" ".repeat(12_000)}` };
+  const receipt: TransportItem = { kind: "receipt", text: `omitted 120 older facts; expand: ${Array.from({ length: 120 }, (_, i) => `/tm/F${i + 1}`).join(", ")}${" ".repeat(12_000)}` };
   const slices = sliceCcInjection(binding, [receipt]);
   const contexts = slices.filter(Boolean).map(item => item!.hookSpecificOutput.additionalContext);
   expect(contexts.every(text => text.length <= CC_SLICE_LIMIT)).toBe(true);
-  expect(contexts.join(" ")).toContain("omitted 120 items; expand: F1");
+  expect(contexts.join(" ")).toContain("omitted 120 items; expand: /tm/F1");
   expect(contexts.join(" ")).toContain("F120");
 });
 
@@ -96,14 +98,16 @@ test("92 CC placement prices the final single knowledge list, including exact UT
   const first: TransportItem = { kind: "knowledge", category: "reference", commitId: 1, address: "K1@v1", text: `[K1#aaaa] ${"a".repeat(3_000)}` };
   const emptySecond: TransportItem = { kind: "knowledge", category: "reference", commitId: 2, address: "K2@v1", text: "[K2#bbbb] " };
   const membership = { knowledgeCommitIds: [1, 2], factIds: [], entryIds: [], slice: [0, 24] as [number, number] };
-  const body = (second: TransportItem) => renderKnowledgeBlock([first, second].map(item => ({ category: "items", text: item.text })), ccKnowledgeHeader(binding));
+  const guide = readingGuide(binding.coreSession!, ccPluginToolNames);
+  const knowledgeBody = (second: TransportItem) => renderKnowledgeBlock([first, second].map(item => ({ category: "items", text: item.text })), ccKnowledgeHeader(binding));
+  const body = (second: TransportItem) => `${guide}\n\n${knowledgeBody(second)}`;
   const initial = encodeCcInjection(binding, { ...membership, text: body(emptySecond) }).length;
   for (const target of [9999, 10000, 10001]) {
     const second = { ...emptySecond, text: emptySecond.text + "x".repeat(target - initial - 30) + "😀" };
-    const encode = () => encodeCcInjection(binding, { ...membership, text: body(second), knowledgeTokens: tokens(body(second)) });
+    const encode = () => encodeCcInjection(binding, { ...membership, text: body(second), knowledgeTokens: tokens(knowledgeBody(second)) });
     while (encode().length < target) second.text = "x" + second.text;
     const text = body(second);
-    expect(ccInjectionLength(binding, { ...membership, knowledgeTokens: tokens(text) }, text.length)).toBe(target);
+    expect(ccInjectionLength(binding, { ...membership, knowledgeTokens: tokens(knowledgeBody(second)) }, text.length)).toBe(target);
     expect(encode().length).toBe(target);
     const outputs = sliceCcInjection(binding, [first, second]);
     const actual = outputs.filter(Boolean).map(value => decodeCcInjection(value!.hookSpecificOutput.additionalContext, binding)!);

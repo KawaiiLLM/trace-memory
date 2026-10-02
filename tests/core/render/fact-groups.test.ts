@@ -44,7 +44,7 @@ test("history selection keeps its priority prefix, charges a heading once, then 
   const cap = charge(grouped);
   const result = budgetFacts(candidates, line, cap, times);
   expect(result.recent).toEqual(grouped); // F3 then F8, although F8 had selection priority
-  expect(result.receipts).toEqual(["omitted 1 older facts; expand: F2"]);
+  expect(result.receipts).toEqual(["omitted 1 older facts; expand: /tm/F2"]);
   expect(result.recent.join("\n").match(/selected facts/g)).toHaveLength(1);
   expect(budgetFacts([recent], line, charge([line(recent)]), times).recent).toEqual([]); // header is not free
   const one = charge(renderFactGroups([recent], line, times));

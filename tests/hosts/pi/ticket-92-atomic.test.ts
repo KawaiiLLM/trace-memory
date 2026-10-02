@@ -3,13 +3,21 @@ import { join } from "node:path";
 import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
 import { fixture, call, say, broken } from "./native-fixture.ts";
 import { runWorker } from "../../../src/hosts/pi/worker.ts";
-import { toolDefinitions, renderToolDefinitions, canonicalToolNames } from "../../../src/core/api/index.ts";
+import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
+import { toolDefinitions, renderToolDefinitions, canonicalToolNames, memoryFiles } from "../../../src/core/api/index.ts";
+
+function frozenRead(memory: ReturnType<typeof sourceSeededMemory>, task: NotingAgentInput, cwd: string) {
+  if (!task.reader) throw new Error("Pi worker fixture requires the Core-frozen reader");
+  const files = memoryFiles(memory, task.reader);
+  return memoryReadTool(cwd, path => files.read(path), { memoryOnly: true });
+}
 
 for (const ending of ["success", "error"] as const) test(`04: actual Pi worker holds both tools until ${ending} terminal`, async () => {
   const f = await fixture();
   const memory = sourceSeededMemory(join(f.h.dir, "atomic.sqlite"), raw => {
     const task = raw as NotingAgentInput;
     return runWorker(task, { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
+      read: frozenRead(memory, task, f.h.dir),
       runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
       onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
   });
@@ -55,6 +63,7 @@ for (const obsolete of [false, true]) test(`04: real Pi fork shared schemas pres
       expect({ name: bound.name, description: bound.description, parameters: bound.parameters }).toEqual(shared);
     }
     return runWorker(task, { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
+      read: frozenRead(memory, task, f.h.dir),
       runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
       fork: { parentFile: f.manager().getSessionFile()!, parentSessionId: f.manager().getSessionId(), checkpoint: f.manager().getLeafId()!, captured },
       onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
@@ -108,7 +117,8 @@ for (const kind of ["note", "memory"] as const)
         const task = raw as NotingAgentInput;
         return runWorker({ ...task, reportToolRejection: (...args) => {
           refusals++; task.reportToolRejection(...args); task.reportToolRejection(...args);
-        } }, { model: f.model as never, checkCapacity: () => {}, tools: task.tools, runsDir: f.runsDir, cwd: f.h.dir,
+        } }, { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
+          read: frozenRead(memory, task, f.h.dir), runsDir: f.runsDir, cwd: f.h.dir,
           agentDir: f.agentDir, maxToolRounds: 0, onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
       });
       try {
@@ -152,13 +162,14 @@ for (const kind of ["note", "memory"] as const)
       } finally { memory.close(); await f.dispose(); }
     });
 
-for (const [kind, corrected] of [["note", false], ["note", true], ["trace", false]] as const) test(`04: native Pi ${kind} schema rejection; corrected=${corrected}`, async () => {
+for (const [kind, corrected] of [["note", false], ["note", true], ["read", false]] as const) test(`04: native Pi ${kind} schema rejection; corrected=${corrected}`, async () => {
   const f = await fixture();
   const memory = sourceSeededMemory(join(f.h.dir, "schema.sqlite"), raw => {
     const task = raw as NotingAgentInput;
     const report = task.reportToolRejection;
     return runWorker({ ...task, reportToolRejection: (...args) => { report(...args); report(...args); } },
-      { model: f.model as never, checkCapacity: () => {}, tools: task.tools, runsDir: f.runsDir, cwd: f.h.dir,
+      { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
+        read: frozenRead(memory, task, f.h.dir), runsDir: f.runsDir, cwd: f.h.dir,
         agentDir: f.agentDir, maxToolRounds: 0, onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
   });
   try {
@@ -176,9 +187,9 @@ for (const [kind, corrected] of [["note", false], ["note", true], ["trace", fals
       return say("Done");
     });
     const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: turn.id, mode: "subagent" });
-    expect(result.outcome).toBe(corrected || kind === "trace" ? "success" : "bounced");
+    expect(result.outcome).toBe(corrected || kind === "read" ? "success" : "bounced");
     const facts = memory.store.listSessionFacts(session.id);
-    expect(facts.map(fact => fact.text).sort()).toEqual(corrected ? ["corrected", "sibling"] : kind === "trace" ? ["original", "sibling"] : []);
+    expect(facts.map(fact => fact.text).sort()).toEqual(corrected ? ["corrected", "sibling"] : kind === "read" ? ["original", "sibling"] : []);
     if (!("runId" in result)) throw new Error("missing run");
     const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
     expect(audit.toolCalls.filter((item: any) => item.input?.slot === "$1" && !item.input.sources)).toHaveLength(kind === "note" ? 1 : 0);

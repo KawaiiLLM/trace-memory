@@ -1,13 +1,14 @@
-import { readFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { createSdkMcpServer, query, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
-import { toolRejected } from "../../core/api/index.ts";
+import { memoryPath, toolRejected } from "../../core/api/index.ts";
 import { CC_AGENT_SDK_VERSION, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
+import { materializeCcWorkerRead } from "./files.ts";
 import { CC_WORKER_SERVER_NAME, ccWorkerToolNames } from "./tool-names.ts";
 
 export type CcAgentTask = NotingAgentInput | DreamingAgentInput;
@@ -111,8 +112,8 @@ export class CcResponseOrigins {
       if (prior && prior !== responseId)
         throw this.fail(new Error(`CC tool use ${block.id} is ambiguous across assistant responses`));
       this.origins.set(block.id, responseId);
-      const name = block.name.startsWith(`mcp__${CC_WORKER_SERVER_NAME}__`) ? block.name.slice(`mcp__${CC_WORKER_SERVER_NAME}__`.length) : block.name;
-      if (this.task.kind === "noting" && (name === "note" || name === "memory") && !this.pendingWrites.has(block.id))
+      const name = block.name === ccWorkerToolNames.note ? "note" : block.name === ccWorkerToolNames.memory ? "memory" : undefined;
+      if (this.task.kind === "noting" && name !== undefined && !this.pendingWrites.has(block.id))
         this.pendingWrites.set(block.id, { name, input: structuredClone(block.input) });
       for (const waiter of this.waiters.get(block.id) ?? []) {
         clearTimeout(waiter.timer); waiter.resolve(responseId);
@@ -347,6 +348,8 @@ export class CcAgentWorker {
       throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
     if (task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
       throw new Error(`CC ${task.kind} task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}`);
+    if (!task.reader?.sessionId || !task.reader.branch || !task.reader.headTurnId || !task.reader.projectId)
+      throw new Error("CC worker needs a frozen Core reader target");
     // 78: the path Claude Code itself will persist this run's native session under, known only once
     // init reports the native session id. Verified, never created, by this adapter.
     let nativeLog: string | undefined;
@@ -358,6 +361,39 @@ export class CcAgentWorker {
       protocolError ??= error; controller.abort(error);
     });
     const results: SDKResultMessage[] = [], assistantMessages: SDKAssistantMessage[] = [];
+    const frozenReader = { ...task.reader };
+    const renderedRoot = join(this.config.stateDir, "rendered");
+    mkdirSync(renderedRoot, { recursive: true, mode: 0o700 });
+    const readDirectory = mkdtempSync(join(renderedRoot, "worker-"));
+    const rendered = new Set<string>();
+    const onRead = async (raw: unknown) => {
+      const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown> };
+      const file = event.tool_input?.file_path;
+      const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse" as const,
+        permissionDecision: "deny" as const, permissionDecisionReason: reason } });
+      if (event.tool_name !== "Read" || typeof file !== "string") return deny("CC worker accepts only Read of /tm");
+      const virtual = memoryPath(file);
+      if (virtual !== null) {
+        const path = materializeCcWorkerRead(this.config, frozenReader, virtual, readDirectory);
+        rendered.add(path);
+        return { hookSpecificOutput: { hookEventName: "PreToolUse" as const,
+          permissionDecision: "allow" as const, permissionDecisionReason: "read frozen Trace Memory view",
+          updatedInput: { ...event.tool_input, file_path: path } } };
+      }
+      // A continuation may name only a file rendered by this very run; never a sibling worker's
+      // snapshot or a path reached through a symlink or lexical traversal.
+      if (!isAbsolute(file) || file !== resolve(file) || !rendered.has(file)) return deny("CC worker Read is restricted to its own /tm snapshots");
+      let actual: string;
+      try { actual = realpathSync(file); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return deny("CC worker Read snapshot no longer exists");
+        throw error;
+      }
+      if (!actual.startsWith(realpathSync(readDirectory) + sep) || !lstatSync(file).isFile() || lstatSync(file).isSymbolicLink())
+        return deny("CC worker Read snapshot is outside its own session");
+      return { hookSpecificOutput: { hookEventName: "PreToolUse" as const,
+        permissionDecision: "allow" as const, permissionDecisionReason: "continue frozen Trace Memory read" } };
+    };
     let assistantMessagesAfterResult: SDKAssistantMessage[] = [];
     const input = new CcUserInput();
     input?.push(userMessage(task.text));
@@ -380,14 +416,15 @@ export class CcAgentWorker {
       this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error.message }),
       async () => { try {
       task.signal?.throwIfAborted();
-      const allowedTools = task.tools.map(definition => ccWorkerToolNames[definition.name]);
+      const allowedTools = ["Read", ...task.tools.map(definition => ccWorkerToolNames[definition.name])];
       const execution = this.query({ prompt: input ?? task.text, options: {
         model: settings.model,
         cwd: this.worker.cwd,
         pathToClaudeCodeExecutable: this.worker.claudeExecutable,
         env: this.environment,
-        tools: [],
+        tools: ["Read"],
         allowedTools,
+        hooks: { PreToolUse: [{ matcher: "Read", hooks: [onRead] }] },
         mcpServers: { [CC_WORKER_SERVER_NAME]: workerServer(task, origins, toolsAllowed) },
         abortController: controller,
         systemPrompt: task.prompt,
@@ -491,6 +528,7 @@ export class CcAgentWorker {
         thinking: { requested: settings.thinking, effective: settings.thinking } };
     } finally {
       input?.close(); origins.close(); task.signal?.removeEventListener("abort", cancel);
+      rmSync(readDirectory, { recursive: true, force: true });
     } });
   }
 }

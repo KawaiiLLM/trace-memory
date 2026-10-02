@@ -96,8 +96,8 @@ try {
   try {
     assert.deepEqual(loaded.errors, [], "The installed extension must load without errors");
     assert.equal(loaded.extensions.length, 1);
-    // 101: same-name read and grep serve /tm and hand every other path to Pi's own tools.
-    assert.deepEqual([...loaded.extensions[0].tools.keys()].sort(), ["grep", "memory", "note", "read", "search", "trace"]);
+    // 118: native read/grep serve /tm; public trace is no longer registered.
+    assert.deepEqual([...loaded.extensions[0].tools.keys()].sort(), ["grep", "memory", "note", "read", "search"]);
   } finally {
     for (const extension of loaded.extensions)
       for (const shutdown of extension.handlers.get("session_shutdown") ?? []) await shutdown({ type: "session_shutdown", reason: "quit" }, {});

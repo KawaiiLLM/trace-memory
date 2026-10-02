@@ -4,7 +4,7 @@ import type { KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { renderKnowledgeChange, wordLevelDiff } from "../../../src/core/render/index.ts";
-import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, validateConfig, type NotingAgentInput } from "../../source-fixture.ts";
+import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, memoryFiles, validateConfig, type NotingAgentInput } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 // Ticket 92 transfers ticket 76's create/update/archive authority from C to N.
@@ -194,7 +194,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       const write = input.tools.find(tool => tool.name === "memory")!;
       // D's operation on the frozen (now stale) base is refused; nothing else happens to it — no
       // fallback conversion, no automatic retry against the new base.
-      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(input.tools, history(k5)), text: "D's edit",
+      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(k5)), text: "D's edit",
         category: "reference", scope: "project", topics: [], supports: [`F${fact}`], reason: "D edit." }], skipped: [] }));
       expect(receipt.results[0]).toContain("base is not the latest effective applicable revision");
       expect(receipt.results[0]).toContain(history(cMoved));
@@ -315,7 +315,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       expect(blind).not.toContain("moved rule");
       const corrected = memoryTool.execute({ operations: [{ op: "update", id: currentTag, text: "corrected rule",
         category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: "Correct." },
-        { op: "archive", kind: "budget", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the explicit fixture trigger." }], skipped: [] });
+        { op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(trigger)), supports: [`F${fact}`], reason: "Retire the explicit fixture trigger." }], skipped: [] });
       expect(corrected).toContain('"committed"');
       return { outcome: "success", output: "scenario complete", request };
     });
@@ -472,8 +472,8 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       const dreamed = await scenarios.run(memory, path, input => {
         input.reportRequest({});
         const write = input.tools.find(tool => tool.name === "memory")!;
-        const receipt = JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: readHandle(input.tools, history(item)), supports: [`F${fact}`], reason: "D retires it." },
-          { op: "archive", kind: "budget", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
+        const receipt = JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(item)), supports: [`F${fact}`], reason: "D retires it." },
+          { op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
         expect(receipt.committed).toHaveLength(2);
         return { outcome: "success", output: "D archived it", request: {} };
       });
@@ -517,9 +517,9 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
         // Archive history is inspectable, but only its own exact tag can revive the current archive.
         expect(input.material.changed).toContain("revivable body");
         const write = input.tools.find(tool => tool.name === "memory")!;
-        const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(input.tools, history(archiveCommit)),
+        const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(archiveCommit)),
           text: "revived body", category: "reference", scope: "project", topics: [], supports: [`F${fact}`], reason: "Revived." },
-          { op: "archive", kind: "budget", id: readHandle(input.tools, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
+          { op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
         expect(receipt.committed).toHaveLength(2);
         return { outcome: "success", output: "revived", request: {} };
       });
@@ -699,7 +699,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     const memoryTool = tools.find(tool => tool.name === "memory")!;
     expect((memoryTool.parameters.properties as any).op.enum).toEqual(["create", "update", "archive"]);
     expect(memoryTool.execute(created(f.fact, "manual item"))).toContain('"committed"');
-    const tag = readHandle(tools, "K1");
+    const tag = readHandle(address => memoryFiles(memory, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id }).read(address).content, "K1");
     expect(memoryTool.execute({ ...created(f.fact, "changed"), op: "update", id: tag })).toContain("Dreamer");
     expect(memoryTool.execute({ op: "archive", kind: "budget", id: tag, supports: [`F${f.fact}`], reason: "Retired." })).toContain('"committed"');
   });

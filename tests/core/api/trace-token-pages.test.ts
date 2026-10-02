@@ -1,348 +1,66 @@
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { sourceSeededMemory , hydrate } from "../../source-fixture.ts";
-import { legacyFacts } from "../../support/seed.ts";
-import { drainTrace, tracePage, wholeTrace } from "../../trace-pages.ts";
-import { finish, listingLine, renderTrace, tokens } from "../../../src/core/render/index.ts";
-import * as rendering from "../../../src/core/render/index.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+// Ticket 118 rulings 6/7 and Paging retire public trace cursors, mixed-address lists and
+// Core-owned item/page ceilings. Keep the independent whole-entry and write-authority contracts.
+import { afterEach, beforeEach, expect, test } from "vitest";
+import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 
-const time = "2026-09-11T00:00:00Z";
-let memory: ReturnType<typeof sourceSeededMemory>, admittedScenarios: AdmittedDreamerScenarios;
-beforeEach(() => {
-  admittedScenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected model call"); });
-  memory = sourceSeededMemory(":memory:", admittedScenarios.agent);
-});
+let memory: ReturnType<typeof sourceSeededMemory>;
+beforeEach(() => { memory = sourceSeededMemory(":memory:", async () => { throw new Error("offline fixture"); }); });
 afterEach(() => memory.close());
+
 function corpus() {
   const store = memory.store;
-  const projectId = store.createProject({ name: "pagination", declaredBy: "mark" }).id;
-  const sessionId = store.createSession({ host: "fake", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true }).id;
-  const turn = store.appendTurn({ sessionId, kind: "turn", userPrompt: "USER-ONLY", assistantText: "ASSISTANT-ONLY", startedAt: time });
-  const script = '中文😀𠮷 é👨‍👩‍👧‍👦 \\"\n\t\\uD83D\\uDE00 </script> '.repeat(600) + "SCRIPT-END";
+  const projectId = store.createProject({ name: "entries", declaredBy: "mark" }).id;
+  const sessionId = store.createSession({ host: "fake", projectId, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true }).id;
+  const turn = store.appendTurn({ sessionId, kind: "turn", userPrompt: "USER-ONLY", assistantText: "ASSISTANT-ONLY", startedAt: "now" });
+  const script = '中文😀𠮷 é👨‍👩‍👧‍👦 \\"\n\\t\\uD83D\\uDE00 </script> '.repeat(600) + "SCRIPT-END";
   const result = "RESULT-START " + "🧪数据 abc123 ".repeat(900) + " RESULT-END\r\n\n";
   store.appendToolCall({ turnId: turn.id, name: "bash", input: JSON.stringify({ command: script }), result, status: "success" });
   store.appendToolCall({ turnId: turn.id, name: "read", input: '{"path":"OTHER-CALL"}', result: "OTHER-RESULT", status: "success" });
   return { sessionId, turn, script, result };
 }
-function rendered(turnId: number, full = true, part?: "user" | "assistant" | `t${number}`, branch?: string) {
-  const turn = memory.store.getTurn(turnId)!;
-  const entries = hydrate(memory.store.listSourceEntries(turn.sessionId, turnId, full ? undefined : branch), memory.store);
-  if (part) {
-    const ordinal = part === "user" ? 1 : part === "assistant" ? 2 : Number(part.slice(1));
-    const selected = entries.find(entry => entry.entryOrdinal === ordinal)!;
-    // The oracle renders the stored entry directly; it must not reuse the paging API under test.
-    return finish(renderTrace(turn, [selected], memory.config.render, { full, blocks: true }));
-  }
-  const body = finish(renderTrace(turn, entries, memory.config.render, { full }));
-  return `${body}\nRaw: T${turnId}#E${entries[0]!.entryOrdinal}..E${entries.at(-1)!.entryOrdinal}`;
-}
-const boundUser = (turnId: number) => hydrate(memory.store.listSourceEntries(memory.store.getTurn(turnId)!.sessionId, turnId), memory.store)
-  .find(entry => entry.role === "user")!;
-function historicalFact(sessionId: number, turnId: number, text: string, negate: { target: string; strength: "strong" }[] = []) {
-  const entry = boundUser(turnId);
-  return legacyFacts(memory.store, { kind: "manual", sessionId, branch: "main", createdAt: time }, [{
-    category: "observation", actor: "user", text, negate, createdAt: time,
-    sources: [{ entry, address: `T${turnId}#E${entry.entryOrdinal}` }],
-  }]).facts[0]!;
-}
 
-test("omission receipts expand only the exact source call, including its result", () => {
-  const { turn, script, result } = corpus();
-  const preview = wholeTrace(memory, `T${turn.id}`);
-  const instructions = [...preview.matchAll(/expand: trace\(([^\n]+)\)/g)].map(m => JSON.parse(m[1]!));
-  expect(instructions).toEqual([3, 4].map(ordinal => ({ address: `T${turn.id}#E${ordinal}`,
-    itemBudget: null, toolCallBudget: null, toolResultBudget: null })));
-  const expanded = instructions.map(instruction => wholeTrace(memory, instruction.address, instruction)).join("\n");
-  expect(expanded).toBe([3, 4].map(ordinal => rendered(turn.id, true, `t${ordinal}`)).join("\n"));
-  expect(expanded).toContain(`command=${JSON.stringify(script)}`);
-  expect(expanded).toContain(result);
-  for (const absent of ["USER-ONLY", "ASSISTANT-ONLY", "OTHER-CALL", "OTHER-RESULT", "omitted calls", "characters truncated"]) expect(expanded).not.toContain(absent);
+test("118: one exact Raw entry is whole, preserving Unicode, escapes and source isolation", () => {
+  const { sessionId, turn, script, result } = corpus();
+  const files = memoryFiles(memory, { sessionId, branch: "main", headTurnId: turn.id });
+  const root = `/tm/raw/S${sessionId}/T${turn.id}`;
+  const call = files.read(`${root}#E3@assistant`);
+  const observation = files.read(`${root}#E4@observation`);
+  expect(call.unbounded).toBe(true);
+  expect(call.content).toContain(`command=${JSON.stringify(script)}`);
+  expect(call.content).not.toContain("USER-ONLY");
+  expect(call.content).not.toContain("OTHER-CALL");
+  expect(observation.content).toContain(result);
+  expect(observation.content).not.toContain("OTHER-RESULT");
+  expect(() => files.read(`${root}#E3@user`)).toThrow(/role does not match/);
+  const overview = files.read(root).content;
+  expect(overview).toContain(`[S${sessionId}/T${turn.id}]`);
+  expect(overview).toContain(`[T${turn.id}#E3@assistant]`);
+  expect(overview).toContain(`[T${turn.id}#E4@observation]`);
+  expect(overview).toContain(`${root}#E3`);
+  expect(overview).toContain(`${root}#E4`);
+  expect(overview).toContain("omitted calls"); // A bounded call may retain its tail, including SCRIPT-END.
 });
 
-test.each([1, 2, 100])("full source and assembled trace are lossless within both budgets, cap=%s", cap => {
-  const { turn } = corpus();
-  for (const part of [undefined, "t3", "user", "assistant"] as const) {
-    const address = `T${turn.id}${part ? `#E${part === "user" ? 1 : part === "assistant" ? 2 : 3}` : ""}`;
-    const result = drainTrace(memory, memory.trace(address, { full: true, cap }), { cap });
-    expect(result.joined).toBe(rendered(turn.id, true, part));
-    if (!part || part === "t3") expect(result.pages).toBeGreaterThan(3);
-  }
-});
-
-test("mixed and repeated addresses have one cursor stream, without nested cursors or dropped tails", () => {
-  const { turn } = corpus();
-  const address = `T${turn.id}#E3,T${turn.id}#E2,T${turn.id}#E3`;
-  const first = memory.trace(address, { full: true });
-  const result = drainTrace(memory, first);
-  expect(result.joined).toBe([rendered(turn.id, true, "t3"), rendered(turn.id, true, "assistant"), rendered(turn.id, true, "t3")].join("\n"));
-  expect(result.joined).not.toContain("cursor=");
-});
-
-test.each([false, true])("pending text, later named material and occurrences freeze before branch/profile changes, full=%s", full => {
-  const { sessionId, turn } = corpus();
-  const originalIds = hydrate(memory.store.listSourceEntries(sessionId, turn.id), memory.store).map(e => e.id);
-  memory.selectEntries(sessionId, "main", originalIds);
-  const expected = rendered(turn.id, full, undefined, "main");
-  const options = { sessionId, branch: "main", full, cap: 1 };
-  const first = memory.trace(`T${turn.id},T${turn.id}`, options);
-  const result = drainTrace(memory, first, options, page => {
-    if (page !== 1) return;
-    expect(memory.store.db.isTransaction).toBe(false);
-    const later = memory.appendEntry({ sessionId, turnId: turn.id, nativeLineage: "fixture", nativeId: "later-result", role: "toolResult", text: "", raw: "{}",
-      calls: [{ ordinal: 1, callId: "call-1", name: "bash", result: "UNREAD-LATER-RESULT", status: "success" }] });
-    memory.selectEntries(sessionId, "main", [originalIds[0]!, later.id]);
-    memory.config.render.toolInputTokens = 1000;
-    memory.config.render.toolResultTokens = 1000;
-  });
-  expect(result.joined).toBe([expected, expected].join("\n"));
-  expect(result.joined).not.toContain("UNREAD-LATER-RESULT");
-});
-
-test("session listing freezes its Turn set before new Turns arrive", () => {
-  const { sessionId, turn } = corpus();
-  const expected = listingLine(finish(renderTrace(turn, hydrate(memory.store.listSourceEntries(sessionId, turn.id), memory.store), memory.config.render, { full: false })));
-  const first = memory.trace(`S${sessionId}`);
-  memory.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: "UNREAD-NEW-TURN", startedAt: time });
-  expect(drainTrace(memory, first).joined).toBe(expected);
-});
-
-test("token-limited intervals render only one lookahead and freeze relations and membership", () => {
-  const { sessionId, turn } = corpus();
-  const commit = (text: string, negate?: { target: string; strength: "strong" }[]) => historicalFact(sessionId, turn.id, text, negate);
-  for (let i = 0; i < 100; i++) expect(commit(`fact-${i} ${"事实😀".repeat(2000)}`).id).toBe(i + 1);
-  const reads = vi.spyOn(memory.store, "getFact");
-  // 93 removes fact intervals; explicit fact addresses still freeze named relations.
-  const first = memory.trace(Array.from({ length: 100 }, (_, i) => `F${i + 1}`).join(","));
-  expect(reads.mock.calls.length).toBe(1);
-  reads.mockRestore();
-  expect(commit("UNREAD-NEW-FACT", [{ target: "F100", strength: "strong" }]).id).toBe(101);
-  const all = drainTrace(memory, first).joined;
-  expect(all).not.toContain("UNREAD-NEW-FACT");
-  expect(all).not.toContain("inbound negate");
-  for (let i = 1; i <= 100; i++) expect(all.split(`[F${i}]`)).toHaveLength(2);
-  expect(wholeTrace(memory, "F100")).toContain("inbound negate F101 strong");
-});
-
-test("rejected continuations do not consume trace cursors or loosen frozen budgets", () => {
-  const { sessionId, turn } = corpus();
-  const options = { full: true, sessionId, maxTokens: 256 };
-  const first = memory.trace(`T${turn.id}#E3`, options), cursor = tracePage(first).cursor!;
-  for (const maxTokens of [0, 1, -1, 1.5, Infinity, NaN, 257, null, "256"]) {
-    expect(() => memory.trace(`cursor=${cursor}`, { sessionId, maxTokens: maxTokens as number })).toThrow(/maxTokens/);
-  }
-  expect(() => memory.search("", "raw", { sessionId, cursor })).toThrow(/search cannot continue a trace cursor/);
-  expect(() => memory.trace(`cursor=${cursor}`, { sessionId, cap: 0 })).toThrow(/cap/);
-  expect(() => memory.trace(`T${turn.id},cursor=${cursor}`, { sessionId })).toThrow(/alone/);
-  expect(() => memory.trace(`cursor=${cursor}`, { sessionId: sessionId + 1 })).toThrow(/unknown or expired/);
-  expect(drainTrace(memory, first, options).joined).toBe(rendered(turn.id, true, "t3"));
-});
-
-test("41 repair: trace accepts repeated effective defaults and freezes the configured entry profile", () => {
-  const { sessionId, turn } = corpus();
-  const first = memory.trace(`T${turn.id}`, { sessionId, cap: 1 });
-  const cursor = tracePage(first).cursor!;
-  const repeated = { sessionId, cap: 1, pageBudget: 2000, itemBudget: memory.config.render.entryTokens,
-    toolCallBudget: memory.config.render.toolInputTokens, toolResultBudget: memory.config.render.toolResultTokens };
-  expect(memory.trace(`cursor=${cursor}`, repeated)).not.toContain("unknown or expired cursor");
-
-  const changed = memory.trace(`T${turn.id}`, { sessionId, cap: 1 }), changedCursor = tracePage(changed).cursor!;
-  expect(() => memory.trace(`cursor=${changedCursor}`, { sessionId, full: true })).toThrow("cursor itemBudget is frozen");
-  expect(() => memory.trace(`cursor=${changedCursor}`, { ...repeated, itemBudget: repeated.itemBudget + 1 })).toThrow("cursor itemBudget is frozen");
-  expect(memory.trace(`cursor=${changedCursor}`, repeated)).not.toContain("unknown or expired cursor");
-
-  const unbounded = memory.trace(`T${turn.id}#E3`, { sessionId, full: true, pageBudget: null });
-  expect(unbounded).not.toContain("cursor=");
-  expect(unbounded).toBe(rendered(turn.id, true, "t3"));
-});
-
-test.each([
-  { direction: "three null ceilings to full:true", first: { itemBudget: null, toolCallBudget: null, toolResultBudget: null }, second: { full: true } },
-  { direction: "full:true to three null ceilings", first: { full: true }, second: { itemBudget: null, toolCallBudget: null, toolResultBudget: null } },
-])("raw Turn pagination treats $direction as one effective profile", ({ first, second }) => {
-  const { sessionId, turn } = corpus();
-  let page = memory.trace(`T${turn.id}`, { ...first, sessionId, pageBudget: 256 });
-  let joined = "", separator = "", pages = 0;
-  for (;;) {
-    const parsed = tracePage(page);
-    joined += separator + parsed.body;
-    pages++;
-    if (!parsed.cursor) break;
-    separator = parsed.fragment ? "" : "\n";
-    if (pages === 1) {
-      expect(() => memory.trace(`cursor=${parsed.cursor}`, { sessionId, itemBudget: 64 })).toThrow("cursor itemBudget is frozen");
-      expect(() => memory.trace(`cursor=${parsed.cursor}`, { sessionId, pageBudget: 257 })).toThrow("cursor pageBudget is frozen");
-      expect(() => memory.trace(`cursor=${parsed.cursor}`, { sessionId, cap: 99 })).toThrow("cursor cap is frozen");
-      page = memory.trace(`cursor=${parsed.cursor}`, { ...second, sessionId, pageBudget: 256 });
-    } else {
-      // Once equivalence is established, every frozen option can be omitted.
-      page = memory.trace(`cursor=${parsed.cursor}`, { sessionId });
-    }
-  }
-  expect(pages).toBeGreaterThan(2);
-  expect(joined).toBe(rendered(turn.id));
-});
-
-test.each(["facade", "tool"])("%s preserves explicit-cursor address compatibility and priority", entry => {
-  const { sessionId, turn } = corpus();
-  const address = `T${turn.id}#E3`;
-  const trace = memory.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" }).find(t => t.name === "trace")!;
-  const read = (address: string, cursor?: string) => entry === "facade"
-    ? memory.trace(address, { sessionId, full: true, cursor }) : trace.execute({ address, full: true, cursor });
-  let page = read(address), joined = "", fragment = false, pages = 0;
-  const placeholders = [address, "unused placeholder", "", "K1,T1", "cursor=bogus"];
-  for (;;) {
-    expect(page).not.toContain("rejected:");
-    const parsed = tracePage(page);
-    joined += joined && !fragment ? `\n${parsed.body}` : parsed.body;
-    fragment = parsed.fragment;
-    if (!parsed.cursor) break;
-    expect(trace.execute({ cursor: parsed.cursor })).toContain("rejected: address must be a string");
-    // Explicit options.cursor retains priority over a standalone address cursor.
-    page = read(placeholders[pages++ % placeholders.length]!, parsed.cursor);
-    expect(pages).toBeLessThan(100);
-  }
-  expect(pages).toBeGreaterThanOrEqual(placeholders.length);
-  expect(joined).toBe(rendered(turn.id, true, "t3"));
-});
-
-test.each([64, 80, 96, 128])("tiny shared budget %s advances losslessly with Unicode and escapes", maxTokens => {
-  const { turn } = corpus();
-  const options = { full: true, maxTokens };
-  let first: string;
-  try { first = memory.trace(`T${turn.id}#E3`, options); }
-  catch (error) { expect(String(error)).toMatch(/maxTokens is too small/); return; }
-  expect(drainTrace(memory, first, options).joined).toBe(rendered(turn.id, true, "t3"));
-});
-
-test.each(["😀", "𠮷", "👨‍👩‍👧‍👦", "é", "\\\\uD83D\\\\uDE00", "\\\\\\\"\\\\n", "abc123"])("page probes preserve script classification and escaped bytes: %s", unit => {
+test.each(["😀", "𠮷", "👨‍👩‍👧‍👦", "é", "\\\\uD83D\\\\uDE00", "\\\\\\\"\\\\n", "abc123"])("118: exact user entry preserves repeated script bytes: %s", unit => {
   const { sessionId, turn } = corpus();
   const text = unit.repeat(2000);
-  const t = memory.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: text, startedAt: time });
-  const options = { full: true, maxTokens: 128 };
-  expect(drainTrace(memory, memory.trace(`T${t.id}#E1@user`, options), options).joined).toBe(`[T${t.id}#E1@user] user: ${text}`);
+  const later = memory.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: text, startedAt: "now" });
+  const exact = memoryFiles(memory, { sessionId, branch: "main", headTurnId: later.id }).read(`/tm/raw/S${sessionId}/T${later.id}#E1@user`);
+  expect(exact.content).toContain(`[T${later.id}#E1@user] user: ${text}`);
+  expect(exact.content).toContain(text.slice(-100));
+  expect(exact.unbounded).toBe(true);
 });
 
-test.each(["K1@v1", "F1,K1@v1,T1#E3"])("admitted Dreamer drains token-paged historical %s losslessly", async address => {
+test("118/92: reading an exact tagged knowledge body does not grant manual update authority", () => {
   const { sessionId, turn } = corpus();
-  const run = { kind: "manual" as const, sessionId, branch: "main", createdAt: time };
-  expect(historicalFact(sessionId, turn.id, "evidence").id).toBe(1);
-  const created = memory.store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "h1", author: "fake", text: "知识😀".repeat(1_800),
-    category: "understanding", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] });
-  expect(created.ok).toBe(true);
-  const selectedEntries = hydrate(memory.store.listSourceEntries(sessionId, turn.id), memory.store);
-  memory.selectEntries(sessionId, "main", selectedEntries.map(entry => entry.id));
-  const path = { sessionId, headTurnId: turn.id, branch: "main", triggerEntryId: selectedEntries.at(-1)!.id };
-  const firstTrigger = createDreamerTrigger(memory, path, 1, 1, "project");
-  const settled = await admittedScenarios.run(memory, path, input => {
-    const request = { fixture: "make pagination target historical" }; input.reportRequest(request);
-    const trace = input.tools.find(t => t.name === "trace")!, write = input.tools.find(t => t.name === "memory")!;
-    trace.execute({ address: "K1@v1", itemBudget: null });
-    write.execute({ operations: [{ op: "update", id: `K1#${memory.store.versionTag(1, 1)}`, text: "current replacement", category: "understanding", scope: "project",
-      supports: ["F1"], reason: "Make the large revision historical for the stateless pagination test.", topics: [] },
-    { op: "archive", kind: "budget", id: `K${firstTrigger.knowledgeId}#${memory.store.versionTag(firstTrigger.knowledgeId, firstTrigger.commit)}`, supports: ["F1"], reason: "Retire the initial pagination trigger." }], skipped: [] });
-    return { outcome: "success", output: "settled", request };
-  });
-  if (settled.outcome !== "success") throw new Error(JSON.stringify(settled));
-  const trigger = createDreamerTrigger(memory, path, 1, 2, "project");
-  const expected = wholeTrace(memory, address, { full: true, modelFacing: true, ...path });
-  const result = await admittedScenarios.run(memory, path, input => {
-    const request = { fixture: "token-paged handle", trigger }; input.reportRequest(request);
-    const trace = input.tools.find(t => t.name === "trace")!, write = input.tools.find(t => t.name === "memory")!;
-    let page = trace.execute({ address, full: true }), pages = 0, joined = "", fragment = false;
-    for (;;) {
-      expect(page).not.toContain("rejected:");
-      expect(tokens(page)).toBeLessThanOrEqual(2000);
-      const parsed = tracePage(page), cursor = parsed.cursor;
-      joined += joined && !fragment ? `\n${parsed.body}` : parsed.body;
-      fragment = parsed.fragment;
-      if (!cursor) break;
-      page = trace.execute({ address: `cursor=${cursor}` });
-      expect(++pages).toBeLessThan(100);
-    }
-    expect(pages).toBeGreaterThan(1);
-    expect(joined).toBe(expected);
-    const tag = `K${trigger.knowledgeId}#${memory.store.versionTag(trigger.knowledgeId, trigger.commit)}`;
-    trace.execute({ address: tag, itemBudget: null });
-    write.execute({ operations: [{ op: "archive", kind: "budget", id: tag,
-      supports: ["F1"], reason: "Retire the explicit fixture trigger." }], skipped: [] });
-    return { outcome: "success", output: "pagination checked", request };
-  });
-  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-});
-
-test.each([128, 400, 2000])("non-monotone intact Unicode lines take one page when they fit: %s emoji", count => {
-  const { sessionId, turn } = corpus();
-  const text = `needle ${"😀".repeat(count)}a`;
-  const t = memory.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: text, startedAt: time });
-  expect(tokens("😀".repeat(128))).toBe(143);
-  expect(tokens("😀".repeat(128) + "a")).toBe(37);
-  const expected = `[T${t.id}#E1@user] user: ${text}`;
-  expect(memory.trace(`T${t.id}#E1@user`, { full: true, maxTokens: Math.max(128, tokens(expected)) })).toBe(expected);
-  const search = memory.search("needle", "raw", { maxTokens: 8000 });
-  expect(search).not.toContain("cursor=");
-  expect(memory.search("needle", "raw", { maxTokens: Math.max(128, tokens(search)) })).toBe(search);
-});
-
-test("named multi-address values freeze under the transaction, but rendering and estimation never run there", () => {
-  const { sessionId, turn } = corpus();
-  const store = memory.store;
-  const run = { kind: "manual" as const, sessionId, branch: "main", createdAt: time };
-  expect(historicalFact(sessionId, turn.id, "original fact").id).toBe(1);
-  expect(store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "h1", author: "fake", text: "original knowledge",
-    category: "understanding", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] }).ok).toBe(true);
-  const address = `T${turn.id},S${sessionId},pagination,F1,K1,F1`; // 93 removes F intervals; repeated addresses remain valid.
-  const expected = wholeTrace(memory, address);
-  const spies = (["renderTrace", "renderFact", "renderKnowledgeTrace", "tokens"] as const).map(name => {
-    const original = rendering[name];
-    return vi.spyOn(rendering, name).mockImplementation(((...args: never[]) => {
-      expect(store.db.isTransaction, name).toBe(false);
-      return (original as Function)(...args);
-    }) as never);
-  });
-  const readSnapshot = store.readSnapshot.bind(store);
-  let changed = false;
-  const snapshot = vi.spyOn(store, "readSnapshot").mockImplementation(body => {
-    const value = readSnapshot(body);
-    if (!changed) {
-      changed = true;
-      store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: "NEW-TURN", startedAt: time });
-      memory.appendEntry({ sessionId, turnId: turn.id, nativeLineage: "fixture", nativeId: "new-after-freeze", role: "toolResult", text: "", raw: "{}",
-        calls: [{ ordinal: 1, callId: "call-1", name: "bash", result: "NEW-RESULT", status: "success" }] });
-      expect(historicalFact(sessionId, turn.id, "NEW-NEGATION", [{ target: "F1", strength: "strong" }]).id).toBe(2);
-      memory.config.render.toolInputTokens = 1000;
-      memory.config.render.toolResultTokens = 1000;
-    }
-    return value;
-  });
-  try {
-    expect(wholeTrace(memory, address, { cap: 1 })).toBe(expected);
-    expect(changed).toBe(true);
-    for (const spy of spies) expect(spy).toHaveBeenCalled();
-  } finally { snapshot.mockRestore(); for (const spy of spies) spy.mockRestore(); }
-});
-
-test("large lines are priced whole once, then only page-sized prefixes on continuation", () => {
-  const { turn } = corpus();
-  const read = (size: number) => {
-    const text = "abc123 中文😀 ".repeat(size);
-    const t = memory.store.appendTurn({ sessionId: turn.sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: text, startedAt: time });
-    const original = String.prototype.split;
-    let measured = 0, first = "";
-    String.prototype.split = function (this: string, separator: any, limit?: number) {
-      if (separator instanceof RegExp) measured += this.length;
-      return original.call(this, separator, limit);
-    } as typeof original;
-    let initial = 0;
-    try {
-      first = memory.trace(`T${t.id}#E1@user`, { full: true });
-      initial = measured;
-      measured = 0;
-      const cursor = tracePage(first).cursor!;
-      first = memory.trace(`cursor=${cursor}`);
-    } finally { String.prototype.split = original; }
-    expect(tokens(first)).toBeLessThanOrEqual(2000);
-    expect(initial).toBeLessThan(text.length * 2 + 100_000);
-    return measured;
-  };
-  expect(read(100_000)).toBeLessThan(read(1000) * 2);
+  const tools = memory.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" });
+  const note = tools.find(tool => tool.name === "note")!, write = tools.find(tool => tool.name === "memory")!;
+  const fact = JSON.parse(note.execute({ title: "Script decision", sources: `[T${turn.id}#E1] USER-ONLY` })).factIds[0];
+  const created = JSON.parse(write.execute({ op: "create", text: "Keep exact scripts", category: "constraint", scope: "project",
+    topics: [], supports: [`F${fact}`], reason: "User decision" }));
+  const id = created.committed[0].knowledgeId;
+  const tag = `K${id}#${memory.store.versionTag(id, memory.store.resolveVersionOrdinal(id, 1))}`;
+  expect(memoryFiles(memory, { sessionId, branch: "main", headTurnId: turn.id }).read(`/tm/${tag}`).content).toContain("Keep exact scripts");
+  expect(write.execute({ op: "update", id: tag, text: "Unauthorized rewrite", category: "constraint", scope: "project",
+    topics: [], supports: [`F${fact}`], reason: "Read is not authority" })).toContain("Dreamer");
 });

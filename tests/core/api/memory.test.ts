@@ -4,6 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { skipRest } from "../../dreaming-skips.ts";
+import { memoryFiles } from "../../../src/core/api/files.ts";
 let memory: ReturnType<typeof sourceSeededMemory>, admittedScenarios: AdmittedDreamerScenarios, triggerEntryId: number;
 afterEach(() => memory?.close());
 const create = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
@@ -20,18 +21,18 @@ function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>) {
   const source = memory.store.getSourceEntry(entries[0]!.id)!;
   const evidence = seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Use pnpm", [{ entry: source, text: "Use pnpm" }]);
   expect(evidence.text).toBe("Use pnpm");
-  return memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[3]!;
+  return memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!;
 }
 const success = (): RunAgentResult => ({ outcome: "success", output: "Done", request: { last: true } });
 const integrate = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
-const read = (id: number, version = 1) => readHandle(memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }), `K${id}@v${version}`);
+const read = (id: number, version = 1) => readHandle(path => memoryFiles(memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(path).content, `K${id}@v${version}`);
 const dreamPath = () => ({ sessionId: 1, branch: "main", headTurnId: 1, triggerEntryId });
 
 test("payload-free acknowledgement preserves explicit native request-audit unavailability", async () => {
   setup(async input => {
     input.acknowledgeRequest();
-    input.tools[2]!.execute({});
-    expect(JSON.parse(input.tools[3]!.execute(batch)).held).toHaveLength(1);
+    input.tools.find(tool => tool.name === "note")!.execute({});
+    expect(JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute(batch)).held).toHaveLength(1);
     return { outcome: "success", output: "done", audit: { available: false, reason: "native request body unavailable" } };
   });
   const result = await integrate();
@@ -44,8 +45,8 @@ test("payload-free acknowledgement preserves explicit native request-audit unava
 test("N publishes its held batch only on normal terminal success", async () => {
   setup(async input => {
     input.reportRequest({ first: true });
-    input.tools[2]!.execute({});
-    expect(input.tools[3]!.execute(batch)).toContain("held");
+    input.tools.find(tool => tool.name === "note")!.execute({});
+    expect(input.tools.find(tool => tool.name === "memory")!.execute(batch)).toContain("held");
     expect(memory.store.getKnowledge(1)).toBeNull();
     expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
     return success();
@@ -62,8 +63,8 @@ test("N publishes its held batch only on normal terminal success", async () => {
 
 test("a rejected batch can be corrected before the first valid submission", async () => {
   setup(async input => {
-    const write = input.tools[3]!; input.reportRequest({ first: true });
-    input.tools[2]!.execute({});
+    const write = input.tools.find(tool => tool.name === "memory")!; input.reportRequest({ first: true });
+    input.tools.find(tool => tool.name === "note")!.execute({});
     expect(write.execute({ ...create, supports: [] })).toContain("rejected:");
     expect(memory.store.getKnowledge(1)).toBeNull();
     input.reportRequest({ second: true });
@@ -77,8 +78,8 @@ test("a rejected batch can be corrected before the first valid submission", asyn
 for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`N ${mode} after staging publishes nothing`, async () => {
   setup(async input => {
     input.reportRequest({ provider: "captured" });
-    input.tools[2]!.execute({ title: "Additional evidence", sources: "[T1#E1] Additional evidence" });
-    expect(input.tools[3]!.execute(batch)).toContain("held");
+    input.tools.find(tool => tool.name === "note")!.execute({ title: "Additional evidence", sources: "[T1#E1] Additional evidence" });
+    expect(input.tools.find(tool => tool.name === "memory")!.execute(batch)).toContain("held");
     expect(memory.store.getKnowledge(1)).toBeNull();
     if (mode === "throw" || mode === "abort") { const error = new Error("late provider error"); if (mode === "abort") error.name = "AbortError"; throw error; }
     return { outcome: mode, output: "late provider error", request: { final: true } };
@@ -125,10 +126,10 @@ test("116: manual memory rejects malformed operations independently of valid com
 test("116: N rejects skipped without publishing its held operation", async () => {
   setup(async input => {
     for (const skipped of [null, { fact: "F999", because: "not durable" }, { fact: "F1", because: "" }, { fact: "F1", because: "skip", id: "F1" }]) {
-      expect(input.tools[3]!.execute({ operations: [create], skipped: [skipped] })).toContain("rejected:");
+      expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [create], skipped: [skipped] })).toContain("rejected:");
       expect(memory.store.getKnowledge(1)).toBeNull();
     }
-    input.tools[2]!.execute({});
+    input.tools.find(tool => tool.name === "note")!.execute({});
     return success();
   });
   const result = await integrate();
@@ -154,8 +155,8 @@ test("manual memory accepts create and archive but rejects Dreamer maintenance o
 test("N terminal success-audit failure rolls back facts, knowledge and Raw progress", async () => {
   setup(async input => {
     input.reportRequest({ first: true });
-    expect(input.tools[2]!.execute({ title: "New evidence", sources: "[T1#E1] New evidence" })).toContain("held");
-    expect(input.tools[3]!.execute({ ...create, supports: ["$1"] })).toContain("held");
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ title: "New evidence", sources: "[T1#E1] New evidence" })).toContain("held");
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ ...create, supports: ["$1"] })).toContain("held");
     return success();
   });
   memory.store.db.exec(`CREATE TEMP TRIGGER reject_success_audit BEFORE INSERT ON runs
@@ -178,8 +179,8 @@ test("N terminal success-audit failure rolls back facts, knowledge and Raw progr
 test("N post-success claim-release failure reports cleanup without undoing terminal publication", async () => {
   setup(async input => {
     input.reportRequest({ exact: "terminal request" });
-    input.tools[2]!.execute({ title: "New evidence", sources: "[T1#E1] New evidence" });
-    input.tools[3]!.execute({ ...create, supports: ["$1"] });
+    input.tools.find(tool => tool.name === "note")!.execute({ title: "New evidence", sources: "[T1#E1] New evidence" });
+    input.tools.find(tool => tool.name === "memory")!.execute({ ...create, supports: ["$1"] });
     return success();
   });
   const release = vi.spyOn(memory.store, "releaseClaim").mockImplementation(() => { throw new Error("cleanup unavailable"); });
@@ -207,8 +208,10 @@ test("21a 2026-09-08: create, update, merge and archive all carry nonempty suppo
   createDreamerTrigger(memory, path, 1, 1, "project");
   const result = await admittedScenarios.run(memory, path, input => {
     const request = { fixture: "supports on merge and archive" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, dream = input.tools.find(tool => tool.name === "memory")!;
-    trace.execute({ address: "K1@v1,K2@v1", itemBudget: null });
+    const dream = input.tools.find(tool => tool.name === "memory")!;
+    const files = memoryFiles(memory, path);
+    expect(files.read("/tm/K1@v1").content).toContain("Use pnpm");
+    expect(files.read("/tm/K2@v1").content).toContain("Commit the lockfile");
     const merge = JSON.parse(dream.execute({ operations: [{ op: "merge", id: read(1), absorb: [read(2)], text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Two readings of one packaging rule." }], skipped: [] }));
     expect(merge.committed).toHaveLength(1);
     const merged = merge.committed[0]; expect(merged.version).toBe("K1@v2");
@@ -265,7 +268,7 @@ test("21a 2026-09-08: an omitted, wrongly typed or empty reason or supports reje
 
 test("21a/116: removed because is rejected and cannot satisfy a required N memory call", async () => {
   setup(async input => {
-    const write = input.tools[3]!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
     for (const bad of [{ ...create, because: ["F1"] }, { ...create, because: [] }, { ...create, because: "prompted by the user" },
       { op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", because: ["F1"] }]) {
       const result = JSON.parse(write.execute(bad));
@@ -274,7 +277,7 @@ test("21a/116: removed because is rejected and cannot satisfy a required N memor
       expect(memory.store.getKnowledge(1)).toBeNull();
     }
     // Invalid call syntax cannot satisfy the mandatory knowledge-tool call.
-    input.tools[2]!.execute({});
+    input.tools.find(tool => tool.name === "note")!.execute({});
     return success();
   });
   expect((await integrate()).outcome).toBe("failure");
@@ -293,8 +296,8 @@ test("21a 2026-09-08: one supports list holds both the text's grounds and the fa
   createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
   const result = await admittedScenarios.run(memory, dreamPath(), input => {
     const request = { fixture: "multi-fact supports" }; input.reportRequest(request);
-    input.tools[0]!.execute({ address: "K1@v1", itemBudget: null });
-    expect(input.tools[3]!.execute({ operations: [update], skipped: [] })).toContain("committed");
+    expect(memoryFiles(memory, dreamPath()).read("/tm/K1@v1").content).toContain("Use pnpm");
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [update], skipped: [] })).toContain("committed");
     expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
     return { outcome: "success", output: "updated", request };
   });
@@ -311,8 +314,8 @@ test("21a 2026-09-08: reason shows in commit history, diffs and the run, never i
   let updatedCommit = 0;
   const result = await admittedScenarios.run(memory, dreamPath(), input => {
     const request = { fixture: "reason history" }; input.reportRequest(request);
-    input.tools[0]!.execute({ address: "K1@v1", itemBudget: null });
-    const receipt = JSON.parse(input.tools[3]!.execute({ operations: [{ op: "update", id: read(1), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
+    expect(memoryFiles(memory, dreamPath()).read("/tm/K1@v1").content).toContain("Use pnpm");
+    const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: read(1), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
     expect(receipt.committed[0].version).toBe("K1@v2");
     updatedCommit = memory.store.resolveVersionOrdinal(1, 2);
     expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
@@ -333,10 +336,10 @@ test("21a 2026-09-08: a reason-only update on a stale base is rejected like any 
   const result = await admittedScenarios.run(memory, dreamPath(), input => {
     const request = { fixture: "stale reason-only update" }; input.reportRequest(request);
     const original = read(1);
-    const sharpened = JSON.parse(input.tools[3]!.execute({ operations: [{ op: "update", id: original, text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Sharpened wording." }], skipped: [] })).committed[0];
+    const sharpened = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: original, text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Sharpened wording." }], skipped: [] })).committed[0];
     expect(sharpened.version).toBe("K1@v2");
-    expect(input.tools[3]!.execute({ operations: [{ op: "update", id: original, text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Classification cleanup only." }], skipped: [] })).toContain("base is not the latest effective applicable revision; current: K1@v2");
-    expect(input.tools[3]!.execute({ operations: [{ op: "update", id: read(1, 2), text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Corrected the stale address without changing the conclusion." }], skipped: [] })).toContain("committed");
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: original, text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Classification cleanup only." }], skipped: [] })).toContain("base is not the latest effective applicable revision; current: K1@v2");
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: read(1, 2), text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Corrected the stale address without changing the conclusion." }], skipped: [] })).toContain("committed");
     expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
     return { outcome: "success", output: "stale corrected", request };
   });
@@ -388,8 +391,10 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   let cleanupCommit = 0, clearedCommit = 0, mergedCommit = 0;
   const result = await admittedScenarios.run(memory, path, input => {
     const request = { fixture: "topic maintenance sequence" }; input.reportRequest(request);
-    const trace = input.tools[0]!, dream = input.tools[3]!;
-    trace.execute({ address: "K1@v1,K2@v1", itemBudget: null });
+    const dream = input.tools.find(tool => tool.name === "memory")!;
+    const files = memoryFiles(memory, path);
+    expect(files.read("/tm/K1@v1").content).toContain("Use pnpm");
+    expect(files.read("/tm/K2@v1").content).toContain("Commit the lockfile");
     const cleanup = JSON.parse(dream.execute({ operations: [{ op: "update", id: read(1), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: ["packaging", "tooling"], reason: "Classification cleanup: the rule also concerns tooling." }], skipped: [] }));
     expect(cleanup.committed[0].version).toBe("K1@v2");
     cleanupCommit = memory.store.resolveVersionOrdinal(1, 2);

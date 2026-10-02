@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { TraceMemory } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { type KnowledgeRevision } from "../../../src/core/model/index.ts";
 import { type KnowledgePath, Store } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -112,9 +112,9 @@ test("64b stateless graph: genuine alternative split operations keep only the op
     let children: number[] = [];
     const dreamed = await scenarios.run(memory, path, input => {
       const request = { fixture: `alternative split ${sequence}` }; input.reportRequest(request);
-      const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-      trace.execute({ address: tag(store, base), itemBudget: null, pageBudget: 8000 });
-      trace.execute({ address: tag(store, trigger), itemBudget: null, pageBudget: 8000 });
+      const write = input.tools.find(tool => tool.name === "memory")!;
+      memoryFiles(memory, path).read(`/tm/${tag(store, base)}`);
+      memoryFiles(memory, path).read(`/tm/${tag(store, trigger)}`);
       const receipt = JSON.parse(write.execute({ operations: [
         { op: "split", id: tag(store, base), supports: [`F${support}`], reason: "Alternative atomic split.",
           children: labels.map(text => ({ text, category: "constraint", topics: [] })) },
@@ -167,9 +167,9 @@ test("64b stateless graph: admitted deep branch defeats a restored sibling from 
     let result!: { knowledgeId: number; commit: number };
     const dreamed = await scenarios.run(memory, path, input => {
       const request = { fixture: `64b deep fork ${sequence}` }; input.reportRequest(request);
-      const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
-      trace.execute({ address: tag(store, prior), itemBudget: null, pageBudget: 8000 });
-      trace.execute({ address: tag(store, trigger), itemBudget: null, pageBudget: 8000 });
+      const write = input.tools.find(tool => tool.name === "memory")!;
+      memoryFiles(memory, path).read(`/tm/${tag(store, prior)}`);
+      memoryFiles(memory, path).read(`/tm/${tag(store, trigger)}`);
       const receipt = JSON.parse(write.execute({ operations: [
         { op: "update", id: tag(store, prior), text, category: "constraint", scope: "global",
           supports: [`F${support}`], reason: "Advance the selected branch.", topics: [] },
@@ -239,9 +239,9 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
   let absorbedSibling = { commit: 0 }, splitSibling = { commit: 0 };
   const siblingRun = await scenarios.run(memory, aPath, input => {
     const request = { fixture: "64b restorable sibling branches" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [scopedParent, survivor, absorbed, splitParent, siblingTrigger])
-      trace.execute({ address: tag(store, item), itemBudget: null, pageBudget: 8000 });
+      memoryFiles(memory, aPath).read(`/tm/${tag(store, item)}`);
     const operated = new Set([absorbed, splitParent, siblingTrigger]
       .map(item => history(store, item)));
     const unchangedSupplied = suppliedHandles(input.material.changed).filter(knowledge => !operated.has(knowledge));
@@ -265,9 +265,9 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
   let scopedChild = 0, mergeCommit = 0, splitChildren: number[] = [];
   const scopeChange = await scenarios.run(memory, aPath, input => {
     const request = { fixture: "64b stateless session scope change" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [scopedParent, sessionTrigger])
-      trace.execute({ address: tag(store, item), itemBudget: null, pageBudget: 8000 });
+      memoryFiles(memory, aPath).read(`/tm/${tag(store, item)}`);
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: tag(store, scopedParent), text: "global child with B support",
         category: "constraint", scope: "global", supports: [`F${bFact.id}`], reason: "Direct child evidence changes scope.", topics: [] },
@@ -284,9 +284,9 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
   const commit = vi.spyOn(store, "commitConsolidationRun");
   const result = await scenarios.run(memory, aPath, input => {
     const request = { fixture: "64b stateless cross-identity graph" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
+    const write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [survivor, absorbed, splitParent, trigger])
-      trace.execute({ address: tag(store, item), itemBudget: null, pageBudget: 8000 });
+      memoryFiles(memory, aPath).read(`/tm/${tag(store, item)}`);
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "merge", id: tag(store, survivor), absorb: [tag(store, absorbed)],
         text: "merged result with B support", category: "constraint", scope: "global", supports: [`F${bFact.id}`],

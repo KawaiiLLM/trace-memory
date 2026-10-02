@@ -10,6 +10,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { host as createHost, reply, notingFact, noteHeld, type Reply } from "./test-host.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
@@ -212,15 +213,15 @@ test("24a: the counts follow the selected branch, so a sibling entry of the same
     .find(value => value.entryOrdinal === ordinal)!;
   fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha rule",
     [{ entry: h.memory.store.getSourceEntry(source(1).id)!, text: "Use alpha everywhere" }]);
-  expect(write("main")[3]!.execute({ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
+  expect(write("main").find(tool => tool.name === "memory")!.execute({ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
     supports: ["F1"], reason: "Admitted from the shared ancestry." })).not.toContain("rejected:");
   // A withdrawal bound to a sibling entry of the same Turn: only main holds it.
   h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });
   await h.emit("agent_end");
   fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha withdrawn",
     [{ entry: h.memory.store.getSourceEntry(source(4).id)!, text: "Pi agent reports alpha withdrawn" }]);
-  const handle = readHandle(write("main"), "K1");
-  expect(write("main")[3]!.execute({ op: "archive", kind: "budget", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." })).not.toContain("rejected:");
+  const handle = readHandle(address => memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(address).content, "K1");
+  expect(write("main").find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." })).not.toContain("rejected:");
   await refresh(h);
   const onMain = footer(h);
   expect(onMain).toMatchObject({ ...enumerated(h), facts: "2", knowledge: "0" }); // archived here

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry , hydrate } from "../../source-fixture.ts";
+import { sourceSeededMemory, memoryFiles, type NotingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry , hydrate } from "../../source-fixture.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import fixture from "../../fixtures/noting/turns.json";
@@ -83,7 +83,7 @@ test("a hosted CC launch cannot silently use canonical names or accept an incomp
 
 test("worker tool names are rendered before capacity, audit and held-result status", async () => {
   const first = turn();
-  const names = Object.fromEntries(Object.keys(canonicalToolNames).map(role => [role, `mcp__trace_memory__${role}`])) as unknown as typeof canonicalToolNames;
+  const names = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", grep: "Grep" };
   const expected = loadPrompt("noting.md", names);
   const canonical = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent" }, memory.config);
   const priced = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent", toolNames: names }, memory.config);
@@ -123,8 +123,8 @@ test("worker tool names are rendered before capacity, audit and held-result stat
 test("fork and refused-fork fresh admissions freeze distinct namespaces, guidance, exact costs and hashes", () => {
   const first = turn();
   const target = { sessionId, branch: "main", headTurnId: first.id, mode: "fork" as const };
-  const forkNames = Object.fromEntries(Object.keys(canonicalToolNames).map(role => [role, `mcp__plugin_trace-memory_traceMemory__${role}`])) as unknown as typeof canonicalToolNames;
-  const freshNames = Object.fromEntries(Object.keys(canonicalToolNames).map(role => [role, `mcp__trace_memory__${role}`])) as unknown as typeof canonicalToolNames;
+  const forkNames = { ...canonicalToolNames, search: "mcp__plugin_trace-memory_traceMemory__search", note: "mcp__plugin_trace-memory_traceMemory__note", memory: "mcp__plugin_trace-memory_traceMemory__memory", check: "mcp__plugin_trace-memory_traceMemory__check", read: "Read", grep: "Grep" };
+  const freshNames = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", grep: "Grep" };
   const forkGuidance = "Use ToolSearch for {{tool.note}} and {{tool.memory}}.";
   const fork = freezeNoting(memory.store, { ...target, effectiveMode: "fork", toolNames: forkNames, forkGuidance }, memory.config);
   const forkPrompt = `${loadPrompt("noting.md", forkNames)}\n\nUse ToolSearch for ${forkNames.note} and ${forkNames.memory}.`;
@@ -300,16 +300,19 @@ test("fixture turn golden and noting input use identical rendering with receipts
   expect(memory.trace("T1")).toBe(golden("turn"));
   expect(memory.trace("T2")).toBe(golden("read"));
   script.push(async (input) => {
-    // 17a: automatic Raw uses completed entries; explicit trace retains its independent full read.
+    // 17a: automatic Raw uses completed entries; an exact /tm entry retains its independent full read.
     const views = hydrate(memory.pendingEntries(sessionId, "main", first.id), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
     expect(input.material.entries.map(e => e.view).join("\n\n")).toBe(views);
-    expect(input.tools[0]!.execute({ address: "T1", full: true })).toBe(memory.trace("T1", { full: true }));
+    const exact = memoryFiles(memory, { sessionId, branch: "main", headTurnId: first.id }).read(`/tm/raw/S${sessionId}/T${first.id}#E1@user`);
+    expect(exact.content).toContain(`[T${first.id}#E1@user]`);
+    expect(exact.unbounded).toBe(true);
     return success([]);
   });
   const result = await memory.noting({ sessionId, branch: "main", headTurnId: first.id, mode: "subagent" });
   if (result.outcome !== "success") throw new Error("expected success");
-  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).fetched[0].input).toEqual({ address: "T1", full: true });
-  expect(calls[0]!.tools[0]!.execute({ address: "T1" })).toContain("finished");
+  // Membership comes from completed native entries, not a fabricated completion word.
+  expect(calls[0]!.material.entries.map(entry => entry.id)).toEqual(
+    memory.store.sourcePath(sessionId, "main", first.id).map(entry => entry.id));
 });
 
 test("fixture fact goldens include quote, sources and both relation directions across turns", async () => {

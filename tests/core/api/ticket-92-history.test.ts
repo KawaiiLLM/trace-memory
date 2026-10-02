@@ -1,6 +1,6 @@
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { expect, test } from "vitest";
-import { sourceSeededMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import type { KnowledgePath, KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 
 test("92/03: branch history owns stable ordinals, membership/status follows the reader, and exact reads grant no write scope", () => {
@@ -40,25 +40,23 @@ test("92/03: branch history owns stable ordinals, membership/status follows the 
     const id = initial.knowledgeId;
     const read = (path: Path, address: string, versions = "current") => {
       activate(path);
-      return memory.tools({ kind: "manual", sessionId: session.id, branch: path.branch, currentTurnId: path.headTurnId! })
-        .find(t => t.name === "trace")!.execute({ address, versions, itemBudget: null, pageBudget: 8000 });
+      return memoryFiles(memory, path).read(`/tm/${address}${versions === "history" ? ".history" : ""}`).content;
     };
     expect([initial, first, second].map(value => store.versionOrdinal(id, value.commit))).toEqual([1, 2, 3]);
     const current = read(paths[1]!, `K${id}`);
-    expect(current).toContain(`[K${id}@v2]`);
+    expect(current).toContain(`[K${id}#${store.versionTag(id, first.commit)}]`);
     expect(current).toContain("Left body");
     expect(current).not.toContain("Right body");
     expect(current).not.toContain("Initial body");
     const history = read(paths[1]!, `K${id}`, "history");
-    expect(history).toContain(`[K${id}@v1]`);
-    expect(history).toContain(`[K${id}@v2]`);
+    expect(history).toContain(`[K${id}#${store.versionTag(id, initial.commit)}]`);
+    expect(history).toContain(`[K${id}#${store.versionTag(id, first.commit)}]`);
     expect(history).not.toContain("Right body");
     expect(history).toContain("superseded");
-    const all = read(paths[1]!, `K${id}`, "all");
-    expect(all).toContain(`[K${id}@v3]`);
-    expect(all).toContain("another branch");
+    const all = read(paths[1]!, `K${id}@v3`);
+    expect(all).toContain("Right body");
     expect(all).not.toMatch(/K\d+@\d+/);
-    expect(read(paths[2]!, `K${id}`)).toContain(`[K${id}@v3]`);
+    expect(read(paths[2]!, `K${id}`)).toContain(`[K${id}#${store.versionTag(id, second.commit)}]`);
     expect(store.versionOrdinal(id, first.commit)).toBe(2);
     const archive = write(paths[2]!, [{ op: "archive", kind: "budget", knowledgeId: id, baseCommit: second.commit, supports: [facts[2]!], reason: "retired", createdAt: "now" }]);
     expect(read(paths[2]!, `K${id}`, "history")).toContain("archived");
@@ -69,7 +67,7 @@ test("92/03: branch history owns stable ordinals, membership/status follows the 
     const foreignTurn = store.appendTurn({ sessionId: foreign.id, kind: "turn", userPrompt: "outside", startedAt: "now" });
     const tools = memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: foreignTurn.id });
     const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "Outside evidence", sources: `[T${foreignTurn.id}#E1] Outside evidence` })).factIds[0];
-    expect(tools.find(t => t.name === "trace")!.execute({ address: `K${id}@v2` })).toContain("Left body");
+    expect(memoryFiles(memory, { sessionId: foreign.id, branch: "main", headTurnId: foreignTurn.id }).read(`/tm/K${id}@v2`).content).toContain("Left body");
     const rejected = tools.find(t => t.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" });
     expect(rejected).toContain("rejected:");
     expect(rejected).not.toContain("expects one create/archive operation");

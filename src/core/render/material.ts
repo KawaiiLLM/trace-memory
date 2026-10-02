@@ -88,6 +88,8 @@ export function measureRetainedMemoryText(rendered: string, original: string, of
  * sharing this type never adds a block to a consumer's order (initial injection stays knowledge-only,
  * and since 25a neither Noter mode carries knowledge at all). */
 export interface SharedMaterial {
+  /** Ticket 118: one reading guide for the complete material, never one per knowledge block. */
+  readingGuide?: string;
   /** Active knowledge within the knowledge budget, in category order; absent for the Noter (25a). */
   knowledge?: KnowledgeGroup[];
   /** Historical facts selected by freshness, displayed in chronological Turn groups, within budget. */
@@ -285,7 +287,7 @@ const rawText = (material: SharedMaterial): string => (material.entries ?? []).m
 export const knowledgeBlock = (material: SharedMaterial): string => renderKnowledgeBlock(material.knowledge ?? [], material.knowledgeNotice);
 const leading = (material: SharedMaterial): string[] => {
   const knowledge = knowledgeBlock(material);
-  return knowledge ? [knowledge] : [];
+  return [...(material.readingGuide ? [material.readingGuide] : []), ...(knowledge ? [knowledge] : [])];
 };
 
 /** 29b's status block, emitted only when there is a status line: the commits the reader's context

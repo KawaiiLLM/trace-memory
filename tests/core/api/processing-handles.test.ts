@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { seedSourceEntry } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -16,11 +16,11 @@ function setup(second = false, initialText = "body A") {
   m.selectEntries(s.id, "main", [rootEntry.id]);
   const context = { kind: "manual" as const, sessionId: s.id, currentTurnId: t.id, branch: "main", triggerEntryId: rootEntry.id };
   const tools = m.tools(context);
-  expect(tools[2]!.execute({ title: "Handle evidence", sources: `[T${t.id}#E1] facts` })).not.toContain("rejected:");
+  expect(tools.find(tool => tool.name === "note")!.execute({ title: "Handle evidence", sources: `[T${t.id}#E1] facts` })).not.toContain("rejected:");
   const content = { text: initialText, category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "test" };
   const write = (operations: unknown[], binding = tools) => {
     if (operations.length !== 1) throw new Error("manual memory writes one operation per call (ticket 116)");
-    return binding[3]!.execute(operations[0]);
+    return binding.find(tool => tool.name === "memory")!.execute(operations[0]);
   };
   expect(write([{ op: "create", ...content }])).not.toContain("rejected:");
   if (second) expect(write([{ op: "create", ...content, text: "second" }])).not.toContain("rejected:");
@@ -91,7 +91,7 @@ test("92 supersedes 32: mutations require exact tags, not bare identities or hum
 
 test("92: previews carry no tag; a valid tag works across bindings without a read ledger", () => {
   const a = setup(true);
-  const preview = a.tools[1]!.execute({ query: "body", layer: "knowledge" });
+  const preview = a.tools.find(tool => tool.name === "search")!.execute({ query: "body", layer: "knowledge" });
   expect(preview).toContain("K1@v1");
   expect(preview).not.toContain(a.tag(1));
   const archive = (id: string) => a.write([{ op: "archive", kind: "budget", id, supports: ["F1"], reason: "Retire tagged item" }], a.m.tools(a.context));
@@ -149,21 +149,21 @@ test("manual writers freeze fact sources and knowledge supports at the exact tri
   const later = a.m.store.listSourceEntries(1, a.t.id).at(-1)!;
   a.m.selectEntries(1, "main", [a.rootEntry.id, carrier.id, later.id]);
   const lateTools = a.m.tools({ ...a.context, triggerEntryId: later.id, entryIds: [a.rootEntry.id, carrier.id, later.id] });
-  expect(lateTools[2]!.execute({ title: "Later evidence", sources: `[T${a.t.id}#E${later.entryOrdinal}] later` })).not.toContain("rejected:");
+  expect(lateTools.find(tool => tool.name === "note")!.execute({ title: "Later evidence", sources: `[T${a.t.id}#E${later.entryOrdinal}] later` })).not.toContain("rejected:");
   const earlyTools = a.m.tools({ ...a.context, triggerEntryId: carrier.id, entryIds: [a.rootEntry.id, carrier.id] });
-  expect(earlyTools[2]!.execute({ title: "Too late", sources: `[T${a.t.id}#E${later.entryOrdinal}] too late` })).toContain("invalid source");
-  expect(earlyTools[3]!.execute({ op: "create", ...a.content, supports: ["F2"] })).toContain("after the exact triggering source prefix");
+  expect(earlyTools.find(tool => tool.name === "note")!.execute({ title: "Too late", sources: `[T${a.t.id}#E${later.entryOrdinal}] too late` })).toContain("invalid source");
+  expect(earlyTools.find(tool => tool.name === "memory")!.execute({ op: "create", ...a.content, supports: ["F2"] })).toContain("after the exact triggering source prefix");
 });
 
 test("92 supersedes named-read grants: copied Raw tags do not prove reading, but still identify the exact version", () => {
   const a = setup();
-  const tagged = a.tools[0]!.execute({ address: "K1@v1", itemBudget: null });
+  const tagged = memoryFiles(a.m, a.path).read("/tm/K1@v1").content;
   expect(tagged).toContain(a.tag(1));
   a.m.store.updateTurn(a.t.id, { assistantText: tagged });
   seedSourceEntry(a.m, a.t.id, "assistant", tagged);
   a.m.selectEntries(1, "main", a.m.store.listSourceEntries(1, a.t.id).map(entry => entry.id));
   const fresh = a.m.tools(a.context);
-  expect(fresh[0]!.execute({ address: `T${a.t.id}` })).toContain(a.tag(1));
+  expect(memoryFiles(a.m, a.path).read(`/tm/raw/S${a.path.sessionId}/T${a.t.id}`).content).toContain(a.tag(1));
   const archive = (id: string) => a.write([{ op: "archive", kind: "budget", id, supports: ["F1"], reason: "Retire exact tagged version" }], fresh);
   expect(archive("K1#unknown")).toContain("knowledge version does not exist");
   expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");

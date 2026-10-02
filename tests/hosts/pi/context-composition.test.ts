@@ -2,7 +2,6 @@ import { expect, test } from "vitest";
 import { formatSkillsForPrompt, SessionManager, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { memoryBodyHash, tokens } from "../../../src/core/api/index.ts";
-import { tracePage } from "../../trace-pages.ts";
 import { compactText, measuredMemory } from "../../../src/core/render/material.ts";
 import { contextComposition, type ContextComposition } from "../../../src/hosts/pi/context-composition.ts";
 import { compositionMap, percent, projectComposition, statusBody } from "../../../src/hosts/pi/session-status.ts";
@@ -464,29 +463,20 @@ test("initial and on/project supplement carriers share assembly measurement; ret
     expect(before.memory.Raw).toBe(compact.details.traceMemory.composition.raw);
     const saved = JSON.stringify(retained.sm.getEntries());
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: 1, branch: "main" });
-    const trace = tools.find(t => t.name === "trace")!, write = tools.find(t => t.name === "memory")!;
+    const write = tools.find(t => t.name === "memory")!;
     const edit = (id = "K2@v1") => JSON.parse(write.execute({ op: "archive", kind: "budget", id, supports: ["F1"], reason: "integration mutation" }));
     // History is not a tagged write base; reading creates no authority ledger.
     expect(edit().results[0]).toContain("supply an exact K#tag");
-    let tag: string | undefined;
-    for (const address of ["T1", "K2@v1"]) {
-      let page = trace.execute({ address, cap: 1 }), pages = 0;
-      for (;;) {
-        expect(page).not.toContain("rejected:");
-        expect(tokens(page)).toBeLessThanOrEqual(2000);
-        expect(retained.read()).toEqual(before);
-        expect(JSON.stringify(retained.sm.getEntries())).toBe(saved);
-        const cursor = tracePage(page).cursor;
-        tag ??= /K2#[a-z]+/.exec(page)?.[0];
-        if (!cursor) break;
-        expect(edit().results[0]).toContain("supply an exact K#tag");
-        page = trace.execute({ address: `cursor=${cursor}` });
-        expect(++pages).toBeLessThan(100);
-      }
-      expect(pages).toBeGreaterThan(0);
-      if (address === "T1") expect(tag).toBeUndefined();
-    }
+    const read = async (path: string) => (await h.tools.get("read").execute("read-memory", { path }, undefined, undefined, h.ctx)).content[0].text as string;
+    const turn = await read("/tm/raw/S1/T1");
+    expect(turn).toContain("[T1#E1@user]");
+    expect(turn).not.toMatch(/K2#[a-z]+/);
+    expect(retained.read()).toEqual(before);
+    const history = await read("/tm/K2@v1");
+    const tag = /K2#[a-z]+/.exec(history)?.[0];
     expect(tag).toBeDefined();
+    expect(retained.read()).toEqual(before);
+    expect(JSON.stringify(retained.sm.getEntries())).toBe(saved);
     expect(edit(tag!).committed[0]).toMatchObject({ knowledgeId: 2, op: "archive" });
     expect(h.memory.store.currentCommit(2)[0]?.op).toBe("archive");
     expect(retained.read()).toEqual(before); // Live DB mutation and reads never remeasure a saved carrier.

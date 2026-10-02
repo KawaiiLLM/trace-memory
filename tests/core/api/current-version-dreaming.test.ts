@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { skipRest as skipAll } from "../../dreaming-skips.ts";
 
@@ -184,12 +184,11 @@ test.each(["absorbed", "survivor", "explicit"] as const)("64c merge shorthand co
   const f = fixture(async task => {
     task.acknowledgeRequest();
     const write = task.tools.find(tool => tool.name === "memory")!;
-    const trace = task.tools.find(tool => tool.name === "trace")!;
     if (mode === "survivor") {
       const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
         text: latest, category: "constraint", scope: "project", supports: [], topics: [], reason: "newer commit of older identity" }], skipped: [] }));
       older = { knowledgeId: updated.committed[0].knowledgeId, commit: f.store.resolveVersionOrdinal(updated.committed[0].knowledgeId, Number(updated.committed[0].version.split("@v")[1])) };
-      trace.execute({ address: updated.committed[0].version, itemBudget: null });
+      expect(memoryFiles(f.memory, task.reader!).read(`/tm/${updated.committed[0].version}`).content).toContain(latest.trim());
     }
     const receipt = JSON.parse(write.execute({ operations: [{ op: "merge", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
       absorb: [`K${newer.knowledgeId}#${f.store.versionTag(newer.knowledgeId, newer.commit)}`], ...(mode === "explicit" ? { text: explicit } : {}),

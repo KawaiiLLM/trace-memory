@@ -35,6 +35,12 @@ migration contract, not a claim that a production copy has passed acceptance. St
 before opening the upgraded database; mixed-runtime writes are unsupported. Preserve backups and
 logs. See the [installation guide](../README.md#install) before loading the package.
 
+## Memory reads (118)
+
+Models read `/tm` through Pi's native `read` and `grep`; public `trace` is removed, while the human `/trace` controls and private audit remain. `/tm/S<n>` lists one facts/raw path pair per Turn. Content paths are `/tm/<layer>/S<n>[/T<t>]`; raw alone accepts entry and role suffixes. Ordinary reads use native 2,000-line/50KB paging, while session knowledge and exact raw entries are whole. Each virtual invocation renders once; non-virtual main reads remain native, and N/D child reads are restricted to `/tm`. No child grep or glob is added.
+
+The single Core guide is shared by injection, compaction and N/D materials, once per material. Its native tool names are `read`/`grep`; no extra adapter reading lesson is appended to tool descriptions. Fresh admission prices native Read metadata, and forks preserve captured definitions plus the final SDK capacity gate. These are implementation contracts; actual host/provider acceptance must be reported separately.
+
 ## Noter calls and end review (116/117)
 
 Pi exposes the same flat `note` and `memory` definitions to N and manual callers. One `note` call carries one fact in top-level `title` and `sources` fields; `sources` is a string of segments, each beginning on a line with `[T12#E3@user] ` (role optional), with no text before the first marker. Core trims trailing whitespace from each source segment while preserving internal line breaks. One `memory` call carries one top-level operation (`op`, `supports`, `reason` and applicable fields); N allows create/update/archive and has no `skipped`. Manual writes commit each call immediately, with memory limited to fact-backed create/archive. Dreamer alone retains batch `memory({operations, skipped})`.

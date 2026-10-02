@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { suppliedHandles } from "../../dreaming-skips.ts";
-import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 
 const opened: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { vi.useRealTimers(); for (const memory of opened.splice(0)) memory.close(); });
@@ -59,7 +59,7 @@ test.each(["success", "failure", "cancelled", "timeout"] as const)("68: 86 froze
     }
     expect(ids).toHaveLength(86);
     for (const id of ids.slice(0, 34)) {
-      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(task.tools, id), text: `Maintained rule ${outputs.length + 1}`, category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain" }], skipped: [] }));
+      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(path => memoryFiles(f.memory, f.target).read(path).content, id), text: `Maintained rule ${outputs.length + 1}`, category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain" }], skipped: [] }));
       expect(receipt.committed).toHaveLength(1);
       const version = /^K(\d+)@v(\d+)$/.exec(receipt.committed[0].version)!;
       outputs.push(f.store.resolveVersionOrdinal(Number(version[1]), Number(version[2])));
@@ -90,9 +90,9 @@ test("68: deliberated count measures frozen parents, not output revisions", asyn
   const f = setup(async task => {
     task.acknowledgeRequest();
     const ids = handles(task), write = task.tools.find(tool => tool.name === "memory")!;
-    const merged = JSON.parse(write.execute({ operations: [{ op: "merge", id: readHandle(task.tools, ids[0]!), absorb: [readHandle(task.tools, ids[1]!)], text: "One rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "duplicate" }], skipped: [] }));
+    const merged = JSON.parse(write.execute({ operations: [{ op: "merge", id: readHandle(path => memoryFiles(f.memory, f.target).read(path).content, ids[0]!), absorb: [readHandle(path => memoryFiles(f.memory, f.target).read(path).content, ids[1]!)], text: "One rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "duplicate" }], skipped: [] }));
     expect(merged.committed).toHaveLength(1);
-    const split = JSON.parse(write.execute({ operations: [{ op: "split", id: readHandle(task.tools, ids[2]!), supports: [], reason: "independent rules", children: [{ text: "First", category: "constraint", topics: [] }, { text: "Second", category: "constraint", topics: [] }] }], skipped: [] }));
+    const split = JSON.parse(write.execute({ operations: [{ op: "split", id: readHandle(path => memoryFiles(f.memory, f.target).read(path).content, ids[2]!), supports: [], reason: "independent rules", children: [{ text: "First", category: "constraint", topics: [] }, { text: "Second", category: "constraint", topics: [] }] }], skipped: [] }));
     expect(split.committed).toHaveLength(2);
     return { outcome: "success", output: "done", ...exact };
   });

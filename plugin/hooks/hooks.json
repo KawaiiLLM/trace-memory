@@ -2,6 +2,14 @@
   "description": "Trace Memory lifecycle, knowledge injection and local menu",
   "modules": ["./menu.tsx"],
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/read.mjs\"", "timeout": 60 }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup|resume|clear|compact",

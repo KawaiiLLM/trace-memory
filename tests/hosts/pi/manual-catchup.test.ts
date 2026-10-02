@@ -37,9 +37,9 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     backlog(h);
     await h.emit("session_start"); // import only; no automatic trigger (17a/17b)
     const head = h.memory.store.listTurns(1).at(-1)!.id;
-    const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!;
-    note.execute({ title: "Pre-existing A", sources: "[T1#E1] Pre-existing A" });
-    note.execute({ title: "Pre-existing B", sources: "[T1#E1] Pre-existing B" });
+    const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!;
+    expect(note.execute({ title: "Pre-existing A", sources: "[T1#E1] Pre-existing A" })).toContain("ok: F");
+    expect(note.execute({ title: "Pre-existing B", sources: "[T1#E1] Pre-existing B" })).toContain("ok: F");
     h.provider(async c => notingFact(c));
     await command(h, "catchup");
     await settle(h);
@@ -52,7 +52,7 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     const requestsBefore = h.requests.length;
     // A later ordinary Turn and a later manual fact must stay outside this already-completed target.
     await h.turn();
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ title: "Later unrelated", sources: "[T1#E1] Later, unrelated" });
+    expect(h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!.execute({ title: "Later unrelated", sources: "[T1#E1] Later, unrelated" })).toContain("ok: F");
     expect(h.requests.length).toBe(requestsBefore); // nothing auto-triggered (both are far below threshold)
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     expect(h.memory.store.listSessionFacts(1).some(f => f.text === "Later, unrelated")).toBe(true);
@@ -93,9 +93,9 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
-    const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!;
-    note.execute({ title: "Consolidation A", sources: "[T1#E1] Needs consolidation A" });
-    note.execute({ title: "Consolidation B", sources: "[T1#E1] Needs consolidation B" });
+    const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!;
+    expect(note.execute({ title: "Consolidation A", sources: "[T1#E1] Needs consolidation A" })).toContain("ok: F");
+    expect(note.execute({ title: "Consolidation B", sources: "[T1#E1] Needs consolidation B" })).toContain("ok: F");
     const release = hold(h);
     await h.prompt("new main turn"); await h.answer("word ".repeat(15000)); await h.drain();
     expect(h.requests).toHaveLength(1); // the ordinary automatic Noting run occupies this executor's one Noting slot
@@ -123,7 +123,7 @@ test("18b 2026-09-08: a foreign claim on the target shows Waiting without steali
   const h = host();
   try {
     await h.turn();
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ title: "Foreign claim", sources: "[T1#E1] Foreign claim target" });
+    expect(h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!.execute({ title: "Foreign claim", sources: "[T1#E1] Foreign claim target" })).toContain("ok: F");
     const other = TraceMemory(h.dbPath, async () => { throw new Error("no model expected"); });
     try {
       const foreign = other.store.acquireClaim({ sessionId: 1, branch: "main", headTurnId: 1 }, "noting", "foreign-executor")!;
@@ -224,7 +224,7 @@ test("18b 2026-09-08: switching tree paths during catchup ends it; it is never r
   const h = host();
   try {
     await h.turn();
-    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ title: "Old path", sources: "[T1#E1] Old path fact" });
+    expect(h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!.execute({ title: "Old path", sources: "[T1#E1] Old path fact" })).toContain("ok: F");
     h.provider(async (_c, signal) => new Promise<Reply>(resolve => signal!.addEventListener("abort", () => resolve({ ...reply(""), stopReason: "aborted" }), { once: true })));
     await command(h, "catchup");
     await h.drain();

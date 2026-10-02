@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
+import { TraceMemory, memoryFiles, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { Store, type KnowledgeOperationInput, type KnowledgePath, type SourceInput } from "../../../src/core/store/index.ts";
 import { renderRun } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -20,11 +20,6 @@ const time = "2026-09-12T00:00:00.000Z";
 const tagged = (store: Store, id: number, commit: number) => `K${id}#${store.versionTag(id, commit)}`;
 const history = (store: Store, id: number, commit: number) => `K${id}@v${store.versionOrdinal(id, commit)}`;
 
-function fullRead(tool: { execute(input: unknown): string }, address: string) {
-  let page = tool.execute({ address, full: true, itemBudget: null });
-  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1])
-    page = tool.execute({ address: `cursor=${cursor}`, itemBudget: null });
-}
 function fixture() {
   const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected fixture phase"); });
   const memory = TraceMemory(":memory:", scenarios.agent); const store = memory.store; stores.push(store);
@@ -55,17 +50,18 @@ function fixture() {
     let committed: { knowledgeId: number; commit: number }[] = [];
     const dreamed = await scenarios.run(memory, target, input => {
       const request = { fixture: "lineage maintenance" }; input.reportRequest(request);
-      const trace = input.tools.find(tool => tool.name === "trace")!, tool = input.tools.find(tool => tool.name === "memory")!;
+      const read = (address: string) => memoryFiles(memory, input.reader!).read(`/tm/${address}`).content;
+      const tool = input.tools.find(tool => tool.name === "memory")!;
       const addressed = new Set<string>();
       const converted = operations.map(operation => {
-        if (operation.op === "update") { const id = tagged(store, operation.knowledgeId, operation.baseCommit); addressed.add(history(store, operation.knowledgeId, operation.baseCommit)); fullRead(trace, id);
+        if (operation.op === "update") { const id = tagged(store, operation.knowledgeId, operation.baseCommit); addressed.add(history(store, operation.knowledgeId, operation.baseCommit)); read(id);
           return { op: "update", id, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
-        if (operation.op === "split") { const id = tagged(store, operation.knowledgeId, operation.baseCommit); addressed.add(history(store, operation.knowledgeId, operation.baseCommit)); fullRead(trace, id);
+        if (operation.op === "split") { const id = tagged(store, operation.knowledgeId, operation.baseCommit); addressed.add(history(store, operation.knowledgeId, operation.baseCommit)); read(id);
           return { op: "split", id, children: operation.children, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
         if (operation.op === "merge") { const id = tagged(store, operation.intoKnowledgeId, operation.intoBaseCommit), absorb = operation.absorb.map(parent => tagged(store, parent.knowledgeId, parent.baseCommit));
           addressed.add(history(store, operation.intoKnowledgeId, operation.intoBaseCommit));
           for (const parent of operation.absorb) addressed.add(history(store, parent.knowledgeId, parent.baseCommit));
-          for (const address of [id, ...absorb]) fullRead(trace, address);
+          for (const address of [id, ...absorb]) read(address);
           return { op: "merge", id, absorb, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
         return operation;
       });
@@ -154,9 +150,10 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
   const trigger = createDreamerTrigger(f.memory, childPath, f.rootFact, 999);
   const malformedRun = await f.scenarios.run(f.memory, childPath, input => {
     const request = { fixture: "invalid three-parent merge" }; input.reportRequest(request);
-    const trace = input.tools.find(tool => tool.name === "trace")!, tool = input.tools.find(tool => tool.name === "memory")!;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
+    const tool = input.tools.find(tool => tool.name === "memory")!;
     for (const address of [tagged(f.store, f.created.knowledgeId, merged.commit), tagged(f.store, childOnly.knowledgeId, childOnly.commit), tagged(f.store, f.created.knowledgeId, f.created.commit)])
-      fullRead(trace, address);
+      read(address);
     const malformed = tool.execute({ operations: [{ op: "merge", id: tagged(f.store, f.created.knowledgeId, merged.commit),
       absorb: [tagged(f.store, childOnly.knowledgeId, childOnly.commit), tagged(f.store, f.created.knowledgeId, f.created.commit)],
       text: "illegal three-parent merge", category: "constraint", scope: "project", topics: [], supports: [`F${f.rootFact}`], reason: "invalid fixture" }], skipped: [] });
@@ -190,12 +187,12 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
       children: [{ text: "first rule", category: "constraint", topics: ["first"] }, { text: "second rule", category: "goal", topics: ["second"] }] }], skipped: [] }));
     expect(split.committed).toHaveLength(2);
     const [first, second] = split.committed as { knowledgeId: number; version: string }[];
-    const trace = input.tools.find(t => t.name === "trace")!;
-    expect(trace.execute({ address: first!.version, itemBudget: null })).not.toContain("rejected:");
+    const read = (address: string) => memoryFiles(memory, input.reader!).read(`/tm/${address}`).content;
+    expect(read(first!.version)).not.toContain("rejected:");
     const update = JSON.parse(tool.execute({ operations: [{ op: "update", id: tagged(memory.store, first!.knowledgeId, memory.store.resolveVersionOrdinal(first!.knowledgeId, Number(first!.version.split("@v")[1]))),
       text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }], skipped: [] }));
     expect(update.committed).toHaveLength(1);
-    trace.execute({ address: history(memory.store, trigger.knowledgeId, trigger.commit), itemBudget: null });
+    read(history(memory.store, trigger.knowledgeId, trigger.commit));
     expect(tool.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(memory.store, trigger.knowledgeId, trigger.commit),
       supports: [], reason: "Retire the explicit split trigger." }], skipped: [] })).toContain("committed");
     expect(input.tools.find(t => t.name === "check")!.execute({})).toContain("Blockers: none");

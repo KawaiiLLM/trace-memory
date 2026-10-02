@@ -79,7 +79,7 @@ test("18a 2026-09-08: historical import and pause resume use native identities w
   expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 42 } })).toBeUndefined();
   expect(compacted(h.memory.compact(1))).toBe(""); expect(h.memory.branchSummary(1, "main", 3)).toBe("");
   for (const name of ["note", "memory"]) await expect(h.tools.get(name).execute("id", {}, undefined, undefined, h.ctx)).rejects.toThrow("/trace on");
-  expect((await h.tools.get("trace").execute("id", { address: "T1" }, undefined, undefined, h.ctx)).content[0].text).toContain("same");
+  expect((await h.tools.get("read").execute("id", { path: "/tm/raw/S1/T1" }, undefined, undefined, h.ctx)).content[0].text).toContain("same");
   expect((await h.tools.get("search").execute("id", { query: "same", layer: "raw" }, undefined, undefined, h.ctx)).content[0].text).toContain("T1");
   await command(h, "on"); expect(h.memory.store.listTurns(1)).toHaveLength(4);
   expect(h.memory.pendingEntries(1, "main", state(h).head)).toHaveLength(8); expect(h.requests).toEqual([]);
@@ -214,11 +214,10 @@ test("18a 2026-09-08: selecting pre-allocation history keeps the allocated ident
   expect(h.memory.store.getSession(2)).toBeNull();
 });
 
-test("18a 2026-09-08: disabled reads retain tool validation before and after allocation", async () => {
+test("18a 2026-09-08: disabled search retains tool validation before and after allocation", async () => {
   const h = setup(); await h.emit("session_start"); await command(h, "off");
   for (const allocate of [false, true]) {
     if (allocate) { await command(h, "on"); await h.turn(); await command(h, "off"); }
-    await expect(h.tools.get("trace").execute("id", { address: "T1", full: "yes" }, undefined, undefined, h.ctx)).rejects.toThrow("full must be boolean");
     await expect(h.tools.get("search").execute("id", { query: "a", unexpected: 1 }, undefined, undefined, h.ctx)).rejects.toThrow("unexpected parameter");
   }
 });
@@ -289,7 +288,7 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
   expect(h.memory.store.commitConsolidationRun({ run: { ...run, kind: "manual" }, operations: [] }).ok).toBe(false);
   expect(h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id)).toEqual([1]);
   expect(h.memory.store.listRuns(1).slice(0, before.length)).toEqual(before);
-  expect(h.memory.trace("F1")).toContain("Already committed");
+  expect((await h.tools.get("read").execute("read-fact", { path: "/tm/F1" }, undefined, undefined, h.ctx)).content[0].text).toContain("Already committed");
   expect(() => h.memory.store.updateTurn(1, { assistantText: "blocked" })).toThrow("/trace on");
   expect(() => h.memory.store.appendToolCall({ turnId: 1, name: "blocked", status: "attempted" })).toThrow("/trace on");
   expect(() => h.memory.selectEntries(1, "main", [])).toThrow("/trace on");

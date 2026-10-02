@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { sourceSeededMemory } from "./source-fixture.ts";
+import { sourceSeededMemory, memoryFiles } from "./source-fixture.ts";
 import { readHandle } from "./read-handle-fixture.ts";
 
 for (const long of [false, true]) test(`92: fixture reads the complete tagged body without translating legacy addresses (long=${long})`, () => {
@@ -13,14 +13,16 @@ for (const long of [false, true]) test(`92: fixture reads the complete tagged bo
     expect(note.execute({ title: "Rule evidence", sources: `[T${turn.id}#E1] Keep this rule` })).not.toContain("rejected:");
     expect(write.execute({ op: "create", text: long ? "Rule detail. ".repeat(4000) : "A short rule", category: "constraint",
       scope: "project", topics: [], supports: ["F1"], reason: "Fixture evidence" })).toContain("committed");
-    const trace = vi.spyOn(tools.find(tool => tool.name === "trace")!, "execute");
+    const files = memoryFiles(memory, { sessionId: session.id, branch: "main", headTurnId: turn.id });
+    const read = (path: string) => files.read(path).content;
+    const spy = vi.spyOn(files, "read");
     const expected = `K1#${memory.store.versionTag(1, 1)}`;
-    expect(readHandle(tools, "K1")).toBe(expected);
-    if (long) expect(trace.mock.calls.length).toBeGreaterThan(1);
-    expect(readHandle(tools, "K1@v1")).toBe(expected);
-    expect(readHandle(tools, expected)).toBe(expected);
-    const calls = trace.mock.calls.length;
-    expect(() => readHandle(tools, "K1@1")).toThrow("@v fixture address");
-    expect(trace.mock.calls).toHaveLength(calls);
+    expect(readHandle(read, "K1")).toBe(expected);
+    if (long) expect(files.read("/tm/K1").content).toContain("Rule detail.");
+    expect(readHandle(read, "K1@v1")).toBe(expected);
+    expect(readHandle(read, expected)).toBe(expected);
+    const calls = spy.mock.calls.length;
+    expect(() => readHandle(read, "K1@1")).toThrow("@v fixture address");
+    expect(spy.mock.calls).toHaveLength(calls);
   } finally { memory.close(); }
 });

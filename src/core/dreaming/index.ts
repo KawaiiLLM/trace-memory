@@ -1,4 +1,5 @@
 import { loadPrompt } from "../prompts/load.ts";
+import { readingGuide } from "../render/reading-guide.ts";
 import { createHash } from "node:crypto";
 import type { Store, RunInput, TaskClaim } from "../store/index.ts";
 import { processedBlock } from "../store/processing.ts";
@@ -117,7 +118,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
   const factText = (count: number) => ["Direct supporting facts:",
     ...renderFactGroups(facts.slice(0, count), fact => renderFact(fact, relations.get(fact.id) ?? []), times),
-    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count).map(fact => `F${fact.id}`).join(", ")}; expand with ${names.trace}.`] : [])].join("\n");
+    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count).map(fact => `/tm/F${fact.id}`).join(" ")}.`] : [])].join("\n");
   let count = facts.length;
   while (count && tokens(factText(count)) > 10_000) count--;
   const direct = factText(count);
@@ -125,10 +126,11 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
 
   const material = { bound: `Run wall-clock bound: ${config.dreaming.timeoutMs} ms. Wrap up before this deadline.${processedExcessOrder}`,
     processed: old, changed, facts: direct };
-  const text = Object.values(material).join("\n\n");
+  const text = [readingGuide(path.sessionId, names), ...Object.values(material)].join("\n\n");
   const prompt = loadPrompt("dreaming.md", names);
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
-      tokens(prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingToolDefinitions(), names))) + tokens(text) > input.capacity.inputTokens))
+      tokens(prompt) + tokens(JSON.stringify([...pricedToolDefinitions(dreamingToolDefinitions(), names),
+        ...(input.nativeReadTool ? [input.nativeReadTool] : [])])) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
   return { sessionId: path.sessionId, branch: path.branch, path, range, pool: due.pool, frozenIds: [...frozenIds],
     eventIds: [...frozenIds], changed: { versions: [...frozenValues, ...frozenArchives] }, material, text,

@@ -10,8 +10,12 @@ import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { fixture, say } from "./native-fixture.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
+import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
 import type { NotingAgentInput, ToolDefinition } from "../../../src/core/api/index.ts";
 
+const read = (f: Awaited<ReturnType<typeof fixture>>) => memoryReadTool(f.h.dir,
+  path => memoryFiles(f.h.memory, {}).read(path), { memoryOnly: true });
 const note = (): ToolDefinition => ({ name: "note", description: "Record facts.", parameters: { type: "object", properties: {} }, execute: () => "committed" });
 /** One frozen core task, as the façade prepares it. */
 const task = (mode: "fork" | "subagent"): NotingAgentInput => ({
@@ -29,7 +33,7 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
     f.script(async body => { sent.push(body); await held; return say("Done."); });
     const checked: (number | undefined)[] = [], reported: unknown[] = [];
     const binding: WorkerBinding = { model: f.model as never, checkCapacity: contextTokens => { checked.push(contextTokens); },
-      tools: [note()], runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
+      tools: [note()], read: read(f), runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
       onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} };
     const frozen = { ...task("subagent"), reportRequest: (body: unknown) => { reported.push(body); } };
     const run = runWorker(frozen, binding);
@@ -41,7 +45,7 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
     expect(result.outcome).toBe("success");
     expect(result.output).toBe("Done.");
     expect(result.mode).toBe("subagent");
-    expect(sent[0].tools.map((t: any) => t.function.name)).toEqual(["note"]); // the list handed in at launch
+    expect(sent[0].tools.map((t: any) => t.function.name).sort()).toEqual(["note", "read"]); // frozen note and restricted Read, not the later binding
     expect(String(result.nativeLog).startsWith(f.runsDir)).toBe(true);        // the directory handed in at launch
     expect(existsSync(join(f.h.dir, "elsewhere"))).toBe(false);
     expect(reported).toEqual([result.request]);
@@ -59,7 +63,7 @@ test("27c: the host's fork refusal arrives as a value, and the run comes back to
     f.script(async () => say("Done."));
     const before = f.sent.length;
     const result = await runWorker(task("fork"), { model: f.model as never, checkCapacity: () => {},
-      tools: [note()], runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
+      tools: [note()], read: read(f), runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
       fork: { refused: "No current-branch provider payload captured" },
       onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
     // 27c: the adapter runs the task in the mode it was admitted for, and no other. The refusal names
@@ -79,7 +83,7 @@ test("27c: a task admitted with a reason runs fresh and records it — the launc
     f.script(async () => say("Done."));
     const result = await runWorker({ ...task("fork"), fallbackReason: "Raw availability: entry 2 (T1, native e5) of this batch is not in the inherited context" } as NotingAgentInput,
       { model: f.model as never, checkCapacity: () => {},
-        tools: [note()], runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
+        tools: [note()], read: read(f), runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
         onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
     expect(result.outcome).toBe("success");
     expect(result.mode).toBe("subagent");
