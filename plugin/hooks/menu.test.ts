@@ -6,14 +6,15 @@ const menu = {
   menu: {
     header: { session: "S1", project: "example", enabled: true },
     context: { model: "Claude Code" },
-    pending: { noting: { tokens: 0, trigger: 10000 }, consolidation: { tokens: 0, trigger: 5000 },
-      dreaming: { global: { tokens: 0, trigger: 4000 }, project: { tokens: 0, trigger: 5000 }, session: { tokens: 0, trigger: 1000 } } },
+    pending: { noting: { tokens: 0, trigger: 10000 },
+      dreaming: { pending: { tokens: 0, trigger: 5000 }, knowledge: { tokens: 0, trigger: 1000 } } },
     spend: { session: 0, noting: { runs: 0, cost: 0 }, consolidation: { runs: 0, cost: 0 }, dreaming: { runs: 0, cost: 0 }, today: 0 },
     notices: [], actions: { enabled: true },
   },
   settings: { database: "/tmp/test-trace.db", budgets: { global: 4000, project: 15000, session: 1000, sharedAllowanceTokens: 10000 },
-    workers: [{ phase: "Noter", model: "sonnet", thinking: "high" }, { phase: "Consolidator", model: "opus", thinking: "high" }, { phase: "Dreamer", model: "opus", thinking: "high" }],
+    workers: [{ phase: "Noter", model: "sonnet", thinking: "high" }, { phase: "Dreamer", model: "opus", thinking: "high" }],
     closedSessionScope: "project" },
+  models: ["sonnet", "opus"],
   context: { presence: "unavailable" }, runs: [{ id: 1, phase: "noting", status: "completed", cost: 0.1, at: "2026-01-01" }],
 };
 const pane = { title: "Trace Memory", isFocused: true, bodyColumns: 65, placement: "inline", scroll: { offset: 0, bodyRows: 45 }, view: {} } as const;
@@ -63,10 +64,10 @@ test("local command renders headless text and a mountable narrow pane, then disp
   await ui.input({ key: "edit-budget.global", text: "5000" });
   expect(await ui.find({ type: "Text", text: "saved; not applied" }), `saved-not-applied mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
   expect(seen.some(args => args.includes("setting budget.global 5000"))).toBe(true);
-  for (const row of ["budget.project", "budget.session", "noting.model", "noting.thinking", "consolidation.model", "consolidation.thinking", "dreaming.model", "dreaming.thinking", "closedSessionScope"]) {
+  for (const row of ["budget.project", "budget.session", "noting.model", "noting.thinking", "dreaming.model", "dreaming.thinking", "closedSessionScope"]) {
     await ui.select({ key: "setting-rows", value: row });
-    expect(await ui.find({ key: row === "closedSessionScope" ? "scope-choice" : `edit-${row}` }), `setting row ${row}: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
-    await ui.select({ key: row === "closedSessionScope" ? "scope-back" : "edit-back", value: "back" });
+    expect(await ui.find({ key: row === "closedSessionScope" ? "scope-choice" : row.endsWith(".model") ? "model-choice" : `edit-${row}` }), `setting row ${row}: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
+    await ui.select({ key: row === "closedSessionScope" ? "scope-back" : row.endsWith(".model") ? "model-back" : "edit-back", value: "back" });
   }
   await ui.select({ key: "setting-rows", value: "closedSessionScope" });
   await ui.select({ key: "scope-choice", value: "global" });

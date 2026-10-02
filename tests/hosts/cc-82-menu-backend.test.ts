@@ -38,10 +38,17 @@ const setup = () => {
   expect(resolveCcHostConfig(JSON.parse(mode)).coreConfig.noting.forkModeDefault).toBe(true);
   expect(resolveCcHostConfig(JSON.parse(editedCcConfig(mode, "noting.mode", "subagent"))).coreConfig.noting.forkModeDefault).toBe(false);
   expect(() => editedCcConfig(f.text, "noting.mode", "inherit")).toThrow("must be fork or subagent");
+  const offered = Object.keys(f.config.worker!.contextWindows);
+  for (const id of ["noting.model", "dreaming.model"] as const) for (const model of offered) {
+    const selected = resolveCcHostConfig(JSON.parse(editedCcConfig(f.text, id, model)));
+    expect(selected.worker!.phases[id === "noting.model" ? "noting" : "dreaming"].model).toBe(model);
+    expect(selected.worker!.contextWindows).toEqual(f.config.worker!.contextWindows);
+  }
   const added = editedCcConfig(f.text, "dreaming.model", "claude-new", "180000");
   expect(added).toContain('"custom": { "unrelated": [1, 2] }');
   expect(added).toContain('"claude-opus-5-5": 250000');
-  expect(added).toContain('"claude-new": 180000');
+  expect(resolveCcHostConfig(JSON.parse(added)).worker!.contextWindows["claude-new"]).toBe(180000);
+  expect(resolveCcHostConfig(JSON.parse(added)).worker!.phases.dreaming.model).toBe("claude-new");
   expect(added).toContain('"claudeExecutable": "/usr/bin/false",\n    "claudeVersion"');
   expect(() => editedCcConfig(f.text, "dreaming.model", "claude-new")).toThrow("requires a context capacity");
   expect(() => editedCcConfig(f.text, "noting.thinking", "inherit")).toThrow("thinking must be");
@@ -58,6 +65,7 @@ test("menu is navigable without an executor but does not label saved worker file
     transcript_path: transcriptPath, source: "startup" }, null);
   const before = readBinding(f.config, f.session)!;
   const menu = readCcMenu(f.config, f.session);
+  expect(menu.models).toEqual(Object.keys(f.config.worker!.contextWindows));
   expect(menu.menu.actions.enabled).toBe(false);
   expect(menu.menu.pending.noting.tokens).toBeNull();
   expect(menu.settings.workers[0]).toMatchObject({ mode: "subagent", model: "unavailable",

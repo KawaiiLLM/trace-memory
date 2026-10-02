@@ -45098,7 +45098,7 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
       JSON.stringify(header.states.map(knowledgeStateKey)),
       header.knowledgeTokens ?? 0
     ) !== void 0);
-    return { menu: data, settings, context, runs };
+    return { menu: data, settings, models: Object.keys(config3.worker?.contextWindows ?? {}), context, runs };
   } finally {
     memory.store.close();
   }
@@ -46475,7 +46475,7 @@ function editedCcConfig(text, id, value, capacity) {
     if (!known) {
       const amount = Number(capacity);
       if (!Number.isSafeInteger(amount) || amount <= CC_CONTEXT_HEADROOM)
-        throw new Error(`new model requires a context capacity greater than ${CC_CONTEXT_HEADROOM}`);
+        throw new Error(`new model requires a context capacity greater than ${CC_CONTEXT_HEADROOM}; accepted models: ${Object.keys(input.worker.contextWindows).join(", ")}; format: <model id> <context window>, e.g. claude-opus-5-5 1000000`);
       output = editJson(output, ["worker", "contextWindows", value], amount);
     }
   } else if (capacity !== void 0) throw new Error("capacity applies only to a new model");

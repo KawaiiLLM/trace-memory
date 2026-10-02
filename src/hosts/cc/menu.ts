@@ -29,6 +29,7 @@ export function ccCatchupNotice(status: CcCatchupStatus | null): string | null {
 export interface CcMenuReply {
   menu: TraceMenuInput;
   settings: SettingsInput;
+  models: string[];
   context: ReturnType<typeof ccContextEvidence>;
   runs: CcMenuRun[];
 }
@@ -131,6 +132,6 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       AND commits = ? AND states = ? AND knowledge_tokens = ? LIMIT 1`);
     const context = ccContextEvidence(binding, config.dbPath, current, header => recorded.get(coreHostOf(binding),
       JSON.stringify(header.commits), JSON.stringify(header.states.map(knowledgeStateKey)), header.knowledgeTokens ?? 0) !== undefined);
-    return { menu: data, settings, context, runs };
+    return { menu: data, settings, models: Object.keys(config.worker?.contextWindows ?? {}), context, runs };
   } finally { memory.store.close(); }
 }

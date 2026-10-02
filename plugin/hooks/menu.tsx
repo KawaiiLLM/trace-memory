@@ -1010,6 +1010,19 @@ export const register = (on) => {
     const row = selectedSetting;
     if (!row) throw new Error("Trace Memory: no setting selected");
     const label = buildSettingsChoices(reply.settings).find((choice) => choice.id === row)?.label ?? row;
+    const saveSetting = async (parts) => {
+      try {
+        const result = JSON.parse(await run("setting", [row, ...parts]));
+        notice = `Setting ${result.saved ? "saved" : "not saved"}; ${result.applied ? "applied" : "not applied"}${result.diagnostic ? `: ${result.diagnostic}` : ""}`;
+        if (result.saved && result.applied) await reload();
+        else $.ui.invalidate("ui.render");
+      } catch (error) {
+        notice = String(error);
+        $.ui.invalidate("ui.render");
+      }
+      screen = "settings";
+      $.ui.invalidate("ui.render");
+    };
     if (row === "noting.mode") return <Box flexDirection="column"><Text>{label}</Text>
       <Select
       key="noting-mode"
@@ -1017,19 +1030,7 @@ export const register = (on) => {
       autoFocus
       options={["subagent", "fork"].map((value) => ({ value, label: value }))}
       onSelect={(value) => {
-        void (async () => {
-          try {
-            const result = JSON.parse(await run("setting", [row, value]));
-            notice = `Setting ${result.saved ? "saved" : "not saved"}; ${result.applied ? "applied" : "not applied"}${result.diagnostic ? `: ${result.diagnostic}` : ""}`;
-            if (result.saved && result.applied) await reload();
-            else $.ui.invalidate("ui.render");
-          } catch (error) {
-            notice = String(error);
-            $.ui.invalidate("ui.render");
-          }
-          screen = "settings";
-          $.ui.invalidate("ui.render");
-        })();
+        void saveSetting([value]);
       }}
     />
       <Select key="mode-back" label="Action" options={[back]} onSelect={() => {
@@ -1044,20 +1045,7 @@ export const register = (on) => {
       autoFocus
       options={["off", "project", "global"].map((value) => ({ value, label: value }))}
       onSelect={(value) => {
-        void (async () => {
-          try {
-            const output = await run("setting", [row, value]);
-            const result = JSON.parse(output);
-            notice = `Setting ${result.saved ? "saved" : "not saved"}; ${result.applied ? "applied" : "not applied"}${result.diagnostic ? `: ${result.diagnostic}` : ""}`;
-            if (result.saved && result.applied) await reload();
-            else $.ui.invalidate("ui.render");
-          } catch (error) {
-            notice = String(error);
-            $.ui.invalidate("ui.render");
-          }
-          screen = "settings";
-          $.ui.invalidate("ui.render");
-        })();
+        void saveSetting([value]);
       }}
     />
       <Select key="scope-back" label="Action" options={[back]} onSelect={() => {
@@ -1065,10 +1053,29 @@ export const register = (on) => {
       $.ui.invalidate("ui.render");
     }} />
     </Box>;
+    if (row.endsWith(".model") && screen !== "model-other") return <Box flexDirection="column"><Text>{label}</Text>
+      <Select
+      key="model-choice"
+      label="Model"
+      autoFocus
+      options={[...reply.models.map((value) => ({ value, label: value })), { value: "", label: "Other\u2026" }]}
+      onSelect={(value) => {
+        if (value) void saveSetting([value]);
+        else {
+          screen = "model-other";
+          $.ui.invalidate("ui.render");
+        }
+      }}
+    />{message}
+      <Select key="model-back" label="Action" options={[back]} onSelect={() => {
+      screen = "settings";
+      $.ui.invalidate("ui.render");
+    }} />
+    </Box>;
     return <Box flexDirection="column"><Text>{label}</Text>
       <Input
       key={`edit-${row}`}
-      label={row.endsWith(".model") ? "Model and optional capacity (model capacity)" : "New value"}
+      label={row.endsWith(".model") ? "<model id> <context window>, e.g. claude-opus-5-5 1000000" : "New value"}
       autoFocus
       onSubmit={(value) => {
         const parts = row.endsWith(".model") ? value.trim().split(/\s+/) : [value.trim()];
@@ -1077,20 +1084,7 @@ export const register = (on) => {
           $.ui.invalidate("ui.render");
           return;
         }
-        void (async () => {
-          try {
-            const output = await run("setting", [row, ...parts]);
-            const result = JSON.parse(output);
-            notice = `Setting ${result.saved ? "saved" : "not saved"}; ${result.applied ? "applied" : "not applied"}${result.diagnostic ? `: ${result.diagnostic}` : ""}`;
-            if (result.saved && result.applied) await reload();
-            else $.ui.invalidate("ui.render");
-          } catch (error) {
-            notice = String(error);
-            $.ui.invalidate("ui.render");
-          }
-          screen = "settings";
-          $.ui.invalidate("ui.render");
-        })();
+        void saveSetting(parts);
       }}
     />{message}<Select key="edit-back" label="Action" options={[back]} onSelect={() => {
       screen = "settings";

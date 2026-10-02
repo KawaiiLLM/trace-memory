@@ -42,7 +42,7 @@ export function editedCcConfig(text: string, id: CcSettingId, value: string, cap
     if (!known) {
       const amount = Number(capacity);
       if (!Number.isSafeInteger(amount) || amount <= CC_CONTEXT_HEADROOM)
-        throw new Error(`new model requires a context capacity greater than ${CC_CONTEXT_HEADROOM}`);
+        throw new Error(`new model requires a context capacity greater than ${CC_CONTEXT_HEADROOM}; accepted models: ${Object.keys(input.worker!.contextWindows).join(", ")}; format: <model id> <context window>, e.g. claude-opus-5-5 1000000`);
       output = editJson(output, ["worker", "contextWindows", value], amount);
     }
   } else if (capacity !== undefined) throw new Error("capacity applies only to a new model");
