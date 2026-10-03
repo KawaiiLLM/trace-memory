@@ -330,7 +330,7 @@ function substantiveArchiveStatement(text) {
   return typeof text === "string" && !!text.trim() && !/^(?:invalid|obsolete|无效|过时|失效)[。.!！]?$/iu.test(text.trim());
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/base.js
+// node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
     let callback;
@@ -532,7 +532,7 @@ var Diff = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/diff/libesm/diff/array.js
+// node_modules/diff/libesm/diff/array.js
 var ArrayDiff = class extends Diff {
   tokenize(value) {
     return value.slice();
@@ -2740,6 +2740,14 @@ var Store = class {
     }
     return bindings;
   }
+  /** The facts view and Turn index share contribution selection, including legacy integrity checks. */
+  contributingTurnFacts(turnId, sessionId, entries) {
+    this.assertTurnLegacyBindings(turnId, sessionId);
+    const bindings = this.turnFactBindings(turnId);
+    const selectedIds = new Set(entries.map((entry) => entry.id));
+    const facts = this.factsByIds([...bindings.keys()]);
+    return { facts: facts.filter((fact) => bindings.get(fact.id).some((id) => selectedIds.has(id))), bindings };
+  }
   revisionSupportIds(knowledgeIds) {
     if (!knowledgeIds.length) return [];
     return this.db.prepare(`SELECT DISTINCT j.value AS id FROM knowledge_revisions r, json_each(r.supports) j
@@ -4695,9 +4703,14 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   listSessions() {
     return this.db.prepare("SELECT * FROM sessions ORDER BY id").all().map(toSession);
   }
-  /** 101: every fact's title, or the first line of a legacy untitled body, for the `/tm` listing. */
-  factHeadings() {
-    return this.db.prepare("SELECT id, COALESCE(title, substr(text, 1, 200)) AS heading FROM facts ORDER BY id").all().map((row) => ({ id: Number(row.id), heading: String(row.heading).split("\n")[0] }));
+  /** Nonempty sessions, ordered by their newest Turn's start time rather than session creation. */
+  sessionActivity() {
+    return this.db.prepare(`SELECT s.*, activity.turns, activity.last FROM sessions s JOIN
+      (SELECT session_id, count(*) AS turns, max(started_at) AS last FROM turns GROUP BY session_id) activity
+      ON activity.session_id = s.id ORDER BY activity.last DESC, s.id DESC`).all().map((row) => ({ session: toSession(row), turns: Number(row.turns), last: String(row.last) }));
+  }
+  knowledgeCount() {
+    return Number(this.db.prepare("SELECT count(DISTINCT knowledge_id) AS n FROM knowledge_revisions").get().n);
   }
   /** 101: a session's current selected head — its most advanced lineage cursor, or its newest Turn
    * when no host has recorded a cursor. */
@@ -6266,16 +6279,21 @@ var listingLine = (text) => text.replaceAll("\n", " \u23CE ");
 // src/core/prompts/tool-names.ts
 var TOOL_ROLES = ["search", "note", "memory", "check"];
 var canonicalToolNames = { search: "search", note: "note", memory: "memory", check: "check", read: "read", grep: "grep" };
-var NAME_ROLES = [...TOOL_ROLES, "read", "grep"];
+var NAME_ROLES = [...TOOL_ROLES, "read"];
 function validateToolNames(names) {
-  if (!names || NAME_ROLES.some((role) => typeof names[role] !== "string" || !/^[a-zA-Z][\w-]*$/.test(names[role])))
+  const roles = names?.grep === void 0 ? NAME_ROLES : [...NAME_ROLES, "grep"];
+  if (!names || roles.some((role) => typeof names[role] !== "string" || !/^[a-zA-Z][\w-]*$/.test(names[role])))
     throw new Error("Missing or invalid exposed tool name for worker launch");
-  if (new Set(NAME_ROLES.map((role) => names[role])).size !== NAME_ROLES.length)
+  if (new Set(roles.map((role) => names[role])).size !== roles.length)
     throw new Error("Worker exposed tool names must be distinct");
   return Object.freeze({ ...names });
 }
 function renderToolNames(text, names) {
-  return text.replace(/\{\{tool\.(search|note|memory|check|read|grep)\}\}/g, (_, role) => names[role]);
+  return text.replace(/\{\{tool\.(search|note|memory|check|read|grep)\}\}/g, (_, role) => {
+    const name = names[role];
+    if (name === void 0) throw new Error(`Missing exposed tool name: ${role}`);
+    return name;
+  });
 }
 
 // src/core/knowledge-write/prepare.ts
@@ -6526,7 +6544,7 @@ var import_node_crypto5 = require("node:crypto");
 // src/core/render/reading-guide.ts
 function readingGuide(sessionId, names) {
   const session = sessionId === void 0 ? "<n>" : String(sessionId);
-  return `Memory is at /tm: virtual, so use ${names.read} or ${names.grep}, never a shell command. /tm lists every path.
+  return `Memory is at /tm: virtual, so use ${names.read}${names.grep === void 0 ? "" : ` or ${names.grep}`}, never a shell command. /tm lists every path.
 Path: /tm/<layer>/S<n>/T<t>. Without /T<t>: the session's current head.
 Layers: knowledge (what a fresh context there receives), compact (what compaction there injects), facts (the Turn's facts), raw (its Raw overview).
 raw only: #E<k> gives one full entry and @role keeps one role, e.g. citation T12#E3@assistant of S7 is /tm/raw/S7/T12#E3@assistant.
@@ -8362,6 +8380,13 @@ function memoryFiles(memory, reader) {
     return value;
   };
   const projectName = (id) => id === null ? "no project" : store.getProject(id)?.name ?? `project ${id}`;
+  const count2 = (n) => n.toLocaleString("en-US");
+  const utcMinute = (time5) => new Date(time5).toISOString().slice(0, 16).replace("T", " ") + "Z";
+  const hostKind = (s) => s.host.startsWith("cc:") ? "Claude Code" : s.host.startsWith("pi:") ? "Pi" : s.host;
+  const sessionProject = (s) => {
+    const name = s.projectId === null ? void 0 : store.getProject(s.projectId)?.name;
+    return name === void 0 || name === s.host ? "no project name" : name;
+  };
   const selectedPath = (sessionId, turnId) => {
     const current = sessionId === reader.sessionId ? store.knowledgePath(sessionId, reader.branch, reader.headTurnId) : store.currentPath(sessionId);
     const headTurnId = turnId ?? current.headTurnId;
@@ -8391,12 +8416,11 @@ function memoryFiles(memory, reader) {
   };
   const children = (path) => {
     if (path === MEMORY_ROOT) return [
-      [VISIBLE, "directory: knowledge visible to you, current versions"],
-      [ALL, "directory: every knowledge identity in every scope and project, archived included"],
-      [`${MEMORY_ROOT}/facts`, "directory: Turn facts"],
-      [`${MEMORY_ROOT}/raw`, "directory: full Raw entries"],
-      ...store.listSessions().map((s) => [`${MEMORY_ROOT}/S${s.id}`, `session \xB7 project ${projectName(s.projectId)} \xB7 ${s.host} \xB7 ${s.startedAt}`]),
-      ...store.factHeadings().map((f) => [`${MEMORY_ROOT}/F${f.id}`, preview(f.heading)])
+      [VISIBLE, `knowledge visible to you, current versions: ${count2(visible().length)}`],
+      [ALL, `every scope and project, archived included: ${count2(store.knowledgeCount())}`],
+      [`${MEMORY_ROOT}/facts`, "every session's Turns by layer"],
+      [`${MEMORY_ROOT}/raw`, "every session's Turns by layer"],
+      ...store.sessionActivity().map(({ session: s, turns, last }) => [`${MEMORY_ROOT}/S${s.id}`, `${hostKind(s)} \xB7 ${sessionProject(s)} \xB7 ${count2(turns)} Turns \xB7 last ${utcMinute(last)}`])
     ];
     if (path === VISIBLE) return visible().map(({ knowledge, revision }) => [`${MEMORY_ROOT}/K${knowledge.id}`, `[${revision.category}/${revision.scope}] ${preview(revision.text)}`]);
     if (path === ALL) {
@@ -8470,12 +8494,68 @@ ${full(`F${id}`)}`, unbounded: false };
     }
     throw new Error(`no such path: ${path}; /tm`);
   };
+  const rootText = (listing) => {
+    const lines = [readingGuide(reader.sessionId, toolNames), ""];
+    if (reader.sessionId !== void 0) {
+      const own = session(reader.sessionId);
+      const path = store.knowledgePath(own.id, reader.branch, reader.headTurnId);
+      const turns = [...store.pathTurns(path)].sort((a, b) => a - b);
+      lines.push(
+        `This session: S${own.id} \xB7 ${hostKind(own)} \xB7 project ${sessionProject(own)}`,
+        `Current branch: ${count2(turns.length)} Turns${turns.length ? `, T${turns[0]} \u2026 T${path.headTurnId} (head)` : ""}`,
+        `Recent Turns: ${turns.slice(-10).map((id) => `T${id}`).join(" ")}`,
+        `Turn list: /tm/S${own.id}`,
+        ""
+      );
+    }
+    lines.push(
+      ...listing.slice(0, 2).map(([path, label]) => `${path}  ${label}`),
+      "/tm/facts  /tm/raw  every session's Turns by layer",
+      "",
+      "Sessions, latest activity first:",
+      ...listing.slice(4).map(([path, label]) => `${path}  ${label}`)
+    );
+    return lines.join("\n");
+  };
+  const turnList = (id) => {
+    const owner = session(id);
+    const turns = store.listTurns(id).sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.id - a.id);
+    const lines = [`S${id} \xB7 ${hostKind(owner)} \xB7 ${sessionProject(owner)} \xB7 ${count2(turns.length)} Turns, newest first`];
+    for (const turn of turns) {
+      const entries = entriesOf(id, turn.id);
+      const { facts, bindings } = store.contributingTurnFacts(turn.id, id, entries);
+      const ordinals = new Map(entries.map((entry) => [entry.id, entry.entryOrdinal]));
+      let earliest = facts[0], earliestOrdinal = Infinity;
+      for (const fact of facts) for (const entryId of bindings.get(fact.id)) {
+        const ordinal = ordinals.get(entryId);
+        if (ordinal !== void 0 && ordinal < earliestOrdinal) {
+          earliest = fact;
+          earliestOrdinal = ordinal;
+        }
+      }
+      let title;
+      if (facts.length) {
+        const heading = earliest.title ?? earliest.text.split("\n")[0];
+        const characters = [...heading];
+        title = (characters.length > 80 ? characters.slice(0, 80).join("") + "\u2026" : heading) + (facts.length > 1 ? ` (+${facts.length - 1})` : "");
+      } else {
+        const noted = store.notedEntryIds(entries.map((entry) => entry.id));
+        title = entries.some((entry) => !noted.has(entry.id)) ? "(not yet noted)" : "(no fact)";
+      }
+      lines.push(`T${turn.id}  ${utcMinute(turn.startedAt).slice(5)}  ${entries.length} ev  ${turn.kind === "turn" ? "" : `[${turn.kind}] `}${title}`);
+    }
+    return lines.join("\n");
+  };
   const read = (raw) => {
-    const path = resolve5(raw), listing = children(path);
-    if (listing && (path === MEMORY_ROOT || path === VISIBLE || path === ALL || SESSION.test(path) || LAYER.test(path))) return { content: [
-      ...path === MEMORY_ROOT ? [readingGuide(reader.sessionId, toolNames)] : [],
-      ...listing.length ? SESSION.test(path) ? store.listTurns(Number(SESSION.exec(path)[1])).map((turn) => `${MEMORY_ROOT}/facts${path.slice(MEMORY_ROOT.length)}/T${turn.id}  ${MEMORY_ROOT}/raw${path.slice(MEMORY_ROOT.length)}/T${turn.id}  ${turn.kind} ${turn.startedAt}`) : listing.map(([child, label]) => LAYER.test(path) ? child : label ? `${child}  ${label}` : child) : ["(empty)"]
-    ].join("\n"), unbounded: false };
+    const path = resolve5(raw);
+    const match = SESSION.exec(path);
+    if (match) return { content: turnList(Number(match[1])), unbounded: false };
+    const listing = children(path);
+    if (path === MEMORY_ROOT) return { content: rootText(listing), unbounded: false };
+    if (listing && (path === VISIBLE || path === ALL || LAYER.test(path))) return {
+      content: (listing.length ? listing.map(([child, label]) => LAYER.test(path) ? child : label ? `${child}  ${label}` : child) : ["(empty)"]).join("\n"),
+      unbounded: false
+    };
     return fileText(path);
   };
   const whole = (entry) => renderEntryWhole(entry, memory.resultText, void 0, void 0, true).content;
@@ -8493,8 +8573,7 @@ ${full(`F${id}`)}`, unbounded: false };
     if (path === MEMORY_ROOT) {
       yield* searched(VISIBLE);
       yield* searched(ALL);
-      for (const s of store.listSessions()) yield* searched(`${MEMORY_ROOT}/S${s.id}`);
-      for (const f of store.factHeadings()) yield { path: `${MEMORY_ROOT}/F${f.id}`, text: () => full(`F${f.id}`) };
+      for (const { session: s } of store.sessionActivity()) yield* searched(`${MEMORY_ROOT}/S${s.id}`);
       return;
     }
     if (path === VISIBLE) {
@@ -9575,17 +9654,11 @@ Knowledge: ${backlinks.join("; ")}` : "");
     if (!parsed2.entries && !parsed2.selector && !display.rawTurn && (turn.kind !== "compaction" || display.fileFacts)) {
       const meta3 = display.entryIds ? store.listSourceEntries(turn.sessionId, turn.id, display.branch).filter((entry) => display.entryIds.includes(entry.id)) : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
       const selectedIds = new Set(meta3.map((entry) => entry.id));
-      store.assertTurnLegacyBindings(turn.id, turn.sessionId);
-      const bindings = store.turnFactBindings(turn.id);
-      const facts = store.factsByIds([...bindings.keys()]);
+      const { facts } = store.contributingTurnFacts(turn.id, turn.sessionId, meta3);
       const path = display.sessionId === void 0 ? null : store.knowledgePath(display.sessionId, display.branch, display.headTurnId);
       const snapshot2 = path ? store.pathSnapshot(path) : void 0;
       const allBound = store.factSourceEntries(facts.map((fact) => fact.id));
-      const selected = facts.filter((fact) => {
-        if (!bindings.get(fact.id)?.some((id) => selectedIds.has(id))) return false;
-        if (display.fileFacts) return true;
-        return !path || store.factOnPath(fact, path, snapshot2, void 0, void 0, allBound);
-      });
+      const selected = display.fileFacts || !path ? facts : facts.filter((fact) => store.factOnPath(fact, path, snapshot2, void 0, void 0, allBound));
       const relations = display.sessionId === void 0 ? store.listFactRelationsOf(selected.map((f) => f.id)) : store.listFactRelationsOnPathOf(selected.map((f) => f.id), path);
       const cited = new Set(selected.flatMap((fact) => allBound.get(fact.id) ?? []));
       const noted = store.notedEntryIds(meta3.map((entry) => entry.id));
@@ -11597,7 +11670,7 @@ var import_node_fs7 = require("node:fs");
 var import_node_os3 = require("node:os");
 var import_node_path6 = require("node:path");
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -32395,7 +32468,7 @@ function query({
   return queryInstance;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
+// node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -32469,7 +32542,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
+// node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -33148,7 +33221,7 @@ var Class2 = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
+// node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -33214,7 +33287,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
+// node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -33294,7 +33367,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
+// node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -33451,7 +33524,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
+// node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -33999,7 +34072,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
+// node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -34035,14 +34108,14 @@ var Doc2 = class {
   }
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
+// node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
+// node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -36013,7 +36086,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
+// node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -36122,7 +36195,7 @@ function en_default3() {
   };
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
+// node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -36170,7 +36243,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
+// node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -36974,7 +37047,7 @@ function _stringFormat(Class3, format2, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
+// node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -37326,7 +37399,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
+// node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -37802,7 +37875,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -37971,7 +38044,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
+// node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -38005,7 +38078,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
+// node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -38046,7 +38119,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
+// node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -38086,7 +38159,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
+// node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -38100,7 +38173,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -39179,22 +39252,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
+// node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
+// node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
+// node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -40717,7 +40790,7 @@ var CC_PLUGIN_NAME = "trace-memory";
 var CC_MCP_SERVER_NAME = "traceMemory";
 var exposed = (prefix) => ({ ...Object.fromEntries(
   TOOL_ROLES.map((role) => [role, `${prefix}${canonicalToolNames[role]}`])
-), read: "Read", grep: "Grep" });
+), read: "Read" });
 var ccWorkerToolNames = exposed(`mcp__${CC_WORKER_SERVER_NAME}__`);
 var ccPluginToolNames = exposed(`mcp__plugin_${CC_PLUGIN_NAME}_${CC_MCP_SERVER_NAME}__`);
 
@@ -44964,7 +45037,7 @@ async function declareCcProject(config3, nativeSessionId, name) {
 var import_node_fs13 = require("node:fs");
 var import_node_path11 = require("node:path");
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@earendil-works/pi-tui/dist/terminal-image.js
+// node_modules/@earendil-works/pi-tui/dist/terminal-image.js
 function getPngDimensions(base64Data) {
   try {
     const buffer = Buffer.from(base64Data, "base64");
@@ -45378,7 +45451,7 @@ var import_node_fs14 = require("node:fs");
 var import_node_path12 = require("node:path");
 var import_node_crypto17 = require("node:crypto");
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/scanner.js
+// node_modules/jsonc-parser/lib/esm/impl/scanner.js
 function createScanner(text, ignoreTrivia = false) {
   const len = text.length;
   let pos = 0, value = "", tokenOffset = 0, token = 16, lineNumber = 0, lineStartOffset = 0, tokenLineStartOffset = 0, prevTokenLineStartOffset = 0, scanError = 0;
@@ -45799,7 +45872,7 @@ var CharacterCodes;
   CharacterCodes2[CharacterCodes2["tab"] = 9] = "tab";
 })(CharacterCodes || (CharacterCodes = {}));
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/string-intern.js
+// node_modules/jsonc-parser/lib/esm/impl/string-intern.js
 var cachedSpaces = new Array(20).fill(0).map((_, index) => {
   return " ".repeat(index);
 });
@@ -45830,7 +45903,7 @@ var cachedBreakLinesWithSpaces = {
 };
 var supportedEols = ["\n", "\r", "\r\n"];
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/format.js
+// node_modules/jsonc-parser/lib/esm/impl/format.js
 function format(documentText, range, options) {
   let initialIndentLevel;
   let formatText;
@@ -46066,7 +46139,7 @@ function isEOL(text, offset) {
   return "\r\n".indexOf(text.charAt(offset)) !== -1;
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/parser.js
+// node_modules/jsonc-parser/lib/esm/impl/parser.js
 var ParseOptions;
 (function(ParseOptions2) {
   ParseOptions2.DEFAULT = {
@@ -46488,7 +46561,7 @@ function getNodeType(value) {
   }
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/edit.js
+// node_modules/jsonc-parser/lib/esm/impl/edit.js
 function setProperty(text, originalPath, value, options) {
   const path = originalPath.slice();
   const errors = [];
@@ -46632,7 +46705,7 @@ function applyEdit(text, edit) {
   return text.substring(0, edit.offset) + edit.content + text.substring(edit.offset + edit.length);
 }
 
-// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/main.js
+// node_modules/jsonc-parser/lib/esm/main.js
 var ScanError;
 (function(ScanError2) {
   ScanError2[ScanError2["None"] = 0] = "None";

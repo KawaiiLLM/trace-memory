@@ -18,7 +18,20 @@ import { suppliedHandles } from "../../dreaming-skips.ts";
 import { fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
-import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { canonicalToolNames, validateToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { ccPluginToolNames, ccWorkerToolNames } from "../../../src/hosts/cc/tool-names.ts";
+
+test("the reading guide names only available native tools within its framing ceiling", () => {
+  const pi = readingGuide(Number.MAX_SAFE_INTEGER, validateToolNames(canonicalToolNames));
+  expect(pi.split("\n")[0]).toContain("use read or grep, never a shell command.");
+  expect(tokens(pi)).toBeLessThanOrEqual(200);
+  for (const names of [ccPluginToolNames, ccWorkerToolNames]) {
+    const cc = readingGuide(Number.MAX_SAFE_INTEGER, validateToolNames(names));
+    expect(cc.split("\n")[0]).toContain("use Read, never a shell command.");
+    expect(cc).not.toMatch(/grep/i);
+    expect(tokens(cc)).toBeLessThanOrEqual(200);
+  }
+});
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: NotingAgentInput[], scenarios: AdmittedDreamerScenarios;
 const time = "2026-09-08T00:00:00Z";

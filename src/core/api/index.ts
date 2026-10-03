@@ -669,20 +669,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const meta = display.entryIds ? store.listSourceEntries(turn.sessionId, turn.id, display.branch)
         .filter(entry => display.entryIds!.includes(entry.id)) : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
       const selectedIds = new Set(meta.map(entry => entry.id));
-      store.assertTurnLegacyBindings(turn.id, turn.sessionId);
-      const bindings = store.turnFactBindings(turn.id);
-      const facts = store.factsByIds([...bindings.keys()]);
+      const { facts } = store.contributingTurnFacts(turn.id, turn.sessionId, meta);
       const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, display.branch, display.headTurnId);
       const snapshot = path ? store.pathSnapshot(path) : undefined;
       const allBound = store.factSourceEntries(facts.map(fact => fact.id));
-      const selected = facts.filter(fact => {
-        if (!bindings.get(fact.id)?.some(id => selectedIds.has(id))) return false;
-        // 93: a facts file selects contributions made in this Turn, not complete-fact
-        // applicability. Segmented facts project this Turn; legacy bodies remain whole.
-        // Binding integrity was checked above, including sources in later Turns.
-        if (display.fileFacts) return true;
-        return !path || store.factOnPath(fact, path, snapshot, undefined, undefined, allBound);
-      });
+      // Facts files select contributions in this Turn, not complete-fact applicability.
+      const selected = display.fileFacts || !path ? facts
+        : facts.filter(fact => store.factOnPath(fact, path, snapshot, undefined, undefined, allBound));
       const relations = display.sessionId === undefined ? store.listFactRelationsOf(selected.map(f => f.id))
         : store.listFactRelationsOnPathOf(selected.map(f => f.id), path!);
       const cited = new Set(selected.flatMap(fact => allBound.get(fact.id) ?? []));

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memoryFiles, memoryGlob, memoryPath, recorded, sourceSeededMemory } from "../../source-fixture.ts";
-import { entry, fact, knowledge, session } from "../../support/seed.ts";
+import { entry, fact, knowledge, legacyFact, session } from "../../support/seed.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { tokens } from "../../../src/core/render/tokens.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
@@ -78,8 +78,6 @@ test("all path classes, native whole-file contract and role checks", () => {
   expect(files.read(`/tm/F${x.f.id}`).content).toContain(`Source session: S${x.owner.id}`);
   const target = `/tm/facts/S${x.owner.id}/T${x.turn.id}`;
   const raw = `/tm/raw/S${x.owner.id}/T${x.turn.id}`;
-  expect(files.read(S).content.split("\n")).toEqual([`${target}  ${raw}  turn ${x.turn.startedAt}`]);
-  expect(files.read("/tm").content).toContain(`${S}  session · project alpha · pi:reader ·`);
   expect(files.read("/tm").content).toContain("/tm/facts");
   expect(files.read("/tm").content).toContain("/tm/raw");
   expect(() => files.read(T)).toThrow(/no such path: .*; \/tm$/);
@@ -132,7 +130,7 @@ test.each(["K99", "K99@v1", "K1@v99", "F99"])("reports missing /tm target %s", a
   expect(() => x.files.read(`/tm/${address}`)).toThrow(/does not exist|has no revision|unknown knowledge history/);
 });
 
-test("118: the shared guide stays within 200 tokens and appears once across knowledge groups", () => {
+test("the shared guide stays within 200 tokens and appears once across knowledge groups", () => {
   for (const names of [canonicalToolNames, ccPluginToolNames, ccWorkerToolNames])
     for (const id of [undefined, 1, 140, Number.MAX_SAFE_INTEGER])
       expect(tokens(readingGuide(id, names))).toBeLessThanOrEqual(200);
@@ -181,7 +179,7 @@ test("explicit sibling Turn remains readable outside the selected cursor, while 
   expect(x.files.read(`/tm/raw/S${x.owner.id}`).content).not.toContain("MAIN_PATH_ONLY");
   const files = memoryFiles(x.memory, x.store.currentPath(x.owner.id));
   const explicit = `/tm/raw/S${x.owner.id}/T${sibling.id}`;
-  expect(files.read(x.S).content).toContain(`/tm/facts/S${x.owner.id}/T${sibling.id}  ${explicit}  turn ${sibling.startedAt}`);
+  expect(files.read(x.S).content.split("\n").find(line => line.startsWith(`T${sibling.id} `))).toContain("Sibling decision");
   expect(files.glob(`/tm/raw/S${x.owner.id}/*`).lines).toContain(`/tm/raw/S${x.owner.id}/T${sibling.id}`);
   expect(files.read(`/tm/raw/S${x.owner.id}`).content).toContain("MAIN_PATH_ONLY");
   expect(files.read(`/tm/raw/S${x.owner.id}`).content).not.toContain("SIBLING_ORIGINAL_TEXT");
@@ -390,4 +388,120 @@ test("normalised absolute memory paths only", () => {
   for (const [pattern, path] of [["/t*/K1", undefined], ["/tm*", undefined], ["/tmp/*", undefined], ["tm/*", undefined],
     ["*", "tm"], ["../etc/*", "/tm"], ["*", "/tmp"], ["/tm/../etc/*", undefined]] as const)
     expect(memoryGlob(pattern, path)).toBeNull();
+});
+
+test("root indexes nonempty sessions by latest activity and binds navigation to the reader's branch", () => {
+  const x = fixture();
+  try {
+    const unnamed = x.store.createProject({ name: "cc:undeclared", declaredBy: "marker" });
+    const other = session(x.store, unnamed.id, "cc:undeclared");
+    const empty = session(x.store, unnamed.id, "cc:empty");
+    x.store.appendTurn({ sessionId: other.id, kind: "turn", startedAt: "2026-09-20T08:00:00.000Z" });
+    let parent = x.turn.id;
+    const branchTurns = [parent], branchEntries = x.store.sourcePath(x.owner.id, "main", parent).map(e => e.id);
+    for (let i = 0; i < 11; i++) {
+      const turn = x.store.appendTurn({ sessionId: x.owner.id, parentTurnId: parent, kind: "turn",
+        startedAt: `2026-09-22T00:${String(i).padStart(2, "0")}:00.000Z` });
+      branchTurns.push(turn.id); parent = turn.id;
+      branchEntries.push(entry(x.store, x.owner.id, turn.id, `branch-${i}`, "user").id);
+    }
+    x.memory.selectEntries(x.owner.id, "reader", branchEntries);
+    const sibling = x.store.appendTurn({ sessionId: x.owner.id, parentTurnId: x.turn.id, kind: "turn",
+      startedAt: "2026-09-23T00:00:00.000Z" });
+    x.memory.selectEntries(x.owner.id, "main", [
+      ...x.store.sourcePath(x.owner.id, "main", x.turn.id).map(e => e.id),
+      entry(x.store, x.owner.id, sibling.id, "sibling-nav", "user").id,
+    ]);
+    x.store.setCurrentPath(x.owner.id, "main", sibling.id, "main-live");
+    const bound = memoryFiles(x.memory, { sessionId: x.owner.id, branch: "reader", headTurnId: parent }).read("/tm").content;
+    const unbound = memoryFiles(x.memory, {}).read("/tm").content;
+    expect(bound).toContain(`This session: S${x.owner.id} · Pi · project alpha`);
+    expect(bound).toContain(`Current branch: 12 Turns, T${x.turn.id} … T${parent} (head)`);
+    expect(bound.split("\n").find(line => line.startsWith("Recent Turns:"))?.match(/T\d+/g))
+      .toEqual(branchTurns.slice(-10).map(id => `T${id}`));
+    expect(bound).toContain(`Turn list: ${x.S}`);
+    expect(unbound).not.toMatch(/This session:|Current branch:|Recent Turns:|Turn list:/);
+    const sessions = bound.split("\n").filter(line => /^\/tm\/S\d+\s/.test(line));
+    expect(sessions).toEqual([
+      `${x.S}  Pi · alpha · 13 Turns · last 2026-09-23 00:00Z`,
+      `/tm/S${other.id}  Claude Code · no project name · 1 Turns · last 2026-09-20 08:00Z`,
+    ]);
+    expect(bound).not.toMatch(/^\/tm\/F\d+/m);
+    expect(bound).not.toMatch(new RegExp(`^/tm/S${empty.id}\\s`, "m"));
+    expect(bound).toContain("/tm/knowledge  knowledge visible to you, current versions: 1");
+    expect(bound).toContain("/tm/knowledge-all  every scope and project, archived included: 1");
+    expect(memoryFiles(x.memory, { sessionId: empty.id, headTurnId: null }).read("/tm").content).toContain("Current branch: 0 Turns");
+  } finally { x.memory.close(); }
+});
+
+test("Turn titles use the earliest contribution, include spanning facts, and list all branches newest first", () => {
+  const x = fixture();
+  try {
+    const base = x.store.sourcePath(x.owner.id, "main", x.turn.id);
+    const turn = x.store.appendTurn({ sessionId: x.owner.id, parentTurnId: x.turn.id, kind: "turn",
+      startedAt: "2026-09-22T01:02:03.000Z" });
+    const early = entry(x.store, x.owner.id, turn.id, "early-title", "user");
+    const later = entry(x.store, x.owner.id, turn.id, "late-title", "assistant");
+    x.memory.selectEntries(x.owner.id, "main", [...base.map(e => e.id), early.id, later.id]);
+    const path = { sessionId: x.owner.id, branch: "main", headTurnId: turn.id };
+    fact(x.memory, path, "Created first, contributed later", [{ entry: later, text: "LATER_CONTRIBUTION" }]);
+    fact(x.memory, path, "Spanning decision", [
+      { entry: x.store.hydrateSourceEntries([base[0]!.id])[0]!, text: "EARLIER_TURN_CONTRIBUTION" },
+      { entry: early, text: "FIRST_CONTRIBUTION" },
+    ]);
+    const orphan = x.store.appendTurn({ sessionId: x.owner.id, parentTurnId: x.turn.id, kind: "turn",
+      startedAt: "2026-09-23T00:00:00.000Z" });
+    entry(x.store, x.owner.id, orphan.id, "orphan-title", "user");
+    const lines = x.files.read(x.S).content.split("\n");
+    expect(lines[0]).toContain("3 Turns, newest first");
+    expect(lines.slice(1).map(line => /^T\d+/.exec(line)![0])).toEqual([orphan.id, turn.id, x.turn.id].map(id => `T${id}`));
+    expect(lines[2]).toBe(`T${turn.id}  09-22 01:02Z  2 ev  Spanning decision (+1)`);
+    expect(lines[3]).toContain("Cache policy (+1)");
+    expect(lines.slice(1).every(line => !line.includes("/tm/"))).toBe(true);
+    expect(x.files.read(`/tm/facts/S${x.owner.id}/T${turn.id}`).content).toContain("FIRST_CONTRIBUTION");
+    expect(x.files.read(`/tm/facts/S${x.owner.id}/T${x.turn.id}`).content).toContain("EARLIER_TURN_CONTRIBUTION");
+    const found = [...x.files.grep("FIRST_CONTRIBUTION", "/tm")].map(hit => hit.path);
+    expect(found).toEqual([`/tm/facts/S${x.owner.id}/T${turn.id}`]);
+    expect([...x.files.grep("LRU", "/tm")].some(hit => /^\/tm\/F\d+/.test(hit.path))).toBe(false);
+    const spanSession = session(x.store, x.owner.projectId, "pi:span");
+    const first = x.store.appendTurn({ sessionId: spanSession.id, kind: "turn", startedAt: "2026-09-21T00:00:00.000Z" });
+    const second = x.store.appendTurn({ sessionId: spanSession.id, parentTurnId: first.id, kind: "turn", startedAt: "2026-09-22T00:00:00.000Z" });
+    const start = entry(x.store, spanSession.id, first.id, "span-start", "user");
+    const end = entry(x.store, spanSession.id, second.id, "span-end", "assistant");
+    x.memory.selectEntries(spanSession.id, "main", [start.id, end.id]);
+    fact(x.memory, { sessionId: spanSession.id, branch: "main", headTurnId: second.id }, "Both Turns",
+      [{ entry: start, text: "Start." }, { entry: end, text: "End." }]);
+    const spanLines = x.files.read(`/tm/S${spanSession.id}`).content.split("\n").slice(1);
+    expect(spanLines).toEqual([
+      `T${second.id}  09-22 00:00Z  1 ev  Both Turns`,
+      `T${first.id}  09-21 00:00Z  1 ev  Both Turns`,
+    ]);
+  } finally { x.memory.close(); }
+});
+
+test("Turn list distinguishes pending and processed no-fact entries, marks kinds, and truncates legacy headings", () => {
+  const x = fixture();
+  try {
+    const pending = x.store.appendTurn({ sessionId: x.owner.id, parentTurnId: x.turn.id, kind: "turn",
+      startedAt: "2026-09-22T00:00:00.000Z" });
+    const a = entry(x.store, x.owner.id, pending.id, "pending-title", "user");
+    const processed = x.store.appendTurn({ sessionId: x.owner.id, parentTurnId: x.turn.id, kind: "turn",
+      startedAt: "2026-09-23T00:00:00.000Z" });
+    const b = entry(x.store, x.owner.id, processed.id, "processed-title", "user");
+    x.store.commitNotingRun({ run: { kind: "manual", sessionId: x.owner.id, branch: "processed",
+      createdAt: "2026-09-23T00:00:00.000Z" }, facts: [], entryIds: [b.id] });
+    const legacy = x.store.appendTurn({ sessionId: x.owner.id, parentTurnId: x.turn.id, kind: "turn",
+      startedAt: "2026-09-24T00:00:00.000Z" });
+    const c = entry(x.store, x.owner.id, legacy.id, "legacy-title", "user");
+    legacyFact(x.store, { sessionId: x.owner.id, branch: "legacy", headTurnId: legacy.id },
+      [{ entry: c, address: `T${legacy.id}#E${c.entryOrdinal}` }], "旧".repeat(81) + "\nNot the heading.");
+    const compact = x.store.appendTurn({ sessionId: x.owner.id, parentTurnId: legacy.id, kind: "compaction",
+      startedAt: "2026-09-25T00:00:00.000Z" });
+    const lines = x.files.read(x.S).content.split("\n");
+    expect(lines.find(line => line.startsWith(`T${pending.id} `))).toBe(`T${pending.id}  09-22 00:00Z  1 ev  (not yet noted)`);
+    expect(lines.find(line => line.startsWith(`T${processed.id} `))).toBe(`T${processed.id}  09-23 00:00Z  1 ev  (no fact)`);
+    expect(lines.find(line => line.startsWith(`T${legacy.id} `))).toBe(`T${legacy.id}  09-24 00:00Z  1 ev  ${"旧".repeat(80)}…`);
+    expect(lines[1]).toBe(`T${compact.id}  09-25 00:00Z  0 ev  [compaction] (no fact)`);
+    expect(x.store.entryNoted(a.id)).toBe(false);
+  } finally { x.memory.close(); }
 });

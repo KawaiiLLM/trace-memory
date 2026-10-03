@@ -1,6 +1,6 @@
 // /tm is a read-only, host-neutral namespace. Hosts own pagination and output limits.
 import type { TraceMemory } from "./index.ts";
-import type { KnowledgeRevision } from "../model/index.ts";
+import type { KnowledgeRevision, Session } from "../model/index.ts";
 import type { SourceEntry } from "../store/index.ts";
 import { MEMORY_ROOT, memoryPath, parseMemoryViewPath } from "../model/address.ts";
 import { renderEntryWhole } from "../render/index.ts";
@@ -75,6 +75,13 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
     return value;
   };
   const projectName = (id: number | null) => id === null ? "no project" : store.getProject(id)?.name ?? `project ${id}`;
+  const count = (n: number) => n.toLocaleString("en-US");
+  const utcMinute = (time: string) => new Date(time).toISOString().slice(0, 16).replace("T", " ") + "Z";
+  const hostKind = (s: Session) => s.host.startsWith("cc:") ? "Claude Code" : s.host.startsWith("pi:") ? "Pi" : s.host;
+  const sessionProject = (s: Session) => {
+    const name = s.projectId === null ? undefined : store.getProject(s.projectId)?.name;
+    return name === undefined || name === s.host ? "no project name" : name;
+  };
   const selectedPath = (sessionId: number, turnId?: number) => {
     const current = sessionId === reader.sessionId
       ? store.knowledgePath(sessionId, reader.branch, reader.headTurnId) : store.currentPath(sessionId);
@@ -109,12 +116,12 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
   /** A directory's children as [path, label], or null when the path is not a directory. */
   const children = (path: string): [string, string][] | null => {
     if (path === MEMORY_ROOT) return [
-      [VISIBLE, "directory: knowledge visible to you, current versions"],
-      [ALL, "directory: every knowledge identity in every scope and project, archived included"],
-      [`${MEMORY_ROOT}/facts`, "directory: Turn facts"],
-      [`${MEMORY_ROOT}/raw`, "directory: full Raw entries"],
-      ...store.listSessions().map(s => [`${MEMORY_ROOT}/S${s.id}`, `session · project ${projectName(s.projectId)} · ${s.host} · ${s.startedAt}`] as [string, string]),
-      ...store.factHeadings().map(f => [`${MEMORY_ROOT}/F${f.id}`, preview(f.heading)] as [string, string]),
+      [VISIBLE, `knowledge visible to you, current versions: ${count(visible().length)}`],
+      [ALL, `every scope and project, archived included: ${count(store.knowledgeCount())}`],
+      [`${MEMORY_ROOT}/facts`, "every session's Turns by layer"],
+      [`${MEMORY_ROOT}/raw`, "every session's Turns by layer"],
+      ...store.sessionActivity().map(({ session: s, turns, last }) =>
+        [`${MEMORY_ROOT}/S${s.id}`, `${hostKind(s)} · ${sessionProject(s)} · ${count(turns)} Turns · last ${utcMinute(last)}`] as [string, string]),
     ];
     if (path === VISIBLE) return visible().map(({ knowledge, revision }) =>
       [`${MEMORY_ROOT}/K${knowledge.id}`, `[${revision.category}/${revision.scope}] ${preview(revision.text)}`]);
@@ -183,15 +190,58 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
     }
     throw new Error(`no such path: ${path}; /tm`);
   };
+  const rootText = (listing: [string, string][]) => {
+    const lines = [readingGuide(reader.sessionId, toolNames), ""];
+    if (reader.sessionId !== undefined) {
+      const own = session(reader.sessionId);
+      const path = store.knowledgePath(own.id, reader.branch, reader.headTurnId);
+      const turns = [...store.pathTurns(path)].sort((a, b) => a - b);
+      lines.push(`This session: S${own.id} · ${hostKind(own)} · project ${sessionProject(own)}`,
+        `Current branch: ${count(turns.length)} Turns${turns.length ? `, T${turns[0]} … T${path.headTurnId} (head)` : ""}`,
+        `Recent Turns: ${turns.slice(-10).map(id => `T${id}`).join(" ")}`,
+        `Turn list: /tm/S${own.id}`, "");
+    }
+    lines.push(...listing.slice(0, 2).map(([path, label]) => `${path}  ${label}`),
+      "/tm/facts  /tm/raw  every session's Turns by layer", "", "Sessions, latest activity first:",
+      ...listing.slice(4).map(([path, label]) => `${path}  ${label}`));
+    return lines.join("\n");
+  };
+  const turnList = (id: number) => {
+    const owner = session(id);
+    const turns = store.listTurns(id).sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.id - a.id);
+    const lines = [`S${id} · ${hostKind(owner)} · ${sessionProject(owner)} · ${count(turns.length)} Turns, newest first`];
+    for (const turn of turns) {
+      const entries = entriesOf(id, turn.id);
+      const { facts, bindings } = store.contributingTurnFacts(turn.id, id, entries);
+      const ordinals = new Map(entries.map(entry => [entry.id, entry.entryOrdinal]));
+      let earliest = facts[0], earliestOrdinal = Infinity;
+      for (const fact of facts) for (const entryId of bindings.get(fact.id)!) {
+        const ordinal = ordinals.get(entryId);
+        if (ordinal !== undefined && ordinal < earliestOrdinal) { earliest = fact; earliestOrdinal = ordinal; }
+      }
+      let title: string;
+      if (facts.length) {
+        const heading = earliest!.title ?? earliest!.text.split("\n")[0]!;
+        const characters = [...heading];
+        title = (characters.length > 80 ? characters.slice(0, 80).join("") + "…" : heading) +
+          (facts.length > 1 ? ` (+${facts.length - 1})` : "");
+      } else {
+        const noted = store.notedEntryIds(entries.map(entry => entry.id));
+        title = entries.some(entry => !noted.has(entry.id)) ? "(not yet noted)" : "(no fact)";
+      }
+      lines.push(`T${turn.id}  ${utcMinute(turn.startedAt).slice(5)}  ${entries.length} ev  ${turn.kind === "turn" ? "" : `[${turn.kind}] `}${title}`);
+    }
+    return lines.join("\n");
+  };
   const read = (raw: string): MemoryFile => {
-    const path = resolve(raw), listing = children(path);
-    if (listing && (path === MEMORY_ROOT || path === VISIBLE || path === ALL || SESSION.test(path) || LAYER.test(path))) return { content: [
-      ...(path === MEMORY_ROOT ? [readingGuide(reader.sessionId, toolNames)] : []),
-      ...(listing.length ? SESSION.test(path)
-        ? store.listTurns(Number(SESSION.exec(path)![1])).map(turn =>
-          `${MEMORY_ROOT}/facts${path.slice(MEMORY_ROOT.length)}/T${turn.id}  ${MEMORY_ROOT}/raw${path.slice(MEMORY_ROOT.length)}/T${turn.id}  ${turn.kind} ${turn.startedAt}`)
-        : listing.map(([child, label]) => LAYER.test(path) ? child : label ? `${child}  ${label}` : child) : ["(empty)"]),
-    ].join("\n"), unbounded: false };
+    const path = resolve(raw);
+    const match = SESSION.exec(path);
+    if (match) return { content: turnList(Number(match[1])), unbounded: false };
+    const listing = children(path);
+    if (path === MEMORY_ROOT) return { content: rootText(listing!), unbounded: false };
+    if (listing && (path === VISIBLE || path === ALL || LAYER.test(path))) return { content:
+      (listing.length ? listing.map(([child, label]) => LAYER.test(path) ? child : label ? `${child}  ${label}` : child) : ["(empty)"]).join("\n"),
+      unbounded: false };
     return fileText(path);
   };
 
@@ -211,8 +261,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
   function* searched(path: string): Generator<Searched> {
     if (path === MEMORY_ROOT) {
       yield* searched(VISIBLE); yield* searched(ALL);
-      for (const s of store.listSessions()) yield* searched(`${MEMORY_ROOT}/S${s.id}`);
-      for (const f of store.factHeadings()) yield { path: `${MEMORY_ROOT}/F${f.id}`, text: () => full(`F${f.id}`) };
+      for (const { session: s } of store.sessionActivity()) yield* searched(`${MEMORY_ROOT}/S${s.id}`);
       return;
     }
     if (path === VISIBLE) {

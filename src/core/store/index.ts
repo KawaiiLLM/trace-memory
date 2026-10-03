@@ -2232,6 +2232,15 @@ export class Store {
     return bindings;
   }
 
+  /** The facts view and Turn index share contribution selection, including legacy integrity checks. */
+  contributingTurnFacts(turnId: number, sessionId: number, entries: readonly SourceEntryMeta[]) {
+    this.assertTurnLegacyBindings(turnId, sessionId);
+    const bindings = this.turnFactBindings(turnId);
+    const selectedIds = new Set(entries.map(entry => entry.id));
+    const facts = this.factsByIds([...bindings.keys()]);
+    return { facts: facts.filter(fact => bindings.get(fact.id)!.some(id => selectedIds.has(id))), bindings };
+  }
+
   revisionSupportIds(knowledgeIds: readonly number[]): number[] {
     if (!knowledgeIds.length) return [];
     return (this.db.prepare(`SELECT DISTINCT j.value AS id FROM knowledge_revisions r, json_each(r.supports) j
@@ -4213,10 +4222,16 @@ export class Store {
     return this.db.prepare("SELECT * FROM sessions ORDER BY id").all().map(toSession);
   }
 
-  /** 101: every fact's title, or the first line of a legacy untitled body, for the `/tm` listing. */
-  factHeadings(): { id: number; heading: string }[] {
-    return (this.db.prepare("SELECT id, COALESCE(title, substr(text, 1, 200)) AS heading FROM facts ORDER BY id").all() as
-      { id: number; heading: string }[]).map(row => ({ id: Number(row.id), heading: String(row.heading).split("\n")[0]! }));
+  /** Nonempty sessions, ordered by their newest Turn's start time rather than session creation. */
+  sessionActivity(): { session: Session; turns: number; last: string }[] {
+    return this.db.prepare(`SELECT s.*, activity.turns, activity.last FROM sessions s JOIN
+      (SELECT session_id, count(*) AS turns, max(started_at) AS last FROM turns GROUP BY session_id) activity
+      ON activity.session_id = s.id ORDER BY activity.last DESC, s.id DESC`).all()
+      .map(row => ({ session: toSession(row), turns: Number(row.turns), last: String(row.last) }));
+  }
+
+  knowledgeCount(): number {
+    return Number(this.db.prepare("SELECT count(DISTINCT knowledge_id) AS n FROM knowledge_revisions").get()!.n);
   }
 
   /** 101: a session's current selected head — its most advanced lineage cursor, or its newest Turn

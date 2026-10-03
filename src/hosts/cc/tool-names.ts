@@ -8,7 +8,7 @@ export const CC_MCP_SERVER_NAME = "traceMemory";
 
 const exposed = (prefix: string): ToolNames => ({ ...Object.fromEntries(
   TOOL_ROLES.map(role => [role, `${prefix}${canonicalToolNames[role]}`]),
-), read: "Read", grep: "Grep" }) as ToolNames;
+), read: "Read" }) as ToolNames;
 
 export const ccWorkerToolNames = exposed(`mcp__${CC_WORKER_SERVER_NAME}__`);
 export const ccPluginToolNames = exposed(`mcp__plugin_${CC_PLUGIN_NAME}_${CC_MCP_SERVER_NAME}__`);
