@@ -137,7 +137,10 @@ The Dreamer processes each supplied item through split, merge, conflict resoluti
 committing one decision before moving to the next. It compares only within a scope. A later user
 ruling can displace an older ruling; an assistant proposal or report cannot. Archiving preserves a
 named survivor or cites evidence that the item is obsolete, contradicted, completed or abandoned;
-when over budget, the prompt continues archiving in its protection order and checking until pools fit.
+when over budget, first remove redundancy and reliably retrievable detail whose omission harms no
+recognition, understanding, judgement or continuation; preserve confirmed next steps and execution
+boundaries. Then coarsen suitable related topics, and only then archive lower-value knowledge if
+needed, checking until the frozen pool fits (122). Categories have no fixed priority.
 Budget excess is never a write gate.
 
 `check` reports current pool sizes, budgets and blockers: operation failures, the frozen pool over its
@@ -156,11 +159,11 @@ the bound in its reason, settles partial work and releases its claim; it is not 
 
 At the start of a run, when the frozen pool's size without this run's pending items already exceeds
 its budget, the task material states the pool, pending, remainder and budget numbers and directs the
-run to reduce the already-processed knowledge first under Budget priorities, before deliberating the
-pending items. Both measures come from the same pool projection `check` reports from; the run's own
-final `check` and the "Over budget" loop are unchanged.
+run to reduce the already-processed knowledge first under the **Over budget** principle, before
+deliberating the pending items (103). Both measures come from the same pool projection `check`
+reports from; the remove, coarsen, archive order applies inside either budget-reduction phase (122).
 
-A run archives until its pool fits; one pool's excess alone makes no session due.
+A run reduces its frozen pool until it fits; one pool's excess alone makes no session due.
 Project relabelling creates no processing event or knowledge revision. It removes destination-pool
 processing records only for moved-in project versions, so returning versions become pending again.
 Unrelated destination records and global/session records are unchanged; order follows revision creation.

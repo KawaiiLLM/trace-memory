@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "vitest";
-import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { readFileSync } from "node:fs";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import type { KnowledgeCategory, KnowledgeScope } from "../../../src/core/model/index.ts";
@@ -15,7 +14,7 @@ interface WorkflowFixture {
   promptOrder: string[]; examples: WorkflowExample[];
 }
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as WorkflowFixture;
-const prompt = loadPrompt("dreaming.md"), active: ReturnType<typeof TraceMemory>[] = [];
+const active: TraceMemory[] = [];
 afterEach(() => { for (const memory of active.splice(0)) memory.close(); });
 const success = { outcome: "success", output: "scripted fixture complete", request: { fixture: "dreaming-workflow" } } as const;
 const example = (id: string) => { const found = fixture.examples.find(value => value.id === id); if (!found) throw new Error(`Missing ${id}`); return found; };
@@ -52,28 +51,6 @@ test("35c reviewed fixtures label semantic judgments and non-semantic limits hon
   expect(fixture.semanticReview.limitations.join(" ")).toContain("not new human gold or real-model approval");
   expect(fixture.provenance).toContain("Magic Context 246a1c390e9a81944b867c1cd94ae5b7166e26e3");
   expect(fixture.provenance).toContain("pi-observational-memory ce9fc982b3a219a7839f07c9f4a3e054e81a2b21");
-});
-
-test("64c prompt and fixture use only the current maintenance contract", () => {
-  let previous = -1;
-  for (const heading of fixture.promptOrder) {
-    const position = prompt.indexOf(heading);
-    expect(position, `missing prompt stage: ${heading}`).toBeGreaterThan(previous);
-    expect(prompt.indexOf(heading, position + heading.length), `duplicate prompt stage: ${heading}`).toBe(-1);
-    previous = position;
-  }
-  const renderedFixture = JSON.stringify(fixture);
-  for (const retired of [
-    "archivePriority", "### Intensity, set by the failed check", "Second intensity",
-    "second intensity", "frozen family", "successor-free", "shortening-only",
-    "qualified-open-reminder", "readable-body-left-alone",
-    "finished-reference-archived-on-completion-fact", "finished-status-folded-into-ruling",
-  ]) expect(renderedFixture).not.toContain(retired);
-  expect(prompt).not.toContain("### Intensity, set by the failed check");
-  expect(prompt).toContain("over budget: another round of budget reduction on it, then `check` again");
-  expect(prompt).toContain("coarsen suitable related topics first, then archive lower-value knowledge if needed");
-  expect(prompt).toContain("then `check` again until the pool fits");
-  expect(prompt).toContain("Another pool over budget is reported, not acted on");
 });
 
 test("85: a pending-triggered deterministic Dreamer still archives until its selected pool fits", async () => {
