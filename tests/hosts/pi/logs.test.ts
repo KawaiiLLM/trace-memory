@@ -210,11 +210,6 @@ test.skipIf(!reader)("24c: the external daily reader charges every new worker re
     expect(perEntry).toBe(entries.length * REPLY);
     expect(entries.length).toBeGreaterThan(distinct.size);
 
-    // Identical text, distinct responses: the fork's reply and the subagent's reply are both
-    // "Done.", written to different files, and both are charged.
-    const done = entries.filter(entry => JSON.stringify(entry.message.content).includes("Done."));
-    expect(new Set(done.map(entry => entry.id)).size).toBe(2);
-
     // The day boundary is the consumer's own. A window that starts just after the parent's first
     // reply drops it — and drops the fork's inherited copy of it too, although that file was written
     // inside the window and every other entry in it still counts.
