@@ -2729,24 +2729,20 @@ var Store = class {
       AND (substr(source.value,1,?)=? OR source.value GLOB ?) ORDER BY f.id`).all(sessionId, prefix.length, prefix, qualified);
     this.factBoundAddresses(facts.map((fact) => ({ id: fact.id, source: JSON.parse(fact.source) })));
   }
-  /** Source membership for a Turn, not ownership by the first contributing Turn. */
-  turnFactBindings(turnId) {
-    const bindings = /* @__PURE__ */ new Map();
-    for (const row of this.db.prepare(`SELECT fs.fact_id, fs.entry_id FROM fact_sources fs
-      JOIN source_entries e ON e.id = fs.entry_id WHERE e.turn_id = ? ORDER BY fs.fact_id, fs.entry_id`).all(turnId)) {
-      const entries = bindings.get(row.fact_id) ?? [];
-      entries.push(row.entry_id);
-      bindings.set(row.fact_id, entries);
-    }
-    return bindings;
+  /** Contributions from selected entries, shared by the single-Turn facts view and session index.
+   * Only the facts view hydrates bodies and checks legacy integrity; navigation needs metadata. */
+  turnFactContributions(sessionId, entryIds) {
+    if (!entryIds.length) return [];
+    return this.db.prepare(`SELECT e.turn_id AS turnId, fs.fact_id AS id,
+      min(e.entry_ordinal) AS firstOrdinal, COALESCE(f.title, substr(f.text, 1, 81)) AS heading
+      FROM fact_sources fs JOIN source_entries e ON e.id = fs.entry_id JOIN facts f ON f.id = fs.fact_id
+      WHERE e.session_id = ? AND e.id IN (SELECT value FROM json_each(?))
+      GROUP BY e.turn_id, fs.fact_id ORDER BY e.turn_id, firstOrdinal, fs.fact_id`).all(sessionId, JSON.stringify(entryIds));
   }
-  /** The facts view and Turn index share contribution selection, including legacy integrity checks. */
   contributingTurnFacts(turnId, sessionId, entries) {
     this.assertTurnLegacyBindings(turnId, sessionId);
-    const bindings = this.turnFactBindings(turnId);
-    const selectedIds = new Set(entries.map((entry) => entry.id));
-    const facts = this.factsByIds([...bindings.keys()]);
-    return { facts: facts.filter((fact) => bindings.get(fact.id).some((id) => selectedIds.has(id))), bindings };
+    const contributions = this.turnFactContributions(sessionId, entries.map((entry) => entry.id));
+    return { facts: this.factsByIds(contributions.map((fact) => fact.id)) };
   }
   revisionSupportIds(knowledgeIds) {
     if (!knowledgeIds.length) return [];
@@ -4699,6 +4695,47 @@ ${archivedBody}${evidenceLine}${diffLine}`;
   listTurns(sessionId) {
     return this.db.prepare("SELECT * FROM turns WHERE session_id = ? ORDER BY id").all(sessionId).map(toTurn);
   }
+  /** One branch choice per Turn and one set of entry/fact reads, never per-Turn queries or Raw bodies. */
+  sessionTurnIndex(path) {
+    const turns = this.db.prepare(`SELECT id, parent_turn_id, kind, started_at FROM turns
+      WHERE session_id = ? ORDER BY started_at DESC, id DESC`).all(path.sessionId);
+    const parents = new Map(turns.map((turn) => [turn.id, turn.parent_turn_id]));
+    const onBranch = path.headTurnId == null ? /* @__PURE__ */ new Set() : this.ancestryFromParents(parents, path.headTurnId);
+    const preferred = path.branch === void 0 ? void 0 : this.db.prepare(
+      "SELECT id FROM source_paths WHERE session_id = ? AND branch = ?"
+    ).get(path.sessionId, path.branch);
+    const fallback = this.sourcePathsContainingTurns(path.sessionId);
+    const choices = turns.map((turn) => [turn.id, onBranch.has(turn.id) ? preferred?.id ?? null : fallback.get(turn.id)?.id ?? null]);
+    const entries = this.db.prepare(`SELECT e.id, e.turn_id, EXISTS
+      (SELECT 1 FROM noted_entries n WHERE n.entry_id = e.id) AS noted
+      FROM json_each(?) choice JOIN source_entries e INDEXED BY idx_source_turn_ordinal
+        ON e.turn_id = json_extract(choice.value, '$[0]') AND e.session_id = ?
+      WHERE json_extract(choice.value, '$[1]') IS NULL OR EXISTS
+        (SELECT 1 FROM source_path_entries member WHERE member.path_id = json_extract(choice.value, '$[1]')
+          AND member.entry_id = e.id)`).all(JSON.stringify(choices), path.sessionId);
+    const index = turns.map((turn) => ({
+      id: turn.id,
+      kind: turn.kind,
+      startedAt: turn.started_at,
+      onBranch: onBranch.has(turn.id),
+      entries: 0,
+      pending: false,
+      facts: 0,
+      heading: void 0
+    }));
+    const byTurn = new Map(index.map((turn) => [turn.id, turn]));
+    for (const entry of entries) {
+      const turn = byTurn.get(entry.turn_id);
+      turn.entries++;
+      if (!entry.noted) turn.pending = true;
+    }
+    for (const fact of this.turnFactContributions(path.sessionId, entries.map((entry) => entry.id))) {
+      const turn = byTurn.get(fact.turnId);
+      if (!turn.facts) turn.heading = fact.heading.split("\n")[0];
+      turn.facts++;
+    }
+    return index;
+  }
   /** 101: every session, for the `/tm` listing. */
   listSessions() {
     return this.db.prepare("SELECT * FROM sessions ORDER BY id").all().map(toSession);
@@ -5213,7 +5250,10 @@ ${archivedBody}${evidenceLine}${diffLine}`;
    * A headless Turn is covered by its recorded lineage head; other Turns follow the selected
    * source tail's ancestry. No payload or knowledge rendering is needed to choose a branch. */
   sourceBranchContainingTurn(sessionId, turnId) {
-    const row = this.db.prepare(`WITH RECURSIVE heads(path_id, turn_id) AS (
+    return this.sourcePathsContainingTurns(sessionId, turnId).get(turnId)?.branch ?? null;
+  }
+  sourcePathsContainingTurns(sessionId, turnId) {
+    const rows = this.db.prepare(`WITH RECURSIVE heads(path_id, turn_id) AS (
       SELECT p.id, e.turn_id FROM source_paths p JOIN source_entries e ON e.id = p.tail_entry_id
         WHERE p.session_id = ?
       UNION
@@ -5222,10 +5262,13 @@ ${archivedBody}${evidenceLine}${diffLine}`;
       UNION
       SELECT h.path_id, t.parent_turn_id FROM heads h JOIN turns t ON t.id = h.turn_id
         WHERE t.parent_turn_id IS NOT NULL AND t.session_id = ?
-    ) SELECT p.branch FROM source_paths p JOIN heads h ON h.path_id = p.id
-      WHERE p.session_id = ? AND h.turn_id = ?
-      ORDER BY p.hwm_entry_id DESC, p.id DESC LIMIT 1`).get(sessionId, sessionId, sessionId, sessionId, turnId);
-    return row?.branch ?? null;
+    ), ranked AS (
+      SELECT h.turn_id, p.id, p.branch,
+        row_number() OVER (PARTITION BY h.turn_id ORDER BY p.hwm_entry_id DESC, p.id DESC) AS priority
+      FROM source_paths p JOIN heads h ON h.path_id = p.id WHERE p.session_id = ?
+        AND (? IS NULL OR h.turn_id = ?)
+    ) SELECT turn_id, id, branch FROM ranked WHERE priority = 1`).all(sessionId, sessionId, sessionId, sessionId, turnId ?? null, turnId ?? null);
+    return new Map(rows.map((row) => [row.turn_id, { id: row.id, branch: row.branch }]));
   }
   /** Publish source selection and its lineage cursor atomically, validating the supplied identities
    * once without writing and then reparsing the full path. Other lineage cursors remain untouched. */
@@ -8383,9 +8426,9 @@ function memoryFiles(memory, reader) {
   const count2 = (n) => n.toLocaleString("en-US");
   const utcMinute = (time5) => new Date(time5).toISOString().slice(0, 16).replace("T", " ") + "Z";
   const hostKind = (s) => s.host.startsWith("cc:") ? "Claude Code" : s.host.startsWith("pi:") ? "Pi" : s.host;
-  const sessionProject = (s) => {
+  const sessionProject = (s, withLabel = false) => {
     const name = s.projectId === null ? void 0 : store.getProject(s.projectId)?.name;
-    return name === void 0 || name === s.host ? "no project name" : name;
+    return name === void 0 || name === s.host ? "no project name" : withLabel ? `project ${name}` : name;
   };
   const selectedPath = (sessionId, turnId) => {
     const current = sessionId === reader.sessionId ? store.knowledgePath(sessionId, reader.branch, reader.headTurnId) : store.currentPath(sessionId);
@@ -8501,7 +8544,7 @@ ${full(`F${id}`)}`, unbounded: false };
       const path = store.knowledgePath(own.id, reader.branch, reader.headTurnId);
       const turns = [...store.pathTurns(path)].sort((a, b) => a - b);
       lines.push(
-        `This session: S${own.id} \xB7 ${hostKind(own)} \xB7 project ${sessionProject(own)}`,
+        `This session: S${own.id} \xB7 ${hostKind(own)} \xB7 ${sessionProject(own, true)}`,
         `Current branch: ${count2(turns.length)} Turns${turns.length ? `, T${turns[0]} \u2026 T${path.headTurnId} (head)` : ""}`,
         `Recent Turns: ${turns.slice(-10).map((id) => `T${id}`).join(" ")}`,
         `Turn list: /tm/S${own.id}`,
@@ -8519,30 +8562,18 @@ ${full(`F${id}`)}`, unbounded: false };
   };
   const turnList = (id) => {
     const owner = session(id);
-    const turns = store.listTurns(id).sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.id - a.id);
+    const path = id === reader.sessionId ? store.knowledgePath(id, reader.branch, reader.headTurnId) : store.currentPath(id);
+    const turns = store.sessionTurnIndex(path);
     const lines = [`S${id} \xB7 ${hostKind(owner)} \xB7 ${sessionProject(owner)} \xB7 ${count2(turns.length)} Turns, newest first`];
     for (const turn of turns) {
-      const entries = entriesOf(id, turn.id);
-      const { facts, bindings } = store.contributingTurnFacts(turn.id, id, entries);
-      const ordinals = new Map(entries.map((entry) => [entry.id, entry.entryOrdinal]));
-      let earliest = facts[0], earliestOrdinal = Infinity;
-      for (const fact of facts) for (const entryId of bindings.get(fact.id)) {
-        const ordinal = ordinals.get(entryId);
-        if (ordinal !== void 0 && ordinal < earliestOrdinal) {
-          earliest = fact;
-          earliestOrdinal = ordinal;
-        }
-      }
       let title;
-      if (facts.length) {
-        const heading = earliest.title ?? earliest.text.split("\n")[0];
-        const characters = [...heading];
-        title = (characters.length > 80 ? characters.slice(0, 80).join("") + "\u2026" : heading) + (facts.length > 1 ? ` (+${facts.length - 1})` : "");
+      if (turn.heading !== void 0) {
+        const characters = [...turn.heading];
+        title = (characters.length > 80 ? characters.slice(0, 80).join("") + "\u2026" : turn.heading) + (turn.facts > 1 ? ` (+${turn.facts - 1})` : "");
       } else {
-        const noted = store.notedEntryIds(entries.map((entry) => entry.id));
-        title = entries.some((entry) => !noted.has(entry.id)) ? "(not yet noted)" : "(no fact)";
+        title = !turn.onBranch ? "(other branch)" : turn.pending ? "(not yet noted)" : "(no fact)";
       }
-      lines.push(`T${turn.id}  ${utcMinute(turn.startedAt).slice(5)}  ${entries.length} ev  ${turn.kind === "turn" ? "" : `[${turn.kind}] `}${title}`);
+      lines.push(`T${turn.id}  ${utcMinute(turn.startedAt).slice(5)}  ${turn.entries} ev  ${turn.kind === "turn" ? "" : `[${turn.kind}] `}${title}`);
     }
     return lines.join("\n");
   };

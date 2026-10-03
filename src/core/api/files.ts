@@ -78,9 +78,9 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
   const count = (n: number) => n.toLocaleString("en-US");
   const utcMinute = (time: string) => new Date(time).toISOString().slice(0, 16).replace("T", " ") + "Z";
   const hostKind = (s: Session) => s.host.startsWith("cc:") ? "Claude Code" : s.host.startsWith("pi:") ? "Pi" : s.host;
-  const sessionProject = (s: Session) => {
+  const sessionProject = (s: Session, withLabel = false) => {
     const name = s.projectId === null ? undefined : store.getProject(s.projectId)?.name;
-    return name === undefined || name === s.host ? "no project name" : name;
+    return name === undefined || name === s.host ? "no project name" : withLabel ? `project ${name}` : name;
   };
   const selectedPath = (sessionId: number, turnId?: number) => {
     const current = sessionId === reader.sessionId
@@ -196,7 +196,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
       const own = session(reader.sessionId);
       const path = store.knowledgePath(own.id, reader.branch, reader.headTurnId);
       const turns = [...store.pathTurns(path)].sort((a, b) => a - b);
-      lines.push(`This session: S${own.id} · ${hostKind(own)} · project ${sessionProject(own)}`,
+      lines.push(`This session: S${own.id} · ${hostKind(own)} · ${sessionProject(own, true)}`,
         `Current branch: ${count(turns.length)} Turns${turns.length ? `, T${turns[0]} … T${path.headTurnId} (head)` : ""}`,
         `Recent Turns: ${turns.slice(-10).map(id => `T${id}`).join(" ")}`,
         `Turn list: /tm/S${own.id}`, "");
@@ -208,28 +208,20 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
   };
   const turnList = (id: number) => {
     const owner = session(id);
-    const turns = store.listTurns(id).sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.id - a.id);
+    const path = id === reader.sessionId
+      ? store.knowledgePath(id, reader.branch, reader.headTurnId) : store.currentPath(id);
+    const turns = store.sessionTurnIndex(path);
     const lines = [`S${id} · ${hostKind(owner)} · ${sessionProject(owner)} · ${count(turns.length)} Turns, newest first`];
     for (const turn of turns) {
-      const entries = entriesOf(id, turn.id);
-      const { facts, bindings } = store.contributingTurnFacts(turn.id, id, entries);
-      const ordinals = new Map(entries.map(entry => [entry.id, entry.entryOrdinal]));
-      let earliest = facts[0], earliestOrdinal = Infinity;
-      for (const fact of facts) for (const entryId of bindings.get(fact.id)!) {
-        const ordinal = ordinals.get(entryId);
-        if (ordinal !== undefined && ordinal < earliestOrdinal) { earliest = fact; earliestOrdinal = ordinal; }
-      }
       let title: string;
-      if (facts.length) {
-        const heading = earliest!.title ?? earliest!.text.split("\n")[0]!;
-        const characters = [...heading];
-        title = (characters.length > 80 ? characters.slice(0, 80).join("") + "…" : heading) +
-          (facts.length > 1 ? ` (+${facts.length - 1})` : "");
+      if (turn.heading !== undefined) {
+        const characters = [...turn.heading];
+        title = (characters.length > 80 ? characters.slice(0, 80).join("") + "…" : turn.heading) +
+          (turn.facts > 1 ? ` (+${turn.facts - 1})` : "");
       } else {
-        const noted = store.notedEntryIds(entries.map(entry => entry.id));
-        title = entries.some(entry => !noted.has(entry.id)) ? "(not yet noted)" : "(no fact)";
+        title = !turn.onBranch ? "(other branch)" : turn.pending ? "(not yet noted)" : "(no fact)";
       }
-      lines.push(`T${turn.id}  ${utcMinute(turn.startedAt).slice(5)}  ${entries.length} ev  ${turn.kind === "turn" ? "" : `[${turn.kind}] `}${title}`);
+      lines.push(`T${turn.id}  ${utcMinute(turn.startedAt).slice(5)}  ${turn.entries} ev  ${turn.kind === "turn" ? "" : `[${turn.kind}] `}${title}`);
     }
     return lines.join("\n");
   };
