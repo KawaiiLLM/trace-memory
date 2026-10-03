@@ -42,9 +42,9 @@ Recursive Grep searches facts and full Raw entries, not duplicate compressed ove
 
 ## Host limits and teaching
 
-Ordinary `/tm` reads use the host's existing pagination and notices. CC rewrites Read to a newly rendered immutable file; continuation reads that file, while a new `/tm` read creates a new snapshot. Pi uses native Read operations and truncation. There is no `/tm` cursor or separate 8,000-token cap. Search keeps its own existing parameters and pagination.
+Ordinary `/tm` reads use the host's existing pagination and notices. CC rewrites each Read to a freshly rendered backing file; continuation uses the same virtual `/tm` path with offset/limit and renders again. Content may change between calls; backing paths are not exposed and no model-visible text is added. Pi uses native Read operations and truncation. There is no `/tm` cursor or separate 8,000-token cap. Search keeps its own existing parameters and pagination.
 
-Session knowledge and exact raw entries are whole on Pi and CC main sessions. CC fresh workers retain the native SDK Read cap because the hook cannot directly return content; their task material already supplies knowledge. Reading records no delivery or state change.
+Session knowledge, compaction views and exact raw entries are whole on Pi and CC main sessions. CC fresh workers retain the native SDK Read cap because the hook cannot directly return content; their task material already supplies knowledge. Reading records no delivery or state change.
 
 The same guide, at most 200 Core-estimated tokens, appears once per injection, compaction or N/D material and at `/tm`. Only host tool names and session number vary. Root paths expose the session-list entry without adding guide text. Receipts and errors give navigation paths, not another reading lesson. Changed prompt sentences and the final guide require review before merging.
 

@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -126,9 +126,13 @@ test("CC worker rejects a task without a frozen Core reader before SDK launch", 
   expect(query).not.toHaveBeenCalled();
 });
 
-test("fresh CC Read uses Core's frozen reader, denies other files, and retains a read snapshot", async () => {
+test("fresh CC Read uses Core's frozen reader, denies other files, and re-renders virtual offset reads", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-read-")); dirs.push(directory);
   const config = workerConfig(directory);
+  // Keep state outside the private cwd: the real --restricted runtime refuses that old placement.
+  const cwd = join(directory, "private-cwd"); mkdirSync(cwd);
+  const unrelated = join(cwd, "unrelated.txt"); writeFileSync(unrelated, "not a memory rendering");
+  config.worker!.cwd = cwd;
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("no model"); });
   const project = memory.store.createProject({ name: "read-worker", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:read-worker", projectId: project.id, enrollmentChoice: true,
@@ -143,18 +147,32 @@ test("fresh CC Read uses Core's frozen reader, denies other files, and retains a
       const first = (await hook({ tool_name: "Read", tool_input: { file_path: path } })).hookSpecificOutput;
       expect(first.permissionDecision).toBe("allow");
       const snapshot = first.updatedInput.file_path;
+      expect(realpathSync(snapshot).startsWith(realpathSync(cwd) + sep)).toBe(true);
       expect(readFileSync(snapshot, "utf8")).toContain("FROZEN-WORKER-RAW");
       expect((await hook({ tool_name: "Read", tool_input: { file_path: "/etc/passwd" } })).hookSpecificOutput.permissionDecision).toBe("deny");
+      expect((await hook({ tool_name: "Read", tool_input: { file_path: unrelated } })).hookSpecificOutput.permissionDecision).toBe("deny");
       expect((await hook({ tool_name: "Read", tool_input: { file_path: `${snapshot}/../memory.txt` } })).hookSpecificOutput.permissionDecision).toBe("deny");
-      const continuation = await hook({ tool_name: "Read", tool_input: { file_path: snapshot, offset: 2, limit: 4 } });
-      expect(continuation.hookSpecificOutput.permissionDecision).toBe("allow");
-      const second = (await hook({ tool_name: "Read", tool_input: { file_path: path } })).hookSpecificOutput;
-      expect(second.updatedInput.file_path).not.toBe(snapshot);
-      expect(readFileSync(snapshot, "utf8")).toBe(readFileSync(second.updatedInput.file_path, "utf8"));
+      const continuation = (await hook({ tool_name: "Read", tool_input: { file_path: path, offset: 2, limit: 4 } })).hookSpecificOutput;
+      expect(continuation.permissionDecision).toBe("allow");
+      expect(continuation.updatedInput.offset).toBe(2);
+      expect(continuation.updatedInput.limit).toBe(4);
+      expect(continuation.updatedInput.file_path).not.toBe(snapshot);
+      expect(readFileSync(continuation.updatedInput.file_path, "utf8")).toContain("FROZEN-WORKER-RAW");
+      const invalid = (await hook({ tool_name: "Read", tool_input: { file_path: "/tm/not-a-view" } })).hookSpecificOutput;
+      expect(invalid.permissionDecision).toBe("deny");
+      expect(invalid.permissionDecisionReason).toMatch(/\/tm/);
+      expect(invalid.permissionDecisionReason).not.toContain("snapshot");
+      rmSync(snapshot);
+      const missing = (await hook({ tool_name: "Read", tool_input: { file_path: snapshot } })).hookSpecificOutput;
+      expect(missing.permissionDecision).toBe("deny");
+      expect(missing.permissionDecisionReason).toMatch(/ENOENT/);
+      expect(missing.permissionDecisionReason).toContain(path);
+      expect(missing.permissionDecisionReason).not.toContain(snapshot);
       expect(request.options.tools).toEqual(["Read"]);
       expect(request.options.allowedTools).toEqual(["Read"]);
+      expect(request.options.extraArgs.restricted).toBeNull();
       observed = true;
-      yield { type: "system", subtype: "init", session_id: "read-worker", claude_code_version: TEST_CC_VERSION, cwd: directory,
+      yield { type: "system", subtype: "init", session_id: "read-worker", claude_code_version: TEST_CC_VERSION, cwd,
         tools: ["Read"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: "read-worker", is_error: false, result: "ok", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };

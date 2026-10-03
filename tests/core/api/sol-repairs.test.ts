@@ -197,8 +197,7 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
         expect(tokens(item)).toBeLessThanOrEqual(100);
         if (/^\[T\d+\]/.test(item)) {
           expect(items[index + 1]).toMatch(/^\[F\d+\]/);
-          expect(tokens(`${item}\n${items[index + 1]}`), JSON.stringify({ address, header: item, firstFact: items[index + 1] }))
-            .toBeLessThanOrEqual(100);
+          expect(tokens(`${item}\n${items[index + 1]}`)).toBeLessThanOrEqual(100);
         }
       }
       expect(grouped).toContain("[F3]");

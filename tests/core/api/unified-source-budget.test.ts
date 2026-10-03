@@ -111,7 +111,7 @@ test("92 exact historical versions retain complete tags without granting stale u
       expect(memoryFiles(m, input.reader!).read("/tm/K1@v1").content).toContain(oldTag);
       const rejected = write.execute({ operations: [{ op: "update", id: oldTag, text: "Wrong replacement", category: "understanding", scope: "project",
         supports: ["F1"], reason: "Wrong base", topics: [] }], skipped: [] });
-      expect(rejected).toContain("base is not the latest effective applicable revision");
+      expect(rejected).toContain("base is not the latest effective applicable revision; current: K1@v2");
       write.execute({ operations: [{ op: "archive", kind: "budget", id: `K${next.knowledgeId}#${m.store.versionTag(next.knowledgeId, next.commit)}`,
         supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] });
       return { outcome: "success", output: "stale base checked", request };

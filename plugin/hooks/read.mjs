@@ -15,8 +15,8 @@ for (const part of value.split('/')) {
 }
 if (parts[0] !== 'tm') process.exit(0);
 const path = `/${parts.join('/')}`;
-// Main-session inheritance and exact Raw entries bypass native paging in the function hook.
-if (/^\/tm\/(?:knowledge\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) process.exit(0);
+// Whole node views and exact Raw entries are answered by the main-session function hook.
+if (/^\/tm\/(?:(?:knowledge|compact)\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) process.exit(0);
 let decision;
 try {
   const root = process.env.CLAUDE_PLUGIN_ROOT;

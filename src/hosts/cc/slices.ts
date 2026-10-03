@@ -12,7 +12,7 @@ export const CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segmen
 /** 101 (ruled): a bound session's knowledge header also names it and the path a subagent inherits
  * its knowledge from. */
 export const ccKnowledgeHeader = (binding: CcVisibleBinding): string => binding.coreSession === null
-  ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE, ccPluginToolNames);
+  ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
 
 const address = (item: TransportItem, sessionId: number | null): string => item.kind === "knowledge" || item.kind === "state" ? `/tm/${item.address}`
   : item.kind === "fact" ? `/tm/F${item.factId}` : item.kind === "raw" ? `/tm/raw/S${sessionId}/${item.address}` : "";
@@ -22,6 +22,8 @@ const address = (item: TransportItem, sessionId: number | null): string => item.
  * Capacity drops the lowest-priority whole item and names it in a receipt. */
 export function sliceCcInjection(binding: CcVisibleBinding, items: readonly TransportItem[],
   warning?: string, knowledgeAllowance = Infinity): (CcHookOutput | null)[] {
+  if (binding.coreSession === null && items.some(item => item.kind === "raw"))
+    throw new Error("CC Raw transport needs a bound core session");
   const slots: { items: TransportItem[] }[] = Array.from({ length: CC_SLICE_COUNT }, () => ({ items: [] }));
   const omitted: string[] = [];
   let pendingRaw = 0, pendingFacts = 0, pendingFactTokens = 0, omittedKnowledge = false;

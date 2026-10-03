@@ -50,13 +50,13 @@ function seeded() {
 const results = (body: Body) => new Map((body.messages ?? []).filter((m: Body) => m.role === "tool")
   .map((m: Body) => [m.tool_call_id, typeof m.content === "string" ? m.content : m.content.map((c: Body) => c.text).join("")]));
 
-test("118: Pi native read pages ordinary /tm text and reads knowledge or exact Raw whole", async () => {
+test("118: Pi native read re-renders ordinary /tm pages and reads knowledge, compact or exact Raw whole", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-pi-read-")); dirs.push(dir);
   const body = Array.from({ length: 2100 }, (_, i) => `line ${i + 1}`).join("\n");
   let rendered = 0;
   const read = memoryReadTool(dir, path => {
     rendered++;
-    return { content: body, unbounded: /^\/tm\/(?:knowledge\/S\d+(?:\/T\d+)?|raw\/S\d+\/T\d+#E\d+(?:@(user|assistant|observation))?)$/.test(path) };
+    return { content: body, unbounded: /^\/tm\/(?:(?:knowledge|compact)\/S\d+(?:\/T\d+)?|raw\/S\d+\/T\d+#E\d+(?:@(user|assistant|observation))?)$/.test(path) };
   }, { memoryOnly: true });
   const invoke = async (path: string, offset?: number) => {
     const block = (await read.execute("test", { path, offset }, undefined, undefined, { cwd: dir } as never)).content[0];
@@ -66,19 +66,20 @@ test("118: Pi native read pages ordinary /tm text and reads knowledge or exact R
   expect(rendered).toBe(1);
   expect(await invoke("/tm/F1", 2001)).toContain("line 2100");
   expect(rendered).toBe(2);
-  for (const path of ["/tm/knowledge/S1", "/tm/knowledge/S1/T2", "/tm/raw/S1/T2#E3", "/tm/raw/S1/T2#E3@user"]) {
+  for (const path of ["/tm/knowledge/S1", "/tm/knowledge/S1/T2", "/tm/compact/S1", "/tm/compact/S1/T2", "/tm/raw/S1/T2#E3", "/tm/raw/S1/T2#E3@user"]) {
     const whole = await invoke(path, 2001);
     expect(whole).toContain("line 1");
     expect(whole).toContain("line 2100");
     expect(whole).not.toContain("Use offset=");
   }
-  expect(rendered).toBe(6);
-  expect(await invoke("/tm/compact/S1")).toContain("Use offset=2001 to continue.");
-  expect(await invoke("/tm/raw/S1/T2")).toContain("Use offset=2001 to continue.");
   expect(rendered).toBe(8);
+  expect(await invoke("/tm/raw/S1/T2")).toContain("Use offset=2001 to continue.");
+  expect(rendered).toBe(9);
   const large = memoryReadTool(dir, () => ({ content: "X".repeat(60_000), unbounded: true }), { memoryOnly: true });
-  const whole = await large.execute("large", { path: "/tm/raw/S1/T2#E3" }, undefined, undefined, { cwd: dir } as never);
-  expect(whole.content[0]).toEqual({ type: "text", text: "X".repeat(60_000) });
+  for (const path of ["/tm/raw/S1/T2#E3", "/tm/knowledge/S1", "/tm/compact/S1"]) {
+    const whole = await large.execute("large", { path }, undefined, undefined, { cwd: dir } as never);
+    expect(whole.content[0]).toEqual({ type: "text", text: "X".repeat(60_000) });
+  }
   await expect(invoke("/etc/passwd")).rejects.toThrow("restricted to /tm");
 });
 

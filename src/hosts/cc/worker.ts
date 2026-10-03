@@ -362,37 +362,42 @@ export class CcAgentWorker {
     });
     const results: SDKResultMessage[] = [], assistantMessages: SDKAssistantMessage[] = [];
     const frozenReader = { ...task.reader };
-    const renderedRoot = join(this.config.stateDir, "rendered");
+    // Native --restricted confines Read to the prepared private worker cwd, even after a Hook rewrite.
+    const renderedRoot = join(this.worker.cwd, "rendered");
     mkdirSync(renderedRoot, { recursive: true, mode: 0o700 });
     const readDirectory = mkdtempSync(join(renderedRoot, "worker-"));
-    const rendered = new Set<string>();
+    const rendered = new Map<string, string>();
     const onRead = async (raw: unknown) => {
-      const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown> };
-      const file = event.tool_input?.file_path;
       const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse" as const,
         permissionDecision: "deny" as const, permissionDecisionReason: reason } });
-      if (event.tool_name !== "Read" || typeof file !== "string") return deny("CC worker accepts only Read of /tm");
-      const virtual = memoryPath(file);
-      if (virtual !== null) {
-        const path = materializeCcWorkerRead(this.config, frozenReader, virtual, readDirectory);
-        rendered.add(path);
+      const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown> };
+      const file = event?.tool_input?.file_path;
+      try {
+        if (event.tool_name !== "Read" || typeof file !== "string") return deny("CC worker accepts only Read of /tm");
+        const virtual = memoryPath(file);
+        if (virtual !== null) {
+          const path = materializeCcWorkerRead(this.config, frozenReader, virtual, readDirectory);
+          rendered.set(path, virtual);
+          return { hookSpecificOutput: { hookEventName: "PreToolUse" as const,
+            permissionDecision: "allow" as const, permissionDecisionReason: "read /tm rendering",
+            updatedInput: { ...event.tool_input, file_path: path } } };
+        }
+        // A continuation may name only a file rendered by this very run; never a sibling worker's
+        // rendering or a path reached through a symlink or lexical traversal.
+        if (!isAbsolute(file) || file !== resolve(file) || !rendered.has(file)) return deny("CC worker Read is restricted to its own /tm renderings");
+        const actual = realpathSync(file);
+        if (!actual.startsWith(realpathSync(readDirectory) + sep) || !lstatSync(file).isFile() || lstatSync(file).isSymbolicLink())
+          return deny("CC worker Read rendering is outside its own session");
         return { hookSpecificOutput: { hookEventName: "PreToolUse" as const,
-          permissionDecision: "allow" as const, permissionDecisionReason: "read frozen Trace Memory view",
-          updatedInput: { ...event.tool_input, file_path: path } } };
+          permissionDecision: "allow" as const, permissionDecisionReason: "continue /tm read" } };
+      } catch (error) {
+        const virtual = typeof file === "string" ? memoryPath(file) ?? rendered.get(file) : null;
+        if (virtual && error instanceof Error && "code" in error && typeof error.code === "string") {
+          const operation = "syscall" in error && typeof error.syscall === "string" ? error.syscall : "read";
+          return deny(`${error.code}: ${operation} '${virtual}'`);
+        }
+        return deny(error instanceof Error ? error.message : String(error));
       }
-      // A continuation may name only a file rendered by this very run; never a sibling worker's
-      // snapshot or a path reached through a symlink or lexical traversal.
-      if (!isAbsolute(file) || file !== resolve(file) || !rendered.has(file)) return deny("CC worker Read is restricted to its own /tm snapshots");
-      let actual: string;
-      try { actual = realpathSync(file); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return deny("CC worker Read snapshot no longer exists");
-        throw error;
-      }
-      if (!actual.startsWith(realpathSync(readDirectory) + sep) || !lstatSync(file).isFile() || lstatSync(file).isSymbolicLink())
-        return deny("CC worker Read snapshot is outside its own session");
-      return { hookSpecificOutput: { hookEventName: "PreToolUse" as const,
-        permissionDecision: "allow" as const, permissionDecisionReason: "continue frozen Trace Memory read" } };
     };
     let assistantMessagesAfterResult: SDKAssistantMessage[] = [];
     const input = new CcUserInput();

@@ -1,6 +1,4 @@
 import { diffArrays } from "diff";
-import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
-import { readingGuide } from "./reading-guide.ts";
 import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup } from "../model/index.ts";
 import type { KnowledgeCategory, KnowledgeRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
@@ -766,9 +764,8 @@ export const expandList = (addresses: string[]): string => addresses.length <= E
   : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 
 export const KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
-export const MEMORY_FILES_NOTICE = readingGuide(undefined, canonicalToolNames);
 /** Identity/recency framing only; the reading guide belongs to the complete injection once. */
-export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE, _toolNames: ToolNames = canonicalToolNames): string =>
+export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string =>
   `${recencyNotice}\nSession S${sessionId}.`;
 
 export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision[]): string[] =>

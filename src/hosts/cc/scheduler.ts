@@ -3,7 +3,7 @@ import type { CcReconcileResult } from "./importer.ts";
 import type { ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 import { ccPluginToolNames, ccWorkerToolNames } from "./tool-names.ts";
-import { CC_NATIVE_READ_TOOL } from "./read-tool.ts";
+import { CC_NATIVE_READ_TOOL_TOKENS } from "./read-tool.ts";
 
 // CC alone defers MCP tools in a native fork. Core receives and prices this exact text at freeze;
 // the host must not append anything to the admitted task at launch.
@@ -215,7 +215,7 @@ export class CcTaskScheduler {
     const execution = this.worker!.phases[phase];
     return { ...target, borrowed, automatic, executorSessionId: target.sessionId, mode: "subagent" as const,
       effectiveMode: "subagent" as const, model: execution.model, capacity: execution.capacity, maxReadChars: CC_MAX_RESULT_CHARS,
-      toolNames: ccWorkerToolNames, nativeReadTool: CC_NATIVE_READ_TOOL,
+      toolNames: ccWorkerToolNames, nativeReadToolTokens: CC_NATIVE_READ_TOOL_TOKENS,
       thinkingLevel: execution.thinking, subagentThinkingLevel: execution.thinking, ...(boundary ? { boundary } : {}) };
   }
 

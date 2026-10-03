@@ -9,7 +9,7 @@ import { legacyFacts } from "../../support/seed.ts";
 const OMITTED = "compaction omitted";
 
 async function truncatingHost() {
-  const h = host({ "noting.triggerTokens": 1_000_000, "compaction.rawTokens": 50, "compaction.sharedAllowanceTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1_000_000, "compaction.rawTokens": 300, "compaction.sharedAllowanceTokens": 1 });
   for (let i = 0; i < 5; i++) { await h.prompt(`pending-${i} ${"word ".repeat(250)}`); await h.answer(); }
   const warnings: string[] = [];
   const notify = h.ctx.ui.notify.bind(h.ctx.ui);
@@ -33,6 +33,7 @@ test("73: the truncation warning is given once Pi appends the carrier, not befor
   try {
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     expect(result.compaction).toBeDefined();
+    expect(result.compaction.summary).toContain("earlier entries omitted from the Raw window");
     expect(warnings).toEqual([]); // nothing is said while the compaction may still be cancelled
     await append(result);
     expect(warnings).toHaveLength(1);

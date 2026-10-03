@@ -24,9 +24,10 @@ test("118: separate exact fact paths retain order and identity; a missing fact f
   const { sessionId, turn, ids } = facts(5);
   const files = memoryFiles(memory, { sessionId, branch: "main", headTurnId: turn.id });
   expect(ids).toEqual([1, 2, 3, 4, 5]);
-  expect([1, 3, 5].map(id => files.read(`/tm/F${id}`).content)).toEqual(expect.arrayContaining([
-    expect.stringContaining("fact 1"), expect.stringContaining("fact 3"), expect.stringContaining("fact 5"),
-  ]));
+  const selected = [1, 3, 5].map(id => files.read(`/tm/F${id}`).content);
+  expect(selected.map(text => /fact (\d+)/.exec(text)?.[1])).toEqual(["1", "3", "5"]);
+  expect(selected[0]).not.toContain("fact 3");
+  expect(selected[1]).not.toContain("fact 5");
   expect(() => files.read("/tm/F999")).toThrow("fact F999 does not exist");
 });
 
@@ -34,7 +35,7 @@ test("118: removed fact intervals and comma lists cannot be used as /tm paths", 
   const { sessionId, turn } = facts(3);
   const files = memoryFiles(memory, { sessionId, branch: "main", headTurnId: turn.id });
   for (const path of ["/tm/F1,F2", "/tm/F1-F3", "/tm/K1@v1..v2", `/tm/raw/S${sessionId}/T${turn.id}#E1,E2`]) {
-    expect(() => files.read(path)).toThrow(/\/tm|Trace Memory path/);
+    expect(() => files.read(path)).toThrow(`no such path: ${path}; /tm`);
   }
   expect(files.read("/tm/F1").content).toContain("fact 1");
 });

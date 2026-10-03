@@ -61,6 +61,13 @@ test("Read, Grep and Glob under /tm are answered by cc.cjs fs for this session, 
     file: { filePath: "/tm//knowledge/S2/T3", content: "whole\nknowledge", numLines: 2, startLine: 1, totalLines: 2 } } });
   expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("read", "/tm/knowledge/S2/T3"));
   expect(h.next).not.toHaveBeenCalled();
+  for (const path of ["/tm/compact/S2", "/tm/compact/S2/T3"]) {
+    h = host({ content: "whole\ncompact", unbounded: true });
+    expect(await hooks.get("Read")!(h.$, { tool: "Read", file_path: path }, h.next)).toMatchObject({ result: {
+      file: { filePath: path, content: "whole\ncompact", startLine: 1, totalLines: 2 } } });
+    expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("read", path));
+    expect(h.next).not.toHaveBeenCalled();
+  }
   h = host({ content: "whole\nentry", unbounded: true });
   const exact = { tool: "Read", file_path: "/tm/raw/S2/T3#E4@assistant" };
   expect(await hooks.get("Read")!(h.$, exact, h.next)).toMatchObject({ result: { file: { filePath: exact.file_path, content: "whole\nentry" } } });
@@ -157,10 +164,17 @@ test("cc.cjs fs reads for the bound native session, accepts combined grep flags,
   expect(withoutNumbers.lines.length).toBeGreaterThan(0);
   expect(withoutNumbers.lines.every((line: string) => !/:\d+:/.test(line))).toBe(true);
   expect((await cli("read", `/tm/knowledge/S${core}`)).content).toContain("Hashline uses an LRU cache.");
+  const compact = await cli("read", `/tm/compact/S${core}`);
+  expect(compact.unbounded).toBe(true);
+  expect(compact.content).toContain("Hashline uses an LRU cache.");
   const first = await cli("materialize", "/tm/K1");
-  const second = await cli("materialize", "/tm/K1");
-  expect(first.path).not.toBe(second.path);
-  expect(readFileSync(first.path, "utf8")).toBe(readFileSync(second.path, "utf8"));
+  const body = readFileSync(first.path, "utf8");
+  writeFileSync(first.path, "stale rendering");
+  const second = await cli("materialize", "/tm//K1/");
+  expect(second.path).toBe(first.path);
+  expect(readFileSync(second.path, "utf8")).toBe(body);
+  const other = await cli("materialize", "/tm/F1");
+  expect(other.path).not.toBe(first.path);
   expect(first.path.startsWith(join(config.stateDir, "rendered", native))).toBe(true);
   expect((await cli("glob", `/tm/raw/S${core}/T*#E*`)).lines).toEqual([expect.stringMatching(new RegExp(`^/tm/raw/S${core}/T\\d+#E1$`)), expect.stringMatching(/#E2$/)]);
   await expect(cli("write", "/tm/K1")).rejects.toThrow(/read-only/);

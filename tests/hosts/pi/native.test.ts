@@ -355,7 +355,7 @@ test("19b 2026-09-08: an explicit subagent task runs in a fresh native child wit
     const child = f.sent[1]!;
     expect(child.messages[0].role).toBe("system");
     expect(String(child.messages[0].content)).toContain("Noting (facts and knowledge)");
-    expect(child.tools.map((t: Body) => t.function.name).sort()).toEqual(["memory", "note", "read", "search"]);
+    expect(child.tools.map((t: Body) => t.function.name)).toEqual(["search", "note", "memory", "read"]);
     expect(String(JSON.stringify(child.messages[1]))).toContain("Raw:"); // the full fresh-context material
     // Its own private session in the runs directory, not a fork of the parent file.
     const log = response.nativeLog as string;
@@ -399,7 +399,7 @@ test("19b 2026-09-08: the fresh child activates no inherited extension", async (
     const run = await settled(f);
     expect(run.outcome).toBe("success");
     expect(existsSync(marker)).toBe(false); // the extension was never loaded, so it never ran
-    expect(f.sent[1]!.tools.map((t: Body) => t.function.name).sort()).toEqual(["memory", "note", "read", "search"]);
+    expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["search", "note", "memory", "read"]);
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1); // and started no second worker
   } finally { await f.dispose(); }
 });
@@ -483,7 +483,7 @@ test("19c 2026-09-08: no legacy loop remains: a fork that cannot be prepared run
     const worker0 = f.sent.find(body => worker(body))!;
     expect(worker0.messages[0].role).toBe("system");
     expect(String(worker0.messages[0].content)).toContain("Noting (facts and knowledge)");
-    expect(worker0.tools.map((t: Body) => t.function.name).sort()).toEqual(["memory", "note", "read", "search"]);
+    expect(worker0.tools.map((t: Body) => t.function.name)).toEqual(["search", "note", "memory", "read"]);
     expect(JSON.parse(readFileSync(log, "utf8").split("\n")[0]!)).toBeTruthy(); // the child really wrote its session
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
   } finally { await f.dispose(); }

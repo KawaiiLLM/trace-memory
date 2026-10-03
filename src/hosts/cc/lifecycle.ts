@@ -1,10 +1,10 @@
-import { existsSync, readdirSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { Store } from "../../core/store/index.ts";
 import { deliveredView, selectNotingMode, type NotingAgentInput, type RunAgentResult, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
 import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
 import { activeFunctionHook, bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, updateBindingInStoreTransaction, validateNativeSessionId, type CcHookInput,
-  type CcSessionBinding } from "./binding.ts";
+  type CcSessionBinding, withCcBindingLock } from "./binding.ts";
 import { CcImporter, type CcImportInstrumentation, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import type { CcWorkerJournal } from "./worker.ts";
 import { startControlServer, type CcControlServer, type CcForkObservation } from "./control.ts";
@@ -118,6 +118,18 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
     };
     if (store) await updateBindingInStoreTransaction(config, nativeSessionId, store, close, config.finalSyncTimeoutMs);
     else await updateBinding(config, nativeSessionId, close, config.finalSyncTimeoutMs);
+    // Recheck under the native binding lock: a resumed SessionStart may already own this id.
+    // Only a confirmed native close (not executor shutdown) removes its rendered directory.
+    try {
+      await withCcBindingLock(config, nativeSessionId, locked => {
+        const current = locked.read();
+        if (current?.lastClose?.confirmed && current.nativeProcess?.pid === nativeProcess.pid &&
+            current.nativeProcess.startedAt === nativeProcess.startedAt)
+          rmSync(join(config.stateDir, "rendered", nativeSessionId), { recursive: true, force: true });
+      }, config.finalSyncTimeoutMs);
+    } catch (error) {
+      return { confirmed: true, reason, diagnostic: `rendered /tm cleanup failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
     return { confirmed: true, reason };
   } catch (error) {
     return { confirmed: false, reason, diagnostic: error instanceof Error ? error.message : String(error) };

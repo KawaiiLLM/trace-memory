@@ -56,7 +56,6 @@ export function readProfile(options: ListingOptions, inherited: EntryProfile): E
 }
 /** Shared default response budget for trace and search, including pagination receipts. */
 export const DEFAULT_READ_TOKENS = 2000;
-export interface TraceRead { text: string }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
 /** 21b "Group projection": the topics of current visible knowledge, as references to the exact
@@ -81,7 +80,9 @@ export interface TopicGroups {
  * carries — every supplied entry, pending and refilled alike, plus the facts and knowledge commits
  * that survived budgeting. What a budget dropped is absent here. A native delegation supplies
  * nothing, so it has no `supplied` at all. */
-export type CompactResult = { text: string; material?: SharedMaterial; supplied: SuppliedMaterial; knowledgeAllowance?: number; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt }
+export type CompactResult = { text: string; material?: SharedMaterial; supplied: SuppliedMaterial; knowledgeAllowance?: number; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt;
+  /** Material exists before capacity selection, even if no body or omission receipt fits. */
+  hasMaterialCandidates?: boolean }
   | { native: true; reason: string };
 
 /** Foreground truncation notice for omitted pending Raw and facts. Facts are context omissions,
@@ -216,12 +217,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   // ever becomes large enough that sixteen of them matter.
   const CURSORS = 16;
   const cursors = new Map<string, Remainder>();
-  const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = "", origin: "trace" | "search" = "trace"): TraceRead => {
+  const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = "", origin: "trace" | "search" = "trace"): string => {
     const owner = options.sessionId === undefined ? "unbound" : `${options.sessionId}:${store.getSession(options.sessionId)?.projectId}`;
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     if (saved && saved.modelFacing !== !!options.modelFacing) throw new Error("cursor belongs to another presentation surface");
-    if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue an internal trace cursor: /tm");
+    // Core API callers can still create internal-renderer cursors; Search must not consume them.
+    if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue an internal trace cursor");
     const defaults = { itemBudget: config.render.entryTokens, toolCallBudget: config.render.toolInputTokens,
       toolResultBudget: config.render.toolResultTokens };
     const content = (key: keyof typeof defaults): number | null => options[key] !== undefined ? options[key]!
@@ -333,7 +335,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       cursors.set(cursor, remainder);
       for (const oldest of cursors.keys()) { if (cursors.size <= CURSORS) break; cursors.delete(oldest); }
     }
-    return { text: result };
+    return result;
   };
   const session = (id: number) => {
     const value = store.getSession(id);
@@ -374,7 +376,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     }));
     const current = values(graph.current.filter(revision => revision.op !== "archive"));
     const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? undefined : projectId, graph, true);
-    const notice = id === undefined ? undefined : sessionKnowledgeNotice(id, undefined, toolNames);
+    const notice = id === undefined ? undefined : sessionKnowledgeNotice(id);
 
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
     const states = allStates.filter(state => !(visible.knowledgeStates ?? new Set()).has(knowledgeStateKey(state.receipt)));
@@ -447,7 +449,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       ] } : {}),
       ...(selectedStates.length ? { knowledgeStates: selectedStates.map(state => state.receipt) } : {}) };
   };
-  const traceRead = (address: string, options: ListingOptions = {}): TraceRead => {
+  const trace = (address: string, options: ListingOptions = {}): string => {
     validateBudgets(options);
     const cursor = /^cursor=([^,\s]+)$/.exec(address.trim());
     if (options.cursor || cursor) {
@@ -655,8 +657,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     spend,
     spendSince,
     progress,
-    trace: (address: string, options?: ListingOptions) => traceRead(address, options).text,
-    traceRead,
+    trace,
     // 21b: a read organization projection over the same selected set the automatic material uses; it
     // changes no injection order, no scope and no applicability.
     topicGroups: (sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups => {
@@ -749,7 +750,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // With nothing kept, a receipt that does not fit either leaves the notices window empty.
       const noteOmittedReceipt = noteCost(noteKept) <= knowledgeEnvelope ? noteReceipt(allNotes.length - noteKept) : [];
       const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
-      const notice = sessionKnowledgeNotice(sessionId, undefined, options.toolNames);
+      const notice = sessionKnowledgeNotice(sessionId);
       // The count is part of the rendered line, so the budget below charges it like any other text.
       const line = options.showKnowledgeSize ? (value: KnowledgeWithRevision) => renderKnowledge(value,
         `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, true) : knowledgeLine;
@@ -870,6 +871,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           ...(noteKept ? { knowledgeStates: allNotes.slice(0, noteKept).map(note => note.receipt) } : {}) },
         // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
         charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts), raw: rawCharged, envelope },
+        hasMaterialCandidates: Boolean(allNotes.length || knowledge.length || candidates.length || eligibleFacts.length),
         ...(Object.keys(truncated).length ? { truncated } : {}) };
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number, toolNames: ToolNames = canonicalToolNames): string => {
@@ -925,7 +927,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
       if (input.category !== undefined && scope !== "knowledge")
         throw new Error("category filter requires layer knowledge");
-      if (input.cursor) return page([], input, "", "search").text;
+      if (input.cursor) return page([], input, "", "search");
       const effective = effectiveOptions(input);
       const historyFields = (scope === "knowledge" || scope === "all") && effective.versions !== "current";
       const options = { ...effective, fields: [...(input.fields ?? (historyFields ? SEARCH_HISTORY_DEFAULT_FIELDS : SEARCH_DEFAULT_FIELDS))],
@@ -1016,7 +1018,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const preview = `preview: ${fields.size === 0 ? "identity only" : fields.size === 1 && fields.has("text") ? "text only" : `fields ${[...fields].join(", ")}`}; omitted fields: ${omitted.join(", ") || "none"}`;
       return page({ items, format, capture, ...(batched ? { queryCap: perQuery } : {}) }, { ...options, ...(batched ? { cap: undefined } : {}),
         maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS },
-        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${renderToolNames(KNOWLEDGE_REPRESENTATIVE_RECEIPT, options.toolNames ?? canonicalToolNames)}\n${preview}`, "search").text;
+        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${renderToolNames(KNOWLEDGE_REPRESENTATIVE_RECEIPT, options.toolNames ?? canonicalToolNames)}\n${preview}`, "search");
     },
     status: (sessionId: number, branch?: string, headTurnId?: number | null): string => {
       const s = session(sessionId), runs = store.listRuns(sessionId);

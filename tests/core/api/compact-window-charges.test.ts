@@ -65,6 +65,24 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
     if ("native" in result) throw new Error("native");
     expect(result.text).toBe(readingGuide(session.id, canonicalToolNames)); // fixed framing, no window titles, tags or receipts
     expect(result.charged).toMatchObject({ knowledge: 0, facts: 0, raw: 0 });
+    expect(result.hasMaterialCandidates).toBe(true); // capacity omission is not genuine emptiness
+    expect(result.truncated?.facts).toBeUndefined(); // no retired-C pending-fact warning is revived
+  } finally { memory.close(); }
+});
+
+test("empty compaction has no candidates or omissions, unlike a zero-charge capacity truncation", () => {
+  const { memory, session } = setup();
+  try {
+    const empty = memory.store.createSession({ enrollmentChoice: true, host: "empty", projectId: session.projectId,
+      startedAt: at, firstReplyAt: at });
+    const result = memory.compact(empty.id, "main");
+    if ("native" in result) throw new Error("native");
+    expect(result.hasMaterialCandidates).toBe(false);
+    expect(result.truncated).toBeUndefined();
+    expect(result.charged).toMatchObject({ knowledge: 0, facts: 0, raw: 0 });
+    expect(result.supplied.entries).toEqual([]);
+    expect(result.supplied.factIds).toEqual([]);
+    expect(result.supplied.knowledgeCommitIds).toEqual([]);
   } finally { memory.close(); }
 });
 

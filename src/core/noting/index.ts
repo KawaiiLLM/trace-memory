@@ -17,13 +17,13 @@ import type { NotingDiagnostic } from "./review.ts";
 // Pricing includes the launch's rendered names, not the canonical template. The lazy per-map cache
 // avoids repeatedly tokenizing static schemas through the source-selection loop.
 const fixed = new Map<string, { prompt: string; instructions: number; tools: number }>();
-const fixedCost = (names: ToolNames, nativeReadTool: TaskOptions["nativeReadTool"]) => {
-  const key = JSON.stringify([names, nativeReadTool]);
+const fixedCost = (names: ToolNames, nativeReadToolTokens: TaskOptions["nativeReadToolTokens"]) => {
+  const key = JSON.stringify([names, nativeReadToolTokens]);
   let cost = fixed.get(key);
   if (!cost) {
     const prompt = loadPrompt("noting.md", names);
-    const definitions = [...pricedToolDefinitions(toolDefinitions, names), ...(nativeReadTool ? [nativeReadTool] : [])];
-    cost = { prompt, instructions: tokens(prompt), tools: tokens(JSON.stringify(definitions)) };
+    cost = { prompt, instructions: tokens(prompt),
+      tools: tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, names))) + (nativeReadToolTokens ?? 0) };
     fixed.set(key, cost);
   }
   return cost;
@@ -177,6 +177,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   if (typeof input.branch !== "string" || !input.branch) throw new Error("noting requires a non-empty branch");
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
     !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
+  if (input.nativeReadToolTokens !== undefined && (!Number.isSafeInteger(input.nativeReadToolTokens) || input.nativeReadToolTokens < 0))
+    throw new Error("Invalid native Read token estimate: expected a nonnegative safe integer");
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   let snapshot = pendingAll ? undefined : store.pathSnapshot(path);
   const allPending = pendingAll ?? store.pendingEntries(session.id, input.branch, input.headTurnId, snapshot);
@@ -191,7 +193,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // budget check inside the loop below is unchanged and still decides every freeze that passes here
   // (parent 22: "A fast preflight supplements the final guard; it does not replace it").
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
-  const { prompt, instructions, tools } = fixedCost(names, input.nativeReadTool);
+  const { prompt, instructions, tools } = fixedCost(names, input.nativeReadToolTokens);
   const inheriting = (input.effectiveMode ?? mode) === "fork";
   const forkPrompt = input.forkGuidance ? `${prompt}\n\n${renderToolNames(input.forkGuidance, names)}` : prompt;
   const forkInstructions = input.forkGuidance ? tokens(forkPrompt) : instructions;

@@ -39,20 +39,24 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
     commits: created.committed.map(value => value.commit), pending: memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id) };
 }
 
-test("native Read description and schema count in fresh Noter capacity, but not again in a fork", () => {
+test("fresh Noter prices native Read scalar, while fork counts its inherited prefix only", () => {
   const f = fixture([]);
   // This boundary prices mandatory input only; optional history may legitimately shrink first.
   f.memory.config.compaction.factsTokens = 0;
-  const nativeReadTool = { name: "Read", description: "Read native files and continue by line. ".repeat(50),
-    parameters: { type: "object", properties: { file_path: { type: "string", description: "Absolute source path." } }, required: ["file_path"] } };
+  const nativeReadToolTokens = 402;
   const definitions = pricedToolDefinitions(toolDefinitions, canonicalToolNames);
-  const full = f.freeze();
-  const freshPrice = tokens(full.prompt!) + tokens(JSON.stringify([...definitions, nativeReadTool])) + tokens(full.prepared!.text);
-  expect(freshPrice).toBeGreaterThan(tokens(full.prompt!) + tokens(JSON.stringify(definitions)) + tokens(full.prepared!.text));
-  const input = { ...f.target, nativeReadTool, boundary: { exactEntryIds: f.pending } };
-  const exact = freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice, prefixTokens: 0 } }, f.memory.config);
-  expect(exact.prepared!.selectedEntryIds).toEqual(f.pending);
+  const input = { ...f.target, nativeReadToolTokens, boundary: { exactEntryIds: f.pending } };
+  const full = freezeNoting(f.memory.store, input, f.memory.config);
+  const freshPrice = tokens(full.prompt!) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(full.prepared!.text);
+  expect(freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice, prefixTokens: 0 } }, f.memory.config)
+    .prepared!.selectedEntryIds).toEqual(f.pending);
   expect(() => freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice - 1, prefixTokens: 0 } }, f.memory.config))
+    .toThrow(NOTING_CAPACITY);
+  // A requested fork re-admitted fresh must pay for Read too.
+  const fallback = { ...input, mode: "fork" as const, effectiveMode: "subagent" as const };
+  expect(freezeNoting(f.memory.store, { ...fallback, capacity: { inputTokens: freshPrice, prefixTokens: 0 } }, f.memory.config)
+    .prepared!.selectedEntryIds).toEqual(f.pending);
+  expect(() => freezeNoting(f.memory.store, { ...fallback, capacity: { inputTokens: freshPrice - 1, prefixTokens: 0 } }, f.memory.config))
     .toThrow(NOTING_CAPACITY);
 
   const fork = { ...input, mode: "fork" as const, effectiveMode: "fork" as const };
@@ -61,6 +65,8 @@ test("native Read description and schema count in fresh Noter capacity, but not 
   const forkPrice = prefixTokens + tokens(inherited.forkPrompt!) + tokens(inherited.prepared!.text);
   expect(freezeNoting(f.memory.store, { ...fork, capacity: { inputTokens: forkPrice, prefixTokens } }, f.memory.config)
     .prepared!.selectedEntryIds).toEqual(f.pending);
+  expect(() => freezeNoting(f.memory.store, { ...fork, capacity: { inputTokens: forkPrice - 1, prefixTokens } }, f.memory.config))
+    .toThrow(NOTING_CAPACITY);
   expect(f.memory.pendingEntries(f.target.sessionId, "main", f.target.headTurnId).map(entry => entry.id)).toEqual(f.pending);
 });
 

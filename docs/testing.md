@@ -22,7 +22,7 @@ A low-risk, reversible change does not get a new test only to have one.
 
 ## Rendered text
 
-Each view kind keeps one snapshot test: `/tm` facts, raw overview, full entry, fact, knowledge, search page and injection block. Ticket 118 retires public `trace` event ranges, comma lists and Core-owned `/tm` pagination; historical citation parsing remains. Every other test asserts structure: ids, order, roles, counts, token totals and rejection reasons. It reads the field it checks rather than comparing the whole string.
+Rendered-output tests assert structure: ids, order, roles, counts, token totals and rejection reasons. A test reads the field it checks rather than comparing unrelated surrounding text; a complete-body delivery test compares the complete body after validating the host's framing.
 
 ## Rulings
 

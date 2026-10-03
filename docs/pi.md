@@ -18,7 +18,7 @@ on a fork's first request and the run record. The request-copy runner — its ow
 loop, its provider-message construction and its handwritten retry-settings reader — was
 deleted in 19c; there is no second runtime and no fallback to one.
 
-Run the extension with Pi 0.85.1 on Node 24.6.0. The core uses Node's built-in
+The declared minimum is Pi >=0.86.0 on Node >=24.6.0; the current host tests use Pi 0.87.1. The core uses Node's built-in
 `node:sqlite` (`DatabaseSync`), with no native dependency to install. From the
 repository root, run `npm install`, `npm test`, `npm run typecheck`, and
 `npm run smoke:pi`. The smoke script loads the extension directly under Node
@@ -37,7 +37,7 @@ logs. See the [installation guide](../README.md#install) before loading the pack
 
 ## Memory reads (118)
 
-Models read `/tm` through Pi's native `read` and `grep`; public `trace` is removed, while the human `/trace` controls and private audit remain. `/tm/S<n>` lists one facts/raw path pair per Turn. Content paths are `/tm/<layer>/S<n>[/T<t>]`; raw alone accepts entry and role suffixes. Ordinary reads use native 2,000-line/50KB paging, while session knowledge and exact raw entries are whole. Each virtual invocation renders once; non-virtual main reads remain native, and N/D child reads are restricted to `/tm`. No child grep or glob is added.
+Models read `/tm` through Pi's native `read` and `grep`; public `trace` is removed, while the human `/trace` controls and private audit remain. `/tm/S<n>` lists one facts/raw path pair per Turn. Content paths are `/tm/<layer>/S<n>[/T<t>]`; raw alone accepts entry and role suffixes. Ordinary reads use native 2,000-line/50KB paging, while session knowledge, compaction views and exact raw entries are whole. Offset/limit continuations use the original virtual path and render again; non-virtual main reads remain native, and N/D child reads are restricted to `/tm`. No child grep or glob is added.
 
 The single Core guide is shared by injection, compaction and N/D materials, once per material. Its native tool names are `read`/`grep`; no extra adapter reading lesson is appended to tool descriptions. Fresh admission prices native Read metadata, and forks preserve captured definitions plus the final SDK capacity gate. These are implementation contracts; actual host/provider acceptance must be reported separately.
 
@@ -187,9 +187,9 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   submission commits immediately. `consolidation.subagentModeDefault`
   — the retired *inverse* key — stays **removed**. Tree navigation launches no extraction.
 
-The peer dependency supplies Pi SDK types. Verification uses the installed
-`@earendil-works/pi-coding-agent` 0.85.1. Tests use Vitest on Node; the standalone
-smoke uses Node's built-in TypeScript support and does not load Vitest.
+The peer dependency supplies Pi SDK types. The declared minimum is Pi >=0.86.0;
+the current host tests use Pi 0.87.1. Tests use Vitest on Node;
+the standalone smoke uses Node's built-in TypeScript support and does not load Vitest.
 
 ## Host decisions and boundaries
 
@@ -263,11 +263,9 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - Each completed entry owns a Turn. An assistant entry persists its tool-call
   occurrences immediately; a subsequent tool result is a separate source entry
   using the same stable Turn tool ordinal. Original messages, arguments and results
-  are retained. `trace` with `full: true` retrieves the original tool argument and
-  result strings, whatever the envelope carries. An explicit `trace` without `full`
-  is assembled from that Turn's selected source entries under the configured entry view
-  (ticket 23b), so a branch's own occurrences are what a bound read shows; pagination
-  retains its existing protocol.
+  are retained. `/tm/raw/S<n>/T<t>#E<k>` reads one complete source entry, including original
+  tool arguments and results. `/tm/raw/S<n>/T<t>` assembles the Turn's selected entries
+  under the configured compressed profile; ordinary paging follows Pi's native `read`.
 - The final main-turn checkpoint checks the active branch's N/D queues once (105).
   Entry reconciliation alone starts no run; the unchanged native leaf-id guard keeps streaming updates O(1).
   `noting.triggerTokens` defaults to **10,000 compressed-view tokens** measured
@@ -332,7 +330,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   `Removed setting consolidation.subagentModeDefault: use consolidation.forkModeDefault (the inverse
   boolean: true means fork)`. Nothing is normalized behind the setting and no settings file is
   rewritten. Runs recorded in fork mode before 25b keep that mode and read back as themselves in Runs
-  and `trace R<n>`.
+  and in the historical internal run audit.
 - `render.stdoutHeadTokens`, `render.stdoutTailTokens` and `render.stderrTailTokens` are **removed**
   (ticket 23). They budgeted a stdout/stderr result shape Pi never produces, so they were never
   effective on any Pi run; a layer that still supplies one fails the load with `Removed setting
@@ -364,12 +362,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   searches for that id, finds none, and keeps the compaction plus later messages.
   Successful compaction is then recorded as a `compaction` turn; it receives no facts.
   Pre-reply compaction returns project injection without allocating a session.
-- Main-agent registration and subagent requests use the exact same four definition
-  objects, with façade descriptions and schema objects. Pi execution fields are
-  non-enumerable, so provider serialization includes only shared metadata. The read
-  forms are `trace({address, versions?, category?, scope?, fields?,
-  itemBudget?, toolCallBudget?, toolResultBudget?, pageBudget?, tool?, full?,
-  cursor?, cap?})` and `search({query, layer?, versions?, category?, scope?,
+- Main-agent registration and subagent requests share Core's `search`, `note` and `memory`
+  definitions; model reads use Pi's native `read` (and `grep` on the main session) over `/tm`.
+  Pi execution fields are non-enumerable, so provider serialization includes only shared metadata.
+  Search remains `search({query, layer?, versions?, category?, scope?,
   fields?, itemBudget?, maxTokens?, cursor?, cap?})`.
 
   `scope` alone controls material selection; obsolete `where` is rejected. Omitted
@@ -379,40 +375,32 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   of author project. Only category implies the knowledge layer; scope does not.
   Explicit project/session scope requires context; unbound omission discovers all owners.
 
-  `versions` selects current/history/all candidates within each K. Every search or
-  project collection returns one representative per K, chosen before pagination.
-  Literal admission is unchanged; lexical text/topic similarity chooses only among
-  matching revisions of the same K. Ties prefer current, then newer commit; empty
-  queries and collections use that tie order without scoring. K-ID ordering remains.
-  Explicit K history/all or K.. expands the named identity's history. Exact evidence
-  and comma-list order/repeats remain unrestricted.
+  `versions` selects current/history/all candidates within each K. Search returns
+  one representative per K, chosen before pagination. Literal admission is unchanged;
+  lexical text/topic similarity chooses only among matching revisions of the same K.
+  Ties prefer current, then newer commit; empty queries use that tie order without scoring.
+  K-ID ordering remains. `/tm/K<id>.history` reads the named identity's history;
+  `/tm` rejects the retired comma lists and `K..` forms.
 
-  Named session trace remains only that session's Raw under every scope. Named
-  projects retain their own facts; scope narrows only their global/project knowledge
-  and never widens those facts. Project plus session scope rejects rather than
-  borrowing the caller's session. Collection receipts describe the actual selection.
-  Collections grant no handles, and omitted alternative versions or history reference
-  lines never prove a full-body read. Current search defaults to text-only one-line fact and knowledge
+  These search scope and representative rules do not widen exact `/tm` reads or grant
+  mutation authority. Collections grant no handles; omitted alternative versions and
+  history reference lines never prove a full-body read. Current search defaults to text-only one-line fact and knowledge
   previews; knowledge history/all defaults to text plus the existing computed status.
   Explicit fields, including text-only or none, remain authoritative. The item budget
   defaults to 80 tokens; embedded line breaks render as ` ⏎ ` and long bodies keep a
   head plus the inline character-truncation marker. Raw search
-  hits keep their entry profile. Search returns no knowledge write handle. Trace
-  defaults to full semantic fields except reason for current/exact reads; explicit K
-  history/all and `K1..` also default to commit reasons. Explicit fields remain authoritative.
+  hits keep their entry profile. Search returns no knowledge write handle; use `/tm/K<id>`
+  for a complete tagged current body and `/tm/K<id>.history` for its history.
 
-  One trace address may carry a comma list (`F81,F90,F95`, preserving order and
-  repeats) and inclusive fact-id intervals (`F81-F90`, combinable as
-  `F81-F90,F95`). Both tools default to 2,000 estimated tokens per response, and
-  public `maxTokens`/`pageBudget` values are capped at 8,000; `cap` separately
-  counts output lines. Every search receipt names the effective filters and preview
-  fields and the one-representative/history route. Cursors freeze exact representatives,
-  owner selection, statuses, effective filters, fields, content budgets, page-budget aliases, and
-  line cap; omitted or equivalent repeated values continue, while a
-  changed value rejects without consuming the cursor. Oversized transport content
-  continues in lossless Unicode-safe fragments, but a fragment is not a complete
-  hit. Follow receipts: continue search with an empty query and trace with its cursor.
-  See [the core search contract](core.md) for budget rejection and joining rules.
+  Search defaults to 2,000 estimated tokens per response; `maxTokens` is capped at 8,000
+  and `cap` separately counts output lines. Every search receipt names its effective filters,
+  preview fields and the one-representative/history route. Search cursors freeze representatives,
+  owner selection, statuses, filters, fields, content budgets and line cap; omitted or equivalent
+  repeated values continue, while a changed value rejects without consuming the cursor.
+  Oversized transport content continues in lossless Unicode-safe fragments, but a fragment
+  is not a complete hit. Continue search with an empty query and its cursor. `/tm` reads instead
+  use native offset/limit on the original virtual path. See [the core search contract](core.md)
+  for budget rejection and joining rules.
   Manual `note({title, sources: "[T1#E1@user] Authored text", ...})` takes one top-level
   string of `[address] text` segments (multiline segments allowed, no preamble) and writes one fact;
   `memory({op, supports, reason, ...})`
@@ -514,7 +502,7 @@ call and does not synthesize a completion. The next main turn end checks
 normal queue thresholds. Repeating enable does not duplicate imported sources.
 
 Disabled sessions ingest nothing, inject nothing and start no new worker. Manual `note` and
-`memory` reject with `/trace on`; `trace`, `search` and status remain available even before
+`memory` reject with `/trace on`; `/tm` reads, `search` and status remain available even before
 allocation. Compaction and tree hooks return no plugin override so Pi proceeds with native context
 handling. Stored Raw, facts, Knowledge, runs and scopes stay intact; other sessions still see shared
 Knowledge. Already-injected text remains in context.
@@ -760,20 +748,19 @@ Unavailable states return `available: false` with `reason` and `message`; a host
 this way too, never as native compaction (73: `compact` no longer refuses for capacity). Successful
 results are detached from later changes.
 
-## Memory files under /tm (101)
+## Memory files under /tm
 
-The extension registers `read` and `grep` of the same names as Pi's own. A path under `/tm/` reads Trace Memory as read-only files for the session's reader: `/tm/<address>` is what `trace(<address>)` shows, `read /tm` shows the layout, and `grep` lists matching files by default (`output_mode: "content"` shows `path:line:text`, `count` counts) and searches Raw entries in full. Every other path goes to Pi's own tool unchanged. `edit` and `write` under `/tm/` are blocked with a pointer to `note` and `memory`; reading records nothing. `pi-subagents` children load the package's extensions and so read `/tm/` too; the injected knowledge names `/tm/S<n>/knowledge`, the knowledge a fresh context of the session receives, so a main agent can point a child at it. Pi keeps the first registration of a tool name: when another extension registered `read` or `grep` first, the session start warns that it cannot read `/tm/`.
+The extension extends Pi's native `read` and `grep` for the read-only virtual `/tm` namespace. `read /tm` lists paths; node views use `/tm/<layer>/S<n>[/T<t>]`, with knowledge, compact, facts and raw layers. Raw alone accepts entry and role suffixes. `/tm/knowledge/S<n>` gives a child the knowledge a fresh context there receives; `/tm/compact/S<n>` gives it continuation material. Grep lists matching files by default, supports content/count modes and searches full Raw entries, not duplicate overviews. Public `trace` is removed; private rendering and human `/trace` controls remain. Every other path goes to Pi's native tool unchanged. Writes under `/tm` are refused and reads record no delivery. Fresh N/D child reads are restricted to `/tm`; ordinary subagents with the extension can use these paths too. A session-start warning reports an earlier extension's conflicting `read` or `grep` registration.
 
 ## Compaction and the post-compaction boundary
 
 `session_before_compact` reconciles persisted history and asks core to allocate one frozen selected-path
-snapshot. Allocation is local and model-free: it takes no claim and advances no phase. Core always
-returns a complete custom replacement; native Pi compaction is reserved for an unexpected host-caught
-error, never for capacity (73).
+snapshot. Allocation is local and model-free: it takes no claim and advances no phase. Core truncates material to its windows rather than delegating for capacity. Pi delegates only when there are no eligible material candidates and nothing was omitted, or on an unexpected host-caught error. An empty window caused by capacity still completes custom compaction and warns in the foreground, even if its omission receipt does not fit.
 
 | Outcome | Condition | Adapter result |
 |---|---|---|
-| `{text, supplied, charged, truncated?}` | any valid path | Return the text as `compaction.summary`; a `truncated` receipt names the pending Raw entries and unconsolidated facts omitted |
+| `{text, supplied, charged, truncated?}` | Eligible material exists, even if all windows are empty because of capacity | Return the text as `compaction.summary`; omitted pending Raw and facts remain pending and cause a foreground warning |
+| No material candidates | Nothing to supply or omit; the reading guide alone is not material | Delegate to Pi's native compaction without recording a custom delivery |
 | `{native: true, reason}` | An unexpected host-caught error (a store error, an invalid path) | Delegate to Pi's native compaction |
 
 The default bases are Knowledge 20,000 tokens from the database policy, facts 10,000 and Raw 10,000.
@@ -796,7 +783,7 @@ sources straddle the span's start. Omitted material starts no worker and changes
 The adapter passes the native ids that Pi will retain, so historical Raw is not duplicated. A custom
 replacement supplies every kept entry as the shared bounded `renderEntry` view and returns
 `firstKeptEntryId: ""`; the replacement, rather than old Pi messages, carries those views. The same
-entry labels, budgets and truncation markers are used by Noting and explicit bounded trace. A carrier
+entry labels, budgets and truncation markers are used by Noting and `/tm/raw` overviews. A carrier
 records only the entries, fact ids and Knowledge commits actually emitted. Native compaction writes
 no Trace Memory carrier.
 
@@ -1054,7 +1041,7 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    tokens produce no Noting. Continue with substantial conversation material
    until an eligible completion reaches the threshold; inspect the resulting run's
    entry audit and exact progress. The reply after it carries no receipt of that run (29d): read the
-   new facts with `trace` if you want to see them. Invalid model output may bounce; inspect the run
+   new facts with `read` on `/tm/F<id>` if you want to see them. Invalid model output may bounce; inspect the run
    result.
 4. Run `/compact`. Expect immediate compaction with `<knowledge>` and `<episodic>`,
    pending compressed Raw views, recent facts, and no compaction model request. The
@@ -1063,15 +1050,13 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    pending views no longer fit: the compaction still succeeds with bounded entry
    views, but a second, `warning`-level notice reports the omitted pending entries
    and that they remain pending for Noting.
-5. Ask the agent to call `search` for `pnpm`, then `trace` on a returned fact and
-   its source turn. Expect the original conversation text and source addresses.
-   The search/trace tools themselves are recorded as raw tool calls.
+5. Ask the agent to call `search` for `pnpm`, then `read` on the returned `/tm/F<id>`
+   and its source `/tm/raw/S<n>/T<t>#E<k>`. Expect the original conversation text and
+   source addresses. Search and Read calls are recorded as Raw tool calls.
 6. Save the actual prompt/reply transcript, `/trace` outputs, observed fact ids,
-   compaction content, and trace result. Check `runs.request`, `mode`, `model`
-   and `response.usage` using the facade. Default consolidation requires 5,000 rendered fact
-   tokens; six short turns need not produce any consolidation run. For a
-   separate consolidation exercise set `consolidation.triggerTokens` to 1 and wait
-   for another eligible source entry completion after the Noting commits.
+   compaction content, and `/tm` Read result. Check `runs.request`, `mode`, `model`
+   and `response.usage` using the facade. Consolidation is retired; this manual
+   exercise does not expect a new C run.
 
 Automated verification uses a fake provider; it does not establish live provider
 credentials or replace the manual conversation above.
@@ -1619,15 +1604,12 @@ notice per scheduled attempt; the footer indicator does not change while one wai
 
 ## Run records
 
-Every Noting, Consolidation and manual write leaves a row in `runs` with the
+Every Noting and manual write leaves a row in `runs`; historical Consolidation runs remain. Runs record the
 exact last provider request, the final output, summed usage, the tool-call
 sequence, fetches and problems. The response envelope also carries
 `thinking: { requested, effective }`, the level frozen at admission and the level
-Pi's clamp left the child at (26b). `trace R<n>` renders a run as a summary (kind,
-outcome, range, model, mode, what it created, usage, cost, tool counts,
-problems); `full` adds each tool round and cut previews of the raw request and
-response. The menu's Current session > Runs lists the session's last n runs, with a
-count input (the `/trace runs [n]` subcommand was retired in 24b).
+Pi's clamp left the child at (26b). The menu's Current session > Runs lists the
+session's last n runs with a count input (`/trace runs [n]` was retired in 24b).
 
 ## Footer status item
 
@@ -1837,7 +1819,7 @@ pass and its fixed end review — processes only its selected entries; later ent
 same Turn remain pending. A run that ends without calling both tools or with unresolved
 refusals publishes nothing and processes no entries. Address aliases are interpreted against the frozen
 entry set. A later matching source occurrence makes that address ineligible for
-the earlier writer, even if an unrestricted trace fetch can read it. Run records
+the earlier writer, even if an explicit `/tm/raw` read can display it. Run records
 include `entryAudit`: native identities, owning Turns, frozen branch, view-budget
 version and values, and the exact omission markers. Entry processing, facts, run
 audit commit atomically. Rejected or failed work remains

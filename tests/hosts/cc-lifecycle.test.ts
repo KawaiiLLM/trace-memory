@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -179,7 +179,6 @@ test("function-hook child requires the exact live SessionStart assignment and ow
   expect(processStartedAt(process.pid)).toBe(owner.startedAt);
 });
 
-// Thirteen independent child attaches share this test's outer deadline; per-operation waits remain 3s.
 test("reloaded executor clears only an unconfirmed close for the same live native assignment", async () => {
   const f = fixture("reload-close"); f.write();
   const input = { hook_event_name: "SessionStart" as const, session_id: f.nativeSessionId, transcript_path: f.transcriptPath };
@@ -283,7 +282,7 @@ test("reloaded executor clears only an unconfirmed close for the same live nativ
   const { child } = await attempt();
   try { expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toEqual(close); }
   finally { child.send({ type: "close" }); await childExit(child); }
-}, 20_000);
+}, 5_000);
 
 test("live function-hook turns check once across both import orders and do not replay bootstrap", async () => {
   const f = fixture("turn-hook"); enableSyntheticWorker(f);
@@ -1550,8 +1549,10 @@ test.each([false, true])("86: SessionEnd permits an executor replacement but rej
   } finally { store.close(); }
 });
 
-test.each(["prompt_input_exit", "other", "logout"])("86: SessionEnd %s closes with a live executor and an unimported tail", async reason => {
+test.each(["prompt_input_exit", "other", "logout", "clear"])("86: SessionEnd %s closes with a live executor and an unimported tail", async reason => {
   const f = fixture(`session-end-${reason}`); f.write();
+  const rendered = join(f.config.stateDir, "rendered", f.nativeSessionId);
+  mkdirSync(rendered, { recursive: true }); writeFileSync(join(rendered, "memory.txt"), "rendered memory");
   const started = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const importer = new CcImporter(f.config, started); const imported = await importer.reconcile(); importer.close();
@@ -1562,6 +1563,7 @@ test.each(["prompt_input_exit", "other", "logout"])("86: SessionEnd %s closes wi
       message: { role: "user", content: "not imported" } }].map(record => `${JSON.stringify(record)}\n`).join("") + '{"uuid":');
   expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath, reason })).toMatchObject({ confirmed: true });
+  expect(existsSync(rendered)).toBe(false);
   const store = new Store(f.config.dbPath);
   try {
     expect(store.getSession(imported.coreSessionId!)!.closedAt).not.toBeNull();
@@ -1575,6 +1577,8 @@ test.each(["prompt_input_exit", "other", "logout"])("86: SessionEnd %s closes wi
 
 test("86: SessionEnd needs no executor and never guesses a missing native process identity", async () => {
   const f = fixture("session-end-no-executor"); f.write();
+  const rendered = join(f.config.stateDir, "rendered", f.nativeSessionId);
+  mkdirSync(rendered, { recursive: true }); writeFileSync(join(rendered, "memory.txt"), "live rendering");
   const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const importer = new CcImporter(f.config, binding); const imported = await importer.reconcile(); importer.close();
@@ -1584,10 +1588,12 @@ test("86: SessionEnd needs no executor and never guesses a missing native proces
   vi.stubEnv("CLAUDE_PID", "");
   expect(await recordCcSessionEnd(f.config, input)).toMatchObject({ confirmed: false,
     diagnostic: expect.stringContaining("native process identity is unavailable") });
+  expect(existsSync(rendered)).toBe(true);
   const store = new Store(f.config.dbPath);
   try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
   vi.stubEnv("CLAUDE_PID", String(process.pid));
   expect(await recordCcSessionEnd(f.config, input)).toMatchObject({ confirmed: true });
+  expect(existsSync(rendered)).toBe(false);
 });
 
 test("86: a still-running coordinator cannot undo SessionEnd by polling or final shutdown", async () => {

@@ -531,7 +531,7 @@ export default function (pi: ExtensionAPI) {
     // Fresh Pi children expose the native Read definition via memoryReadTool. Price that same
     // description and schema beside Core's memory tools; a fork already carries its captured Read.
     const { name, description, parameters } = createReadToolDefinition(context.cwd);
-    const nativeReadTool = effective === "subagent" ? { name, description, parameters } : undefined;
+    const nativeReadToolTokens = effective === "subagent" ? tokens(JSON.stringify({ name, description, parameters })) : undefined;
     // 29b: the second half of a fork's initial state, beside the measure above — what this session's
     // selected context actually holds, read through the 29a memo and frozen with the task. Only a task
     // that will run with an inherited context gets one: an explicit subagent and a fork re-admitted as
@@ -542,7 +542,7 @@ export default function (pi: ExtensionAPI) {
       ...(inherited ? { visible: inherited } : {}),
       subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
-      ...(nativeReadTool ? { nativeReadTool } : {}),
+      ...(nativeReadToolTokens !== undefined ? { nativeReadToolTokens } : {}),
       ...(options.boundary ? { boundary: options.boundary } : {}),
       // 27c: the refused attempt's gate result, for a refusal that recorded no run of its own.
       // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
@@ -1231,6 +1231,9 @@ export default function (pi: ExtensionAPI) {
     result = allocate();
     if (signal?.aborted || closed) return { cancel: true };
     if ("native" in result) return;
+    // Only genuinely absent material delegates; capacity omissions remain custom compactions
+    // even when none of the windows can fit an omission receipt.
+    if (!result.text || result.hasMaterialCandidates === false) return;
     // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the
     // compaction entry Pi appends for it, so a cancelled or failed attempt — which appends no entry —
     // leaves the earlier baseline untouched, and a native delegation carries no `traceMemory` at all.
@@ -1253,9 +1256,10 @@ export default function (pi: ExtensionAPI) {
       if (signal?.aborted || closed) return { cancel: true };
       result = allocate(false);
       if (signal?.aborted || closed) return { cancel: true };
-      if ("native" in result || !result.text) return;
+      if ("native" in result || !result.text || result.hasMaterialCandidates === false) return;
     }
-    publishedTruncation = result.truncated;
+    publishedTruncation = result.truncated ?? (result.hasMaterialCandidates && result.charged &&
+      !result.charged.knowledge && !result.charged.facts && !result.charged.raw ? {} : undefined);
     return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied, prompt).traceMemory, composition: result.composition } } } };
   });
   pi.on("session_compact", (_event, context) => {
@@ -1276,7 +1280,9 @@ export default function (pi: ExtensionAPI) {
         ...(raw ? [`${raw.entries} pending Raw ${raw.entries === 1 ? "entry" : "entries"}`] : []),
         ...(facts ? [`${facts.count} ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens)`] : []),
       ];
-      context.ui.notify(`Trace Memory: compaction omitted ${parts.join(" and ")}${raw ? "; omitted Raw remains pending for Noting." : "."}`, "warning");
+      context.ui.notify(parts.length
+        ? `Trace Memory: compaction omitted ${parts.join(" and ")}${raw ? "; omitted Raw remains pending for Noting." : "."}`
+        : "Trace Memory: compaction omitted material that did not fit even as an omission receipt; it remains in memory.", "warning");
     }
     if (enabled() && state.sessionId) {
       const sessionId = state.sessionId;

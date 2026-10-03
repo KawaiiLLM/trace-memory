@@ -78,8 +78,8 @@ async function nativeCompaction($: any, e: any, next: any, session: string) {
   }
 }
 
-// Virtual grep/glob and the two whole-knowledge views use the bound native reader. Other Read
-// calls are rewritten by the command PreToolUse hook, then paged by Claude Code's own Read.
+// Virtual grep/glob and whole node/entry views use the bound native reader. Other Read
+// calls are re-rendered by the command PreToolUse hook, then paged by Claude Code's own Read.
 async function memoryFiles($: any, args: string[]): Promise<any> {
   const root = $.plugin.root, session = await $.session.id();
   const run = await $.process.run(["node", `${root}/dist/cc.cjs`, "fs", "--config", `${root}/cc.config.json`, "--session", session, ...args]);
@@ -150,11 +150,11 @@ function watchNativeFork($: any, session: string, agent: string): void {
 }
 
 export const register = (on: any) => {
-  // Knowledge inheritance and exact Raw entries are returned whole in the main session. Native
-  // Read owns every other /tm page and reads its own immutable backing-file snapshot.
+  // Knowledge/compact node views and exact Raw entries are returned whole in the main session.
+  // Native Read pages other /tm views; each virtual-path call renders afresh.
   on("tool.call", { tool: "Read" }, async ($: any, e: any, next: any) => {
     const path = memoryPath(e.file_path);
-    if (path === null || !/^\/tm\/(?:knowledge\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) return next(e);
+    if (path === null || !/^\/tm\/(?:(?:knowledge|compact)\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) return next(e);
     try {
       const file = await memoryFiles($, ["read", path]);
       if (!file.unbounded) throw new Error(`not a whole memory view: ${path}`);

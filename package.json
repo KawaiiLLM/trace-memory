@@ -29,8 +29,8 @@
     "perf": "node tests/perf/run.ts"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.85.1",
-    "@earendil-works/pi-coding-agent": ">=0.85.1",
+    "@earendil-works/pi-ai": ">=0.86.0",
+    "@earendil-works/pi-coding-agent": ">=0.86.0",
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {

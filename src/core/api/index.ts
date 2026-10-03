@@ -303,8 +303,8 @@ export const CANCELLED_BEFORE_FALLBACK = "cancelled before fallback";
  * Without either, selection uses the ordinary pending set. */
 export interface TaskBoundary { maxEntryId?: number; exactEntryIds?: number[] }
 export interface TaskOptions {
-  /** Native Read metadata supplied by the host, included in fresh-worker tool input estimates. */
-  nativeReadTool?: { name: string; description: string; parameters: object };
+  /** Host estimate of native Read's tool-input tokens for a fresh worker; a fork inherits it. */
+  nativeReadToolTokens?: number;
   /** Durable execution shared only with a refused attempt's fallback. */
   executionId?: string;
   borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary;

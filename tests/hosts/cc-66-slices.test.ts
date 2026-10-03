@@ -43,6 +43,13 @@ test("66 warning-only clear still emits one foreground notice, without pretendin
   expect(slices.slice(1).every(item => item === null)).toBe(true);
 });
 
+test("unbound injection cannot emit a Raw address with Snull", () => {
+  expect(() => sliceCcInjection({ ...binding, coreSession: null }, [
+    { kind: "raw", entryId: 1, address: "T1#E1", pending: true, text: "Raw" },
+  ])).toThrow("CC Raw transport needs a bound core session");
+  expect(sliceCcInjection({ ...binding, coreSession: null }, []).filter(Boolean)).toHaveLength(0);
+});
+
 test("66 omitted pending Raw is not delivered and warns in slot one", () => {
   const slices = sliceCcInjection(binding, [{ kind: "raw", entryId: 90, address: "T9#E1", pending: true,
     text: `[T9#E1@text] user: ${"y".repeat(12_000)}` }]);

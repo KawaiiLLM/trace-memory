@@ -76,16 +76,16 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
   };
   const projectName = (id: number | null) => id === null ? "no project" : store.getProject(id)?.name ?? `project ${id}`;
   const selectedPath = (sessionId: number, turnId?: number) => {
-    const current = store.currentPath(sessionId);
+    const current = sessionId === reader.sessionId
+      ? store.knowledgePath(sessionId, reader.branch, reader.headTurnId) : store.currentPath(sessionId);
     const headTurnId = turnId ?? current.headTurnId;
     if (headTurnId == null) throw new Error(`no such path: session S${sessionId} has no current Turn`);
     if (store.getTurn(headTurnId)?.sessionId !== sessionId)
       throw new Error(`no such path: T${headTurnId} is not in S${sessionId}`);
     if (turnId === undefined || current.headTurnId != null && store.pathTurns(current).has(turnId))
       return { sessionId, branch: current.branch, headTurnId };
-    const branch = store.sourceBranchContainingTurn(sessionId, turnId);
-    if (branch === null) throw new Error(`no such path: T${turnId} is on no selected source branch of S${sessionId}`);
-    return { sessionId, branch, headTurnId };
+    // A stored Turn need not belong to any selected source path. Read its entries unbound, as main did.
+    return { sessionId, branch: store.sourceBranchContainingTurn(sessionId, turnId) ?? undefined, headTurnId };
   };
   const entriesOf = (sessionId: number, turnId: number) =>
     store.listSourceEntries(sessionId, turnId, selectedPath(sessionId, turnId).branch);
@@ -132,8 +132,8 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
     if ((m = SESSION.exec(path))) {
       session(Number(m[1]));
       return store.listTurns(Number(m[1])).flatMap(turn => [
-        [`${MEMORY_ROOT}/facts/S${m![1]}/T${turn.id}`, ""],
-        [`${MEMORY_ROOT}/raw/S${m![1]}/T${turn.id}`, ""],
+        [`${MEMORY_ROOT}/facts/S${m![1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
+        [`${MEMORY_ROOT}/raw/S${m![1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
       ] as [string, string][]);
     }
     if (LAYER.test(path)) return store.listSessions().map(s => [`${path}/S${s.id}`, ""]);
@@ -158,11 +158,12 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
           { sessionId: id, branch: undefined, headTurnId: turnId, full: true }), unbounded: true };
       }
       const node = selectedPath(id, turnId);
-      if (layer === "knowledge") return { content: memory.injection(node, undefined, false, toolNames).text, unbounded: true };
+      if (layer === "knowledge") return { content: memory.injection(node, undefined, false, toolNames).text ||
+        `(a fresh context at S${id}'s current head would receive no knowledge)`, unbounded: true };
       if (layer === "compact") {
         const compact = memory.compact(id, node.branch, node.headTurnId, undefined, false, { toolNames });
         if ("native" in compact) throw new Error(compact.reason);
-        return { content: compact.text, unbounded: false };
+        return { content: compact.text, unbounded: true };
       }
       const { sessionId, branch, headTurnId } = node;
       const target = `S${id}/T${headTurnId}`;
@@ -188,8 +189,8 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
       ...(path === MEMORY_ROOT ? [readingGuide(reader.sessionId, toolNames)] : []),
       ...(listing.length ? SESSION.test(path)
         ? store.listTurns(Number(SESSION.exec(path)![1])).map(turn =>
-          `${MEMORY_ROOT}/facts${path.slice(MEMORY_ROOT.length)}/T${turn.id}  ${MEMORY_ROOT}/raw${path.slice(MEMORY_ROOT.length)}/T${turn.id}`)
-        : listing.map(([child, label]) => path === MEMORY_ROOT || LAYER.test(path) ? child : label ? `${child}  ${label}` : child) : ["(empty)"]),
+          `${MEMORY_ROOT}/facts${path.slice(MEMORY_ROOT.length)}/T${turn.id}  ${MEMORY_ROOT}/raw${path.slice(MEMORY_ROOT.length)}/T${turn.id}  ${turn.kind} ${turn.startedAt}`)
+        : listing.map(([child, label]) => LAYER.test(path) ? child : label ? `${child}  ${label}` : child) : ["(empty)"]),
     ].join("\n"), unbounded: false };
     return fileText(path);
   };

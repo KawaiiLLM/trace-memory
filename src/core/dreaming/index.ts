@@ -68,6 +68,8 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   { pool: due, range }: ReturnType<Store["freezeKnowledgePool"]>) {
   if (store.getSession(path.sessionId)!.host.startsWith("cc:") && !input.toolNames)
     throw new Error("CC Dreamer launch requires exposed tool names");
+  if (input.nativeReadToolTokens !== undefined && (!Number.isSafeInteger(input.nativeReadToolTokens) || input.nativeReadToolTokens < 0))
+    throw new Error("Invalid native Read token estimate: expected a nonnegative safe integer");
   const frozenIds = new Set(range.eventIds);
   const pending = due.pending.filter(value => frozenIds.has(value.revisionId));
   const changed = ["Pending current knowledge:", ...pending.map(value => value.material)].join("\n");
@@ -129,8 +131,8 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const text = [readingGuide(path.sessionId, names), ...Object.values(material)].join("\n\n");
   const prompt = loadPrompt("dreaming.md", names);
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
-      tokens(prompt) + tokens(JSON.stringify([...pricedToolDefinitions(dreamingToolDefinitions(), names),
-        ...(input.nativeReadTool ? [input.nativeReadTool] : [])])) + tokens(text) > input.capacity.inputTokens))
+      tokens(prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingToolDefinitions(), names))) +
+        (input.nativeReadToolTokens ?? 0) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
   return { sessionId: path.sessionId, branch: path.branch, path, range, pool: due.pool, frozenIds: [...frozenIds],
     eventIds: [...frozenIds], changed: { versions: [...frozenValues, ...frozenArchives] }, material, text,

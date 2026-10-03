@@ -35,7 +35,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // src/hosts/cc/index.ts
 var import_node_fs15 = require("node:fs");
-var import_node_crypto17 = require("node:crypto");
+var import_node_crypto18 = require("node:crypto");
 var import_node_path13 = require("node:path");
 var import_node_url = require("node:url");
 
@@ -547,32 +547,6 @@ var ArrayDiff = class extends Diff {
 var arrayDiff = new ArrayDiff();
 function diffArrays(oldArr, newArr, options) {
   return arrayDiff.diff(oldArr, newArr, options);
-}
-
-// src/core/prompts/tool-names.ts
-var TOOL_ROLES = ["search", "note", "memory", "check"];
-var canonicalToolNames = { search: "search", note: "note", memory: "memory", check: "check", read: "read", grep: "grep" };
-var NAME_ROLES = [...TOOL_ROLES, "read", "grep"];
-function validateToolNames(names) {
-  if (!names || NAME_ROLES.some((role) => typeof names[role] !== "string" || !/^[a-zA-Z][\w-]*$/.test(names[role])))
-    throw new Error("Missing or invalid exposed tool name for worker launch");
-  if (new Set(NAME_ROLES.map((role) => names[role])).size !== NAME_ROLES.length)
-    throw new Error("Worker exposed tool names must be distinct");
-  return Object.freeze({ ...names });
-}
-function renderToolNames(text, names) {
-  return text.replace(/\{\{tool\.(search|note|memory|check|read|grep)\}\}/g, (_, role) => names[role]);
-}
-
-// src/core/render/reading-guide.ts
-function readingGuide(sessionId, names) {
-  const session = sessionId === void 0 ? "<n>" : String(sessionId);
-  return `Memory is at /tm: virtual, so use ${names.read} or ${names.grep}, never a shell command. /tm lists every path.
-Path: /tm/<layer>/S<n>/T<t>. Without /T<t>: the session's current head.
-Layers: knowledge (what a fresh context there receives), compact (what compaction there injects), facts (the Turn's facts), raw (its Raw overview).
-raw only: #E<k> gives one full entry and @role keeps one role, e.g. citation T12#E3@assistant of S7 is /tm/raw/S7/T12#E3@assistant.
-/tm/K<id>, /tm/F<id>: one knowledge item or fact.
-Give a subagent /tm/knowledge/S${session} for background or /tm/compact/S${session} to continue, and tell it to use ${names.read}.`;
 }
 
 // src/core/store/index.ts
@@ -6210,8 +6184,7 @@ var charge = (parts) => parts.reduce((total, part) => total + tokens(part) + 1, 
 var EXPAND_LIMIT = 8;
 var expandList = (addresses) => addresses.length <= EXPAND_LIMIT ? addresses.join(", ") : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 var KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
-var MEMORY_FILES_NOTICE = readingGuide(void 0, canonicalToolNames);
-var sessionKnowledgeNotice = (sessionId, recencyNotice = KNOWLEDGE_RECENCY_NOTICE, _toolNames = canonicalToolNames) => `${recencyNotice}
+var sessionKnowledgeNotice = (sessionId, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) => `${recencyNotice}
 Session S${sessionId}.`;
 var renderKnowledgeOmissions = (omitted) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
   const members = omitted.filter((value) => knowledgeCategoryGroup(value.revision.category) === category);
@@ -6289,6 +6262,21 @@ ${recencyNotice}
 };
 var renderKnowledgeBlock = (groups, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) => knowledgeBlockParts(groups, recencyNotice).join("");
 var listingLine = (text) => text.replaceAll("\n", " \u23CE ");
+
+// src/core/prompts/tool-names.ts
+var TOOL_ROLES = ["search", "note", "memory", "check"];
+var canonicalToolNames = { search: "search", note: "note", memory: "memory", check: "check", read: "read", grep: "grep" };
+var NAME_ROLES = [...TOOL_ROLES, "read", "grep"];
+function validateToolNames(names) {
+  if (!names || NAME_ROLES.some((role) => typeof names[role] !== "string" || !/^[a-zA-Z][\w-]*$/.test(names[role])))
+    throw new Error("Missing or invalid exposed tool name for worker launch");
+  if (new Set(NAME_ROLES.map((role) => names[role])).size !== NAME_ROLES.length)
+    throw new Error("Worker exposed tool names must be distinct");
+  return Object.freeze({ ...names });
+}
+function renderToolNames(text, names) {
+  return text.replace(/\{\{tool\.(search|note|memory|check|read|grep)\}\}/g, (_, role) => names[role]);
+}
 
 // src/core/knowledge-write/prepare.ts
 var numbers = (text) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
@@ -6534,6 +6522,17 @@ function bindMemory(store, sessionId, run, path = store.knowledgePath(sessionId)
 
 // src/core/api/read.ts
 var import_node_crypto5 = require("node:crypto");
+
+// src/core/render/reading-guide.ts
+function readingGuide(sessionId, names) {
+  const session = sessionId === void 0 ? "<n>" : String(sessionId);
+  return `Memory is at /tm: virtual, so use ${names.read} or ${names.grep}, never a shell command. /tm lists every path.
+Path: /tm/<layer>/S<n>/T<t>. Without /T<t>: the session's current head.
+Layers: knowledge (what a fresh context there receives), compact (what compaction there injects), facts (the Turn's facts), raw (its Raw overview).
+raw only: #E<k> gives one full entry and @role keeps one role, e.g. citation T12#E3@assistant of S7 is /tm/raw/S7/T12#E3@assistant.
+/tm/K<id>, /tm/F<id>: one knowledge item or fact.
+Give a subagent /tm/knowledge/S${session} for background or /tm/compact/S${session} to continue, and tell it to use ${names.read}.`;
+}
 
 // src/core/api/similarity.ts
 function characterBigrams(text) {
@@ -6824,7 +6823,7 @@ function readFacade(store, config3, prepare = () => {
     const saved = options.cursor ? cursors.get(options.cursor) : void 0;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     if (saved && saved.modelFacing !== !!options.modelFacing) throw new Error("cursor belongs to another presentation surface");
-    if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue an internal trace cursor: /tm");
+    if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue an internal trace cursor");
     const defaults = {
       itemBudget: config3.render.entryTokens,
       toolCallBudget: config3.render.toolInputTokens,
@@ -6942,7 +6941,7 @@ function readFacade(store, config3, prepare = () => {
         cursors.delete(oldest);
       }
     }
-    return { text: result };
+    return result;
   };
   const session = (id) => {
     const value = store.getSession(id);
@@ -6976,7 +6975,7 @@ function readFacade(store, config3, prepare = () => {
     }));
     const current = values(graph.current.filter((revision) => revision.op !== "archive"));
     const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? void 0 : projectId, graph, true);
-    const notice = id === void 0 ? void 0 : sessionKnowledgeNotice(id, void 0, toolNames);
+    const notice = id === void 0 ? void 0 : sessionKnowledgeNotice(id);
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
     const states = allStates.filter((state) => !(visible.knowledgeStates ?? /* @__PURE__ */ new Set()).has(knowledgeStateKey(state.receipt)));
     if (!delta.length && !states.length) return empty();
@@ -7062,7 +7061,7 @@ function readFacade(store, config3, prepare = () => {
       ...selectedStates.length ? { knowledgeStates: selectedStates.map((state) => state.receipt) } : {}
     };
   };
-  const traceRead = (address2, options = {}) => {
+  const trace = (address2, options = {}) => {
     validateBudgets(options);
     const cursor = /^cursor=([^,\s]+)$/.exec(address2.trim());
     if (options.cursor || cursor) {
@@ -7275,8 +7274,7 @@ function readFacade(store, config3, prepare = () => {
     spend,
     spendSince,
     progress,
-    trace: (address2, options) => traceRead(address2, options).text,
-    traceRead,
+    trace,
     // 21b: a read organization projection over the same selected set the automatic material uses; it
     // changes no injection order, no scope and no applicability.
     topicGroups: (sessionId, headTurnId, branch) => {
@@ -7344,7 +7342,7 @@ function readFacade(store, config3, prepare = () => {
       const notes = allNotes.slice(0, noteKept).map((note) => note.text);
       const noteOmittedReceipt = noteCost(noteKept) <= knowledgeEnvelope ? noteReceipt(allNotes.length - noteKept) : [];
       const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
-      const notice = sessionKnowledgeNotice(sessionId, void 0, options.toolNames);
+      const notice = sessionKnowledgeNotice(sessionId);
       const line = options.showKnowledgeSize ? (value) => renderKnowledge(
         value,
         `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`,
@@ -7482,6 +7480,7 @@ function readFacade(store, config3, prepare = () => {
         },
         // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
         charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts), raw: rawCharged, envelope },
+        hasMaterialCandidates: Boolean(allNotes.length || knowledge.length || candidates.length || eligibleFacts.length),
         ...Object.keys(truncated2).length ? { truncated: truncated2 } : {}
       };
     },
@@ -7539,7 +7538,7 @@ function readFacade(store, config3, prepare = () => {
       if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
       if (input.category !== void 0 && scope !== "knowledge")
         throw new Error("category filter requires layer knowledge");
-      if (input.cursor) return page([], input, "", "search").text;
+      if (input.cursor) return page([], input, "", "search");
       const effective = effectiveOptions(input);
       const historyFields = (scope === "knowledge" || scope === "all") && effective.versions !== "current";
       const options = {
@@ -7638,7 +7637,7 @@ ${filters}
 ${renderToolNames(KNOWLEDGE_REPRESENTATIVE_RECEIPT, options.toolNames ?? canonicalToolNames)}
 ${preview2}`,
         "search"
-      ).text;
+      );
     },
     status: (sessionId, branch, headTurnId) => {
       const s = session(sessionId), runs = store.listRuns(sessionId);
@@ -7935,7 +7934,7 @@ var memoryOperationSchema = { ...object2({
   }
 ] };
 var toolDefinitions = [
-  { name: "search", description: `Use literal substring search over facts, raw and knowledge commits. scope controls facts, Raw and knowledge: session selects this session's facts/Raw and session-scoped knowledge; project selects project facts/Raw and project-scoped knowledge; global selects all sessions' facts/Raw and global-scoped knowledge regardless of author. Omitted scope selects project facts/Raw and applicable global/project/session knowledge; unbound omission discovers all owners. Explicit project/session requires context. versions defaults to current applicable tips; history additionally includes applicable superseded and archived revisions; all additionally includes other branches' revisions in scope, including their history and archives. Revisions not applicable here are never write bases, and reading never bypasses write validation. Each K contributes one best matching revision: highest lexical text/topic similarity, then current, then newer commit. Admission stays literal. The batched form selects each query's capped knowledge hits by similarity so cap keeps the closest match; model-visible knowledge results then display oldest first, retaining category labels. /tm/K<id>.history. Only category implies layer=knowledge and conflicts with every other layer; scope does not imply a layer. Fact and knowledge hits are one-line previews: fields defaults to text for current searches and to text plus status for knowledge history/all; explicit fields is authoritative. itemBudget defaults to ${SEARCH_PREVIEW_TOKENS}; /tm/F<id>. Raw keeps its entry profile. Every receipt states filters and omitted preview fields; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} and is capped at ${MAX_PUBLIC_READ_TOKENS} estimated tokens for one response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit frozen options or repeat their original values (changes are rejected). Search previews never count as complete knowledge reads.`, parameters: { ...object2({ maxTokens: { type: "integer", minimum: 1, maximum: MAX_PUBLIC_READ_TOKENS, default: DEFAULT_READ_TOKENS }, itemBudget: { ...contentBudget, default: SEARCH_PREVIEW_TOKENS }, fields, query: string2, queries: { type: "array", items: string2, minItems: 1, description: 'Batched form, exclusive with query: one response, each query\'s own hits under the shared options, at most cap per query (default 1), the query echoed on each hit line, queries with no hit listed as `no hit: "q"` lines after the hits and paged like them; a cursor may repeat the original cap.' }, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...readFilters, ...pagination }) } },
+  { name: "search", description: `Use literal substring search over facts, raw and knowledge commits. scope controls facts, Raw and knowledge: session selects this session's facts/Raw and session-scoped knowledge; project selects project facts/Raw and project-scoped knowledge; global selects all sessions' facts/Raw and global-scoped knowledge regardless of author. Omitted scope selects project facts/Raw and applicable global/project/session knowledge; unbound omission discovers all owners. Explicit project/session requires context. versions defaults to current applicable tips; history additionally includes applicable superseded and archived revisions; all additionally includes other branches' revisions in scope, including their history and archives. Revisions not applicable here are never write bases, and reading never bypasses write validation. Each K contributes one best matching revision: highest lexical text/topic similarity, then current, then newer commit. Admission stays literal. The batched form selects each query's capped knowledge hits by similarity so cap keeps the closest match; model-visible knowledge results then display oldest first, retaining category labels. Inspect a K's history at /tm/K<id>.history. Only category implies layer=knowledge and conflicts with every other layer; scope does not imply a layer. Fact and knowledge hits are one-line previews: fields defaults to text for current searches and to text plus status for knowledge history/all; explicit fields is authoritative. itemBudget defaults to ${SEARCH_PREVIEW_TOKENS}. Read fact quotes, sources and relations at /tm/F<id>. Raw keeps its entry profile. Every receipt states filters and omitted preview fields; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} and is capped at ${MAX_PUBLIC_READ_TOKENS} estimated tokens for one response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit frozen options or repeat their original values (changes are rejected). Search previews never count as complete knowledge reads.`, parameters: { ...object2({ maxTokens: { type: "integer", minimum: 1, maximum: MAX_PUBLIC_READ_TOKENS, default: DEFAULT_READ_TOKENS }, itemBudget: { ...contentBudget, default: SEARCH_PREVIEW_TOKENS }, fields, query: string2, queries: { type: "array", items: string2, minItems: 1, description: 'Batched form, exclusive with query: one response, each query\'s own hits under the shared options, at most cap per query (default 1), the query echoed on each hit line, queries with no hit listed as `no hit: "q"` lines after the hits and paged like them; a cursor may repeat the original cap.' }, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...readFilters, ...pagination }) } },
   { name: "note", description: "Write one topic's episodic slice with a nonempty single-line title and one top-level sources string: each segment starts on a line with [T12#E3@user] and a space (role suffix optional), followed by authored text until the next marker. No text may precede the first marker. Give each contributing whole native entry its own segment; Core orders segments by path and joins their texts as the body. End a slice at a topic pivot, batch end or body cap; preserve the reasoning arc and name the actual harness in agent segments. Do not put later interpretations in an earlier source or tool-result segment. Block selectors and fact-level text are not allowed. No model-supplied category, status, quote or actor. Thinking alone is not evidence. Relations are optional; manual calls cite existing F facts, N $ references name accepted earlier stable slots. Manual calls commit one fact immediately and reject slot/drop. N calls hold privately until normal terminal publication: omit slot to append, slot:$n completely replaces including a rejected item, drop:$n removes only an unreferenced slot in its own call. Failed replacement invalidates the prior value; numbers never recycle; accepted siblings survive. An empty call {} confirms use, never clears drafts or rejected slots. Receipts list held/rejected handles, including after a native schema refusal; an empty call inspects them. A valid call clears top-level call errors only. Both {{tool.note}} and {{tool.memory}} are required in N.", parameters: {
     ...object2({ ...factSchema.properties, slot: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: replace one held fact." }, drop: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: drop one unreferenced held fact in a separate call." } }),
     if: { required: ["drop"] },
@@ -8364,16 +8363,14 @@ function memoryFiles(memory, reader) {
   };
   const projectName = (id) => id === null ? "no project" : store.getProject(id)?.name ?? `project ${id}`;
   const selectedPath = (sessionId, turnId) => {
-    const current = store.currentPath(sessionId);
+    const current = sessionId === reader.sessionId ? store.knowledgePath(sessionId, reader.branch, reader.headTurnId) : store.currentPath(sessionId);
     const headTurnId = turnId ?? current.headTurnId;
     if (headTurnId == null) throw new Error(`no such path: session S${sessionId} has no current Turn`);
     if (store.getTurn(headTurnId)?.sessionId !== sessionId)
       throw new Error(`no such path: T${headTurnId} is not in S${sessionId}`);
     if (turnId === void 0 || current.headTurnId != null && store.pathTurns(current).has(turnId))
       return { sessionId, branch: current.branch, headTurnId };
-    const branch = store.sourceBranchContainingTurn(sessionId, turnId);
-    if (branch === null) throw new Error(`no such path: T${turnId} is on no selected source branch of S${sessionId}`);
-    return { sessionId, branch, headTurnId };
+    return { sessionId, branch: store.sourceBranchContainingTurn(sessionId, turnId) ?? void 0, headTurnId };
   };
   const entriesOf = (sessionId, turnId) => store.listSourceEntries(sessionId, turnId, selectedPath(sessionId, turnId).branch);
   const visible = () => {
@@ -8416,8 +8413,8 @@ function memoryFiles(memory, reader) {
     if (m = SESSION.exec(path)) {
       session(Number(m[1]));
       return store.listTurns(Number(m[1])).flatMap((turn) => [
-        [`${MEMORY_ROOT}/facts/S${m[1]}/T${turn.id}`, ""],
-        [`${MEMORY_ROOT}/raw/S${m[1]}/T${turn.id}`, ""]
+        [`${MEMORY_ROOT}/facts/S${m[1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
+        [`${MEMORY_ROOT}/raw/S${m[1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`]
       ]);
     }
     if (LAYER.test(path)) return store.listSessions().map((s) => [`${path}/S${s.id}`, ""]);
@@ -8441,11 +8438,11 @@ function memoryFiles(memory, reader) {
         ), unbounded: true };
       }
       const node = selectedPath(id, turnId);
-      if (layer === "knowledge") return { content: memory.injection(node, void 0, false, toolNames).text, unbounded: true };
+      if (layer === "knowledge") return { content: memory.injection(node, void 0, false, toolNames).text || `(a fresh context at S${id}'s current head would receive no knowledge)`, unbounded: true };
       if (layer === "compact") {
         const compact = memory.compact(id, node.branch, node.headTurnId, void 0, false, { toolNames });
         if ("native" in compact) throw new Error(compact.reason);
-        return { content: compact.text, unbounded: false };
+        return { content: compact.text, unbounded: true };
       }
       const { sessionId, branch, headTurnId } = node;
       const target = `S${id}/T${headTurnId}`;
@@ -8477,7 +8474,7 @@ ${full(`F${id}`)}`, unbounded: false };
     const path = resolve5(raw), listing = children(path);
     if (listing && (path === MEMORY_ROOT || path === VISIBLE || path === ALL || SESSION.test(path) || LAYER.test(path))) return { content: [
       ...path === MEMORY_ROOT ? [readingGuide(reader.sessionId, toolNames)] : [],
-      ...listing.length ? SESSION.test(path) ? store.listTurns(Number(SESSION.exec(path)[1])).map((turn) => `${MEMORY_ROOT}/facts${path.slice(MEMORY_ROOT.length)}/T${turn.id}  ${MEMORY_ROOT}/raw${path.slice(MEMORY_ROOT.length)}/T${turn.id}`) : listing.map(([child, label]) => path === MEMORY_ROOT || LAYER.test(path) ? child : label ? `${child}  ${label}` : child) : ["(empty)"]
+      ...listing.length ? SESSION.test(path) ? store.listTurns(Number(SESSION.exec(path)[1])).map((turn) => `${MEMORY_ROOT}/facts${path.slice(MEMORY_ROOT.length)}/T${turn.id}  ${MEMORY_ROOT}/raw${path.slice(MEMORY_ROOT.length)}/T${turn.id}  ${turn.kind} ${turn.startedAt}`) : listing.map(([child, label]) => LAYER.test(path) ? child : label ? `${child}  ${label}` : child) : ["(empty)"]
     ].join("\n"), unbounded: false };
     return fileText(path);
   };
@@ -8657,13 +8654,16 @@ function recordAttempt(run, result, requestedMode, body) {
 
 // src/core/noting/index.ts
 var fixed = /* @__PURE__ */ new Map();
-var fixedCost = (names, nativeReadTool) => {
-  const key = JSON.stringify([names, nativeReadTool]);
+var fixedCost = (names, nativeReadToolTokens) => {
+  const key = JSON.stringify([names, nativeReadToolTokens]);
   let cost = fixed.get(key);
   if (!cost) {
     const prompt = loadPrompt("noting.md", names);
-    const definitions = [...pricedToolDefinitions(toolDefinitions, names), ...nativeReadTool ? [nativeReadTool] : []];
-    cost = { prompt, instructions: tokens(prompt), tools: tokens(JSON.stringify(definitions)) };
+    cost = {
+      prompt,
+      instructions: tokens(prompt),
+      tools: tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, names))) + (nativeReadToolTokens ?? 0)
+    };
     fixed.set(key, cost);
   }
   return cost;
@@ -8695,6 +8695,8 @@ function freezeNoting(store, input, config3, resultText = rawResultText, pending
   if (session.host.startsWith("cc:") && !input.toolNames) throw new Error("CC Noter launch requires exposed tool names");
   if (typeof input.branch !== "string" || !input.branch) throw new Error("noting requires a non-empty branch");
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 || !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
+  if (input.nativeReadToolTokens !== void 0 && (!Number.isSafeInteger(input.nativeReadToolTokens) || input.nativeReadToolTokens < 0))
+    throw new Error("Invalid native Read token estimate: expected a nonnegative safe integer");
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   let snapshot2 = pendingAll ? void 0 : store.pathSnapshot(path);
   const allPending = pendingAll ?? store.pendingEntries(session.id, input.branch, input.headTurnId, snapshot2);
@@ -8703,7 +8705,7 @@ function freezeNoting(store, input, config3, resultText = rawResultText, pending
     throw new Error(`${NOTING_MEMBERSHIP}entries ${exact.filter((id) => !pending.some((e) => e.id === id)).join(", ")} of the frozen batch ${exact.join(", ")} are no longer pending; nothing was re-processed`);
   const mode = input.mode ?? (config3.noting.forkModeDefault ? "fork" : "subagent");
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
-  const { prompt, instructions, tools } = fixedCost(names, input.nativeReadTool);
+  const { prompt, instructions, tools } = fixedCost(names, input.nativeReadToolTokens);
   const inheriting = (input.effectiveMode ?? mode) === "fork";
   const forkPrompt = input.forkGuidance ? `${prompt}
 
@@ -9055,6 +9057,8 @@ function admitDreaming(store, input, config3, executorId) {
 function prepareDreaming(store, input, config3, claim, path, { pool: due, range }) {
   if (store.getSession(path.sessionId).host.startsWith("cc:") && !input.toolNames)
     throw new Error("CC Dreamer launch requires exposed tool names");
+  if (input.nativeReadToolTokens !== void 0 && (!Number.isSafeInteger(input.nativeReadToolTokens) || input.nativeReadToolTokens < 0))
+    throw new Error("Invalid native Read token estimate: expected a nonnegative safe integer");
   const frozenIds = new Set(range.eventIds);
   const pending = due.pending.filter((value) => frozenIds.has(value.revisionId));
   const changed = ["Pending current knowledge:", ...pending.map((value) => value.material)].join("\n");
@@ -9114,10 +9118,7 @@ function prepareDreaming(store, input, config3, claim, path, { pool: due, range 
   };
   const text = [readingGuide(path.sessionId, names), ...Object.values(material)].join("\n\n");
   const prompt = loadPrompt("dreaming.md", names);
-  if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 || tokens(prompt) + tokens(JSON.stringify([
-    ...pricedToolDefinitions(dreamingToolDefinitions(), names),
-    ...input.nativeReadTool ? [input.nativeReadTool] : []
-  ])) + tokens(text) > input.capacity.inputTokens))
+  if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 || tokens(prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingToolDefinitions(), names))) + (input.nativeReadToolTokens ?? 0) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
   return {
     sessionId: path.sessionId,
@@ -40785,6 +40786,7 @@ var CcForegroundTools = class {
 
 // src/hosts/cc/files.ts
 var import_node_fs6 = require("node:fs");
+var import_node_crypto13 = require("node:crypto");
 var import_node_path5 = require("node:path");
 var usage = "fs read <path> | fs materialize <path> | fs grep [-i] [-n|--no-line-numbers] [-c] [-F] [-A|-B|-C <n>] [--glob <g>] [--offset <n>] [--limit <n>] [--] <pattern> [path] | fs glob <pattern>";
 var integer3 = (value, name) => {
@@ -40873,12 +40875,19 @@ function ccGrep(files, path, options) {
   const pagination2 = [appliedLimit === void 0 ? "" : `limit: ${appliedLimit}`, offset ? `offset: ${offset}` : ""].filter(Boolean).join(", ");
   return { lines, total: all.length, matches, countFiles, pagination: pagination2, appliedLimit, offset };
 }
-function materializeCcRead(directory, content) {
-  (0, import_node_fs6.mkdirSync)(directory, { recursive: true, mode: 448 });
-  const snapshot2 = (0, import_node_fs6.mkdtempSync)((0, import_node_path5.join)(directory, "read-"));
-  const path = (0, import_node_path5.join)(snapshot2, "memory.txt");
-  (0, import_node_fs6.writeFileSync)(path, content, { flag: "wx", mode: 384 });
-  return path;
+function materializeCcRead(directory, content, virtualPath) {
+  const target = virtualPath === void 0 ? (0, import_node_path5.join)((0, import_node_fs6.mkdtempSync)((0, import_node_path5.join)(directory, "read-")), "memory.txt") : (0, import_node_path5.join)(directory, ...virtualPath.slice("/tm".length).split("/").filter(Boolean), "memory.txt");
+  const parent = (0, import_node_path5.dirname)(target);
+  (0, import_node_fs6.mkdirSync)(parent, { recursive: true, mode: 448 });
+  const temporary = `${target}.${(0, import_node_crypto13.randomUUID)()}`;
+  try {
+    (0, import_node_fs6.writeFileSync)(temporary, content, { flag: "wx", mode: 384 });
+    (0, import_node_fs6.renameSync)(temporary, target);
+  } catch (error3) {
+    (0, import_node_fs6.rmSync)(temporary, { force: true });
+    throw error3;
+  }
+  return target;
 }
 function materializeCcWorkerRead(config3, reader, path, directory) {
   const memory = TraceMemory(config3.dbPath, async () => {
@@ -40903,7 +40912,9 @@ function runCcFiles(config3, nativeSessionId, [op, ...args]) {
       if (args.length !== 1) throw new Error(usage);
       const rendered = files.read(args[0]);
       if (op === "read") return rendered;
-      return { path: materializeCcRead((0, import_node_path5.join)(config3.stateDir, "rendered", validateNativeSessionId(nativeSessionId)), rendered.content) };
+      const virtual = memoryPath(args[0]);
+      if (virtual === null) throw new Error("materialize requires a /tm path");
+      return { path: materializeCcRead((0, import_node_path5.join)(config3.stateDir, "rendered", validateNativeSessionId(nativeSessionId)), rendered.content, virtual) };
     }
     if (op === "grep") {
       const { pattern, path, options } = parseGrepArgs(args);
@@ -41261,45 +41272,48 @@ var CcAgentWorker = class {
     });
     const results = [], assistantMessages = [];
     const frozenReader = { ...task.reader };
-    const renderedRoot = (0, import_node_path6.join)(this.config.stateDir, "rendered");
+    const renderedRoot = (0, import_node_path6.join)(this.worker.cwd, "rendered");
     (0, import_node_fs7.mkdirSync)(renderedRoot, { recursive: true, mode: 448 });
     const readDirectory = (0, import_node_fs7.mkdtempSync)((0, import_node_path6.join)(renderedRoot, "worker-"));
-    const rendered = /* @__PURE__ */ new Set();
+    const rendered = /* @__PURE__ */ new Map();
     const onRead = async (raw) => {
-      const event = raw;
-      const file2 = event.tool_input?.file_path;
       const deny = (reason) => ({ hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason: reason
       } });
-      if (event.tool_name !== "Read" || typeof file2 !== "string") return deny("CC worker accepts only Read of /tm");
-      const virtual = memoryPath(file2);
-      if (virtual !== null) {
-        const path = materializeCcWorkerRead(this.config, frozenReader, virtual, readDirectory);
-        rendered.add(path);
+      const event = raw;
+      const file2 = event?.tool_input?.file_path;
+      try {
+        if (event.tool_name !== "Read" || typeof file2 !== "string") return deny("CC worker accepts only Read of /tm");
+        const virtual = memoryPath(file2);
+        if (virtual !== null) {
+          const path = materializeCcWorkerRead(this.config, frozenReader, virtual, readDirectory);
+          rendered.set(path, virtual);
+          return { hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            permissionDecisionReason: "read /tm rendering",
+            updatedInput: { ...event.tool_input, file_path: path }
+          } };
+        }
+        if (!(0, import_node_path6.isAbsolute)(file2) || file2 !== (0, import_node_path6.resolve)(file2) || !rendered.has(file2)) return deny("CC worker Read is restricted to its own /tm renderings");
+        const actual = (0, import_node_fs7.realpathSync)(file2);
+        if (!actual.startsWith((0, import_node_fs7.realpathSync)(readDirectory) + import_node_path6.sep) || !(0, import_node_fs7.lstatSync)(file2).isFile() || (0, import_node_fs7.lstatSync)(file2).isSymbolicLink())
+          return deny("CC worker Read rendering is outside its own session");
         return { hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "allow",
-          permissionDecisionReason: "read frozen Trace Memory view",
-          updatedInput: { ...event.tool_input, file_path: path }
+          permissionDecisionReason: "continue /tm read"
         } };
-      }
-      if (!(0, import_node_path6.isAbsolute)(file2) || file2 !== (0, import_node_path6.resolve)(file2) || !rendered.has(file2)) return deny("CC worker Read is restricted to its own /tm snapshots");
-      let actual;
-      try {
-        actual = (0, import_node_fs7.realpathSync)(file2);
       } catch (error3) {
-        if (error3.code === "ENOENT") return deny("CC worker Read snapshot no longer exists");
-        throw error3;
+        const virtual = typeof file2 === "string" ? memoryPath(file2) ?? rendered.get(file2) : null;
+        if (virtual && error3 instanceof Error && "code" in error3 && typeof error3.code === "string") {
+          const operation = "syscall" in error3 && typeof error3.syscall === "string" ? error3.syscall : "read";
+          return deny(`${error3.code}: ${operation} '${virtual}'`);
+        }
+        return deny(error3 instanceof Error ? error3.message : String(error3));
       }
-      if (!actual.startsWith((0, import_node_fs7.realpathSync)(readDirectory) + import_node_path6.sep) || !(0, import_node_fs7.lstatSync)(file2).isFile() || (0, import_node_fs7.lstatSync)(file2).isSymbolicLink())
-        return deny("CC worker Read snapshot is outside its own session");
-      return { hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "allow",
-        permissionDecisionReason: "continue frozen Trace Memory read"
-      } };
     };
     let assistantMessagesAfterResult = [];
     const input = new CcUserInput();
@@ -42098,7 +42112,7 @@ var CcImporter = class {
 var import_node_fs8 = require("node:fs");
 var import_node_net = require("node:net");
 var import_node_path7 = require("node:path");
-var import_node_crypto13 = require("node:crypto");
+var import_node_crypto14 = require("node:crypto");
 var socketPath = (config3, token) => {
   const value = (0, import_node_path7.join)(config3.stateDir, "control", `${token.replaceAll("-", "").slice(0, 12)}.sock`);
   if (Buffer.byteLength(value) > 100) throw new Error("CC control socket path exceeds the supported Unix-domain path length; configure a shorter stateDir");
@@ -42145,7 +42159,7 @@ var closeServer = (server) => new Promise((resolve5) => {
   server.close(() => resolve5());
 });
 async function startControlServer(config3, binding, memory, bindingTimeoutMs, signal, handlers) {
-  const token = (0, import_node_crypto13.randomUUID)(), path = socketPath(config3, token);
+  const token = (0, import_node_crypto14.randomUUID)(), path = socketPath(config3, token);
   const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
   (0, import_node_fs8.mkdirSync)((0, import_node_path7.dirname)(path), { recursive: true });
   const watches = /* @__PURE__ */ new Map();
@@ -42552,11 +42566,11 @@ async function controlSession(config3, nativeSessionId, verb, timeoutMs = 2e3) {
 }
 
 // src/hosts/cc/injection.ts
-var import_node_crypto14 = require("node:crypto");
+var import_node_crypto15 = require("node:crypto");
 var import_node_fs9 = require("node:fs");
 var BEGIN = CC_INJECTION_BEGIN;
 var END = "TRACE MEMORY KNOWLEDGE END";
-var digest = (text) => (0, import_node_crypto14.createHash)("sha256").update(text, "utf8").digest("hex");
+var digest = (text) => (0, import_node_crypto15.createHash)("sha256").update(text, "utf8").digest("hex");
 var databaseIdentity = (path) => {
   const stat = (0, import_node_fs9.statSync)(path);
   return `${stat.dev}:${stat.ino}`;
@@ -42675,8 +42689,8 @@ function ccDeliveryHead(binding, memory) {
     return {
       owner,
       node: { owner, sessionId: core, ...core === null ? {} : { branch: binding.branch }, headTurnId: headTurnId2, pending },
-      at: () => !last ? headTurnId2 === null ? {} : { turnId: headTurnId2 } : "prompt" in last ? { nodeKey: last.prompt } : { nodeKey: pending.at(-1).key ?? (0, import_node_crypto14.randomUUID)(), follows: last.follows ?? unanchored() },
-      following: () => ({ nodeKey: (0, import_node_crypto14.randomUUID)(), follows: leaf ?? unanchored() }),
+      at: () => !last ? headTurnId2 === null ? {} : { turnId: headTurnId2 } : "prompt" in last ? { nodeKey: last.prompt } : { nodeKey: pending.at(-1).key ?? (0, import_node_crypto15.randomUUID)(), follows: last.follows ?? unanchored() },
+      following: () => ({ nodeKey: (0, import_node_crypto15.randomUUID)(), follows: leaf ?? unanchored() }),
       target
     };
   };
@@ -42917,7 +42931,7 @@ async function ccCompaction(config3, input) {
       const current = readBinding(config3, input.session_id);
       if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch || current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
         throw new Error("the session or its selected path changed while the compaction was built");
-      memory.store.recordKnowledgeDelivery({ owner, nodeKey: (0, import_node_crypto14.randomUUID)(), follows: leaf }, [{
+      memory.store.recordKnowledgeDelivery({ owner, nodeKey: (0, import_node_crypto15.randomUUID)(), follows: leaf }, [{
         knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
         knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
         knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0
@@ -42938,22 +42952,7 @@ async function ccDeltaInjection(config3, input, event, slice) {
 }
 
 // src/hosts/cc/read-tool.ts
-var CC_NATIVE_READ_TOOL = {
-  name: "Read",
-  description: 'Reads a file from the local filesystem.\n\n- `file_path` must be an absolute path.\n- Reads up to 2000 lines by default.\n- When you already know which part of the file you need, only read that part. This can be important for larger files.\n- Results are returned using cat -n format, with line numbers starting at 1\n- Reads images (PNG, JPG, \u2026) and presents them visually. Reads PDFs via the `pages` parameter (e.g. "1-5", max 20 pages/request; required for PDFs over 10 pages). Reads Jupyter notebooks (.ipynb) as cells with outputs.\n- Reading a directory, a missing file, or an empty file returns an error or system reminder rather than content.\n- Do NOT re-read a file you just edited to verify \u2014 Edit/Write would have errored if the change failed, and the harness tracks file state for you.',
-  parameters: {
-    $schema: "https://json-schema.org/draft/2020-12/schema",
-    type: "object",
-    properties: {
-      file_path: { description: "The absolute path to the file to read", type: "string" },
-      offset: { description: "The line number to start reading from. Only provide if the file is too large to read at once", type: "integer", minimum: 0, maximum: 9007199254740991 },
-      limit: { description: "The number of lines to read. Only provide if the file is too large to read at once.", type: "integer", exclusiveMinimum: 0, maximum: 9007199254740991 },
-      pages: { description: 'Page range for PDF files (e.g., "1-5", "3", "10-20"). Only applicable to PDF files. Maximum 20 pages per request.', type: "string" }
-    },
-    required: ["file_path"],
-    additionalProperties: false
-  }
-};
+var CC_NATIVE_READ_TOOL_TOKENS = 402;
 
 // src/hosts/cc/scheduler.ts
 var CC_NOTER_FORK_GUIDANCE = "In this Claude Code fork, {{tool.note}} and {{tool.memory}} may be deferred. Use ToolSearch to load both tools before writing.";
@@ -43181,7 +43180,7 @@ var CcTaskScheduler = class {
       capacity: execution.capacity,
       maxReadChars: CC_MAX_RESULT_CHARS,
       toolNames: ccWorkerToolNames,
-      nativeReadTool: CC_NATIVE_READ_TOOL,
+      nativeReadToolTokens: CC_NATIVE_READ_TOOL_TOKENS,
       thinkingLevel: execution.thinking,
       subagentThinkingLevel: execution.thinking,
       ...boundary ? { boundary } : {}
@@ -43790,12 +43789,12 @@ async function accountForkTranscript(path, expected, catalog, options = {}) {
 // src/hosts/cc/status.ts
 var import_node_fs11 = require("node:fs");
 var import_node_path9 = require("node:path");
-var import_node_crypto15 = require("node:crypto");
+var import_node_crypto16 = require("node:crypto");
 function statusPath(stateDir, nativeSessionId) {
   return (0, import_node_path9.join)(stateDir, "status", `${nativeSessionId}.json`);
 }
 function writeCcStatus(stateDir, status) {
-  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto15.randomUUID)()}.tmp`;
+  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto16.randomUUID)()}.tmp`;
   (0, import_node_fs11.mkdirSync)((0, import_node_path9.dirname)(target), { recursive: true });
   let descriptor;
   try {
@@ -43901,6 +43900,15 @@ async function recordCcSessionEnd(config3, input) {
     };
     if (store) await updateBindingInStoreTransaction(config3, nativeSessionId, store, close, config3.finalSyncTimeoutMs);
     else await updateBinding(config3, nativeSessionId, close, config3.finalSyncTimeoutMs);
+    try {
+      await withCcBindingLock(config3, nativeSessionId, (locked) => {
+        const current = locked.read();
+        if (current?.lastClose?.confirmed && current.nativeProcess?.pid === nativeProcess.pid && current.nativeProcess.startedAt === nativeProcess.startedAt)
+          (0, import_node_fs12.rmSync)((0, import_node_path10.join)(config3.stateDir, "rendered", nativeSessionId), { recursive: true, force: true });
+      }, config3.finalSyncTimeoutMs);
+    } catch (error3) {
+      return { confirmed: true, reason, diagnostic: `rendered /tm cleanup failed: ${error3 instanceof Error ? error3.message : String(error3)}` };
+    }
     return { confirmed: true, reason };
   } catch (error3) {
     return { confirmed: false, reason, diagnostic: error3 instanceof Error ? error3.message : String(error3) };
@@ -44742,9 +44750,11 @@ ${task.text}`, turnId: launch.turnId });
 var CC_SLICE_COUNT = 24;
 var CC_SLICE_LIMIT = 1e4;
 var CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segments, order knowledge by the header's p[0] segment number, then by position within that segment: higher segments and later items are newer. Arrival order is not recency. For claims about the same object, the newer item takes precedence until maintenance merges them.";
-var ccKnowledgeHeader = (binding) => binding.coreSession === null ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE, ccPluginToolNames);
+var ccKnowledgeHeader = (binding) => binding.coreSession === null ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
 var address = (item, sessionId) => item.kind === "knowledge" || item.kind === "state" ? `/tm/${item.address}` : item.kind === "fact" ? `/tm/F${item.factId}` : item.kind === "raw" ? `/tm/raw/S${sessionId}/${item.address}` : "";
 function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinity) {
+  if (binding.coreSession === null && items2.some((item) => item.kind === "raw"))
+    throw new Error("CC Raw transport needs a bound core session");
   const slots = Array.from({ length: CC_SLICE_COUNT }, () => ({ items: [] }));
   const omitted = [];
   let pendingRaw = 0, pendingFacts = 0, pendingFactTokens = 0, omittedKnowledge = false;
@@ -45366,7 +45376,7 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
 // src/hosts/cc/menu-config.ts
 var import_node_fs14 = require("node:fs");
 var import_node_path12 = require("node:path");
-var import_node_crypto16 = require("node:crypto");
+var import_node_crypto17 = require("node:crypto");
 
 // ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/jsonc-parser/lib/esm/impl/scanner.js
 function createScanner(text, ignoreTrivia = false) {
@@ -46744,7 +46754,7 @@ function editedCcConfig(text, id, value, capacity) {
 function saveCcConfig(path, original, updated) {
   const next = resolveCcHostConfig(JSON.parse(updated));
   if ((0, import_node_fs14.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
-  const temporary = `${path}.${process.pid}.${(0, import_node_crypto16.randomUUID)()}`;
+  const temporary = `${path}.${process.pid}.${(0, import_node_crypto17.randomUUID)()}`;
   let fd;
   try {
     fd = (0, import_node_fs14.openSync)(temporary, "wx", 384);
@@ -47096,7 +47106,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
         return { ...current, lastCompactionNotice: null };
       });
     }
-    const selection = (0, import_node_crypto17.createHash)("sha256").update(JSON.stringify({
+    const selection = (0, import_node_crypto18.createHash)("sha256").update(JSON.stringify({
       material: output?.transportItems ?? [],
       warning: output?.systemMessage ?? null,
       knowledgeAllowance: output?.transportKnowledgeAllowance ?? null

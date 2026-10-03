@@ -50,7 +50,7 @@ async function admitted(f: ReturnType<typeof fixture>, scenario: (input: Dreamin
   return { trigger, result: await f.scenarios.run(f.memory, f.target, input => scenario(input, trigger)) };
 }
 
-test("native Read description and schema count in Dreamer capacity before dispatch", async () => {
+test("native Read token estimate counts in Dreamer capacity before dispatch", async () => {
   const f = fixture();
   createDreamerTrigger(f.memory, f.target, f.fact, 1);
   let base: DreamingAgentInput | undefined;
@@ -60,18 +60,16 @@ test("native Read description and schema count in Dreamer capacity before dispat
   };
   await f.scenarios.run(f.memory, f.target, task => { base = task; return stop(task); });
   if (!base) throw new Error("missing baseline Dreamer dispatch");
-  const nativeReadTool = { name: "Read", description: "Read native files and continue by line. ".repeat(50),
-    parameters: { type: "object", properties: { file_path: { type: "string", description: "Absolute source path." } }, required: ["file_path"] } };
+  const nativeReadToolTokens = 402;
   const definitions = pricedToolDefinitions(dreamingToolDefinitions(), canonicalToolNames);
-  const price = tokens(base.prompt) + tokens(JSON.stringify([...definitions, nativeReadTool])) + tokens(base.text);
-  expect(price).toBeGreaterThan(tokens(base.prompt) + tokens(JSON.stringify(definitions)) + tokens(base.text));
-  const bounded = { ...f.target, nativeReadTool, capacity: { inputTokens: price - 1, prefixTokens: 0 } };
+  const price = tokens(base.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(base.text);
+  const bounded = { ...f.target, nativeReadToolTokens, capacity: { inputTokens: price - 1, prefixTokens: 0 } };
   const runs = f.store.listRuns(f.session.id).length;
   await expect(f.scenarios.run(f.memory, bounded, () => { throw new Error("over-cap dispatch"); })).rejects.toThrow(/Dreaming capacity/);
   expect(f.store.listRuns(f.session.id)).toHaveLength(runs);
   const exact = { ...bounded, capacity: { inputTokens: price, prefixTokens: 0 } };
   await f.scenarios.run(f.memory, exact, task => {
-    expect(tokens(task.prompt) + tokens(JSON.stringify([...definitions, nativeReadTool])) + tokens(task.text)).toBe(price);
+    expect(tokens(task.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(task.text)).toBe(price);
     return stop(task);
   });
   expect(f.store.listRuns(f.session.id)).toHaveLength(runs + 1);

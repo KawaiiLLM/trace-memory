@@ -1,6 +1,8 @@
 import { expect, test, vi } from "vitest";
 import { host, reply, notingFact, type Reply } from "./test-host.ts";
 import { noteAndMemory, stableForkFixture as forkFixture, noteBatch, say, toolResults, worker } from "./native-fixture.ts";
+import { Store } from "../../../src/core/store/index.ts";
+import { fact, knowledge } from "../../support/seed.ts";
 
 // Ticket 20c — compaction and post-compaction worker mode, at the host boundary. Core decides between
 // the custom replacement and the native delegation over its own frozen snapshot (core/api/read.test.ts);
@@ -50,32 +52,22 @@ test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary unde
   } finally { await h.dispose(); }
 });
 
-test("73/118: no room for a Raw omission receipt leaves all entries pending, without delegation or worker", async () => {
-  // Many bounded views exceed the tiny Raw window and its shared allowance. A /tm receipt also
-  // exceeds that window, so none of its entries or receipts appear in the replacement; compaction
-  // still starts no worker. The failing Noter below only keeps its own entries pending.
+test("73: many tiny entries over the Raw window truncate to the newest span rather than delegate, and compact starts no worker", async () => {
   const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "dreaming.triggerTokens": 1,
-    "compaction.factsTokens": 50, "compaction.rawTokens": 50, "compaction.sharedAllowanceTokens": 1 });
+    "compaction.factsTokens": 50, "compaction.rawTokens": 600, "compaction.sharedAllowanceTokens": 1 });
   try {
     h.memory.setKnowledgeBudget("global", 0);
     h.memory.setKnowledgeBudget("project", 0);
     h.memory.setKnowledgeBudget("session", 0);
-    failing(h); // repeated Noter failures leave entries pending; unrelated to compact's own truncation
+    failing(h);
     for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i} ` + "word ".repeat(250)); await h.answer(); await h.emit("agent_settled"); await h.drain(); }
-    // 32c: repeated failures now disable enrollment. Explicitly resume before testing the
-    // compaction boundary itself; this imports the disabled interval and resets its streak.
     await h.commands.get("trace").handler("on", h.ctx);
     expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
     const runsBefore = h.memory.store.listRuns(1).length;
     const pendingBefore = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
-    // Fifty tokens cannot fit this multi-path omission receipt; an empty Raw window emits no receipt.
-    expect(result.compaction.summary).toContain("Memory is at /tm:");
-    expect(result.compaction.summary).not.toContain("earlier entries omitted from the Raw window");
-    expect(result.compaction.summary).not.toContain("\nRaw:\n");
+    expect(result.compaction.summary).toContain("earlier entries omitted from the Raw window");
     expect(h.notices.some(n => n.includes("compaction preparing bounded entry views"))).toBe(true);
-    // The foreground truncation warning comes once Pi appends the carrier: what was omitted, and
-    // that it stays pending.
     expect(h.notices.some(n => n.includes("compaction omitted"))).toBe(false);
     const entry = { id: "compact", parentId: h.entries.at(-1)!.id, timestamp: "now", type: "compaction",
       summary: result.compaction.summary, firstKeptEntryId: "", tokensBefore: 100_000, details: result.compaction.details };
@@ -85,15 +77,77 @@ test("73/118: no room for a Raw omission receipt leaves all entries pending, wit
     expect(warning).toContain("pending Raw");
     expect(warning).toContain("omitted Raw remains pending for Noting.");
     expect(warning).not.toMatch(/Consolidation|unconsolidated/);
-    // Compact itself never runs a worker (with or without recovery) and never touches progress.
     expect(h.memory.store.listRuns(1)).toHaveLength(runsBefore);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pendingBefore);
-    // Pi persists the (truncated) compaction entry; the next fork-mode Noter is downgraded because
-    // the compaction dropped entries from the inherited context, same as any other truncated summary.
     await h.emit("session_compact", { compactionEntry: h.compaction(result.compaction.summary), fromExtension: true });
     await work(h, long("more"));
     expect(response(h).requestedMode).toBe("fork");
+    expect(lastRun(h).mode).toBe("subagent");
+    expect(String(response(h).fallbackReason)).toContain("Raw availability: entry ");
   } finally { await h.dispose(); }
+});
+
+test("73: a Raw window too small for its omission receipt still completes custom compaction and warns", async () => {
+  const h = host({ ...quiet, "compaction.factsTokens": 1, "compaction.rawTokens": 1, "compaction.sharedAllowanceTokens": 1 });
+  try {
+    h.memory.setKnowledgeBudget("global", 0);
+    h.memory.setKnowledgeBudget("project", 0);
+    h.memory.setKnowledgeBudget("session", 0);
+    await h.prompt(long("PENDING")); await h.answer();
+    const pending = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
+    expect(pending.length).toBeGreaterThan(0);
+    const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
+    expect(result.compaction.summary).not.toContain("earlier entries omitted from the Raw window");
+    expect(result.compaction.details.traceMemory).toBeDefined();
+    expect(h.notices.some(n => n.includes("compaction omitted"))).toBe(false);
+    const entry = { id: "compact-small", parentId: h.entries.at(-1)!.id, timestamp: "now", type: "compaction",
+      summary: result.compaction.summary, firstKeptEntryId: "", tokensBefore: 100_000, details: result.compaction.details };
+    h.entries.push(entry as never); h.allEntries.push(entry as never);
+    await h.emit("session_compact", { compactionEntry: entry });
+    expect(h.notices.find(n => n.includes("compaction omitted"))).toContain("pending Raw");
+    expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pending);
+  } finally { await h.dispose(); }
+});
+
+test("118: genuinely empty material delegates without a custom delivery", async () => {
+  const h = host(quiet);
+  try {
+    await h.emit("session_start"); // no reply, source, fact or knowledge has been created
+    const deliveries = vi.spyOn(Store.prototype, "recordKnowledgeDelivery");
+    expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } })).toBeUndefined();
+    expect(deliveries).not.toHaveBeenCalled();
+    expect(h.notices.some(n => n.includes("compaction omitted"))).toBe(false);
+    expect(h.memory.store.listSessions()).toEqual([]);
+  } finally { vi.restoreAllMocks(); await h.dispose(); }
+});
+
+test("118: a failed knowledge delivery still completes a capacity-omitted custom replacement", async () => {
+  const h = host({ ...quiet, "compaction.factsTokens": 1, "compaction.rawTokens": 1, "compaction.sharedAllowanceTokens": 1 });
+  try {
+    await h.prompt("establish session"); await h.answer();
+    const path = h.memory.store.knowledgePath(1, "main", 1);
+    const source = h.memory.store.getSourceEntry(h.memory.store.sourcePath(1, "main", 1)[0]!.id)!;
+    const support = fact(h.memory, path, "Session established", [{ entry: source, text: "establish session" }]);
+    const created = knowledge(h.memory.store, path, "project", "constraint", [support.id], "KNOWLEDGE_BEFORE_FAILED_DELIVERY");
+    const pending = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
+    expect(pending.length).toBeGreaterThan(0);
+    // The extension and the observer own separate Stores; inject at their shared writer seam.
+    const deliveries = vi.spyOn(Store.prototype, "recordKnowledgeDelivery").mockImplementationOnce(() => { throw new Error("injected delivery failure"); });
+    const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
+    expect(deliveries).toHaveBeenCalledTimes(1);
+    expect(deliveries.mock.calls[0]![1][0]!.knowledgeCommitIds).toContain(created.commit);
+    expect(h.notices.some(n => n.includes("injected delivery failure"))).toBe(true);
+    expect(result.compaction.summary).toContain("Memory is at /tm");
+    expect(result.compaction.summary).not.toContain("KNOWLEDGE_BEFORE_FAILED_DELIVERY");
+    expect(result.compaction.summary).not.toContain("earlier entries omitted from the Raw window");
+    expect(result.compaction.details.traceMemory.supplied).toMatchObject({ entries: [], factIds: [], knowledgeCommitIds: [] });
+    expect(result.compaction.details.traceMemory.composition).toMatchObject({ knowledge: 0, facts: 0, raw: 0 });
+    expect(result.compaction.details.traceMemory.prompt).toBeUndefined();
+    const entry = h.compaction(result.compaction.summary);
+    await h.emit("session_compact", { compactionEntry: entry });
+    expect(h.notices.find(n => n.includes("compaction omitted"))).toContain("pending Raw");
+    expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pending);
+  } finally { vi.restoreAllMocks(); await h.dispose(); }
 });
 
 test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter, a concurrent commit survives it, and no summary re-enters the source queue", async () => {
