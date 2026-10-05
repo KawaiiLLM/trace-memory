@@ -116,6 +116,26 @@ test.each(["update", "archive"] as const)("64b: empty-support %s materializes th
   if (result.ok) expect(f.store.knowledgeRevision(result.committed[0]!.commit)?.supports).toEqual(f.content.supports);
 });
 
+test.each(["update", "archive"] as const)("inherited cross-project supports do not block a Dreamer empty-support %s", op => {
+  const f = fixture();
+  const sibling = seedSession(f.store, f.store.getSession(f.target.sessionId)!.projectId, "sibling");
+  const turn = f.store.appendTurn({ sessionId: sibling.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
+  const source = seedEntry(f.store, sibling.id, turn.id, "evidence", "user", "evidence");
+  f.store.selectSourcePath(sibling.id, "main", [source.id]);
+  const cited = legacyFact(f.store, { sessionId: sibling.id, branch: "main", headTurnId: turn.id },
+    [{ entry: source, address: `T${turn.id}#user` }], "sibling rule", "decision");
+  const item = seedKnowledge(f.store, f.target, "project", "constraint", [cited.id], "project rule");
+  f.store.db.prepare("UPDATE sessions SET project_id = ? WHERE id = ?")
+    .run(f.store.createProject({ name: "moved", declaredBy: "mark" }).id, sibling.id); // the cited fact now belongs to another project
+  const run = f.store.bindDreamingRun(f.run);
+  const operation = op === "archive" ? { ...f.archive, knowledgeId: item.knowledgeId, baseCommit: item.commit }
+    : { op, knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "maintained rule", category: "constraint" as const,
+      scope: "project" as const, supports: [], topics: [], reason: "Maintenance rewrite.", createdAt: "now" };
+  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [operation] });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  if (result.ok) expect(f.store.knowledgeRevision(result.committed[0]!.commit)).toMatchObject({ op, supports: [cited.id] });
+});
+
 test("64b: empty-support merge unions both exact parents and split copies its exact parent", () => {
   const merged = fixture();
   const mergedEntry = merged.store.getSourceEntry(merged.target.triggerEntryId!)!;

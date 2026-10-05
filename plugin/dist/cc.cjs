@@ -4352,7 +4352,7 @@ ${annotation}`;
       const problem = this.archiveProblem(op);
       if (problem) return { ok: false, reason: problem };
     }
-    const bad = this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId));
+    const bad = op.supports.length ? this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId)) : null;
     if (bad) return { ok: false, reason: bad };
     const insertRevision = (knowledgeId3, parentId, text2, category, topics, revisionOp) => {
       if (!isKnowledgeCategory(category) && !(revisionOp === "archive" && category === prior?.category))

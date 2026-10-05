@@ -3861,7 +3861,8 @@ export class Store {
       const problem = this.archiveProblem(op);
       if (problem) return { ok: false, reason: problem };
     }
-    const bad = this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId));
+    // 123: only supports this operation writes are checked; inherited parent supports stay as visible knowledge had them.
+    const bad = op.supports.length ? this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId)) : null;
     if (bad) return { ok: false, reason: bad };
     const insertRevision = (knowledgeId: number, parentId: number | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp) => {
       if (!isKnowledgeCategory(category) && !(revisionOp === "archive" && category === prior?.category))
