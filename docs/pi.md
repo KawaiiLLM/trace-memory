@@ -114,9 +114,9 @@ from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a n
 `dreaming.triggerTokens` is configurable again: its default is 10,000, compared with the session's
 pending weight summed across its pools (104). Consolidator Knowledge and foreground publication may use the Knowledge base plus
 the shared allowance. Dreamer uses that same maximum for its Changed-plus-reference input, while a
-single due pool's Changed range is capped by that pool's budget. Database budget edits accept exact
+run's Changed range over all of the session's pools is capped at 10,000 rendered tokens. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
-connections to that database. Budgets cap a run's Changed range and decide its success, not writes: an over-budget pool
+connections to that database. Budgets decide a run's success, not writes: an over-budget pool
 is scheduled only when the session overflows its window or its summed pending reaches the trigger (104). Running Dreamer and Consolidator
 requests keep their frozen admitted capacities; later admissions use the current policy. Actual
 provider context capacity remains an independent hard gate.
@@ -293,9 +293,10 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   project and this session together. Pending is each pool's current visible, non-archived revision lacking a
   `(pool, revision)` processing record, one revision per identity at its full rendered size. A run is
   due when the pools' total exceeds the Knowledge base plus the shared allowance (30,000 by default), or
-  when their nonempty pending, summed, reaches `dreaming.triggerTokens` (104). One run handles one pool,
-  the one most over its budget, else the one with the most pending weight; its Changed range is capped at that pool's full budget,
-  4,000 / 15,000 / 1,000 by default. Changed material and current same-scope references share the
+  when their nonempty pending, summed, reaches `dreaming.triggerTokens` (104). One run covers all three
+  pools (126): their pending items, oldest first across the pools, fill one Changed range of at most 10,000
+  rendered tokens, and the rest stays pending. It succeeds only when every pool ends within its budget,
+  4,000 / 15,000 / 1,000 by default. Changed material and current references of the three pools share the
   30,000-token Knowledge-base-plus-shared-allowance window; direct facts have a separate 10,000-token cap.
   There is no automatic Raw block or `note` tool.
 
@@ -1434,11 +1435,11 @@ admitted as before: a miss never turns the requested fork into a subagent.
 
 Three terminal business failures of one **logical task** persistently disable its target's memory.
 The key is target session, phase and stable oldest selected backlog item: a source entry for Noting,
-the first fact in Consolidation order, or, since 104, the Dreamer's pool. A new leaf,
+the first fact in Consolidation order; since 126 the Dreamer's key is its session alone. A new leaf,
 a growing tail, another executor or partial Dreamer edits do not reset it. Cancellation is not a
 business failure. Dreamer ranges end once: processing covers skips and own output, leaving untouched
-material pending. A Dreamer run that times out, ends over its pool's budget or leaves a frozen
-version undeliberated is a failure of its pool. Ordinary worker
+material pending. A Dreamer run that times out, ends with any of the session's pools over its budget
+or leaves a frozen version undeliberated is a failure of the session's Dreamer task. Ordinary worker
 completion starts no next task beyond the Dreamer check after a successful run; later eligible entries supply new opportunities (compaction no
 longer runs recovery tasks: 73). Manual catchup alone rechecks all phases after its own successful
 completions.

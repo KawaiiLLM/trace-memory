@@ -38,7 +38,7 @@ The [entry-address contract](unified-entry.md) supersedes older ticket descripti
 - store/   SQLite: global ids, sessions, project attribution, facts, knowledge, knowledge revisions, run records.
 - noting/    freeze the task material, provide tools, record the last provider request and final text.
 - api/tools.ts  role-bound tools; atomic note/memory validation and commit; Dreamer's read-only check.
-- dreaming/  freeze one due Knowledge pool, provide maintenance tools, and record terminal pool consumption.
+- dreaming/  freeze the session's Knowledge pools, provide maintenance tools, and record terminal pool consumption.
 - render/  one renderer for noting material, compaction tail, branch summary, trace; XML injection blocks.
 - render/material.ts  the shared material contract and the block layout of every consumer (20a).
 - prompts/ noting.md, dreaming.md — the live stage prompts, each declaring the shared memory-model blocks it includes (`shared/model.md`, `facts.md`, `knowledge.md` — definitions; `admission.md`, `atomicity.md`, `evidence.md`, `grounding.md`, `identity.md`, `authority.md`, `protection.md`, `body.md`, `reading.md` — principles; `formats.md`, `live.md` — inputs) at `<!-- include: name -->` markers that `load.ts` splices in — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
@@ -65,24 +65,25 @@ visible as requested-versus-actual.
 
 Both hosts check Noting and Dreaming once at each main turn end, admitting at most one run per phase under the existing seats and claims. Entry ingestion and ordinary run completion start no automatic check. A busy phase is skipped; turns that pass while it runs accumulate no owed runs.
 
-Three consequences are **derived interpretations** of 105, not additional maintainer quotations: both due phases may start under the existing rules without a new ordering rule; a failed automatic task may retry at a later turn end; explicit manual catchup retains its existing drain and completion checkpoints. Three consecutive business failures still disable memory. Thresholds, batch limits, pool selection, project-declaration checks and closed-session borrowing are unchanged.
+Three consequences are **derived interpretations** of 105, not additional maintainer quotations: both due phases may start under the existing rules without a new ordering rule; a failed automatic task may retry at a later turn end; explicit manual catchup retains its existing drain and completion checkpoints. Three consecutive business failures still disable memory. Thresholds, batch limits, project-declaration checks and closed-session borrowing are unchanged.
 
 Fork eligibility is evaluated at that checkpoint, without an earlier reserved seat or a wait for a future hook. Core checks the inherited input plus its increment against the reported capacity. Missing inherited sources or an explicit pre-start refusal use the existing fresh runner and record the reason; a started or ambiguous fork failure is not a fresh fallback. CC accepts originals only in a compaction carrier as a fresh case; no persistent Raw/carrier association is added. Pi's existing coverage rules remain unchanged.
 
 ## Dreamer execution
 
-Dreaming maintains one due Knowledge pool in a fresh subagent. The three pool identities are
+Dreaming maintains a session's Knowledge pools in a fresh subagent. The three pool identities are
 `global`, `project:<id>` and `session:<id>`. At the automatic checkpoint above, the host checks the
 session's visible pools together. Pending membership includes the current visible revision of each
 identity without a `(pool, revision)` processing record, including archives; archives remain excluded
 from pool size. Intermediate revisions do not accumulate weight. A run is due for the session (104) when its pools' total size
 exceeds the Knowledge base plus the shared allowance, or when their nonempty pending weight, summed,
-reaches `dreaming.triggerTokens`. It takes the pool most over its own budget, else the pool with the
-most pending weight. Ordinary completion starts no further run; the next main turn end checks afresh.
+reaches `dreaming.triggerTokens`. A run covers all three pools (126); which condition made it due
+does not change what it does. Ordinary completion starts no further run; the next main turn end checks afresh.
 Explicit manual catchup retains its own completion checkpoints.
 
-Each run freezes one due pool and an oldest eligible prefix under that pool's soft batch budget.
-The first item is included even when its complete framing exceeds the batch budget; later items wait.
+Each run freezes the pending versions of all three pools together, oldest first across them, up to
+10,000 rendered tokens in total; the rest stays pending. Versions an open range of a live claim already
+reserved are skipped. An oldest item that cannot fit leaves the run's pending in place.
 The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens, so the overflow window
 is 30,000 with the default 10,000 shared allowance. One pool over its budget within that window
 triggers nothing by itself. There is one database-wide Dreamer seat. The ordinary target claim,
@@ -140,13 +141,16 @@ named survivor or cites evidence that the item is obsolete, contradicted, comple
 when over budget, first remove redundancy and reliably retrievable detail whose omission harms no
 recognition, understanding, judgement or continuation; preserve confirmed next steps and execution
 boundaries. Then coarsen suitable related topics, and only then archive lower-value knowledge if
-needed, checking until the frozen pool fits (122). Categories have no fixed priority.
+needed, checking until every pool fits (122). Categories have no fixed priority.
 Budget excess is never a write gate.
 
-`check` reports current pool sizes, budgets and blockers: operation failures, the frozen pool over its
-budget and frozen versions neither operated on nor skipped. A run succeeds only with no blocker (104);
-a timeout never succeeds.
-A run records `(pool, revision)` only for frozen versions explicitly skipped and revisions it wrote.
+`check` reports current pool sizes, budgets and blockers: operation failures, any of the session's
+pools over its budget and frozen versions neither operated on nor skipped. A run succeeds only with no
+blocker (126); a timeout never succeeds. The writable set is the three pools; a merge's parents and
+result still share one scope.
+A run records `(pool, revision)` only for frozen versions explicitly skipped, each in its own pool,
+and revisions it wrote. A frozen version that a sibling session's project declaration moved out of the
+session's pools mid-run is not recorded; it stays pending in its new pool.
 Skipped versions use the existing processing table; terminal settlement adds own output and closes the
 range, including on failure or cancellation. Untouched frozen versions remain pending. No skip table
 or extra atomicity mechanism is introduced. Partial writes survive; a version already updated does
@@ -157,13 +161,13 @@ Dreamer has no tool-round ceiling. The shared `dreaming.timeoutMs` default is 1,
 on both hosts, including Pi where this adds a new time bound. Expiry closes writes, fails the run with
 the bound in its reason, settles partial work and releases its claim; it is not a completed pass.
 
-At the start of a run, when the frozen pool's size without this run's pending items already exceeds
-its budget, the task material states the pool, pending, remainder and budget numbers and directs the
-run to reduce the already-processed knowledge first under the **Over budget** principle, before
-deliberating the pending items (103). Both measures come from the same pool projection `check`
+At the start of a run, for each pool whose size without this run's pending items already exceeds its
+budget, the task material states the pool, pending, remainder and budget numbers and directs the run to
+reduce that pool's already-processed knowledge first under the **Over budget** principle, before
+deliberating the pending items (103, per pool since 126). Both measures come from the same pool projection `check`
 reports from; the remove, coarsen, archive order applies inside either budget-reduction phase (122).
 
-A run reduces its frozen pool until it fits; one pool's excess alone makes no session due.
+A run reduces each pool until it fits; one pool's excess alone makes no session due.
 Project relabelling creates no processing event or knowledge revision. It removes destination-pool
 processing records only for moved-in project versions, so returning versions become pending again.
 Unrelated destination records and global/session records are unchanged; order follows revision creation.
@@ -184,7 +188,7 @@ Run `npm test` for the Vitest suite, `npm run typecheck` for TypeScript, and
 
 ## Logical-task outcomes (32c)
 
-A logical task is `(target session, phase, backlog key)`, independent of its run ids. Noting uses the first frozen source entry and Consolidation the first selected fact (`head`); since 104 the Dreamer uses its pool (`pool`), whatever each run's range holds. Existing rows keep their revision `head` and no pool. A Dreamer range is terminal after one run; a catchup retry admits a new range and preserves prior committed work.
+A logical task is `(target session, phase, backlog key)`, independent of its run ids. Noting uses the first frozen source entry and Consolidation the first selected fact (`head`); since 126 the Dreamer's task is its session alone, stored under the fixed pool key `all`, whatever each run's range holds. Rows before 104 keep their revision `head` and no pool; executions from 104 to 126 keep the pool they ran under. The 126 upgrade folds a session's per-pool Dreamer streaks into its one streak at the largest count, in the schema transaction. A Dreamer range is terminal after one run; a catchup retry admits a new range and preserves prior committed work.
 
 Ticket 86's one-time normal-open upgrade clears only legacy Dreamer failure counters, whose heads used range IDs and could collide with revision IDs. SQLite `user_version = 1` records completion in the same transaction; reopening preserves new counters. N/C counters, run/execution audit and enrollment are unchanged. Historical execution heads retain their original meaning; they are not rewritten.
 
