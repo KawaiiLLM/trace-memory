@@ -418,10 +418,12 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     await session.waitForIdle();
     // A native prompt includes the whole tool loop and provider retries. Only now is this a pass
     // end. The same child, counters and retry accounting survive the one system-generated repair.
-    if (task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted" &&
-        (task.kind === "dreaming" || (terminal && terminal.stopReason !== "length" && !terminal.errorMessage))) {
-      const followup = task.passEnd(rounds);
-      if (followup && (task.kind === "noting" || task.maxToolRounds === 0 || rounds < task.maxToolRounds)) {
+    if (task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted") {
+      // A truncated first pass is a failed pass: the Dreamer is still asked for its round count, but
+      // only a normally ended pass gets a follow-up, so the failure stays the run's outcome (125).
+      const normal = terminal !== undefined && terminal.stopReason !== "length" && !terminal.errorMessage;
+      const followup = task.kind === "dreaming" || normal ? task.passEnd(rounds) : undefined;
+      if (followup && normal && (task.kind === "noting" || task.maxToolRounds === 0 || rounds < task.maxToolRounds)) {
         // A new public prompt reapplies before_agent_start. An idle custom-message turn skips it,
         // so Pi's next-turn refresh would replace the worker instructions with its base prompt.
         // The feedback identifies itself as host-generated, not evidence, in this same child log.

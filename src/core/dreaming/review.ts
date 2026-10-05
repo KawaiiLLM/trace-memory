@@ -26,13 +26,18 @@ export function renderDreamingReview(store: Store, runId: number | undefined, bl
   const latest = (knowledgeId: number) => address(own.get(knowledgeId)!.at(-1)!);
   const blocks = [...own].flatMap(([knowledgeId, revisions]) => {
     const gone = replaced.get(knowledgeId);
-    if (gone) return [`${address(gone.last)} (${gone.op === "merge" ? "merged into" : "split into"} ${[...gone.by].map(latest).join(", ")}):\n[-${gone.last.text}-]`];
-    const last = revisions.at(-1)!;
+    const first = revisions[0], parent = first?.parentId == null ? undefined : store.knowledgeRevision(first.parentId);
+    // The version this run started from; the item's last version when the run had no revision of it.
+    const start = first === undefined ? gone?.last : parent?.knowledgeId === knowledgeId ? parent : undefined;
+    const last = revisions.at(-1) ?? gone!.last;
+    // What leaves the pool is the body the run started from, not a later rewrite of it.
+    const removed = `[-${(start ?? last).text}-]`;
+    if (gone) return [`${address(gone.last)} (${gone.op === "merge" ? "merged into" : "split into"} ${[...gone.by].map(latest).join(", ")}):\n${removed}`];
     if (last.op === "archive")
-      return [`${address(last)} (archive: ${last.archiveKind}; reason: ${last.reason}):\n${last.archiveKind === "budget" ? `[-${last.text}-]` : last.text}`];
-    const start = revisions[0]!.parentId === null ? undefined : store.knowledgeRevision(revisions[0]!.parentId);
-    if (start?.knowledgeId !== knowledgeId)
-      return [`${address(last)} (${start ? `split from K${start.knowledgeId}` : "new"}):\n{+${last.text}+}`];
+      return [`${address(last)} (archive: ${last.archiveKind}; reason: ${last.reason}):\n${last.archiveKind === "budget" ? removed
+        : `${start ? `${removed}\n` : ""}archive text: ${last.text}`}`];
+    if (start?.op === "archive") return [`${address(last)} (restored from archive):\n{+${last.text}+}`];
+    if (!start) return [`${address(last)} (${parent ? `split from K${parent.knowledgeId}` : "new"}):\n{+${last.text}+}`];
     const bodyChanged = start.text !== last.text;
     if (!bodyChanged && start.category === last.category && start.scope === last.scope &&
         JSON.stringify(start.topics) === JSON.stringify(last.topics)) return [];

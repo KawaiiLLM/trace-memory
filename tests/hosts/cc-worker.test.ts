@@ -16,6 +16,7 @@ import { canonicalToolNames } from "../../src/core/prompts/tool-names.ts";
 import { CcTaskScheduler as CoreCcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import type { CcReconcileResult } from "../../src/hosts/cc/importer.ts";
 import { TEST_CC_VERSION } from "../support/cc-version.ts";
+import { fact as seedFact, knowledgeBatch } from "../support/seed.ts";
 
 type FixtureProjection = Omit<CcReconcileResult, "selectedCount" | "selectedTailId" | "selectedAppendedEntryIds">;
 // Scheduler-only fixtures vary source selection independently. Supply the importer-owned header
@@ -1748,14 +1749,11 @@ test("production MCP D gets the end review after its first pass; its second-pass
   const project = memory.store.createProject({ name: "cc-dreamer-review", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
   const target = append(memory, session.id, "source", "Durable CC evidence");
-  const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" },
-    facts: [{ turnId: target.turn.id, text: "Durable CC evidence", entryIds: [target.entry.id], source: [`T${target.turn.id}#E1`], createdAt: "now" }] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{
-    op: "create", handle: "$rule", author: "fixture", text: "Durable constraint", category: "constraint", scope: "project",
-    supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
-  if (!created.ok) throw new Error(created.problems.join("; "));
-  const item = created.committed[0]!, firstTag = `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, item.commit)}`;
+  const path = { sessionId: session.id, branch: "main", headTurnId: target.turn.id };
+  const evidence = seedFact(memory, path, "Durable CC evidence", [{ entry: memory.store.hydrateSourceEntries([target.entry.id])[0]!, text: "Durable CC evidence" }]);
+  const item = knowledgeBatch(memory.store, path, [{ scope: "project", category: "constraint", supports: [evidence.id], text: "Durable constraint" }],
+    { kind: "manual", createdAt: "now" }).committed[0]!;
+  const firstTag = `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, item.commit)}`;
   const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: target.turn.id, triggerEntryId: target.entry.id,
     model: "claude-sonnet-4-5", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { hydrate, sourceSeededMemory, type DreamingAgentInput } from "../../source-fixture.ts";
-import { fact as seedFact } from "../../support/seed.ts";
+import { archive, fact as seedFact, knowledgeBatch } from "../../support/seed.ts";
 
 const memories: { close(): void }[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -12,7 +12,7 @@ const invalidReason = "The rule no longer holds: the user corrected its basis; a
 /** A pool of pending project knowledge, every item due, and a fake provider that plays the host's
  * pass protocol: first pass, then the end review once (`passEnd`) and, if it was sent, a second pass. */
 function pool(bodies: string[], pass: { first(task: DreamingAgentInput, tool: Tool, items: Item[]): void;
-  second?(task: DreamingAgentInput, tool: Tool, items: Item[], review: string): void }) {
+  second?(task: DreamingAgentInput, tool: Tool, items: Item[], review: string): void }, archived: number[] = []) {
   const reviews: (string | undefined)[] = [];
   let items!: Item[];
   const memory = sourceSeededMemory(":memory:", async raw => {
@@ -34,11 +34,13 @@ function pool(bodies: string[], pass: { first(task: DreamingAgentInput, tool: To
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
   const user = hydrate(store.listSourceEntries(session.id, turn.id), store).find(entry => entry.role === "user")!;
   const evidence = seedFact(memory, target, "Evidence", [{ entry: user, text: "User gave evidence" }]).id;
-  const created = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" },
-    operations: bodies.map((text, n) => ({ op: "create" as const, handle: `$${n}`, author: "test", category: "constraint" as const,
-      scope: "project" as const, topics: [], supports: [evidence], reason: "fixture", createdAt: "now", text })) });
-  if (!created.ok) throw new Error(created.problems.join("; "));
-  items = created.committed.map(({ knowledgeId, commit }) => ({ knowledgeId, tag: tagOf(knowledgeId, commit), skip: `K${knowledgeId}@v1` }));
+  const created = knowledgeBatch(store, target, bodies.map(text => ({ scope: "project" as const, category: "constraint" as const,
+    supports: [evidence], text })), { kind: "manual", createdAt: "now" });
+  // An item archived before the run is still pending for it, addressed by its archive version.
+  for (const index of archived) { const { knowledgeId, commit } = created.committed[index]!;
+    created.committed[index] = { op: "archive", knowledgeId, commit: archive(store, target, knowledgeId, commit, [evidence], "budget") }; }
+  items = created.committed.map(({ knowledgeId, commit }) => ({ knowledgeId, tag: tagOf(knowledgeId, commit),
+    skip: `K${knowledgeId}@v${store.versionOrdinal(knowledgeId, commit)}` }));
   function tagOf(knowledgeId: number, commit: number) { return `K${knowledgeId}#${store.versionTag(knowledgeId, commit)}`; }
   /** The run's latest version of an item, as the model would address it after the receipt. */
   const current = (item: Item) => {
@@ -47,6 +49,11 @@ function pool(bodies: string[], pass: { first(task: DreamingAgentInput, tool: To
   };
   return { memory, store, target, reviews, items: () => items, current, run: () => memory.dream(target) };
 }
+/** The two sections of a review by structure: the blockers and the change blocks, without the closing instruction. */
+const sections = (review: string) => {
+  const [head, rest] = review.split("\n\nKnowledge changes committed in this run:\n") as [string, string];
+  return { blockers: head.split("\n\nBlockers:\n")[1]!, changes: rest.slice(0, rest.lastIndexOf("\n\n")) };
+};
 type Tool = (name: "memory" | "check", input: unknown) => any;
 type Item = { knowledgeId: number; tag: string; skip: string };
 const skipAll = (items: Item[]) => ({ operations: [], skipped: items.map(item => ({ knowledge: item.skip, because: "Reviewed unchanged" })) });
@@ -65,14 +72,14 @@ test("the review is sent once after the first pass and no later pass end sends a
 test("both parts render, with None. for a run that changed nothing and has no blocker", async () => {
   const p = pool(["Rule A body."], { first: (_task, tool, items) => ok(tool("memory", skipAll(items))) });
   await p.run();
-  expect(p.reviews[0]).toContain("Blockers:\nNone.\n\nKnowledge changes committed in this run:\nNone.\n\nCheck each change against your Principles");
+  expect(sections(p.reviews[0]!)).toEqual({ blockers: "None.", changes: "None." });
 });
 
 test("the blockers are the run's check blockers, one per line", async () => {
   const p = pool(["Rule A body.", "Rule B body."], { first: () => {} });
   await p.run();
-  const [, blockers, changes] = p.reviews[0]!.split(/\n\n(?:Knowledge changes committed in this run:\n)?/);
-  expect(blockers).toMatch(/^Blockers:\nfrozen versions not deliberated: K\d+@v1, K\d+@v1$/);
+  const { blockers, changes } = sections(p.reviews[0]!);
+  expect(blockers).toMatch(/^frozen versions not deliberated: K\d+@v1, K\d+@v1$/);
   expect(changes).toBe("None.");
 });
 
@@ -119,7 +126,7 @@ test("each operation kind renders as specified: merge, split, invalid and budget
   expect(result.outcome, JSON.stringify(result)).toBe("success");
   const [survivor, absorbed, parent, obsolete, budget, category] = p.items();
   const store = p.store, tag = (item: Item) => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, store.listKnowledgeRevisions(item.knowledgeId).at(-1)!.id)}`;
-  const blocks = p.reviews[0]!.split("Knowledge changes committed in this run:\n")[1]!.split("\n\nCheck each change")[0]!.split("\n\n");
+  const blocks = sections(p.reviews[0]!).changes.split("\n\n");
   const byHead = (item: Item) => blocks.find(block => block.includes(`K${item.knowledgeId}#`))!;
   expect(blocks).toHaveLength(8);
   const survivorBlock = blocks.find(block => block.startsWith(`[${tag(survivor!)}]`))!;
@@ -127,7 +134,7 @@ test("each operation kind renders as specified: merge, split, invalid and budget
   expect(byHead(absorbed!)).toBe(`${absorbed!.tag} (merged into ${tag(survivor!)}):\n[-${bodies[1]}-]`);
   expect(byHead(parent!)).toMatch(new RegExp(`^${parent!.tag} \\(split into K\\d+#[a-z]+, K\\d+#[a-z]+\\):\\n\\[-${bodies[2]}-\\]$`));
   expect(blocks.filter(block => /\(split from K\d+\)/.test(block)).map(block => block.split("\n")[1])).toEqual(["{+Child one.+}", "{+Child two.+}"]);
-  expect(byHead(obsolete!)).toBe(`${tag(obsolete!)} (archive: invalid; reason: contradicted):\n${invalidReason}`);
+  expect(byHead(obsolete!)).toBe(`${tag(obsolete!)} (archive: invalid; reason: contradicted):\n[-${bodies[3]}-]\narchive text: ${invalidReason}`);
   expect(byHead(budget!)).toBe(`${tag(budget!)} (archive: budget; reason: over budget):\n[-${bodies[4]}-]`);
   expect(byHead(category!)).toBe(`[${tag(category!)}]\n  category: constraint -> reference`);
 });
@@ -150,4 +157,38 @@ test("the second pass is a further operation on the run's own latest version and
   const failed = await unresolved.run();
   expect(failed.outcome).toBe("failure");
   expect("problems" in failed && failed.problems.join(" ")).toContain("frozen versions not deliberated");
+});
+
+test("an item rewritten and then archived, split or absorbed shows the body the run started from as removed", async () => {
+  const boundary = "Keep the routine. Never stash or reset the user's work.", kept = "Keep the routine.";
+  const bodies = ["Survivor body.", boundary + " (absorbed)", boundary + " (budget)", boundary + " (split)", boundary + " (invalid)"];
+  const p = pool(bodies, { first(_task, tool, [survivor, absorbed, budget, parent, invalid]) {
+    const rewrite = (item: Item, text: string) => ok(tool("memory", { operations: [update(p.current(item), text)], skipped: [] }));
+    for (const [item, text] of [[absorbed, kept + " (absorbed)"], [budget, kept + " (budget)"], [parent, kept + " (split)"], [invalid, kept + " (invalid)"]] as const) rewrite(item!, text);
+    ok(tool("memory", { operations: [
+      { op: "merge", id: survivor!.tag, absorb: [p.current(absorbed!)], text: "Survivor body.", category: "constraint", scope: "project", topics: [], supports: [], reason: "same rule" },
+      { op: "archive", kind: "budget", id: p.current(budget!), supports: [], reason: "over budget" },
+      { op: "split", id: p.current(parent!), children: [{ text: "One.", category: "constraint", topics: [] }, { text: "Two.", category: "constraint", topics: [] }], supports: [], reason: "two rules" },
+      { op: "archive", kind: "invalid", id: p.current(invalid!), text: invalidReason, supports: [], reason: "contradicted" }], skipped: [] }));
+  } });
+  const result = await p.run();
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const [, absorbed, budget, parent, invalid] = p.items();
+  const blocks = sections(p.reviews[0]!).changes.split("\n\n");
+  const block = (item: Item) => blocks.find(value => value.startsWith(`K${item.knowledgeId}#`))!;
+  expect(block(absorbed!)).toContain(`\n[-${bodies[1]}-]`);
+  expect(block(budget!)).toContain(`\n[-${bodies[2]}-]`);
+  expect(block(parent!)).toContain(`\n[-${bodies[3]}-]`);
+  expect(block(invalid!)).toContain(`\n[-${bodies[4]}-]\narchive text: ${invalidReason}`);
+  for (const value of blocks) expect(value).not.toContain(`[-${kept} (`); // never the intermediate rewrite
+});
+
+test("an archived item revived with the same body is reported as restored, with its full body", async () => {
+  const p = pool(["Rule A body.", "Rule B body."], { first(_task, tool, [a, b]) {
+    ok(tool("memory", { operations: [update(a!.tag, "Rule A body.")], skipped: [{ knowledge: b!.skip, because: "Reviewed unchanged" }] }));
+  } }, [0]);
+  const result = await p.run();
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const { changes } = sections(p.reviews[0]!), [a] = p.items();
+  expect(changes).toBe(`${p.current(a!)} (restored from archive):\n{+Rule A body.+}`);
 });

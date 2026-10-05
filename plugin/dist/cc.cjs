@@ -9165,15 +9165,19 @@ function renderDreamingReview(store, runId, blockers) {
   const latest = (knowledgeId2) => address2(own.get(knowledgeId2).at(-1));
   const blocks2 = [...own].flatMap(([knowledgeId2, revisions]) => {
     const gone = replaced.get(knowledgeId2);
+    const first = revisions[0], parent = first?.parentId == null ? void 0 : store.knowledgeRevision(first.parentId);
+    const start = first === void 0 ? gone?.last : parent?.knowledgeId === knowledgeId2 ? parent : void 0;
+    const last = revisions.at(-1) ?? gone.last;
+    const removed = `[-${(start ?? last).text}-]`;
     if (gone) return [`${address2(gone.last)} (${gone.op === "merge" ? "merged into" : "split into"} ${[...gone.by].map(latest).join(", ")}):
-[-${gone.last.text}-]`];
-    const last = revisions.at(-1);
+${removed}`];
     if (last.op === "archive")
       return [`${address2(last)} (archive: ${last.archiveKind}; reason: ${last.reason}):
-${last.archiveKind === "budget" ? `[-${last.text}-]` : last.text}`];
-    const start = revisions[0].parentId === null ? void 0 : store.knowledgeRevision(revisions[0].parentId);
-    if (start?.knowledgeId !== knowledgeId2)
-      return [`${address2(last)} (${start ? `split from K${start.knowledgeId}` : "new"}):
+${last.archiveKind === "budget" ? removed : `${start ? `${removed}
+` : ""}archive text: ${last.text}`}`];
+    if (start?.op === "archive") return [`${address2(last)} (restored from archive):
+{+${last.text}+}`];
+    if (!start) return [`${address2(last)} (${parent ? `split from K${parent.knowledgeId}` : "new"}):
 {+${last.text}+}`];
     const bodyChanged = start.text !== last.text;
     if (!bodyChanged && start.category === last.category && start.scope === last.scope && JSON.stringify(start.topics) === JSON.stringify(last.topics)) return [];

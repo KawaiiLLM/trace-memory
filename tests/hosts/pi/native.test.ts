@@ -42,7 +42,7 @@ test("92: a native held receipt is neither rejected nor marked as committed", as
   } finally { await f.dispose(); }
 });
 
-test.each(["noting", "dreaming"] as const)("117: native %s keeps its own pass-end eligibility after a length stop", async kind => {
+test.each(["noting", "dreaming"] as const)("117/125: native %s gets no end review after a length stop and the truncated run stays a failure", async kind => {
   const f = await fixture({ "noting.triggerTokens": 1e9 });
   try {
     f.script(body => !worker(body, kind === "noting" ? "Noting" : "Dreaming") ? say("Parent ready.")
@@ -51,10 +51,11 @@ test.each(["noting", "dreaming"] as const)("117: native %s keeps its own pass-en
         choices: [{ index: 0, delta: { role: "assistant", content: "Truncated." }, finish_reason: "length" }], usage: usage() }]));
     const captured = await f.turn();
     const passEnd = vi.fn(() => "Host followup");
-    await runNative(f.task(captured, { kind, task: `${kind === "noting" ? "Noting (facts and knowledge)" : "Dreaming (knowledge extraction)"} material`, passEnd }));
-    expect(passEnd).toHaveBeenCalledTimes(kind === "dreaming" ? 2 : 0);
+    const result = await runNative(f.task(captured, { kind, task: `${kind === "noting" ? "Noting (facts and knowledge)" : "Dreaming (knowledge extraction)"} material`, passEnd }));
+    expect(passEnd).toHaveBeenCalledTimes(kind === "dreaming" ? 1 : 0); // the Dreamer still reports its rounds
     expect(f.sent.filter(body => worker(body, kind === "noting" ? "Noting" : "Dreaming") &&
-      JSON.stringify(body.messages).includes("Host followup"))).toHaveLength(kind === "dreaming" ? 1 : 0);
+      JSON.stringify(body.messages).includes("Host followup"))).toHaveLength(0);
+    expect(result.outcome).toBe("failure");
   } finally { await f.dispose(); }
 });
 
