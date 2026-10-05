@@ -9249,7 +9249,7 @@ function prepareDreaming(store, input, config3, claim, path, { pools, range }) {
       (value) => pool.rendered.get(value.revision.id)
     ));
     if (remainder <= pool.budget) return [];
-    return [pending.length ? `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens; this run's pending items in it occupy ${pool.tokens - remainder}; without them it is still ${remainder}, over budget.` : `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens, over budget.`];
+    return [pending.some((value) => value.pool === pool.pool) ? `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens; this run's pending items in it occupy ${pool.tokens - remainder}; without them it is still ${remainder}, over budget.` : `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens, over budget${pending.length ? "; it has no pending items in this run" : ""}.`];
   });
   const these = overBudget.length === 1 ? "that pool" : "each of these pools";
   const processedExcessOrder = !overBudget.length ? "" : ` ${overBudget.join(" ")} ${pending.length ? `Reduce the already-processed knowledge of ${these} under the Over budget principle until it fits, then deliberate the pending items below.` : `This run has no pending items. Reduce the already-processed knowledge of ${these} under the Over budget principle until it fits.`}`;
