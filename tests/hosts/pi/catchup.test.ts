@@ -157,7 +157,7 @@ test("borrowed N publishes both layers to its target without a special executor 
 });
 
 test("an owned D pool uses a real pending version and keeps its global seat separate from borrowed N", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000_000 });
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerTokens": 5_000 });
   try {
     await h.turn();
     const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!
@@ -239,7 +239,7 @@ test("reopening a closed target replaces borrowed N token and prevents stale pub
 });
 
 test("one shutdown deadline fences borrowed N and owned D even when both providers hang", async () => {
-  const h = host({ "noting.triggerTokens": 1_000 });
+  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerTokens": 5_000 });
   try {
     await h.turn();
     const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!

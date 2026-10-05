@@ -89,6 +89,7 @@ test("64c: Pi does not borrow a due closed-session Dreamer target", async () => 
       supports: [noted.facts[0]!.id], topics: [], reason: "closed session test", createdAt: "now" }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     store.closeSession(closed.id);
+    h.memory.config.dreaming.triggerTokens = 5_000;
     expect(h.memory.taskEligibility("dreaming", { sessionId: closed.id, branch: "main", headTurnId: turn.id })).toEqual({ due: true });
 
     await h.prompt("one executor opportunity");

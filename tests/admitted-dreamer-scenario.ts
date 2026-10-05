@@ -41,6 +41,8 @@ export class AdmittedDreamerScenarios {
  * budget, the project pool by the most pending weight. Retiring it returns the pool to its budget. */
 export function createDreamerTrigger(memory: TraceMemory, path: TaskTarget, factId: number, sequence: number,
   scope: "global" | "project" | "session" = "project") {
+  // The trigger item below is sized for a 5,000-token threshold; the fixture pins it so the default can move.
+  memory.config.dreaming.triggerTokens = Math.min(memory.config.dreaming.triggerTokens, 5_000);
   const tools = memory.tools({ kind: "manual", sessionId: path.sessionId, branch: path.branch,
     currentTurnId: path.headTurnId });
   const operation = (text: string) => ({ op: "create", text, category: "reference" as const,

@@ -330,7 +330,7 @@ function substantiveArchiveStatement(text) {
   return typeof text === "string" && !!text.trim() && !/^(?:invalid|obsolete|无效|过时|失效)[。.!！]?$/iu.test(text.trim());
 }
 
-// node_modules/diff/libesm/diff/base.js
+// ../trace-memory/node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
     let callback;
@@ -532,7 +532,7 @@ var Diff = class {
   }
 };
 
-// node_modules/diff/libesm/diff/array.js
+// ../trace-memory/node_modules/diff/libesm/diff/array.js
 var ArrayDiff = class extends Diff {
   tokenize(value) {
     return value.slice();
@@ -1103,7 +1103,7 @@ function dropStale(nodes, turns, root2) {
 
 // src/core/store/processing.ts
 var DEFAULT_KNOWLEDGE_BUDGETS = { global: 4e3, project: 15e3, session: 1e3 };
-var DEFAULT_DREAMING_TRIGGER_TOKENS = 5e3;
+var DEFAULT_DREAMING_TRIGGER_TOKENS = 1e4;
 var DEFAULT_SHARED_ALLOWANCE_TOKENS = 1e4;
 function dueKnowledgePool(pools, window, triggerTokens) {
   const weight = (pool) => pool.pending.reduce((sum, value) => sum + value.tokens, 0);
@@ -11701,7 +11701,7 @@ var import_node_fs7 = require("node:fs");
 var import_node_os3 = require("node:os");
 var import_node_path6 = require("node:path");
 
-// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -32499,7 +32499,7 @@ function query({
   return queryInstance;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../trace-memory/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -32573,7 +32573,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../trace-memory/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -33252,7 +33252,7 @@ var Class2 = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../trace-memory/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -33318,7 +33318,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../trace-memory/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -33398,7 +33398,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
+// ../trace-memory/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -33555,7 +33555,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/zod/v4/core/checks.js
+// ../trace-memory/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -34103,7 +34103,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../trace-memory/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -34139,14 +34139,14 @@ var Doc2 = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../trace-memory/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../trace-memory/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -36117,7 +36117,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../trace-memory/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -36226,7 +36226,7 @@ function en_default3() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../trace-memory/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -36274,7 +36274,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
+// ../trace-memory/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -37078,7 +37078,7 @@ function _stringFormat(Class3, format2, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../trace-memory/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -37430,7 +37430,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../trace-memory/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -37906,7 +37906,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// node_modules/zod/v4/classic/schemas.js
+// ../trace-memory/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -38075,7 +38075,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../trace-memory/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -38109,7 +38109,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// node_modules/zod/v4/classic/iso.js
+// ../trace-memory/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -38150,7 +38150,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../trace-memory/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -38190,7 +38190,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../trace-memory/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -38204,7 +38204,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../trace-memory/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -39283,22 +39283,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// node_modules/zod/v4/classic/compat.js
+// ../trace-memory/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../trace-memory/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// node_modules/zod/v4/classic/external.js
+// ../trace-memory/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -45068,7 +45068,7 @@ async function declareCcProject(config3, nativeSessionId, name) {
 var import_node_fs13 = require("node:fs");
 var import_node_path11 = require("node:path");
 
-// node_modules/@earendil-works/pi-tui/dist/terminal-image.js
+// ../trace-memory/node_modules/@earendil-works/pi-tui/dist/terminal-image.js
 function getPngDimensions(base64Data) {
   try {
     const buffer = Buffer.from(base64Data, "base64");
@@ -45482,7 +45482,7 @@ var import_node_fs14 = require("node:fs");
 var import_node_path12 = require("node:path");
 var import_node_crypto17 = require("node:crypto");
 
-// node_modules/jsonc-parser/lib/esm/impl/scanner.js
+// ../trace-memory/node_modules/jsonc-parser/lib/esm/impl/scanner.js
 function createScanner(text, ignoreTrivia = false) {
   const len = text.length;
   let pos = 0, value = "", tokenOffset = 0, token = 16, lineNumber = 0, lineStartOffset = 0, tokenLineStartOffset = 0, prevTokenLineStartOffset = 0, scanError = 0;
@@ -45903,7 +45903,7 @@ var CharacterCodes;
   CharacterCodes2[CharacterCodes2["tab"] = 9] = "tab";
 })(CharacterCodes || (CharacterCodes = {}));
 
-// node_modules/jsonc-parser/lib/esm/impl/string-intern.js
+// ../trace-memory/node_modules/jsonc-parser/lib/esm/impl/string-intern.js
 var cachedSpaces = new Array(20).fill(0).map((_, index) => {
   return " ".repeat(index);
 });
@@ -45934,7 +45934,7 @@ var cachedBreakLinesWithSpaces = {
 };
 var supportedEols = ["\n", "\r", "\r\n"];
 
-// node_modules/jsonc-parser/lib/esm/impl/format.js
+// ../trace-memory/node_modules/jsonc-parser/lib/esm/impl/format.js
 function format(documentText, range, options) {
   let initialIndentLevel;
   let formatText;
@@ -46170,7 +46170,7 @@ function isEOL(text, offset) {
   return "\r\n".indexOf(text.charAt(offset)) !== -1;
 }
 
-// node_modules/jsonc-parser/lib/esm/impl/parser.js
+// ../trace-memory/node_modules/jsonc-parser/lib/esm/impl/parser.js
 var ParseOptions;
 (function(ParseOptions2) {
   ParseOptions2.DEFAULT = {
@@ -46592,7 +46592,7 @@ function getNodeType(value) {
   }
 }
 
-// node_modules/jsonc-parser/lib/esm/impl/edit.js
+// ../trace-memory/node_modules/jsonc-parser/lib/esm/impl/edit.js
 function setProperty(text, originalPath, value, options) {
   const path = originalPath.slice();
   const errors = [];
@@ -46736,7 +46736,7 @@ function applyEdit(text, edit) {
   return text.substring(0, edit.offset) + edit.content + text.substring(edit.offset + edit.length);
 }
 
-// node_modules/jsonc-parser/lib/esm/main.js
+// ../trace-memory/node_modules/jsonc-parser/lib/esm/main.js
 var ScanError;
 (function(ScanError2) {
   ScanError2[ScanError2["None"] = 0] = "None";

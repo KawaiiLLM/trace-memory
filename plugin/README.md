@@ -21,7 +21,7 @@ Core phase bounds use optional top-level keys in the same file:
 | --- | ---: | --- |
 | `noting.triggerTokens` | 10,000 | Noter trigger checked at main turn end; catchup still drains below it |
 | `noting.forkModeDefault` | `false` | Request native fork when eligible; otherwise record the fresh fallback reason |
-| `dreaming.triggerTokens` | 5,000 | Dreamer trigger on the session's pending weight summed across its pools |
+| `dreaming.triggerTokens` | 10,000 | Dreamer trigger on the session's pending weight summed across its pools |
 | `dreaming.timeoutMs` | 1,800,000 | Dreamer wall-clock bound; no tool-round ceiling |
 | `compaction.sharedAllowanceTokens` | 10,000 | Shared allowance Knowledge borrows first, then unprocessed Raw |
 

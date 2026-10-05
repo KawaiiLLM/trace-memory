@@ -161,6 +161,7 @@ test("73: real facade freezes D references to base plus the configured shared al
     return { outcome: "failure", output: "capture only", request: {} };
   });
   f.memory.setKnowledgeBudget("project", 30_000);
+  f.memory.config.dreaming.triggerTokens = 5_000;
   f.create("一".repeat(8_000), "project");
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   const first = f.captured[0]!;

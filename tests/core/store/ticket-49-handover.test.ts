@@ -175,7 +175,7 @@ test("64c hand-over may cross the target budget; budget triggers but never block
   expect(after.tokens).toBeGreaterThan(before);
   expect(after.tokens).toBeGreaterThan(after.budget);
   expect(store.pendingVersions(targetPool, reader.path).map(value => value.revisionId)).toEqual([moved.commit]);
-  expect(store.duePools(reader.path).map(value => value.pool)).toContain(targetPool);
+  expect(store.duePools(reader.path, 5_000).map(value => value.pool)).toContain(targetPool);
   expect(() => processPool(store, reader.path, targetPool)).not.toThrow();
   expect(store.pendingVersions(targetPool, reader.path)).toEqual([]);
   expect(store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(targetPool)

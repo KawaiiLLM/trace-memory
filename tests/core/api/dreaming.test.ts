@@ -167,7 +167,7 @@ test("64c pre-first-commit cancellation consumes nothing and leaves the pool due
   expect((await pending).outcome).toBe("cancelled");
   expect(processed(f)).toEqual([]);
   expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
-  expect(f.store.duePools(f.target).map(value => value.pool)).toContain(`project:${f.project.id}`);
+  expect(f.store.duePools(f.target, f.memory.config.dreaming.triggerTokens).map(value => value.pool)).toContain(`project:${f.project.id}`);
 });
 
 test("64c cancellation after a commit consumes the frozen revisions and the own revision in its resulting pool", async () => {
@@ -270,6 +270,7 @@ test.each([
 
 test("64c reference material is genuinely non-empty, capped and receipted when current out-of-range knowledge is oversized", async () => {
   const f = fixture();
+  f.memory.config.dreaming.triggerTokens = 5_000;
   const references = Array.from({ length: 8 }, (_, index) => f.create(`reference-${index} ${"reference ".repeat(2_000)}`));
   const pool = `project:${f.project.id}`, pendingWeight = f.store.pendingPoolWeight(pool, f.target);
   f.store.setKnowledgeBudget("project", pendingWeight * 2);

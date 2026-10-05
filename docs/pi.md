@@ -85,7 +85,7 @@ For example, either settings file can contain:
     "noting.batchTokens": 10000,
     "noting.nearThreshold": 0.4,
     "consolidation.triggerTokens": 5000,
-    "dreaming.triggerTokens": 5000,
+    "dreaming.triggerTokens": 10000,
     "dreaming.maxToolRounds": 0,
     "dreaming.timeoutMs": 600000,
     "dreaming.model": "session",
@@ -111,7 +111,7 @@ The three bases never lend directly to one another.
 
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
 from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a named load error.
-`dreaming.triggerTokens` is configurable again: its default is 5,000, compared with the session's
+`dreaming.triggerTokens` is configurable again: its default is 10,000, compared with the session's
 pending weight summed across its pools (104). Consolidator Knowledge and foreground publication may use the Knowledge base plus
 the shared allowance. Dreamer uses that same maximum for its Changed-plus-reference input, while a
 single due pool's Changed range is capped by that pool's budget. Database budget edits accept exact

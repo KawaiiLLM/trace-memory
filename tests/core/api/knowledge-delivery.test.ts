@@ -60,6 +60,7 @@ async function maintain(f: ReturnType<typeof fixture>, operation: Record<string,
   const history = (address: string) => address.replace(/^K(\d+)@(\d+)$/, (_, id, commit) => `K${id}@v${f.memory.store.versionOrdinal(Number(id), Number(commit))}`);
   operation = { ...operation, id: tag(String(operation.id)), ...(Array.isArray(operation.absorb) ? { absorb: operation.absorb.map(tag) } : {}) };
   const factId = f.facts[0]!.id;
+  f.memory.config.dreaming.triggerTokens = Math.min(f.memory.config.dreaming.triggerTokens, 5_000);
   const trigger = needsTrigger ? createDreamerTrigger(f.memory, f.target, factId, f.memory.store.listKnowledgeRevisions().length + 1) : null;
   let committed: { knowledgeId: number; commit: number }[] = [];
   const result = await f.scenarios.run(f.memory, f.target, input => {

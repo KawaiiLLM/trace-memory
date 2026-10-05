@@ -323,7 +323,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
 });
 
 test("24a/51: concurrent N and D indicator prefers N; off and no-theme fallback", async () => {
-  const h = host({ "noting.triggerTokens": 1_000, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 1_000, "noting.forkModeDefault": false, "dreaming.triggerTokens": 5_000 });
   await h.turn();
   expect(footer(h)).toMatchObject({ glyph: "○", role: "dim" });
   const source = h.memory.store.sourcePath(1, "main", 1).find(value => value.entryOrdinal === 1)!;

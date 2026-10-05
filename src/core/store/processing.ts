@@ -10,7 +10,7 @@ export interface KnowledgeBudgets extends KnowledgeBudgetValues {
   dreamingProcessedInput: number;
 }
 export const DEFAULT_KNOWLEDGE_BUDGETS: KnowledgeBudgetValues = { global: 4_000, project: 15_000, session: 1_000 };
-export const DEFAULT_DREAMING_TRIGGER_TOKENS = 5_000;
+export const DEFAULT_DREAMING_TRIGGER_TOKENS = 10_000;
 export const DEFAULT_SHARED_ALLOWANCE_TOKENS = 10_000;
 
 /** 104: one Dreamer evaluation per session context, over its applicable pools. Due when their sizes

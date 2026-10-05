@@ -7,7 +7,7 @@ const compact = (h: ReturnType<typeof host>, signal?: AbortSignal) =>
 
 async function seeded(options: { rawTokens?: number } = {}) {
   const h = host({ "noting.triggerTokens": 10_000, "consolidation.triggerTokens": 5_000,
-    "compaction.factsTokens": 10_000, "compaction.rawTokens": options.rawTokens ?? 10_000 });
+    "dreaming.triggerTokens": 5_000, "compaction.factsTokens": 10_000, "compaction.rawTokens": options.rawTokens ?? 10_000 });
   if (options.rawTokens !== undefined) {
     await h.prompt("oversized required raw " + "word ".repeat(12_000));
     await h.answer(); await h.emit("agent_end"); await h.drain();
@@ -31,7 +31,7 @@ test("64c: due changed knowledge fits the knowledge window without compaction Dr
   try {
     const path = store.knowledgePath(1, "main");
     if (path.headTurnId === null) throw new Error("fixture requires a current Turn");
-    expect(store.duePools(path).map(value => value.pool)).toContain(pool);
+    expect(store.duePools(path, 5_000).map(value => value.pool)).toContain(pool);
     const result = await compact(h);
     expect(result.compaction.summary).toContain("rule");
     expect(h.requests).toEqual([]);
