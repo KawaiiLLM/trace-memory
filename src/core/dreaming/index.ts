@@ -84,9 +84,9 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
     const remainder = tokens(processedBlock(pool.versions.filter(value => !frozenIds.has(value.revision.id)),
       value => pool.rendered.get(value.revision.id)!));
     if (remainder <= pool.budget) return [];
-    return [pending.length
+    return [pending.some(value => value.pool === pool.pool)
       ? `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens; this run's pending items in it occupy ${pool.tokens - remainder}; without them it is still ${remainder}, over budget.`
-      : `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens, over budget.`];
+      : `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens, over budget${pending.length ? "; it has no pending items in this run" : ""}.`];
   });
   const these = overBudget.length === 1 ? "that pool" : "each of these pools";
   const processedExcessOrder = !overBudget.length ? "" : ` ${overBudget.join(" ")} ${pending.length

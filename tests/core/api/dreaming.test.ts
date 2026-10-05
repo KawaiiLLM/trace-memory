@@ -469,9 +469,10 @@ test("103/126 order instruction: every pool still over budget without this run's
   const named = [...withPending.bound.matchAll(/Pool (\S+) is (\d+)\/(\d+) tokens; this run's pending items in it occupy (\d+); without them it is still (\d+), over budget\./g)]
     .map(match => ({ pool: match[1], tokens: Number(match[2]), budget: Number(match[3]), occupied: Number(match[4]), remainder: Number(match[5]) }));
   expect(named).toEqual([
-    { pool: "global", tokens: global, budget: global - 1, occupied: 0, remainder: global },
     { pool: projectPool, tokens: size(projectPool), budget: processedProject - 1, occupied: size(projectPool) - processedProject, remainder: processedProject },
   ]);
+  expect([...withPending.bound.matchAll(/Pool (\S+) is (\d+)\/(\d+) tokens, over budget; it has no pending items in this run\./g)]
+    .map(match => ({ pool: match[1], tokens: Number(match[2]), budget: Number(match[3]) }))).toEqual([{ pool: "global", tokens: global, budget: global - 1 }]);
   expect(withPending.bound).not.toContain(sessionPool);
 
   // Nothing pending now; the session is due only because its knowledge overflows the window.
