@@ -1,7 +1,7 @@
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { expect, test } from "vitest";
 import { hydrate, sourceSeededMemory, type DreamingAgentInput } from "../../source-fixture.ts";
-import { fact as seedFact, legacyFacts } from "../../support/seed.ts";
+import { fact as seedFact, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
 
 test("92/03: D skips tagless diffs by history address; mutation diagnostics separate model versions from human commits", async () => {
   let scenario!: (task: DreamingAgentInput) => void;
@@ -64,10 +64,8 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
       const otherTarget = { sessionId: otherSession.id, branch: "main", headTurnId: otherTurn.id };
       const otherUser = hydrate(store.listSourceEntries(otherSession.id, otherTurn.id), store).find(entry => entry.role === "user")!;
       const otherFact = seedFact(memory, otherTarget, "Other evidence", [{ entry: otherUser, text: "User gave other evidence" }]).id;
-      const external = store.commitConsolidationRun({ path: otherTarget, run: { kind: "manual", sessionId: otherSession.id, createdAt: "now" },
-        operations: [{ op: "create", handle: "$outside", author: "test", ...content, supports: [otherFact], text: "Other pool" }] });
-      if (!external.ok) throw new Error(external.problems.join("; "));
-      const out = external.committed[0]!;
+      const out = seedKnowledge(store, otherTarget, content.scope, content.category, [otherFact], "Other pool",
+        { run: { kind: "manual", createdAt: "now" } });
       const poolError = write.execute({ operations: [{ op: "archive", kind: "budget", id: address(out.knowledgeId, out.commit), supports: [], reason: "wrong pool" }], skipped: [] });
       expect(poolError).toContain("outside the Dreamer pools");
       expect(poolError).not.toMatch(/K\d+@\d+/);
