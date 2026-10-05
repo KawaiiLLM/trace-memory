@@ -37,8 +37,8 @@ export class AdmittedDreamerScenarios {
 }
 
 /** A visible, normally-accounted body whose pending weight alone crosses the session's configured
- * Dreamer trigger (104) and selects its own scope's pool: the global and session pools it puts over
- * budget, the project pool by the most pending weight. Retiring it returns the pool to its budget. */
+ * Dreamer trigger (104). In the global or session scope it puts that pool over budget; retiring it
+ * returns the pool to its budget. */
 export function createDreamerTrigger(memory: TraceMemory, path: TaskTarget, factId: number, sequence: number,
   scope: "global" | "project" | "session" = "project") {
   // The trigger item below is sized for a 5,000-token threshold; the fixture pins it so the default can move.
