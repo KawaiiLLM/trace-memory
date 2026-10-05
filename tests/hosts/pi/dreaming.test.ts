@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
-import { legacyFacts } from "../../support/seed.ts";
+import { knowledge, legacyFacts } from "../../support/seed.ts";
 
 const workflowHeadings = (JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as { promptOrder: string[] }).promptOrder;
 const call = (id: string, name: string, args: unknown): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args as JsonObject }] });
@@ -277,12 +277,8 @@ test("125: native Dreamer gets the end review once after its first pass; a secon
 test("126: one native Dreamer run covers the session's pools; the end review is sent once", async () => {
   const { h, store, item, content, pool } = await seeded();
   try {
-    const made = (scope: "global" | "session") => {
-      const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [
-        { op: "create", handle: `$${scope}`, author: "test", ...content, scope, text: `A ${scope} rule` }] });
-      if (!result.ok) throw Error(result.problems.join());
-      return result.committed[0]!;
-    };
+    const made = (scope: "global" | "session") => knowledge(store, store.knowledgePath(1, "main"), scope, content.category,
+      content.supports, `A ${scope} rule`, { run: { kind: "manual", createdAt: "now" } });
     const global = made("global"), local = made("session");
     const history = (value: { knowledgeId: number; commit: number }) => `K${value.knowledgeId}@v${store.versionOrdinal(value.knowledgeId, value.commit)}`;
     const reviews: string[] = [];

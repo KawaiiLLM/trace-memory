@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hydrate, sourceSeededMemory, type NotingAgentInput, type RunAgent, type TraceMemory } from "../../source-fixture.ts";
-import { legacyFacts } from "../../support/seed.ts";
+import { knowledge, legacyFacts } from "../../support/seed.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 import type { DreamingAgentInput } from "../../../src/core/api/index.ts";
@@ -356,10 +356,8 @@ test("126: runs that each leave a different pool over budget continue one streak
   const results = [];
   for (const [scope, pool] of [["global", "global"], ["project", projectPool], ["session", sessionPool]] as const) {
     for (const field of ["global", "project", "session"] as const) m.store.setKnowledgeBudget(field, roomy[field]);
-    const made = m.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" },
-      operations: [{ op: "create", handle: "$1", author: "test", text: `${scope} rule ${"word ".repeat(60)}`, category: "constraint",
-        scope, topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" }] });
-    if (!made.ok) throw Error(made.problems.join("; "));
+    knowledge(m.store, target, scope, "constraint", [facts.facts[0]!.id], `${scope} rule ${"word ".repeat(60)}`,
+      { run: { kind: "manual", createdAt: "now" } });
     const size = m.store.poolSizes(target).find(value => value.pool === pool)!.tokens;
     m.store.setKnowledgeBudget(scope, size - 1); // only this pool ends over its budget
     const result = await m.dream(target);
