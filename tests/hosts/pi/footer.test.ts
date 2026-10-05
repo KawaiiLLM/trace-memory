@@ -62,13 +62,13 @@ function facts(h: Host, count = 3) {
     Array.from({ length: count }, (_, i) => ({ sources: [{ entry: source, address: `T1#E${source.entryOrdinal}` }],
       category: "observation" as const, actor: "user" as const, text: `footer fact ${i}`, createdAt: time }))).facts;
 }
-function processPool(h: Host, pool: string, createdAt = time, response?: string) {
+function processPool(h: Host, createdAt = time, response?: string) {
   const store = h.memory.store, current = store.knowledgePath(1, "main");
   const path = { sessionId: 1, branch: "main", headTurnId: current.headTurnId! };
   const claim = store.acquireClaim(path, "dreaming", "footer-test");
   if (!claim) throw new Error("dreaming claim unavailable");
-  const range = store.retainKnowledgePoolRange(path, pool, claim);
-  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", pool: range.pool!, origin: range.origin });
+  const range = store.retainKnowledgePoolRange(path, claim);
+  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", origin: range.origin });
   const run = store.bindDreamingRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
     executionId, claim, createdAt, response });
   store.completeKnowledgePoolRange(run, "success");
@@ -99,7 +99,7 @@ test("footer reports pending Raw, applicable facts, changed Knowledge, and histo
     [written[0]!.id], "Use pnpm, never npm", { run: { kind: "manual", createdAt: time } });
   await refresh(h);
   expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "1", knowledge: "1", cost: "0.00" });
-  processPool(h, `session:${h.memory.store.getSession(1)!.id}`);
+  processPool(h);
   await refresh(h);
   // R1FINAL does not falsely protect an untouched input when a synthetic run commits no output.
   expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "1", knowledge: "1", cost: "0.00" });
@@ -131,7 +131,7 @@ test("footer reports pending Raw, applicable facts, changed Knowledge, and histo
   // pending work, then finish it through the current pool facade with observed Dreamer usage.
   knowledge(h.memory.store, h.memory.store.knowledgePath(1, "main", 1), "session", "constraint",
     [written[0]!.id], "priced Dreamer item", { run: { kind: "manual", createdAt: today }, operation: { createdAt: today } });
-  processPool(h, "session:1", today,
+  processPool(h, today,
     JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } } }));
   await h.commands.get("trace")!.handler("", h.ctx);
   const panel = h.notices.at(-1)!;

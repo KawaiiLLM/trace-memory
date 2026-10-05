@@ -57,11 +57,19 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
       const reversedMerge = write.execute({ operations: [{ op: "merge", id: address(b!.knowledgeId, b!.commit), absorb: [address(a!.knowledgeId, changed.committed[0]!.commit)], supports: [], reason: "reverse order", category: "constraint", scope: "project", topics: [] }], skipped: [] });
       expect(reversedMerge).toContain("swap them");
       expect(reversedMerge).not.toMatch(/K\d+@\d+/);
-      const external = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$outside", author: "test", ...content, scope: "global", text: "Other pool" }] });
+      // 126: the session's three pools are writable; another project's item is not.
+      const otherProject = store.createProject({ name: "dream-tags-other", declaredBy: "mark" });
+      const otherSession = store.createSession({ projectId: otherProject.id, host: "pi:other", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+      const otherTurn = store.appendTurn({ sessionId: otherSession.id, kind: "turn", userPrompt: "Other evidence", startedAt: "now" });
+      const otherTarget = { sessionId: otherSession.id, branch: "main", headTurnId: otherTurn.id };
+      const otherUser = hydrate(store.listSourceEntries(otherSession.id, otherTurn.id), store).find(entry => entry.role === "user")!;
+      const otherFact = seedFact(memory, otherTarget, "Other evidence", [{ entry: otherUser, text: "User gave other evidence" }]).id;
+      const external = store.commitConsolidationRun({ path: otherTarget, run: { kind: "manual", sessionId: otherSession.id, createdAt: "now" },
+        operations: [{ op: "create", handle: "$outside", author: "test", ...content, supports: [otherFact], text: "Other pool" }] });
       if (!external.ok) throw new Error(external.problems.join("; "));
       const out = external.committed[0]!;
       const poolError = write.execute({ operations: [{ op: "archive", kind: "budget", id: address(out.knowledgeId, out.commit), supports: [], reason: "wrong pool" }], skipped: [] });
-      expect(poolError).toContain("outside Dreamer pool");
+      expect(poolError).toContain("outside the Dreamer pools");
       expect(poolError).not.toMatch(/K\d+@\d+/);
       expect(skip(`K${a!.knowledgeId}@v2`)).not.toContain("rejected:");
       expect(skip(`K${c!.knowledgeId}@v2`)).not.toContain("rejected:");

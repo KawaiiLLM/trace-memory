@@ -114,7 +114,7 @@ test("64c exact provider request and terminal audit are preserved while success 
   const run = f.store.getRun(result.runId)!;
   expect(run.request).toBe(JSON.stringify(exact));
   expect(JSON.parse(run.response!)).toMatchObject({ output: "audited", nativeLog: "/tmp/dream.jsonl",
-    usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: { total: 0.1 } }, check: { pool: `project:${f.project.id}` } });
+    usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: { total: 0.1 } }, check: { totals: expect.arrayContaining([expect.objectContaining({ pool: `project:${f.project.id}` })]) } });
   expect(f.memory.spend(f.session.id)).toMatchObject({ input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.1 });
   expect(processed(f).map(row => Number(row.revision_id))).toEqual([base.commit, trigger.commit]);
 });
@@ -167,7 +167,7 @@ test("64c pre-first-commit cancellation consumes nothing and leaves the pool due
   expect((await pending).outcome).toBe("cancelled");
   expect(processed(f)).toEqual([]);
   expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
-  expect(f.store.duePools(f.target, f.memory.config.dreaming.triggerTokens).map(value => value.pool)).toContain(`project:${f.project.id}`);
+  expect(f.store.dreamingDue(f.target, f.memory.config.dreaming.triggerTokens)).toBe(true);
 });
 
 test("64c cancellation after a commit consumes the frozen revisions and the own revision in its resulting pool", async () => {
@@ -264,7 +264,7 @@ test.each([
   const run = f.store.getRun(result.runId)!;
   expect(run.request).toBe(JSON.stringify(exact));
   expect(JSON.parse(run.response!)).toMatchObject({ output: "provider completed before terminal fault",
-    check: { pool: `project:${f.project.id}`, frozenRevisionIds: [base.commit, trigger.commit], ownRevisionIds: [own] } });
+    check: { frozenRevisionIds: [base.commit, trigger.commit], ownRevisionIds: [own] } });
   expect(JSON.parse(run.response!).problems.join(" ")).toContain(failure);
 });
 
@@ -427,7 +427,7 @@ test("103 order instruction: present for an archive — the excluded size is 0, 
   // 104: the fixture budget keeps the pool over budget, so the run is not a success.
   expect(secondRun, JSON.stringify(secondRun)).toMatchObject({ outcome: "failure", problems: [expect.stringContaining("over budget")] });
 
-  const match = seenBound.match(/This pool is (\d+)\/(\d+) tokens; this run's pending items occupy (\d+); without them it is still (\d+), over budget\./);
+  const match = seenBound.match(new RegExp(`Pool ${projectPool} is (\\d+)/(\\d+) tokens; this run's pending items in it occupy (\\d+); without them it is still (\\d+), over budget\\.`));
   expect(match, seenBound).toBeTruthy();
   const shownPoolTokens = Number(match![1]), budget = Number(match![2]), excludedSize = Number(match![3]), shownRemainder = Number(match![4]);
   expect(shownPoolTokens).toBe(poolTokens);
@@ -447,4 +447,39 @@ test("103 order instruction: absent when the pool without this run's pending ite
     return success;
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");
+});
+
+test("103/126 order instruction: every pool still over budget without this run's pending items is named with its numbers; a run with none pending is told so", async () => {
+  const f = fixture();
+  f.memory.config.dreaming.triggerTokens = 1;
+  const projectPool = `project:${f.project.id}`, sessionPool = `session:${f.session.id}`;
+  f.create("Global knowledge already processed. ".repeat(40), "global");
+  f.create("Project knowledge already processed. ".repeat(40));
+  const deliberate = async () => { let bound = ""; const result = await f.scenarios.run(f.memory, f.target, input => {
+    input.acknowledgeRequest(); bound = input.material.bound; skipRest(input); return success; }); return { result, bound }; };
+  expect((await deliberate()).result.outcome).toBe("success");
+  const size = (pool: string) => f.store.knowledgePools(f.target).find(value => value.pool === pool)!.tokens;
+  const processedProject = size(projectPool), global = size("global");
+  f.create("Project knowledge pending in this run. ".repeat(20));
+  f.create("Session note pending in this run.", "session");
+  f.store.setKnowledgeBudget("global", global - 1); // over budget with no pending item of its own
+  f.store.setKnowledgeBudget("project", processedProject - 1); // over budget even without its pending item
+  const withPending = await deliberate();
+  expect(withPending.result.outcome).toBe("failure"); // 126: pools left over budget fail the run
+  const named = [...withPending.bound.matchAll(/Pool (\S+) is (\d+)\/(\d+) tokens; this run's pending items in it occupy (\d+); without them it is still (\d+), over budget\./g)]
+    .map(match => ({ pool: match[1], tokens: Number(match[2]), budget: Number(match[3]), occupied: Number(match[4]), remainder: Number(match[5]) }));
+  expect(named).toEqual([
+    { pool: "global", tokens: global, budget: global - 1, occupied: 0, remainder: global },
+    { pool: projectPool, tokens: size(projectPool), budget: processedProject - 1, occupied: size(projectPool) - processedProject, remainder: processedProject },
+  ]);
+  expect(withPending.bound).not.toContain(sessionPool);
+
+  // Nothing pending now; the session is due only because its knowledge overflows the window.
+  f.store.setKnowledgeBudget("session", 0);
+  f.memory.config.compaction.sharedAllowanceTokens = 0;
+  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
+  const overflow = await deliberate();
+  expect([...overflow.bound.matchAll(/Pool (\S+) is \d+\/\d+ tokens, over budget\./g)].map(match => match[1])).toEqual(["global", projectPool, sessionPool]);
+  expect(overflow.bound).not.toMatch(/pending items in it occupy/);
+  expect(overflow.bound).toContain("This run has no pending items.");
 });

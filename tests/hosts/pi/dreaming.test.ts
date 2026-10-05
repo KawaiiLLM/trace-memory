@@ -31,7 +31,7 @@ async function seeded(config: Record<string, unknown> = {}, text = "Keep the use
     .find(value => value.revisionId === item.commit)!.tokens;
   const pool = `project:${store.getSession(1)!.projectId}`;
   h.memory.setKnowledgeBudget("project", renderedTokens * 2);
-  expect(store.duePools(path, 1).map(value => value.pool)).toContain(pool);
+  expect(store.dreamingDue(path, 1)).toBe(true);
   return { h, store, item, content, pool };
 }
 const terminal = async (h: ReturnType<typeof host>) => vi.waitFor(() => {
@@ -45,8 +45,8 @@ test("85: Pi does not launch Dreamer for an over-budget pool below its pending t
   const { h, store, content, pool } = await seeded({ "dreaming.triggerTokens": 5000 }, "Durable constraint ".repeat(100));
   const path = { sessionId: 1, branch: "main", headTurnId: store.knowledgePath(1, "main").headTurnId! };
   const claim = store.acquireClaim(path, "dreaming", "fixture")!;
-  const range = store.retainKnowledgePoolRange(path, pool, claim);
-  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", pool: range.pool!, origin: range.origin });
+  const range = store.retainKnowledgePoolRange(path, claim);
+  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", origin: range.origin });
   const run = store.bindDreamingRun({ kind: "dreaming", sessionId: 1, branch: path.branch,
     dreamingRangeId: range.id, executionId, claim, createdAt: "now" });
   store.completeKnowledgePoolRange(run, "success", range.eventIds);
@@ -271,5 +271,37 @@ test("125: native Dreamer gets the end review once after its first pass; a secon
     expect(reviewed).toEqual([false, false, true, true]);
     expect(store.listCommitsByRun(run.id).map(revision => revision.text))
       .toEqual(["Keep the user's constraint", "Keep the user's constraint, restored"]);
+  } finally { await h.dispose(); }
+});
+
+test("126: one native Dreamer run covers the session's pools; the end review is sent once", async () => {
+  const { h, store, item, content, pool } = await seeded();
+  try {
+    const made = (scope: "global" | "session") => {
+      const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [
+        { op: "create", handle: `$${scope}`, author: "test", ...content, scope, text: `A ${scope} rule` }] });
+      if (!result.ok) throw Error(result.problems.join());
+      return result.committed[0]!;
+    };
+    const global = made("global"), local = made("session");
+    const history = (value: { knowledgeId: number; commit: number }) => `K${value.knowledgeId}@v${store.versionOrdinal(value.knowledgeId, value.commit)}`;
+    const reviews: string[] = [];
+    h.provider(async conversation => {
+      const review = conversation.messages.map(message => JSON.stringify(message.content))
+        .find(text => text.includes("Before this run ends, review it once."));
+      if (review) { reviews.push(review); return reply("Reviewed"); }
+      if (conversation.messages.some(message => message.role === "toolResult")) return reply("Done first pass");
+      return call("maintain", "memory", { operations: [{ op: "update", id: `K${global.knowledgeId}#${store.versionTag(global.knowledgeId, global.commit)}`,
+        text: "A global rule, clarified", category: "constraint", scope: "global", supports: [], topics: [], reason: "clarify" }],
+        skipped: [history(item), history(local)].map(knowledge => ({ knowledge, because: "reviewed; no operation needed" })) });
+    }, { autoStop: false });
+    await h.turn();
+    const run = await terminal(h);
+    expect(run.outcome, run.response ?? "").toBe("success");
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]).toContain(`K${global.knowledgeId}#`);
+    const own = store.listCommitsByRun(run.id)[0]!;
+    expect([processedIn(store, "global", own.id), processedIn(store, pool, item.commit), processedIn(store, "session:1", local.commit)])
+      .toEqual([true, true, true]);
   } finally { await h.dispose(); }
 });

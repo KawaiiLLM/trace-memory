@@ -61,7 +61,7 @@ test("85: a pending-triggered deterministic Dreamer still archives until its sel
   expect(weight).toBeGreaterThan(5_000);
   state.store.setKnowledgeBudget("project", Math.max(5_700, Math.floor(size * 0.75)));
   expect(state.store.poolSizes(state.target).find(value => value.pool === pool)!.tokens).toBeGreaterThan(state.store.knowledgeBudgets().project);
-  expect(state.store.duePools(state.target, state.memory.config.dreaming.triggerTokens).map(value => value.pool)).toContain(pool);
+  expect(state.store.dreamingDue(state.target, state.memory.config.dreaming.triggerTokens)).toBe(true);
   const outcome = await state.scenarios.run(state.memory, state.target, task => {
     task.acknowledgeRequest();
     const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [

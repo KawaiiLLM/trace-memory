@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { TriggerOrigin } from "../model/index.ts";
 import type { Store, RunInput, Phase } from "./index.ts";
+import { ALL_POOLS } from "./processing.ts";
 
 /** A logical task: the target session, the phase and its backlog key. Noting's key is its oldest
- * pending entry (`head`); since 104 the Dreamer's is its pool, and `head` stays empty. Rows written
- * before 104 keep their revision `head` and no pool. */
-export interface LogicalTask { sessionId: number; phase: Phase; head?: number; pool?: string; origin?: TriggerOrigin | null }
+ * pending entry (`head`). 126: the Dreamer's task is (session, Dreamer), stored under the fixed pool
+ * key `ALL_POOLS`. Rows written before 104 keep their revision `head`; rows from 104 to 126 keep the
+ * one pool they named. */
+export interface LogicalTask { sessionId: number; phase: Phase; head?: number; origin?: TriggerOrigin | null }
 export type ExecutionOutcome = "success" | "failure" | "cancelled" | "conflict";
 const TASK_KEY_SQL = `head INTEGER CHECK(head > 0), pool TEXT CHECK(pool IS NULL OR phase = 'dreaming' AND head IS NULL)`;
 export const TASK_EXECUTIONS_TABLE = `CREATE TABLE IF NOT EXISTS task_executions (
@@ -43,15 +45,31 @@ export function migrateTaskPool104(store: Store, rebuild: (table: string, create
   if (failures.length && !failures.includes("pool")) rebuild("task_failures", TASK_FAILURES_TABLE);
 }
 
+/** 126: a session's per-pool Dreamer streaks become its one Dreamer streak, at the largest of their
+ * counts, keeping that row's last reason and run. Executions keep the pool they ran under. Runs inside
+ * Store's schema transaction, after `EXECUTIONS_SQL`: concurrent openers serialize there, and an open
+ * that finds no per-pool streak changes nothing. */
+export function migrateDreamerTask126(store: Store): void {
+  const perPool = "phase = 'dreaming' AND pool IS NOT NULL";
+  if (!store.db.prepare(`SELECT 1 FROM task_failures WHERE ${perPool} AND pool != ? LIMIT 1`).get(ALL_POOLS)) return;
+  // SQLite takes the bare columns from the row holding MAX(count).
+  const streaks = store.db.prepare(`SELECT session_id, MAX(count) AS count, last_reason, last_run_id, updated_at
+    FROM task_failures WHERE ${perPool} GROUP BY session_id`).all();
+  store.db.prepare(`DELETE FROM task_failures WHERE ${perPool}`).run();
+  const insert = store.db.prepare(`INSERT INTO task_failures(session_id,phase,head,pool,count,last_reason,last_run_id,updated_at)
+    VALUES (?,'dreaming',NULL,?,?,?,?,?)`);
+  for (const row of streaks) insert.run(row.session_id!, ALL_POOLS, row.count!, row.last_reason ?? null, row.last_run_id ?? null, row.updated_at!);
+}
+
 /** Admission supplies the oldest selected stable member, never a leaf or an attempt id.
  * A refusal carries this identity back; it does not settle it. Unfinished executions remain
  * visible after interruption, without inferring a terminal outcome from an attempt audit. */
 export function beginExecution(store: Store, task: LogicalTask, previous?: string): string {
   store.requireEnabled(task.sessionId);
   if (task.phase !== "noting" && task.phase !== "dreaming") throw new Error(`Unsupported live phase: ${task.phase}`);
-  const head = task.phase === "noting" ? task.head ?? null : null, pool = task.phase === "dreaming" ? task.pool ?? null : null;
-  if (task.phase === "noting" ? !Number.isSafeInteger(head) || head! <= 0 || task.pool !== undefined : !pool || task.head !== undefined)
-    throw new Error(task.phase === "noting" ? "Logical task requires a stable backlog head" : "Dreamer logical task requires its pool");
+  const head = task.phase === "noting" ? task.head ?? null : null, pool = task.phase === "dreaming" ? ALL_POOLS : null;
+  if (task.phase === "noting" ? !Number.isSafeInteger(head) || head! <= 0 : task.head !== undefined)
+    throw new Error(task.phase === "noting" ? "Logical task requires a stable backlog head" : "Dreamer logical task has no backlog head");
   if (previous !== undefined) {
     const row = store.db.prepare("SELECT * FROM task_executions WHERE id = ?").get(previous);
     if (!row || row.session_id !== task.sessionId || row.phase !== task.phase || row.head !== head || row.pool !== pool || row.outcome !== null)

@@ -76,7 +76,7 @@ test("Dreaming projection follows the selected head and current project, not dat
   } finally { memory.close(); }
 });
 
-test("104: dreamingPending is the session's summed pending weight and knowledge total, the figures duePools decides on", () => {
+test("104: dreamingPending is the session's summed pending weight and knowledge total, the figures the due check decides on", () => {
   const memory = sourceSeededMemory(":memory:", vi.fn());
   try {
     const store = memory.store, project = store.createProject({ name: "P", declaredBy: "mark" });

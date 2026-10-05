@@ -11,7 +11,7 @@ const invalidReason = "The rule no longer holds: the user corrected its basis; a
 
 /** A pool of pending project knowledge, every item due, and a fake provider that plays the host's
  * pass protocol: first pass, then the end review once (`passEnd`) and, if it was sent, a second pass. */
-function pool(bodies: string[], pass: { first(task: DreamingAgentInput, tool: Tool, items: Item[]): void;
+function pool(bodies: (string | { text: string; scope: "global" | "project" | "session" })[], pass: { first(task: DreamingAgentInput, tool: Tool, items: Item[]): void;
   second?(task: DreamingAgentInput, tool: Tool, items: Item[], review: string): void }, archived: number[] = []) {
   const reviews: (string | undefined)[] = [];
   let items!: Item[];
@@ -34,8 +34,8 @@ function pool(bodies: string[], pass: { first(task: DreamingAgentInput, tool: To
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
   const user = hydrate(store.listSourceEntries(session.id, turn.id), store).find(entry => entry.role === "user")!;
   const evidence = seedFact(memory, target, "Evidence", [{ entry: user, text: "User gave evidence" }]).id;
-  const created = knowledgeBatch(store, target, bodies.map(text => ({ scope: "project" as const, category: "constraint" as const,
-    supports: [evidence], text })), { kind: "manual", createdAt: "now" });
+  const created = knowledgeBatch(store, target, bodies.map(body => ({ category: "constraint" as const,
+    supports: [evidence], ...typeof body === "string" ? { text: body, scope: "project" as const } : body })), { kind: "manual", createdAt: "now" });
   // An item archived before the run is still pending for it, addressed by its archive version.
   for (const index of archived) { const { knowledgeId, commit } = created.committed[index]!;
     created.committed[index] = { op: "archive", knowledgeId, commit: archive(store, target, knowledgeId, commit, [evidence], "budget") }; }
@@ -57,7 +57,7 @@ const sections = (review: string) => {
 type Tool = (name: "memory" | "check", input: unknown) => any;
 type Item = { knowledgeId: number; tag: string; skip: string };
 const skipAll = (items: Item[]) => ({ operations: [], skipped: items.map(item => ({ knowledge: item.skip, because: "Reviewed unchanged" })) });
-const update = (id: string, text: string) => ({ op: "update", id, text, category: "constraint", scope: "project", topics: [], supports: [], reason: "rewrite" });
+const update = (id: string, text: string, scope = "project") => ({ op: "update", id, text, category: "constraint", scope, topics: [], supports: [], reason: "rewrite" });
 const ok = (receipt: { results: string[] }) => expect(receipt.results.join("; ")).not.toContain("rejected");
 
 test("the review is sent once after the first pass and no later pass end sends another", async () => {
@@ -81,6 +81,20 @@ test("the blockers are the run's check blockers, one per line", async () => {
   const { blockers, changes } = sections(p.reviews[0]!);
   expect(blockers).toMatch(/^frozen versions not deliberated: K\d+@v1, K\d+@v1$/);
   expect(changes).toBe("None.");
+});
+
+test("126: the review lists the run's changes in every pool, and a pool left over budget is a blocker", async () => {
+  const p = pool([{ text: "Global rule body.", scope: "global" }, { text: "Project rule body.", scope: "project" }], {
+    first(_task, tool, [global, project]) {
+      ok(tool("memory", { operations: [update(global!.tag, "Global rule body, extended well past its budget.", "global"),
+        update(project!.tag, "Project rule body, clarified.")], skipped: [] }));
+    } });
+  p.memory.setKnowledgeBudget("global", 5);
+  const result = await p.run();
+  expect(result.outcome).toBe("failure");
+  const [global, project] = p.items(), { blockers, changes } = sections(p.reviews[0]!);
+  expect(blockers).toMatch(/^pool global over budget: \d+\/5 tokens$/);
+  for (const item of [global!, project!]) expect(changes).toContain(p.current(item));
 });
 
 test("an item changed twice shows one net diff of changed parts only, and unchanged or reverted items are absent", async () => {

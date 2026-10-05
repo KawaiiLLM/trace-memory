@@ -70,7 +70,7 @@ export interface TraceMemoryConfig {
   };
   /** Bounded fresh-subagent maintenance; no fork mode. */
   dreaming: {
-    /** Pending-trigger cap; each pool uses min(triggerTokens, its own budget). */
+    /** The session's pending weight, summed across its pools, that makes a Dreamer run due (104). */
     triggerTokens: number;
     /** 0 = unlimited. Dreaming is bounded by timeoutMs instead. */
     maxToolRounds: number;
@@ -851,7 +851,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     } catch { return { state: "unavailable", pending: null, knowledge: null }; }
   };
   const dreamingDue = (target: TaskTarget) =>
-    store.duePools(target, cfg.dreaming.triggerTokens, cfg.compaction.sharedAllowanceTokens).length > 0;
+    store.dreamingDue(target, cfg.dreaming.triggerTokens, cfg.compaction.sharedAllowanceTokens);
   // 29d: eligibility is the trigger threshold and nothing else. The delivery pause that used to hold
   // a fork-mode Noting task until its predecessor's facts had been delivered to the foreground went
   // with the deliveries themselves (parent 29: "Old pending rows cannot pause either phase once the
@@ -894,9 +894,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         projectId = store.getSession(input.sessionId)!.projectId;
         const frozen = admitted.frozen;
         origin = frozen.range.origin;
-        // The range id is audit/binding authority, not logical task identity: 104 keys the Dreamer's
-        // logical task on its pool, so every run on one pool continues the same failure streak.
-        executionId = store.beginExecution({ sessionId: target.sessionId, phase, pool: frozen.pool, origin }, input.executionId);
+        // The range id is audit/binding authority, not logical task identity: 126 keys the Dreamer's
+        // logical task on its session alone, so every run of one session continues one failure streak.
+        executionId = store.beginExecution({ sessionId: target.sessionId, phase, origin }, input.executionId);
         return frozen;
       }
       const pendingNow = store.pendingEntries(target.sessionId, target.branch, target.headTurnId);

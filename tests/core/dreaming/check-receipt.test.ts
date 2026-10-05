@@ -4,7 +4,6 @@ import { tokens } from "../../../src/core/render/index.ts";
 
 function check(overrides: Partial<DreamingCheckResult> = {}): DreamingCheckResult {
   return {
-    pool: "project:7",
     frozenRevisionIds: [11, 12],
     ownRevisionIds: [21, 22],
     pendingRevisionIds: [30],
@@ -19,13 +18,12 @@ function check(overrides: Partial<DreamingCheckResult> = {}): DreamingCheckResul
   };
 }
 
-test("64c receipt reports the frozen pool, exact processing sets, pool budgets and blockers without mutating audit", () => {
+test("64c receipt reports the exact processing sets, pool budgets and blockers without mutating audit", () => {
   const full = check(), before = structuredClone(full);
   const receipt = renderDreamingCheckReceipt(full);
 
   expect(full).toEqual(before);
   expect(receipt).toContain("Dreamer pool check:");
-  expect(receipt).toContain("- frozen pool: project:7");
   expect(receipt).toContain("- frozen current revisions: 2 (11, 12)");
   expect(receipt).toContain("- own resulting revisions: 2 (21, 22)");
   expect(receipt).toContain("- newly pending revisions: 1 (30)");
@@ -39,10 +37,9 @@ test("64c receipt reports the frozen pool, exact processing sets, pool budgets a
 
 test("64c passing receipt explicitly has no blockers and handles empty exact sets", () => {
   const receipt = renderDreamingCheckReceipt(check({
-    pool: "global", frozenRevisionIds: [], ownRevisionIds: [], pendingRevisionIds: [],
+    frozenRevisionIds: [], ownRevisionIds: [], pendingRevisionIds: [],
     totals: [{ pool: "global", tokens: 0, budget: 4_000 }], operationFailures: [], problems: [],
   }));
-  expect(receipt).toContain("- frozen pool: global");
   expect(receipt).toContain("- frozen current revisions: 0 (none)");
   expect(receipt).toContain("- own resulting revisions: 0 (none)");
   expect(receipt).toContain("- newly pending revisions: 0 (none)");

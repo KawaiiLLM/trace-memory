@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
 import { Store, type TaskTarget } from "../../../src/core/store/index.ts";
+import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 import { entry as seedEntry, legacyFacts } from "../../support/seed.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
@@ -118,7 +119,7 @@ test.each(["project", "global"] as const)("86: declaring session's Dreamer block
   expect(f.memory.taskEligibility("dreaming", f.path).due).toBe(true);
   const claim = f.store.acquireClaim(f.path, "dreaming", "worker")!;
   expect(claim).not.toBeNull();
-  const range = f.store.retainKnowledgePoolRange(f.path, pool, claim);
+  const range = f.store.retainKnowledgePoolRange(f.path, claim);
   const before = { session: f.store.getSession(f.session.id), revisions: f.store.listKnowledgeRevisions() };
   expect(() => f.memory.declareProject(f.session.id, "move-target", "mark", f.path)).toThrow(/dreaming has a live claim/);
   expect(f.store.findProjectByName("move-target")).toBeNull();
@@ -185,14 +186,14 @@ test.each(["source", "target", "unrelated"] as const)("86: a %s project peer's l
   const peerItem = knowledge({ ...f, own: peerProject, session: peerSession, turn: peerTurn, source: peerSource, path: peerPath });
   const held = f.store.acquireClaim(peerPath, "dreaming", "peer-executor")!;
   expect(held).not.toBeNull();
-  const range = f.store.retainKnowledgePoolRange(peerPath, `project:${peerProject.id}`, held);
+  const range = f.store.retainKnowledgePoolRange(peerPath, held);
   const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: peerSession.id, branch: "main", projectId: peerProject.id,
-    claim: held, dreamingRangeId: range.id, executionId: f.store.beginExecution({ sessionId: peerSession.id, phase: "dreaming", pool: range.pool!, origin: range.origin }), createdAt: "now" });
+    claim: held, dreamingRangeId: range.id, executionId: f.store.beginExecution({ sessionId: peerSession.id, phase: "dreaming", origin: range.origin }), createdAt: "now" });
   const move = () => f.memory.declareProject(f.session.id, destination.name, "mark", f.path);
   expect(move()).toContain(destination.name);
   expect(f.store.getSession(f.session.id)!.projectId).toBe(destination.id);
   expect(f.store.getClaim(peerSession.id, "dreaming")).toEqual(held);
-  expect(f.store.dreamingRange(range.id)!.pool).toBe(`project:${peerProject.id}`);
+  expect(f.store.dreamingRange(range.id)!.pool).toBe(ALL_POOLS);
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
   const before = f.store.listKnowledgeRevisions().length;
   const commit = f.store.commitConsolidationRun({ path: peerPath, run, operations: [{ op: "update", knowledgeId: peerItem.knowledgeId,

@@ -268,16 +268,19 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [scopedParent, sessionTrigger])
       memoryFiles(memory, aPath).read(`/tm/${tag(store, item)}`);
+    // 126: the run also freezes the other pools' pending items; they are deliberated unchanged.
+    const operated = new Set([scopedParent, sessionTrigger].map(item => history(store, item)));
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: tag(store, scopedParent), text: "global child with B support",
         category: "constraint", scope: "global", supports: [`F${bFact.id}`], reason: "Direct child evidence changes scope.", topics: [] },
       { op: "archive", kind: "budget", id: tag(store, sessionTrigger), supports: [`F${aFact.id}`], reason: "Retire session trigger." },
-    ], skipped: [] }));
+    ], skipped: suppliedHandles(input.material.changed).filter(knowledge => !operated.has(knowledge))
+      .map(knowledge => ({ knowledge, because: "Not part of the scope change." })) }));
     scopedChild = publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === scopedParent.knowledgeId));
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "scope changed", request };
   });
-  expect(scopeChange.outcome).toBe("success");
+  expect(scopeChange.outcome, JSON.stringify(scopeChange)).toBe("success");
   compareCommittedGraph(store, bPath);
 
   const trigger = createDreamerTrigger(memory, aPath, aFact.id, 2, "global");

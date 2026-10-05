@@ -130,8 +130,8 @@ test("68 untouched pending stays pending and due after a failed run", async () =
   const second = f.create("session", "second ".repeat(80));
   const pool = `session:${f.session.id}`;
   f.memory.config.dreaming.triggerTokens = f.store.pendingPoolWeight(pool, f.target);
-  expect(f.store.duePools(f.target, f.memory.config.dreaming.triggerTokens).some(value => value.pool === pool)).toBe(true);
+  expect(f.store.dreamingDue(f.target, f.memory.config.dreaming.triggerTokens)).toBe(true);
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([first.commit, second.commit]);
-  expect(f.store.duePools(f.target, f.memory.config.dreaming.triggerTokens).some(value => value.pool === pool)).toBe(true);
+  expect(f.store.dreamingDue(f.target, f.memory.config.dreaming.triggerTokens)).toBe(true);
 });

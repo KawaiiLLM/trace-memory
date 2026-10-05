@@ -70,9 +70,9 @@ test.each(["consolidation", "budget", "cursor-back", "branch-switch", "path-rewr
       mutate = () => writer.mergeProject(project.id, other.id);
     } else {
       const claim = writer.acquireClaim(path, "dreaming", "memo-input-test")!;
-      const range = writer.retainKnowledgePoolRange(path, `session:${sessionId}`, claim);
+      const range = writer.retainKnowledgePoolRange(path, claim);
       if (kind === "pool-state") writer.setKnowledgeBudget("session", 1);
-      const executionId = writer.beginExecution({ sessionId, phase: "dreaming", pool: range.pool!, origin: range.origin });
+      const executionId = writer.beginExecution({ sessionId, phase: "dreaming", origin: range.origin });
       const run = writer.bindDreamingRun({ kind: "dreaming", sessionId, branch: "main", dreamingRangeId: range.id,
         executionId, claim, createdAt: time });
       mutate = () => { writer.completeKnowledgePoolRange(run, "success", range.eventIds); writer.releaseClaim(claim); };

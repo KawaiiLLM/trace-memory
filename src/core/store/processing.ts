@@ -15,20 +15,18 @@ export const DEFAULT_SHARED_ALLOWANCE_TOKENS = 10_000;
 
 /** 104: one Dreamer evaluation per session context, over its applicable pools. Due when their sizes
  * (as `check` measures them) exceed `window`, the injection base plus the shared allowance, or when
- * their nonempty pending weight, summed, reaches the trigger. The run's pool is the largest excess
- * over its own budget, else the most pending weight; ties keep the fixed global, project, session order. */
-export function dueKnowledgePool<T extends KnowledgePoolSize & { pending: readonly { tokens: number }[] }>(
-  pools: readonly T[], window: number, triggerTokens: number): T | undefined {
-  const weight = (pool: T) => pool.pending.reduce((sum, value) => sum + value.tokens, 0);
-  const excess = (pool: T) => pool.tokens - pool.budget;
+ * their nonempty pending weight, summed, reaches the trigger. 126: the answer is only whether a run is
+ * due; a run covers all of the session's pools. */
+export function dreamingDue(pools: readonly (KnowledgePoolSize & { pending: readonly { tokens: number }[] })[],
+  window: number, triggerTokens: number): boolean {
   const overflow = pools.reduce((sum, pool) => sum + pool.tokens, 0) > window;
-  const pending = pools.some(pool => pool.pending.length) && pools.reduce((sum, pool) => sum + weight(pool), 0) >= triggerTokens;
-  if (!overflow && !pending) return undefined;
-  const over = pools.filter(pool => excess(pool) > 0);
-  if (over.length) return over.reduce((best, pool) => excess(pool) > excess(best) ? pool : best);
-  const candidates = pools.filter(pool => pool.pending.length);
-  return candidates.length ? candidates.reduce((best, pool) => weight(pool) > weight(best) ? pool : best) : undefined;
+  return overflow || pools.some(pool => pool.pending.length) &&
+    pools.reduce((sum, pool) => sum + pool.pending.reduce((total, value) => total + value.tokens, 0), 0) >= triggerTokens;
 }
+
+/** 126: the fixed pool key of a Dreamer range, execution and failure streak that covers all of a
+ * session's pools. Rows written before 126 keep the one pool they named. */
+export const ALL_POOLS = "all";
 
 /** Database policy owns the base window only. The shared allowance is a fixed configuration value
  * (`compaction.sharedAllowanceTokens`), never derived from the maintenance triggers (73). */
@@ -79,18 +77,16 @@ export interface PendingKnowledgeVersion {
   material: string;
 }
 export interface KnowledgePoolSize { pool: string; tokens: number; budget: number }
-export interface DueKnowledgePool extends KnowledgePoolSize {
-  pending: PendingKnowledgeVersion[];
-}
 export interface DreamingRange {
   id: number;
   sessionId: number;
   branch: string;
   headTurnId: number;
-  /** The oldest frozen revision; null for a range with none (104: a pool chosen for its excess). */
+  /** The oldest frozen revision; null for a range with none (a run due by overflow alone). */
   anchor: number | null;
   eventIds: number[];
   origin: TriggerOrigin | null;
+  /** `ALL_POOLS` since 126; one pool on older rows; null on legacy ranges. */
   pool: string | null;
   claimToken: string | null;
   closedAt: string | null;

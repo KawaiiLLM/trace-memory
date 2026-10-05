@@ -9,6 +9,7 @@ import { renderRun } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { suppliedHandles } from "../../dreaming-skips.ts";
 import { legacyFacts } from "../../support/seed.ts";
+import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 
 const stores: Store[] = [], dirs: string[] = [];
 afterEach(() => {
@@ -237,7 +238,7 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
   expect(fstore.pendingVersions(pool, { sessionId: session.id, branch: "main", headTurnId: turn.id })).toEqual([]);
   const retained = fstore.db.prepare("SELECT * FROM dreaming_ranges WHERE id = 1").get()!;
   const origin = { sessionId: Number(retained.origin_session_id), entryIds: JSON.parse(String(retained.origin_entry_ids)) };
-  expect(retained.pool).toBe(pool);
+  expect(retained.pool).toBe(ALL_POOLS);
   expect(JSON.parse(String(retained.pending_revisions))).toEqual(expect.arrayContaining([parent.commit, trigger.commit]));
   expect(origin).toEqual({ sessionId: session.id, entryIds: [entry.id] });
   expect(fstore.getRun(result.runId)!.origin).toEqual(origin);

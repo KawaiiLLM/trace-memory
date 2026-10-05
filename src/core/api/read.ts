@@ -367,7 +367,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const path = id === undefined ? null : typeof target === "object" && "sessionId" in target
       ? target : store.knowledgePath(id);
     // Ticket 80 item 2: injection runs on every ordinary prompt, sharing this session's per-process
-    // graph memo with the footer, eligibility and knowledgePools/duePools reads of the same request.
+    // graph memo with the footer, eligibility and knowledgePools/dreamingDue reads of the same request.
     const input = store.commitGraphInput(undefined, id);
     const graph = store.commitGraph(path, path ? undefined : projectId, undefined, input);
     const records = store.knowledgeRecords(graph.revisions.map(revision => revision.knowledgeId));

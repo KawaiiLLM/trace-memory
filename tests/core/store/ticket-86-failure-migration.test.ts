@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Store, type TaskTarget } from "../../../src/core/store/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
+import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -20,10 +21,10 @@ function legacyExecution(store: Store, sessionId: number, head: number): string 
   return id;
 }
 
-function reserve(store: Store, path: TaskTarget, pool: string, executor: string) {
+function reserve(store: Store, path: TaskTarget, executor: string) {
   const claim = store.acquireClaim(path, "dreaming", executor);
   if (!claim) throw new Error("fixture Dreamer claim is unavailable");
-  return { claim, range: store.retainKnowledgePoolRange(path, pool, claim) };
+  return { claim, range: store.retainKnowledgePoolRange(path, claim) };
 }
 
 function legacyDatabase() {
@@ -50,9 +51,9 @@ function legacyDatabase() {
     const oldest = store.pendingVersions(pool, path)[0]!;
     const budget = tokens(`Pending current knowledge:\n${oldest.material}`);
     store.setKnowledgeBudget("project", budget); // One complete item fits even under the old hard cap.
-    const abandoned = reserve(store, path, pool, "abandoned");
+    const abandoned = reserve(store, path, "abandoned");
     store.releaseClaim(abandoned.claim);
-    const failed = reserve(store, path, pool, "legacy-failure");
+    const failed = reserve(store, path, "legacy-failure");
     expect(failed.range.id).toBe(second!.commit);
     expect(failed.range.anchor).toBe(first!.commit);
     expect(failed.range.eventIds).toEqual([first!.commit, second!.commit]);
@@ -62,7 +63,7 @@ function legacyDatabase() {
     store.completeKnowledgePoolRange(oldRun, "failure");
     store.settleExecution(oldExecution, "failure", store.dreamingRunId(oldRun)!, "legacy failure of first revision");
     store.releaseClaim(failed.claim);
-    const processed = reserve(store, path, pool, "legacy-success");
+    const processed = reserve(store, path, "legacy-success");
     const successExecution = legacyExecution(store, session.id, processed.range.id);
     const successRun = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", createdAt: "now",
       executionId: successExecution, dreamingRangeId: processed.range.id, claim: processed.claim });
@@ -84,14 +85,14 @@ function legacyDatabase() {
       .run(session.id, fact.facts[0]!.id, historical.id);
     // The pre-86 database had identical execution tables but no application-version marker.
     store.db.exec("PRAGMA user_version = 0");
-    return { file, path, pool, budget, disabledId: disabled.id,
+    return { file, path, budget, disabledId: disabled.id,
       beforeAudit: audit(store.db), beforeStreaks: streaks(store.db) };
   } finally { store.close(); }
 }
 
-function failNextRevision(store: Store, path: TaskTarget, pool: string) {
-  const { claim, range } = reserve(store, path, pool, "new-failure");
-  const executionId = store.beginExecution({ sessionId: path.sessionId, phase: "dreaming", pool: range.pool! });
+function failNextRevision(store: Store, path: TaskTarget) {
+  const { claim, range } = reserve(store, path, "new-failure");
+  const executionId = store.beginExecution({ sessionId: path.sessionId, phase: "dreaming" });
   const run = store.bindDreamingRun({ kind: "dreaming", sessionId: path.sessionId, branch: path.branch, createdAt: "now",
     executionId, dreamingRangeId: range.id, claim });
   store.completeKnowledgePoolRange(run, "failure");
@@ -100,7 +101,7 @@ function failNextRevision(store: Store, path: TaskTarget, pool: string) {
   return result;
 }
 
-test("86 option A: clear only old D streaks once; 104: the pool's streak then starts at one and reopen preserves its count", () => {
+test("86 option A: clear only old D streaks once; 126: the session's Dreamer streak then starts at one and reopen preserves its count", () => {
   const fixture = legacyDatabase();
   let store = new Store(fixture.file);
   try {
@@ -109,17 +110,17 @@ test("86 option A: clear only old D streaks once; 104: the pool's streak then st
     expect(audit(store.db)).toEqual(fixture.beforeAudit);
     expect(store.enabled(fixture.path.sessionId)).toBe(true);
     expect(store.enabled(fixture.disabledId)).toBe(false);
-    expect(failNextRevision(store, fixture.path, fixture.pool)).toEqual({});
+    expect(failNextRevision(store, fixture.path)).toEqual({});
     expect(store.taskFailures(fixture.path.sessionId).filter(row => row.phase === "dreaming"))
-      .toMatchObject([{ head: null, pool: fixture.pool, count: 1 }]);
+      .toMatchObject([{ head: null, pool: ALL_POOLS, count: 1 }]);
     store.close(); store = new Store(fixture.file);
     expect(store.taskFailures(fixture.path.sessionId).filter(row => row.phase === "dreaming"))
-      .toMatchObject([{ head: null, pool: fixture.pool, count: 1 }]);
-    expect(failNextRevision(store, fixture.path, fixture.pool)).toEqual({});
+      .toMatchObject([{ head: null, pool: ALL_POOLS, count: 1 }]);
+    expect(failNextRevision(store, fixture.path)).toEqual({});
     store.close(); store = new Store(fixture.file);
     expect(store.taskFailures(fixture.path.sessionId).filter(row => row.phase === "dreaming"))
-      .toMatchObject([{ head: null, pool: fixture.pool, count: 2 }]);
-    expect(failNextRevision(store, fixture.path, fixture.pool).automaticOff).toBeTruthy();
+      .toMatchObject([{ head: null, pool: ALL_POOLS, count: 2 }]);
+    expect(failNextRevision(store, fixture.path).automaticOff).toBeTruthy();
     expect(store.enabled(fixture.path.sessionId)).toBe(false);
     expect(store.enabled(fixture.disabledId)).toBe(false);
   } finally { store.close(); }

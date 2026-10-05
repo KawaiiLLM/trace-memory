@@ -33,7 +33,7 @@ export interface DreamingAgentInput extends AgentControl {
   reportRounds(rounds: number): void;
 }
 
-/** Freeze exactly one due owner pool. Processing is scheduling state: references are the pool's
+/** 126: freeze all of the session's pools. Processing is scheduling state: references are the pools'
  * current revisions outside the selected prefix; Changed contains only that frozen prefix. */
 export function freezeDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, claim?: TaskClaim,
   _origin: TriggerOrigin | null = store.triggerOrigin({ sessionId: input.sessionId, branch: input.branch,
@@ -67,28 +67,33 @@ export function admitDreaming(store: Store, input: DreamingInput, config: TraceM
 
 function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, claim: TaskClaim,
   path: { sessionId: number; branch: string; headTurnId: number },
-  { pool: due, range }: ReturnType<Store["freezeKnowledgePool"]>) {
+  { pools, range }: ReturnType<Store["freezeKnowledgePool"]>) {
   if (store.getSession(path.sessionId)!.host.startsWith("cc:") && !input.toolNames)
     throw new Error("CC Dreamer launch requires exposed tool names");
   if (input.nativeReadToolTokens !== undefined && (!Number.isSafeInteger(input.nativeReadToolTokens) || input.nativeReadToolTokens < 0))
     throw new Error("Invalid native Read token estimate: expected a nonnegative safe integer");
   const frozenIds = new Set(range.eventIds);
-  const pending = due.pending.filter(value => frozenIds.has(value.revisionId));
+  const pending = pools.flatMap(pool => pool.pending).filter(value => frozenIds.has(value.revisionId))
+    .sort((left, right) => left.revisionId - right.revisionId);
   const changed = ["Pending current knowledge:", ...pending.map(value => value.material)].join("\n");
-  // 103: remainder excludes this run's pending current versions from the pool at the exact size
-  // `check`/`Store.knowledgePools` measures (processedBlock over `due.versions`) — not their
-  // scheduling weight (a Changed item's diff, an Archived item's removed body). An Archived item's
-  // current version is never in `due.versions` (76), so excluding it removes nothing, as required.
-  const pendingRevisionIds = new Set(pending.map(value => value.revisionId));
-  const remainderValues = due.versions.filter(value => !pendingRevisionIds.has(value.revision.id));
-  const remainder = tokens(processedBlock(remainderValues, value => due.rendered.get(value.revision.id)!));
-  const excludedSize = due.tokens - remainder;
-  const processedExcessOrder = remainder > due.budget
-    ? pending.length
-      ? ` This pool is ${due.tokens}/${due.budget} tokens; this run's pending items occupy ${excludedSize}; without them it is still ${remainder}, over budget. Reduce the already-processed knowledge under the Over budget principle until that remainder fits, then deliberate the pending items below.`
-      : ` This pool is ${due.tokens}/${due.budget} tokens, over budget, and this run has no pending items. Reduce the already-processed knowledge under the Over budget principle until the pool fits.`
-    : "";
-  const references = due.versions.filter(value => !frozenIds.has(value.revision.id));
+  // 103, per pool since 126: a remainder excludes this run's pending current versions from the pool at
+  // the exact size `check`/`Store.knowledgePools` measures (processedBlock over the pool's versions) —
+  // not their scheduling weight (a Changed item's diff, an Archived item's removed body). An Archived
+  // item's current version is never among the versions (76), so excluding it removes nothing.
+  const overBudget = pools.flatMap(pool => {
+    const remainder = tokens(processedBlock(pool.versions.filter(value => !frozenIds.has(value.revision.id)),
+      value => pool.rendered.get(value.revision.id)!));
+    if (remainder <= pool.budget) return [];
+    return [pending.length
+      ? `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens; this run's pending items in it occupy ${pool.tokens - remainder}; without them it is still ${remainder}, over budget.`
+      : `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens, over budget.`];
+  });
+  const these = overBudget.length === 1 ? "that pool" : "each of these pools";
+  const processedExcessOrder = !overBudget.length ? "" : ` ${overBudget.join(" ")} ${pending.length
+    ? `Reduce the already-processed knowledge of ${these} under the Over budget principle until it fits, then deliberate the pending items below.`
+    : `This run has no pending items. Reduce the already-processed knowledge of ${these} under the Over budget principle until it fits.`}`;
+  const rendered = new Map(pools.flatMap(pool => [...pool.rendered]));
+  const references = pools.flatMap(pool => pool.versions).filter(value => !frozenIds.has(value.revision.id));
   const budgets = store.knowledgeBudgets();
   const knowledgeCapacity = budgets.injection + config.compaction.sharedAllowanceTokens;
   if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Dreamer Knowledge capacity must be a safe integer");
@@ -97,7 +102,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const referenceTitle = "Current pool knowledge outside this range:\n";
   if (processedInputCap < tokens(referenceTitle))
     throw new Error("Dreaming capacity: pending Knowledge and required framing cannot fit the Knowledge window; left pending");
-  const renderReference = (value: (typeof references)[number]) => due.rendered.get(value.revision.id)!;
+  const renderReference = (value: (typeof references)[number]) => rendered.get(value.revision.id)!;
   let old = processedBlock(references, renderReference);
   if (tokens(`${referenceTitle}${old}`) > processedInputCap) {
     const selected = budgetKnowledge(references, processedInputCap - tokens(referenceTitle),
@@ -110,10 +115,10 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   if (tokens(changed) > 10_000 || tokens([old, changed].join("\n\n")) > knowledgeCapacity)
     throw new Error("Dreaming capacity: complete Knowledge rendering exceeds its pending slice or total Knowledge window; left pending");
 
-  const frozenValues = due.versions.filter(value => frozenIds.has(value.revision.id));
-  // 76: a frozen archive is not among `due.versions` (pool size/versions exclude archives); its own
+  const frozenValues = pools.flatMap(pool => pool.versions).filter(value => frozenIds.has(value.revision.id));
+  // 76: a frozen archive is not among a pool's versions (pool size/versions exclude archives); its own
   // supports and the body it removed still need to reach D, exactly as any other frozen item's do.
-  const frozenArchives = due.archived.filter(value => frozenIds.has(value.revision.id));
+  const frozenArchives = pools.flatMap(pool => pool.archived).filter(value => frozenIds.has(value.revision.id));
   const facts = [...new Set([...frozenValues, ...frozenArchives].flatMap(value => value.revision.supports))].sort((a, b) => a - b).map(id => {
     const fact = store.getFact(id); if (!fact) throw new Error(`Missing direct support F${id}`); return fact;
   });
@@ -136,7 +141,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
       tokens(prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingToolDefinitions(), names))) +
         (input.nativeReadToolTokens ?? 0) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
-  return { sessionId: path.sessionId, branch: path.branch, path, range, pool: due.pool, frozenIds: [...frozenIds],
+  return { sessionId: path.sessionId, branch: path.branch, path, range, frozenIds: [...frozenIds],
     eventIds: [...frozenIds], changed: { versions: [...frozenValues, ...frozenArchives] }, material, text,
     profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const, claim,
     prompt, names, promptHash: createHash("sha256").update(prompt).digest("hex"),
@@ -148,7 +153,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   const { sessionId, branch, path, range } = frozen;
   let rounds = 0;
   const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
-    promptHash: frozen.promptHash, rangeFrom: `${frozen.pool}#${range.id}`, rangeTo: `${frozen.pool}#${range.id}`, createdAt: new Date().toISOString() };
+    promptHash: frozen.promptHash, rangeFrom: `${range.pool}#${range.id}`, rangeTo: `${range.pool}#${range.id}`, createdAt: new Date().toISOString() };
   let binding!: ReturnType<typeof bindTools>;
   const address = (commit: number) => {
     const revision = store.knowledgeRevision(commit)!;
@@ -159,19 +164,19 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     const revision = store.knowledgeRevision(id);
     return revision ? store.commitParents(revision).map(parent => parent.id) : [];
   })].filter(id => frozen.frozenIds.includes(id)));
-  /** 104: success is the frozen pool within its budget and every frozen version deliberated; what
-   * still prevents it is a blocker, beside rejected operations. */
+  /** 126: success is every pool of the session within its own budget and every frozen version
+   * deliberated; what still prevents it is a blocker, beside rejected operations. */
   const check = (): DreamingCheckResult => {
     const runId = store.dreamingRunId(run);
     const ownRevisionIds = runId === undefined ? [] : store.listCommitsByRun(runId).map(revision => revision.id);
     const excluded = new Set([...frozen.frozenIds, ...ownRevisionIds]);
     const operationFailures = [...binding.toolProblems, ...binding.memory.problems];
-    const pools = store.knowledgePools(path), own = pools.find(value => value.pool === frozen.pool)!;
+    const pools = store.knowledgePools(path);
     const done = deliberated(ownRevisionIds), open = frozen.frozenIds.filter(id => !done.has(id));
-    const acceptance = [...own.tokens > own.budget ? [`frozen pool ${own.pool} over budget: ${own.tokens}/${own.budget} tokens`] : [],
+    const acceptance = [...pools.filter(pool => pool.tokens > pool.budget).map(pool => `pool ${pool.pool} over budget: ${pool.tokens}/${pool.budget} tokens`),
       ...open.length ? [`frozen versions not deliberated: ${open.map(address).join(", ")}`] : []];
-    return { pool: frozen.pool, frozenRevisionIds: frozen.frozenIds, ownRevisionIds,
-      pendingRevisionIds: own.pending.map(value => value.revisionId).filter(id => !excluded.has(id)),
+    return { frozenRevisionIds: frozen.frozenIds, ownRevisionIds,
+      pendingRevisionIds: pools.flatMap(pool => pool.pending.map(value => value.revisionId)).filter(id => !excluded.has(id)).sort((a, b) => a - b),
       totals: pools.map(({ pool, budget, tokens }) => ({ pool, budget, tokens })), operationFailures,
       problems: [...operationFailures, ...acceptance] };
   };

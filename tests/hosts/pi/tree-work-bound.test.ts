@@ -22,7 +22,7 @@ test("67: a long before-tree carry and after-tree restore have bounded projectio
       { kind: "manual", createdAt: "now" });
     const projection = vi.spyOn(Store.prototype, "commitGraphInput");
     const publication = vi.spyOn(Store.prototype, "publishSourcePath");
-    const eligibility = vi.spyOn(Store.prototype, "duePools");
+    const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
     const cursorOnly = vi.spyOn(Store.prototype, "setCurrentPath");
     try {
       await h.emit("session_before_tree");
@@ -97,7 +97,7 @@ test("67: real ancestor rewind and sibling switch preserve evidence carry with d
     }
     const graph = vi.spyOn(Store.prototype, "commitGraphInput");
     const publish = vi.spyOn(Store.prototype, "publishSourcePath");
-    const due = vi.spyOn(Store.prototype, "duePools");
+    const due = vi.spyOn(Store.prototype, "dreamingDue");
     const measureCarry = async () => {
       graph.mockClear(); publish.mockClear();
       const result = await h.emit("session_before_tree");

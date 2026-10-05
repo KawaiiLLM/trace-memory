@@ -31,7 +31,7 @@ test("64c: due changed knowledge fits the knowledge window without compaction Dr
   try {
     const path = store.knowledgePath(1, "main");
     if (path.headTurnId === null) throw new Error("fixture requires a current Turn");
-    expect(store.duePools(path, 5_000).map(value => value.pool)).toContain(pool);
+    expect(store.dreamingDue(path, 5_000)).toBe(true);
     const result = await compact(h);
     expect(result.compaction.summary).toContain("rule");
     expect(h.requests).toEqual([]);

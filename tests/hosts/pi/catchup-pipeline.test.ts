@@ -77,7 +77,9 @@ for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fenc
       await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: stopped");
     } else {
       const completed = h.memory.store.listRuns(1).filter(r => r.kind === "dreaming" && r.outcome === "success");
-      expect(new Set(completed.map(run => run.rangeFrom?.split("#")[0])).size).toBe(2);
+      // 126: a run covers every pool; the checkpoints leave nothing pending in any of them.
+      expect(completed.length).toBeGreaterThan(0);
+      expect(h.memory.store.knowledgePools(h.memory.store.knowledgePath(1, "main")).flatMap(pool => pool.pending)).toEqual([]);
       await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
       const count = dreams; await settle(h); expect(dreams).toBe(count);
     }
@@ -179,7 +181,7 @@ test("92: successful N checks but does not run D below its ordinary threshold", 
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1e9 });
   try {
     await h.turn(); h.provider(async c => extract(c));
-    const eligibility = vi.spyOn(Store.prototype, "duePools");
+    const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
     await command(h, "catchup"); await settle(h);
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(1);
     expect(h.memory.store.currentKnowledge()).toHaveLength(1);
@@ -222,7 +224,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
 for (const correct of [false, true]) test(`86: bounced N ${correct ? "retries the frozen entry successfully" : "turns memory off after three failures"} without an intervening D check`, async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1e9 });
   try {
-    await h.turn(); const eligibility = vi.spyOn(Store.prototype, "duePools");
+    await h.turn(); const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
     let attempts = 0; const checks: number[] = [];
     h.provider(async c => {
       if (dreaming(c)) throw new Error("Unexpected D admission");

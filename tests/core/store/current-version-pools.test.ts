@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { tokens } from "../../../src/core/render/index.ts";
 import * as rendering from "../../../src/core/render/index.ts";
-import { TraceMemory } from "../../../src/core/api/index.ts";
+import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
+import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { Store, type RunInput, type TaskClaim } from "../../../src/core/store/index.ts";
 import { declarationContext } from "../project-declaration-context.ts";
+import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 
 const stores: Store[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); });
@@ -48,17 +50,17 @@ function claim(f: Fixture, executor = `executor-${Math.random()}`): TaskClaim {
   return value;
 }
 
-function begin(f: Fixture, pool: string, executor?: string) {
+function begin(f: Fixture, executor?: string) {
   const held = claim(f, executor);
-  const range = f.store.retainKnowledgePoolRange(f.target, pool, held);
-  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", pool: range.pool!, origin: range.origin });
+  const range = f.store.retainKnowledgePoolRange(f.target, held);
+  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", origin: range.origin });
   const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: f.target.branch,
     dreamingRangeId: range.id, executionId, claim: held, createdAt: "now" });
   return { held, range, run };
 }
 
-function consume(f: Fixture, pool: string, outcome: "success" | "failure" | "cancelled" = "success") {
-  const admitted = begin(f, pool);
+function consume(f: Fixture, outcome: "success" | "failure" | "cancelled" = "success") {
+  const admitted = begin(f);
   f.store.completeKnowledgePoolRange(admitted.run, outcome, admitted.range.eventIds);
   f.store.releaseClaim(admitted.held);
   return admitted;
@@ -76,26 +78,26 @@ function update(f: Fixture, run: RunInput, base: { knowledgeId: number; commit: 
 test("85: direct Dreaming claim and range allow below-threshold pending, never an empty over-budget range", () => {
   const f = setup(), pool = `project:${f.project.id}`;
   f.create("project", "long durable rule ".repeat(150));
-  consume(f, pool);
+  consume(f);
   const originalSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
   f.create("project", "short rule");
   const weight = f.store.pendingPoolWeight(pool, f.target);
   const budget = originalSize - 1;
   expect(weight).toBeLessThan(budget);
   f.store.setKnowledgeBudget("project", budget);
-  expect(f.store.duePools(f.target)).toEqual([]);
+  expect(f.store.dreamingDue(f.target)).toBe(false);
   expect(f.store.admitKnowledgePool(f.target, "auto").outcome).toBe("empty");
   const held = claim(f);
-  expect(() => f.store.freezeKnowledgePool(f.target, held)).toThrow(/No Knowledge pool is due/);
-  const range = f.store.retainKnowledgePoolRange(f.target, pool, held);
+  expect(() => f.store.freezeKnowledgePool(f.target, held)).toThrow(/No Dreamer run is due/);
+  const range = f.store.retainKnowledgePoolRange(f.target, held);
   expect(range.eventIds).toHaveLength(1);
-  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", pool: range.pool!, origin: range.origin });
+  const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", origin: range.origin });
   const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: "main",
     dreamingRangeId: range.id, executionId, claim: held, createdAt: "now" });
   f.store.completeKnowledgePoolRange(run, "success", range.eventIds);
   f.store.releaseClaim(held);
   f.store.setKnowledgeBudget("project", 0);
-  expect(f.store.duePools(f.target)).toEqual([]);
+  expect(f.store.dreamingDue(f.target)).toBe(false);
   expect(f.store.acquireClaim(f.target, "dreaming", "empty")).toBeNull();
   expect(f.store.admitKnowledgePool(f.target, "auto").outcome).toBe("empty");
 });
@@ -109,14 +111,13 @@ test("64c current versions: global is shared, project is shared only within its 
   expect(a.store.pendingVersions(`project:${other.project.id}`, other.target)).toEqual([]);
   expect(a.store.pendingVersions(`session:${a.session.id}`, a.target).map(v => v.revisionId)).toEqual([session.commit]);
   expect(a.store.pendingVersions(`session:${a.session.id}`, same.target)).toEqual([]);
-  consume(a, "global");
+  consume(a);
   expect(a.store.pendingVersions("global", other.target)).toEqual([]);
-  consume(a, `project:${a.project.id}`);
   expect(a.store.pendingVersions(`project:${a.project.id}`, same.target)).toEqual([]);
 });
 
 test("64c current versions: repeated updates count once at the latest rendered revision and archives count zero", () => {
-  const f = setup(), item = f.create("global", "v1"), admitted = begin(f, "global");
+  const f = setup(), item = f.create("global", "v1"), admitted = begin(f);
   const v2 = update(f, admitted.run, item, "v2 with more body");
   const v3 = update(f, admitted.run, v2, "v3 is the only current body");
   const pending = f.store.pendingVersions("global", f.target);
@@ -159,14 +160,14 @@ test("64c current versions: session visibility follows the selected branch and r
 });
 
 test("64c current versions: merge absorption yields one current identity and split yields two", () => {
-  const merged = setup(), first = merged.create("global", "first"), second = merged.create("global", "second"), mergeRun = begin(merged, "global");
+  const merged = setup(), first = merged.create("global", "first"), second = merged.create("global", "second"), mergeRun = begin(merged);
   const merge = merged.store.commitConsolidationRun({ run: mergeRun.run, path: merged.target, operations: [{ op: "merge",
     intoKnowledgeId: first.knowledgeId, intoBaseCommit: first.commit, absorb: [{ knowledgeId: second.knowledgeId, baseCommit: second.commit }],
     text: "merged", category: "constraint", scope: "global", supports: [], topics: [], reason: "deduplicate", createdAt: "now" }] });
   if (!merge.ok) throw new Error(merge.problems.join("; "));
   expect(merged.store.pendingVersions("global", merged.target).map(v => v.revisionId)).toEqual([merge.committed[0]!.commit]);
 
-  const split = setup(), parent = split.create("global", "mixed"), splitRun = begin(split, "global");
+  const split = setup(), parent = split.create("global", "mixed"), splitRun = begin(split);
   const result = split.store.commitConsolidationRun({ run: splitRun.run, path: split.target, operations: [{ op: "split",
     knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: [], reason: "separate", createdAt: "now",
     children: [{ text: "one", category: "constraint", topics: [] }, { text: "two", category: "constraint", topics: [] }] }] });
@@ -175,8 +176,9 @@ test("64c current versions: merge absorption yields one current identity and spl
 });
 
 test("64c current versions: legal P to Q to P declarations preserve pair semantics and an acyclic project graph", () => {
-  const f = setup(), projectItem = f.create("project"), globalItem = f.create("global"), sessionItem = f.create("session");
-  consume(f, `project:${f.project.id}`);
+  const f = setup(), projectItem = f.create("project");
+  consume(f);
+  const globalItem = f.create("global"), sessionItem = f.create("session");
   const beforeGlobal = f.store.pendingVersions("global", f.target).map(v => v.revisionId);
   const beforeSession = f.store.pendingVersions(`session:${f.session.id}`, f.target).map(v => v.revisionId);
   const q = f.store.createProject({ name: "Q", declaredBy: "mark" });
@@ -193,51 +195,72 @@ test("64c current versions: legal P to Q to P declarations preserve pair semanti
   expect(f.store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'knowledge_event%'").all()).toEqual([]);
 });
 
-test.each(["update", "archive", "split"] as const)("64c pool authority: global run rejects a project %s base without side effects", op => {
-  const f = setup(), global = f.create("global"), project = f.create("project"), admitted = begin(f, "global");
-  const operation = op === "update" ? { op, knowledgeId: project.knowledgeId, baseCommit: project.commit,
-    text: "forbidden", category: "constraint" as const, scope: "project" as const, supports: [], topics: [], reason: "cross pool", createdAt: "now" }
-    : op === "archive" ? { op, kind: "budget" as const, knowledgeId: project.knowledgeId, baseCommit: project.commit, supports: [], reason: "cross pool", createdAt: "now" }
-    : { op, knowledgeId: project.knowledgeId, baseCommit: project.commit, supports: [], reason: "cross pool", createdAt: "now",
+test.each(["update", "archive", "split"] as const)("126 writable set: one run may %s knowledge in each of the session's pools", op => {
+  const f = setup(), items = (["global", "project", "session"] as const).map(scope => f.create(scope, `${scope} item`));
+  const admitted = begin(f);
+  const operation = (base: { knowledgeId: number; commit: number }, scope: "global" | "project" | "session") => op === "update"
+    ? { op, knowledgeId: base.knowledgeId, baseCommit: base.commit, text: `${scope} rewritten`, category: "constraint" as const, scope,
+      supports: [], topics: [], reason: "maintenance", createdAt: "now" }
+    : op === "archive" ? { op, kind: "budget" as const, knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [], reason: "budget", createdAt: "now" }
+    : { op, knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [], reason: "separate", createdAt: "now",
       children: [{ text: "one", category: "constraint" as const, topics: [] }, { text: "two", category: "constraint" as const, topics: [] }] };
-  const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(project.knowledgeId) };
-  const result = f.store.commitConsolidationRun({ run: admitted.run, path: f.target, operations: [operation] });
-  expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.problems.join(" ")).toContain(`outside Dreamer pool global`);
-  expect(f.store.listKnowledgeRevisions()).toEqual(before.revisions);
-  expect(f.store.listKnowledgeLinks(project.knowledgeId)).toEqual(before.links);
-  expect(f.store.pendingVersions("global", f.target).map(v => v.revisionId)).toContain(global.commit);
+  const result = f.store.commitConsolidationRun({ run: admitted.run, path: f.target,
+    operations: items.map((item, index) => operation(item, (["global", "project", "session"] as const)[index]!)) });
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  expect(items.map(item => f.store.currentCommit(item.knowledgeId, f.target)[0]?.id ?? null).every(id => !items.some(item => item.commit === id))).toBe(true);
 });
 
-test("64c pool authority: every merge parent must belong to the frozen pool", () => {
-  const f = setup(), global = f.create("global"), project = f.create("project"), admitted = begin(f, "global");
+/** Another project's item: never in this session's pools. */
+function foreignItem(f: Fixture) {
+  const other = setup(f.store, "elsewhere");
+  return other.create("project", "another project's item");
+}
+
+test.each(["update", "archive", "split"] as const)("126 writable set: a %s base outside the session's pools is rejected without side effects", op => {
+  const f = setup(), own = f.create("global"), foreign = foreignItem(f), admitted = begin(f);
+  const operation = op === "update" ? { op, knowledgeId: foreign.knowledgeId, baseCommit: foreign.commit,
+    text: "forbidden", category: "constraint" as const, scope: "project" as const, supports: [], topics: [], reason: "cross pool", createdAt: "now" }
+    : op === "archive" ? { op, kind: "budget" as const, knowledgeId: foreign.knowledgeId, baseCommit: foreign.commit, supports: [], reason: "cross pool", createdAt: "now" }
+    : { op, knowledgeId: foreign.knowledgeId, baseCommit: foreign.commit, supports: [], reason: "cross pool", createdAt: "now",
+      children: [{ text: "one", category: "constraint" as const, topics: [] }, { text: "two", category: "constraint" as const, topics: [] }] };
+  const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(foreign.knowledgeId) };
+  const result = f.store.commitConsolidationRun({ run: admitted.run, path: f.target, operations: [operation] });
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.problems.join(" ")).toContain(`outside the Dreamer pools global, project:${f.project.id}, session:${f.session.id}`);
+  expect(f.store.listKnowledgeRevisions()).toEqual(before.revisions);
+  expect(f.store.listKnowledgeLinks(foreign.knowledgeId)).toEqual(before.links);
+  expect(f.store.pendingVersions("global", f.target).map(v => v.revisionId)).toContain(own.commit);
+});
+
+test("64c merge scope: merge parents from two of the session's pools are refused without side effects", () => {
+  const f = setup(), global = f.create("global"), project = f.create("project"), admitted = begin(f);
   const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(project.knowledgeId) };
   const result = f.store.commitConsolidationRun({ run: admitted.run, path: f.target, operations: [{ op: "merge",
     intoKnowledgeId: global.knowledgeId, intoBaseCommit: global.commit,
     absorb: [{ knowledgeId: project.knowledgeId, baseCommit: project.commit }], text: "forbidden merge",
     category: "constraint", scope: "global", supports: [], topics: [], reason: "cross pool", createdAt: "now" }] });
   expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.problems.join(" ")).toContain(`outside Dreamer pool global`);
+  if (!result.ok) expect(result.problems.join(" ")).toContain("merge parents and result must share one scope");
   expect(f.store.listKnowledgeRevisions()).toEqual(before.revisions);
   expect(f.store.listKnowledgeLinks(project.knowledgeId)).toEqual(before.links);
 });
 
-test("64c pool authority: a valid same-pool write followed by a wrong-pool base rolls the whole batch back", () => {
-  const f = setup(), global = f.create("global"), project = f.create("project"), admitted = begin(f, "global");
+test("64c pool authority: a valid write followed by a base outside the session's pools rolls the whole batch back", () => {
+  const f = setup(), global = f.create("global"), foreign = foreignItem(f), admitted = begin(f);
   const before = f.store.listKnowledgeRevisions();
   const result = f.store.commitConsolidationRun({ run: admitted.run, path: f.target, operations: [
     { op: "update", knowledgeId: global.knowledgeId, baseCommit: global.commit, text: "would commit", category: "constraint",
       scope: "global", supports: [], topics: [], reason: "same pool", createdAt: "now" },
-    { op: "archive", kind: "budget", knowledgeId: project.knowledgeId, baseCommit: project.commit, supports: [], reason: "wrong pool", createdAt: "now" },
+    { op: "archive", kind: "budget", knowledgeId: foreign.knowledgeId, baseCommit: foreign.commit, supports: [], reason: "wrong pool", createdAt: "now" },
   ] });
   expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.problems.join(" ")).toContain(`outside Dreamer pool global`);
+  if (!result.ok) expect(result.problems.join(" ")).toContain("outside the Dreamer pools");
   expect(f.store.listKnowledgeRevisions()).toEqual(before);
   expect(f.store.currentCommit(global.knowledgeId, f.target)[0]!.id).toBe(global.commit);
 });
 
 test.each(["success", "failure"] as const)("64c current versions: %s records the frozen range and leaves later external revisions pending", outcome => {
-  const f = setup(), first = f.create("global", "first"), admitted = begin(f, "global");
+  const f = setup(), first = f.create("global", "first"), admitted = begin(f);
   const later = f.create("global", "later external");
   f.store.completeKnowledgePoolRange(admitted.run, outcome, admitted.range.eventIds);
   expect(f.store.pendingVersions("global", f.target).map(v => v.revisionId)).toEqual([later.commit]);
@@ -246,17 +269,17 @@ test.each(["success", "failure"] as const)("64c current versions: %s records the
 });
 
 test("64c current versions: cancellation before the first commit records nothing and releases the reservation", () => {
-  const f = setup(), item = f.create("global"), first = begin(f, "global", "first");
+  const f = setup(), item = f.create("global"), first = begin(f, "first");
   f.store.completeKnowledgePoolRange(first.run, "cancelled");
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
   expect(f.store.pendingVersions("global", f.target).map(v => v.revisionId)).toEqual([item.commit]);
   f.store.releaseClaim(first.held);
-  const second = begin(f, "global", "second");
+  const second = begin(f, "second");
   expect(second.range.eventIds).toEqual(first.range.eventIds);
 });
 
 test.each(["cancelled", "failure"] as const)("64c current versions: %s after a real scope-changing commit processes range and output owners", outcome => {
-  const f = setup(), item = f.create("global"), admitted = begin(f, "global");
+  const f = setup(), item = f.create("global"), admitted = begin(f);
   const changed = update(f, admitted.run, item, "narrowed", "project");
   f.store.completeKnowledgePoolRange(admitted.run, outcome);
   expect(f.store.pendingVersions("global", f.target)).toEqual([]);
@@ -274,23 +297,23 @@ test("85: pending residual eligibility survives reopen without pool suppression 
     const pool = `project:${f.project.id}`;
     expect(tokens(["Pending current knowledge:", ...f.store.pendingVersions(pool, f.target).map(value => value.material)].join("\n"))).toBeGreaterThan(10_000);
     f.store.setKnowledgeBudget("project", 30_000);
-    consume(f, pool);
+    consume(f);
     expect(f.store.pendingPoolWeight(pool, f.target)).toBeGreaterThan(0);
-    expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
+    expect(f.store.dreamingDue(f.target, 1)).toBe(true);
     stores.splice(stores.indexOf(f.store), 1);
     f.store.close();
 
     const reopened = new Store(path); stores.push(reopened);
     expect(reopened.pendingPoolWeight(pool, f.target)).toBeGreaterThan(0);
-    expect(reopened.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
+    expect(reopened.dreamingDue(f.target, 1)).toBe(true);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 test("64c current versions: expired ownership does not reserve revisions and the stale runner cannot record", () => {
-  const f = setup(), item = f.create("global"), stale = begin(f, "global", "stale");
+  const f = setup(), item = f.create("global"), stale = begin(f, "stale");
   f.store.invalidateExecutor("stale");
   const replacementClaim = claim(f, "replacement");
-  const replacement = f.store.retainKnowledgePoolRange(f.target, "global", replacementClaim);
+  const replacement = f.store.retainKnowledgePoolRange(f.target, replacementClaim);
   expect(replacement.eventIds).toEqual([item.commit]);
   expect(() => f.store.completeKnowledgePoolRange(stale.run, "failure")).toThrow(/no longer current and unexpired/);
   expect(f.store.pendingVersions("global", f.target).map(v => v.revisionId)).toEqual([item.commit]);
@@ -322,7 +345,7 @@ test("67: pool reads batch graph, processing history and rendering independently
     }
     expect(processingReads[1]).toBe(processingReads[0]);
     graphInput.mockClear();
-    f.store.duePools(f.target);
+    f.store.dreamingDue(f.target);
     expect(graphInput).toHaveBeenCalledTimes(1);
   } finally { graphInput.mockRestore(); graph.mockRestore(); prepare.mockRestore(); render.mockRestore(); }
 });
@@ -369,18 +392,38 @@ test("67: create batches skip writer graphs while consuming operations recheck a
   } finally { graph.mockRestore(); }
 });
 
+test("126 freeze: one range takes all three pools' pending oldest first within 10,000 rendered tokens; skips are recorded in each version's own pool", () => {
+  const f = setup(), scopes = ["session", "global", "project", "global", "session", "project", "project", "global"] as const;
+  const made = scopes.map((scope, i) => ({ scope, ...f.create(scope, `${scope} item ${i} ${"word ".repeat(1_800)}`) }));
+  const pool = (scope: typeof scopes[number]) => scope === "global" ? "global" : scope === "project" ? `project:${f.project.id}` : `session:${f.session.id}`;
+  const pending = new Map(f.store.knowledgePools(f.target).flatMap(value => value.pending.map(item => [item.revisionId, item.material] as const)));
+  const slice = (count: number) => tokens(["Pending current knowledge:", ...made.slice(0, count).map(item => pending.get(item.commit)!)].join("\n"));
+  const admitted = begin(f);
+  const frozen = admitted.range.eventIds.length;
+  expect(admitted.range.pool).toBe(ALL_POOLS);
+  expect(admitted.range.eventIds).toEqual(made.slice(0, frozen).map(item => item.commit)); // oldest first across the pools
+  expect(new Set(made.slice(0, frozen).map(item => item.scope))).toEqual(new Set(["global", "project", "session"]));
+  expect(slice(frozen)).toBeLessThanOrEqual(10_000);
+  expect(slice(frozen + 1)).toBeGreaterThan(10_000);
+  expect(admitted.range.pendingRevisionIds).toEqual(made.map(item => item.commit));
+  f.store.completeKnowledgePoolRange(admitted.run, "success", admitted.range.eventIds);
+  expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed ORDER BY revision_id").all())
+    .toEqual(made.slice(0, frozen).map(item => ({ pool: pool(item.scope), revision_id: item.commit })));
+  expect(f.store.knowledgePools(f.target).flatMap(value => value.pending.map(item => item.revisionId)).sort((x, y) => x - y))
+    .toEqual(made.slice(frozen).map(item => item.commit));
+});
+
 test("85: freeze builds one pool projection; terminal consumption no longer reads pool suppression state", () => {
   const f = setup();
   f.store.setKnowledgeBudget("global", 100);
   const first = f.create("global", "evidence ".repeat(25));
-  f.create("project");
+  const project = f.create("project");
   const held = claim(f), graph = vi.spyOn(f.store, "commitGraphInput");
   try {
     const frozen = f.store.freezeKnowledgePool(f.target, held, 1);
     expect(graph).toHaveBeenCalledTimes(1);
-    expect(frozen.pool.pool).toBe("global");
-    expect(frozen.range.eventIds).toContain(first.commit);
-    const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", pool: frozen.range.pool!, origin: frozen.range.origin });
+    expect(frozen.range.eventIds).toEqual([first.commit, project.commit]);
+    const executionId = f.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", origin: frozen.range.origin });
     const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: "main",
       dreamingRangeId: frozen.range.id, executionId, claim: held, createdAt: "now" });
     const own = update(f, run, first, "maintained body");
@@ -389,7 +432,8 @@ test("85: freeze builds one pool projection; terminal consumption no longer read
     expect(graph).not.toHaveBeenCalled();
     expect(f.store.pendingVersions("global", f.target)).toEqual([]);
     expect(f.store.poolVersions("global", f.target).map(value => value.revision.id)).toEqual([own.commit]);
-    expect(f.store.pendingVersions(`project:${f.project.id}`, f.target)).toHaveLength(1);
+    // Frozen but neither skipped nor operated on: still pending.
+    expect(f.store.pendingVersions(`project:${f.project.id}`, f.target).map(value => value.revisionId)).toEqual([project.commit]);
   } finally { graph.mockRestore(); }
 });
 
@@ -426,7 +470,7 @@ test("67: admission observes intervening knowledge mutation and preserves enroll
   const f = setup(), executor = setup(f.store, "executor");
   f.store.setKnowledgeBudget("global", 100);
   const item = f.create("global", "evidence ".repeat(25));
-  expect(f.store.duePools(f.target, 1)).not.toEqual([]);
+  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
   f.store.setEnrollment(executor.session.id, false);
   expect(f.store.admitKnowledgePool(f.target, "executor", false, executor.session.id, 1)).toEqual({ outcome: "dropped" });
   expect(f.store.admitKnowledgePool(f.target, "borrowed", true, undefined, 1)).toEqual({ outcome: "dropped" });
@@ -458,27 +502,11 @@ test("67: facade Dreamer eligibility and explicit pending status each share thei
 
 test("64c current versions: same-project relabel is a processing no-op", () => {
   const f = setup(), item = f.create("project");
-  consume(f, `project:${f.project.id}`);
+  consume(f);
   const before = f.store.db.prepare("SELECT * FROM knowledge_processed").all();
   f.store.mergeProject(f.project.id, f.project.id);
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual(before);
   expect(f.store.pendingVersions(`project:${f.project.id}`, f.target).map(v => v.revisionId)).not.toContain(item.commit);
-});
-
-test("104: a run's pool is the largest excess over its own budget, else the most pending weight", () => {
-  const f = setup();
-  f.create("global", "global ".repeat(40));
-  f.create("project", "project ".repeat(80));
-  f.create("session", "session ".repeat(20));
-  const projectPool = `project:${f.project.id}`, sessionPool = `session:${f.session.id}`;
-  const size = (pool: string) => f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
-  const selected = () => f.store.duePools(f.target, 1).map(value => value.pool);
-  expect(selected()).toEqual([projectPool]); // none over budget: the most pending weight
-  f.store.setKnowledgeBudget("global", size("global") - 30);
-  f.store.setKnowledgeBudget("session", size(sessionPool) - 10);
-  expect(selected()).toEqual(["global"]); // over budget beats more pending; the larger excess first
-  f.store.setKnowledgeBudget("global", size("global") - 5);
-  expect(selected()).toEqual([sessionPool]);
 });
 
 test("104: two sessions sharing a pool start one Dreamer run", async () => {
@@ -497,4 +525,35 @@ test("104: two sessions sharing a pool start one Dreamer run", async () => {
   release();
   expect((await first).outcome).toBe("cancelled");
   expect(started).toBe(1);
+});
+
+test.each(["A", "B"] as const)("126: two sessions due at once on the shared global pool run one at a time; %s first leaves the other only what it did not freeze", async opener => {
+  let hold = true, release = () => {};
+  const runs: { sessionId: number; frozen: number[] }[] = [];
+  const memory = TraceMemory(":memory:", async raw => {
+    const task = raw as DreamingAgentInput;
+    task.acknowledgeRequest();
+    runs.push({ sessionId: task.sessionId, frozen: suppliedHandles(task.material.changed).map(handle => {
+      const [, id, ordinal] = /^K(\d+)@v(\d+)$/.exec(handle)!; return memory.store.resolveVersionOrdinal(Number(id), Number(ordinal)); }) });
+    if (hold) await new Promise<void>(resolve => { release = resolve; });
+    skipRest(task);
+    return { outcome: "success", output: "deliberated", request: { fixture: "126 shared global" } };
+  }, { dreaming: { triggerTokens: 1 } });
+  const a = setup(memory.store, "A"), b = setup(memory.store, "B");
+  const shared = a.create("global", "shared rule ".repeat(30));
+  const own = { A: a.create("project", "A's project rule"), B: b.create("project", "B's project rule") };
+  const [first, second] = opener === "A" ? [a, b] : [b, a];
+  const [firstOwn, secondOwn] = opener === "A" ? [own.A, own.B] : [own.B, own.A];
+  expect([a, b].map(value => memory.taskEligibility("dreaming", value.target).due)).toEqual([true, true]);
+  const running = memory.dream(first.target);
+  await vi.waitFor(() => expect(runs).toHaveLength(1));
+  expect(await memory.dream(second.target)).toEqual({ outcome: "dropped" }); // one database-wide Dreamer seat
+  const late = second.create("global", "late shared rule"); // written while the first run holds the global pool
+  hold = false; release();
+  expect((await running).outcome).toBe("success");
+  expect(runs[0]).toEqual({ sessionId: first.session.id, frozen: [shared.commit, firstOwn.commit] });
+  expect(memory.store.pendingVersions("global", second.target).map(value => value.revisionId)).toEqual([late.commit]);
+  expect((await memory.dream(second.target)).outcome).toBe("success");
+  expect(runs[1]).toEqual({ sessionId: second.session.id, frozen: [secondOwn.commit, late.commit].sort((x, y) => x - y) });
+  for (const f of [a, b]) expect(memory.store.knowledgePools(f.target).flatMap(pool => pool.pending)).toEqual([]);
 });

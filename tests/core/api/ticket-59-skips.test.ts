@@ -61,7 +61,7 @@ test("64c: a skip is audited but terminal success processes the frozen pair inde
   if (!("runId" in result)) throw Error("missing run");
   const response = JSON.parse(f.store.getRun(result.runId)!.response!);
   expect(response.skipped).toEqual([{ knowledge: `K${f.items[0]!.knowledgeId}@v1`, because: "reviewed; no maintenance needed" }]);
-  expect(response.check).toMatchObject({ pool: f.pool, frozenRevisionIds: [f.items[0]!.commit], ownRevisionIds: [], problems: [] });
+  expect(response.check).toMatchObject({ frozenRevisionIds: [f.items[0]!.commit], ownRevisionIds: [], problems: [] });
   expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all())
     .toEqual([{ pool: f.pool, revision_id: f.items[0]!.commit }]);
 });

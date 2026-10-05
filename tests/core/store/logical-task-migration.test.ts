@@ -3,7 +3,9 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Worker } from "node:worker_threads";
 import { Store } from "../../../src/core/store/index.ts";
+import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -40,7 +42,7 @@ function legacyDatabase() {
   db.prepare("INSERT INTO task_failures VALUES (?, 'noting', 5, 2, 'noting failed', ?, 'old'), (?, 'dreaming', 7, 3, 'dreamer failed', ?, 'old')")
     .run(session.id, noting.id, session.id, dreaming.id);
   db.close();
-  return { file, sessionId: session.id, pool: `project:${project.id}` };
+  return { file, sessionId: session.id };
 }
 
 test("104: an existing database gains the Dreamer's pool key with every execution and streak kept as it was", () => {
@@ -54,16 +56,102 @@ test("104: an existing database gains the Dreamer's pool key with every executio
       { phase: "dreaming", head: 7, pool: null, count: 3 }, { phase: "noting", head: 5, pool: null, count: 2 }]);
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(String(store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'idx_execution_task'").get()!.sql)).toContain("pool");
-    // A new Dreamer failure counts on its pool, beside the kept revision-keyed streak.
-    const execution = store.beginExecution({ sessionId: f.sessionId, phase: "dreaming", pool: f.pool });
+    // 126: a new Dreamer failure counts on the session's one Dreamer key, beside the kept revision-keyed streak.
+    const execution = store.beginExecution({ sessionId: f.sessionId, phase: "dreaming" });
     const run = store.recordRun({ kind: "dreaming", sessionId: f.sessionId, executionId: execution, outcome: "failure", createdAt: "new" });
     store.settleExecution(execution, "failure", run.id, "pool failed");
     expect(store.taskFailures(f.sessionId).filter(row => row.phase === "dreaming").map(({ head, pool, count }) => ({ head, pool, count })))
-      .toEqual([{ head: null, pool: f.pool, count: 1 }, { head: 7, pool: null, count: 3 }]);
-    expect(() => store.beginExecution({ sessionId: f.sessionId, phase: "dreaming", head: 9 })).toThrow("Dreamer logical task requires its pool");
+      .toEqual([{ head: null, pool: ALL_POOLS, count: 1 }, { head: 7, pool: null, count: 3 }]);
+    expect(() => store.beginExecution({ sessionId: f.sessionId, phase: "dreaming", head: 9 })).toThrow("Dreamer logical task has no backlog head");
     const schema = store.db.prepare("PRAGMA schema_version").get()!.schema_version;
     store.close(); store = new Store(f.file);
     expect(store.db.prepare("PRAGMA schema_version").get()!.schema_version).toBe(schema);
     expect(store.taskFailures(f.sessionId)).toHaveLength(3);
+  } finally { store.close(); }
+});
+
+/** A database from 104 to 126: Dreamer streaks and executions keyed by pool, a pre-104 revision-keyed
+ * streak, a Noting streak, and closed and open pool ranges with their run labels. */
+function perPoolDatabase() {
+  const dir = mkdtempSync(join(tmpdir(), "tm-dreamer-task-126-")); dirs.push(dir);
+  const file = join(dir, "trace.db"), store = new Store(file);
+  try {
+    const project = store.createProject({ name: "per-pool", declaredBy: "mark" });
+    const [first, second, third] = [1, 2, 3].map(n => store.createSession({ host: `per-pool-${n}`, projectId: project.id,
+      enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" }));
+    const turn = store.appendTurn({ sessionId: first!.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
+    const pool = `project:${project.id}`;
+    const run = (sessionId: number, label: string) => store.recordRun({ kind: "dreaming", sessionId, branch: "main", outcome: "failure",
+      rangeFrom: label, rangeTo: label, createdAt: "old" }).id;
+    const [projectRun, globalRun, sessionRun, otherRun] = [run(first!.id, `${pool}#1`), run(first!.id, "global#2"),
+      run(first!.id, `session:${first!.id}#3`), run(second!.id, "global#4")];
+    const execution = store.db.prepare(`INSERT INTO task_executions(id,session_id,phase,head,pool,outcome,terminal_run,reason,updated_at)
+      VALUES (?,?,'dreaming',?,?,?,?,?,'old')`);
+    execution.run("project-1", first!.id, null, pool, "failure", projectRun, "project over budget");
+    execution.run("global-1", first!.id, null, "global", "failure", globalRun, "global over budget");
+    execution.run("session-1", first!.id, null, `session:${first!.id}`, "success", sessionRun, "");
+    execution.run("other-1", second!.id, null, "global", "failure", otherRun, "timeout");
+    const failure = store.db.prepare(`INSERT INTO task_failures(session_id,phase,head,pool,count,last_reason,last_run_id,updated_at)
+      VALUES (?,?,?,?,?,?,?,?)`);
+    failure.run(first!.id, "dreaming", null, pool, 2, "project over budget", projectRun, "old-project");
+    failure.run(first!.id, "dreaming", null, "global", 1, "global over budget", globalRun, "old-global");
+    failure.run(first!.id, "dreaming", null, `session:${first!.id}`, 0, "", sessionRun, "old-session");
+    failure.run(first!.id, "dreaming", 7, null, 1, "pre-104 revision streak", null, "older");
+    failure.run(second!.id, "dreaming", null, "global", 1, "timeout", otherRun, "old-other");
+    failure.run(third!.id, "noting", 5, null, 2, "noting failed", null, "old-noting");
+    const range = store.db.prepare(`INSERT INTO dreaming_ranges(session_id,branch,head_turn_id,anchor,completed_run,pool,claim_token,closed_at,pending_revisions)
+      VALUES (?,'main',?,NULL,?,?,?,?,'[]')`);
+    range.run(first!.id, turn.id, projectRun, pool, "closed-token", "old");
+    range.run(first!.id, turn.id, null, "global", "open-token", null);
+    const snapshot = (table: string) => store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
+    return { file, first: first!.id, second: second!.id, third: third!.id, projectRun, otherRun,
+      executions: snapshot("task_executions"), ranges: snapshot("dreaming_ranges"), runs: store.listRuns(first!.id) };
+  } finally { store.close(); }
+}
+
+const streak = (store: Store, sessionId: number) => store.taskFailures(sessionId)
+  .map(({ phase, head, pool, count, lastReason, lastRunId }) => ({ phase, head, pool, count, lastReason, lastRunId }));
+
+test("126: a session's per-pool Dreamer streaks become one at their largest count; executions, ranges and run labels stay as they were", () => {
+  const f = perPoolDatabase();
+  let store = new Store(f.file);
+  try {
+    expect(streak(store, f.first)).toEqual([
+      { phase: "dreaming", head: null, pool: ALL_POOLS, count: 2, lastReason: "project over budget", lastRunId: f.projectRun },
+      { phase: "dreaming", head: 7, pool: null, count: 1, lastReason: "pre-104 revision streak", lastRunId: null }]);
+    expect(streak(store, f.second)).toEqual([
+      { phase: "dreaming", head: null, pool: ALL_POOLS, count: 1, lastReason: "timeout", lastRunId: f.otherRun }]);
+    expect(streak(store, f.third)).toEqual([
+      { phase: "noting", head: 5, pool: null, count: 2, lastReason: "noting failed", lastRunId: null }]);
+    expect(store.db.prepare("SELECT * FROM task_executions ORDER BY rowid").all()).toEqual(f.executions);
+    expect(store.db.prepare("SELECT * FROM dreaming_ranges ORDER BY rowid").all()).toEqual(f.ranges);
+    expect(store.listRuns(f.first)).toEqual(f.runs);
+    expect(store.dreamingRange(Number(f.ranges[1]!.id))).toMatchObject({ pool: "global", claimToken: "open-token" });
+    expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    store.close(); store = new Store(f.file);
+    expect(streak(store, f.first)[0]).toMatchObject({ pool: ALL_POOLS, count: 2 });
+    // The carried count continues: one more Dreamer failure of the session is its third.
+    const execution = store.beginExecution({ sessionId: f.first, phase: "dreaming" });
+    const run = store.recordRun({ kind: "dreaming", sessionId: f.first, executionId: execution, outcome: "failure", createdAt: "new" });
+    expect(store.settleExecution(execution, "failure", run.id, "global over budget").automaticOff).toContain(`S${f.first} dreaming off after three failures`);
+    expect(store.enabled(f.first)).toBe(false);
+  } finally { store.close(); }
+});
+
+test("126: stores opened at once by several threads fold the per-pool streaks exactly once", async () => {
+  const f = perPoolDatabase();
+  const module = new URL("../../../src/core/store/index.ts", import.meta.url).href;
+  await Promise.all(Array.from({ length: 4 }, () => new Promise<void>((resolve, reject) => {
+    const child = new Worker(`
+      const { workerData, parentPort } = require('node:worker_threads');
+      import(workerData.module).then(({ Store }) => { new Store(workerData.file).close(); parentPort.postMessage('done'); })
+        .catch(error => { throw error; });`, { eval: true, workerData: { module, file: f.file } });
+    child.once("error", reject);
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error(`opener exited ${code}`)));
+  })));
+  const store = new Store(f.file);
+  try {
+    expect(store.db.prepare("SELECT session_id, pool, count FROM task_failures WHERE phase = 'dreaming' AND pool IS NOT NULL ORDER BY session_id").all())
+      .toEqual([{ session_id: f.first, pool: ALL_POOLS, count: 2 }, { session_id: f.second, pool: ALL_POOLS, count: 1 }]);
   } finally { store.close(); }
 });

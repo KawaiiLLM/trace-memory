@@ -26,9 +26,9 @@ for (const operation of ["update", "merge", "split"] as const) test(`86: D ${ope
     run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [create("x ".repeat(1001))] }) : null;
   if (oversizedManual && !oversizedManual.ok) throw Error(oversizedManual.problems.join("; "));
   const claim = store.acquireClaim(path, "dreaming", "executor")!;
-  const range = store.retainKnowledgePoolRange(path, `project:${project.id}`, claim);
+  const range = store.retainKnowledgePoolRange(path, claim);
   const run = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", projectId: project.id, claim,
-    dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", pool: range.pool!, origin: range.origin }), createdAt: "now" });
+    dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", origin: range.origin }), createdAt: "now" });
   const text = "x ".repeat(1001);
   expect(tokens(text)).toBe(1001);
   const base = { supports: [], reason: "evidence", createdAt: "now" };

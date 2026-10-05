@@ -49,14 +49,13 @@ try {
       path: { sessionId: id, headTurnId: turn.id } }));
   });
   measurements = targets.map(target => {
-    const due = new Map(store.duePools(target.path).map(pool => [pool.pool, pool.reason]));
     return { sessionId: target.sessionId, lineage: target.lineage,
-      mode: target.compatibility ? "cursorless-all-paths" : "cursor", path: target.path,
+      mode: target.compatibility ? "cursorless-all-paths" : "cursor", path: target.path, due: store.dreamingDue(target.path),
       pools: store.poolSizes(target.path).map(size => {
         const current = store.poolVersions(size.pool, target.path), pending = store.pendingVersions(size.pool, target.path);
         return { pool: size.pool, current: current.length, processed: current.length - pending.length,
           pending: pending.length, pendingTokens: pending.reduce((sum, value) => sum + value.tokens, 0),
-          totalTokens: size.tokens, budget: size.budget, due: due.get(size.pool) ?? null };
+          totalTokens: size.tokens, budget: size.budget };
       }) };
   });
   foreignKeyViolations = store.db.prepare("PRAGMA foreign_key_check").all();

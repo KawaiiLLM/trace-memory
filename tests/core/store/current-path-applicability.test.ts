@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { suppliedHandles } from "../../dreaming-skips.ts";
 
 const at = "2026-09-21T00:00:00.000Z";
 const directories: string[] = [];
@@ -332,6 +333,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
     const peerFact = writeFact(store, peer.id, "main", peerNode.turn.id, peerNode.entry.id, "peer scope evidence");
     const base = create(store, ownerPath, ownerFact.id, "project", "project body");
     const tag = (item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`;
+    const history = (item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`;
     let sequence = 0;
     const update = async (prior: { knowledgeId: number; commit: number }, scope: "session" | "project", text: string) => {
       const trigger = createDreamerTrigger(memory, ownerPath, ownerFact.id, ++sequence, prior === base ? "project" : "session");
@@ -402,12 +404,15 @@ test("64b scope visibility: global current hides older visible revisions, reject
       expect(write.execute({ operations: [{ op: "merge", id: tag(widened),
         absorb: [tag(privateParent)], text: "illegal cross-scope merge",
         category: "constraint", scope: "project", supports: [`F${ownerFact.id}`], reason: "Must be refused.", topics: [] }], skipped: [] }))
-        .toContain(`base belongs to session:${owner.id}, outside Dreamer pool project:${project.id}`);
+        .toContain("merge parents and result must share one scope"); // 126: both parents are writable; scope still refuses
+
       expect(store.listKnowledgeRevisions()).toHaveLength(before);
       expect(store.currentCommit(widened.knowledgeId, ownerPath).map(item => item.id)).toEqual([widened.commit]);
       expect(store.currentCommit(privateParent.knowledgeId, ownerPath).map(item => item.id)).toEqual([privateParent.commit]);
+      const operated = history(mergeTrigger);
       expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(mergeTrigger),
-        supports: [], reason: "Retire cross-scope probe trigger." }], skipped: [] })).toContain("committed");
+        supports: [], reason: "Retire cross-scope probe trigger." }], skipped: suppliedHandles(input.material.changed)
+        .filter(knowledge => knowledge !== operated).map(knowledge => ({ knowledge, because: "Merge refused; left as it is." })) })).toContain("committed");
       return { outcome: "success", output: "cross-scope merge refused", request };
     });
     expect(mergeRun.outcome, JSON.stringify(mergeRun)).toBe("success");

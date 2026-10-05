@@ -1764,3 +1764,56 @@ test("production MCP D gets the end review after its first pass; its second-pass
     .toEqual(["Durable constraint, first rewrite", "Durable constraint, corrected in the second pass"]);
   memory.close();
 });
+
+test("126: one production MCP D run writes and skips across the session's pools and gets one end review", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-pools-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const reviews: string[] = [];
+  let operation!: Record<string, unknown>;
+  const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
+    const stream = (async function* () {
+      const prompts = request.prompt[Symbol.asyncIterator]();
+      await prompts.next();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
+      const client = new Client({ name: "dreamer-pools-test", version: "1" }); await client.connect(clientTransport);
+      yield { type: "system", subtype: "init", session_id: "dreamer-pools", messaging_socket_path: "/tmp/dreamer-pools.sock",
+        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [],
+        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      const result = { type: "result", subtype: "success", session_id: "dreamer-pools", is_error: false, result: "done", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+      yield assistant("response-1", ["memory-1"], ccWorkerToolNames.memory);
+      const written = await client.callTool({ name: "memory", arguments: operation, _meta: { "claudecode/toolUseId": "memory-1" } });
+      expect((written.content as { text: string }[])[0]!.text).not.toContain("rejected");
+      yield result;
+      reviews.push((await prompts.next()).value.message.content[0].text);
+      yield result;
+      await client.close();
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const worker = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
+  const memory = TraceMemory(join(directory, "memory.sqlite"), raw => { const task = raw as CcAgentTask; task.reportRequest({ host: "cc-dreamer-pools" });
+    return worker.run(task, 0); }, { dreaming: { triggerTokens: 1 } });
+  const project = memory.store.createProject({ name: "cc-dreamer-pools", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+  const target = append(memory, session.id, "source", "Durable CC evidence");
+  const path = { sessionId: session.id, branch: "main", headTurnId: target.turn.id };
+  const evidence = seedFact(memory, path, "Durable CC evidence", [{ entry: memory.store.hydrateSourceEntries([target.entry.id])[0]!, text: "Durable CC evidence" }]);
+  const [global, local] = knowledgeBatch(memory.store, path, (["global", "project"] as const).map(scope =>
+    ({ scope, category: "constraint" as const, supports: [evidence.id], text: `Durable ${scope} constraint` })), { kind: "manual", createdAt: "now" }).committed;
+  operation = { operations: [{ op: "update", id: `K${global!.knowledgeId}#${memory.store.versionTag(global!.knowledgeId, global!.commit)}`,
+    text: "Durable global constraint, clarified", category: "constraint", scope: "global", topics: [], supports: [], reason: "clarify" }],
+    skipped: [{ knowledge: `K${local!.knowledgeId}@v${memory.store.versionOrdinal(local!.knowledgeId, local!.commit)}`, because: "Reviewed unchanged" }] };
+  const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: target.turn.id, triggerEntryId: target.entry.id,
+    model: "claude-sonnet-4-5", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
+  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
+  expect(reviews).toHaveLength(1);
+  expect(reviews[0]).toContain("{+, clarified+}");
+  const own = memory.store.listCommitsByRun(result.runId)[0]!;
+  expect(memory.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed ORDER BY revision_id").all())
+    .toEqual([{ pool: `project:${project.id}`, revision_id: local!.commit }, { pool: "global", revision_id: own.id }]);
+  memory.close();
+});

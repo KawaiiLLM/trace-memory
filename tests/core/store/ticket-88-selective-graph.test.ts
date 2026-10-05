@@ -64,8 +64,8 @@ test("88: neutral writes do not revisit existing knowledge revisions", () => {
     store.markConsolidated(fact.id, historical.id, project.id);
     assertNeutral("C processing mark");
     const claim = store.acquireClaim(path, "dreaming", "88-neutral")!;
-    const range = store.retainKnowledgePoolRange(path, `session:${session.id}`, claim);
-    const executionId = store.beginExecution({ sessionId: session.id, phase: "dreaming", pool: range.pool!, origin: range.origin });
+    const range = store.retainKnowledgePoolRange(path, claim);
+    const executionId = store.beginExecution({ sessionId: session.id, phase: "dreaming", origin: range.origin });
     const dream = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main",
       dreamingRangeId: range.id, executionId, claim, createdAt: at });
     store.completeKnowledgePoolRange(dream, "success", range.eventIds);
@@ -288,10 +288,10 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     check();
     const target = { ...paths[0]!, branch: "main", headTurnId: a.second.id, triggerEntryId: a.entries[1]!.id };
     const claim = writer.acquireClaim(target, "dreaming", "88-linked")!;
-    const range = writer.retainKnowledgePoolRange(target, "global", claim);
+    const range = writer.retainKnowledgePoolRange(target, claim);
     const run = writer.bindDreamingRun({ kind: "dreaming", sessionId: a.session.id, branch: "main", claim,
       dreamingRangeId: range.id, executionId: writer.beginExecution({ sessionId: a.session.id, phase: "dreaming",
-        pool: range.pool!, origin: range.origin }), createdAt: at });
+        origin: range.origin }), createdAt: at });
     const commitComponents: Set<number>[][] = [];
     const maintain = (operation: Parameters<typeof writer.commitConsolidationRun>[0]["operations"][number]) => {
       const result = writer.commitConsolidationRun({ path: target, run, operations: [operation] });

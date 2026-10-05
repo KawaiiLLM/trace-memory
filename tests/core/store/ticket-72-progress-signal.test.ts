@@ -1,6 +1,6 @@
 // Ticket 72's commit-sensitive signal survives C retirement: completes 69's
 // `Store.progressSignal` — a cheap composite that changes exactly when a commit could change
-// historical fact processing, `duePools` or the footer's cached counts. This covers the two inputs 69's own
+// historical fact processing, `dreamingDue` or the footer's cached counts. This covers the two inputs 69's own
 // signal missed (a knowledge-budget edit, another session's current-path cursor) plus a third Pi's
 // review found while implementing this ticket (a non-append rewrite of a current path's membership
 // under an unchanged cursor), and asserts a pure Raw append re-arms nothing.
@@ -59,10 +59,10 @@ test("85: settling a Dreaming range changes the signal through processing record
   if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
   const path = { sessionId, branch: "main", headTurnId: turnId };
   const claim = store.acquireClaim(path, "dreaming", "ticket-72-test")!;
-  const range = store.retainKnowledgePoolRange(path, `session:${sessionId}`, claim);
+  const range = store.retainKnowledgePoolRange(path, claim);
   // Shrink the budget after the range froze; range settlement still writes processing records.
   store.setKnowledgeBudget("session", 1);
-  const executionId = store.beginExecution({ sessionId, phase: "dreaming", pool: range.pool!, origin: range.origin });
+  const executionId = store.beginExecution({ sessionId, phase: "dreaming", origin: range.origin });
   const run = store.bindDreamingRun({ kind: "dreaming", sessionId, branch: "main", dreamingRangeId: range.id, executionId, claim, createdAt: time });
   const before = store.progressSignal(sessionId);
   store.completeKnowledgePoolRange(run, "success", range.eventIds); // skip records, no pool-state write

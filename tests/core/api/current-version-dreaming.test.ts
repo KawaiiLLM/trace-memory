@@ -49,7 +49,7 @@ test("67: admission, freeze, final check and consumption have bounded independen
   } finally { graph.mockRestore(); }
 });
 
-test("64c facade freezes one due pool and terminal success processes its exact current versions", async () => {
+test("64c facade freezes the due pending and terminal success processes its exact current versions", async () => {
   let seen!: DreamingAgentInput;
   const f = fixture(async task => { seen = task; task.acknowledgeRequest(); skipAll(task); return ok; });
   const item = f.create("project", "project rule");
@@ -81,7 +81,7 @@ test("64c facade leaves an external mid-run revision pending while recording the
   expect((await running).outcome).toBe("success");
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([late.commit]);
   expect(f.store.pendingPoolWeight(pool, f.target) * 2).toBeLessThan(f.store.knowledgeBudgets().project);
-  expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool); // mid-run arrival retains pending eligibility
+  expect(f.store.dreamingDue(f.target, 1)).toBe(true); // mid-run arrival retains pending eligibility
   expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ?",).all(pool).map(row => Number(row.revision_id))).toEqual([first.commit]);
 });
 
@@ -98,7 +98,7 @@ test("64c facade cancellation before a commit closes the range without processin
   expect((await running).outcome).toBe("cancelled");
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
   expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
-  expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
+  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
 });
 
 test("64c cancelled run after a scope-changing commit processes only its resulting owner", async () => {
@@ -170,7 +170,7 @@ test.each([
     expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
     expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
       .map(row => Number(row.revision_id))).toEqual(committed ? [output] : []);
-    expect(f.store.duePools(f.target, 1).some(value => value.pool === pool)).toBe(!committed);
+    expect(f.store.dreamingDue(f.target, 1)).toBe(!committed);
     expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(!committed && !stopping && !disabled);
     expect(f.store.enabled(f.session.id)).toBe(!disabled);
     expect(f.store.taskFailures(f.session.id).every(failure => failure.count === 0)).toBe(true);
@@ -221,8 +221,8 @@ test("64c a shared global threshold can be serviced from another session while p
   f.memory.selectEntries(otherSession.id, "main", [otherEntry.id]);
   const other = { sessionId: otherSession.id, branch: "main", headTurnId: otherTurn.id, triggerEntryId: otherEntry.id };
   f.store.setKnowledgeBudget("global", f.store.pendingPoolWeight("global", other) * 2);
-  expect(f.store.duePools(other, 1).map(value => value.pool)).toContain("global");
-  expect(f.store.duePools(other, 1).map(value => value.pool)).not.toContain(`project:${f.project.id}`);
+  expect(f.store.dreamingDue(other, 1)).toBe(true);
+  expect(f.store.knowledgePools(other).map(value => value.pool)).not.toContain(`project:${f.project.id}`);
   expect((await f.memory.dream(other)).outcome).toBe("success");
   expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all()).toEqual([{ pool: "global", revision_id: global.commit }]);
 });
@@ -249,11 +249,11 @@ test("68 untouched residual stays due before and after an older version becomes 
   const remaining = f.store.pendingPoolWeight(pool, f.target);
   expect(remaining).toBeGreaterThan(0);
   expect(remaining * 2).toBeLessThan(f.store.knowledgeBudgets().project);
-  expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
+  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
 
   f.store.mergeProject(q.id, f.project.id);
   expect(old.committed[0]!.commit).toBeLessThan(Math.min(...f.store.pendingVersions(pool, f.target).filter(v => v.revisionId !== old.committed[0]!.commit).map(v => v.revisionId)));
-  expect(f.store.duePools(f.target, 1).map(value => value.pool)).toContain(pool);
+  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
 });
 
 test("85/104: an untouched residual above the pending threshold remains due; the run ending over budget fails", async () => {
@@ -266,7 +266,7 @@ test("85/104: an untouched residual above the pending threshold remains due; the
   expect((await f.memory.dream(f.target)).outcome).toBe("failure"); // 104: success needs the pool within its budget
   const residual = f.store.pendingPoolWeight(pool, f.target);
   expect(residual * 2).toBeGreaterThanOrEqual(one);
-  expect(f.store.duePools(f.target, 1).some(value => value.pool === pool)).toBe(true);
+  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
 });
 
 test("64c successful terminal transaction persists the full provider audit", async () => {
@@ -278,7 +278,7 @@ test("64c successful terminal transaction persists the full provider audit", asy
   if (!("runId" in result)) throw new Error("missing run");
   const run = f.store.getRun(result.runId)!;
   expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.response!)).toMatchObject({ check: { pool }, nativeLog: "/tmp/dream.jsonl", usage: { input: 7, output: 3 } });
+  expect(JSON.parse(run.response!)).toMatchObject({ check: { totals: expect.arrayContaining([expect.objectContaining({ pool })]) }, nativeLog: "/tmp/dream.jsonl", usage: { input: 7, output: 3 } });
   expect(JSON.parse(run.request!)).toEqual({ exact: "request" });
 });
 
@@ -290,7 +290,7 @@ test.each(["failure", "cancelled"] as const)("64c %s terminal transaction persis
   if (!("runId" in result)) throw new Error("missing run");
   const run = f.store.getRun(result.runId)!;
   expect(run.outcome).toBe(terminal);
-  expect(JSON.parse(run.response!)).toMatchObject({ output: `${terminal} output`, check: { pool }, nativeLog: `/tmp/${terminal}.jsonl` });
+  expect(JSON.parse(run.response!)).toMatchObject({ output: `${terminal} output`, check: { totals: expect.arrayContaining([expect.objectContaining({ pool })]) }, nativeLog: `/tmp/${terminal}.jsonl` });
   expect(JSON.parse(run.request!)).toEqual({ terminal });
   expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([item.commit]);
@@ -306,7 +306,7 @@ test("64c rejected terminal transaction rolls back processing but preserves atte
   expect(result.outcome).toBe("failure");
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([item.commit]);
-  expect(JSON.parse(f.store.getRun(result.runId)!.response!)).toMatchObject({ check: { pool }, output: "done" });
+  expect(JSON.parse(f.store.getRun(result.runId)!.response!)).toMatchObject({ check: { totals: expect.arrayContaining([expect.objectContaining({ pool })]) }, output: "done" });
 });
 
 test("85: a cancelled pending run does not consume its frozen versions", async () => {
@@ -322,12 +322,12 @@ test("85: a cancelled pending run does not consume its frozen versions", async (
   expect((await f.memory.dream(f.target)).outcome).toBe("success"); // clears pending; under budget writes no state row
   const firstSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
   f.store.setKnowledgeBudget("project", firstSize - 1);
-  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(false);
+  expect(f.store.dreamingDue(f.target)).toBe(false);
   f.create("project", "another rule");
-  expect(f.store.duePools(f.target, 1).some(value => value.pool === pool)).toBe(true);
+  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
   mode = "cancel";
   expect((await f.memory.dream(f.target)).outcome).toBe("cancelled");
-  expect(f.store.duePools(f.target, 1).some(value => value.pool === pool)).toBe(true);
+  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
 });
 
 test("85: a cancelled run still records skipped versions without suppression state", async () => {
@@ -348,5 +348,5 @@ test("85: a cancelled run still records skipped versions without suppression sta
   mode = "cancelAfterSkip";
   expect((await f.memory.dream(f.target)).outcome).toBe("cancelled");
   expect(f.store.pendingVersions(pool, f.target)).toEqual([]);
-  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(false);
+  expect(f.store.dreamingDue(f.target)).toBe(false);
 });

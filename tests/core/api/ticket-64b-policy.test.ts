@@ -75,10 +75,10 @@ function retainedFixture() {
   store.setCurrentPath(f.session.id, "left", f.left.id, "test-lineage");
   store.setCurrentPath(foreign.id, "child", foreignChild.id, "test-lineage");
   const claim = store.acquireClaim(target, "dreaming", "64b-policy")!;
-  const range = store.retainKnowledgePoolRange(target, `project:${f.session.projectId}`, claim);
+  const range = store.retainKnowledgePoolRange(target, claim);
   expect(range.eventIds).toEqual([stable.committed[0]!.commit, unrelated.committed[0]!.commit]);
   const run: RunInput = store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: "left", claim,
-    dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: f.session.id, phase: "dreaming", pool: range.pool!, origin: range.origin }), createdAt: at });
+    dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: f.session.id, phase: "dreaming", origin: range.origin }), createdAt: at });
   return { ...f, store, target, range, claim, run, stable: stable.committed[0]!, unrelated: unrelated.committed[0]!,
     foreign, foreignRoot };
 }

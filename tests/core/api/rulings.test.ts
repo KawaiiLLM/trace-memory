@@ -1,5 +1,5 @@
 import { readHandle } from "../../read-handle-fixture.ts";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { knowledgeStatusNotes } from "../../../src/core/api/read.ts";
 import { compacted, recorded } from "../../source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
@@ -614,8 +614,69 @@ test("2026-09-28, 104: '可以让总量超过20 + 10 就可以触发' — a sess
   expect(due()).toBe(false);
   memory.config.compaction.sharedAllowanceTokens = global!.tokens - 1;
   expect(due()).toBe(true);
-  expect(memory.store.duePools(path, memory.config.dreaming.triggerTokens, memory.config.compaction.sharedAllowanceTokens))
-    .toEqual([expect.objectContaining({ pool: "global" })]);
+});
+
+test.each(["pending", "overflow"] as const)("2026-10-05, 126: '两个阈值中任意一个触发，成功执行后应该都是待处理减少10k、知识在20k之内' — a run due by %s ends with every pool within its budget and its frozen pending processed; pending beyond 10k stays pending", async trigger => {
+  const { path, write, create } = memoryWriter();
+  const item = (scope: "global" | "project" | "session", label: string, words: number) =>
+    write([{ ...create, scope, text: `${label} ${"word ".repeat(words)}` }]).committed[0];
+  const pools = () => memory.store.knowledgePools(path);
+  const pendingIds = () => pools().flatMap(pool => pool.pending.map(value => value.revisionId)).sort((a, b) => a - b);
+  const defaults = () => { for (const [field, value] of [["global", 4_000], ["project", 15_000], ["session", 1_000]] as const) memory.setKnowledgeBudget(field, value); };
+  memory.config.compaction.sharedAllowanceTokens = 10_000;
+  if (trigger === "overflow") {
+    // Already-processed knowledge: 4.8k global and 20k project, deliberated by setup runs under roomy budgets.
+    item("global", "Processed global A", 2_400); item("global", "Processed global B", 2_400);
+    for (let i = 0; i < 10; i++) item("project", `Processed project ${i}`, 2_000);
+    for (const field of ["global", "project", "session"] as const) memory.setKnowledgeBudget(field, 100_000);
+    memory.config.dreaming.triggerTokens = 1;
+    while (pendingIds().length) expect((await admittedScenarios.run(memory, path, input => {
+      input.acknowledgeRequest(); skipRest(input); return ok([]); })).outcome).toBe("success");
+    defaults();
+    memory.config.dreaming.triggerTokens = 50_000; // pending stays below the trigger: overflow alone makes the run due
+    for (let i = 0; i < 9; i++) item("project", `Pending project ${i}`, 1_400);
+  } else {
+    memory.config.dreaming.triggerTokens = 10_000;
+    item("global", "Pending global A", 1_500); item("global", "Pending global B", 1_500);
+    for (let i = 0; i < 8; i++) item("project", `Pending project ${i}`, 1_400);
+    item("session", "Pending session", 300);
+    defaults();
+    memory.setKnowledgeBudget("global", pools()[0]!.tokens - 1); // a pool over budget the run must also bring back
+  }
+  const state = memory.dreamingPending(path);
+  if (state.state !== "known") throw new Error("dreaming state unavailable");
+  expect(state.pending.tokens >= state.pending.trigger).toBe(trigger === "pending");
+  expect(state.knowledge.tokens > state.knowledge.window).toBe(trigger === "overflow");
+  expect(memory.taskEligibility("dreaming", path).due).toBe(true);
+  const before = pendingIds();
+  const material = new Map(pools().flatMap(pool => pool.pending.map(value => [value.revisionId, value.material] as const)));
+
+  let frozen: number[] = [], changedTokens = 0;
+  const result = await admittedScenarios.run(memory, path, input => {
+    input.acknowledgeRequest();
+    const handles = suppliedHandles(input.material.changed);
+    frozen = handles.map(handle => { const [, id, ordinal] = /^K(\d+)@v(\d+)$/.exec(handle)!; return memory.store.resolveVersionOrdinal(Number(id), Number(ordinal)); });
+    changedTokens = tokens(input.material.changed);
+    const memoryTool = input.tools.find(tool => tool.name === "memory")!, consumed: string[] = [];
+    // Scripted budget reduction: archive each over-budget pool's oldest item until every pool fits.
+    for (let over = pools().find(pool => pool.tokens > pool.budget); over; over = pools().find(pool => pool.tokens > pool.budget)) {
+      const oldest = [...over.versions].sort((a, b) => a.revision.id - b.revision.id)[0]!.revision;
+      expect(memoryTool.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(oldest.knowledgeId, oldest.id), supports: [],
+        reason: "Over budget: the oldest item is retired." }], skipped: [] })).toContain("committed");
+      consumed.push(history(oldest.knowledgeId, oldest.id));
+    }
+    expect(skipRest(input, consumed)).toContain("committed");
+    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+    return ok([]);
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  for (const pool of pools()) expect(pool.tokens, pool.pool).toBeLessThanOrEqual(pool.budget);
+  expect(changedTokens).toBeLessThanOrEqual(10_000);
+  expect(frozen).toEqual(before.slice(0, frozen.length)); // the oldest pending first, across pools
+  // A full slice: the next pending version would have crossed 10,000 rendered tokens.
+  expect(tokens(["Pending current knowledge:", ...[...frozen, before[frozen.length]!].map(id => material.get(id)!)].join("\n"))).toBeGreaterThan(10_000);
+  expect(pendingIds()).toEqual(before.slice(frozen.length)); // every frozen version processed; the rest stays pending
+  expect(pendingIds().length).toBeGreaterThan(0);
 });
 
 test("92 §§6–8: a D range excludes a later version from this run's material and processing", async () => {

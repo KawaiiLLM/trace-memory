@@ -34,12 +34,12 @@ function create(store: Store, owner: ReturnType<typeof session>, text: string, s
   return result.committed[0]!;
 }
 
-function processPool(store: Store, path: TaskTarget, pool: string) {
+function processPool(store: Store, path: TaskTarget) {
   const claim = store.acquireClaim(path, "dreaming", `processor-${Math.random()}`);
   if (!claim) throw new Error("Dreamer claim unavailable");
   try {
-    const range = store.retainKnowledgePoolRange(path, pool, claim);
-    const executionId = store.beginExecution({ sessionId: path.sessionId, phase: "dreaming", pool: range.pool!, origin: range.origin });
+    const range = store.retainKnowledgePoolRange(path, claim);
+    const executionId = store.beginExecution({ sessionId: path.sessionId, phase: "dreaming", origin: range.origin });
     const run = store.bindDreamingRun({ kind: "dreaming", sessionId: path.sessionId, branch: path.branch,
       dreamingRangeId: range.id, executionId, claim, createdAt: "now" });
     store.completeKnowledgePoolRange(run, "success", range.eventIds);
@@ -57,7 +57,7 @@ test("64c hand-over keeps source processing history and makes current project ve
   const author = session(store, implicit.id, "undeclared"), reader = session(store, target.id);
   const first = create(store, author, "first"), second = create(store, author, "second");
   const sourcePool = `project:${implicit.id}`, targetPool = `project:${target.id}`;
-  processPool(store, author.path, sourcePool);
+  processPool(store, author.path);
   const counts = Object.fromEntries(["facts", "knowledge", "knowledge_revisions"].map(table =>
     [table, store.db.prepare(`SELECT count(*) AS count FROM ${table}`).get()!.count]));
 
@@ -72,7 +72,7 @@ test("64c hand-over keeps source processing history and makes current project ve
   store.close(); stores.splice(stores.indexOf(store), 1);
   store = new Store(file); stores.push(store);
   expect(store.pendingVersions(targetPool, reader.path).map(value => value.revisionId)).toEqual([first.commit, second.commit]);
-  processPool(store, reader.path, targetPool);
+  processPool(store, reader.path);
   expect(store.pendingVersions(targetPool, reader.path)).toEqual([]);
 });
 
@@ -83,11 +83,11 @@ test("86 moved project versions become pending again on a round trip, without cl
   const author = session(store, implicit.id), reader = session(store, target.id);
   const item = create(store, author, "current project version");
   const sourcePool = `project:${implicit.id}`, targetPool = `project:${target.id}`;
-  processPool(store, author.path, sourcePool);
+  processPool(store, author.path);
 
   store.declareProject(author.value.id, target.name, "mark", ready(author.path));
   expect(store.pendingVersions(targetPool, reader.path).map(value => value.revisionId)).toEqual([item.commit]);
-  processPool(store, reader.path, targetPool);
+  processPool(store, reader.path);
   expect(store.pendingVersions(targetPool, reader.path)).toEqual([]);
 
   store.declareProject(author.value.id, implicit.name, "mark", ready(author.path));
@@ -109,10 +109,8 @@ test("86: moving only the initiating session unprocesses only its project versio
   const global = create(store, moving, "global unchanged", "global");
   const local = create(store, moving, "session unchanged", "session");
   const from = `project:${source.id}`, into = `project:${target.id}`;
-  processPool(store, moving.path, from);
-  processPool(store, reader.path, into);
-  processPool(store, moving.path, "global");
-  processPool(store, moving.path, `session:${moving.value.id}`);
+  processPool(store, moving.path); // 126: one run processes the source project, global and session pools
+  processPool(store, reader.path);
   store.declareProject(moving.value.id, target.name, "mark", ready(moving.path));
   expect(store.pendingVersions(into, reader.path).map(value => value.revisionId)).toContain(moved.commit);
   expect(store.pendingVersions(into, reader.path).map(value => value.revisionId)).not.toContain(targetItem.commit);
@@ -128,14 +126,14 @@ test("86: moved current revision becomes pending, while another writer's process
   const author = session(store, target.id), moving = session(store, target.id);
   const original = create(store, author, "first author original text");
   const pool = `project:${target.id}`;
-  processPool(store, author.path, pool);
+  processPool(store, author.path);
   const revised = commitNoterKnowledge(store, { path: moving.path, run: { sessionId: moving.value.id, branch: "main", createdAt: "now" }, operations: [
     { op: "update", knowledgeId: original.knowledgeId, baseCommit: original.commit, text: "second author revised text",
       category: "constraint", scope: "project", supports: [moving.fact.id], topics: [], reason: "new evidence", createdAt: "now" },
   ] });
   if (!revised.ok) throw Error(revised.problems.join("; "));
   const current = revised.committed[0]!;
-  processPool(store, moving.path, pool);
+  processPool(store, moving.path);
   store.declareProject(moving.value.id, source.name, "mark", ready(moving.path));
   store.declareProject(moving.value.id, target.name, "mark", ready(moving.path));
   expect(store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
@@ -151,7 +149,7 @@ test("92: a tiny pool budget triggers but does not cap the 10k oldest-first rang
   const oldest = create(store, author, "oldest whole knowledge"), later = create(store, author, "later whole knowledge");
   store.setKnowledgeBudget("project", 1);
   const claim = store.acquireClaim(author.path, "dreaming", "worker")!;
-  const range = store.retainKnowledgePoolRange(author.path, `project:${project.id}`, claim);
+  const range = store.retainKnowledgePoolRange(author.path, claim);
   expect(range.eventIds).toEqual([oldest.commit, later.commit]);
   expect(store.pendingVersions(`project:${project.id}`, author.path).map(value => value.revisionId)).toEqual([oldest.commit, later.commit]);
 });
@@ -165,8 +163,8 @@ test("64c hand-over may cross the target budget; budget triggers but never block
   const moved = create(store, author, "moved ".repeat(words));
   const existing = create(store, reader, "existing ".repeat(words));
   const sourcePool = `project:${implicit.id}`, targetPool = `project:${target.id}`;
-  processPool(store, author.path, sourcePool);
-  processPool(store, reader.path, targetPool);
+  processPool(store, author.path);
+  processPool(store, reader.path);
   const before = store.poolSizes(reader.path).find(total => total.pool === targetPool)!.tokens;
 
   store.declareProject(author.value.id, target.name, "mark", ready(author.path));
@@ -175,9 +173,26 @@ test("64c hand-over may cross the target budget; budget triggers but never block
   expect(after.tokens).toBeGreaterThan(before);
   expect(after.tokens).toBeGreaterThan(after.budget);
   expect(store.pendingVersions(targetPool, reader.path).map(value => value.revisionId)).toEqual([moved.commit]);
-  expect(store.duePools(reader.path, 5_000).map(value => value.pool)).toContain(targetPool);
-  expect(() => processPool(store, reader.path, targetPool)).not.toThrow();
+  expect(store.dreamingDue(reader.path, 5_000)).toBe(true);
+  expect(() => processPool(store, reader.path)).not.toThrow();
   expect(store.pendingVersions(targetPool, reader.path)).toEqual([]);
   expect(store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(targetPool)
     .map(row => Number(row.revision_id))).toEqual([moved.commit, existing.commit].sort((a, b) => a - b));
+});
+
+test("126: a frozen version that a sibling's declaration moves out of the run's pools mid-run stays pending in its new pool", () => {
+  const store = new Store(":memory:"); stores.push(store);
+  const source = store.createProject({ name: "shared-source", declaredBy: "mark" });
+  const target = store.createProject({ name: "moved-target", declaredBy: "mark" });
+  const runner = session(store, source.id), mover = session(store, source.id);
+  const moved = create(store, mover, "item written by the session that moves");
+  const claim = store.acquireClaim(runner.path, "dreaming", "runner")!;
+  const range = store.retainKnowledgePoolRange(runner.path, claim);
+  expect(range.eventIds).toEqual([moved.commit]);
+  const run = store.bindDreamingRun({ kind: "dreaming", sessionId: runner.value.id, branch: "main", dreamingRangeId: range.id,
+    executionId: store.beginExecution({ sessionId: runner.value.id, phase: "dreaming", origin: range.origin }), claim, createdAt: "now" });
+  store.declareProject(mover.value.id, target.name, "mark", ready(mover.path));
+  store.completeKnowledgePoolRange(run, "success", range.eventIds);
+  expect(store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
+  expect(store.pendingVersions(`project:${target.id}`, mover.path).map(value => value.revisionId)).toEqual([moved.commit]);
 });

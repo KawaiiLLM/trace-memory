@@ -87,8 +87,8 @@ test("ticket 69: the cache invalidates on N knowledge publication and D settleme
     // A Dreamer commit against this pool, run through the ordinary claim/range/execution pipeline.
     const path = { sessionId, branch: "main", headTurnId: turnId };
     const claim = store.acquireClaim(path, "dreaming", "ticket-69-test")!;
-    const range = store.retainKnowledgePoolRange(path, `session:${sessionId}`, claim);
-    const executionId = store.beginExecution({ sessionId, phase: "dreaming", pool: range.pool!, origin: range.origin });
+    const range = store.retainKnowledgePoolRange(path, claim);
+    const executionId = store.beginExecution({ sessionId, phase: "dreaming", origin: range.origin });
     const run = store.bindDreamingRun({ kind: "dreaming", sessionId, branch: "main", dreamingRangeId: range.id, executionId, claim, createdAt: time });
     store.completeKnowledgePoolRange(run, "success", range.eventIds); // reviewed, no operation needed
     store.releaseClaim(claim);
