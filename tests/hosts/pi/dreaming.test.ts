@@ -102,7 +102,7 @@ test("32d native host: turn settlement starts a fresh Dreamer and records its fr
     expect({ sessionId: execution.origin_session_id, entryIds: JSON.parse(String(execution.origin_entry_ids)) }).toEqual(run.origin);
     expect(processedIn(store, pool, item.commit)).toBe(true);
     expect(JSON.parse(readFileSync(join(h.dir, "agent", "settings.json"), "utf8")).compaction.enabled).toBe(true);
-    expect(h.requests).toHaveLength(2);
+    expect(h.requests).toHaveLength(3); // skip batch, pass-ending reply, and the reply to the end review (125)
   } finally { await h.dispose(); }
 });
 
@@ -120,7 +120,7 @@ test("32d native host: pass ends after all intermediate tool turns; first memory
     }, { autoStop: false });
     await h.turn();
     const run = await terminal(h);
-    expect(run.outcome).toBe("success"); expect(requests).toBe(3);
+    expect(run.outcome).toBe("success"); expect(requests).toBe(4); // 125: the fourth request answers the end review
     expect(JSON.parse(run.response!).rounds).toBe(2);
     expect(processedIn(store, pool, store.listKnowledgeRevisions().at(-1)!.id)).toBe(true);
   } finally { await h.dispose(); }
@@ -176,7 +176,8 @@ test("64c native host: a reads-only first pass ends without a repair round; 104:
     expect(repairMessages).toEqual([]);
     expect(initialTools).toEqual(["search", "check", "memory", "read"]);
     expect(transient).toBe(false);
-    expect(requests).toBe(25); // 24 tool rounds and one pass-ending text
+    expect(requests).toBe(26); // 24 tool rounds, one pass-ending text, and the reply to the end review (125)
+    expect(log.filter(e => JSON.stringify(e).includes("Before this run ends, review it once."))).not.toEqual([]);
   } finally { await h.dispose(); }
 });
 
@@ -189,7 +190,7 @@ test("32d native host: Noter and Dreamer occupy independent seats", async () => 
     let dreamerRequests = 0;
     h.provider(async c => { const dreamer = c.systemPrompt!.startsWith("# Dreamer"); phases.add(dreamer ? "D" : "N"); await held;
       if (!dreamer) return emptyNote(c) ?? reply("Done");
-      if (++dreamerRequests > 2) throw new Error("Unexpected Dreamer continuation");
+      if (++dreamerRequests > 3) throw new Error("Unexpected Dreamer continuation"); // skip batch, closing reply, end review (125)
       return dreamerRequests === 1 ? skip(`K${item.knowledgeId}@v1`) : reply("Done"); }, { autoStop: false });
     await h.turn();
     await vi.waitFor(() => expect([...phases].sort()).toEqual(["D", "N"]));
@@ -243,5 +244,32 @@ test("64c native host: provider overflow keeps the archive and consumes the fail
     expect(processedIn(store, pool, archive.id)).toBe(true);
     const entries = readFileSync(JSON.parse(run.response!).nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(entries.some(e => e.type === "compaction")).toBe(false);
+  } finally { await h.dispose(); }
+});
+
+test("125: native Dreamer gets the end review once after its first pass; a second-pass operation commits and no third pass follows", async () => {
+  const { h, store, item } = await seeded();
+  try {
+    const update = (id: string, text: string, reason: string) => call(reason, "memory", { operations: [{ op: "update", id, text,
+      category: "constraint", scope: "project", supports: [], topics: [], reason }], skipped: [] });
+    const reviewed: boolean[] = [];
+    h.provider(async conversation => {
+      const review = conversation.messages.map(message => JSON.stringify(message.content))
+        .find(text => text.includes("Before this run ends, review it once."));
+      reviewed.push(review !== undefined);
+      switch (reviewed.length) {
+        case 1: return update(item.tagged, "Keep the user's constraint", "clarify");
+        case 2: return reply("Done first pass");
+        case 3: return update(/\[(K\d+#[a-z]+)\]/.exec(review!)![1]!, "Keep the user's constraint, restored", "restore a clause");
+        case 4: return reply("Reviewed");
+        default: throw new Error("Unexpected third pass");
+      }
+    }, { autoStop: false });
+    await h.turn();
+    const run = await terminal(h);
+    expect(run.outcome, run.response ?? "").toBe("success");
+    expect(reviewed).toEqual([false, false, true, true]);
+    expect(store.listCommitsByRun(run.id).map(revision => revision.text))
+      .toEqual(["Keep the user's constraint", "Keep the user's constraint, restored"]);
   } finally { await h.dispose(); }
 });

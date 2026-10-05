@@ -11,6 +11,7 @@ import type { NotingInput } from "../noting/index.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { TriggerOrigin } from "../model/index.ts";
 import { renderDreamingCheckReceipt, type DreamingCheckResult } from "./check-receipt.ts";
+import { renderDreamingReview } from "./review.ts";
 
 
 export type DreamingInput = Omit<NotingInput, "mode" | "effectiveMode" | "visible" | "boundary">;
@@ -27,6 +28,7 @@ export interface DreamingAgentInput extends AgentControl {
   tools: import("../api/tools.ts").ToolDefinition[];
   acknowledgeRequest(): void;
   reportRequest(request: unknown): void;
+  /** Called when a pass ends: the one end review on the first call, `undefined` after that. */
   passEnd(rounds: number): string | undefined;
   reportRounds(rounds: number): void;
 }
@@ -180,12 +182,18 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
       : binding.memory.skippedCommits.includes(commit) || binding.memory.allCommitted.some(item =>
           store.commitParents(store.knowledgeRevision(item.commit)!).some(parent => parent.id === commit))
         ? "version was already consumed by this run" : undefined });
+  let reviewed = false;
   let result: RunAgentResult;
   try {
     result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt: frozen.prompt, promptHash: frozen.promptHash,
       text: frozen.text, material: frozen.material, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
       tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
-      passEnd: (used: number) => { rounds = used; return undefined; }, reportRounds: (used: number) => { rounds = used; } } satisfies DreamingAgentInput);
+      passEnd: (used: number) => {
+        rounds = used;
+        if (reviewed) return undefined;
+        reviewed = true;
+        return renderDreamingReview(store, store.dreamingRunId(run), check().problems);
+      }, reportRounds: (used: number) => { rounds = used; } } satisfies DreamingAgentInput);
   } catch (error) { result = agentException(error); }
   binding.close();
   if (store.closed) return { outcome: "dropped" };

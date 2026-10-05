@@ -6119,7 +6119,7 @@ ${selectedCommitLine(r, fields2, versionLabel ?? (address2 ? `K${r.knowledgeId}`
   const rendered = renderSemantic(prefix, r.text, suffix, cap);
   return !address2 || rendered === prefix + r.text + suffix ? rendered : renderSemantic(`[K${value.knowledge.id}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] `, r.text, suffix, cap);
 }
-function diffText(before, after) {
+function diffText(before, after, context) {
   const split = (text) => text.match(new RegExp("\\p{Script=Han}|[\\p{L}\\p{N}\\p{M}_]+|\\s+|[^\\s]", "gu")) ?? [];
   const tokenize = (text) => split(text).flatMap((part) => part.match(new RegExp("\\p{Script=Han}|[^\\p{Script=Han}]+", "gu")) ?? []);
   const a = tokenize(before), b = tokenize(after);
@@ -6142,7 +6142,12 @@ function diffText(before, after) {
     } else if (i < a.length && (j === b.length || lengths[i + 1][j] >= lengths[i][j + 1])) append("remove", a[i++]);
     else append("add", b[j++]);
   }
-  return spans.map(({ kind, text }) => kind === "same" ? text : kind === "remove" ? `[-${text}-]` : `{+${text}+}`).join("");
+  return spans.map(({ kind, text }, index) => {
+    if (kind !== "same") return kind === "remove" ? `[-${text}-]` : `{+${text}+}`;
+    if (context === void 0) return text;
+    const chars = [...text], head = index > 0 ? context : 0, tail = index < spans.length - 1 ? context : 0;
+    return chars.length <= head + tail ? text : `${chars.slice(0, head).join("")}[...]${chars.slice(chars.length - tail).join("")}`;
+  }).join("");
 }
 function wordSegments(text) {
   return [...new Intl.Segmenter(void 0, { granularity: "word" }).segment(text)].map((part) => part.segment);
@@ -6198,8 +6203,8 @@ function renderKnowledgeChange(knowledgeId2, baseline, current, address2 = `K${k
   ].filter(Boolean).join(" ");
   return { text: lines.join("\n"), addedTokens: tokens(added), removedTokens: tokens(removed) };
 }
-function renderKnowledgeDiff(a, b, revisions, cap = Infinity, fields2, address2 = (r) => `K${r.knowledgeId}@${r.id}`, rangeAddress = `${address2(a)}..${address2(b)}`) {
-  const text = diffText(a.text, b.text), identity = `[${rangeAddress}]`;
+function renderKnowledgeDiff(a, b, revisions, cap = Infinity, fields2, address2 = (r) => `K${r.knowledgeId}@${r.id}`, rangeAddress = `${address2(a)}..${address2(b)}`, context) {
+  const text = diffText(a.text, b.text, context), identity = `[${rangeAddress}]`;
   if (fields2) {
     const prefix2 = fields2.has("text") ? `${identity}
   text: ` : identity;
@@ -6212,7 +6217,7 @@ function renderKnowledgeDiff(a, b, revisions, cap = Infinity, fields2, address2 
       ...fields2.has("status") && a.scope !== b.scope ? [`  scope: ${a.scope} -> ${b.scope}`] : [],
       ...fields2.has("reason") && a.reason !== b.reason ? [`  reason: ${a.reason} -> ${b.reason}`] : [],
       ...fields2.has("topics") && JSON.stringify(a.topics) !== JSON.stringify(b.topics) ? [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`] : [],
-      renderCommitHistory(revisions, fields2, address2)
+      ...context !== void 0 && !revisions.length ? [] : [renderCommitHistory(revisions, fields2, address2)]
     ];
     if (!fields2.has("text")) return [prefix2, ...lines].join("\n");
     const whole2 = [prefix2 + text, ...lines].join("\n");
@@ -9138,6 +9143,62 @@ function renderDreamingCheckReceipt(result, address2 = String) {
   ].join("\n");
 }
 
+// src/core/dreaming/review.ts
+var CONTEXT = 20;
+function renderDreamingReview(store, runId, blockers) {
+  const address2 = (revision) => `K${revision.knowledgeId}#${store.versionTag(revision.knowledgeId, revision.id)}`;
+  const own = /* @__PURE__ */ new Map();
+  const replaced = /* @__PURE__ */ new Map();
+  for (const commit of runId === void 0 ? [] : store.listCommitsByRun(runId)) {
+    const record3 = () => own.set(commit.knowledgeId, [...own.get(commit.knowledgeId) ?? [], commit]);
+    if (commit.op !== "split") record3();
+    if (commit.op === "merge" || commit.op === "split") {
+      for (const parent of store.commitParents(commit)) if (parent.knowledgeId !== commit.knowledgeId) {
+        own.set(parent.knowledgeId, own.get(parent.knowledgeId) ?? []);
+        const entry = replaced.get(parent.knowledgeId) ?? { last: parent, by: /* @__PURE__ */ new Set(), op: commit.op };
+        entry.by.add(commit.knowledgeId);
+        replaced.set(parent.knowledgeId, entry);
+      }
+    }
+    if (commit.op === "split") record3();
+  }
+  const latest = (knowledgeId2) => address2(own.get(knowledgeId2).at(-1));
+  const blocks2 = [...own].flatMap(([knowledgeId2, revisions]) => {
+    const gone = replaced.get(knowledgeId2);
+    if (gone) return [`${address2(gone.last)} (${gone.op === "merge" ? "merged into" : "split into"} ${[...gone.by].map(latest).join(", ")}):
+[-${gone.last.text}-]`];
+    const last = revisions.at(-1);
+    if (last.op === "archive")
+      return [`${address2(last)} (archive: ${last.archiveKind}; reason: ${last.reason}):
+${last.archiveKind === "budget" ? `[-${last.text}-]` : last.text}`];
+    const start = revisions[0].parentId === null ? void 0 : store.knowledgeRevision(revisions[0].parentId);
+    if (start?.knowledgeId !== knowledgeId2)
+      return [`${address2(last)} (${start ? `split from K${start.knowledgeId}` : "new"}):
+{+${last.text}+}`];
+    const bodyChanged = start.text !== last.text;
+    if (!bodyChanged && start.category === last.category && start.scope === last.scope && JSON.stringify(start.topics) === JSON.stringify(last.topics)) return [];
+    return [renderKnowledgeDiff(
+      start,
+      last,
+      [],
+      Infinity,
+      /* @__PURE__ */ new Set([...bodyChanged ? ["text"] : [], "status", "topics"]),
+      void 0,
+      address2(last),
+      CONTEXT
+    )];
+  });
+  return `Before this run ends, review it once.
+
+Blockers:
+${blockers.join("\n") || "None."}
+
+Knowledge changes committed in this run:
+${blocks2.join("\n\n") || "None."}
+
+Check each change against your Principles: a removed line must be redundant or reliably retrievable, and no ruling, condition, confirmed next step or execution boundary may be lost. These changes are already committed; correct one with a further operation on its current version. Resolve every blocker. Leave compliant changes as they are. Then end.`;
+}
+
 // src/core/dreaming/index.ts
 var CLAIM_LEASE_MARGIN_MS = 6e4;
 function admitDreaming(store, input, config3, executorId) {
@@ -9308,6 +9369,7 @@ async function runDreaming(store, frozen, runAgent, bind) {
     run,
     { path, check: () => renderDreamingCheckReceipt(check3(), address2), skippable: (commit) => !frozen.frozenIds.includes(commit) ? "skip must name an exact frozen version from this run" : binding.memory.skippedCommits.includes(commit) || binding.memory.allCommitted.some((item) => store.commitParents(store.knowledgeRevision(item.commit)).some((parent) => parent.id === commit)) ? "version was already consumed by this run" : void 0 }
   );
+  let reviewed = false;
   let result;
   try {
     result = await runAgent({
@@ -9326,7 +9388,9 @@ async function runDreaming(store, frozen, runAgent, bind) {
       reportRequest: binding.reportRequest,
       passEnd: (used) => {
         rounds = used;
-        return void 0;
+        if (reviewed) return void 0;
+        reviewed = true;
+        return renderDreamingReview(store, store.dreamingRunId(run), check3().problems);
       },
       reportRounds: (used) => {
         rounds = used;

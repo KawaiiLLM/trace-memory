@@ -630,7 +630,7 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
 
 // Lossless lexical tokens: Han characters, other words/numbers, whitespace runs, punctuation.
 // Unlike whitespace splitting, this exposes edits inside unspaced Chinese memory content.
-function diffText(before: string, after: string): string {
+function diffText(before: string, after: string, context?: number): string {
   const split = (text: string) => text.match(/\p{Script=Han}|[\p{L}\p{N}\p{M}_]+|\s+|[^\s]/gu) ?? [];
   // Exclude Han from the word alternative so a Latin prefix cannot swallow a Han suffix.
   const tokenize = (text: string) => split(text).flatMap((part) =>
@@ -654,7 +654,13 @@ function diffText(before: string, after: string): string {
     else if (i < a.length && (j === b.length || lengths[i + 1]![j]! >= lengths[i]![j + 1]!)) append("remove", a[i++]!);
     else append("add", b[j++]!);
   }
-  return spans.map(({ kind, text }) => kind === "same" ? text : kind === "remove" ? `[-${text}-]` : `{+${text}+}`).join("");
+  return spans.map(({ kind, text }, index) => {
+    if (kind !== "same") return kind === "remove" ? `[-${text}-]` : `{+${text}+}`;
+    // With `context`, an unchanged span keeps that many characters beside each neighbouring change.
+    if (context === undefined) return text;
+    const chars = [...text], head = index > 0 ? context : 0, tail = index < spans.length - 1 ? context : 0;
+    return chars.length <= head + tail ? text : `${chars.slice(0, head).join("")}[...]${chars.slice(chars.length - tail).join("")}`;
+  }).join("");
 }
 
 // Ticket 76: the Dreamer's pending-material diff is a distinct surface from `renderKnowledgeDiff`
@@ -716,8 +722,8 @@ export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRe
 
 export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity,
   fields?: ReadonlySet<string>, address: (revision: KnowledgeRevision) => string = r => `K${r.knowledgeId}@${r.id}`,
-  rangeAddress = `${address(a)}..${address(b)}`): string {
-  const text = diffText(a.text, b.text), identity = `[${rangeAddress}]`;
+  rangeAddress = `${address(a)}..${address(b)}`, context?: number): string {
+  const text = diffText(a.text, b.text, context), identity = `[${rangeAddress}]`;
   if (fields) {
     const prefix = fields.has("text") ? `${identity}\n  text: ` : identity;
     const lines = [
@@ -727,7 +733,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
       ...(fields.has("status") && a.scope !== b.scope ? [`  scope: ${a.scope} -> ${b.scope}`] : []),
       ...(fields.has("reason") && a.reason !== b.reason ? [`  reason: ${a.reason} -> ${b.reason}`] : []),
       ...(fields.has("topics") && JSON.stringify(a.topics) !== JSON.stringify(b.topics) ? [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`] : []),
-      renderCommitHistory(revisions, fields, address),
+      ...(context !== undefined && !revisions.length ? [] : [renderCommitHistory(revisions, fields, address)]),
     ];
     if (!fields.has("text")) return [prefix, ...lines].join("\n");
     const whole = [prefix + text, ...lines].join("\n");

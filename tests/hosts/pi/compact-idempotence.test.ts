@@ -98,7 +98,7 @@ test("persisted hook lifecycle: repeat, N progress, 117 knowledge commits, small
     expect(added.summary).toContain("THIRD"); expect(added.summary).toContain("FOURTH");
     expect(await compact()).toEqual(added);
     expect(store.listSourceEntries(1)).toHaveLength(8);
-    expect(f.sent).toHaveLength(6); // four foreground requests plus the Dreamer's skip batch and closing reply
+    expect(f.sent).toHaveLength(7); // four foreground requests plus the Dreamer's skip batch, closing reply and end-review reply (125)
     expect(store.listRuns(1).filter(run => run.kind === "dreaming")).toHaveLength(1);
 
     const tip = f.manager().getLeafId()!;

@@ -1705,3 +1705,64 @@ test("scheduler borrows an eligible closed target only at the executor turn end"
   expect(memory.pendingEntries(closed.id, "main", tail.turn.id)).toEqual([]);
   memory.close();
 });
+
+test("production MCP D gets the end review after its first pass; its second-pass operation commits on the run's own latest version", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-review-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const reviews: { text: string; synthetic: boolean }[] = [];
+  const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
+    const stream = (async function* () {
+      const prompts = request.prompt[Symbol.asyncIterator]();
+      await prompts.next();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
+      const client = new Client({ name: "dreamer-review-test", version: "1" }); await client.connect(clientTransport);
+      yield { type: "system", subtype: "init", session_id: "dreamer-review", messaging_socket_path: "/tmp/dreamer-review.sock",
+        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [],
+        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      let ordinal = 0;
+      const rewrite = async function* (id: string, text: string) {
+        const callId = `memory-${++ordinal}`;
+        yield assistant(`response-${ordinal}`, [callId], ccWorkerToolNames.memory);
+        const result = await client.callTool({ name: "memory", arguments: { operations: [{ op: "update", id, text, category: "constraint",
+          scope: "project", topics: [], supports: [], reason: "rewrite" }], skipped: [] }, _meta: { "claudecode/toolUseId": callId } });
+        expect((result.content as { text: string }[])[0]!.text).not.toContain("rejected");
+      };
+      const result = { type: "result", subtype: "success", session_id: "dreamer-review", is_error: false, result: "done", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+      yield* rewrite(firstTag, "Durable constraint, first rewrite");
+      yield result;
+      const review = (await prompts.next()).value;
+      reviews.push({ text: review.message.content[0].text, synthetic: review.isSynthetic === true });
+      yield* rewrite(/\[(K\d+#[a-z]+)\]/.exec(review.message.content[0].text)![1]!, "Durable constraint, corrected in the second pass");
+      yield result;
+      await client.close();
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const worker = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
+  const memory = TraceMemory(join(directory, "memory.sqlite"), raw => { const task = raw as CcAgentTask; task.reportRequest({ host: "cc-dreamer-review" });
+    return worker.run(task, 0); }, { dreaming: { triggerTokens: 1 } });
+  const project = memory.store.createProject({ name: "cc-dreamer-review", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+  const target = append(memory, session.id, "source", "Durable CC evidence");
+  const noted = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" },
+    facts: [{ turnId: target.turn.id, text: "Durable CC evidence", entryIds: [target.entry.id], source: [`T${target.turn.id}#E1`], createdAt: "now" }] });
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{
+    op: "create", handle: "$rule", author: "fixture", text: "Durable constraint", category: "constraint", scope: "project",
+    supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
+  if (!created.ok) throw new Error(created.problems.join("; "));
+  const item = created.committed[0]!, firstTag = `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, item.commit)}`;
+  const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: target.turn.id, triggerEntryId: target.entry.id,
+    model: "claude-sonnet-4-5", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
+  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
+  expect(reviews).toHaveLength(1);
+  expect(reviews[0]).toMatchObject({ synthetic: true, text: expect.stringContaining("Before this run ends, review it once.") });
+  expect(reviews[0]!.text).toContain("{+, first rewrite+}");
+  expect(memory.store.listCommitsByRun(result.runId).map(revision => revision.text))
+    .toEqual(["Durable constraint, first rewrite", "Durable constraint, corrected in the second pass"]);
+  memory.close();
+});

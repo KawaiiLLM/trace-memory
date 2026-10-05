@@ -1,0 +1,153 @@
+import { afterEach, expect, test } from "vitest";
+import { hydrate, sourceSeededMemory, type DreamingAgentInput } from "../../source-fixture.ts";
+import { fact as seedFact } from "../../support/seed.ts";
+
+const memories: { close(): void }[] = [];
+afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
+
+const longBody = (head: string, tail: string) =>
+  `${head}。这条规则的背景是：多个会话反复遇到同类问题，所以把处理方式固定下来，并且要求每次都先核对来源再动手，避免凭印象改写。${tail}`;
+const invalidReason = "The rule no longer holds: the user corrected its basis; another rule replaces it.";
+
+/** A pool of pending project knowledge, every item due, and a fake provider that plays the host's
+ * pass protocol: first pass, then the end review once (`passEnd`) and, if it was sent, a second pass. */
+function pool(bodies: string[], pass: { first(task: DreamingAgentInput, tool: Tool, items: Item[]): void;
+  second?(task: DreamingAgentInput, tool: Tool, items: Item[], review: string): void }) {
+  const reviews: (string | undefined)[] = [];
+  let items!: Item[];
+  const memory = sourceSeededMemory(":memory:", async raw => {
+    const task = raw as DreamingAgentInput;
+    task.reportRequest({ fixture: "end review" });
+    const tool: Tool = (name, input) => JSON.parse(task.tools.find(t => t.name === name)!.execute(input));
+    pass.first(task, tool, items);
+    const review = task.passEnd(1);
+    reviews.push(review);
+    if (review !== undefined) pass.second?.(task, tool, items, review);
+    reviews.push(task.passEnd(2));
+    return { outcome: "success", output: "done", request: { fixture: "end review" } };
+  }, { dreaming: { triggerTokens: 1 } });
+  memories.push(memory);
+  const store = memory.store;
+  const project = store.createProject({ name: "end-review", declaredBy: "mark" });
+  const session = store.createSession({ projectId: project.id, host: "pi:dream", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+  const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Evidence", startedAt: "now" });
+  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+  const user = hydrate(store.listSourceEntries(session.id, turn.id), store).find(entry => entry.role === "user")!;
+  const evidence = seedFact(memory, target, "Evidence", [{ entry: user, text: "User gave evidence" }]).id;
+  const created = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" },
+    operations: bodies.map((text, n) => ({ op: "create" as const, handle: `$${n}`, author: "test", category: "constraint" as const,
+      scope: "project" as const, topics: [], supports: [evidence], reason: "fixture", createdAt: "now", text })) });
+  if (!created.ok) throw new Error(created.problems.join("; "));
+  items = created.committed.map(({ knowledgeId, commit }) => ({ knowledgeId, tag: tagOf(knowledgeId, commit), skip: `K${knowledgeId}@v1` }));
+  function tagOf(knowledgeId: number, commit: number) { return `K${knowledgeId}#${store.versionTag(knowledgeId, commit)}`; }
+  /** The run's latest version of an item, as the model would address it after the receipt. */
+  const current = (item: Item) => {
+    const revisions = store.listKnowledgeRevisions(item.knowledgeId);
+    return tagOf(item.knowledgeId, revisions.at(-1)!.id);
+  };
+  return { memory, store, target, reviews, items: () => items, current, run: () => memory.dream(target) };
+}
+type Tool = (name: "memory" | "check", input: unknown) => any;
+type Item = { knowledgeId: number; tag: string; skip: string };
+const skipAll = (items: Item[]) => ({ operations: [], skipped: items.map(item => ({ knowledge: item.skip, because: "Reviewed unchanged" })) });
+const update = (id: string, text: string) => ({ op: "update", id, text, category: "constraint", scope: "project", topics: [], supports: [], reason: "rewrite" });
+const ok = (receipt: { results: string[] }) => expect(receipt.results.join("; ")).not.toContain("rejected");
+
+test("the review is sent once after the first pass and no later pass end sends another", async () => {
+  const p = pool(["Rule A body."], { first: (_task, tool, items) => ok(tool("memory", skipAll(items))) });
+  const result = await p.run();
+  expect(result.outcome).toBe("success");
+  expect(p.reviews).toHaveLength(2);
+  expect(p.reviews[0]).toMatch(/^Before this run ends, review it once\./);
+  expect(p.reviews[1]).toBeUndefined();
+});
+
+test("both parts render, with None. for a run that changed nothing and has no blocker", async () => {
+  const p = pool(["Rule A body."], { first: (_task, tool, items) => ok(tool("memory", skipAll(items))) });
+  await p.run();
+  expect(p.reviews[0]).toContain("Blockers:\nNone.\n\nKnowledge changes committed in this run:\nNone.\n\nCheck each change against your Principles");
+});
+
+test("the blockers are the run's check blockers, one per line", async () => {
+  const p = pool(["Rule A body.", "Rule B body."], { first: () => {} });
+  await p.run();
+  const [, blockers, changes] = p.reviews[0]!.split(/\n\n(?:Knowledge changes committed in this run:\n)?/);
+  expect(blockers).toMatch(/^Blockers:\nfrozen versions not deliberated: K\d+@v1, K\d+@v1$/);
+  expect(changes).toBe("None.");
+});
+
+test("an item changed twice shows one net diff of changed parts only, and unchanged or reverted items are absent", async () => {
+  const bodies = [longBody("规则甲", "结尾甲"), longBody("规则乙", "结尾乙"), longBody("规则丙", "结尾丙")];
+  const p = pool(bodies, { first(_task, tool, [a, b, c]) {
+    const first = tool("memory", { operations: [update(a!.tag, longBody("规则甲", "结尾甲，新增一条边界：不 stash"))], skipped: [] });
+    ok(first);
+    const next = p.current(a!);
+    ok(tool("memory", { operations: [update(next, longBody("规则甲", "结尾甲，新增一条边界：不 stash／reset"))], skipped: [] }));
+    // B is rewritten and then restored to the version it started from: net unchanged.
+    ok(tool("memory", { operations: [update(b!.tag, "temporary")], skipped: [] }));
+    ok(tool("memory", { operations: [update(p.current(b!), bodies[1]!)], skipped: [] }));
+    ok(tool("memory", { operations: [], skipped: [{ knowledge: c!.skip, because: "Reviewed unchanged" }] }));
+  } });
+  const result = await p.run();
+  expect(result.outcome).toBe("success");
+  const [a, b, c] = p.items();
+  const message = p.reviews[0]!;
+  expect(message.match(/^\[K\d+#[a-z]+\]/gm)).toEqual([`[${p.current(a!)}]`]);
+  expect(message).toContain("{+，新增一条边界：不 stash／reset+}");
+  expect(message).not.toContain("stash+}{+"); // one net edit, not two stacked ones
+  expect(message).toContain("[...]");
+  expect(message).not.toContain(bodies[0]!); // no whole unchanged body
+  expect(message).not.toContain(`K${b!.knowledgeId}#`);
+  expect(message).not.toContain(`K${c!.knowledgeId}#`);
+  expect(message).not.toContain("Commits: none");
+});
+
+test("each operation kind renders as specified: merge, split, invalid and budget archive, category change", async () => {
+  const bodies = ["Survivor body " + "x".repeat(60) + " end.", "Absorbed body to disappear.", "Parent body to split.",
+    "Obsolete body.", "Budget body leaving the pool.", "Category body."];
+  const p = pool(bodies, { first(_task, tool, [survivor, absorbed, parent, obsolete, budget, category]) {
+    ok(tool("memory", { operations: [
+      { op: "merge", id: survivor!.tag, absorb: [absorbed!.tag], text: "Survivor body " + "x".repeat(60) + " end, with the absorbed rule.",
+        category: "constraint", scope: "project", topics: [], supports: [], reason: "same rule" },
+      { op: "split", id: parent!.tag, children: [{ text: "Child one.", category: "constraint", topics: [] },
+        { text: "Child two.", category: "reference", topics: [] }], supports: [], reason: "two rules" },
+      { op: "archive", kind: "invalid", id: obsolete!.tag, text: invalidReason, supports: [], reason: "contradicted" },
+      { op: "archive", kind: "budget", id: budget!.tag, supports: [], reason: "over budget" },
+      { ...update(category!.tag, "Category body."), category: "reference" }], skipped: [] }));
+  } });
+  const result = await p.run();
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const [survivor, absorbed, parent, obsolete, budget, category] = p.items();
+  const store = p.store, tag = (item: Item) => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, store.listKnowledgeRevisions(item.knowledgeId).at(-1)!.id)}`;
+  const blocks = p.reviews[0]!.split("Knowledge changes committed in this run:\n")[1]!.split("\n\nCheck each change")[0]!.split("\n\n");
+  const byHead = (item: Item) => blocks.find(block => block.includes(`K${item.knowledgeId}#`))!;
+  expect(blocks).toHaveLength(8);
+  const survivorBlock = blocks.find(block => block.startsWith(`[${tag(survivor!)}]`))!;
+  expect(survivorBlock).toContain("{+, with the absorbed rule+}");
+  expect(byHead(absorbed!)).toBe(`${absorbed!.tag} (merged into ${tag(survivor!)}):\n[-${bodies[1]}-]`);
+  expect(byHead(parent!)).toMatch(new RegExp(`^${parent!.tag} \\(split into K\\d+#[a-z]+, K\\d+#[a-z]+\\):\\n\\[-${bodies[2]}-\\]$`));
+  expect(blocks.filter(block => /\(split from K\d+\)/.test(block)).map(block => block.split("\n")[1])).toEqual(["{+Child one.+}", "{+Child two.+}"]);
+  expect(byHead(obsolete!)).toBe(`${tag(obsolete!)} (archive: invalid; reason: contradicted):\n${invalidReason}`);
+  expect(byHead(budget!)).toBe(`${tag(budget!)} (archive: budget; reason: over budget):\n[-${bodies[4]}-]`);
+  expect(byHead(category!)).toBe(`[${tag(category!)}]\n  category: constraint -> reference`);
+});
+
+test("the second pass is a further operation on the run's own latest version and success is evaluated after it", async () => {
+  const bodies = ["Rule A body.", "Rule B body."];
+  const corrected = pool(bodies, {
+    first: (_task, tool, [a]) => ok(tool("memory", { operations: [update(a!.tag, "Rule A rewritten.")], skipped: [] })),
+    second(_task, tool, [a, b], review) {
+      expect(review).toContain(`frozen versions not deliberated: ${b!.skip}`);
+      expect(review).toContain("{+rewritten+}");
+      ok(tool("memory", { operations: [update(corrected.current(a!), "Rule A restored.")], skipped: [{ knowledge: b!.skip, because: "Reviewed unchanged" }] }));
+    } });
+  const result = await corrected.run();
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const [a] = corrected.items();
+  expect(corrected.store.listKnowledgeRevisions(a!.knowledgeId).map(revision => revision.text)).toEqual(["Rule A body.", "Rule A rewritten.", "Rule A restored."]);
+
+  const unresolved = pool(bodies, { first: (_task, tool, [a]) => ok(tool("memory", { operations: [update(a!.tag, "Rule A rewritten.")], skipped: [] })) });
+  const failed = await unresolved.run();
+  expect(failed.outcome).toBe("failure");
+  expect("problems" in failed && failed.problems.join(" ")).toContain("frozen versions not deliberated");
+});
