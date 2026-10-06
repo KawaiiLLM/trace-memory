@@ -1,4 +1,4 @@
-// /tm is a read-only, host-neutral namespace. Hosts own pagination and output limits.
+// trace:// is a read-only, host-neutral namespace. Hosts own pagination and output limits.
 import type { TraceMemory } from "./index.ts";
 import type { KnowledgeRevision, Session } from "../model/index.ts";
 import type { SourceEntry } from "../store/index.ts";
@@ -7,9 +7,9 @@ import { renderEntryWhole } from "../render/index.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import { readingGuide } from "../render/reading-guide.ts";
 
-export { MEMORY_ROOT, MEMORY_READ_ONLY, memoryPath, memoryGlob } from "../model/address.ts";
+export { MEMORY_ROOT, MEMORY_READ_ONLY, memoryPath, resolvedMemoryPath, memoryGlob } from "../model/address.ts";
 
-/** Whose view a `/tm` file shows: the reader's own path, as a host binds `trace`. */
+/** Whose view a `trace://` file shows: the reader's own path, as a host binds `trace`. */
 export interface MemoryReader { sessionId?: number; branch?: string; headTurnId?: number | null; projectId?: number; toolNames?: ToolNames }
 export interface MemoryFile { content: string; unbounded: boolean }
 export type MemoryGrepMode = "files_with_matches" | "content" | "count";
@@ -22,14 +22,14 @@ export interface MemoryGrepOptions {
 export interface MemoryGrepFile { path: string; lines: string[]; hits: number[]; mark?: string }
 export interface MemoryListing { lines: string[]; total: number }
 
-const VISIBLE = `${MEMORY_ROOT}/knowledge`, ALL = `${MEMORY_ROOT}/knowledge-all`;
-const SESSION = /^\/tm\/S([1-9]\d*)$/;
-const LAYER = /^\/tm\/(facts|raw)$/;
-const LAYER_SESSION = /^\/tm\/(facts|raw)\/S([1-9]\d*)$/;
-const LAYER_TURN = /^\/tm\/(facts|raw)\/S([1-9]\d*)\/T([1-9]\d*)$/;
-const KNOWLEDGE = /^\/tm\/K[1-9]\d*(?:#[a-z]{4,}|@v[1-9]\d*)?$/;
-const FACT = /^\/tm\/F[1-9]\d*$/;
-const HISTORY = /^\/tm\/(K[1-9]\d*)\.history$/;
+const VISIBLE = `${MEMORY_ROOT}knowledge`, ALL = `${MEMORY_ROOT}knowledge-all`;
+const SESSION = /^trace:\/\/S([1-9]\d*)$/;
+const LAYER = /^trace:\/\/(facts|raw)$/;
+const LAYER_SESSION = /^trace:\/\/(facts|raw)\/S([1-9]\d*)$/;
+const LAYER_TURN = /^trace:\/\/(facts|raw)\/S([1-9]\d*)\/T([1-9]\d*)$/;
+const KNOWLEDGE = /^trace:\/\/K[1-9]\d*(?:#[a-z]{4,}|@v[1-9]\d*)?$/;
+const FACT = /^trace:\/\/F[1-9]\d*$/;
+const HISTORY = /^trace:\/\/(K[1-9]\d*)\.history$/;
 const PREVIEW = 160;
 const preview = (text: string) => { const line = text.split("\n")[0]!; return line.length > PREVIEW ? `${line.slice(0, PREVIEW)}…` : line; };
 
@@ -118,13 +118,13 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
     if (path === MEMORY_ROOT) return [
       [VISIBLE, `knowledge visible to you, current versions: ${count(visible().length)}`],
       [ALL, `every scope and project, archived included: ${count(store.knowledgeCount())}`],
-      [`${MEMORY_ROOT}/facts`, "every session's Turns by layer"],
-      [`${MEMORY_ROOT}/raw`, "every session's Turns by layer"],
+      [`${MEMORY_ROOT}facts`, "every session's Turns by layer"],
+      [`${MEMORY_ROOT}raw`, "every session's Turns by layer"],
       ...store.sessionActivity().map(({ session: s, turns, last }) =>
-        [`${MEMORY_ROOT}/S${s.id}`, `${hostKind(s)} · ${sessionProject(s)} · ${count(turns)} Turns · last ${utcMinute(last)}`] as [string, string]),
+        [`${MEMORY_ROOT}S${s.id}`, `${hostKind(s)} · ${sessionProject(s)} · ${count(turns)} Turns · last ${utcMinute(last)}`] as [string, string]),
     ];
     if (path === VISIBLE) return visible().map(({ knowledge, revision }) =>
-      [`${MEMORY_ROOT}/K${knowledge.id}`, `[${revision.category}/${revision.scope}] ${preview(revision.text)}`]);
+      [`${MEMORY_ROOT}K${knowledge.id}`, `[${revision.category}/${revision.scope}] ${preview(revision.text)}`]);
     if (path === ALL) {
       const { identities, records, ordinal } = versions();
       return identities.map(([id, list]) => {
@@ -132,15 +132,15 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
         const body = revisionBody(latest, list);
         const owner = latest.scope === "global" ? "" : latest.scope === "session" ? ` S${record.originSessionId}` : ` ${projectName(record.projectId)}`;
         const status = latest.op === "archive" ? ` (archived at v${ordinal(latest)}${latest.archiveKind ? `, ${latest.archiveKind}` : ""})` : "";
-        return [`${MEMORY_ROOT}/K${id}@v${ordinal(latest)}`, `[${latest.category}/${latest.scope}${owner}]${status} ${preview(body)}`];
+        return [`${MEMORY_ROOT}K${id}@v${ordinal(latest)}`, `[${latest.category}/${latest.scope}${owner}]${status} ${preview(body)}`];
       });
     }
     let m: RegExpExecArray | null;
     if ((m = SESSION.exec(path))) {
       session(Number(m[1]));
       return store.listTurns(Number(m[1])).flatMap(turn => [
-        [`${MEMORY_ROOT}/facts/S${m![1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
-        [`${MEMORY_ROOT}/raw/S${m![1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
+        [`${MEMORY_ROOT}facts/S${m![1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
+        [`${MEMORY_ROOT}raw/S${m![1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
       ] as [string, string][]);
     }
     if (LAYER.test(path)) return store.listSessions().map(s => [`${path}/S${s.id}`, ""]);
@@ -179,16 +179,16 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
         sessionId, branch, headTurnId, rawTurn: true, toolNames }), unbounded: false };
     }
     if ((m = HISTORY.exec(path))) return { content: full(`${m[1]}.history`), unbounded: false };
-    if (KNOWLEDGE.test(path)) return { content: full(path.slice(MEMORY_ROOT.length + 1)), unbounded: false };
+    if (KNOWLEDGE.test(path)) return { content: full(path.slice(MEMORY_ROOT.length)), unbounded: false };
     if (FACT.test(path)) {
-      const id = Number(path.slice(MEMORY_ROOT.length + 2));
+      const id = Number(path.slice(MEMORY_ROOT.length + 1));
       const fact = store.getFact(id);
       if (!fact) throw new Error(`fact F${id} does not exist`);
       const owner = store.getTurn(fact.turnId);
       if (!owner) throw new Error(`fact F${id} has no owning Turn`);
       return { content: `Source session: S${owner.sessionId}\n${full(`F${id}`)}`, unbounded: false };
     }
-    throw new Error(`no such path: ${path}; /tm`);
+    throw new Error(`no such path: ${path}; ${MEMORY_ROOT}`);
   };
   const rootText = (listing: [string, string][]) => {
     const lines = [readingGuide(reader.sessionId, toolNames), ""];
@@ -199,10 +199,10 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
       lines.push(`This session: S${own.id} · ${hostKind(own)} · ${sessionProject(own, true)}`,
         `Current branch: ${count(turns.length)} Turns${turns.length ? `, T${turns[0]} … T${path.headTurnId} (head)` : ""}`,
         `Recent Turns: ${turns.slice(-10).map(id => `T${id}`).join(" ")}`,
-        `Turn list: /tm/S${own.id}`, "");
+        `Turn list: ${MEMORY_ROOT}S${own.id}`, "");
     }
     lines.push(...listing.slice(0, 2).map(([path, label]) => `${path}  ${label}`),
-      "/tm/facts  /tm/raw  every session's Turns by layer", "", "Sessions, latest activity first:",
+      `${MEMORY_ROOT}facts  ${MEMORY_ROOT}raw  every session's Turns by layer`, "", "Sessions, latest activity first:",
       ...listing.slice(4).map(([path, label]) => `${path}  ${label}`));
     return lines.join("\n");
   };
@@ -241,23 +241,23 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
   type Searched = { path: string; text: () => string; mark?: string };
   const whole = (entry: SourceEntry) => renderEntryWhole(entry, memory.resultText, undefined, undefined, true).content;
   function* turnFiles(sessionId: number, turnId: number, layer?: "facts" | "raw", role?: "user" | "assistant" | "observation"): Generator<Searched> {
-    const factPath = `${MEMORY_ROOT}/facts/S${sessionId}/T${turnId}`;
+    const factPath = `${MEMORY_ROOT}facts/S${sessionId}/T${turnId}`;
     if (layer !== "raw") yield { path: factPath, text: () => fileText(factPath).content };
     if (layer === "facts") return;
     const meta = entriesOf(sessionId, turnId);
     for (const entry of store.hydrateSourceEntries(meta.map(e => e.id))) {
       if (role && (entry.role === "toolResult" ? "observation" : entry.role) !== role) continue;
-      yield { path: `${MEMORY_ROOT}/raw/S${sessionId}/T${turnId}#E${entry.entryOrdinal}`, text: () => whole(entry) };
+      yield { path: `${MEMORY_ROOT}raw/S${sessionId}/T${turnId}#E${entry.entryOrdinal}`, text: () => whole(entry) };
     }
   }
   function* searched(path: string): Generator<Searched> {
     if (path === MEMORY_ROOT) {
       yield* searched(VISIBLE); yield* searched(ALL);
-      for (const { session: s } of store.sessionActivity()) yield* searched(`${MEMORY_ROOT}/S${s.id}`);
+      for (const { session: s } of store.sessionActivity()) yield* searched(`${MEMORY_ROOT}S${s.id}`);
       return;
     }
     if (path === VISIBLE) {
-      for (const { knowledge } of visible()) yield { path: `${MEMORY_ROOT}/K${knowledge.id}`, text: () => full(`K${knowledge.id}`) };
+      for (const { knowledge } of visible()) yield { path: `${MEMORY_ROOT}K${knowledge.id}`, text: () => full(`K${knowledge.id}`) };
       return;
     }
     if (path === ALL) {
@@ -269,7 +269,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
           const address = `K${id}@v${ordinal(revision)}`;
           // 101 (ruled): a legacy empty archive is searched by its parent's body, same as its listing.
           const legacyEmpty = revision.op === "archive" && !revision.text;
-          yield { path: `${MEMORY_ROOT}/${address}`, text: () => legacyEmpty ? revisionBody(revision, list) : full(address),
+          yield { path: `${MEMORY_ROOT}${address}`, text: () => legacyEmpty ? revisionBody(revision, list) : full(address),
             mark: revision !== latest ? ` (historical; ${latestStatus})` : latest.op === "archive" ? " (archived)" : undefined };
         }
       }
@@ -321,7 +321,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
     catch (error) { throw new Error(`invalid pattern: ${(error as Error).message}`); }
     const filter = options.glob ? globRegex(options.glob) : undefined;
     for (const file of searched(root)) {
-      if (filter && !filter.test(options.glob!.includes("/") ? file.path.slice(root.length + 1) : basename(file.path))) continue;
+      if (filter && !filter.test(options.glob!.includes("/") ? file.path.slice(root.length).replace(/^\//, "") : basename(file.path))) continue;
       const lines = file.text().split("\n");
       const hits = lines.flatMap((line, index) => regex.test(line) ? [index] : []);
       if (hits.length) yield { path: file.path, lines, hits, ...(file.mark ? { mark: file.mark } : {}) };
@@ -329,7 +329,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
   }
 
   const glob = (pattern: string): MemoryListing => {
-    const segments = resolve(pattern).split("/").slice(2);
+    const segments = resolve(pattern).slice(MEMORY_ROOT.length).split("/").filter(Boolean);
     const found = new Set<string>();
     const walk = (path: string, rest: string[]) => {
       if (!rest.length) { found.add(path); return; }
@@ -338,7 +338,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
       const matcher = globRegex(head!);
       for (const [child] of children(path) ?? []) if (matcher.test(basename(child))) walk(child, tail);
       // An E suffix is part of the T segment, not a further slash component.
-      if (LAYER_SESSION.test(path) && path.startsWith(`${MEMORY_ROOT}/raw/`) && head!.includes("#"))
+      if (LAYER_SESSION.test(path) && path.startsWith(`${MEMORY_ROOT}raw/`) && head!.includes("#"))
         for (const [turn] of children(path) ?? []) for (const [entry] of children(turn) ?? [])
           if (matcher.test(basename(entry))) walk(entry, tail);
     };

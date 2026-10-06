@@ -128,7 +128,7 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
           rmSync(join(config.stateDir, "rendered", nativeSessionId), { recursive: true, force: true });
       }, config.finalSyncTimeoutMs);
     } catch (error) {
-      return { confirmed: true, reason, diagnostic: `rendered /tm cleanup failed: ${error instanceof Error ? error.message : String(error)}` };
+      return { confirmed: true, reason, diagnostic: `rendered trace:// cleanup failed: ${error instanceof Error ? error.message : String(error)}` };
     }
     return { confirmed: true, reason };
   } catch (error) {

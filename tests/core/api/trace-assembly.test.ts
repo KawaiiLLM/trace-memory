@@ -18,7 +18,7 @@ const turn = (userPrompt: string, assistantText: string | null = null, parentTur
 const occurrence = (turnId: number, nativeId: string, entry: Partial<Parameters<typeof memory.appendEntry>[0]>) =>
   memory.appendEntry({ sessionId, nativeLineage: "fixture", nativeId, turnId, role: "assistant", text: "", raw: "{}", calls: [], ...entry });
 const files = (headTurnId: number) => memoryFiles(memory, { sessionId, branch: "main", headTurnId });
-const raw = (turnId: number) => `/tm/raw/S${sessionId}/T${turnId}`;
+const raw = (turnId: number) => `trace://raw/S${sessionId}/T${turnId}`;
 
 test("multiple assistant occurrences retain entry order in the compressed overview", () => {
   const t = turn("what changed?", "first reply"); occurrence(t.id, "second-reply", { text: "second reply" });

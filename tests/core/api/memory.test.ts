@@ -210,8 +210,8 @@ test("21a 2026-09-08: create, update, merge and archive all carry nonempty suppo
     const request = { fixture: "supports on merge and archive" }; input.reportRequest(request);
     const dream = input.tools.find(tool => tool.name === "memory")!;
     const files = memoryFiles(memory, path);
-    expect(files.read("/tm/K1@v1").content).toContain("Use pnpm");
-    expect(files.read("/tm/K2@v1").content).toContain("Commit the lockfile");
+    expect(files.read("trace://K1@v1").content).toContain("Use pnpm");
+    expect(files.read("trace://K2@v1").content).toContain("Commit the lockfile");
     const merge = JSON.parse(dreamerWrite(dream, { operations: [{ op: "merge", id: read(1), absorb: [read(2)], text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Two readings of one packaging rule." }], skipped: [] }));
     expect(merge.committed).toHaveLength(1);
     const merged = merge.committed[0]; expect(merged.version).toBe("K1@v2");
@@ -299,7 +299,7 @@ test("21a 2026-09-08: one supports list holds both the text's grounds and the fa
   createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
   const result = await admittedScenarios.run(memory, dreamPath(), input => {
     const request = { fixture: "multi-fact supports" }; input.reportRequest(request);
-    expect(memoryFiles(memory, dreamPath()).read("/tm/K1@v1").content).toContain("Use pnpm");
+    expect(memoryFiles(memory, dreamPath()).read("trace://K1@v1").content).toContain("Use pnpm");
     expect(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [update], skipped: [] })).toContain("committed");
     expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
     return { outcome: "success", output: "updated", request };
@@ -317,7 +317,7 @@ test("21a 2026-09-08: reason shows in commit history, diffs and the run, never i
   let updatedCommit = 0;
   const result = await admittedScenarios.run(memory, dreamPath(), input => {
     const request = { fixture: "reason history" }; input.reportRequest(request);
-    expect(memoryFiles(memory, dreamPath()).read("/tm/K1@v1").content).toContain("Use pnpm");
+    expect(memoryFiles(memory, dreamPath()).read("trace://K1@v1").content).toContain("Use pnpm");
     const receipt = JSON.parse(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [{ op: "update", id: read(1), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
     expect(receipt.committed[0].version).toBe("K1@v2");
     updatedCommit = memory.store.resolveVersionOrdinal(1, 2);
@@ -396,8 +396,8 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
     const request = { fixture: "topic maintenance sequence" }; input.reportRequest(request);
     const dream = input.tools.find(tool => tool.name === "memory")!;
     const files = memoryFiles(memory, path);
-    expect(files.read("/tm/K1@v1").content).toContain("Use pnpm");
-    expect(files.read("/tm/K2@v1").content).toContain("Commit the lockfile");
+    expect(files.read("trace://K1@v1").content).toContain("Use pnpm");
+    expect(files.read("trace://K2@v1").content).toContain("Commit the lockfile");
     const cleanup = JSON.parse(dreamerWrite(dream, { operations: [{ op: "update", id: read(1), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: ["packaging", "tooling"], reason: "Classification cleanup: the rule also concerns tooling." }], skipped: [] }));
     expect(cleanup.committed[0].version).toBe("K1@v2");
     cleanupCommit = memory.store.resolveVersionOrdinal(1, 2);

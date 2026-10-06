@@ -4256,7 +4256,7 @@ export class Store {
     return index;
   }
 
-  /** 101: every session, for the `/tm` listing. */
+  /** 101: every session, for the `trace://` listing. */
   listSessions(): Session[] {
     return this.db.prepare("SELECT * FROM sessions ORDER BY id").all().map(toSession);
   }

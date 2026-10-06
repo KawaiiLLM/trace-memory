@@ -90,7 +90,7 @@ probe("native file: a real CC worker run writes its transcript under <config dir
   const configDir = tempDir("tm78-native-config-");
   const reader = workerReader(cwd);
   const loopback = await startLoopbackAnthropic((assistantTurns) => assistantTurns === 0
-    ? { blocks: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: `/tm/raw/S${reader.sessionId}/T${reader.headTurnId}#E1` } }], stopReason: "tool_use" }
+    ? { blocks: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: `trace://raw/S${reader.sessionId}/T${reader.headTurnId}#E1` } }], stopReason: "tool_use" }
     : { blocks: [{ type: "text", text: "done" }], stopReason: "end_turn" });
   try {
     await fence(cwd, [Number(new URL(loopback.url).port)]);

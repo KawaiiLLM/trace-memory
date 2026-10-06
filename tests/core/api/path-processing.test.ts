@@ -67,7 +67,7 @@ async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, s
   const currentTriggers = f.store.currentKnowledge(path).filter(item => item.revision.text.startsWith("Fixture trigger"));
   const result = await f.scenarios.run(f.memory, path, async input => {
     const request = { operation, branch, trigger }; input.reportRequest(request);
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
     read(tagged(f.store, f.base.knowledgeId, f.base.commit));
     for (const item of currentTriggers) read(tagged(f.store, item.knowledge.id, item.revision.id));
@@ -106,7 +106,7 @@ test.each(["archive", "split", "merge-into", "merge-absorb"] as const)(
     await runOperation(f, "left", 1, operation, `${operation} result`);
     const leftPath = f.path("left");
     const stale = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "left", currentTurnId: f.turn.id, triggerEntryId: f.entries.left.id });
-    expect(memoryFiles(f.memory, { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id }).read(`/tm/${tagged(f.store, f.base.knowledgeId, f.base.commit)}`).content).toContain("base");
+    expect(memoryFiles(f.memory, { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id }).read(`trace://${tagged(f.store, f.base.knowledgeId, f.base.commit)}`).content).toContain("base");
     expect(stale.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
       supports: [`F${f.fact}`], reason: "Probe the stale base." })).toContain("base is not the latest effective applicable revision");
     await runOperation(f, "right", 2, "update", `${operation} divergent result`);
@@ -133,7 +133,7 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
   const trigger = createDreamerTrigger(f.memory, path, f.fact, 1);
   let finished = false;
   const result = await f.scenarios.run(f.memory, path, input => {
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
     read(tagged(f.store, f.base.knowledgeId, f.base.commit));
     read(tagged(f.store, trigger.knowledgeId, trigger.commit));

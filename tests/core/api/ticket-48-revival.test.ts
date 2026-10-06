@@ -49,7 +49,7 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
   if (!created.ok) throw new Error(created.problems.join("; "));
   old = created.committed[0]!;
 
-  expect(memoryFiles(memory, path).read(`/tm/K${old.knowledgeId}@v1`).content).toContain("Original widget state");
+  expect(memoryFiles(memory, path).read(`trace://K${old.knowledgeId}@v1`).content).toContain("Original widget state");
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
   const archived = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget",
     id: `K${old.knowledgeId}#${store.versionTag(old.knowledgeId, old.commit)}`, supports: [`F${fact}`], reason: "Widget retired" }));

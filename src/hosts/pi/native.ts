@@ -39,7 +39,7 @@ interface NativeCommon {
   /** The adapter-composed user prompt for this run (hosts/pi/compose.ts). */
   task: string;
   tools: ToolDefinition[];
-  /** Same frozen reader as this task's material; only /tm execution is exposed. */
+  /** Same frozen reader as this task's material; only trace:// execution is exposed. */
   read: ReturnType<typeof import("./memory-files.ts").memoryReadTool>;
   reportToolRejection?(id: string, name: "note" | "memory", input: unknown, reason: string): void;
   /** 0 = unlimited, as `maxToolRounds` has always meant. */

@@ -23,11 +23,11 @@ import { ccPluginToolNames, ccWorkerToolNames } from "../../../src/hosts/cc/tool
 
 test("the reading guide names only available native tools within its framing ceiling", () => {
   const pi = readingGuide(Number.MAX_SAFE_INTEGER, validateToolNames(canonicalToolNames));
-  expect(pi.split("\n")[0]).toContain("use read or grep, never a shell command.");
+  expect(pi.split("\n")[0]).toContain("with read or grep, never a shell command.");
   expect(tokens(pi)).toBeLessThanOrEqual(200);
   for (const names of [ccPluginToolNames, ccWorkerToolNames]) {
     const cc = readingGuide(Number.MAX_SAFE_INTEGER, validateToolNames(names));
-    expect(cc.split("\n")[0]).toContain("use Read, never a shell command.");
+    expect(cc.split("\n")[0]).toContain("with Read, never a shell command.");
     expect(cc).not.toMatch(/grep/i);
     expect(tokens(cc)).toBeLessThanOrEqual(200);
   }
@@ -59,7 +59,7 @@ function seeded() {
     { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [] } }).knowledgeId).toBe(1);
   // 118: identity framing stays in the block; the complete injection carries one guide.
   knowledgeBlock = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] The project uses pnpm\n  change supports: F1\n</knowledge>`;
-  return { s, t, user, read: (address: string) => memoryFiles(memory, path).read(`/tm/${address}`).content };
+  return { s, t, user, read: (address: string) => memoryFiles(memory, path).read(`trace://${address}`).content };
 }
 let knowledgeBlock: string;
 /** Fresh N alone shows the body's cap-check token count after the category tag. */
@@ -76,7 +76,7 @@ async function maintain(path: { sessionId: number; branch: string; headTurnId: n
   let committed: { knowledgeId: number; commit: number }[] = [];
   const dreamed = await scenarios.run(memory, target, input => {
     const request = { fixture: "material maintenance" }; input.reportRequest(request);
-    memoryFiles(memory, input.reader!).read(`/tm/${address}`);
+    memoryFiles(memory, input.reader!).read(`trace://${address}`);
     const triggerAddress = tag(trigger.knowledgeId, trigger.commit);
     const supplied = new Set(suppliedHandles(input.material.changed));
     const operated = /^K(\d+)#([a-z]+)$/.exec(address)!;
@@ -174,7 +174,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   const { s, t, user } = seeded();
   const raw = views(s.id, t.id);
   // Facts have an independent window; its omission receipt follows the complete Raw block.
-  const factReceipt = "omitted 1 older facts; expand: /tm/F1";
+  const factReceipt = "omitted 1 older facts; expand: trace://F1";
   memory.config.compaction.factsTokens = charge([factReceipt]) + charge(["Receipts:"]);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const noting = calls[0]! as NotingAgentInput;
@@ -184,7 +184,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   expect(noting.text.endsWith(`Raw:\n\n${raw}\n</episodic>\n\nReceipts:\n${factReceipt}`)).toBe(true);
   memory.config.compaction.factsTokens = 10_000;
   // A legal oversized manual item pressures the same Knowledge selector used by N.
-  const receipt = "omitted 2 constraint knowledge; expand: /tm/K2, /tm/K1";
+  const receipt = "omitted 2 constraint knowledge; expand: trace://K2, trace://K1";
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   tools.find(tool => tool.name === "memory")!.execute({ op: "create", topics: [],
     reason: "Exercise a database-derived omission boundary.", text: "The project uses pnpm " + "word ".repeat(5_200),
@@ -226,7 +226,7 @@ test("20b 2026-09-08 scenario 3: exactly-at fits and one over does not, with lab
   expect(budget({ episodic: smallest }).facts).toEqual([groupedLine]);
   expect(budget({ episodic: smallest }).receipts).toEqual([]);
   expect(budget({ episodic: smallest - 1 }).facts).toEqual([]); // one token under, it is omitted
-  expect(budget({ episodic: smallest - 1 }).receipts).toContain("omitted 1 older facts; expand: /tm/F9");
+  expect(budget({ episodic: smallest - 1 }).receipts).toContain("omitted 1 older facts; expand: trace://F9");
   // Whatever the budget, everything emitted fits inside it — the retained facts and the receipts that
   // report the omitted ones. Only mandatory evidence may exceed it, and then it is receipted.
   const three = (episodic: number) => budgetMaterial({ knowledge: [], current: view, framing, range,
@@ -243,14 +243,14 @@ test("20b 2026-09-08 scenario 3: exactly-at fits and one over does not, with lab
   expect(tight.receipts[0]).toMatch(/^raw overage: \d+ tokens; all unrecorded raw kept$/);
   // A large omitted list stays a bounded receipt rather than an enumeration that defeats the cap.
   const many = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, turnId: 1 }) as Fact);
-  const omission = "omitted 200 older facts; expand: /tm/F1, /tm/F2, /tm/F3, /tm/F4, /tm/F5, /tm/F6, /tm/F7, /tm/F8 and 192 more up to /tm/F200";
+  const omission = "omitted 200 older facts; expand: trace://F1, trace://F2, trace://F3, trace://F4, trace://F5, trace://F6, trace://F7, trace://F8 and 192 more up to trace://F200";
   // 118 paths make the receipt longer; the exact emitted receipt and its heading still fit.
   const receiptBudget = charge([omission]) + charge(["Receipts:"]);
   const boundedAt = (room: number) => budgetMaterial({ knowledge: [], current: view, framing, range, facts: many, factLine: () => line, factTurns,
     caps: { knowledge: 1_000, current: 1_000, episodic: mandatory + room } });
   const bounded = boundedAt(receiptBudget);
   expect(bounded.receipts).toEqual([omission]);
-  expect(omission.match(/\/tm\/F\d+/g)).toHaveLength(9); // Eight paths plus the final endpoint, not 200.
+  expect(omission.match(/trace:\/\/F\d+/g)).toHaveLength(9); // Eight paths plus the final endpoint, not 200.
   expect(bounded.over.episodic).toBe(0);
   expect(boundedAt(receiptBudget - 1).over.episodic).toBe(1);
 });
@@ -383,7 +383,9 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
  * that implements it, and then end to end through a real freeze. */
 test("25a 2026-09-09: the history and Raw allowances are independent — neither's unused space enlarges the other", () => {
   const line = "[F9] 2026-09-08T00:00:00Z [observation/user] " + "word ".repeat(20) + "\n  source: T1#user";
-  const facts = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, turnId: 1 }) as Fact);
+  // 20 facts: both budgeting passes then omit more than the expand list's eight addresses, so the omission
+  // receipt's shape is the same in each (at 12 it flipped from eight addresses to "and 1 more" between them).
+  const facts = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, turnId: 1 }) as Fact);
   const factTurns = new Map([[1, time]]);
   const range = { from: "S1/T1", to: "S1/T2" }, framing = [FACTS_TITLE, RAW_TITLE];
   const history = charge([`[T1] ${time} (selected facts)`, ...Array(4).fill(line)]); // room for about four facts
@@ -498,7 +500,7 @@ test("29b/92: compact filters retained facts before budgeting; fork N adds no hi
   // An allowance around three fact lines, so the block is really bound by it.
   const room = charge([xmlBlock("episodic", ""), FACTS_TITLE])
     + charge(renderFactGroups(facts.slice(-3), line, turns))
-    + charge(["Receipts:", "omitted 3 older facts; expand: /tm/F3, /tm/F2, /tm/F1"]);
+    + charge(["Receipts:", "omitted 3 older facts; expand: trace://F3, trace://F2, trace://F1"]);
   memory.config.compaction.factsTokens = room;
   memory.config.compaction.rawTokens = 0;
   memory.config.compaction.sharedAllowanceTokens = 0;
@@ -579,7 +581,7 @@ test("29b/92 (case 13): fresh N receives one full material dispatch across its t
     calls.push(input);
     if (input.kind === "noting") {
       // Two tool rounds inside one run: the child keeps its own messages and nothing is resent.
-      memoryFiles(worker, input.reader!).read(`/tm/raw/S${s.id}/T${t.id}#E1@user`); rounds++;
+      memoryFiles(worker, input.reader!).read(`trace://raw/S${s.id}/T${t.id}#E1@user`); rounds++;
       input.tools.find(tool => tool.name === "note")!.execute({});
       input.tools.find(tool => tool.name === "memory")!.execute({}); rounds++;
     }
@@ -608,7 +610,7 @@ test("29b/92 (case 13): fresh N receives one full material dispatch across its t
 test("29b/92: foreground Knowledge is an exact-version delta with stale state notices inside its allowance", async () => {
   const { s, t } = seeded();
   const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id });
-  files.read("/tm/K1@v1");
+  files.read("trace://K1@v1");
   const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: tag(1, 1),
     topics: [], reason: "The rule was restated.", text: "The project uses pnpm only", category: "constraint", scope: "project", supports: ["F1"] }, tag(1, 1)))[0]!;
   seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Package manager retained",
@@ -627,7 +629,7 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   const unchanged = delivery([current]);
   expect(unchanged.text).toBe("");
   expect(unchanged.knowledgeCommitIds).toEqual([]);
-  files.read(`/tm/${tag(1, current)}`);
+  files.read(`trace://${tag(1, current)}`);
   await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "archive", kind: "budget", id: tag(1, current),
     reason: "Withdrawn by the user.", supports: ["F1"] }, tag(1, current));
   setKnowledgeCapacity(memory, 5_000);
@@ -648,10 +650,10 @@ test("64c: recency uses commit order across categories, not identity, timestamp 
   });
   const oldest = item(100, 1, "constraint", "2099"), newest = item(1, 9, "constraint", "1900"), middle = item(2, 6, "reference", "2000");
   const values = [newest, oldest, middle];
-  const cap = wholeKnowledge([newest, middle]).cost + charge(["omitted 1 constraint knowledge; expand: /tm/K100", "Receipts:"]);
+  const cap = wholeKnowledge([newest, middle]).cost + charge(["omitted 1 constraint knowledge; expand: trace://K100", "Receipts:"]);
   const selected = budgetKnowledge(values, cap);
   expect(selected.commits).toEqual([6, 9]); // One chronological list crosses categories.
-  expect(selected.receipts).toEqual(["omitted 1 constraint knowledge; expand: /tm/K100"]);
+  expect(selected.receipts).toEqual(["omitted 1 constraint knowledge; expand: trace://K100"]);
   expect(budgetKnowledge([...values].reverse(), cap)).toEqual(selected);
   expect(wholeKnowledge(values).commits).toEqual([1, 6, 9]); // Commit order, not category grouping.
   const text = finish({ content: renderKnowledgeBlock(selected.groups), receipts: selected.receipts });
@@ -678,7 +680,7 @@ test("64c/92: foreground and fresh N keep the same newer items and receipt omitt
   expect(frozen.prepared!.supplied.knowledgeCommitIds).toEqual(injected.knowledgeCommitIds);
   for (const text of [injected.text, frozen.prepared!.text]) {
     expect(text).toContain(KNOWLEDGE_RECENCY_NOTICE);
-    expect(text).toContain("omitted 2 constraint knowledge; expand: /tm/K2, /tm/K1");
+    expect(text).toContain("omitted 2 constraint knowledge; expand: trace://K2, trace://K1");
     expect(text).not.toContain("[K1#");
     expect(text).not.toContain("[K2#");
   }
@@ -764,7 +766,7 @@ test("45: inherited status competes with active bodies and omission receipt floo
     caps: { knowledge: cap, episodic: cap } });
   expect(mixed.knowledgeNotes).toHaveLength(1);
   expect(mixed.knowledgeCommitIds).toEqual([2]);
-  expect(mixed.receipts).toEqual(["omitted 1 constraint knowledge; expand: /tm/K1"]);
+  expect(mixed.receipts).toEqual(["omitted 1 constraint knowledge; expand: trace://K1"]);
   const emitted = injectionText({ knowledge: mixed.knowledge, receipts: mixed.receipts }, mixed.knowledgeNotes);
   expect(tokens(emitted)).toBeLessThanOrEqual(cap);
 

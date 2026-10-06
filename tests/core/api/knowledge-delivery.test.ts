@@ -67,7 +67,7 @@ async function maintain(f: ReturnType<typeof fixture>, operation: Record<string,
   const result = await f.scenarios.run(f.memory, f.target, input => {
     input.reportRequest({ fixture: "knowledge delivery maintenance" });
     const files = memoryFiles(f.memory, input.reader!);
-    for (const address of addresses) expect(files.read(`/tm/${tag(address)}`).content).toContain(tag(address));
+    for (const address of addresses) expect(files.read(`trace://${tag(address)}`).content).toContain(tag(address));
     const triggerAddress = trigger ? `K${trigger.knowledgeId}@${trigger.commit}` : null;
     const supplied = new Set(input.material.changed.match(/K\d+@v\d+/g) ?? []);
     if (triggerAddress) supplied.delete(history(triggerAddress)); for (const address of addresses) supplied.delete(history(address));
@@ -203,7 +203,7 @@ test("64c an oversized old body cannot displace a fitting newer body, and omissi
   const result = f.memory.injection(f.target);
   expect(result.knowledgeCommitIds).toEqual([latest.commit]);
   expect(result.text).toContain("small later");
-  expect(result.text).toContain(`omitted 1 constraint knowledge; expand: /tm/K${old.knowledgeId}`);
+  expect(result.text).toContain(`omitted 1 constraint knowledge; expand: trace://K${old.knowledgeId}`);
   expect(result.text).not.toContain("large first");
 });
 
@@ -382,7 +382,7 @@ test("34c split notice names both children while partial budgeting grants body v
   expect(partial?.knowledgeCommitIds).toHaveLength(1);
   expect(partial?.knowledgeStates).toEqual([{ fromCommit: parent.commit, toCommits: split.map(item => item.commit) }]);
   expect(partial?.knowledgeCommitIds).toEqual([split[1]!.commit]);
-  expect(partial?.text).toContain(`omitted 1 constraint knowledge; expand: /tm/K${split[0]!.knowledgeId}`);
+  expect(partial?.text).toContain(`omitted 1 constraint knowledge; expand: trace://K${split[0]!.knowledgeId}`);
   expect(partial?.text).not.toContain("first child");
   expect(partial?.text).toContain("second child");
 });

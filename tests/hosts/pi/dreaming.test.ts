@@ -115,7 +115,7 @@ test("32d native host: pass ends after all intermediate tool turns; first memory
       if (requests === 1) return call("archive", "memory", { op: "archive", kind: "budget", id: item.tagged, supports: [], reason: "Retire redundant active rule; history preserved" });
       expect(store.currentKnowledge(store.knowledgePath(1))).toEqual([]);
       expect(processedIn(store, pool, store.listKnowledgeRevisions().at(-1)!.id)).toBe(false);
-      if (requests === 2) return call("read", "read", { path: `/tm/K${item.knowledgeId}` });
+      if (requests === 2) return call("read", "read", { path: `trace://K${item.knowledgeId}` });
       return reply("Done");
     }, { autoStop: false });
     await h.turn();
@@ -150,7 +150,7 @@ test("64c native host: a reads-only first pass ends without a repair round; 104:
       if (tools === 24 && !conversation.messages.some(m => JSON.stringify(m).includes("One repair,"))) return reply("Done first pass");
       if (tools === 26 && !transient) { transient = true; return { ...reply(""), stopReason: "error", errorMessage: "rate limit exceeded" }; }
       tools++;
-      return call(`read-${tools}`, "read", { path: `/tm/K${item.knowledgeId}` });
+      return call(`read-${tools}`, "read", { path: `trace://K${item.knowledgeId}` });
     }, { autoStop: false });
     await h.turn();
     const run = await terminal(h), audit = JSON.parse(run.response!);
@@ -162,8 +162,8 @@ test("64c native host: a reads-only first pass ends without a repair round; 104:
     const log = readFileSync(audit.nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     const repairMessages = log.filter(e => JSON.stringify(e).includes("System-generated Dreamer completion check"));
     expect(initialSystem).toContain("# Dreamer — bounded knowledge maintenance");
-    expect(initialMaterial).toContain("/tm/knowledge/S1");
-    expect(initialSystem).not.toContain("/tm/knowledge/S1");
+    expect(initialMaterial).toContain("trace://knowledge/S1");
+    expect(initialSystem).not.toContain("trace://knowledge/S1");
     let priorStage = -1;
     for (const heading of workflowHeadings.filter(value => !value.includes("Intensity, set by the failed check"))) {
       const position = initialSystem!.indexOf(heading);

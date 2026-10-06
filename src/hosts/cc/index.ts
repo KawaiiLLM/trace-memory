@@ -273,7 +273,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
   }
   if (sessionFlag !== "--session" || !nativeSessionId || !verb)
     throw new Error("CLI requires --session <native-id> and a command");
-  // 101: the `/tm` read-only files the function hook answers Read, Grep and Glob from.
+  // 101: the `trace://` read-only files the function hook answers Read, Grep and Glob from.
   if (command === "fs") { process.stdout.write(`${JSON.stringify(runCcFiles(config, nativeSessionId, [verb, ...rest]))}\n`); return; }
   if (verb === "menu" || verb === "runs") {
     if (rest[0] !== "--json" || verb === "menu" && !(rest.length === 1 || rest.length === 2 && rest[1] === "--snapshot") || verb === "runs" && rest.length !== 2)

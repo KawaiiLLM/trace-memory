@@ -22,7 +22,7 @@ function corpus() {
 test("118: one exact Raw entry is whole, preserving Unicode, escapes and source isolation", () => {
   const { sessionId, turn, script, result } = corpus();
   const files = memoryFiles(memory, { sessionId, branch: "main", headTurnId: turn.id });
-  const root = `/tm/raw/S${sessionId}/T${turn.id}`;
+  const root = `trace://raw/S${sessionId}/T${turn.id}`;
   const call = files.read(`${root}#E3@assistant`);
   const observation = files.read(`${root}#E4@observation`);
   expect(call.unbounded).toBe(true);
@@ -45,7 +45,7 @@ test.each(["😀", "𠮷", "👨‍👩‍👧‍👦", "é", "\\\\uD83D\\\\uDE0
   const { sessionId, turn } = corpus();
   const text = unit.repeat(2000);
   const later = memory.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: text, startedAt: "now" });
-  const exact = memoryFiles(memory, { sessionId, branch: "main", headTurnId: later.id }).read(`/tm/raw/S${sessionId}/T${later.id}#E1@user`);
+  const exact = memoryFiles(memory, { sessionId, branch: "main", headTurnId: later.id }).read(`trace://raw/S${sessionId}/T${later.id}#E1@user`);
   expect(exact.content).toContain(`[T${later.id}#E1@user] user: ${text}`);
   expect(exact.content).toContain(text.slice(-100));
   expect(exact.unbounded).toBe(true);
@@ -60,7 +60,7 @@ test("118/92: reading an exact tagged knowledge body does not grant manual updat
     topics: [], supports: [`F${fact}`], reason: "User decision" }));
   const id = created.committed[0].knowledgeId;
   const tag = `K${id}#${memory.store.versionTag(id, memory.store.resolveVersionOrdinal(id, 1))}`;
-  expect(memoryFiles(memory, { sessionId, branch: "main", headTurnId: turn.id }).read(`/tm/${tag}`).content).toContain("Keep exact scripts");
+  expect(memoryFiles(memory, { sessionId, branch: "main", headTurnId: turn.id }).read(`trace://${tag}`).content).toContain("Keep exact scripts");
   expect(write.execute({ op: "update", id: tag, text: "Unauthorized rewrite", category: "constraint", scope: "project",
     topics: [], supports: [`F${fact}`], reason: "Read is not authority" })).toContain("Dreamer");
 });

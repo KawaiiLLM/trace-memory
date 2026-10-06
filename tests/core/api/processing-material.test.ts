@@ -73,7 +73,7 @@ test("32/92: actual inherited carriers suppress duplicate bodies without grantin
 test("92: omitted knowledge stays fully readable while N holds a distinct create until termination", async () => {
   const f = fixture(input => {
     expect(input).not.toHaveProperty("readKnowledgeCommits");
-    const read = memoryFiles(f.memory, f.target).read("/tm/K1@v1").content;
+    const read = memoryFiles(f.memory, f.target).read("trace://K1@v1").content;
     expect(read).toContain(`K1#${f.memory.store.versionTag(1, 1)}`);
     expect(read).toContain(f.content.text);
     // A read produces frozen output only; it never mutates the dispatch snapshot.

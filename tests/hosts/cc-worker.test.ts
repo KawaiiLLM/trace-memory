@@ -140,28 +140,36 @@ test("fresh CC Read uses Core's frozen reader, denies other files, and re-render
     startedAt: "now", firstReplyAt: "now" });
   const { turn } = append(memory, session.id, "first", "FROZEN-WORKER-RAW");
   memory.store.close();
-  const path = `/tm/raw/S${session.id}/T${turn.id}#E1`;
+  const path = `trace://raw/S${session.id}/T${turn.id}#E1`;
+  // Claude Code resolves file_path against its working directory before a PreToolUse hook runs, so `trace://raw/…`
+  // arrives as `<cwd>/trace:/raw/…` (ticket 128, measured on 2.1.284); the raw form is accepted as well.
+  const resolved = `${cwd}/trace:/raw/S${session.id}/T${turn.id}#E1`;
   let observed = false;
   const fakeQuery = ((request: { options: Record<string, any> }) => {
     const stream = (async function* () {
       const hook = request.options.hooks.PreToolUse[0].hooks[0];
-      const first = (await hook({ tool_name: "Read", tool_input: { file_path: path } })).hookSpecificOutput;
+      const first = (await hook({ tool_name: "Read", cwd, tool_input: { file_path: resolved } })).hookSpecificOutput;
       expect(first.permissionDecision).toBe("allow");
+      expect((await hook({ tool_name: "Read", cwd, tool_input: { file_path: path } })).hookSpecificOutput.permissionDecision).toBe("allow");
       const snapshot = first.updatedInput.file_path;
       expect(realpathSync(snapshot).startsWith(realpathSync(cwd) + sep)).toBe(true);
       expect(readFileSync(snapshot, "utf8")).toContain("FROZEN-WORKER-RAW");
       expect((await hook({ tool_name: "Read", tool_input: { file_path: "/etc/passwd" } })).hookSpecificOutput.permissionDecision).toBe("deny");
       expect((await hook({ tool_name: "Read", tool_input: { file_path: unrelated } })).hookSpecificOutput.permissionDecision).toBe("deny");
+      // 128: `/tm/...` is an ordinary path for a worker too: denied, and nothing is rendered for it.
+      const old = (await hook({ tool_name: "Read", cwd, tool_input: { file_path: `/tm/raw/S${session.id}/T${turn.id}#E1` } })).hookSpecificOutput;
+      expect(old.permissionDecision).toBe("deny");
+      expect(old.updatedInput).toBeUndefined();
       expect((await hook({ tool_name: "Read", tool_input: { file_path: `${snapshot}/../memory.txt` } })).hookSpecificOutput.permissionDecision).toBe("deny");
-      const continuation = (await hook({ tool_name: "Read", tool_input: { file_path: path, offset: 2, limit: 4 } })).hookSpecificOutput;
+      const continuation = (await hook({ tool_name: "Read", cwd, tool_input: { file_path: resolved, offset: 2, limit: 4 } })).hookSpecificOutput;
       expect(continuation.permissionDecision).toBe("allow");
       expect(continuation.updatedInput.offset).toBe(2);
       expect(continuation.updatedInput.limit).toBe(4);
       expect(continuation.updatedInput.file_path).not.toBe(snapshot);
       expect(readFileSync(continuation.updatedInput.file_path, "utf8")).toContain("FROZEN-WORKER-RAW");
-      const invalid = (await hook({ tool_name: "Read", tool_input: { file_path: "/tm/not-a-view" } })).hookSpecificOutput;
+      const invalid = (await hook({ tool_name: "Read", cwd, tool_input: { file_path: `${cwd}/trace:/not-a-view` } })).hookSpecificOutput;
       expect(invalid.permissionDecision).toBe("deny");
-      expect(invalid.permissionDecisionReason).toMatch(/\/tm/);
+      expect(invalid.permissionDecisionReason).toMatch(/trace:\/\//);
       expect(invalid.permissionDecisionReason).not.toContain("snapshot");
       rmSync(snapshot);
       const missing = (await hook({ tool_name: "Read", tool_input: { file_path: snapshot } })).hookSpecificOutput;
@@ -434,9 +442,9 @@ test("CC worker observes fifty-one native Read calls through its SDK hook with u
       const hook = request.options.hooks.PreToolUse[0].hooks[0];
       for (let round = 1; round <= 51; round++) {
         yield { type: "assistant", session_id: "long-child", message: { id: `response-${round}`,
-          content: [{ type: "tool_use", id: `tool-${round}`, name: "Read", input: { file_path: "/tm" } }], usage: { input_tokens: 1, output_tokens: 1,
+          content: [{ type: "tool_use", id: `tool-${round}`, name: "Read", input: { file_path: "trace://" } }], usage: { input_tokens: 1, output_tokens: 1,
             cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
-        const read = (await hook({ tool_name: "Read", tool_input: { file_path: "/tm" } })).hookSpecificOutput;
+        const read = (await hook({ tool_name: "Read", tool_input: { file_path: "trace://" } })).hookSpecificOutput;
         expect(read.permissionDecision).toBe("allow");
         executed(readFileSync(read.updatedInput.file_path, "utf8"));
       }
@@ -749,7 +757,7 @@ test("production worker preserves legitimate all-zero usage", async () => {
   expect(result.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } });
 });
 
-test("production worker reads a /tm snapshot, preserves search cursors and accounts usage", async () => {
+test("production worker reads a trace:// snapshot, preserves search cursors and accounts usage", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-core-")); dirs.push(directory);
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
@@ -771,9 +779,9 @@ test("production worker reads a /tm snapshot, preserves search cursors and accou
       };
       let id = 0;
       const hook = request.options.hooks.PreToolUse[0].hooks[0];
-      const read = (await hook({ tool_name: "Read", tool_input: { file_path: "/tm" } })).hookSpecificOutput;
+      const read = (await hook({ tool_name: "Read", tool_input: { file_path: "trace://" } })).hookSpecificOutput;
       expect(read.permissionDecision).toBe("allow");
-      expect(readFileSync(read.updatedInput.file_path, "utf8")).toContain("/tm/S");
+      expect(readFileSync(read.updatedInput.file_path, "utf8")).toContain("trace://S");
       yield assistant(`search-${++id}`, [`search-${id}`], ccWorkerToolNames.search);
       let page = await call(`search-${id}`, `search-${id}`, "search", { query: "needle", layer: "raw", maxTokens: 256 });
       expect(page).toContain("cursor=");

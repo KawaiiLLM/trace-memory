@@ -17,7 +17,7 @@ test("92/41b: reasons belong to history metadata, not current or exact bodies", 
     expect(write.execute({ ...content, text: "Another identity", reason: "OTHER_REASON" })).toContain("committed");
     const tag = `K1#${memory.store.versionTag(1, 1)}`;
     expect(write.execute({ op: "archive", kind: "budget", id: tag, supports: ["F1"], reason: "REASON_ARCHIVE" })).toContain("committed");
-    const read = (address: string) => memoryFiles(memory, path).read(`/tm/${address}`).content;
+    const read = (address: string) => memoryFiles(memory, path).read(`trace://${address}`).content;
     for (const address of [tag, "K1@v1", "K1@v2", "K2"]) {
       expect(read(address)).not.toContain("REASON_");
       expect(read(address)).not.toContain("OTHER_REASON");

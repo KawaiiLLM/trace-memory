@@ -34,13 +34,13 @@ beforeAll(() => {
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-test("79/118: exact /tm entry on a 2,000-entry Turn hydrates one row", () => {
+test("79/118: exact trace:// entry on a 2,000-entry Turn hydrates one row", () => {
   const memory = TraceMemory(dbPath, async () => { throw new Error("no model in this test"); });
   const counter = countHydratedRows();
   try {
     const files = memoryFiles(memory, { sessionId, branch, headTurnId: turnId });
     counter.reset();
-    const result = files.read(`/tm/raw/S${sessionId}/T${turnId}#E1`).content;
+    const result = files.read(`trace://raw/S${sessionId}/T${turnId}#E1`).content;
     expect(result).toContain("entry 0");
     expect(counter.reads()).toBe(1);
   } finally { memory.close(); counter.restore(); }

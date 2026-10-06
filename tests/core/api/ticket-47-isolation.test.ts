@@ -130,7 +130,7 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
   const dreamed = await scenarios.run(memory, siblingPath, input => {
     const request = { fixture: "ticket-47 sibling maintenance" };
     input.reportRequest(request);
-    const read = (address: string) => memoryFiles(memory, input.reader!).read(`/tm/${address}`).content;
+    const read = (address: string) => memoryFiles(memory, input.reader!).read(`trace://${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
     const addressed = [maintained, archived, survivor, victim, trigger]
       .map(item => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`);

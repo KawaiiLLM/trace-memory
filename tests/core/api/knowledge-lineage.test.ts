@@ -51,7 +51,7 @@ function fixture() {
     let committed: { knowledgeId: number; commit: number }[] = [];
     const dreamed = await scenarios.run(memory, target, input => {
       const request = { fixture: "lineage maintenance" }; input.reportRequest(request);
-      const read = (address: string) => memoryFiles(memory, input.reader!).read(`/tm/${address}`).content;
+      const read = (address: string) => memoryFiles(memory, input.reader!).read(`trace://${address}`).content;
       const tool = input.tools.find(tool => tool.name === "memory")!;
       const addressed = new Set<string>();
       const converted = operations.map(operation => {
@@ -151,7 +151,7 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
   const trigger = createDreamerTrigger(f.memory, childPath, f.rootFact, 999);
   const malformedRun = await f.scenarios.run(f.memory, childPath, input => {
     const request = { fixture: "invalid three-parent merge" }; input.reportRequest(request);
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
     const tool = input.tools.find(tool => tool.name === "memory")!;
     for (const address of [tagged(f.store, f.created.knowledgeId, merged.commit), tagged(f.store, childOnly.knowledgeId, childOnly.commit), tagged(f.store, f.created.knowledgeId, f.created.commit)])
       read(address);
@@ -190,7 +190,7 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
       children: [{ text: "first rule", category: "constraint", topics: ["first"] }, { text: "second rule", category: "goal", topics: ["second"] }] }], skipped: [] }));
     expect(split.committed).toHaveLength(2);
     const [first, second] = split.committed as { knowledgeId: number; version: string }[];
-    const read = (address: string) => memoryFiles(memory, input.reader!).read(`/tm/${address}`).content;
+    const read = (address: string) => memoryFiles(memory, input.reader!).read(`trace://${address}`).content;
     expect(read(first!.version)).not.toContain("rejected:");
     const update = JSON.parse(dreamerWrite(tool, { operations: [{ op: "update", id: tagged(memory.store, first!.knowledgeId, memory.store.resolveVersionOrdinal(first!.knowledgeId, Number(first!.version.split("@v")[1]))),
       text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }], skipped: [] }));

@@ -160,7 +160,7 @@ test("64c category display and commit recency retain whole newer items; lines ar
   expect(visibleIds.length).toBeGreaterThan(0);
   expect(new Set(visibleIds)).toEqual(new Set([1, ...ids, earlier].sort((a, b) => b - a).slice(0, visibleIds.length)));
   expect(partial).toContain("Receipts:"); // omitted bodies remain eligible and unacknowledged
-  for (const id of ids.slice(0, 4)) expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: memory.store.currentPath(s.id).headTurnId }).read(`/tm/K${id}`).content).toContain(`[K${id}@v${memory.store.versionOrdinal(id, id)}]`);
+  for (const id of ids.slice(0, 4)) expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: memory.store.currentPath(s.id).headTurnId }).read(`trace://K${id}`).content).toContain(`[K${id}@v${memory.store.versionOrdinal(id, id)}]`);
 });
 
 test("64c compaction is identical across scheduling records and large changed Knowledge is optional", () => {
@@ -244,7 +244,7 @@ test("20c/92: pending Raw and historical facts fit their independent windows wit
   Object.assign(memory.config.compaction, { factsTokens: Math.ceil(windows.facts * 0.8) });
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${second.id}]`); expect(limited).not.toContain("[F1]");
-  expect(limited).toContain("omitted 1 older facts; expand: /tm/F1");
+  expect(limited).toContain("omitted 1 older facts; expand: trace://F1");
   expect(limited.indexOf("Receipts:")).toBeGreaterThan(limited.indexOf("</episodic>"));
   defaultWindows();
 });
@@ -322,20 +322,20 @@ test("20c/23 scenario 10, rescaled by 73: one bounded view of every entry under 
   expect(delegated.truncated?.raw).toBeTruthy();
   expect(compacted(delegated)).toContain("earlier entries omitted from the Raw window");
   const hosted = memory.compact(s.id, "main", next.id, [], false, { toolNames: { note: "host_note", memory: "host_memory", read: "Read", grep: "Grep", search: "host_search", check: "host_check" } });
-  expect(compacted(hosted)).toContain(`/tm/raw/S${s.id}/T`);
+  expect(compacted(hosted)).toContain(`trace://raw/S${s.id}/T`);
   expect(compacted(hosted)).not.toContain("read them with trace");
   expect(charged(hosted).raw).toBeLessThanOrEqual(memory.config.compaction.rawTokens);
   if ("native" in hosted) throw new Error(hosted.reason);
-  expect(charged(hosted).raw).toBeGreaterThanOrEqual(tokens(hosted.material!.receipts.find(line => line.includes(`/tm/raw/S${s.id}/T`))!));
+  expect(charged(hosted).raw).toBeGreaterThanOrEqual(tokens(hosted.material!.receipts.find(line => line.includes(`trace://raw/S${s.id}/T`))!));
   expect(hydrate(memory.pendingEntries(s.id, "main", next.id), memory.store).map(e => e.id)).toEqual(pending.map(e => e.id));
   defaultWindows();
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
   // read without `full` (23b) is the same bounded view of the same entry, cut where the budgets bite.
   const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: next.id });
-  expect(files.read(`/tm/raw/S${s.id}/T${next.id}#E1`).content).toContain(body);
-  expect(files.read(`/tm/raw/S${s.id}/T${next.id}`).content).toContain("USER_HEAD");
-  expect(files.read(`/tm/raw/S${s.id}/T${next.id}#E${call.entryOrdinal}`).content).toContain("SECRET_ARGUMENT");
-  expect(files.read(`/tm/raw/S${s.id}/T${next.id}#E${resultEntry.entryOrdinal}`).content).toContain("SECRET_RESULT");
+  expect(files.read(`trace://raw/S${s.id}/T${next.id}#E1`).content).toContain(body);
+  expect(files.read(`trace://raw/S${s.id}/T${next.id}`).content).toContain("USER_HEAD");
+  expect(files.read(`trace://raw/S${s.id}/T${next.id}#E${call.entryOrdinal}`).content).toContain("SECRET_ARGUMENT");
+  expect(files.read(`trace://raw/S${s.id}/T${next.id}#E${resultEntry.entryOrdinal}`).content).toContain("SECRET_RESULT");
 });
 
 /** 25c amended this acceptance on its own terms — its thresholds moved from `noting.batchTokens` to
@@ -417,7 +417,7 @@ test("73: when the bounded views miss the Raw window compact truncates to the ne
   const source = hydrate(memory.store.sourcePath(s.id, "main", parent), memory.store);
   const newest = source.at(-1)!;
   const receipt = `[... ${source.length - 1} earlier entries omitted from the Raw window] ${expandList(
-    [...new Set(source.slice(0, -1).map(entry => `/tm/raw/S${s.id}/T${entry.turnId}`))])}`;
+    [...new Set(source.slice(0, -1).map(entry => `trace://raw/S${s.id}/T${entry.turnId}`))])}`;
   memory.config.compaction.rawTokens = rawWindowTokens([renderEntry(newest, memory.config.render).content], [receipt]);
   const receipted = memory.compact(s.id, "main", parent);
   if ("native" in receipted) throw new Error(receipted.reason);
@@ -442,7 +442,7 @@ test("73: when the bounded views miss the Raw window compact truncates to the ne
   expect(compacted(named)).not.toContain("raw ceiling");
   // Truncation is a receipt, not a summary: nothing was read differently, processed or erased.
   expect(hydrate(memory.pendingEntries(s.id, "main", parent), memory.store).map(e => e.id)).toEqual(pending);
-  expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: parent }).read(`/tm/raw/S${s.id}/T${parent}#E1@user`).content).toContain("entry 39");
+  expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: parent }).read(`trace://raw/S${s.id}/T${parent}#E1@user`).content).toContain("entry 39");
   expect(calls).toBe(0);
 });
 
@@ -481,7 +481,7 @@ test("64c/92: the independent facts window bounds history while Knowledge and Ra
   const assemble = readFacade(memory.store, memory.config).compact;
   const measured = charged(assemble(s.id, "main", t.id, [], false, { processedRawRefill: false }));
   const factReceipt = `omitted ${facts.length} older facts; expand: ${expandList(
-    [...facts].sort((a, b) => b.id - a.id).map(fact => `/tm/F${fact.id}`))}`;
+    [...facts].sort((a, b) => b.id - a.id).map(fact => `trace://F${fact.id}`))}`;
   const receiptBudget = charge([factReceipt]) + charge(["Receipts:"]);
   // Size Raw to its complete views, facts to its receipt alone and Knowledge to its measured body.
   // Raw and Knowledge remain, while facts are omitted because their own window cannot hold a body.
@@ -661,8 +661,8 @@ test("opaque cursors continue search snapshots; virtual files reject retired add
   const last = memory.search("ignored", "all", { cursor });
   expect(last).toContain("[F2]"); expect(last).not.toContain("cursor="); expect(last).toContain("No hit does not mean absent");
   const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id });
-  expect(() => files.read(`/tm/F${f.id}..`)).toThrow();
-  expect(() => files.read(`/tm/cursor=${cursor}`)).toThrow();
+  expect(() => files.read(`trace://F${f.id}..`)).toThrow();
+  expect(() => files.read(`trace://cursor=${cursor}`)).toThrow();
 });
 
 test("status reports attribution, counts, every watermark and last runs, and no delivery queue (29d)", () => {
@@ -737,7 +737,7 @@ test("search marks historical, merged and archived knowledge hits so they do not
     const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
     for (const address of [tag(a, 1), tag(b, b), tag(c, c), tag(trigger1.knowledgeId, trigger1.commit)])
-      expect(memoryFiles(memory, input.reader!).read(`/tm/${address}`).content).toContain(address);
+      expect(memoryFiles(memory, input.reader!).read(`trace://${address}`).content).toContain(address);
     const receipt = JSON.parse(dreamerWrite(write, { operations: [
       { op: "update", id: tag(a, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: ["F1"] },
       { op: "merge", id: tag(b, b), absorb: [tag(c, c)], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: ["F1"] },
@@ -755,7 +755,7 @@ test("search marks historical, merged and archived knowledge hits so they do not
     const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
     for (const address of [tag(b, merged.commit), tag(trigger2.knowledgeId, trigger2.commit)])
-      expect(memoryFiles(memory, input.reader!).read(`/tm/${address}`).content).toContain(address);
+      expect(memoryFiles(memory, input.reader!).read(`trace://${address}`).content).toContain(address);
     dreamerWrite(write, { operations: [
       { op: "archive", kind: "budget", id: tag(b, merged.commit), supports: ["F1"], reason: "Retired: the cited evidence withdraws this conclusion." },
       { op: "archive", kind: "budget", id: tag(trigger2.knowledgeId, trigger2.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
@@ -783,7 +783,7 @@ test("reads resolve any existing address: another session's history, current rev
     const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
     for (const address of [tag(k, 1), tag(trigger.knowledgeId, trigger.commit)])
-      expect(memoryFiles(memory, input.reader!).read(`/tm/${address}`).content).toContain(address);
+      expect(memoryFiles(memory, input.reader!).read(`trace://${address}`).content).toContain(address);
     const receipt = JSON.parse(dreamerWrite(write, { operations: [
       { op: "update", id: tag(k, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
         category: "goal", scope: "session", supports: ["F1"] },
@@ -798,10 +798,10 @@ test("reads resolve any existing address: another session's history, current rev
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
   const files = memoryFiles(memory, { sessionId: peer.id, branch: "main", headTurnId: pt.id });
   expect(memory.search("shared-then-private", "knowledge", { sessionId: peer.id })).not.toContain(`[K${k}@`);
-  expect(files.read(`/tm/K${k}@v1`).content).toContain("shared-then-private goal");
-  expect(files.read(`/tm/K${k}`).content).not.toContain("shared-then-private goal");
-  expect(files.read(`/tm/K${k}@v2`).content).toContain("private goal now");
-  expect(() => files.read(`/tm/K${k}@v999`)).toThrow(`unknown knowledge history K${k}@v999`);
+  expect(files.read(`trace://K${k}@v1`).content).toContain("shared-then-private goal");
+  expect(files.read(`trace://K${k}`).content).not.toContain("shared-then-private goal");
+  expect(files.read(`trace://K${k}@v2`).content).toContain("private goal now");
+  expect(() => files.read(`trace://K${k}@v999`)).toThrow(`unknown knowledge history K${k}@v999`);
 });
 
 // ---- 21b 2026-09-08: topic grouping and literal label retrieval ----
@@ -902,7 +902,7 @@ test("73: knowledge borrows the shared allowance first, even when it leaves pend
   // oldest items past base plus allowance.
   expect(windows.knowledge).toBeGreaterThan(base);
   expect(windows.knowledge).toBeLessThanOrEqual(base + allowance);
-  expect(text).toContain("knowledge; expand: /tm/K");
+  expect(text).toContain("knowledge; expand: trace://K");
   // Facts fit inside their own base with nothing left to borrow.
   for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
   // Raw cannot borrow what knowledge already took, so it truncates to its own base — the newest
@@ -993,6 +993,6 @@ test("28a/92: the independent facts window keeps newest whole facts and receipts
   Object.assign(memory.config.compaction, { factsTokens: Math.ceil(measured.facts * 0.65), sharedAllowanceTokens: 0 });
   const text = compacted(memory.compact(s.id, "main", t.id));
   expect(text).toContain("NEWEST"); expect(text).not.toContain("OLDEST");
-  expect(text).toContain(`omitted 1 older facts; expand: /tm/F${older.id}`);
+  expect(text).toContain(`omitted 1 older facts; expand: trace://F${older.id}`);
   defaultWindows();
 });

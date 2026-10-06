@@ -18,7 +18,7 @@ for (const long of [false, true]) test(`92: fixture reads the complete tagged bo
     const spy = vi.spyOn(files, "read");
     const expected = `K1#${memory.store.versionTag(1, 1)}`;
     expect(readHandle(read, "K1")).toBe(expected);
-    if (long) expect(files.read("/tm/K1").content).toContain("Rule detail.");
+    if (long) expect(files.read("trace://K1").content).toContain("Rule detail.");
     expect(readHandle(read, "K1@v1")).toBe(expected);
     expect(readHandle(read, expected)).toBe(expected);
     const calls = spy.mock.calls.length;

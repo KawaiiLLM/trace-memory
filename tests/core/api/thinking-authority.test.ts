@@ -32,7 +32,7 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
     expect(f.m.store.entryNoted(f.pure.id)).toBe(false);
     for (const address of ["T1#E1@thinking", "T1#E2@thinking"])
       expect(note.execute(fact(address))).toContain("rejected:");
-    const raw = `/tm/raw/S${f.sessionId}/T${f.turnId}`;
+    const raw = `trace://raw/S${f.sessionId}/T${f.turnId}`;
     const before = f.m.store.db.prepare("SELECT * FROM knowledge_deliveries").all();
     expect(files.read(raw).content).not.toContain("Private inference");
     expect(files.read(`${raw}@assistant`).content).not.toContain("Private inference");

@@ -57,7 +57,7 @@ async function maintain(f: ReturnType<typeof fixture>, branch: "left" | "right",
     item.knowledge.id !== trigger.knowledgeId && item.revision.text.startsWith("Fixture trigger"));
   const result = await f.scenarios.run(f.memory, path, input => {
     const request = { branch, sequence }; input.reportRequest(request);
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
     read(tag(f.base.knowledgeId, f.base.commit));
@@ -106,7 +106,7 @@ test("64b: global current selects one direct-fact branch and rejects the histori
   const result = await f.scenarios.run(f.memory, rightPath, input => {
     changed = input.material.changed;
     const request = { branch: "right", purpose: "global-current stale refusal" }; input.reportRequest(request);
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
     for (const revision of [leftTip, rightTip]) read(tag(f.base.knowledgeId, revision.id));
@@ -131,7 +131,7 @@ test("64b: global current selects one direct-fact branch and rejects the histori
   expect(changed).not.toContain(`K${f.base.knowledgeId}@v2`);
   expect(tokens(changed)).toBeLessThanOrEqual(10000);
   const history = memoryFiles(f.memory, { sessionId: f.session.id, branch: "right", headTurnId: f.turn.id })
-    .read(`/tm/K${f.base.knowledgeId}.history`).content;
+    .read(`trace://K${f.base.knowledgeId}.history`).content;
   expect(history).toContain("left knowledge");
   expect(history).toContain("right knowledge");
 });

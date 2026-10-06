@@ -191,7 +191,7 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
       const request = { fixture: "topic-set diff" }; input.reportRequest(request);
       const write = input.tools.find(tool => tool.name === "memory")!;
       const base = `K1#${f.m.store.versionTag(1, 1)}`;
-      expect(memoryFiles(f.m, input.reader!).read("/tm/K1@v1").content).toContain(base);
+      expect(memoryFiles(f.m, input.reader!).read("trace://K1@v1").content).toContain(base);
       const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: base, ...content, topics: ["a", "b"] }], skipped: [] }));
       expect(receipt.committed[0].version).toBe("K1@v2");
       updatedCommit = f.m.store.resolveVersionOrdinal(1, 2);
@@ -200,8 +200,8 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
     });
     expect(result.outcome).toBe("success");
     const files = memoryFiles(f.m, { sessionId: f.s.id, branch: "main", headTurnId: f.t.id });
-    expect(files.read("/tm/K1@v1").content).toContain('topics: ["a, b"]');
-    expect(files.read(`/tm/K1@v${f.m.store.versionOrdinal(1, updatedCommit)}`).content).toContain('topics: ["a","b"]');
+    expect(files.read("trace://K1@v1").content).toContain('topics: ["a, b"]');
+    expect(files.read(`trace://K1@v${f.m.store.versionOrdinal(1, updatedCommit)}`).content).toContain('topics: ["a","b"]');
     expect(renderKnowledgeDiff(f.m.store.knowledgeRevision(1)!, f.m.store.knowledgeRevision(updatedCommit)!, []))
       .toContain('topics: ["a, b"] -> ["a","b"]');
   } finally { f.m.close(); }

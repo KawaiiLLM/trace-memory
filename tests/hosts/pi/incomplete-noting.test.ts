@@ -120,7 +120,7 @@ test("32c replaces 26a: off preserves committed facts and reads, blocks both pha
     expect(tools.find(t => t.name === "note")!.execute({ title: "Retained claim", sources: "[T1#E1] Retained claim" })).toContain("ok: F1");
     await tick(h); await tick(h);
     expect(disabled(h)).toHaveLength(1);
-    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/F1").content).toContain("Retained claim");
+    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://F1").content).toContain("Retained claim");
     const count = h.memory.store.listRuns(1).length;
     await expect(command(h, "catchup")).rejects.toThrow("Disabled"); await h.drain();
     expect(h.memory.store.enabled(1)).toBe(false);

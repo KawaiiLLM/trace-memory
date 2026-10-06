@@ -43,7 +43,7 @@ async function archive(f: ReturnType<typeof fixture>, item: { knowledgeId: numbe
   const result = await f.scenarios.run(f.memory, f.path, input => {
     const request = { fixture: "archive revival predecessor", sequence }; input.reportRequest(request);
     const write = input.tools.find(tool => tool.name === "memory")!;
-    for (const value of [item, trigger]) expect(memoryFiles(f.memory, f.path).read(`/tm/${f.tag(value)}`).content).toContain(f.tag(value));
+    for (const value of [item, trigger]) expect(memoryFiles(f.memory, f.path).read(`trace://${f.tag(value)}`).content).toContain(f.tag(value));
     const receipt = JSON.parse(dreamerWrite(write, { operations: [
       { op: "archive", kind: "budget", id: f.tag(item), supports: [], reason: "Object ended" },
       { op: "archive", kind: "budget", id: f.tag(trigger), supports: [], reason: "Retire archive trigger" },
@@ -66,7 +66,7 @@ test("48: a trusted Dreamer revives an archived older identity through merge onl
   const result = await f.scenarios.run(f.memory, f.path, input => {
     const request = { fixture: "revive archived identity" }; input.reportRequest(request);
     const write = input.tools.find(tool => tool.name === "memory")!;
-    for (const value of [archived, returned, trigger]) expect(memoryFiles(f.memory, f.path).read(`/tm/${f.tag(value)}`).content).toContain(f.tag(value));
+    for (const value of [archived, returned, trigger]) expect(memoryFiles(f.memory, f.path).read(`trace://${f.tag(value)}`).content).toContain(f.tag(value));
     const operation = { op: "merge", id: f.tag(archived), absorb: [f.tag(returned)],
       text: "Object state after return", category: "constraint", scope: "project", supports: [], reason: "Object returned", topics: ["object"] };
     const receipt = JSON.parse(dreamerWrite(write, { operations: [operation,
@@ -92,7 +92,7 @@ test("76: an archive base accepts a Dreamer revival through update as well as th
   const result = await f.scenarios.run(f.memory, f.path, input => {
     const request = { fixture: "archive accepts update revival" }; input.reportRequest(request);
     const write = input.tools.find(tool => tool.name === "memory")!;
-    for (const value of [archived, active, trigger]) expect(memoryFiles(f.memory, f.path).read(`/tm/${f.tag(value)}`).content).toContain(f.tag(value));
+    for (const value of [archived, active, trigger]) expect(memoryFiles(f.memory, f.path).read(`trace://${f.tag(value)}`).content).toContain(f.tag(value));
     // 76: baseProblem's archived-base acceptance for a Dreamer revival now covers a plain update too,
     // not merge alone ("D reviews an archive... to revoke or adjust it, D updates the archived version").
     expect(dreamerWrite(write, { operations: [{ op: "update", id: f.tag(archived),

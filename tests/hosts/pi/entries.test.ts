@@ -46,8 +46,8 @@ test("17a 2026-09-08: attach imports earlier native history, preserves repeated 
     const entries = hydrate(h.memory.pendingEntries(1, "main", 2), h.memory.store);
     expect(entries.map(e => [e.turnId, e.role, e.text])).toEqual([[1, "user", "same"], [1, "assistant", "same answer"], [1, "assistant", "same answer"], [2, "user", "same"], [2, "assistant", "same answer"], [2, "assistant", ""]]);
     expect(new Set(entries.map(e => e.nativeId)).size).toBe(6);
-    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/raw/S1/T1@assistant").content).toBe("[T1#E2@assistant] assistant: same answer\n[T1#E3@assistant] assistant: same answer");
-    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 2 }).read("/tm/raw/S1/T2#E3@assistant").content).toContain("private");
+    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://raw/S1/T1@assistant").content).toBe("[T1#E2@assistant] assistant: same answer\n[T1#E3@assistant] assistant: same answer");
+    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 2 }).read("trace://raw/S1/T2#E3@assistant").content).toContain("private");
     await h.emit("session_start");
     expect(hydrate(h.memory.pendingEntries(1, "main", 2), h.memory.store)).toEqual(entries);
     expect(h.memory.store.getSession(2)).toBeNull();
@@ -89,7 +89,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
     await h.emit("tool_result", { toolCallId: "call", toolName: "bash", input: { command: "check" }, content: [{ type: "text", text: "late result" }], isError: false });
     await h.answer("late assistant");
     const lateResult = hydrate(h.memory.store.sourcePath(1, "main", 1), h.memory.store).find(entry => entry.role === "toolResult")!;
-    const read = memoryFiles(noter, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`/tm/raw/S1/T1#E${lateResult.entryOrdinal}`).content;
+    const read = memoryFiles(noter, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`trace://raw/S1/T1#E${lateResult.entryOrdinal}`).content;
     expect(read).toContain("late result");
     const note = input.tools.find(t => t.name === "note")!;
     expect(note.execute({ title: "Late evidence", sources: `[T1#E${lateResult.entryOrdinal}] Late evidence` })).toContain("rejected:");
@@ -109,7 +109,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
     expect(audit).toMatchObject({ branch: "main", viewVersion: "107-cc-result-content", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
     await h.emit("session_start");
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toEqual(after);
-    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`/tm/raw/S1/T1#E${lateResult.entryOrdinal}`).content).toContain("late result");
+    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`trace://raw/S1/T1#E${lateResult.entryOrdinal}`).content).toContain("late result");
     const next = TraceMemory(join(h.dir, "trace.db"), async raw => {
       const forkInput = raw as NotingAgentInput;
       // 29b: with the whole target visible the fork supplies no Raw body, so the only entry text it
@@ -182,7 +182,7 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
     expect(tokens(entries.map(e => e.raw).join("\n\n"))).toBeGreaterThan(20000);
     expect(tokens(entries.map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBeLessThan(20000);
     const block = compacted(h.memory.compact(1, "main", 1));
-    const factView = memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/F1").content;
+    const factView = memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://F1").content;
     expect(factView).toMatch(/^Source session: S1\n/);
     const grouped = `[T1] ${h.memory.store.getTurn(1)!.startedAt} (selected facts) · session harness: Pi agent (context, not claim attribution)\n${factView.slice("Source session: S1\n".length)}`;
     expect(block.split("Recent facts (by Turn):\n\n")[1]!.split("\n\nRaw:")[0]).toBe(grouped);
@@ -234,9 +234,9 @@ test("17a 2026-09-08: forks reuse shared identities and ordinals but native shor
     try {
       expect(hydrate(reopened.pendingEntries(1, branch, 1), reopened.store)).toEqual([fork]);
       // 23c: `full` renders the stored arguments under the entry view's labels, values uncut.
-      expect(memoryFiles(reopened, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`/tm/raw/S1/T1#E${initial[1]!.entryOrdinal}`).content).toContain('bash(command="first")');
-      expect(memoryFiles(reopened, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`/tm/raw/S1/T1#E${original.entryOrdinal}`).content).toContain('bash(command="original tail")');
-      expect(memoryFiles(reopened, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`/tm/raw/S1/T1#E${fork.entryOrdinal}`).content).toContain('bash(command="fork tail")');
+      expect(memoryFiles(reopened, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`trace://raw/S1/T1#E${initial[1]!.entryOrdinal}`).content).toContain('bash(command="first")');
+      expect(memoryFiles(reopened, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`trace://raw/S1/T1#E${original.entryOrdinal}`).content).toContain('bash(command="original tail")');
+      expect(memoryFiles(reopened, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`trace://raw/S1/T1#E${fork.entryOrdinal}`).content).toContain('bash(command="fork tail")');
     } finally { reopened.close(); }
   } finally { noter.close(); await h.dispose(); }
 });
@@ -257,9 +257,9 @@ test("17a 2026-09-08: shared-call fork results retain both originals through unr
     await h.emit("tool_result", { toolCallId: "shared", toolName: "bash", input: {}, content: [{ type: "text", text: "RESULT B" }], isError: true });
     const results = hydrate(h.memory.store.listSourceEntries(1), h.memory.store).filter(e => e.role === "toolResult");
     expect(results).toHaveLength(2);
-    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/raw/S1/T1#E2").content).toContain(`[T1#E2@assistant] bash(command="check", timeout=20)`);
-    const first = memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`/tm/raw/S1/T1#E${results[0]!.entryOrdinal}`).content;
-    const second = memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`/tm/raw/S1/T1#E${results[1]!.entryOrdinal}`).content;
+    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://raw/S1/T1#E2").content).toContain(`[T1#E2@assistant] bash(command="check", timeout=20)`);
+    const first = memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`trace://raw/S1/T1#E${results[0]!.entryOrdinal}`).content;
+    const second = memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`trace://raw/S1/T1#E${results[1]!.entryOrdinal}`).content;
     expect(first).toContain(`bash success: ${JSON.stringify({ content: [{ type: "text", text: "RESULT A" }] })}`);
     expect(second).toContain(`bash failure: ${JSON.stringify({ content: [{ type: "text", text: "RESULT B" }] })}`);
     expect(hydrate(h.memory.pendingEntries(1, branch, 1), h.memory.store).flatMap(e => e.calls.map(c => c.result).filter(Boolean)).join("\n")).not.toContain("RESULT A");
@@ -274,8 +274,8 @@ test("33: thinking-only messages are stored for explicit reads, never added to a
     await h.emit("agent_settled"); await h.drain();
     expect(h.conversations).toHaveLength(0); // answered-Turn trigger superseded 2026-09-08 by 17b
     expect(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).map(e => e.role)).toEqual(["user", "assistant"]);
-    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/raw/S1/T1#E2@assistant").content).toContain("private reasoning");
-    expect(() => memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/raw/S1/T1@text")).toThrow(/not a Trace Memory path|no such path|invalid/);
+    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://raw/S1/T1#E2@assistant").content).toContain("private reasoning");
+    expect(() => memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://raw/S1/T1@text")).toThrow(/not a Trace Memory path|no such path|invalid/);
     expect(compacted(h.memory.compact(1, "main", 1))).not.toContain("private reasoning");
   } finally { await h.dispose(); }
 });
@@ -296,8 +296,8 @@ test("17a 2026-09-08: huge native JSON arguments and results remain byte-exact t
     expect(before.raw).toBe(JSON.stringify(message));
     // 23c: `full` renders the same labels as every other view, the stored value bytes uncut — the
     // argument strings are JSON-encoded exactly as they were stored, and the result is the raw string.
-    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/raw/S1/T1#E2").content).toBe(`[T1#E2@assistant] bash(command=${JSON.stringify(args.command)}, timeout=42, env=${JSON.stringify(args.env)})`);
-    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/raw/S1/T1#E3").content).toBe(`[T1#E3@observation] bash success: ${JSON.stringify({ content, details })}`);
+    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://raw/S1/T1#E2").content).toBe(`[T1#E2@assistant] bash(command=${JSON.stringify(args.command)}, timeout=42, env=${JSON.stringify(args.env)})`);
+    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://raw/S1/T1#E3").content).toBe(`[T1#E3@observation] bash success: ${JSON.stringify({ content, details })}`);
     const result = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).find(e => e.role === "toolResult")!;
     expect(JSON.parse(result.raw)).toMatchObject({ content, details, toolCallId: "huge", toolName: "bash", isError: false });
     expect(renderEntry(h.memory.store.getSourceEntry(before.id)!, h.memory.config.render).content).toBe(argumentView);
@@ -498,7 +498,7 @@ test("23 2026-09-09: the Pi extractor unwraps a real tool-result message shape �
     // A result string that is not this host's envelope is the string itself.
     expect(piResultText("not json")).toEqual({ text: "not json" });
     // `full` still renders the stored envelope uncut.
-    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/raw/S1/T1#E3").content).toContain(JSON.stringify({ content, details }));
+    expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://raw/S1/T1#E3").content).toContain(JSON.stringify({ content, details }));
   } finally { await h.dispose(); }
 });
 

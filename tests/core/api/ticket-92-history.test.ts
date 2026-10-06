@@ -40,7 +40,7 @@ test("92/118: all-branch history owns stable ordinals, current selection follows
     const id = initial.knowledgeId;
     const read = (path: Path, address: string, versions = "current") => {
       activate(path);
-      return memoryFiles(memory, path).read(`/tm/${address}${versions === "history" ? ".history" : ""}`).content;
+      return memoryFiles(memory, path).read(`trace://${address}${versions === "history" ? ".history" : ""}`).content;
     };
     expect([initial, first, second].map(value => store.versionOrdinal(id, value.commit))).toEqual([1, 2, 3]);
     const current = read(paths[1]!, `K${id}`);
@@ -74,7 +74,7 @@ test("92/118: all-branch history owns stable ordinals, current selection follows
     const foreignTurn = store.appendTurn({ sessionId: foreign.id, kind: "turn", userPrompt: "outside", startedAt: "now" });
     const tools = memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: foreignTurn.id });
     const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "Outside evidence", sources: `[T${foreignTurn.id}#E1] Outside evidence` })).factIds[0];
-    expect(memoryFiles(memory, { sessionId: foreign.id, branch: "main", headTurnId: foreignTurn.id }).read(`/tm/K${id}@v2`).content).toContain("Left body");
+    expect(memoryFiles(memory, { sessionId: foreign.id, branch: "main", headTurnId: foreignTurn.id }).read(`trace://K${id}@v2`).content).toContain("Left body");
     const rejected = tools.find(t => t.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" });
     expect(rejected).toContain("rejected:");
     expect(rejected).not.toContain("expects one create/archive operation");

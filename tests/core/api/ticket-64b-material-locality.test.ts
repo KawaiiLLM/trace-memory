@@ -70,7 +70,7 @@ async function diverge(f: Fixture, branch: "left" | "right", triggerEntryId: num
   const trigger = createDreamerTrigger(f.memory, path, f.fact, f.memory.store.listKnowledgeRevisions().length + 1, "project");
   const result = await f.scenarios.run(f.memory, path, input => {
     const request = { branch }; input.reportRequest(request);
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
+    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
     const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
     expect(read(tag(f.base.knowledgeId, f.base.commit))).toContain("current concise parent");

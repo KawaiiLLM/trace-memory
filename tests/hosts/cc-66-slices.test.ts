@@ -56,7 +56,7 @@ test("66 omitted pending Raw is not delivered and warns in slot one", () => {
   expect(slices[0]?.systemMessage).toBe("Trace Memory: inline transport omitted 1 pending Raw entry; omitted Raw remains pending for Noting.");
   expect(slices.filter(item => item?.systemMessage)).toHaveLength(1);
   expect(slices.filter(Boolean).flatMap(item => decodeCcInjection(item!.hookSpecificOutput.additionalContext, binding)?.entryIds ?? [])).toEqual([]);
-  expect(slices.filter(Boolean).map(item => item!.hookSpecificOutput.additionalContext).join(" ")).toContain("expand: /tm/raw/S1/T9#E1");
+  expect(slices.filter(Boolean).map(item => item!.hookSpecificOutput.additionalContext).join(" ")).toContain("expand: trace://raw/S1/T9#E1");
 });
 
 test("92 fact-only transport omission preserves its count without promising extraction", () => {
@@ -68,11 +68,11 @@ test("92 fact-only transport omission preserves its count without promising extr
 });
 
 test("66 legacy oversized omission receipt keeps its actual bounded expansion", () => {
-  const receipt: TransportItem = { kind: "receipt", text: `omitted 120 older facts; expand: ${Array.from({ length: 120 }, (_, i) => `/tm/F${i + 1}`).join(", ")}${" ".repeat(12_000)}` };
+  const receipt: TransportItem = { kind: "receipt", text: `omitted 120 older facts; expand: ${Array.from({ length: 120 }, (_, i) => `trace://F${i + 1}`).join(", ")}${" ".repeat(12_000)}` };
   const slices = sliceCcInjection(binding, [receipt]);
   const contexts = slices.filter(Boolean).map(item => item!.hookSpecificOutput.additionalContext);
   expect(contexts.every(text => text.length <= CC_SLICE_LIMIT)).toBe(true);
-  expect(contexts.join(" ")).toContain("omitted 120 items; expand: /tm/F1");
+  expect(contexts.join(" ")).toContain("omitted 120 items; expand: trace://F1");
   expect(contexts.join(" ")).toContain("F120");
 });
 

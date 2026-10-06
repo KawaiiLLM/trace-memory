@@ -106,8 +106,8 @@ test("41 unbound discovery, missing contexts and obsolete input are explicit", a
 test("exact fact and knowledge history reads remain unrestricted across discovery scopes", async () => {
   const { foreign, knowledge } = await scopeCorpus();
   const files = memoryFiles(memory, foreign);
-  expect(files.read(`/tm/F${foreign.factId}`).content).toContain(`Needle foreign`);
-  expect(files.read(`/tm/${history(knowledge.at(-1)!)}`).content).toContain("needle");
+  expect(files.read(`trace://F${foreign.factId}`).content).toContain(`Needle foreign`);
+  expect(files.read(`trace://${history(knowledge.at(-1)!)}`).content).toContain("needle");
 });
 
 test("41 representatives use only admitted revisions; lexical score never ranks different K identities", async () => {
@@ -162,9 +162,9 @@ test("41 long histories select before paging and freeze bodies, status and owner
   expect(last).not.toContain(`[K${changed.knowledgeId}@${changed.commit}]`);
   expect(last).not.toContain("cursor=");
   const files = memoryFiles(memory, who);
-  expect(files.read(`/tm/K${old.knowledgeId}.history`).content.match(/^  K1@v\d+ /gm)).toHaveLength(25);
-  expect(files.read(`/tm/K${old.knowledgeId}.history`).content).toContain("reason: Reason needle");
-  expect(() => files.read(`/tm/K${old.knowledgeId}..`)).toThrow();
+  expect(files.read(`trace://K${old.knowledgeId}.history`).content.match(/^  K1@v\d+ /gm)).toHaveLength(25);
+  expect(files.read(`trace://K${old.knowledgeId}.history`).content).toContain("reason: Reason needle");
+  expect(() => files.read(`trace://K${old.knowledgeId}..`)).toThrow();
 });
 
 test("64b global current ignores parent scope while explicit history remains filterable", async () => {
@@ -176,8 +176,8 @@ test("64b global current ignores parent scope while explicit history remains fil
   expect(identities(all)).toEqual([`K${widened.knowledgeId}@${widened.commit}`]);
   expect(all).not.toContain(`[K${old.knowledgeId}@${old.commit}]`);
   const files = memoryFiles(memory, foreign);
-  expect(files.read(`/tm/${history(old)}`).content).toContain("needle private parent");
-  expect(files.read(`/tm/${history(widened)}`).content).toContain("needle global child");
+  expect(files.read(`trace://${history(old)}`).content).toContain("needle private parent");
+  expect(files.read(`trace://${history(widened)}`).content).toContain("needle global child");
   expect(identities(memory.search("needle", "knowledge", { ...foreign, versions: "all", scope: "project" }))).toEqual([]);
 });
 
@@ -210,13 +210,13 @@ test("41 archives and merged-away identities have no current body but remain his
   expect(identities(historyText)).toHaveLength(3);
   expect(historyText).toContain(`[K${trigger.knowledgeId}@`);
   expect(historyText).toContain("archived on this path");
-  expect(memoryFiles(memory, who).read("/tm/knowledge-all").content).toContain(`/tm/K${survivor.knowledgeId}@v`);
+  expect(memoryFiles(memory, who).read("trace://knowledge-all").content).toContain(`trace://K${survivor.knowledgeId}@v`);
 });
 
 test("exact knowledge reads are whole rather than Core item-budgeted", async () => {
   const who = owner("budget");
   const item = await who.put("needle " + "body ".repeat(500));
-  const file = memoryFiles(memory, who).read(`/tm/K${item.knowledgeId}`);
+  const file = memoryFiles(memory, who).read(`trace://K${item.knowledgeId}`);
   expect(file.content).toContain("body ".repeat(500));
   expect(file.content).not.toContain("characters truncated");
 });
@@ -228,9 +228,9 @@ test("92 complete collections expose tags, metadata and history references do no
   const currentTag = `K1#${memory.store.versionTag(1, current.commit)}`;
   const oldTag = `K1#${memory.store.versionTag(1, old.commit)}`;
   const files = memoryFiles(memory, who);
-  expect(files.read("/tm/K1").content).toContain("new body");
-  expect(files.read("/tm/K1").content).toContain(currentTag);
-  const historyText = files.read("/tm/K1.history").content;
+  expect(files.read("trace://K1").content).toContain("new body");
+  expect(files.read("trace://K1").content).toContain(currentTag);
+  const historyText = files.read("trace://K1.history").content;
   expect(historyText).toContain("K1@v1");
   expect(historyText).toContain("reason: Reason old body");
   const write = tools.find(tool => tool.name === "memory")!;

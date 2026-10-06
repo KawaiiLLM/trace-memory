@@ -9,7 +9,7 @@ import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/source.ts";
 import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
-export { memoryFiles, memoryPath, memoryGlob, MEMORY_ROOT, MEMORY_READ_ONLY } from "./files.ts";
+export { memoryFiles, memoryPath, resolvedMemoryPath, memoryGlob, MEMORY_ROOT, MEMORY_READ_ONLY } from "./files.ts";
 export type { MemoryReader, MemoryFile, MemoryGrepMode, MemoryGrepOptions, MemoryGrepFile, MemoryListing } from "./files.ts";
 // 29a/53: core owns only the host-neutral visibility contract; each host reads its own envelopes.
 import type { VisibleView } from "./visible.ts";
@@ -605,7 +605,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       return () => [path ? `K${id} path current: ${tips.map(shown).join(", ") || "none"}`
         : `K${id} tips (newest-created: ${tips.length ? shown(tips.reduce((a, b) => a.id > b.id ? a : b)) : "none"}):`,
         ...tips.map(r => (tips.length > 1 ? `Alternative ${shown(r)}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
-        ...archived.map(r => `  ${shown(r)}: ${selection.status(r)}; /tm/K${id}.history`),
+        ...archived.map(r => `  ${shown(r)}: ${selection.status(r)}; trace://K${id}.history`),
         ...(fields.has("links") ? links.map(l => `  ${l.kind}: ${display.modelFacing ? `K${l.toKnowledge}@v${store.versionOrdinal(l.toKnowledge, l.toCommit)}` : `K${l.toKnowledge}@${l.toCommit}`} (from ${display.modelFacing ? `K${l.fromKnowledge}@v${store.versionOrdinal(l.fromKnowledge, l.fromCommit)}` : `K${l.fromKnowledge}@${l.fromCommit}`})`) : []),
         ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable, fields, shown)]
           : ["Commit history:", renderCommitHistory(allHistory, fields, shown)]),
@@ -706,7 +706,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         }
         if (display.fileFacts) {
           const uncovered = meta.filter(entry => !cited.has(entry.id));
-          if (uncovered.length) lines.push(`Events without a fact: ${uncovered.map(entry => `/tm/raw/S${turn.sessionId}/T${turn.id}#E${entry.entryOrdinal}`).join(" ")}`);
+          if (uncovered.length) lines.push(`Events without a fact: ${uncovered.map(entry => `trace://raw/S${turn.sessionId}/T${turn.id}#E${entry.entryOrdinal}`).join(" ")}`);
         } else {
           if (uncited.length) lines.push(`Processed, not cited: ${uncited.map(entry => `T${turn.id}#E${entry.entryOrdinal}`).join(", ")}`);
           if (meta.length) lines.push(`Raw: T${turn.id}#E${meta[0]!.entryOrdinal}..E${meta.at(-1)!.entryOrdinal}`);

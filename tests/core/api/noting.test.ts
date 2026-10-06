@@ -300,10 +300,10 @@ test("fixture turn golden and noting input use identical rendering with receipts
   expect(memory.trace("T1")).toBe(golden("turn"));
   expect(memory.trace("T2")).toBe(golden("read"));
   script.push(async (input) => {
-    // 17a: automatic Raw uses completed entries; an exact /tm entry retains its independent full read.
+    // 17a: automatic Raw uses completed entries; an exact trace:// entry retains its independent full read.
     const views = hydrate(memory.pendingEntries(sessionId, "main", first.id), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
     expect(input.material.entries.map(e => e.view).join("\n\n")).toBe(views);
-    const exact = memoryFiles(memory, { sessionId, branch: "main", headTurnId: first.id }).read(`/tm/raw/S${sessionId}/T${first.id}#E1@user`);
+    const exact = memoryFiles(memory, { sessionId, branch: "main", headTurnId: first.id }).read(`trace://raw/S${sessionId}/T${first.id}#E1@user`);
     expect(exact.content).toContain(`[T${first.id}#E1@user]`);
     expect(exact.unbounded).toBe(true);
     return success([]);

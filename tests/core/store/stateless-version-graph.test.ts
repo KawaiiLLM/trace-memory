@@ -113,8 +113,8 @@ test("64b stateless graph: genuine alternative split operations keep only the op
     const dreamed = await scenarios.run(memory, path, input => {
       const request = { fixture: `alternative split ${sequence}` }; input.reportRequest(request);
       const write = input.tools.find(tool => tool.name === "memory")!;
-      memoryFiles(memory, path).read(`/tm/${tag(store, base)}`);
-      memoryFiles(memory, path).read(`/tm/${tag(store, trigger)}`);
+      memoryFiles(memory, path).read(`trace://${tag(store, base)}`);
+      memoryFiles(memory, path).read(`trace://${tag(store, trigger)}`);
       const receipt = JSON.parse(dreamerWrite(write, { operations: [
         { op: "split", id: tag(store, base), supports: [`F${support}`], reason: "Alternative atomic split.",
           children: labels.map(text => ({ text, category: "constraint", topics: [] })) },
@@ -168,8 +168,8 @@ test("64b stateless graph: admitted deep branch defeats a restored sibling from 
     const dreamed = await scenarios.run(memory, path, input => {
       const request = { fixture: `64b deep fork ${sequence}` }; input.reportRequest(request);
       const write = input.tools.find(tool => tool.name === "memory")!;
-      memoryFiles(memory, path).read(`/tm/${tag(store, prior)}`);
-      memoryFiles(memory, path).read(`/tm/${tag(store, trigger)}`);
+      memoryFiles(memory, path).read(`trace://${tag(store, prior)}`);
+      memoryFiles(memory, path).read(`trace://${tag(store, trigger)}`);
       const receipt = JSON.parse(dreamerWrite(write, { operations: [
         { op: "update", id: tag(store, prior), text, category: "constraint", scope: "global",
           supports: [`F${support}`], reason: "Advance the selected branch.", topics: [] },
@@ -241,7 +241,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const request = { fixture: "64b restorable sibling branches" }; input.reportRequest(request);
     const write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [scopedParent, survivor, absorbed, splitParent, siblingTrigger])
-      memoryFiles(memory, aPath).read(`/tm/${tag(store, item)}`);
+      memoryFiles(memory, aPath).read(`trace://${tag(store, item)}`);
     const operated = new Set([absorbed, splitParent, siblingTrigger]
       .map(item => history(store, item)));
     const unchangedSupplied = suppliedHandles(input.material.changed).filter(knowledge => !operated.has(knowledge));
@@ -267,7 +267,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const request = { fixture: "64b stateless session scope change" }; input.reportRequest(request);
     const write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [scopedParent, sessionTrigger])
-      memoryFiles(memory, aPath).read(`/tm/${tag(store, item)}`);
+      memoryFiles(memory, aPath).read(`trace://${tag(store, item)}`);
     // 126: the run also freezes the other pools' pending items; they are deliberated unchanged.
     const operated = new Set([scopedParent, sessionTrigger].map(item => history(store, item)));
     const receipt = JSON.parse(dreamerWrite(write, { operations: [
@@ -289,7 +289,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const request = { fixture: "64b stateless cross-identity graph" }; input.reportRequest(request);
     const write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [survivor, absorbed, splitParent, trigger])
-      memoryFiles(memory, aPath).read(`/tm/${tag(store, item)}`);
+      memoryFiles(memory, aPath).read(`trace://${tag(store, item)}`);
     const receipt = JSON.parse(dreamerWrite(write, { operations: [
       { op: "merge", id: tag(store, survivor), absorb: [tag(store, absorbed)],
         text: "merged result with B support", category: "constraint", scope: "global", supports: [`F${bFact.id}`],

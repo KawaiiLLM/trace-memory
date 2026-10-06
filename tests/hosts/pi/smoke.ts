@@ -23,7 +23,7 @@ const h = host({ "noting.triggerTokens": 30 }, { extension });
 try {
   // The default data directory must never be interpreted as a project marker file.
   mkdirSync(join(h.dir, ".trace-memory"));
-  assert.deepEqual([...h.tools.keys()], ["read", "grep", "search", "note", "memory"]); // 118: /tm through native read and grep
+  assert.deepEqual([...h.tools.keys()], ["read", "grep", "search", "note", "memory"]); // 118: trace:// through native read and grep
   h.provider(async conversation => notingFact(conversation));
   await h.emit("session_start");
   await h.turn();
@@ -155,7 +155,7 @@ try {
     .map(row => Number(row.revision_id)), [archive.id]);
   assert.deepEqual(store.pendingVersions(pool, store.knowledgePath(1, "main")), []);
   // Exact archive reads preserve the inherited direct support and parent provenance.
-  assert.ok(memoryFiles(dreamer.memory, { sessionId: 1, branch: "main", headTurnId: store.knowledgePath(1, "main").headTurnId }).read(`/tm/K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, archive.id)}`).content.includes(`F${facts.facts[0]!.id}`));
+  assert.ok(memoryFiles(dreamer.memory, { sessionId: 1, branch: "main", headTurnId: store.knowledgePath(1, "main").headTurnId }).read(`trace://K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, archive.id)}`).content.includes(`F${facts.facts[0]!.id}`));
   assert.ok(dreamer.notices.some(n => n.includes("compaction preparing")));
   assert.ok(!dreamer.notices.some(n => n.includes("compaction used")), "before returning a carrier is not persisted success");
   const entry = dreamer.compaction(compacted.compaction.summary, { details: compacted.compaction.details });

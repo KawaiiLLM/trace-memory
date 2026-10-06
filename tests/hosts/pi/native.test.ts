@@ -59,24 +59,24 @@ test.each(["noting", "dreaming"] as const)("117/125: native %s gets no end revie
   } finally { await f.dispose(); }
 });
 
-test("118: native fork keeps captured read definition while restricting its execution to frozen /tm files", async () => {
+test("118: native fork keeps captured read definition while restricting its execution to frozen trace:// files", async () => {
   const f = await forkFixture({ "noting.triggerTokens": 1e9 });
   try {
     f.script(body => !worker(body) ? say("Parent ready.") : toolResults(body) ? say("Done.")
-      : call("read-tm", "read", { path: "/tm" }));
+      : call("read-tm", "read", { path: "trace://" }));
     const captured = await f.turn();
     const reader = memoryFiles(f.h.memory, { ...f.h.memory.store.currentPath(1), projectId: f.h.memory.store.getSession(1)!.projectId });
     const native = await runNative(f.task(captured, {
-      task: "Noting (facts and knowledge): read /tm before concluding",
+      task: "Noting (facts and knowledge): read trace:// before concluding",
       read: memoryReadTool(f.h.dir, path => reader.read(path), { memoryOnly: true }),
     }));
     expect(native.verification?.passed).toBe(true);
     expect(native.calls).toContainEqual({ name: "read", executed: true });
     expect(native.request).toBeDefined();
-    expect(native.nativeLog && readFileSync(native.nativeLog, "utf8")).toContain("/tm/knowledge");
+    expect(native.nativeLog && readFileSync(native.nativeLog, "utf8")).toContain("trace://knowledge");
     const denied = memoryReadTool(f.h.dir, path => reader.read(path), { memoryOnly: true });
     await expect(denied.execute("denied", { path: "/etc/passwd" }, undefined, undefined, { cwd: f.h.dir } as never))
-      .rejects.toThrow("restricted to /tm");
+      .rejects.toThrow("restricted to trace://");
   } finally { await f.dispose(); }
 });
 
@@ -273,7 +273,7 @@ test("19a 2026-09-08: copied plugin custom state activates no extension and star
   } finally { await f.dispose(); }
 });
 
-test("19a/118: restricted Read denies non-/tm paths while only authorized tools execute in call order", async () => {
+test("19a/118: restricted Read denies non-trace:// paths while only authorized tools execute in call order", async () => {
   const f = await fixture({ "noting.triggerTokens": 1000000000 });
   try {
     f.script(() => say("好的。"));
@@ -288,7 +288,7 @@ test("19a/118: restricted Read denies non-/tm paths while only authorized tools 
     expect(executed).toEqual(["search"]); // the foreground tool never ran
     const results = f.sent.at(-1)!.messages.filter((m: Body) => m.role === "tool");
     expect(results.map((m: Body) => m.tool_call_id)).toEqual(["a", "b"]); // sequential, in call order
-    expect(String(results[0].content)).toContain("restricted to /tm");
+    expect(String(results[0].content)).toContain("restricted to trace://");
     expect(String(results[1].content)).toBe("found");
   } finally { await f.dispose(); }
 });
@@ -494,7 +494,7 @@ test("19c 2026-09-08: every fork round is verified against the previous request 
   const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。")
-      : toolResults(body) === 0 ? call("t1", "read", { path: "/tm/raw/S1/T1" })
+      : toolResults(body) === 0 ? call("t1", "read", { path: "trace://raw/S1/T1" })
       : toolResults(body) === 1 ? noteAndMemory("t2", noteBatch) : say("Done."));
     await f.turn();
     const run = await settled(f);
@@ -595,7 +595,7 @@ test("review 2026-09-08: the tool-round cap still fails the round over it before
   const f = await fixture({ "noting.forkModeDefault": false, "noting.maxToolRounds": 1 });
   try {
     let traces = 0;
-    f.script(body => !worker(body) ? say("好的。") : call(`t${++traces}`, "read", { path: "/tm/raw/S1/T1" }));
+    f.script(body => !worker(body) ? say("好的。") : call(`t${++traces}`, "read", { path: "trace://raw/S1/T1" }));
     await f.turn();
     const run = await settled(f);
     expect(run.outcome).toBe("failure");

@@ -1,4 +1,4 @@
-// Native PreToolUse hands a fresh /tm rendering to Claude Code's own Read.
+// Native PreToolUse hands a fresh trace:// rendering to Claude Code's own Read.
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
@@ -7,16 +7,15 @@ for await (const chunk of process.stdin) input += chunk;
 const event = JSON.parse(input);
 if (event.tool_name !== 'Read') process.exit(0);
 const value = event.tool_input?.file_path;
-if (typeof value !== 'string' || !value.startsWith('/')) process.exit(0);
-const parts = [];
-for (const part of value.split('/')) {
-  if (!part || part === '.') continue;
-  if (part === '..') parts.pop(); else parts.push(part);
-}
-if (parts[0] !== 'tm') process.exit(0);
-const path = `/${parts.join('/')}`;
+// Claude Code resolves file_path against its working directory before a command hook runs, so
+// `trace://K1` arrives as `<cwd>/trace:/K1`; accept that form and the raw one.
+const cwd = typeof event.cwd === 'string' ? event.cwd.replace(/\/+$/, '') : '';
+const rest = typeof value !== 'string' ? null : value.startsWith('trace://') ? value.slice('trace://'.length)
+  : cwd && (value === `${cwd}/trace:` || value.startsWith(`${cwd}/trace:/`)) ? value.slice(cwd.length + '/trace:'.length) : null;
+if (rest === null) process.exit(0);
+const path = `trace://${rest.split('/').filter(Boolean).join('/')}`;
 // Whole node views and exact Raw entries are answered by the main-session function hook.
-if (/^\/tm\/(?:(?:knowledge|compact)\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) process.exit(0);
+if (/^trace:\/\/(?:(?:knowledge|compact)\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) process.exit(0);
 let decision;
 try {
   const root = process.env.CLAUDE_PLUGIN_ROOT;

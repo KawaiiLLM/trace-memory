@@ -1,4 +1,4 @@
-// 101: a `pi-subagents` child session carries the extension's /tm `read` and `grep` (children inherit
+// 101: a `pi-subagents` child session carries the extension's trace:// `read` and `grep` (children inherit
 // the parent's package extensions) and reads Trace Memory with them. Pi's own AgentSession, the real
 // pi-subagents package and this package, a scripted provider and an isolated agent directory; run at the
 // outer level with the native tests, since it needs the pi-subagents checkout.
@@ -16,7 +16,7 @@ const dirs: string[] = [];
 afterAll(() => { vi.unstubAllGlobals(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const textOf = (content: unknown): string => typeof content === "string" ? content : (content as Body[] ?? []).map(part => part.text ?? "").join("\n");
 
-test("a pi-subagents child reads /tm through the extension's read and grep; the parent gets its answer only", async () => {
+test("a pi-subagents child reads trace:// through the extension's read and grep; the parent gets its answer only", async () => {
   // Acceptance evidence, not a portable skip: without the package the inheritance is unverified.
   if (!existsSync(join(SUBAGENTS, "package.json"))) throw new Error(`pi-subagents is required at ${SUBAGENTS} (PI_SUBAGENTS_PACKAGE)`);
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "tm101-pi-subagent-"))); dirs.push(dir);
@@ -41,7 +41,7 @@ test("a pi-subagents child reads /tm through the extension's read and grep; the 
       "Use pnpm, never npm.");
   } finally { memory.close(); }
 
-  const knowledgePath = `/tm/knowledge/S${seed!}`, rawPath = `/tm/raw/S${seed!}`;
+  const knowledgePath = `trace://knowledge/S${seed!}`, rawPath = `trace://raw/S${seed!}`;
   const sent: { kind: string; body: Body }[] = [];
   const child = [call("child_read", "read", { path: knowledgePath }), call("child_grep", "grep", { pattern: "hashline", path: rawPath }), say("CHILD-FINAL-ANSWER")];
   vi.stubGlobal("fetch", async (_url: unknown, init: RequestInit) => {

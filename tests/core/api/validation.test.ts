@@ -94,7 +94,7 @@ describe("checkMemoryBatch", async () => {
       expect(memory.store.getClaim(1, "dreaming")).not.toBeNull();
       expect(memory.store.openDreamingRange(1, "main")).not.toBeNull();
       const tag = `K1#${memory.store.versionTag(1, 1)}`;
-      expect(memoryFiles(memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/K1").content).toContain(tag);
+      expect(memoryFiles(memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://K1").content).toContain(tag);
       const before = memory.store.listKnowledgeRevisions();
       const receipt = dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [{ op: "merge", id: tag,
         absorb: ["not-an-id"], text: "Merged rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Merge duplicate." }], skipped: [] });

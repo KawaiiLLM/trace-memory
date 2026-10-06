@@ -164,13 +164,13 @@ test("manual writers freeze fact sources and knowledge supports at the exact tri
 
 test("92 supersedes named-read grants: copied Raw tags do not prove reading, but still identify the exact version", () => {
   const a = setup();
-  const tagged = memoryFiles(a.m, a.path).read("/tm/K1@v1").content;
+  const tagged = memoryFiles(a.m, a.path).read("trace://K1@v1").content;
   expect(tagged).toContain(a.tag(1));
   a.m.store.updateTurn(a.t.id, { assistantText: tagged });
   seedSourceEntry(a.m, a.t.id, "assistant", tagged);
   a.m.selectEntries(1, "main", a.m.store.listSourceEntries(1, a.t.id).map(entry => entry.id));
   const fresh = a.m.tools(a.context);
-  expect(memoryFiles(a.m, a.path).read(`/tm/raw/S${a.path.sessionId}/T${a.t.id}`).content).toContain(a.tag(1));
+  expect(memoryFiles(a.m, a.path).read(`trace://raw/S${a.path.sessionId}/T${a.t.id}`).content).toContain(a.tag(1));
   const archive = (id: string) => a.write([{ op: "archive", kind: "budget", id, supports: ["F1"], reason: "Retire exact tagged version" }], fresh);
   expect(archive("K1#unknown")).toContain("knowledge version does not exist");
   expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");

@@ -151,10 +151,10 @@ function watchNativeFork($: any, session: string, agent: string): void {
 
 export const register = (on: any) => {
   // Knowledge/compact node views and exact Raw entries are returned whole in the main session.
-  // Native Read pages other /tm views; each virtual-path call renders afresh.
+  // Native Read pages other trace:// views; each virtual-path call renders afresh.
   on("tool.call", { tool: "Read" }, async ($: any, e: any, next: any) => {
     const path = memoryPath(e.file_path);
-    if (path === null || !/^\/tm\/(?:(?:knowledge|compact)\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) return next(e);
+    if (path === null || !/^trace:\/\/(?:(?:knowledge|compact)\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) return next(e);
     try {
       const file = await memoryFiles($, ["read", path]);
       if (!file.unbounded) throw new Error(`not a whole memory view: ${path}`);

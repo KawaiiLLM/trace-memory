@@ -1,6 +1,6 @@
-// 101: the real, installed Claude Code (any version; 106) with this plugin reads Trace Memory under /tm through its own
+// 101: the real, installed Claude Code (any version; 106) with this plugin reads Trace Memory under trace:// through its own
 // Read, Grep and Glob — in the main thread and inside a general-purpose and an Explore subagent — with no
-// permission prompt, while a real file still reaches the real Read and an Edit under /tm is refused.
+// permission prompt, while a real file still reaches the real Read and an Edit under trace:// is refused.
 // Behind the network fence (cc-native-fence.ts), against a loopback provider; run at the outer level
 // like cc-compaction-native.test.ts, since the fence cannot nest.
 import { afterAll, expect, test } from "vitest";
@@ -37,7 +37,7 @@ function results(requests: Body[]): Map<string, { text: string; isError: boolean
   return found;
 }
 
-test("the main thread and its general-purpose and Explore subagents read /tm with Claude Code's own tools, unprompted", async () => {
+test("the main thread and its general-purpose and Explore subagents read trace:// with Claude Code's own tools, unprompted", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "tm101-native-"))); dirs.push(root);
   for (const d of ["home", "config", "cwd", "state/bindings"]) mkdirSync(join(root, d), { recursive: true });
   const plugin = join(root, "plugin"), dbPath = join(root, "memory.sqlite"), stateDir = join(root, "state"), cwd = join(root, "cwd");
@@ -63,15 +63,16 @@ test("the main thread and its general-purpose and Explore subagents read /tm wit
       "Use pnpm, never npm.");
   } finally { memory.close(); }
 
-  const S = `/tm/S${seed!}`;
-  const subagent = (who: string) => [use(`${who}_read`, "Read", { file_path: "/tm/knowledge-all" }),
-    use(`${who}_grep`, "Grep", { pattern: "hashline", path: S }), use(`${who}_inherit`, "Read", { file_path: `/tm/knowledge/S${seed!}` }),
-    use(`${who}_compact`, "Read", { file_path: `/tm/compact/S${seed!}` }), use(`${who}_item`, "Read", { file_path: "/tm/K1" })];
-  const main = [use("main_read", "Read", { file_path: "/tm/K1" }), use("main_glob", "Glob", { pattern: "S*/T*#E*", path: "/tm/raw" }),
-    use("main_lines", "Grep", { pattern: "pnpm", path: "/tm/knowledge-all", output_mode: "content", "-i": true }),
-    use("main_real", "Read", { file_path: join(cwd, "notes.txt") }), use("main_edit", "Edit", { file_path: "/tm/K1", old_string: "pnpm", new_string: "npm" }),
-    use("main_gp", "Agent", { description: "memory read", subagent_type: "general-purpose", prompt: "GP-TASK: read Trace Memory under /tm.", run_in_background: false }),
-    use("main_explore", "Agent", { description: "memory read", subagent_type: "Explore", prompt: "EXPLORE-TASK: read Trace Memory under /tm.", run_in_background: false })];
+  const S = `trace://S${seed!}`;
+  const subagent = (who: string) => [use(`${who}_read`, "Read", { file_path: "trace://knowledge-all" }),
+    use(`${who}_grep`, "Grep", { pattern: "hashline", path: S }), use(`${who}_inherit`, "Read", { file_path: `trace://knowledge/S${seed!}` }),
+    use(`${who}_compact`, "Read", { file_path: `trace://compact/S${seed!}` }), use(`${who}_item`, "Read", { file_path: "trace://K1" })];
+  const main = [use("main_read", "Read", { file_path: "trace://K1" }), use("main_view", "Read", { file_path: `trace://knowledge/S${seed!}` }),
+    use("main_old", "Read", { file_path: "/tm/K1" }), use("main_glob", "Glob", { pattern: "S*/T*#E*", path: "trace://raw" }),
+    use("main_lines", "Grep", { pattern: "pnpm", path: "trace://knowledge-all", output_mode: "content", "-i": true }),
+    use("main_real", "Read", { file_path: join(cwd, "notes.txt") }), use("main_edit", "Edit", { file_path: "trace://K1", old_string: "pnpm", new_string: "npm" }),
+    use("main_gp", "Agent", { description: "memory read", subagent_type: "general-purpose", prompt: "GP-TASK: read Trace Memory under trace://.", run_in_background: false }),
+    use("main_explore", "Agent", { description: "memory read", subagent_type: "Explore", prompt: "EXPLORE-TASK: read Trace Memory under trace://.", run_in_background: false })];
   const requests: Body[] = [];
   const server = createServer((req, res) => {
     let raw = "";
@@ -112,7 +113,7 @@ test("the main thread and its general-purpose and Explore subagents read /tm wit
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 240_000);
   let result: { subtype: string; permission_denials?: unknown[] } | undefined;
   try {
-    for await (const message of query({ prompt: "MAIN-PROMPT: read Trace Memory under /tm, then ask two subagents.", options: {
+    for await (const message of query({ prompt: "MAIN-PROMPT: read Trace Memory under trace://, then ask two subagents.", options: {
       model: "sonnet", cwd, pathToClaudeCodeExecutable: fenced, env, settingSources: [], tools: ["Agent", "Read", "Grep", "Glob", "Edit"],
       plugins: [{ type: "local", path: plugin }], strictMcpConfig: true, permissionMode: "default", abortController: controller,
       canUseTool: async (toolName, input) => { prompts.push({ toolName, input }); return { behavior: "allow", updatedInput: input }; },
@@ -125,14 +126,19 @@ test("the main thread and its general-purpose and Explore subagents read /tm wit
   const seen = results(requests);
   // Main thread: an exact knowledge read, a glob, content lines, and a real file through the real Read.
   expect(seen.get("main_read")?.text).toContain("Use pnpm, never npm.");
-  expect(seen.get("main_glob")?.text).toContain(`/tm/raw/S${seed!}/T`);
-  expect(seen.get("main_lines")?.text).toMatch(/\/tm\/K1@v1:1:.*Use pnpm, never npm\./);
+  expect(seen.get("main_view")?.text).toContain("Use pnpm, never npm.");
+  // 128: `/tm/...` is an ordinary path, so Claude Code answers it itself, with nothing of ours and no pointer to trace://.
+  expect(seen.get("main_old")).toMatchObject({ isError: true });
+  expect(seen.get("main_old")?.text).not.toContain("pnpm");
+  expect(seen.get("main_old")?.text).not.toContain("trace://");
+  expect(seen.get("main_glob")?.text).toContain(`trace://raw/S${seed!}/T`);
+  expect(seen.get("main_lines")?.text).toMatch(/trace:\/\/K1@v1:1:.*Use pnpm, never npm\./);
   expect(seen.get("main_real")?.text).toContain("a real file in the working directory");
   expect(seen.get("main_edit")).toMatchObject({ isError: true, text: expect.stringContaining(MEMORY_READ_ONLY) });
   // Each subagent: the all-scope listing, a search reaching Raw, and the inheritance view.
   for (const who of ["gp", "explore"]) {
-    expect(seen.get(`${who}_read`)?.text, who).toMatch(/\/tm\/K1@v1\s+\[constraint\/global\] Use pnpm, never npm\./);
-    expect(seen.get(`${who}_grep`)?.text, who).toContain(`/tm/raw/S${seed!}/T`);
+    expect(seen.get(`${who}_read`)?.text, who).toMatch(/trace:\/\/K1@v1\s+\[constraint\/global\] Use pnpm, never npm\./);
+    expect(seen.get(`${who}_grep`)?.text, who).toContain(`trace://raw/S${seed!}/T`);
     expect(seen.get(`${who}_grep`)?.text, who).toMatch(/#E1\b/);
     expect(seen.get(`${who}_inherit`)?.text, who).toContain("Use pnpm, never npm.");
     expect(seen.get(`${who}_compact`)?.text, who).toContain("Use pnpm, never npm.");
@@ -142,8 +148,8 @@ test("the main thread and its general-purpose and Explore subagents read /tm wit
   const mainRequests = requests.filter(body => opening(body).includes("MAIN-PROMPT"));
   expect(seen.get("main_gp")?.text).toContain("GP-FINAL-ANSWER");
   expect(seen.get("main_explore")?.text).toContain("EXPLORE-FINAL-ANSWER");
-  expect(mainRequests.some(body => JSON.stringify(body.messages).includes(`/tm/knowledge/S${seed!}`))).toBe(false);
-  // No permission prompt for any /tm call; the real Read inside cwd needs none either.
-  expect(prompts.filter(prompt => JSON.stringify(prompt.input).includes("/tm"))).toEqual([]);
+  expect(mainRequests.some(body => /(?:gp|explore)_(?:read|grep|inherit|compact|item)/.test(JSON.stringify(body.messages)))).toBe(false);
+  // No permission prompt for any trace:// call; the real Read inside cwd needs none either.
+  expect(prompts.filter(prompt => JSON.stringify(prompt.input).includes("trace://"))).toEqual([]);
   expect(result?.permission_denials ?? []).toEqual([]);
 }, 300_000);

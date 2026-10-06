@@ -301,7 +301,7 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
   const han = "一".repeat(400), ascii = "a".repeat(400);
   const call = (command: string) => memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command }), result: JSON.stringify({ stdout: "" }), status: "success" });
   call(han); call(ascii);
-  const rendered = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }).read(`/tm/raw/S${s.id}/T${t.id}`).content;
+  const rendered = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }).read(`trace://raw/S${s.id}/T${t.id}`).content;
   // 23c renders the arguments under one half of `B`; the cap is the same estimate either way.
   expect(rendered).not.toContain(han);   // 348 tokens over a 150-token arguments share: cut.
   expect(rendered).toContain(ascii);     // 58 tokens of the same 400 characters: kept whole.
@@ -423,8 +423,8 @@ test("20a/92: fresh N shares the leading Knowledge block without copying task fr
 test("118: explicit session/Turn paths reject mismatched sessions", () => {
   const { s, t } = session();
   const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id });
-  expect(files.read(`/tm/raw/S${s.id}/T${t.id}`).content).toContain(`T${t.id}#E1`);
-  expect(() => files.read(`/tm/raw/S${s.id + 1}/T${t.id}`)).toThrow("does not exist");
+  expect(files.read(`trace://raw/S${s.id}/T${t.id}`).content).toContain(`T${t.id}#E1`);
+  expect(() => files.read(`trace://raw/S${s.id + 1}/T${t.id}`)).toThrow("does not exist");
 });
 
 // 09:43 "sessions of one project integrate separately": pinned in core/api/consolidation.test.ts,
@@ -450,7 +450,7 @@ test("2026-10-01, 116: a rejected manual item cannot undo its committed sibling"
   expect(note.execute({ ...fact, actor: "tool" })).toContain("rejected:");
   expect(memory.store.listSessionFacts(s.id)).toHaveLength(1);
   expect(JSON.parse(note.execute({ ...fact, support: [["F1", "strong"]] })).factIds).toEqual([2]);
-  expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }).read("/tm/F2").content).toContain("support F1 strong");
+  expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }).read("trace://F2").content).toContain("support F1 strong");
 });
 
 // One publication per run still holds; 92 moves it after all held edits and normal termination.
@@ -540,8 +540,8 @@ test("2026-09-28, 99: archive kind is required; budget retains parent while inva
   expect(memory.store.currentKnowledge(path)).toEqual([]);
   expect(memory.inject(s.id)).not.toContain("Old unique guidance");
   const files = memoryFiles(memory, path), search = tools.find(tool => tool.name === "search")!;
-  expect(files.read(`/tm/${history(invalidId, invalid.id)}`).content).toContain("status: archive (invalid)");
-  expect(files.read(`/tm/${history(budgetId, budget.id)}`).content).toContain("status: archive (budget)");
+  expect(files.read(`trace://${history(invalidId, invalid.id)}`).content).toContain("status: archive (invalid)");
+  expect(files.read(`trace://${history(budgetId, budget.id)}`).content).toContain("status: archive (budget)");
   const found = search.execute({ query: "Old unique guidance", layer: "knowledge", versions: "history" });
   expect(found).toContain(`[K${invalidId}@v1]`);
   expect(found).toContain("archived on this path (historical version)");
@@ -554,13 +554,13 @@ test("2026-09-28, 101: 'grep 直接搜完整原文' — grep reaches Raw beyond 
   const { path } = memoryWriter();
   recorded(memory, s.id, "main", t.id);
   const files = api.memoryFiles(memory, path);
-  const found = [...files.grep("hashline-deep-in-raw", `/tm/S${s.id}`)].map(hit => hit.path);
+  const found = [...files.grep("hashline-deep-in-raw", `trace://S${s.id}`)].map(hit => hit.path);
   expect(found).toHaveLength(1);
   const [, entryOrdinal] = /#E(\d+)$/.exec(found[0]!)!;
-  expect(found[0]).toBe(`/tm/raw/S${s.id}/T${t.id}#E${entryOrdinal}`);
+  expect(found[0]).toBe(`trace://raw/S${s.id}/T${t.id}#E${entryOrdinal}`);
   // Neither the Turn's fact projection nor the compressed Raw overview holds the text.
-  expect(files.read(`/tm/facts/S${s.id}/T${t.id}`).content).not.toContain("hashline-deep-in-raw");
-  expect(files.read(`/tm/raw/S${s.id}/T${t.id}`).content).not.toContain("hashline-deep-in-raw");
+  expect(files.read(`trace://facts/S${s.id}/T${t.id}`).content).not.toContain("hashline-deep-in-raw");
+  expect(files.read(`trace://raw/S${s.id}/T${t.id}`).content).not.toContain("hashline-deep-in-raw");
 });
 
 test("2026-09-28, 101: '1-2. 可以' (1) — an archive written before 99 lists and searches with its parent's body; its own version stays empty", () => {
@@ -568,12 +568,12 @@ test("2026-09-28, 101: '1-2. 可以' (1) — an archive written before 99 lists 
   const base = write([{ ...create, text: "Legacy okapi guidance" }]).committed[0];
   const commit = legacyArchive(memory.store, path, base.knowledgeId, commitOf(base), [1]);
   const files = api.memoryFiles(memory, path);
-  expect(files.read("/tm/knowledge-all").content.split("\n").find(line => line.startsWith(`/tm/K${base.knowledgeId}@`)))
-    .toBe(`/tm/K${base.knowledgeId}@v2  [constraint/project p] (archived at v2) Legacy okapi guidance`);
-  expect([...files.grep("okapi", "/tm/knowledge-all")].map(hit => `${hit.path}${hit.mark ?? ""}`)).toEqual([`/tm/K${base.knowledgeId}@v1 (historical; latest v2, archived)`,
-    `/tm/K${base.knowledgeId}@v2 (archived)`]);
+  expect(files.read("trace://knowledge-all").content.split("\n").find(line => line.startsWith(`trace://K${base.knowledgeId}@`)))
+    .toBe(`trace://K${base.knowledgeId}@v2  [constraint/project p] (archived at v2) Legacy okapi guidance`);
+  expect([...files.grep("okapi", "trace://knowledge-all")].map(hit => `${hit.path}${hit.mark ?? ""}`)).toEqual([`trace://K${base.knowledgeId}@v1 (historical; latest v2, archived)`,
+    `trace://K${base.knowledgeId}@v2 (archived)`]);
   expect(memory.store.getKnowledgeRevision(base.knowledgeId, commit)!.text).toBe("");
-  expect(files.read(`/tm/K${base.knowledgeId}@v2`).content).not.toContain("okapi");
+  expect(files.read(`trace://K${base.knowledgeId}@v2`).content).not.toContain("okapi");
 });
 
 test("118: one identical reading guide per injection and compaction, independent of knowledge count", () => {
@@ -589,7 +589,7 @@ test("118: one identical reading guide per injection and compaction, independent
     .filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext).join("\n");
   once(cc, ccGuide);
   once(compacted(memory.compact(s.id, "main", t.id, [], false, { toolNames: ccPluginToolNames })), ccGuide);
-  expect(memory.inject({ projectId: memory.store.getSession(s.id)!.projectId })).not.toContain(`/tm/knowledge/S${s.id}`);
+  expect(memory.inject({ projectId: memory.store.getSession(s.id)!.projectId })).not.toContain(`trace://knowledge/S${s.id}`);
 });
 
 test("2026-09-28, 104: '可以让总量超过20 + 10 就可以触发' — a session is due on knowledge overflow or summed pending, not per pool", () => {
@@ -737,7 +737,7 @@ test("2026-09-07: supports replaces, history keeps the old set", async () => {
   const commit = commitOf(updated.committed[0]);
   expect(memory.store.getKnowledgeRevision(1, commit)).toMatchObject({ supports: [2], reason: "Substantive correction of the recorded conclusion." });
   expect(memory.store.getKnowledgeRevision(1, 1)?.supports).toEqual([1]);
-  expect(memoryFiles(memory, path).read(`/tm/K1@v${memory.store.versionOrdinal(1, commit)}`).content).toContain("F2");
+  expect(memoryFiles(memory, path).read(`trace://K1@v${memory.store.versionOrdinal(1, commit)}`).content).toContain("F2");
   const runs = memory.store.listRuns(s.id);
   expect(runs.at(-1)).toMatchObject({ kind: "dreaming", branch: "main" });
   expect(runs.at(-1)!.id).toBe(memory.store.getKnowledgeRevision(1, commit)!.runId);
@@ -807,8 +807,8 @@ test("2026-09-07: merge atomic", async () => {
   expect(memory.store.listKnowledgeLinks(second.knowledgeId)).toEqual([{ fromKnowledge: second.knowledgeId,
     fromCommit: second.commit, kind: "merged_into", toKnowledge: first.knowledgeId, toCommit: mergeCommit }]);
   const files = memoryFiles(memory, path);
-  expect(files.read(`/tm/${history(second.knowledgeId, second.commit)}`).content).toContain("Avoid npm");
-  expect(files.read(`/tm/K${second.knowledgeId}`).content).toContain(`merged_into: ${history(first.knowledgeId, mergeCommit)}`);
+  expect(files.read(`trace://${history(second.knowledgeId, second.commit)}`).content).toContain("Avoid npm");
+  expect(files.read(`trace://K${second.knowledgeId}`).content).toContain(`merged_into: ${history(first.knowledgeId, mergeCommit)}`);
 });
 
 
@@ -894,9 +894,9 @@ test.each([{ ordinal: 1, role: "user", text: "用 pnpm，不要 npm" },
 ("93: entry E%s checks @%s and reads the whole entry", ({ ordinal, role, text }) => {
   const { s, t } = session();
   const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id });
-  expect(files.read(`/tm/raw/S${s.id}/T${t.id}#E${ordinal}@${role}`).content).toContain(text);
-  expect(() => files.read(`/tm/raw/S${s.id + 1}/T${t.id}#E${ordinal}@${role}`)).toThrow("no such path");
-  expect(() => files.read(`/tm/raw/S${s.id}/T${t.id}#E${ordinal}@${role === "user" ? "assistant" : "user"}`)).toThrow(/role/);
+  expect(files.read(`trace://raw/S${s.id}/T${t.id}#E${ordinal}@${role}`).content).toContain(text);
+  expect(() => files.read(`trace://raw/S${s.id + 1}/T${t.id}#E${ordinal}@${role}`)).toThrow("no such path");
+  expect(() => files.read(`trace://raw/S${s.id}/T${t.id}#E${ordinal}@${role === "user" ? "assistant" : "user"}`)).toThrow(/role/);
 });
 
 test("118: full Raw entry is unbounded while the Turn overview is compressed", () => {
@@ -904,13 +904,13 @@ test("118: full Raw entry is unbounded while the Turn overview is compressed", (
   const output = "hidden evidence ".repeat(300);
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: '{"command":"second"}', result: output, status: "success" });
   const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id });
-  const overview = files.read(`/tm/raw/S${s.id}/T${t.id}`).content;
+  const overview = files.read(`trace://raw/S${s.id}/T${t.id}`).content;
   expect(overview).toMatch(/\[\.\.\. \d+ characters truncated\]/);
   expect(overview).not.toContain(output);
-  const full = files.read(`/tm/raw/S${s.id}/T${t.id}#E6`);
+  const full = files.read(`trace://raw/S${s.id}/T${t.id}#E6`);
   expect(full.unbounded).toBe(true);
   expect(full.content).toBe(`[T${t.id}#E6@observation] Bash success: ${output}`);
-  expect(files.read(`/tm/raw/S${s.id}/T${t.id}#E5`).content).toContain('Bash(command="second")');
+  expect(files.read(`trace://raw/S${s.id}/T${t.id}#E5`).content).toContain('Bash(command="second")');
 });
 
 // 93 retires block selectors, not the missing-entry and scope rejection guarantees.
@@ -918,7 +918,7 @@ test("118: missing Raw entries and retired selectors are rejected by path", () =
   const { s } = session();
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: null, assistantText: null, startedAt: time });
   const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id });
-  const base = `/tm/raw/S${s.id}/T${t.id}`;
+  const base = `trace://raw/S${s.id}/T${t.id}`;
   expect(() => files.read(`${base}#E1@user`)).toThrow(/no such path/);
   for (const retired of ["#user", "#assistant", "#t1", "#E1@text"])
     expect(() => files.read(`${base}${retired}`)).toThrow(/no such path/);
@@ -949,7 +949,7 @@ function commitPaths() {
         ...(receipts.some(row => row.committed) ? { committed: receipts.flatMap(row => row.committed ?? []).map((item: { knowledgeId: number; version: string }) => ({ ...item, commit: commitOf(item) })) } : {}) };
     };
     return { sessionId, headTurnId, branch, triggerEntryId, fact, tools,
-      read: (address = "K1") => memoryFiles(memory, { sessionId, branch, headTurnId }).read(`/tm/${address}`).content, write,
+      read: (address = "K1") => memoryFiles(memory, { sessionId, branch, headTurnId }).read(`trace://${address}`).content, write,
       writeCommitted: (operations: any[]) => {
         const receipt = write(operations);
         if (!receipt.committed?.length) throw new Error(`expected a committed manual write: ${JSON.stringify(receipt)}`);
@@ -1005,7 +1005,7 @@ async function admittedWrite(
 
 test("2026-09-07 A: sibling-branch facts are readable but supports requires an adoption fact on this path", () => {
   const { c, d, content } = commitPaths();
-  expect(memoryFiles(memory, c).read(`/tm/${d.fact}`).content).toContain(d.fact);
+  expect(memoryFiles(memory, c).read(`trace://${d.fact}`).content).toContain(d.fact);
   for (const scope of ["session", "project", "global"]) {
     const rejected = c.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(c.fact), scope, supports: [d.fact] }]);
     expect(rejected.results[0]).toContain("record an adoption fact on this path first");
@@ -1026,7 +1026,7 @@ test("2026-09-07: supports obeys the session/project/global scope table", () => 
     const result = c.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(c.fact), scope, supports: [origin.fact] }]);
     expect(!!result.committed).toBe(allowed);
   }
-  expect(memoryFiles(memory, c).read(`/tm/${outside.fact}`).content).toContain(outside.fact);
+  expect(memoryFiles(memory, c).read(`trace://${outside.fact}`).content).toContain(outside.fact);
 });
 
 // Footer progress retains `knowledge` as the applicable-current total in `currentKnowledge`'s
@@ -1078,13 +1078,13 @@ test("2026-09-07 B: reading a historical commit never refreshes the base to an u
     input.reportRequest(request);
     const files = memoryFiles(memory, input.reader!);
     const memoryTool = input.tools.find(tool => tool.name === "memory")!;
-    expect(files.read("/tm/K1@v1").content).not.toContain("Unread successor");
+    expect(files.read("trace://K1@v1").content).not.toContain("Unread successor");
     const first = JSON.parse(dreamerWrite(memoryTool, { operations: [{ op: "update", id: tagged(1, 1), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(root.fact, "Unread successor") }], skipped: [] }));
     const successor = first.committed[0];
     expect(dreamerWrite(memoryTool, { operations: [{ op: "update", id: tagged(1, 1), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }], skipped: [] })).toContain(`current: ${successor.version}`);
-    expect(files.read(`/tm/${successor.version}`).content).toContain("Unread successor");
+    expect(files.read(`trace://${successor.version}`).content).toContain("Unread successor");
     const corrected = JSON.parse(dreamerWrite(memoryTool, { operations: [{ slot: "M1", op: "update", id: tagged(1, commitOf(successor)), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }, { op: "archive", kind: "budget",
       id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
@@ -1124,7 +1124,7 @@ test("92/118: search previews are tagless and do not authorize a stale base", as
   expect(result.outcome, JSON.stringify(result)).toBe("success");
 });
 
-test("41a/118: project/current search and exact /tm versions preserve read scope", async () => {
+test("41a/118: project/current search and exact trace:// versions preserve read scope", async () => {
   const { c, d, edit, publish } = commitPaths();
   const cTrigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1);
   const cCommit = (await edit(c, "FILTER-C", cTrigger)).committed[0].commit as number;
@@ -1141,12 +1141,12 @@ test("41a/118: project/current search and exact /tm versions preserve read scope
   expect(all).toContain(`[K1@${cCommit}]`);
   for (const commit of [1, dCommit]) expect(all).not.toContain(`[K1@${commit}]`);
   const files = memoryFiles(memory, c);
-  expect(files.read("/tm/K1").content).toContain(`[${tagged(1, cCommit)}] [${history(1, cCommit)}] [constraint/project] FILTER-C`);
-  const exactHistory = files.read("/tm/K1.history").content;
+  expect(files.read("trace://K1").content).toContain(`[${tagged(1, cCommit)}] [${history(1, cCommit)}] [constraint/project] FILTER-C`);
+  const exactHistory = files.read("trace://K1.history").content;
   for (const commit of [1, cCommit, dCommit]) expect(exactHistory).toContain(`[${history(1, commit)}]`);
   expect(exactHistory).toContain("FILTER-C");
   expect(exactHistory).toContain("FILTER-D");
-  expect(files.read(`/tm/${history(1, dCommit)}`).content).toContain("FILTER-D");
+  expect(files.read(`trace://${history(1, dCommit)}`).content).toContain("FILTER-D");
 });
 
 test("41a: category and unified scope filter candidates and cursor options are frozen", () => {
@@ -1223,8 +1223,8 @@ test("41 review: fact and knowledge previews are one physical line with head-onl
   expect(hit(search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge", itemBudget: 1 }))).toMatch(/^\[K\d+@v\d+\] \[reference\/project\] \[\.\.\. \d+ characters truncated\]$/);
 
   const files = memoryFiles(memory, c);
-  expect(files.read(`/tm/F${factId}`).content).toContain(longFactText);
-  expect(files.read(`/tm/${history(created.knowledgeId, created.commit)}`).content).toContain(longKnowledgeText);
+  expect(files.read(`trace://F${factId}`).content).toContain(longFactText);
+  expect(files.read(`trace://${history(created.knowledgeId, created.commit)}`).content).toContain(longKnowledgeText);
 });
 
 test("41b/92/118: search previews omit tags, while exact tags need no read ledger", async () => {
@@ -1393,7 +1393,7 @@ test("41b/118: search fields and budgets freeze across pages", () => {
   expect(search.execute({ query: "", cursor, itemBudget: 21 })).toContain("rejected: cursor itemBudget is frozen");
   page = search.execute({ query: "", cursor });
   expect(page).not.toContain("rejected:");
-  expect(memoryFiles(memory, c).read("/tm/K1@v1").content).toContain("[K1@v1]");
+  expect(memoryFiles(memory, c).read("trace://K1@v1").content).toContain("[K1@v1]");
 });
 
 test("64b/34a: global current scope hides the identity without visible fallback", async () => {
@@ -1411,7 +1411,7 @@ test("64b/34a: global current scope hides the identity without visible fallback"
   const outside = peer(outsideProject.id);
   const projectCommit = await maintain("Project only", "project", 2);
   expect(memory.inject({ projectId: outsideProject.id })).not.toMatch(/K1[#@]/);
-  expect(memoryFiles(memory, outside).read("/tm/K1").content.split("\n")[0]).toBe("K1 path current: none");
+  expect(memoryFiles(memory, outside).read("trace://K1").content.split("\n")[0]).toBe("K1 path current: none");
   const sessionCommit = await maintain("Session only", "session", 3);
   const ownProject = memory.store.getSession(root.sessionId)!.projectId;
   expect(memory.inject({ projectId: ownProject })).not.toContain(tagged(1, projectCommit));
@@ -1945,7 +1945,7 @@ test("64c: the knowledge cap remains hard and recency, not category, selects who
   expect(tokens(injected)).toBeLessThanOrEqual(cap); // the exemption is gone: no category bypasses it
   expect(injected).toContain("Receipts:");
   expect(injected).not.toContain("constraint 0");
-  expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }).read("/tm/K1").content).toContain("[K1@"); // omitted is not deleted
+  expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }).read("trace://K1").content).toContain("[K1@"); // omitted is not deleted
   expect(t.id).toBeGreaterThan(0);
 });
 
@@ -2393,7 +2393,7 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
   compactionWindows(Math.max(1, measured.knowledge), 40, measured.raw);
   const squeezed = compacted(memory.compact(s.id, "C", selected.id));
   expect(squeezed).not.toContain(`[F${onPath}]`); expect(squeezed).not.toContain(`[F${shared}]`);
-  expect(squeezed).toContain(`omitted 2 older facts; expand: /tm/F${onPath}, /tm/F${shared}`); // manual bindings remain eligible
+  expect(squeezed).toContain(`omitted 2 older facts; expand: trace://F${onPath}, trace://F${shared}`); // manual bindings remain eligible
   defaultWindows();
 
   // 92 uses distinct full-path selection and exact-entry material scopes. This legacy fixture

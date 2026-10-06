@@ -34,7 +34,7 @@ test("92/03: model lists and compact carriers use chronological tags; exact read
     const injected = memory.injection(target, noVisibility(), true);
     const compacted = memory.compact(session.id, "main", turn.id, [], true);
     if ("native" in compacted) throw new Error("unexpected native delegation");
-    for (const body of [injected.text, compacted.text, memoryFiles(memory, target).read(`/tm/knowledge/S${session.id}`).content]) {
+    for (const body of [injected.text, compacted.text, memoryFiles(memory, target).read(`trace://knowledge/S${session.id}`).content]) {
       expect(body).not.toMatch(/K\d+@\d+/);
       expect(body.indexOf(secondTag)).toBeLessThan(body.indexOf(firstTag));
       expect(body).not.toMatch(/<(constraint|open)>/);
@@ -42,7 +42,7 @@ test("92/03: model lists and compact carriers use chronological tags; exact read
     const search = tools.find(t => t.name === "search")!.execute({ query: "Needle", layer: "knowledge", maxTokens: 8000 });
     expect(search.indexOf(`K${second.knowledgeId}@v1`)).toBeLessThan(search.indexOf(`K${first.knowledgeId}@v2`));
     expect(search).not.toContain(firstTag);
-    expect(memoryFiles(memory, target).read(`/tm/K${first.knowledgeId}@v2`).content).toContain(`[${firstTag}] [K${first.knowledgeId}@v${store.versionOrdinal(first.knowledgeId, latest.commit)}]`);
+    expect(memoryFiles(memory, target).read(`trace://K${first.knowledgeId}@v2`).content).toContain(`[${firstTag}] [K${first.knowledgeId}@v${store.versionOrdinal(first.knowledgeId, latest.commit)}]`);
     const binding = { db: "92-surface", nativeSession: "native", coreSession: session.id };
     const slices = sliceCcInjection(binding, injected.transportItems!);
     const text = slices.filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext).join("\n");

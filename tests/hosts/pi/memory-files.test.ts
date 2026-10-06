@@ -1,5 +1,5 @@
-// 101: Pi's same-name `read` and `grep` serve /tm from Trace Memory and hand every other path to Pi's
-// own tools; `edit` and `write` under /tm are refused; a `read` or `grep` another extension registered
+// 101: Pi's same-name `read` and `grep` serve trace:// from Trace Memory and hand every other path to Pi's
+// own tools; `edit` and `write` under trace:// are refused; a `read` or `grep` another extension registered
 // first is reported. A real Pi AgentSession with the real extension and a scripted provider.
 import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -50,68 +50,77 @@ function seeded() {
 const results = (body: Body) => new Map((body.messages ?? []).filter((m: Body) => m.role === "tool")
   .map((m: Body) => [m.tool_call_id, typeof m.content === "string" ? m.content : m.content.map((c: Body) => c.text).join("")]));
 
-test("118: Pi native read re-renders ordinary /tm pages and reads knowledge, compact or exact Raw whole", async () => {
+test("118: Pi native read re-renders ordinary trace:// pages and reads knowledge, compact or exact Raw whole", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-pi-read-")); dirs.push(dir);
   const body = Array.from({ length: 2100 }, (_, i) => `line ${i + 1}`).join("\n");
   let rendered = 0;
   const read = memoryReadTool(dir, path => {
     rendered++;
-    return { content: body, unbounded: /^\/tm\/(?:(?:knowledge|compact)\/S\d+(?:\/T\d+)?|raw\/S\d+\/T\d+#E\d+(?:@(user|assistant|observation))?)$/.test(path) };
+    return { content: body, unbounded: /^trace:\/\/(?:(?:knowledge|compact)\/S\d+(?:\/T\d+)?|raw\/S\d+\/T\d+#E\d+(?:@(user|assistant|observation))?)$/.test(path) };
   }, { memoryOnly: true });
   const invoke = async (path: string, offset?: number) => {
     const block = (await read.execute("test", { path, offset }, undefined, undefined, { cwd: dir } as never)).content[0];
     return block?.type === "text" ? block.text : "";
   };
-  expect(await invoke("/tm/F1")).toContain("[Showing lines 1-2000 of 2100. Use offset=2001 to continue.]");
+  expect(await invoke("trace://F1")).toContain("[Showing lines 1-2000 of 2100. Use offset=2001 to continue.]");
   expect(rendered).toBe(1);
-  expect(await invoke("/tm/F1", 2001)).toContain("line 2100");
+  expect(await invoke("trace://F1", 2001)).toContain("line 2100");
   expect(rendered).toBe(2);
-  for (const path of ["/tm/knowledge/S1", "/tm/knowledge/S1/T2", "/tm/compact/S1", "/tm/compact/S1/T2", "/tm/raw/S1/T2#E3", "/tm/raw/S1/T2#E3@user"]) {
+  for (const path of ["trace://knowledge/S1", "trace://knowledge/S1/T2", "trace://compact/S1", "trace://compact/S1/T2", "trace://raw/S1/T2#E3", "trace://raw/S1/T2#E3@user"]) {
     const whole = await invoke(path, 2001);
     expect(whole).toContain("line 1");
     expect(whole).toContain("line 2100");
     expect(whole).not.toContain("Use offset=");
   }
   expect(rendered).toBe(8);
-  expect(await invoke("/tm/raw/S1/T2")).toContain("Use offset=2001 to continue.");
+  expect(await invoke("trace://raw/S1/T2")).toContain("Use offset=2001 to continue.");
   expect(rendered).toBe(9);
   const large = memoryReadTool(dir, () => ({ content: "X".repeat(60_000), unbounded: true }), { memoryOnly: true });
-  for (const path of ["/tm/raw/S1/T2#E3", "/tm/knowledge/S1", "/tm/compact/S1"]) {
+  for (const path of ["trace://raw/S1/T2#E3", "trace://knowledge/S1", "trace://compact/S1"]) {
     const whole = await large.execute("large", { path }, undefined, undefined, { cwd: dir } as never);
     expect(whole.content[0]).toEqual({ type: "text", text: "X".repeat(60_000) });
   }
-  await expect(invoke("/etc/passwd")).rejects.toThrow("restricted to /tm");
+  await expect(invoke("/etc/passwd")).rejects.toThrow("restricted to trace://");
+  // 128: `/tm` is an ordinary path, so nothing renders for it.
+  await expect(invoke("/tm/K1")).rejects.toThrow();
+  expect(rendered).toBe(9);
 });
 
-test("the main agent reads /tm through read and grep, other paths reach Pi's own tools, and writes under /tm are refused", async () => {
+test("the main agent reads trace:// through read and grep, other paths reach Pi's own tools, and writes under trace:// are refused", async () => {
   const { dir, dbPath } = seeded();
   const real = join(dir, "real.txt");
   writeFileSync(real, "a real file line\n");
   const f = await piSession({ extensions: [extension], activeTools: ["read", "grep", "write"], env: { TRACE_MEMORY_CONFIG: JSON.stringify({ dbPath }) } });
   try {
     const script = [
-      call("tm_read", "read", { path: "/tm/knowledge" }),
-      call("tm_grep", "grep", { pattern: "pnpm", path: "/tm/knowledge-all" }),
-      call("tm_lines", "grep", { pattern: "never", path: "/tm/knowledge-all", ignoreCase: true, output_mode: "content" }),
+      call("tm_read", "read", { path: "trace://knowledge" }),
+      call("tm_grep", "grep", { pattern: "pnpm", path: "trace://knowledge-all" }),
+      call("tm_lines", "grep", { pattern: "never", path: "trace://knowledge-all", ignoreCase: true, output_mode: "content" }),
       call("real_read", "read", { path: real }),
-      call("tm_write", "write", { path: "/tm/K1", content: "overwrite" }),
+      call("tm_write", "write", { path: "trace://K1", content: "overwrite" }),
+      call("old_read", "read", { path: "/tm/K1" }),
+      call("old_grep", "grep", { pattern: "pnpm", path: "/tm" }),
       say("done"),
     ];
     f.script(body => script[(body.messages ?? []).filter((m: Body) => m.role === "assistant").length]!);
-    await f.session.prompt("Read your memory under /tm.");
+    await f.session.prompt("Read your memory under trace://.");
     const seen = results(f.sent.at(-1)!);
-    expect(seen.get("tm_read")).toMatch(/^\/tm\/K1  \[constraint\/global\] Use pnpm, never npm\.$/m);
-    expect(seen.get("tm_grep")).toBe("/tm/K1@v1");
-    expect(seen.get("tm_lines")).toMatch(/^\/tm\/K1@v1:1: \[K1#[a-z]+\] \[K1@v1\] \[constraint\/global\] Use pnpm, never npm\.$/);
+    expect(seen.get("tm_read")).toMatch(/^trace:\/\/K1  \[constraint\/global\] Use pnpm, never npm\.$/m);
+    expect(seen.get("tm_grep")).toBe("trace://K1@v1");
+    expect(seen.get("tm_lines")).toMatch(/^trace:\/\/K1@v1:1: \[K1#[a-z]+\] \[K1@v1\] \[constraint\/global\] Use pnpm, never npm\.$/);
     expect(seen.get("real_read")).toContain("a real file line");
     expect(seen.get("tm_write")).toContain(MEMORY_READ_ONLY);
-    // The model saw one read and one grep: Pi's own, extended for /tm.
+    // 128: `/tm` reaches Pi's own tools like any other path: their own not-found answers, no pointer to trace://.
+    expect(seen.get("old_read")).toMatch(/^ENOENT: no such file or directory/);
+    expect(seen.get("old_grep")).toMatch(/^Path not found/);
+    for (const id of ["old_read", "old_grep"]) expect(seen.get(id), id).not.toContain("trace://");
+    // The model saw one read and one grep: Pi's own, extended for trace://.
     const tools = (f.sent[0]!.tools ?? []).map((tool: Body) => tool.function?.name ?? tool.name);
     expect(tools.filter((name: string) => name === "read" || name === "grep")).toEqual(["read", "grep"]);
   } finally { f.dispose(); }
 });
 
-test("a delegated read of a path outside /tm honors the user's autoResizeImages setting, on and off", async () => {
+test("a delegated read of a path outside trace:// honors the user's autoResizeImages setting, on and off", async () => {
   const { dbPath } = seeded();
   for (const autoResize of [false, true]) {
     const dir = mkdtempSync(join(tmpdir(), "tm-pi-image-")); dirs.push(dir);
@@ -145,7 +154,7 @@ test("a read or grep another extension registered first is reported with what it
     try {
       await f.session.bindExtensions({ uiContext: ui as never });
       const conflicts = notices.filter(text => text.includes("registered") && text.includes("first"));
-      if (extensions.length === 2) expect(conflicts).toEqual([expect.stringMatching(/registered read first.*read cannot read Trace Memory under \/tm\//)]);
+      if (extensions.length === 2) expect(conflicts).toEqual([expect.stringMatching(/registered read first.*read cannot read Trace Memory under trace:\/\//)]);
       else expect(conflicts).toEqual([]);
     } finally { f.dispose(); }
   }

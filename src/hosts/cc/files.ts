@@ -1,9 +1,9 @@
-// Claude Code renders /tm through the native session's bound reader. No conversation is imported
+// Claude Code renders trace:// through the native session's bound reader. No conversation is imported
 // and no delivery is recorded. Each virtual-path Read renders anew for native pagination.
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { TraceMemory, memoryFiles, memoryPath, type MemoryGrepFile, type MemoryGrepOptions, type MemoryReader } from "../../core/api/index.ts";
+import { TraceMemory, memoryFiles, memoryPath, MEMORY_ROOT, type MemoryGrepFile, type MemoryGrepOptions, type MemoryReader } from "../../core/api/index.ts";
 import { readBinding, validateNativeSessionId } from "./binding.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { ccResultText } from "./transcript.ts";
@@ -47,7 +47,7 @@ export function parseGrepArgs(args: readonly string[]): { pattern: string; path:
       } else throw new Error(`unknown grep flag -${flag}; ${usage}`);
     }
   }
-  const [pattern, path = "/tm", ...extra] = rest;
+  const [pattern, path = MEMORY_ROOT, ...extra] = rest;
   if (pattern === undefined || extra.length) throw new Error(usage);
   if (options.lineNumbers === false && options.mode !== "content") throw new Error("--no-line-numbers requires content mode");
   return { pattern, path, options };
@@ -79,7 +79,7 @@ function ccGrep(files: Iterable<MemoryGrepFile>, path: string, options: CcGrepOp
       all.push(`${prefix}${options.lineNumbers === false ? "" : `${line + 1}${isHit ? ":" : "-"}`}${value}`);
     }
   }
-  // Native Grep's file mode uses mtime, with lexicographic paths on ties. /tm has no mtime.
+  // Native Grep's file mode uses mtime, with lexicographic paths on ties. trace:// has no mtime.
   if (mode === "files_with_matches") all.sort((a, b) => a.localeCompare(b));
   const lines = limit === 0 ? all.slice(offset) : all.slice(offset, offset + limit);
   const appliedLimit = limit > 0 && all.length - offset > limit ? limit : undefined;
@@ -90,7 +90,7 @@ function ccGrep(files: Iterable<MemoryGrepFile>, path: string, options: CcGrepOp
 function materializeCcRead(directory: string, content: string, virtualPath?: string): string {
   // Main reads share one file per normalized virtual path; fresh workers keep their per-run files.
   const target = virtualPath === undefined ? join(mkdtempSync(join(directory, "read-")), "memory.txt")
-    : join(directory, ...virtualPath.slice("/tm".length).split("/").filter(Boolean), "memory.txt");
+    : join(directory, ...virtualPath.slice(MEMORY_ROOT.length).split("/").filter(Boolean), "memory.txt");
   const parent = dirname(target);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const temporary = `${target}.${randomUUID()}`;
@@ -103,7 +103,7 @@ function materializeCcRead(directory: string, content: string, virtualPath?: str
 
 /** A fresh worker reads with its frozen Core target, never a foreground native binding. */
 export function materializeCcWorkerRead(config: ResolvedCcHostConfig, reader: MemoryReader, path: string, directory: string): string {
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("/tm reads run no model work"); }, config.coreConfig, ccResultText);
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("trace:// reads run no model work"); }, config.coreConfig, ccResultText);
   try {
     return materializeCcRead(directory, memoryFiles(memory, { ...reader, toolNames: ccWorkerToolNames }).read(path).content);
   } finally {
@@ -111,10 +111,10 @@ export function materializeCcWorkerRead(config: ResolvedCcHostConfig, reader: Me
   }
 }
 
-/** One `/tm` operation for a native session, as JSON: a read page, or grep/glob listing lines. */
+/** One `trace://` operation for a native session, as JSON: a read page, or grep/glob listing lines. */
 export function runCcFiles(config: ResolvedCcHostConfig, nativeSessionId: string, [op, ...args]: readonly string[]): unknown {
   const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("/tm reads run no model work"); }, config.coreConfig, ccResultText);
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("trace:// reads run no model work"); }, config.coreConfig, ccResultText);
   try {
     const core = binding?.dbPath === config.dbPath ? binding.coreSessionId : null;
     const reader: MemoryReader = core !== null && memory.store.getSession(core)
@@ -125,10 +125,10 @@ export function runCcFiles(config: ResolvedCcHostConfig, nativeSessionId: string
       if (args.length !== 1) throw new Error(usage);
       const rendered = files.read(args[0]!);
       if (op === "read") return rendered;
-      // Native Read receives a physical file for this call. A later /tm call renders afresh,
+      // Native Read receives a physical file for this call. A later trace:// call renders afresh,
       // including one made with offset/limit; no snapshot path is exposed to the model.
       const virtual = memoryPath(args[0]!);
-      if (virtual === null) throw new Error("materialize requires a /tm path");
+      if (virtual === null) throw new Error("materialize requires a trace:// address");
       return { path: materializeCcRead(join(config.stateDir, "rendered", validateNativeSessionId(nativeSessionId)), rendered.content, virtual) };
     }
     if (op === "grep") {
@@ -137,7 +137,7 @@ export function runCcFiles(config: ResolvedCcHostConfig, nativeSessionId: string
       return ccGrep(files.grep(pattern, path, coreOptions), path, options);
     }
     if (op === "glob") { if (args.length !== 1) throw new Error(usage); return files.glob(args[0]!); }
-    throw new Error(`${op === "write" || op === "edit" ? `${op}: /tm is read-only` : `unknown operation ${String(op)}`}; ${usage}`);
+    throw new Error(`${op === "write" || op === "edit" ? `${op}: trace:// is read-only` : `unknown operation ${String(op)}`}; ${usage}`);
   } finally {
     // A reader owns no executor or claim: close the Store alone, so reading writes nothing.
     memory.store.close();

@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve, sep } from "node:path";
 import { createSdkMcpServer, query, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
-import { memoryPath, toolRejected } from "../../core/api/index.ts";
+import { memoryPath, resolvedMemoryPath, toolRejected } from "../../core/api/index.ts";
 import { CC_AGENT_SDK_VERSION, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
@@ -371,28 +371,28 @@ export class CcAgentWorker {
     const onRead = async (raw: unknown) => {
       const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse" as const,
         permissionDecision: "deny" as const, permissionDecisionReason: reason } });
-      const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown> };
+      const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown>; cwd?: unknown };
       const file = event?.tool_input?.file_path;
       try {
-        if (event.tool_name !== "Read" || typeof file !== "string") return deny("CC worker accepts only Read of /tm");
-        const virtual = memoryPath(file);
+        if (event.tool_name !== "Read" || typeof file !== "string") return deny("CC worker accepts only Read of trace://");
+        const virtual = memoryPath(file) ?? resolvedMemoryPath(file, event.cwd);
         if (virtual !== null) {
           const path = materializeCcWorkerRead(this.config, frozenReader, virtual, readDirectory);
           rendered.set(path, virtual);
           return { hookSpecificOutput: { hookEventName: "PreToolUse" as const,
-            permissionDecision: "allow" as const, permissionDecisionReason: "read /tm rendering",
+            permissionDecision: "allow" as const, permissionDecisionReason: "read trace:// rendering",
             updatedInput: { ...event.tool_input, file_path: path } } };
         }
         // A continuation may name only a file rendered by this very run; never a sibling worker's
         // rendering or a path reached through a symlink or lexical traversal.
-        if (!isAbsolute(file) || file !== resolve(file) || !rendered.has(file)) return deny("CC worker Read is restricted to its own /tm renderings");
+        if (!isAbsolute(file) || file !== resolve(file) || !rendered.has(file)) return deny("CC worker Read is restricted to its own trace:// renderings");
         const actual = realpathSync(file);
         if (!actual.startsWith(realpathSync(readDirectory) + sep) || !lstatSync(file).isFile() || lstatSync(file).isSymbolicLink())
           return deny("CC worker Read rendering is outside its own session");
         return { hookSpecificOutput: { hookEventName: "PreToolUse" as const,
-          permissionDecision: "allow" as const, permissionDecisionReason: "continue /tm read" } };
+          permissionDecision: "allow" as const, permissionDecisionReason: "continue trace:// read" } };
       } catch (error) {
-        const virtual = typeof file === "string" ? memoryPath(file) ?? rendered.get(file) : null;
+        const virtual = typeof file === "string" ? memoryPath(file) ?? resolvedMemoryPath(file, event.cwd) ?? rendered.get(file) : null;
         if (virtual && error instanceof Error && "code" in error && typeof error.code === "string") {
           const operation = "syscall" in error && typeof error.syscall === "string" ? error.syscall : "read";
           return deny(`${error.code}: ${operation} '${virtual}'`);

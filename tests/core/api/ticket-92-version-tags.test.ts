@@ -36,14 +36,14 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
   expect(memory.store.versionOrdinal(knowledgeId, commit)).toBe(1);
   expect(memory.store.resolveVersionTag(knowledgeId, tag)).toBe(commit);
   const files = memoryFiles(memory, { sessionId: session.id, branch: "main", headTurnId: turn.id });
-  const read = files.read(`/tm/K${knowledgeId}@v1`).content;
+  const read = files.read(`trace://K${knowledgeId}@v1`).content;
   expect(read).toContain(`[K${knowledgeId}#${tag}]`);
   expect(read).not.toContain(`K${knowledgeId}@${commit}`);
   const second = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "create", text: "Second rule: " + "long body segment ".repeat(90), category: "reference", scope: "session", topics: [], reason: "second", supports: [`F${fact}`] }));
   const secondId = second.committed[0].knowledgeId;
   const secondVersion = `K${secondId}#${memory.store.versionTag(secondId, memory.store.resolveVersionOrdinal(secondId, 1))}`;
-  expect(files.read(`/tm/K${secondId}@v1`).content).toContain(secondVersion);
-  expect(files.read(`/tm/K${knowledgeId}@v1`).content).not.toContain(secondVersion);
+  expect(files.read(`trace://K${secondId}@v1`).content).toContain(secondVersion);
+  expect(files.read(`trace://K${knowledgeId}@v1`).content).not.toContain(secondVersion);
   expect(() => memory.store.resolveVersionTag(knowledgeId, tag.slice(0, 3))).toThrow();
   expect(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#xxxx`, reason: "bad", supports: [`F${fact}`] })).toContain("rejected:");
   const otherConnection = open();
@@ -77,11 +77,11 @@ test("118: exact knowledge reads carry a complete tagged body; search previews r
     const { knowledgeId } = receipt.committed[0];
     const version = `K${knowledgeId}#${memory.store.versionTag(knowledgeId, memory.store.resolveVersionOrdinal(knowledgeId, 1))}`;
     const files = memoryFiles(memory, { sessionId: session.id, branch: "main", headTurnId: turn.id });
-    const exact = files.read(`/tm/K${knowledgeId}@v1`).content;
+    const exact = files.read(`trace://K${knowledgeId}@v1`).content;
     expect(exact).toContain(body);
     expect(exact.split(version)).toHaveLength(2);
-    expect(files.read(`/tm/knowledge/S${session.id}`).content).toContain(version);
-    expect(files.read("/tm/knowledge").content).not.toContain(version);
+    expect(files.read(`trace://knowledge/S${session.id}`).content).toContain(version);
+    expect(files.read("trace://knowledge").content).not.toContain(version);
     expect(tools.find(t => t.name === "search")!.execute({ query: "Mixed body", layer: "knowledge", itemBudget: null })).not.toContain(version);
   } finally { memory.close(); }
 });

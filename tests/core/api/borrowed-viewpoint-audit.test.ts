@@ -54,7 +54,7 @@ async function execute(borrowed:boolean,dead:boolean) {
     expect(input.text).not.toContain('EXECUTOR_MUST_NOT_LEAK');
     expect(input.text).not.toContain('EXECUTOR_PRIVATE_KNOWLEDGE');
     // Exact fact reads stay legal, but must not turn a sibling into a valid citation.
-    const historical = memoryFiles(f.memory, input.reader!).read(`/tm/F${f.liveFact.id}`).content;
+    const historical = memoryFiles(f.memory, input.reader!).read(`trace://F${f.liveFact.id}`).content;
     expect(historical, historical).toContain('SIBLING_MUST_NOT_LEAK');
     {
       const note=input.tools.find(t=>t.name==='note')!;
@@ -68,7 +68,7 @@ async function execute(borrowed:boolean,dead:boolean) {
     {
       const write=input.tools.find(t=>t.name==='memory')!;
       const base = `K1#${f.s.versionTag(1, 1)}`;
-      expect(memoryFiles(f.memory,input.reader!).read('/tm/K1@v1').content).toContain(base);
+      expect(memoryFiles(f.memory,input.reader!).read('trace://K1@v1').content).toContain(base);
       const op={op:'update',id:base,category:'constraint',scope:'project',text:'OLD_BRANCH_RESULT',topics:[],reason:'target evidence changes the rule'};
       const bad=write.execute({...op,supports:[`F${f.liveFact.id}`]});
       expect(bad).toContain('rejected:');checks.push('sibling fact citation rejected');

@@ -127,7 +127,7 @@ export function publicTraceTargets(expression: string): string[] {
 export type MemoryViewPath = { layer: "knowledge" | "compact" | "facts" | "raw"; sessionId: number;
   turnId?: number; entryOrdinal?: number; role?: "user" | "assistant" | "observation" };
 export function parseMemoryViewPath(path: string): MemoryViewPath | null {
-  const match = /^\/tm\/(knowledge|compact|facts|raw)\/S([1-9]\d*)(?:\/T([1-9]\d*))?(?:#E([1-9]\d*))?(?:@(user|assistant|observation))?$/.exec(path);
+  const match = /^trace:\/\/(knowledge|compact|facts|raw)\/S([1-9]\d*)(?:\/T([1-9]\d*))?(?:#E([1-9]\d*))?(?:@(user|assistant|observation))?$/.exec(path);
   if (!match || (match[4] && !match[3]) || (match[1] !== "raw" && (match[4] || match[5]))) return null;
   const ids = [match[2], match[3], match[4]].filter((id): id is string => id !== undefined).map(Number);
   if (ids.some(id => !Number.isSafeInteger(id))) return null;
@@ -136,35 +136,32 @@ export function parseMemoryViewPath(path: string): MemoryViewPath | null {
     ...(match[5] ? { role: match[5] as MemoryViewPath["role"] } : {}) };
 }
 
-/** 101: the root of Trace Memory's read-only virtual files, and what a write under it is told. */
-export const MEMORY_ROOT = "/tm";
-export const MEMORY_READ_ONLY = `${MEMORY_ROOT}/ is read-only.`;
+/** 128: the prefix of Trace Memory's read-only virtual addresses, and what a write under it is told. */
+export const MEMORY_ROOT = "trace://";
+export const MEMORY_READ_ONLY = `${MEMORY_ROOT} is read-only.`;
 
-/** 101: the `/tm` path a host tool argument names, or null for every other path. This is the one
- * prefix check a host runs before answering a tool call itself, which bypasses the host's own
- * permission and path checks. Only an absolute path counts. It is normalised lexically — empty and
- * `.` segments dropped, `..` applied — and must then be `/tm` or lie under `/tm/`, so `/tmp`,
- * `/tm-foo`, a relative path and a `..` that leaves `/tm` are not memory paths. Nothing is resolved
- * on disk: a symbolic link is never read as `/tm`. */
+/** 101, 128: the `trace://` address a host tool argument names, or null for every other value. This
+ * is the one prefix check a host runs before answering a tool call itself, which bypasses the host's
+ * own permission and path checks. The prefix is exactly `trace://`, lowercase. The rest is split on
+ * `/` and its empty segments are dropped; `.` and `..` mean nothing and fail ticket 118's grammar. */
 export function memoryPath(value: unknown): string | null {
-  if (typeof value !== "string" || !value.startsWith("/")) return null;
-  const segments: string[] = [];
-  for (const segment of value.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") segments.pop(); else segments.push(segment);
-  }
-  return segments[0] === "tm" ? `/${segments.join("/")}` : null;
+  if (typeof value !== "string" || !value.startsWith(MEMORY_ROOT)) return null;
+  return MEMORY_ROOT + value.slice(MEMORY_ROOT.length).split("/").filter(Boolean).join("/");
 }
 
-/** 101: the `/tm` glob a Glob call names (an absolute pattern, or a relative one under an absolute
- * search path), or null. Its literal leading segments, up to the first holding a glob character,
- * must pass `memoryPath`. */
+/** 128: Claude Code resolves a Read's `file_path` against its working directory before a PreToolUse
+ * command or SDK hook runs, so `trace://K1` reaches such a hook as `<cwd>/trace:/K1`; only a function
+ * hook sees the raw string. This recovers the address from the resolved form, and cannot tell
+ * `trace:/K1` from `trace://K1`. */
+export function resolvedMemoryPath(value: unknown, cwd: unknown): string | null {
+  if (typeof value !== "string" || typeof cwd !== "string" || !cwd) return null;
+  const prefix = `${cwd.replace(/\/+$/, "")}/trace:`;
+  return value === prefix || value.startsWith(`${prefix}/`) ? memoryPath(MEMORY_ROOT + value.slice(prefix.length)) : null;
+}
+
+/** 101, 128: the `trace://` glob a Glob call names (a pattern starting with `trace://`, or a relative
+ * one under a `trace://` search path), or null. */
 export function memoryGlob(pattern: unknown, path?: unknown): string | null {
   if (typeof pattern !== "string" || !pattern) return null;
-  const full = pattern.startsWith("/") ? pattern : typeof path === "string" && path.startsWith("/") ? `${path.replace(/\/+$/, "")}/${pattern}` : null;
-  if (!full) return null;
-  const segments = full.split("/"), wild = segments.findIndex(segment => /[*?[\]{}]/.test(segment));
-  const literal = wild < 0 ? full : segments.slice(0, wild).join("/") || "/";
-  const root = memoryPath(literal);
-  return root === null ? null : wild < 0 ? root : [root, ...segments.slice(wild)].join("/");
+  return memoryPath(pattern.startsWith(MEMORY_ROOT) ? pattern : memoryPath(path) === null ? null : `${path}/${pattern}`);
 }

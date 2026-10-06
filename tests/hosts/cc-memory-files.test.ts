@@ -1,9 +1,10 @@
-// 101: Claude Code's Read, Grep and Glob on /tm. The function hook answers only an exact /tm path and
+// 101: Claude Code's Read, Grep and Glob on trace://. The function hook answers only an exact trace:// path and
 // hands every other call to `next` untouched, since its own answer skips Claude Code's permission and
 // path checks; `cc.cjs fs` serves the files for the native session's bound reader and writes nothing.
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -33,9 +34,10 @@ function host(reply: unknown = { content: "whole", unbounded: true }, exitCode =
 }
 const fs = (...args: string[]) => ["node", "/plugin/dist/cc.cjs", "fs", "--config", "/plugin/cc.config.json", "--session", "native-1", ...args];
 
-test("every path that is not exactly /tm reaches the real tool untouched and runs nothing", async () => {
-  const outside = ["/tmp/K1", "/tm-foo/K1", "/tmx", "/TM/K1", "/tm/../etc/passwd", "/tm/S1/../../private/secret", "tm/K1", "./tm/K1",
-    "~/tm/K1", "/private/tm/K1", "/Users/me/link-to-tm/K1", undefined];
+test("every path that does not start with exactly trace:// reaches the real tool untouched and runs nothing", async () => {
+  // 128: `/tm` is an ordinary path now, and so is every lookalike of the scheme.
+  const outside = ["/tm", "/tm/K1", "/tm/knowledge/S1", "/tmp/K1", "Trace://K1", "TRACE://K1", "trace:/K1", "trace:K1", "xtrace://K1",
+    "./trace://K1", "/private/trace://K1", "tm/K1", undefined];
   for (const path of outside) {
     for (const [tool, event] of [["Read", { file_path: path }], ["Grep", { pattern: "x", path }], ["Glob", { pattern: path ?? "*" }],
       ["Glob", { pattern: "*", path }], ["Edit", { file_path: path, old_string: "a", new_string: "b" }], ["Write", { file_path: path, content: "x" }],
@@ -50,18 +52,18 @@ test("every path that is not exactly /tm reaches the real tool untouched and run
   }
 });
 
-test("Read, Grep and Glob under /tm are answered by cc.cjs fs for this session, in their tools' own result shapes", async () => {
+test("Read, Grep and Glob under trace:// are answered by cc.cjs fs for this session, in their tools' own result shapes", async () => {
   let h = host();
-  const ordinary = { tool: "Read", file_path: "/tm//K1/", offset: 3, limit: 2 };
+  const ordinary = { tool: "Read", file_path: "trace:///K1/", offset: 3, limit: 2 };
   expect(await hooks.get("Read")!(h.$, ordinary, h.next)).toEqual({ result: "native" });
   expect(h.next).toHaveBeenCalledExactlyOnceWith(ordinary);
   expect(h.run).not.toHaveBeenCalled();
   h = host({ content: "whole\nknowledge", unbounded: true });
-  expect(await hooks.get("Read")!(h.$, { tool: "Read", file_path: "/tm//knowledge/S2/T3" }, h.next)).toEqual({ result: { type: "text",
-    file: { filePath: "/tm//knowledge/S2/T3", content: "whole\nknowledge", numLines: 2, startLine: 1, totalLines: 2 } } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("read", "/tm/knowledge/S2/T3"));
+  expect(await hooks.get("Read")!(h.$, { tool: "Read", file_path: "trace:///knowledge/S2/T3" }, h.next)).toEqual({ result: { type: "text",
+    file: { filePath: "trace:///knowledge/S2/T3", content: "whole\nknowledge", numLines: 2, startLine: 1, totalLines: 2 } } });
+  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("read", "trace://knowledge/S2/T3"));
   expect(h.next).not.toHaveBeenCalled();
-  for (const path of ["/tm/compact/S2", "/tm/compact/S2/T3"]) {
+  for (const path of ["trace://compact/S2", "trace://compact/S2/T3"]) {
     h = host({ content: "whole\ncompact", unbounded: true });
     expect(await hooks.get("Read")!(h.$, { tool: "Read", file_path: path }, h.next)).toMatchObject({ result: {
       file: { filePath: path, content: "whole\ncompact", startLine: 1, totalLines: 2 } } });
@@ -69,49 +71,66 @@ test("Read, Grep and Glob under /tm are answered by cc.cjs fs for this session, 
     expect(h.next).not.toHaveBeenCalled();
   }
   h = host({ content: "whole\nentry", unbounded: true });
-  const exact = { tool: "Read", file_path: "/tm/raw/S2/T3#E4@assistant" };
+  const exact = { tool: "Read", file_path: "trace://raw/S2/T3#E4@assistant" };
   expect(await hooks.get("Read")!(h.$, exact, h.next)).toMatchObject({ result: { file: { filePath: exact.file_path, content: "whole\nentry" } } });
   expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("read", exact.file_path));
 
-  h = host({ lines: ["/tm/facts/S1/T2", "/tm/raw/S1/T2#E4"], total: 2, offset: 0 });
-  expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "-hashline", path: "/tm/S1", "-i": true }, h.next))
-    .toEqual({ result: { mode: "files_with_matches", numFiles: 2, totalFiles: 2, filenames: ["/tm/facts/S1/T2", "/tm/raw/S1/T2#E4"] } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "-l", "-i", "--", "-hashline", "/tm/S1"));
+  h = host({ lines: ["trace://facts/S1/T2", "trace://raw/S1/T2#E4"], total: 2, offset: 0 });
+  expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "-hashline", path: "trace://S1", "-i": true }, h.next))
+    .toEqual({ result: { mode: "files_with_matches", numFiles: 2, totalFiles: 2, filenames: ["trace://facts/S1/T2", "trace://raw/S1/T2#E4"] } });
+  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "-l", "-i", "--", "-hashline", "trace://S1"));
 
-  h = host({ lines: ["/tm/K1:1:x"], total: 11, offset: 4, appliedLimit: 10 });
-  expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "x", path: "/tm", output_mode: "content", "-C": 2, "-A": 1,
+  h = host({ lines: ["trace://K1:1:x"], total: 11, offset: 4, appliedLimit: 10 });
+  expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "x", path: "trace://", output_mode: "content", "-C": 2, "-A": 1,
     glob: "E*", offset: 4, head_limit: 10 }, h.next)).toEqual({ result: { mode: "content", numFiles: 0, filenames: [],
-    content: "/tm/K1:1:x", numLines: 1, totalLines: 11, appliedLimit: 10, appliedOffset: 4 } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "-n", "-C", "2", "-A", "1", "--glob", "E*", "--offset", "4", "--limit", "10", "--", "x", "/tm"));
-  h = host({ lines: ["/tm/raw/S1/T2#E1:match"], total: 1 });
-  expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "match", path: "/tm/raw/S1", output_mode: "content", "-n": false }, h.next))
-    .toMatchObject({ result: { content: "/tm/raw/S1/T2#E1:match" } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "--no-line-numbers", "--", "match", "/tm/raw/S1"));
+    content: "trace://K1:1:x", numLines: 1, totalLines: 11, appliedLimit: 10, appliedOffset: 4 } });
+  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "-n", "-C", "2", "-A", "1", "--glob", "E*", "--offset", "4", "--limit", "10", "--", "x", "trace://"));
+  h = host({ lines: ["trace://raw/S1/T2#E1:match"], total: 1 });
+  expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "match", path: "trace://raw/S1", output_mode: "content", "-n": false }, h.next))
+    .toMatchObject({ result: { content: "trace://raw/S1/T2#E1:match" } });
+  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "--no-line-numbers", "--", "match", "trace://raw/S1"));
   for (const unsupported of [{ "-o": true }, { multiline: true }, { type: "ts" }]) {
     h = host();
-    expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "x", path: "/tm/raw/S1", ...unsupported }, h.next))
-      .toEqual({ deny: "unsupported virtual Grep input: /tm/raw/S1" });
+    expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "x", path: "trace://raw/S1", ...unsupported }, h.next))
+      .toEqual({ deny: "unsupported virtual Grep input: trace://raw/S1" });
     expect(h.run).not.toHaveBeenCalled();
   }
 
-  h = host({ lines: ["/tm/facts/S1/T2", "/tm/facts/S1/T3"], total: 2 });
-  expect(await hooks.get("Glob")!(h.$, { tool: "Glob", pattern: "S1/T*", path: "/tm/facts" }, h.next))
-    .toEqual({ result: { durationMs: 0, numFiles: 2, filenames: ["/tm/facts/S1/T2", "/tm/facts/S1/T3"], truncated: false,
+  h = host({ lines: ["trace://facts/S1/T2", "trace://facts/S1/T3"], total: 2 });
+  expect(await hooks.get("Glob")!(h.$, { tool: "Glob", pattern: "S1/T*", path: "trace://facts" }, h.next))
+    .toEqual({ result: { durationMs: 0, numFiles: 2, filenames: ["trace://facts/S1/T2", "trace://facts/S1/T3"], truncated: false,
       totalMatches: 2, countIsComplete: true } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("glob", "/tm/facts/S1/T*"));
+  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("glob", "trace://facts/S1/T*"));
 });
 
-test("edits and writes under /tm are refused with a pointer to note and memory; a failed read is refused with its reason", async () => {
-  for (const [tool, event] of [["Edit", { file_path: "/tm/K1", old_string: "a", new_string: "b" }], ["Write", { file_path: "/tm/S1/new", content: "x" }],
-    ["NotebookEdit", { notebook_path: "/tm/K1", new_source: "x" }]] as const) {
+test("edits and writes under trace:// are refused with a pointer to note and memory; a failed read is refused with its reason", async () => {
+  for (const [tool, event] of [["Edit", { file_path: "trace://K1", old_string: "a", new_string: "b" }], ["Write", { file_path: "trace://S1/new", content: "x" }],
+    ["NotebookEdit", { notebook_path: "trace://K1", new_source: "x" }]] as const) {
     const h = host();
     expect(await hooks.get(tool)!(h.$, { tool, ...event }, h.next)).toEqual({ deny: MEMORY_READ_ONLY });
     expect(h.next).not.toHaveBeenCalled();
   }
-  expect(MEMORY_READ_ONLY).toContain("/tm/");
+  expect(MEMORY_READ_ONLY).toContain("trace://");
   const h = host(undefined, 1);
-  expect(await hooks.get("Read")!(h.$, { tool: "Read", file_path: "/tm/knowledge/S9" }, h.next)).toEqual({ deny: "session S9 does not exist" });
+  expect(await hooks.get("Read")!(h.$, { tool: "Read", file_path: "trace://knowledge/S9" }, h.next)).toEqual({ deny: "session S9 does not exist" });
   expect(h.next).not.toHaveBeenCalled();
+});
+
+test("the command hook sees Claude Code's cwd-resolved path, rewrites only trace:// reads and ignores /tm", () => {
+  const cwd = "/work/project";
+  const hook = (file_path: string) => spawnSync(process.execPath, [resolve("plugin/hooks/read.mjs")], { encoding: "utf8",
+    env: { PATH: process.env.PATH }, input: JSON.stringify({ tool_name: "Read", session_id: "s", cwd, tool_input: { file_path } }) });
+  // No plugin root in this environment, so a matched read ends in a refusal naming that, and an unmatched one in silence.
+  for (const matched of [`${cwd}/trace:/K1`, `${cwd}/trace:`, `${cwd}/trace:/facts/S1/T2`, "trace://K1", "trace:///K1"]) {
+    const { stdout } = hook(matched);
+    expect(JSON.parse(stdout).hookSpecificOutput, matched).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("plugin root") });
+  }
+  for (const unmatched of ["/tm/K1", "/tm", `${cwd}/tm/K1`, `${cwd}/Trace:/K1`, "Trace://K1", "trace:/K1", "/other/trace:/K1",
+    // Whole views are the function hook's.
+    `${cwd}/trace:/knowledge/S1`, `${cwd}/trace:/compact/S1/T2`, `${cwd}/trace:/raw/S1/T2#E3`]) {
+    const { stdout, status } = hook(unmatched);
+    expect({ unmatched, status, stdout }).toEqual({ unmatched, status: 0, stdout: "" });
+  }
 });
 
 const dirs: string[] = [];
@@ -154,30 +173,30 @@ test("cc.cjs fs reads for the bound native session, accepts combined grep flags,
     return JSON.parse(written.join(""));
   };
   // The bound reader's own knowledge, and its session's Turns.
-  expect((await cli("read", "/tm/knowledge")).content).toMatch(/^\/tm\/K1  \[constraint\/project\] Hashline uses an LRU cache\.$/);
-  const combined = await cli("grep", "-in", "HASHLINE", `/tm/S${core}`);
-  expect(combined).toEqual(await cli("grep", "-n", "-i", "HASHLINE", `/tm/S${core}`));
+  expect((await cli("read", "trace://knowledge")).content).toMatch(/^trace:\/\/K1  \[constraint\/project\] Hashline uses an LRU cache\.$/);
+  const combined = await cli("grep", "-in", "HASHLINE", `trace://S${core}`);
+  expect(combined).toEqual(await cli("grep", "-n", "-i", "HASHLINE", `trace://S${core}`));
   expect(combined.lines.length).toBeGreaterThan(1);
-  for (const line of combined.lines) expect(line).toMatch(new RegExp(`^/tm/(?:facts|raw)/S${core}/T\\d+(?:#E\\d+)?:\\d+:.*hashline`, "i"));
-  expect((await cli("grep", "-ic", "hashline", `/tm/S${core}`)).lines.every((line: string) => /:\d+$/.test(line))).toBe(true);
-  const withoutNumbers = await cli("grep", "--no-line-numbers", "-i", "hashline", `/tm/S${core}`);
+  for (const line of combined.lines) expect(line).toMatch(new RegExp(`^trace://(?:facts|raw)/S${core}/T\\d+(?:#E\\d+)?:\\d+:.*hashline`, "i"));
+  expect((await cli("grep", "-ic", "hashline", `trace://S${core}`)).lines.every((line: string) => /:\d+$/.test(line))).toBe(true);
+  const withoutNumbers = await cli("grep", "--no-line-numbers", "-i", "hashline", `trace://S${core}`);
   expect(withoutNumbers.lines.length).toBeGreaterThan(0);
   expect(withoutNumbers.lines.every((line: string) => !/:\d+:/.test(line))).toBe(true);
-  expect((await cli("read", `/tm/knowledge/S${core}`)).content).toContain("Hashline uses an LRU cache.");
-  const compact = await cli("read", `/tm/compact/S${core}`);
+  expect((await cli("read", `trace://knowledge/S${core}`)).content).toContain("Hashline uses an LRU cache.");
+  const compact = await cli("read", `trace://compact/S${core}`);
   expect(compact.unbounded).toBe(true);
   expect(compact.content).toContain("Hashline uses an LRU cache.");
-  const first = await cli("materialize", "/tm/K1");
+  const first = await cli("materialize", "trace://K1");
   const body = readFileSync(first.path, "utf8");
   writeFileSync(first.path, "stale rendering");
-  const second = await cli("materialize", "/tm//K1/");
+  const second = await cli("materialize", "trace:///K1/");
   expect(second.path).toBe(first.path);
   expect(readFileSync(second.path, "utf8")).toBe(body);
-  const other = await cli("materialize", "/tm/F1");
+  const other = await cli("materialize", "trace://F1");
   expect(other.path).not.toBe(first.path);
   expect(first.path.startsWith(join(config.stateDir, "rendered", native))).toBe(true);
-  expect((await cli("glob", `/tm/raw/S${core}/T*#E*`)).lines).toEqual([expect.stringMatching(new RegExp(`^/tm/raw/S${core}/T\\d+#E1$`)), expect.stringMatching(/#E2$/)]);
-  await expect(cli("write", "/tm/K1")).rejects.toThrow(/read-only/);
+  expect((await cli("glob", `trace://raw/S${core}/T*#E*`)).lines).toEqual([expect.stringMatching(new RegExp(`^trace://raw/S${core}/T\\d+#E1$`)), expect.stringMatching(/#E2$/)]);
+  await expect(cli("write", "trace://K1")).rejects.toThrow(/read-only/);
   // A native session with no binding reads unbound: explicit addresses, and no visible knowledge.
   const unbound = async (...args: string[]) => {
     const written: string[] = [];
@@ -185,7 +204,7 @@ test("cc.cjs fs reads for the bound native session, accepts combined grep flags,
     try { await runCcCommand(["fs", "--config", configPath, "--session", "never-bound", ...args]); } finally { spy.mockRestore(); }
     return JSON.parse(written.join(""));
   };
-  expect((await unbound("read", "/tm/knowledge")).content).toBe("(empty)");
-  expect((await unbound("read", "/tm/K1")).content).toContain("Hashline uses an LRU cache.");
+  expect((await unbound("read", "trace://knowledge")).content).toBe("(empty)");
+  expect((await unbound("read", "trace://K1")).content).toContain("Hashline uses an LRU cache.");
   expect(digest()).toBe(before);
 });

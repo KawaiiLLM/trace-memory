@@ -22,7 +22,7 @@ test("33 historical JSON call IDs preserve authored sources and exact coverage",
   const { m, sessionId, turn, entry, files } = setup();
   try {
     const source = `T${turn.id}#E1@"\\u0061ctual"`;
-    expect(files().read(`/tm/raw/S${sessionId}/T${turn.id}#E1@assistant`).content).toContain('command="test"');
+    expect(files().read(`trace://raw/S${sessionId}/T${turn.id}#E1@assistant`).content).toContain('command="test"');
     const result = m.store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time }, entryIds: [entry.id], facts: [{ turnId: turn.id,
       category: "event", actor: "agent", status: "attempted", text: "Started the check.", source: [source], entryIds: [entry.id], createdAt: time }] });
     if (!result.ok) throw Error(result.problems.join("; "));
@@ -30,7 +30,7 @@ test("33 historical JSON call IDs preserve authored sources and exact coverage",
     expect(fact.source).toEqual([source]);
     expect(m.store.factEntries(fact.id)).toEqual([entry.id]);
     expect(m.store.factCoveredByRaw(fact, new Set([entry.id]))).toBe(true);
-    expect(files().read(`/tm/facts/S${sessionId}/T${turn.id}`).content).toContain(`[F${fact.id}]`);
+    expect(files().read(`trace://facts/S${sessionId}/T${turn.id}`).content).toContain(`[F${fact.id}]`);
   } finally { m.close(); }
 });
 
@@ -47,9 +47,9 @@ test("92 dispatch and result derive different roles; new sources reject call fra
     m.selectEntries(sessionId, "main", [entry.id, result.id]);
     expect(note.execute(fact("T1#E2"))).not.toContain("rejected:");
     expect(m.store.getFact(2)!.roles).toEqual([{ role: "observation" }]);
-    expect(files().read(`/tm/raw/S${sessionId}/T${turn.id}@user`).content).not.toContain("passed");
-    expect(files().read(`/tm/raw/S${sessionId}/T${turn.id}@observation`).content).toContain("passed");
-    expect(files().read(`/tm/raw/S${sessionId}/T${turn.id}@observation`).content).not.toContain("command=");
+    expect(files().read(`trace://raw/S${sessionId}/T${turn.id}@user`).content).not.toContain("passed");
+    expect(files().read(`trace://raw/S${sessionId}/T${turn.id}@observation`).content).toContain("passed");
+    expect(files().read(`trace://raw/S${sessionId}/T${turn.id}@observation`).content).not.toContain("command=");
   } finally { m.close(); }
 });
 
@@ -64,8 +64,8 @@ test("93 Turn facts show only contributing segments, with earliest source owning
     const second = JSON.parse(note.execute({ title: "Second ownership", sources: factSources([{ address: "T2#E1", text: "Second ownership" }]) }));
     expect([...first.factIds, ...second.factIds]).toEqual([1, 2]);
     const files = memoryFiles(m, { sessionId, branch: "main", headTurnId: next.id });
-    const firstTurn = files.read(`/tm/facts/S${sessionId}/T${turn.id}`).content;
-    const secondTurn = files.read(`/tm/facts/S${sessionId}/T${next.id}`).content;
+    const firstTurn = files.read(`trace://facts/S${sessionId}/T${turn.id}`).content;
+    const secondTurn = files.read(`trace://facts/S${sessionId}/T${next.id}`).content;
     expect(firstTurn).toContain("[F1] First ownership");
     expect(firstTurn).toContain("[T1#E1@assistant] First ownership");
     expect(firstTurn).not.toContain("Confirmed ownership");
@@ -94,7 +94,7 @@ test("92 exact historical versions retain complete tags without granting stale u
       const request = { fixture: "make read target historical" }; input.reportRequest(request);
       const write = input.tools.find(t => t.name === "memory")!;
       const base = `K1#${m.store.versionTag(1, 1)}`;
-      expect(memoryFiles(m, input.reader!).read(`/tm/${base}`).content).toContain(base);
+      expect(memoryFiles(m, input.reader!).read(`trace://${base}`).content).toContain(base);
       const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: base, text: "Current replacement", category: "understanding", scope: "project",
         supports: ["F1"], reason: "Make old revision historical", topics: [] },
       { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${m.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] }));
@@ -103,13 +103,13 @@ test("92 exact historical versions retain complete tags without granting stale u
     });
     if (settled.outcome !== "success") throw Error(JSON.stringify(settled));
     const oldTag = `K1#${m.store.versionTag(1, 1)}`;
-    expect(files().read("/tm/K1@v1").content).toContain(oldTag);
-    expect(files().read("/tm/K1@v2").content).toContain("Current replacement");
+    expect(files().read("trace://K1@v1").content).toContain(oldTag);
+    expect(files().read("trace://K1@v2").content).toContain("Current replacement");
     const next = createDreamerTrigger(m, path, 1, 2, "project");
     const result = await scenarios.run(m, path, input => {
       const request = { fixture: "stale version authority" }; input.reportRequest(request);
       const write = input.tools.find(t => t.name === "memory")!;
-      expect(memoryFiles(m, input.reader!).read("/tm/K1@v1").content).toContain(oldTag);
+      expect(memoryFiles(m, input.reader!).read("trace://K1@v1").content).toContain(oldTag);
       const rejected = dreamerWrite(write, { operations: [{ op: "update", id: oldTag, text: "Wrong replacement", category: "understanding", scope: "project",
         supports: ["F1"], reason: "Wrong base", topics: [] }], skipped: [] });
       expect(rejected).toContain("base is not the latest effective applicable revision; current: K1@v2");
@@ -119,7 +119,7 @@ test("92 exact historical versions retain complete tags without granting stale u
       return { outcome: "success", output: "stale base checked", request };
     });
     if (result.outcome !== "success") throw Error(JSON.stringify(result));
-    expect(files().read("/tm/K1@v2").content).toContain("Current replacement");
-    expect(() => files().read("/tm/K1@v1..v2")).toThrow();
+    expect(files().read("trace://K1@v2").content).toContain("Current replacement");
+    expect(() => files().read("trace://K1@v1..v2")).toThrow();
   } finally { m.close(); }
 });

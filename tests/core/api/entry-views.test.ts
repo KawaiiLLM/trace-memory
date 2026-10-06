@@ -25,22 +25,22 @@ function fixture() {
   return { m, first, second, session, note };
 }
 
-test("/tm grammar keeps whole entries, role filters and exact knowledge versions only", () => {
+test("trace:// grammar keeps whole entries, role filters and exact knowledge versions only", () => {
   const { m, session, first } = fixture();
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: first.id });
-  expect(memoryPath("/tm/raw/S1/T1#E2@assistant")).toBe("/tm/raw/S1/T1#E2@assistant");
-  for (const old of ["/tm/raw/S1/T1#E1..E3", "/tm/raw/S1/T1#E1,E2", "/tm/raw/S1/T1#E1@thinking",
-    "/tm/raw/S1/T1#E1@call", "/tm/raw/T1#E1", "/tm/F1-F3", "/tm/F1..", "/tm/K1..", "/tm/K1@123"])
+  expect(memoryPath("trace://raw/S1/T1#E2@assistant")).toBe("trace://raw/S1/T1#E2@assistant");
+  for (const old of ["trace://raw/S1/T1#E1..E3", "trace://raw/S1/T1#E1,E2", "trace://raw/S1/T1#E1@thinking",
+    "trace://raw/S1/T1#E1@call", "trace://raw/T1#E1", "trace://F1-F3", "trace://F1..", "trace://K1..", "trace://K1@123"])
     expect(() => files.read(old)).toThrow();
 });
 
 test("qualified Turn and entry addresses check their real session owner", () => {
   const { m, first, session } = fixture();
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: first.id });
-  expect(files.read(`/tm/raw/S${session.id}/T${first.id}#E1`).content).toContain("question");
-  expect(files.read(`/tm/raw/S${session.id}/T${first.id}`).content).toContain(`T${first.id}#E1`);
-  expect(() => files.read(`/tm/raw/S${session.id + 1}/T${first.id}`)).toThrow("does not exist");
-  expect(() => files.read(`/tm/raw/S${session.id + 1}/T${first.id}#E1`)).toThrow("no such path");
+  expect(files.read(`trace://raw/S${session.id}/T${first.id}#E1`).content).toContain("question");
+  expect(files.read(`trace://raw/S${session.id}/T${first.id}`).content).toContain(`T${first.id}#E1`);
+  expect(() => files.read(`trace://raw/S${session.id + 1}/T${first.id}`)).toThrow("does not exist");
+  expect(() => files.read(`trace://raw/S${session.id + 1}/T${first.id}#E1`)).toThrow("no such path");
 });
 
 test("explicit whole-entry Raw shows stored thinking in block order while automatic entry views omit it", () => {
@@ -59,13 +59,13 @@ test("explicit whole-entry Raw shows stored thinking in block order while automa
         { type: "toolCall", id: "check", name: "bash", arguments: {} }] }) });
     m.selectEntries(sessionId, "main", [pure.id, mixed.id]);
     const files = memoryFiles(m, { sessionId, branch: "main", headTurnId: turnId });
-    const exact = files.read(`/tm/raw/S${sessionId}/T${turnId}#E1@assistant`).content;
+    const exact = files.read(`trace://raw/S${sessionId}/T${turnId}#E1@assistant`).content;
     expect(exact).toContain(secret);
     expect(exact).not.toContain("[thinking omitted]");
-    const whole = files.read(`/tm/raw/S${sessionId}/T${turnId}#E2`).content;
+    const whole = files.read(`trace://raw/S${sessionId}/T${turnId}#E2`).content;
     expect(whole.indexOf("Public answer")).toBeLessThan(whole.indexOf("MIDDLE_THINKING"));
     expect(whole.indexOf("MIDDLE_THINKING")).toBeLessThan(whole.indexOf("bash("));
-    const bounded = files.read(`/tm/raw/S${sessionId}/T${turnId}`).content;
+    const bounded = files.read(`trace://raw/S${sessionId}/T${turnId}`).content;
     expect(bounded).not.toContain(secret);
     expect(bounded).not.toContain("MIDDLE_THINKING");
     expect(renderEntry(pure, m.config.render).content).toContain("[thinking omitted]");
@@ -85,11 +85,11 @@ test("exact entry and exact knowledge retain more than 100 lines without Core pa
   const entry = m.store.appendSourceEntry({ sessionId: session.id, turnId: first.id, nativeId: "long-lines", nativeLineage: "main",
     role: "assistant", text: lines, raw: lines, calls: [] });
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: first.id });
-  expect(files.read(`/tm/raw/S${session.id}/T${first.id}#E${entry.entryOrdinal}`).content).toContain("LINE_124");
+  expect(files.read(`trace://raw/S${session.id}/T${first.id}#E${entry.entryOrdinal}`).content).toContain("LINE_124");
   expect(note.execute({ title: "Knowledge source", sources: factSources([{ address: `T${first.id}#E1`, text: "A source" }]) })).toContain("ok: F1");
   const write = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: first.id }).find(tool => tool.name === "memory")!;
   const created = JSON.parse(write.execute({ op: "create", text: lines, category: "reference", scope: "project", topics: [], supports: ["F1"], reason: "Test whole body" }));
-  expect(files.read(`/tm/K${created.committed[0].knowledgeId}`).content).toContain("LINE_124");
+  expect(files.read(`trace://K${created.committed[0].knowledgeId}`).content).toContain("LINE_124");
 });
 
 test("a long title-only listing obeys its item token budget", () => {
@@ -110,7 +110,7 @@ test("several omitted calls in one entry report each call but one whole-entry ex
     [source] as any, { entryTokens: 2000, toolInputTokens: 24, toolResultTokens: 100 });
   expect(rendered.receipts[0]).toContain("2 omitted calls");
   expect(rendered.receipts).toHaveLength(2);
-  expect(rendered.receipts[1]).toBe("/tm/raw/S1/T1#E1");
+  expect(rendered.receipts[1]).toBe("trace://raw/S1/T1#E1");
 });
 
 test("model tools have no trace and an exact entry retains its source content", () => {
@@ -118,7 +118,7 @@ test("model tools have no trace and an exact entry retains its source content", 
   expect(m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: first.id })
     .map(tool => tool.name)).not.toContain("trace");
   expect(memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: first.id })
-    .read(`/tm/raw/S${session.id}/T${first.id}#E2`).content).toContain("assistant: reply");
+    .read(`trace://raw/S${session.id}/T${first.id}#E2`).content).toContain("assistant: reply");
 });
 
 test("knowledge injection charges IDs only while explicit trace/search display support titles", () => {
@@ -134,7 +134,7 @@ test("knowledge injection charges IDs only while explicit trace/search display s
   expect(injected.text).not.toContain("A descriptive episode title");
   expect(injected.knowledgeTokens).toBe(tokens(injected.text.split("\n\n").slice(1).join("\n\n")));
   expect(tokens(injected.text)).toBeGreaterThan(injected.knowledgeTokens!);
-  expect(memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read(`/tm/K${id}`).content).toContain("F1 A descriptive episode title");
+  expect(memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read(`trace://K${id}`).content).toContain("F1 A descriptive episode title");
   expect(m.search("lasting rule", "knowledge", { sessionId: session.id, branch: "main", headTurnId: second.id,
     fields: ["text", "supports"] })).toContain("F1 A descriptive episode title");
 });
@@ -154,7 +154,7 @@ test("Turn local source selection follows authored path order, not allocated ent
   ]) })).toContain("ok: F1");
   const fact = m.store.getFact(1)!;
   expect(fact.segments).toEqual(["first on path", "early by allocation", "later"]);
-  const turn = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read(`/tm/facts/S${session.id}/T${first.id}`).content;
+  const turn = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read(`trace://facts/S${session.id}/T${first.id}`).content;
   expect(turn.indexOf("first on path")).toBeLessThan(turn.indexOf("early by allocation"));
   expect(turn).not.toContain("later");
 });
@@ -165,10 +165,10 @@ test("exact full entry preserves uncut pending Raw", () => {
   m.store.appendSourceEntry({ sessionId: session.id, turnId: first.id, nativeId: "long-raw", nativeLineage: "main",
     role: "assistant", text: long, raw: long, calls: [] });
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: first.id });
-  const full = files.read(`/tm/raw/S${session.id}/T${first.id}#E3`);
+  const full = files.read(`trace://raw/S${session.id}/T${first.id}#E3`);
   expect(full.unbounded).toBe(true);
   expect(full.content).toContain(long);
-  expect(files.read(`/tm/raw/S${session.id}/T${first.id}`).content).not.toContain(long);
+  expect(files.read(`trace://raw/S${session.id}/T${first.id}`).content).not.toContain(long);
 });
 
 test("a fact backlink groups citing history under visible current identity, including current archive", () => {
@@ -186,13 +186,13 @@ test("a fact backlink groups citing history under visible current identity, incl
     reason: "reconsidered", supports: ["F2"] }));
   expect(archive.committed).toHaveLength(1);
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id });
-  const text = [files.read("/tm/F1").content, files.read("/tm/F2").content].join("\n");
+  const text = [files.read("trace://F1").content, files.read("trace://F2").content].join("\n");
   expect(text).toContain(`K${id}@v2 — cited by v1; current v2 (archived)`);
   expect(m.search("finding", "facts", { sessionId: session.id, branch: "main", headTurnId: second.id, pageBudget: null })).toContain("First finding");
   const bodyHit = m.search("Original evidence", "facts", { sessionId: session.id, branch: "main", headTurnId: second.id });
   expect(bodyHit).toContain("First finding");
   expect(bodyHit).toContain("Original evidence");
-  expect(files.read(`/tm/K${id}@v1`).content).toContain("F1 First finding");
+  expect(files.read(`trace://K${id}@v1`).content).toContain("F1 First finding");
   expect(text).not.toContain(`K${id}#`);
 });
 
@@ -209,7 +209,7 @@ test("legacy block source renders every actually bound native entry, never its r
     facts: [{ turnId: first.id, category: "decision", text: "historic decision", createdAt: "now",
       source: [`T${first.id}#assistant`], entryIds: assistants }] });
   expect(saved.ok).toBe(true);
-  const text = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read("/tm/F1").content;
+  const text = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read("trace://F1").content;
   expect(text).toContain(`T${first.id}#E2`);
   expect(text).toContain(`T${first.id}#E${extra.entryOrdinal}`);
   expect(text).not.toContain(`#assistant`);
@@ -227,9 +227,9 @@ test("legacy display uses only actual bindings even when the source alias matche
   const changed = () => (m.store.db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
   const before = changed();
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: first.id });
-  expect(files.read("/tm/F1").content).toContain(`T${first.id}#E${original.entryOrdinal}`);
-  expect(files.read("/tm/F1").content).not.toContain(`T${first.id}#E${extra.entryOrdinal}`);
-  expect(files.read(`/tm/facts/S${session.id}/T${first.id}`).content).toContain("bound historical");
+  expect(files.read("trace://F1").content).toContain(`T${first.id}#E${original.entryOrdinal}`);
+  expect(files.read("trace://F1").content).not.toContain(`T${first.id}#E${extra.entryOrdinal}`);
+  expect(files.read(`trace://facts/S${session.id}/T${first.id}`).content).toContain("bound historical");
   expect(changed()).toBe(before);
 });
 
@@ -242,15 +242,15 @@ test("missing legacy bindings are corruption; titled corruption remains rejected
   expect(saved.ok).toBe(true);
   m.store.db.prepare("DELETE FROM fact_sources WHERE fact_id=1").run();
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: first.id });
-  expect(() => files.read("/tm/F1")).toThrow("F1: missing legacy source bindings");
-  expect(() => files.read(`/tm/facts/S${session.id}/T${first.id}`)).toThrow("F1: missing legacy source bindings");
+  expect(() => files.read("trace://F1")).toThrow("F1: missing legacy source bindings");
+  expect(() => files.read(`trace://facts/S${session.id}/T${first.id}`)).toThrow("F1: missing legacy source bindings");
   m.store.db.prepare("UPDATE facts SET source=? WHERE id=1")
     .run(JSON.stringify([`S${session.id}/T${first.id}#assistant`]));
-  expect(() => files.read(`/tm/facts/S${session.id}/T${first.id}`)).toThrow("F1: missing legacy source bindings");
-  expect(() => files.read("/tm/F1")).toThrow("F1: missing legacy source bindings");
+  expect(() => files.read(`trace://facts/S${session.id}/T${first.id}`)).toThrow("F1: missing legacy source bindings");
+  expect(() => files.read("trace://F1")).toThrow("F1: missing legacy source bindings");
   expect(note.execute({ title: "new", sources: factSources([{ address: `T${first.id}#E1`, text: "segment" }]) })).toContain("ok: F2");
   m.store.db.prepare("UPDATE facts SET text = 'damaged' WHERE id=2").run();
-  expect(() => files.read("/tm/F2")).toThrow("source segments, roles and body disagree");
+  expect(() => files.read("trace://F2")).toThrow("source segments, roles and body disagree");
 });
 
 test("a partially lost legacy binding fails every read and is readable after restoration", () => {
@@ -267,19 +267,19 @@ test("a partially lost legacy binding fails every read and is readable after res
   m.store.db.prepare("UPDATE facts SET source=? WHERE id=1").run(JSON.stringify(source));
   expect(m.store.getFact(1)!.source).toEqual(source);
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id });
-  expect(files.read("/tm/F1").content).toContain("two contributions");
-  expect(files.read(`/tm/facts/S${session.id}/T${first.id}`).content).toContain("two contributions");
-  expect(files.read(`/tm/facts/S${session.id}/T${second.id}`).content).toContain("two contributions");
+  expect(files.read("trace://F1").content).toContain("two contributions");
+  expect(files.read(`trace://facts/S${session.id}/T${first.id}`).content).toContain("two contributions");
+  expect(files.read(`trace://facts/S${session.id}/T${second.id}`).content).toContain("two contributions");
   m.store.db.prepare("DELETE FROM fact_sources WHERE fact_id=1 AND entry_id=?").run(secondEntry.id);
   const unchanged = () => (m.store.db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
   const before = unchanged();
-  for (const target of ["/tm/F1", `/tm/facts/S${session.id}/T${first.id}`, `/tm/facts/S${session.id}/T${second.id}`])
+  for (const target of ["trace://F1", `trace://facts/S${session.id}/T${first.id}`, `trace://facts/S${session.id}/T${second.id}`])
     expect(() => files.read(target)).toThrow("F1: missing legacy source bindings");
   expect(unchanged()).toBe(before);
   m.store.db.prepare("INSERT INTO fact_sources(fact_id,entry_id) VALUES(1,?)").run(secondEntry.id);
-  expect(files.read("/tm/F1").content).toContain("two contributions");
-  expect(files.read(`/tm/facts/S${session.id}/T${first.id}`).content).toContain("two contributions");
-  expect(files.read(`/tm/facts/S${session.id}/T${second.id}`).content).toContain("two contributions");
+  expect(files.read("trace://F1").content).toContain("two contributions");
+  expect(files.read(`trace://facts/S${session.id}/T${first.id}`).content).toContain("two contributions");
+  expect(files.read(`trace://facts/S${session.id}/T${second.id}`).content).toContain("two contributions");
 });
 
 test("a paged search keeps the selected fact preview after later writes", () => {
@@ -300,8 +300,8 @@ test("118: facts lists pending and processed uncited entries only by path", () =
   const entries = m.store.sourcePath(session.id, "main", second.id).filter(entry => entry.turnId === second.id);
   expect(m.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" },
     entryIds: [entries[0]!.id], facts: [] }).ok).toBe(true);
-  const turn = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read(`/tm/facts/S${session.id}/T${second.id}`).content;
-  expect(turn).toContain(`Events without a fact: /tm/raw/S${session.id}/T${second.id}#E1 /tm/raw/S${session.id}/T${second.id}#E2`);
+  const turn = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read(`trace://facts/S${session.id}/T${second.id}`).content;
+  expect(turn).toContain(`Events without a fact: trace://raw/S${session.id}/T${second.id}#E1 trace://raw/S${session.id}/T${second.id}#E2`);
   expect(turn).not.toContain("follow up");
   expect(turn).not.toContain("answer");
   expect(m.store.entryNoted(entries[0]!.id)).toBe(true);
@@ -326,7 +326,7 @@ test("invisible global current successor hides an earlier visible project identi
       baseCommit: m.store.resolveVersionOrdinal(id, 1), text: "Private successor", category: "constraint", scope: "session",
       topics: [], reason: "restricted", supports: [2], createdAt: "later" }] });
   expect(changed.ok).toBe(true);
-  const text = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read("/tm/F1").content;
+  const text = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read("trace://F1").content;
   expect(text).not.toContain(`K${id}@v`);
   expect(text).not.toContain(`K${id}#`);
   expect(text).not.toContain("Private successor");
@@ -340,11 +340,11 @@ test("Turn includes the contributing slice from another Turn's owner; exact entr
   ]) });
   expect(result).toContain("ok: F1");
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id });
-  const turn = files.read(`/tm/facts/S${session.id}/T${second.id}`).content;
+  const turn = files.read(`trace://facts/S${session.id}/T${second.id}`).content;
   expect(turn).toContain("Conversation advances");
   expect(turn).toContain(`[T${second.id}#E2@assistant] Pi agent answers`);
   expect(turn).not.toContain("Question is raised");
-  expect(files.read(`/tm/raw/S${session.id}/T${second.id}#E1@user`).content).toContain("follow up");
-  expect(() => files.read(`/tm/raw/S${session.id}/T${second.id}#E1@assistant`)).toThrow(/role does not match/);
-  expect(files.read("/tm/F1").content).toContain("Conversation advances");
+  expect(files.read(`trace://raw/S${session.id}/T${second.id}#E1@user`).content).toContain("follow up");
+  expect(() => files.read(`trace://raw/S${session.id}/T${second.id}#E1@assistant`)).toThrow(/role does not match/);
+  expect(files.read("trace://F1").content).toContain("Conversation advances");
 });

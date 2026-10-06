@@ -7,17 +7,17 @@
 The [fact-slice and entry-reading contract](unified-entry.md) is the current public reference. It supersedes the historical source, rendering and address forms recorded in the numbered ticket sections below.
 
 - Each new `note` call writes one fact with a single-line `title` and one nonempty top-level `sources` string. Each source segment starts on a line with `[T12#E3@user] ` (the role suffix is optional) and may continue across lines; text before the first marker is rejected. Core parses the markers, trims each segment's trailing whitespace, orders segments by the selected path, joins their bodies, derives source roles and assigns the earliest source Turn. Duplicate resolved entries are rejected. N's 1,000-token cap applies to the body; windows charge the full rendering.
-- Model reads use `/tm/<layer>/S<n>[/T<t>]`, with knowledge, compact, facts and raw layers. Facts show contributed segments and uncovered-entry paths; raw is the compressed overview, with raw-only `#E<k>` for one full entry and `@role` for filtering/checking. `/tm/S<n>` lists every Turn newest first, one line per Turn with its id, UTC start minute, source-entry count, nonstandard kind and earliest contributed fact title. Additional facts add `(+m)`; legacy facts use their heading, and titles are cut to 80 characters with `…`. Factless Turns outside the selected ancestry show `(other branch)`, even if already noted. On that ancestry, they show `(not yet noted)` while any selected entry awaits Noting, otherwise `(no fact)`. Exact facts retain visible knowledge backlinks. Knowledge views and search show support titles; injection does not. Public trace registration, event ranges, comma lists and old path fallback are removed; internal source parsing remains.
+- Model reads use `trace://<layer>/S<n>[/T<t>]`, with knowledge, compact, facts and raw layers. Facts show contributed segments and uncovered-entry paths; raw is the compressed overview, with raw-only `#E<k>` for one full entry and `@role` for filtering/checking. `trace://S<n>` lists every Turn newest first, one line per Turn with its id, UTC start minute, source-entry count, nonstandard kind and earliest contributed fact title. Additional facts add `(+m)`; legacy facts use their heading, and titles are cut to 80 characters with `…`. Factless Turns outside the selected ancestry show `(other branch)`, even if already noted. On that ancestry, they show `(not yet noted)` while any selected entry awaits Noting, otherwise `(no fact)`. Exact facts retain visible knowledge backlinks. Knowledge views and search show support titles; injection does not. Public trace registration, event ranges, comma lists and old path fallback are removed; internal source parsing remains.
 - Public `@` selectors are only role filters. Block selectors, E-list shorthand, fact intervals, negation walks, `K..`, `trace.layer` and `trace.tool` are removed. Knowledge versions use tags or `@v` ordinals, not global commit numbers. Search retains its `layer` parameter.
 - Legacy stored bodies, sources and metadata remain unchanged. Fact-body reads normalize sources to whole-entry addresses; missing bindings or inconsistent stored segments fail explicitly. Turn listings do not validate legacy bodies or bindings, so corruption cannot prevent navigation to the offending Turn. New facts still reject thinking-only evidence. Ordinary Turn views omit thinking; explicit full or entry Raw reads retain it.
 
 Turn listings select sources and fact contributions in bulk, without rendering each Turn's facts view or hydrating Raw bodies. Counts and titles use the same contribution selection as facts reads: the reader's own branch/head for its session, otherwise that session's latest selected path. A Turn outside the preferred ancestry uses a containing source path with the highest entry high-water mark, then highest path id. An empty selected source path stays empty; orphan Turns use their stored entries without a branch binding. Fact titles reflect contributions in the displayed Turn, including facts spanning several Turns, rather than requiring the whole fact to apply there.
 
-`/tm` is a navigation index, not a fact-body listing. After the guide, a bound reader sees its session, own branch/head and last 10 branch Turn ids; unbound readers omit that block. Knowledge directories carry visible-current and all-scope/history counts. Sessions with Turns are listed by newest activity, with host, project, Turn count and latest Turn's UTC start time; undeclared project names equal to the host identity display `no project name`. There are no per-fact `/tm/F` lines, but exact fact reads remain available. Recursive Grep follows the knowledge directories and session Turn views, finding facts through their facts views without separate `/tm/F` leaves.
+`trace://` is a navigation index, not a fact-body listing. After the guide, a bound reader sees its session, own branch/head and last 10 branch Turn ids; unbound readers omit that block. Knowledge directories carry visible-current and all-scope/history counts. Sessions with Turns are listed by newest activity, with host, project, Turn count and latest Turn's UTC start time; undeclared project names equal to the host identity display `no project name`. There are no per-fact `trace://F` lines, but exact fact reads remain available. Recursive Grep follows the knowledge directories and session Turn views, finding facts through their facts views without separate `trace://F` leaves.
 
-The guide names Pi's `read` and `grep`, but only `Read` on Claude Code main sessions and fresh N/D workers. CC's `/tm` Grep/Glob hooks remain available for configurations exposing those tools; only the guide stops naming Grep.
+The guide names Pi's `read` and `grep`, but only `Read` on Claude Code main sessions and fresh N/D workers. CC's `trace://` Grep/Glob hooks remain available for configurations exposing those tools; only the guide stops naming Grep.
 
-Ordinary reads use host-native limits; offset/limit continuations use the original `/tm` path and render again without exposing backing paths or adding model-visible text. Session knowledge, compaction views and exact entries are whole on main sessions and Pi children; CC fresh workers retain SDK Read limits. One shared guide (at most 200 Core-estimated tokens) is emitted once per injection/material, never once per knowledge block. It is fixed framing outside the Knowledge, facts, Raw and shared selection windows; its actual bytes still count toward delivered text and model capacity. Read records no delivery or state. Search pagination is unchanged.
+Ordinary reads use host-native limits; offset/limit continuations use the original `trace://` path and render again without exposing backing paths or adding model-visible text. Session knowledge, compaction views and exact entries are whole on main sessions and Pi children; CC fresh workers retain SDK Read limits. One shared guide (at most 200 Core-estimated tokens) is emitted once per injection/material, never once per knowledge block. It is fixed framing outside the Knowledge, facts, Raw and shared selection windows; its actual bytes still count toward delivered text and model capacity. Read records no delivery or state. Search pagination is unchanged.
 
 ## Noter publication (92/04)
 
@@ -242,7 +242,7 @@ fails or is cancelled; the trailing problem is recorded without undoing business
 writes (user ruling 2026-09-07).
 
 `runAgent` receives `NotingAgentInput` (material and control, above) with the four `tools` definitions:
-`trace`, `search`, `note`, `memory` in the retired ticket-02 protocol. Today the public tools are `search`, `note` and `memory`; `/tm` reads use host-native tools. Each historical definition had a name, description, JSON-schema parameters, and synchronous `execute(input): string`. Hosts execute calls and
+`trace`, `search`, `note`, `memory` in the retired ticket-02 protocol. Today the public tools are `search`, `note` and `memory`; `trace://` reads use host-native tools. Each historical definition had a name, description, JSON-schema parameters, and synchronous `execute(input): string`. Hosts execute calls and
 continue the provider conversation until it stops. `reportRequest(request)`
 reports each exact provider request before tool execution; the returned `request`
 is the last request sent. A result carrying no request — `null` or absent — leaves the last reported
@@ -458,7 +458,7 @@ address when it needs it. Every visible knowledge revision current at the start 
 such a read is judged against a frozen base.
 The budgets themselves, and what each one charges, are in "Material budgets (20b)" below.
 Historically, this ticket emitted expansion addresses for future trace support and
-implemented only `T<n>` and `F<n>` trace targets. Current model reads use `/tm`.
+implemented only `T<n>` and `F<n>` trace targets. Current model reads use `trace://`.
 
 
 ## Shared material and block layout (20a)
@@ -553,7 +553,7 @@ addresses. A fact citing several Turns appears once under its owning Turn, not o
 The renderer reads Turn timestamps from a metadata projection rather than loading conversation
 bodies. All group headings and separators are charged to the same historical/current material
 budgets as their facts; the Consolidation trigger uses that same grouped current-fact view. Individual
-fact reads through `/tm/F<n>` and search results retain their rendering; already-persisted injections are not
+fact reads through `trace://F<n>` and search results retain their rendering; already-persisted injections are not
 rewritten merely to change their layout.
 
 ## Material budgets (20b)
@@ -891,7 +891,7 @@ pending material — is deleted (73): a compaction allocates once and succeeds, 
 user in the foreground instead when it truncated unprocessed material.
 
 The views it emits are `renderEntry` under the configured profile, the same bytes Noter input,
-the token counters and the internal renderer behind `/tm` use, and no view or summary
+the token counters and the internal renderer behind `trace://` use, and no view or summary
 becomes a source entry, a fact or a processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
 path. Sibling queues are never combined into an automatic Raw view.
 
@@ -922,7 +922,7 @@ on continuations. Search selects material as follows:
 An unbound omitted scope discovers all owners. Explicit project/session scope requires
 that context; a missing context is an error, never an inferred project or session.
 Only `category` implies `layer: "knowledge"` and rejects another explicit layer.
-Scope works across all search layers and does not imply a layer. Exact `/tm/F<n>` and raw-entry reads remain
+Scope works across all search layers and does not imply a layer. Exact `trace://F<n>` and raw-entry reads remain
 independent of search selection; selection grants no source or write authority.
 
 `versions` defaults to `current`: the one statelessly resolved current revision, filtered by reader scope and path visibility inside the selected owner scope. `history` also admits applicable superseded and archived revisions; `all` also admits other branches' revisions inside that same scope, including their history and archives. Inapplicable revisions remain unavailable as write bases; reads do not bypass writer validation. Only a revision's direct supports constrain applicability; parent and merge/split links are provenance. Without a path, current uses the globally resolved revision and history/all include the graph history. Versions are candidates inside a K,
@@ -948,24 +948,24 @@ stored line breaks in text and selected metadata render as ` ⏎ `, including wh
 `status`, `reason`, and `links` appear only when requested; `reason` is
 suppressed for current-only search. Raw hits retain the configured entry profile.
 Search never grants a knowledge write handle and emits no write handle in its
-receipts; read the complete `/tm/K<id>` body for a tagged mutation base.
+receipts; read the complete `trace://K<id>` body for a tagged mutation base.
 
 Raw matching includes tool names, inputs, and results; `%` and `_` are escaped.
 Results order facts by id, then knowledge by K id; Raw orders turns by id. Every
 search page states effective material scope, version candidates, one representative
-per K, the explicit `/tm/K<id>.history` route, selected and omitted preview fields, and
+per K, the explicit `trace://K<id>.history` route, selected and omitted preview fields, and
 that no hit does not mean absent.
 
 Search pages default to 2,000 estimated tokens, including receipts.
 Search `maxTokens` is a positive safe integer capped at 8,000; `cap`
-separately defaults to 100 output lines. `/tm` reads use host-native limits, not trace page budgets. Whole hits are preferred. An oversized
+separately defaults to 100 output lines. `trace://` reads use host-native limits, not trace page budgets. Whole hits are preferred. An oversized
 transport hit is split at Unicode code-point boundaries and carried by the cursor,
 not semantically truncated. A `Hit continues on next page` receipt means concatenate
 the next page's content without a newline; otherwise join page contents with a
 newline. Receipts are not hit content, and a fragment need not contain a complete
 hit.
 
-Continue search with `search({query: "", cursor: "…"})`; continue a paged `/tm` Read with its original path and host-native offset. The search cursor freezes owner selection, exact representatives, statuses and
+Continue search with `search({query: "", cursor: "…"})`; continue a paged `trace://` Read with its original path and host-native offset. The search cursor freezes owner selection, exact representatives, statuses and
 every effective filter, field, content budget and line cap. Omit them or repeat equivalent
 effective values; genuinely changed values reject without consuming the cursor.
 Owner isolation and the 16-continuation cache remain unchanged. No
@@ -973,9 +973,9 @@ transaction or reserved connection is held between pages.
 
 The following trace-only address and option behavior is historical, not a public tool contract:
 session and project addresses, comma lists, fact intervals and trace `pageBudget`/`tool`/`full`/`cursor` options.
-Models read exact facts and versions via `/tm/F<id>` and `/tm/K<id>`; sessions and entries use `/tm/<layer>/S<n>[/T<t>]`.
+Models read exact facts and versions via `trace://F<id>` and `trace://K<id>`; sessions and entries use `trace://<layer>/S<n>[/T<t>]`.
 
-For public reads, bare `/tm/K1` selects current, `/tm/K1.history` shows history and `/tm/K1@v<n>` selects an exact ordinal. Search collections grant no complete-read handles; a tagged mutation base requires the complete exact body. Suppressed alternatives and historical commit-reference lines grant no write authority. Search listing `cap` counts output lines, not facts or tokens; its cursor is single-use, bound to the calling facade and session/project, and preserves remaining lines.
+For public reads, bare `trace://K1` selects current, `trace://K1.history` shows history and `trace://K1@v<n>` selects an exact ordinal. Search collections grant no complete-read handles; a tagged mutation base requires the complete exact body. Suppressed alternatives and historical commit-reference lines grant no write authority. Search listing `cap` counts output lines, not facts or tokens; its cursor is single-use, bound to the calling facade and session/project, and preserves remaining lines.
 
 `declareProject(sessionId, name, source, path)` declares attribution through an explicit user
 command and the host's currently selected path. Pi does not discover marker files. An ownership

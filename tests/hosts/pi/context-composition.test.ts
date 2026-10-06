@@ -468,11 +468,11 @@ test("initial and on/project supplement carriers share assembly measurement; ret
     // History is not a tagged write base; reading creates no authority ledger.
     expect(edit().results[0]).toContain("supply an exact K#tag");
     const read = async (path: string) => (await h.tools.get("read").execute("read-memory", { path }, undefined, undefined, h.ctx)).content[0].text as string;
-    const turn = await read("/tm/raw/S1/T1");
+    const turn = await read("trace://raw/S1/T1");
     expect(turn).toContain("[T1#E1@user]");
     expect(turn).not.toMatch(/K2#[a-z]+/);
     expect(retained.read()).toEqual(before);
-    const history = await read("/tm/K2@v1");
+    const history = await read("trace://K2@v1");
     const tag = /K2#[a-z]+/.exec(history)?.[0];
     expect(tag).toBeDefined();
     expect(retained.read()).toEqual(before);

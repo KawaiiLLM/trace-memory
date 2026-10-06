@@ -15,7 +15,7 @@ import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-d
 const time = "2026-09-09T00:00:00Z";
 
 function fullRead(sessionId: number, headTurnId: number, address: string) {
-  return memoryFiles(memory, { sessionId, branch: "main", headTurnId }).read(`/tm/${address}`).content;
+  return memoryFiles(memory, { sessionId, branch: "main", headTurnId }).read(`trace://${address}`).content;
 }
 let dir: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios;
 beforeEach(() => {
@@ -199,7 +199,7 @@ test("22c: continuation is complete and stable, and a commit between pages moves
       const changed = await otherScenarios.run(other, corpus.path, input => {
         const request = { fixture: "between paged reads" }; input.reportRequest(request);
         const base = `K${last.knowledgeId}#${other.store.versionTag(last.knowledgeId, last.commit)}`;
-        expect(memoryFiles(other, corpus.path).read(`/tm/${base}`).content).toContain(base);
+        expect(memoryFiles(other, corpus.path).read(`trace://${base}`).content).toContain(base);
         dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [
           { op: "update", id: base, text: "SEARCHNEEDLE later conclusion",
             category: "understanding", scope: "session", supports: corpus.supports.map(id => `F${id}`), reason: "between pages", topics: [] },

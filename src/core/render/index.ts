@@ -414,7 +414,7 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
     }
   }
   const receipts = omittedCalls ? [`T${turn.id}: ${omittedCalls} omitted calls (including partial calls)`,
-    ...[...omitted].map(address => `/tm/raw/S${turn.sessionId}/${address}`)] : [];
+    ...[...omitted].map(address => `trace://raw/S${turn.sessionId}/${address}`)] : [];
   return { content: lines.join("\n"), receipts };
 }
 
@@ -777,7 +777,7 @@ export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLE
 export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision[]): string[] =>
   KNOWLEDGE_CATEGORIES.flatMap(category => {
     const members = omitted.filter(value => knowledgeCategoryGroup(value.revision.category) === category);
-    return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map(value => `/tm/K${value.knowledge.id}`))}`] : [];
+    return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map(value => `trace://K${value.knowledge.id}`))}`] : [];
   });
 
 interface RenderedKnowledgeItem { category: KnowledgeCategory; text: string; id: number; commit: number; size: number }
@@ -901,7 +901,7 @@ export function budgetFacts(facts: Fact[], line: (fact: Fact) => string, remaini
   const dropped = facts.length - selected.length;
   // 29a: `factIds` is read after the trim loop above, so it is what this block really carries.
   return { recent, factIds: selected.map((f) => f.id),
-    receipts: dropped ? [`omitted ${dropped} older facts; expand: ${expandList(facts.slice(selected.length).map((f) => `/tm/F${f.id}`))}`] : [] };
+    receipts: dropped ? [`omitted ${dropped} older facts; expand: ${expandList(facts.slice(selected.length).map((f) => `trace://F${f.id}`))}`] : [] };
 }
 
 // Tags delimit blocks for the model; the lines inside are trace lines byte for byte, never escaped.

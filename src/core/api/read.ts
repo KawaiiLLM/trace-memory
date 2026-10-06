@@ -26,7 +26,7 @@ export const SEARCH_DEFAULT_FIELDS: readonly ReadField[] = ["text"];
 export const SEARCH_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = ["text", "status"];
 export const SEARCH_PREVIEW_TOKENS = 80;
 export const MAX_PUBLIC_READ_TOKENS = 8000;
-export interface ListingOptions { /** Internal /tm projection: contributed segments plus uncovered entry paths, never Raw bodies. */ fileFacts?: boolean; itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; rawTurn?: boolean; factBacklinks?: ReadonlyMap<number, readonly string[]>; /** Internal frozen metadata for batched exact F reads. */ factReadSnapshot?: { ids: ReadonlySet<number>; relations: ReadonlyMap<number, FactRelation[]> }; profile?: EntryProfile; /** Internal presentation seam; never accepted from model input. */ modelFacing?: boolean; /** Internal host names for generated call hints, not evidence. */ toolNames?: ToolNames }
+export interface ListingOptions { /** Internal trace:// projection: contributed segments plus uncovered entry paths, never Raw bodies. */ fileFacts?: boolean; itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; rawTurn?: boolean; factBacklinks?: ReadonlyMap<number, readonly string[]>; /** Internal frozen metadata for batched exact F reads. */ factReadSnapshot?: { ids: ReadonlySet<number>; relations: ReadonlyMap<number, FactRelation[]> }; profile?: EntryProfile; /** Internal presentation seam; never accepted from model input. */ modelFacing?: boolean; /** Internal host names for generated call hints, not evidence. */ toolNames?: ToolNames }
 /** Validate aliases and filters before rendering or touching cursor state. Null is only a
  * content-ceiling disable; pageBudget=null is reserved for internal assembled material reads. */
 export function validateBudgets(options: ListingOptions): void {
@@ -793,7 +793,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         }
       }
       const rawReceipt = (kept: number) => candidates.length - kept
-        ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window] ${expandList([...new Set(candidates.slice(0, candidates.length - kept).map(entry => `/tm/raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
+        ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window] ${expandList([...new Set(candidates.slice(0, candidates.length - kept).map(entry => `trace://raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
       // Exactly what the Raw window adds to the output: the `<episodic>` tag and title only when it
       // has entries, each kept entry's own view receipts, and its omission receipt.
       const rawWindowCost = (kept: number, receipt: string[]) => {
@@ -824,7 +824,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const factCandidates = applicable.filter(f => !visible.factIds.has(f.id));
       const coveredFactIds = store.factsCoveredByRaw(factCandidates, coverage);
       const eligibleFacts = factCandidates.filter(f => !coveredFactIds.has(f.id)); // already newest-first
-      const omission = (rest: Fact[]) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map(f => `/tm/F${f.id}`))}`] : [];
+      const omission = (rest: Fact[]) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map(f => `trace://F${f.id}`))}`] : [];
       // Exactly what the facts window adds: its title only when it has facts, the `<episodic>` tag
       // only when the Raw window did not already open it, and its omission receipt.
       const factsWindowCost = (kept: number, receipt: string[]) => (kept
@@ -883,7 +883,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const pending = store.pendingEntries(sessionId, branch, headTurnId);
       const raw: ReturnType<typeof renderEntry>[] = [];
       let omitted = pending.length, used = charge([title]);
-      const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget] ${expandList([...new Set(pending.slice(0, omitted).map(entry => `/tm/raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
+      const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget] ${expandList([...new Set(pending.slice(0, omitted).map(entry => `trace://raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
       // A whole suffix is monotone: after the first entry that cannot fit, no earlier
       // entry can join it. Do not render the history that will only be receipted.
       for (let i = pending.length - 1; i >= 0; i--) {

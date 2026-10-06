@@ -14,8 +14,8 @@ export const CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segmen
 export const ccKnowledgeHeader = (binding: CcVisibleBinding): string => binding.coreSession === null
   ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
 
-const address = (item: TransportItem, sessionId: number | null): string => item.kind === "knowledge" || item.kind === "state" ? `/tm/${item.address}`
-  : item.kind === "fact" ? `/tm/F${item.factId}` : item.kind === "raw" ? `/tm/raw/S${sessionId}/${item.address}` : "";
+const address = (item: TransportItem, sessionId: number | null): string => item.kind === "knowledge" || item.kind === "state" ? `trace://${item.address}`
+  : item.kind === "fact" ? `trace://F${item.factId}` : item.kind === "raw" ? `trace://raw/S${sessionId}/${item.address}` : "";
 
 /** Transport selection only: core has already selected and rendered whole items. Pack their
  * unchanged texts under the native per-hook limit; never identify members from arbitrary prose.
@@ -92,7 +92,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     if (tryPlace(item)) continue;
     const count = item.text.match(/omitted (\d+)/)?.[1];
     const expansion = item.text.split("expand: ")[1];
-    const addresses = expansion?.match(/\/tm\/[^\s,]+/g) ?? [];
+    const addresses = expansion?.match(/trace:\/\/[^\s,]+/g) ?? [];
     const compact: TransportItem = { kind: "receipt", knowledge: item.knowledge,
       text: `omitted ${count ?? "1"} ${count ? "items" : "receipt"}; expand: ${expandList(addresses)}` };
     if (!addresses.length || !tryPlace(compact)) throw new Error("CC core omission receipt has no usable expansion address");

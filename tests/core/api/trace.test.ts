@@ -9,7 +9,7 @@ let memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerSce
 let sessionId: number, headTurnId: number, triggerEntryId: number;
 const time = "2026-09-07T00:00:00Z";
 const reader = () => ({ sessionId, branch: "main", headTurnId });
-const read = (address: string) => memoryFiles(memory, reader()).read(`/tm/${address}`).content;
+const read = (address: string) => memoryFiles(memory, reader()).read(`trace://${address}`).content;
 type Operation = Parameters<ReturnType<typeof sourceSeededMemory>["store"]["commitConsolidationRun"]>[0]["operations"][number];
 async function consolidation(...operations: Operation[]) {
   if (operations.every(op => op.op === "create")) {
@@ -29,7 +29,7 @@ async function consolidation(...operations: Operation[]) {
     const exact = (id: number, commit: number) => {
       const address = `K${id}#${memory.store.versionTag(id, commit)}`;
       addressed.add(`K${id}@v${memory.store.versionOrdinal(id, commit)}`);
-      expect(memoryFiles(memory, input.reader!).read(`/tm/${address}`).content).toContain(address);
+      expect(memoryFiles(memory, input.reader!).read(`trace://${address}`).content).toContain(address);
       return address;
     };
     const converted = operations.map(operation => {

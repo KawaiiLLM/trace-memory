@@ -27,7 +27,7 @@ test("92 CC envelope digest binds its Knowledge accounting and body", () => {
 test("92 each final CC slice charges its K framing and notices, not facts, Raw or other slices", () => {
   const state: TransportItem = { kind: "state", text: "K9@v1 is archived", address: "K9", receipt: { fromCommit: 9, toCommits: [10] } };
   const values: TransportItem[] = [state, knowledge(1, 6000), knowledge(2, 5000),
-    { kind: "receipt", text: "omitted 1 reference knowledge; expand: /tm/K3", knowledge: true },
+    { kind: "receipt", text: "omitted 1 reference knowledge; expand: trace://K3", knowledge: true },
     { kind: "fact", factId: 20, pending: false, text: "[F20] " + "f".repeat(700) },
     { kind: "raw", entryId: 30, address: "T3#E1", pending: false, text: "[T3#E1] user: " + "r".repeat(700) }];
   const slices = sliceCcInjection(cc, values).filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext);
@@ -38,7 +38,7 @@ test("92 each final CC slice charges its K framing and notices, not facts, Raw o
       ...(header.states.length ? [`${KNOWLEDGE_STATUS_TITLE}\n${state.text}`] : []),
       renderKnowledgeBlock(values.filter(value => value.kind === "knowledge" && header.commits.includes(value.commitId))
         .map(value => ({ category: "reference", text: value.text })), ccKnowledgeHeader(cc)),
-      ...(header.slice![0] === 0 ? ["Receipts:\nomitted 1 reference knowledge; expand: /tm/K3"] : []),
+      ...(header.slice![0] === 0 ? ["Receipts:\nomitted 1 reference knowledge; expand: trace://K3"] : []),
     ].filter(Boolean);
     expect(header.knowledgeTokens).toBe(tokens(parts.join("\n\n")));
   }

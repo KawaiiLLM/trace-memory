@@ -6,7 +6,7 @@ What the long-term suite in `tests/` keeps, where a ticket's own evidence goes, 
 
 A long-term test protects one of these:
 
-- **Tool contracts.** What `note`, `memory` and `search` accept, reject and return; what `/tm` paths render before host-native pagination.
+- **Tool contracts.** What `note`, `memory` and `search` accept, reject and return; what `trace://` paths render before host-native pagination.
 - **Host delivery.** What reaches the model on each host: injection, compaction, carriers and their accounting.
 - **Storage.** Migrations, atomic publication and rollback, idempotence, and preservation of existing rows.
 - **Ruled performance bounds.** Tickets 79, 80, 87, 88 and 104, and Claude Code's 100 ms heartbeat gate.

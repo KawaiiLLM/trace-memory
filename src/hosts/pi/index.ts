@@ -888,7 +888,7 @@ export default function (pi: ExtensionAPI) {
     for (const [name, description] of memoryTools) {
       const winner = tools.find(tool => tool.name === name);
       if (winner && winner.description !== description) context.ui.notify(`Trace Memory: ${winner.sourceInfo?.path ?? "another extension"} registered ${name} first; ` +
-        `Pi keeps the first registration, so ${name} cannot read Trace Memory under /tm/ in this session.`, "warning");
+        `Pi keeps the first registration, so ${name} cannot read Trace Memory under trace:// in this session.`, "warning");
     }
   });
   // 29d: the injected-once flag is gone, so a tree switch resets nothing here — the selected
@@ -1331,12 +1331,12 @@ export default function (pi: ExtensionAPI) {
     }
   });
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
-  // 101: `read` and `grep` of the same names serve /tm/ from Trace Memory, read-only, for this session's
-  // reader, and hand every other path to Pi's own tool unchanged. Edits and writes under /tm/ are refused.
+  // 101: `read` and `grep` of the same names serve trace:// from Trace Memory, read-only, for this session's
+  // reader, and hand every other path to Pi's own tool unchanged. Edits and writes under trace:// are refused.
   const files = () => memoryFiles(memory, state.sessionId ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head ?? null,
     projectId: state.projectId } : { projectId: state.projectId });
   // Same settings source Pi's own agent session builds its read tool from (`_buildRuntime` reads
-  // `settingsManager.getImageAutoResize()`), so a delegated `/tm`-external read resizes images exactly
+  // `settingsManager.getImageAutoResize()`), so a delegated read outside trace:// resizes images exactly
   // as Pi's own read would.
   const autoResizeImages = SettingsManager.create(process.cwd(), agentDir).getImageAutoResize();
   const builtinRead = memoryReadTool(process.cwd(), path => files().read(path), { autoResizeImages }), builtinGrep = createGrepToolDefinition(process.cwd());
@@ -1348,9 +1348,9 @@ export default function (pi: ExtensionAPI) {
       return builtinRead.execute(id, params, signal, update, context);
     } } as ToolDefinition);
   const grepMode = { type: "string", enum: ["files_with_matches", "content", "count"],
-    description: "Only under /tm/: files_with_matches (default) lists matching files; content shows path:line:text; count shows matches per file." };
+    description: "Only under trace://: files_with_matches (default) lists matching files; content shows path:line:text; count shows matches per file." };
   pi.registerTool({ ...builtinGrep,
-    // Pi's own schema plus the /tm-only output mode.
+    // Pi's own schema plus the trace://-only output mode.
     parameters: ((schema: { properties: Record<string, unknown> }) => ({ ...schema, properties: { ...schema.properties, output_mode: grepMode } }))(JSON.parse(JSON.stringify(builtinGrep.parameters))),
     async execute(id: string, raw: GrepToolInput & { output_mode?: MemoryGrepMode }, signal: AbortSignal | undefined, update: never, context: ExtensionContext) {
       const { output_mode: mode = "files_with_matches", ...params } = raw;

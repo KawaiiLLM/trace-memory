@@ -67,4 +67,4 @@ export function knowledgeReadSelection(store: Store, options: ListingOptions, na
   return { input, graph, path, byCommit, matches, representatives, status };
 }
 
-export const KNOWLEDGE_REPRESENTATIVE_RECEIPT = "One representative per K. /tm/K<id>.history";
+export const KNOWLEDGE_REPRESENTATIVE_RECEIPT = "One representative per K. trace://K<id>.history";

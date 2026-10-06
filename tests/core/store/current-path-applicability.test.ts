@@ -193,9 +193,9 @@ test("64b pilot: an admitted Dreamer child uses only its direct foreground suppo
       const parentTag = `K${parent.knowledgeId}#${store.versionTag(parent.knowledgeId, parent.commit)}`;
       const directTag = `K${parentForDirectA.knowledgeId}#${store.versionTag(parentForDirectA.knowledgeId, parentForDirectA.commit)}`;
       const triggerTag = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
-      expect(files.read(`/tm/${parentTag}`).content).toContain("parent claim");
-      expect(files.read(`/tm/${directTag}`).content).toContain("second parent claim");
-      expect(files.read(`/tm/${triggerTag}`).content).toContain("Fixture trigger 1");
+      expect(files.read(`trace://${parentTag}`).content).toContain("parent claim");
+      expect(files.read(`trace://${directTag}`).content).toContain("second parent claim");
+      expect(files.read(`trace://${triggerTag}`).content).toContain("Fixture trigger 1");
       const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: parentTag,
         text: "child claim", category: "constraint", scope: "global", supports: [`F${childFact.id}`], topics: [], reason: "Child revision." },
       { op: "update", id: directTag,
@@ -267,8 +267,8 @@ test("64b validity pilot: later applicable commit wins independent of restore or
     const files = memoryFiles(memory, bPath);
     const baseTag = `K${base.knowledgeId}#${store.versionTag(base.knowledgeId, base.commit)}`;
     const triggerTag = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
-    expect(files.read(`/tm/${baseTag}`).content).toContain("base body");
-    files.read(`/tm/${triggerTag}`);
+    expect(files.read(`trace://${baseTag}`).content).toContain("base body");
+    files.read(`trace://${triggerTag}`);
     const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: baseTag,
       text: "B replacement", category: "constraint", scope: "global", supports: [`F${bFact.id}`], topics: [], reason: "Replace rewound base." },
     { op: "archive", kind: "budget", id: triggerTag, supports: [`F${bFact.id}`], reason: "Retire trigger." }], skipped: [] }));
@@ -341,8 +341,8 @@ test("64b scope visibility: global current hides older visible revisions, reject
       const dreamed = await scenarios.run(memory, ownerPath, input => {
         const request = { fixture: `64b scope ${scope}` }; input.reportRequest(request);
         const write = input.tools.find(tool => tool.name === "memory")!;
-        memoryFiles(memory, ownerPath).read(`/tm/${tag(prior)}`);
-        memoryFiles(memory, ownerPath).read(`/tm/${tag(trigger)}`);
+        memoryFiles(memory, ownerPath).read(`trace://${tag(prior)}`);
+        memoryFiles(memory, ownerPath).read(`trace://${tag(trigger)}`);
         const receipt = JSON.parse(dreamerWrite(write, { operations: [
           { op: "update", id: tag(prior), text, category: "constraint", scope,
             supports: [`F${ownerFact.id}`], reason: "Change current visibility.", topics: [] },
@@ -378,8 +378,8 @@ test("64b scope visibility: global current hides older visible revisions, reject
     const staleRun = await scenarios.run(memory, peerPath, input => {
       const request = { fixture: "64b hidden stale base" }; input.reportRequest(request);
       const write = input.tools.find(tool => tool.name === "memory")!;
-      memoryFiles(memory, peerPath).read(`/tm/${tag(base)}`);
-      memoryFiles(memory, peerPath).read(`/tm/${tag(staleTrigger)}`);
+      memoryFiles(memory, peerPath).read(`trace://${tag(base)}`);
+      memoryFiles(memory, peerPath).read(`trace://${tag(staleTrigger)}`);
       expect(dreamerWrite(write, { operations: [{ op: "update", id: tag(base), text: "stale peer edit",
         category: "constraint", scope: "project", supports: [`F${peerFact.id}`], reason: "Must remain stale.", topics: [] }], skipped: [] }))
         .toContain("base is not the latest effective applicable revision");
@@ -400,7 +400,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
       const request = { fixture: "64b cross-scope merge" }; input.reportRequest(request);
       const write = input.tools.find(tool => tool.name === "memory")!;
       for (const item of [widened, privateParent, mergeTrigger])
-        memoryFiles(memory, ownerPath).read(`/tm/${tag(item)}`);
+        memoryFiles(memory, ownerPath).read(`trace://${tag(item)}`);
       const before = store.listKnowledgeRevisions().length;
       expect(dreamerWrite(write, { operations: [{ op: "merge", id: tag(widened),
         absorb: [tag(privateParent)], text: "illegal cross-scope merge",
@@ -425,7 +425,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
       const request = { fixture: "64b merge result scope" }; input.reportRequest(request);
       const write = input.tools.find(tool => tool.name === "memory")!;
       for (const item of [widened, projectParent, resultScopeTrigger])
-        memoryFiles(memory, ownerPath).read(`/tm/${tag(item)}`);
+        memoryFiles(memory, ownerPath).read(`trace://${tag(item)}`);
       expect(dreamerWrite(write, { operations: [{ op: "merge", id: tag(widened),
         absorb: [tag(projectParent)], text: "illegal result scope",
         category: "constraint", scope: "session", supports: [`F${ownerFact.id}`], reason: "Must be refused.", topics: [] }], skipped: [] }))

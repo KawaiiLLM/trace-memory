@@ -274,7 +274,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
     let updatedCommit = 0;
     const admitted = await runAdmittedStoreScenario(path, factId, 1, (input, trigger, memory, commit) => {
       const request = { fixture: "store stale-batch atomicity", trigger }; input.reportRequest(request);
-      const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
+      const read = (address: string) => memoryFiles(memory, input.reader).read(`trace://${address}`).content;
       const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
       const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: tag(knowledgeId, created.committed[0]!.commit),
         topics: [], reason: "Substantive correction of the recorded conclusion.", text: "The project uses pnpm exclusively.",
@@ -482,7 +482,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const admitted = await runAdmittedStoreScenario({ sessionId: peer.id, branch: "main", headTurnId: turn.id }, peerFact, 1,
       (input, trigger, memory) => {
         const request = { fixture: "moved editor lineage", trigger }; input.reportRequest(request);
-        const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
+        const read = (address: string) => memoryFiles(memory, input.reader).read(`trace://${address}`).content;
         const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
         read(tag(id, made.committed[0]!.commit));
         read(tag(trigger.knowledgeId, trigger.commit));
@@ -517,7 +517,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const admitted = await runAdmittedStoreScenario({ sessionId: s.id, branch: "main", headTurnId: t.id }, factId, 1,
       (input, trigger, memory) => {
         const request = { fixture: "scope ownership movement", trigger }; input.reportRequest(request);
-        const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
+        const read = (address: string) => memoryFiles(memory, input.reader).read(`trace://${address}`).content;
         const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
         read(tag(id, made.committed[0]!.commit));
         read(tag(trigger.knowledgeId, trigger.commit));
@@ -550,7 +550,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const bId = b.committed[0]!.knowledgeId;
     const admitted = await runAdmittedStoreScenario(path, factId, 1, (input, trigger, memory, commit) => {
       const request = { fixture: "store merge cardinality", trigger }; input.reportRequest(request);
-      const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
+      const read = (address: string) => memoryFiles(memory, input.reader).read(`trace://${address}`).content;
       const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
       dreamerWrite(write, { operations: [], skipped: [
         { knowledge: history(aId, a.committed[0]!.commit), because: "Hold unchanged while validating Store merge cardinality." },
@@ -595,7 +595,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     let olderUpdateCommit = 0, mergeCommit = 0;
     const admitted = await runAdmittedStoreScenario(path, factId, 1, (input, trigger, memory, commit) => {
       const request = { fixture: "store merge survivor and rollback", trigger }; input.reportRequest(request);
-      const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
+      const read = (address: string) => memoryFiles(memory, input.reader).read(`trace://${address}`).content;
       const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
       olderUpdateCommit = publishedCommit(JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: tag(older.knowledgeId, older.commit),
         text: "older revised", category: "reference", scope: "project", supports: [`F${factId}`], reason: "change category", topics: ["identity"] }],

@@ -19,7 +19,7 @@ function fixture(texts: string[], normalized = false) {
   const raw = () => carry().split("Pending raw:\n")[1]!.replace(/\n?<\/branch_carry>$/, "");
   return { memory, session, turn, entries, carry, raw };
 }
-const receipt = (n: number) => `[... ${n} earlier pending entries omitted from the carry budget] /tm/raw/S1/T1`;
+const receipt = (n: number) => `[... ${n} earlier pending entries omitted from the carry budget] trace://raw/S1/T1`;
 
 // 118 replaces host-specific trace hints with path-only receipts, charged inside the same cap.
 test("carry charges its path-only omission receipt identically on both hosts", () => {

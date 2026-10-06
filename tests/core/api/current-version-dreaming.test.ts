@@ -188,7 +188,7 @@ test.each(["absorbed", "survivor", "explicit"] as const)("64c merge shorthand co
       const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
         text: latest, category: "constraint", scope: "project", supports: [], topics: [], reason: "newer commit of older identity" }], skipped: [] }));
       older = { knowledgeId: updated.committed[0].knowledgeId, commit: f.store.resolveVersionOrdinal(updated.committed[0].knowledgeId, Number(updated.committed[0].version.split("@v")[1])) };
-      expect(memoryFiles(f.memory, task.reader!).read(`/tm/${updated.committed[0].version}`).content).toContain(latest.trim());
+      expect(memoryFiles(f.memory, task.reader!).read(`trace://${updated.committed[0].version}`).content).toContain(latest.trim());
     }
     const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
       absorb: [`K${newer.knowledgeId}#${f.store.versionTag(newer.knowledgeId, newer.commit)}`], ...(mode === "explicit" ? { text: explicit } : {}),

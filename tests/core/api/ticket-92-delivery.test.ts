@@ -71,7 +71,7 @@ test("92 a globally current but reader-invisible successor hides the identity an
   expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([]);
   const retained = { ...noVisibility(), knowledgeCommitIds: new Set([first.commit]), knowledgeTokens: offered.knowledgeTokens };
   const delta = f.memory.injection(f.target, retained);
-  expect(delta.text.match(/Memory is at \/tm:/g)).toHaveLength(1);
+  expect(delta.text.match(/Memory is read at trace:\/\/ addresses/g)).toHaveLength(1);
   expect(delta.text).toContain(`Inherited knowledge status (these commits are not current authority):\nK${first.knowledgeId} no longer applies`);
   expect(delta.knowledgeStates).toEqual([{ fromCommit: first.commit, toCommits: [first.commit] }]);
   expect(delta.text).not.toContain("Secret"); expect(delta.text).not.toContain("@v2");

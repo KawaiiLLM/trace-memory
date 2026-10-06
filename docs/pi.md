@@ -37,11 +37,11 @@ logs. See the [installation guide](../README.md#install) before loading the pack
 
 ## Memory reads (118)
 
-Models read `/tm` through Pi's native `read` and `grep`; public `trace` is removed, while the human `/trace` controls and private audit remain. The root is a navigation index: a bound reader's own branch/head and recent Turn ids, knowledge-directory counts, and sessions with Turns ordered by latest activity; it has no per-fact lines. `/tm/S<n>` lists all Turns newest first, one line per Turn with id, UTC minute, source-entry count, nonstandard kind and earliest contributed fact title (or legacy heading), cut to 80 characters with `…`. Additional facts add `(+m)`. Factless Turns outside the selected ancestry show `(other branch)`, even if already noted; on that ancestry, they show `(not yet noted)` while a selected entry is pending Noting, otherwise `(no fact)`.
+Models read `trace://` through Pi's native `read` and `grep`; public `trace` is removed, while the human `/trace` controls and private audit remain. The root is a navigation index: a bound reader's own branch/head and recent Turn ids, knowledge-directory counts, and sessions with Turns ordered by latest activity; it has no per-fact lines. `trace://S<n>` lists all Turns newest first, one line per Turn with id, UTC minute, source-entry count, nonstandard kind and earliest contributed fact title (or legacy heading), cut to 80 characters with `…`. Additional facts add `(+m)`. Factless Turns outside the selected ancestry show `(other branch)`, even if already noted; on that ancestry, they show `(not yet noted)` while a selected entry is pending Noting, otherwise `(no fact)`.
 
 Turn listings select counts and fact contributions in bulk using the same source selection as facts views, without rendering every facts view or loading Raw bodies. The reader's own session uses its bound branch/head, including a historical head; other sessions use their latest selected path. Turns outside the preferred ancestry fall back to a containing source path by highest entry high-water mark, then path id. Empty selected paths remain empty, while orphan Turns use stored entries without a branch binding. Legacy corruption does not block Turn navigation; reading the affected facts view still reports its integrity diagnostic.
 
-Content paths are `/tm/<layer>/S<n>[/T<t>]`; raw alone accepts entry and role suffixes. Ordinary reads use native 2,000-line/50KB paging, while session knowledge, compaction views and exact raw entries are whole. Offset/limit continuations use the original virtual path and render again; non-virtual main reads remain native, and N/D child reads are restricted to `/tm`. No child grep or glob is added.
+Content paths are `trace://<layer>/S<n>[/T<t>]`; raw alone accepts entry and role suffixes. Ordinary reads use native 2,000-line/50KB paging, while session knowledge, compaction views and exact raw entries are whole. Offset/limit continuations use the original virtual path and render again; non-virtual main reads remain native, and N/D child reads are restricted to `trace://`. No child grep or glob is added.
 
 The single Core guide is shared by injection, compaction and N/D materials, once per material. Its native tool names are `read`/`grep`; no extra adapter reading lesson is appended to tool descriptions. Fresh admission prices native Read metadata, and forks preserve captured definitions plus the final SDK capacity gate. These are implementation contracts; actual host/provider acceptance must be reported separately.
 
@@ -267,8 +267,8 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
 - Each completed entry owns a Turn. An assistant entry persists its tool-call
   occurrences immediately; a subsequent tool result is a separate source entry
   using the same stable Turn tool ordinal. Original messages, arguments and results
-  are retained. `/tm/raw/S<n>/T<t>#E<k>` reads one complete source entry, including original
-  tool arguments and results. `/tm/raw/S<n>/T<t>` assembles the Turn's selected entries
+  are retained. `trace://raw/S<n>/T<t>#E<k>` reads one complete source entry, including original
+  tool arguments and results. `trace://raw/S<n>/T<t>` assembles the Turn's selected entries
   under the configured compressed profile; ordinary paging follows Pi's native `read`.
 - The final main-turn checkpoint checks the active branch's N/D queues once (105).
   Entry reconciliation alone starts no run; the unchanged native leaf-id guard keeps streaming updates O(1).
@@ -368,7 +368,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   Successful compaction is then recorded as a `compaction` turn; it receives no facts.
   Pre-reply compaction returns project injection without allocating a session.
 - Main-agent registration and subagent requests share Core's `search`, `note` and `memory`
-  definitions; model reads use Pi's native `read` (and `grep` on the main session) over `/tm`.
+  definitions; model reads use Pi's native `read` (and `grep` on the main session) over `trace://`.
   Pi execution fields are non-enumerable, so provider serialization includes only shared metadata.
   Search remains `search({query, layer?, versions?, category?, scope?,
   fields?, itemBudget?, maxTokens?, cursor?, cap?})`.
@@ -384,18 +384,18 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   one representative per K, chosen before pagination. Literal admission is unchanged;
   lexical text/topic similarity chooses only among matching revisions of the same K.
   Ties prefer current, then newer commit; empty queries use that tie order without scoring.
-  K-ID ordering remains. `/tm/K<id>.history` reads the named identity's history;
-  `/tm` rejects the retired comma lists and `K..` forms.
+  K-ID ordering remains. `trace://K<id>.history` reads the named identity's history;
+  `trace://` rejects the retired comma lists and `K..` forms.
 
-  These search scope and representative rules do not widen exact `/tm` reads or grant
+  These search scope and representative rules do not widen exact `trace://` reads or grant
   mutation authority. Collections grant no handles; omitted alternative versions and
   history reference lines never prove a full-body read. Current search defaults to text-only one-line fact and knowledge
   previews; knowledge history/all defaults to text plus the existing computed status.
   Explicit fields, including text-only or none, remain authoritative. The item budget
   defaults to 80 tokens; embedded line breaks render as ` ⏎ ` and long bodies keep a
   head plus the inline character-truncation marker. Raw search
-  hits keep their entry profile. Search returns no knowledge write handle; use `/tm/K<id>`
-  for a complete tagged current body and `/tm/K<id>.history` for its history.
+  hits keep their entry profile. Search returns no knowledge write handle; use `trace://K<id>`
+  for a complete tagged current body and `trace://K<id>.history` for its history.
 
   Search defaults to 2,000 estimated tokens per response; `maxTokens` is capped at 8,000
   and `cap` separately counts output lines. Every search receipt names its effective filters,
@@ -403,7 +403,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   owner selection, statuses, filters, fields, content budgets and line cap; omitted or equivalent
   repeated values continue, while a changed value rejects without consuming the cursor.
   Oversized transport content continues in lossless Unicode-safe fragments, but a fragment
-  is not a complete hit. Continue search with an empty query and its cursor. `/tm` reads instead
+  is not a complete hit. Continue search with an empty query and its cursor. `trace://` reads instead
   use native offset/limit on the original virtual path. See [the core search contract](core.md)
   for budget rejection and joining rules.
   Manual `note({title, sources: "[T1#E1@user] Authored text", ...})` takes one top-level
@@ -507,7 +507,7 @@ call and does not synthesize a completion. The next main turn end checks
 normal queue thresholds. Repeating enable does not duplicate imported sources.
 
 Disabled sessions ingest nothing, inject nothing and start no new worker. Manual `note` and
-`memory` reject with `/trace on`; `/tm` reads, `search` and status remain available even before
+`memory` reject with `/trace on`; `trace://` reads, `search` and status remain available even before
 allocation. Compaction and tree hooks return no plugin override so Pi proceeds with native context
 handling. Stored Raw, facts, Knowledge, runs and scopes stay intact; other sessions still see shared
 Knowledge. Already-injected text remains in context.
@@ -753,9 +753,9 @@ Unavailable states return `available: false` with `reason` and `message`; a host
 this way too, never as native compaction (73: `compact` no longer refuses for capacity). Successful
 results are detached from later changes.
 
-## Memory files under /tm
+## Memory files under trace://
 
-The extension extends Pi's native `read` and `grep` for the read-only virtual `/tm` namespace. `read /tm` shows the navigation index described above; node views use `/tm/<layer>/S<n>[/T<t>]`, with knowledge, compact, facts and raw layers. Raw alone accepts entry and role suffixes. `/tm/knowledge/S<n>` gives a child the knowledge a fresh context there receives; `/tm/compact/S<n>` gives it continuation material. Grep lists matching files by default, supports content/count modes and searches full Raw entries, not duplicate overviews. Recursive Grep from `/tm` finds facts through session Turn facts views, without separate `/tm/F` leaves. Public `trace` is removed; private rendering and human `/trace` controls remain. Every other path goes to Pi's native tool unchanged. Writes under `/tm` are refused and reads record no delivery. Fresh N/D child reads are restricted to `/tm`; ordinary subagents with the extension can use these paths too. A session-start warning reports an earlier extension's conflicting `read` or `grep` registration.
+The extension extends Pi's native `read` and `grep` for the read-only virtual `trace://` namespace. `read trace://` shows the navigation index described above; node views use `trace://<layer>/S<n>[/T<t>]`, with knowledge, compact, facts and raw layers. Raw alone accepts entry and role suffixes. `trace://knowledge/S<n>` gives a child the knowledge a fresh context there receives; `trace://compact/S<n>` gives it continuation material. Grep lists matching files by default, supports content/count modes and searches full Raw entries, not duplicate overviews. Recursive Grep from `trace://` finds facts through session Turn facts views, without separate `trace://F` leaves. Public `trace` is removed; private rendering and human `/trace` controls remain. Every other path goes to Pi's native tool unchanged. Writes under `trace://` are refused and reads record no delivery. Fresh N/D child reads are restricted to `trace://`; ordinary subagents with the extension can use these paths too. A session-start warning reports an earlier extension's conflicting `read` or `grep` registration.
 
 ## Compaction and the post-compaction boundary
 
@@ -788,7 +788,7 @@ sources straddle the span's start. Omitted material starts no worker and changes
 The adapter passes the native ids that Pi will retain, so historical Raw is not duplicated. A custom
 replacement supplies every kept entry as the shared bounded `renderEntry` view and returns
 `firstKeptEntryId: ""`; the replacement, rather than old Pi messages, carries those views. The same
-entry labels, budgets and truncation markers are used by Noting and `/tm/raw` overviews. A carrier
+entry labels, budgets and truncation markers are used by Noting and `trace://raw` overviews. A carrier
 records only the entries, fact ids and Knowledge commits actually emitted. Native compaction writes
 no Trace Memory carrier.
 
@@ -1046,7 +1046,7 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    tokens produce no Noting. Continue with substantial conversation material
    until an eligible completion reaches the threshold; inspect the resulting run's
    entry audit and exact progress. The reply after it carries no receipt of that run (29d): read the
-   new facts with `read` on `/tm/F<id>` if you want to see them. Invalid model output may bounce; inspect the run
+   new facts with `read` on `trace://F<id>` if you want to see them. Invalid model output may bounce; inspect the run
    result.
 4. Run `/compact`. Expect immediate compaction with `<knowledge>` and `<episodic>`,
    pending compressed Raw views, recent facts, and no compaction model request. The
@@ -1055,11 +1055,11 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    pending views no longer fit: the compaction still succeeds with bounded entry
    views, but a second, `warning`-level notice reports the omitted pending entries
    and that they remain pending for Noting.
-5. Ask the agent to call `search` for `pnpm`, then `read` on the returned `/tm/F<id>`
-   and its source `/tm/raw/S<n>/T<t>#E<k>`. Expect the original conversation text and
+5. Ask the agent to call `search` for `pnpm`, then `read` on the returned `trace://F<id>`
+   and its source `trace://raw/S<n>/T<t>#E<k>`. Expect the original conversation text and
    source addresses. Search and Read calls are recorded as Raw tool calls.
 6. Save the actual prompt/reply transcript, `/trace` outputs, observed fact ids,
-   compaction content, and `/tm` Read result. Check `runs.request`, `mode`, `model`
+   compaction content, and `trace://` Read result. Check `runs.request`, `mode`, `model`
    and `response.usage` using the facade. Consolidation is retired; this manual
    exercise does not expect a new C run.
 
@@ -1824,7 +1824,7 @@ pass and its fixed end review — processes only its selected entries; later ent
 same Turn remain pending. A run that ends without calling both tools or with unresolved
 refusals publishes nothing and processes no entries. Address aliases are interpreted against the frozen
 entry set. A later matching source occurrence makes that address ineligible for
-the earlier writer, even if an explicit `/tm/raw` read can display it. Run records
+the earlier writer, even if an explicit `trace://raw` read can display it. Run records
 include `entryAudit`: native identities, owning Turns, frozen branch, view-budget
 version and values, and the exact omission markers. Entry processing, facts, run
 audit commit atomically. Rejected or failed work remains

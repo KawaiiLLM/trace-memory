@@ -46,15 +46,15 @@ test("47: path-bound relations require both endpoints while an exact Fact read r
   // Named node views prefer this session's selected branch under ruling 8.
   f.store.setCurrentPath(f.session.id, "root", f.turn.id, "test-lineage");
   const rootFiles = memoryFiles(f.memory, f.rootPath);
-  const collection = rootFiles.read(`/tm/facts/S${f.session.id}/T${f.turn.id}`).content;
+  const collection = rootFiles.read(`trace://facts/S${f.session.id}/T${f.turn.id}`).content;
   expect(collection).toContain(`[F${f.root.id}]`);
   expect(collection).not.toContain(`[F${f.sibling.id}]`);
   expect(collection).not.toContain(`inbound negate F${f.sibling.id}`);
-  const targetApplicable = rootFiles.read(`/tm/F${f.root.id}`).content;
+  const targetApplicable = rootFiles.read(`trace://F${f.root.id}`).content;
   expect(targetApplicable).toContain(`inbound negate F${f.sibling.id} strong`);
   expect(targetApplicable).toContain(`other endpoints not applicable on this path: F${f.sibling.id}`);
 
-  const targetInapplicable = rootFiles.read(`/tm/F${f.sibling.id}`).content;
+  const targetInapplicable = rootFiles.read(`trace://F${f.sibling.id}`).content;
   expect(targetInapplicable).toContain(`negate F${f.root.id} strong`);
   expect(targetInapplicable).toContain(`inbound negate F${f.third.id} weak`);
   expect(targetInapplicable).toContain(`other endpoints not applicable on this path: F${f.third.id}`);
@@ -62,14 +62,14 @@ test("47: path-bound relations require both endpoints while an exact Fact read r
 
   f.store.setCurrentPath(f.session.id, "sibling", f.turn.id, "test-lineage");
   const siblingFiles = memoryFiles(f.memory, f.siblingPath);
-  expect(siblingFiles.read(`/tm/facts/S${f.session.id}/T${f.turn.id}`).content).toContain(`inbound negate F${f.sibling.id} strong`);
-  const bothApplicable = siblingFiles.read(`/tm/F${f.sibling.id}`).content;
+  expect(siblingFiles.read(`trace://facts/S${f.session.id}/T${f.turn.id}`).content).toContain(`inbound negate F${f.sibling.id} strong`);
+  const bothApplicable = siblingFiles.read(`trace://F${f.sibling.id}`).content;
   expect(bothApplicable).not.toContain("other endpoints not applicable on this path");
 });
 
 test("47: exact Fact reads reflect current endpoint applicability", () => {
   const f = fixture();
-  const path = `/tm/F${f.root.id}`;
+  const path = `trace://F${f.root.id}`;
   const read = () => memoryFiles(f.memory, f.rootPath).read(path).content;
   expect(read()).not.toContain(`support F${f.fourth.id}`);
   f.store.db.prepare("INSERT INTO fact_relations(from_fact,to_fact,kind,strength) VALUES (?,?,?,?)")

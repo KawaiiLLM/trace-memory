@@ -1,7 +1,7 @@
 import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
 import { memoryPath, type MemoryFile } from "../../core/api/index.ts";
 
-/** Delegate ordinary reads to Pi, and render only lexical /tm paths from the bound reader. */
+/** Delegate ordinary reads to Pi, and render only `trace://` addresses from the bound reader. */
 export function memoryReadTool(cwd: string, read: (path: string) => MemoryFile, options: {
   autoResizeImages?: boolean; memoryOnly?: boolean;
 } = {}) {
@@ -10,7 +10,7 @@ export function memoryReadTool(cwd: string, read: (path: string) => MemoryFile, 
   const adapted: ReturnType<typeof createReadToolDefinition> = { ...native, async execute(id, input, signal, update, context) {
     const path = memoryPath(input.path);
     if (path === null) {
-      if (options.memoryOnly) throw new Error("Trace Memory child read is restricted to /tm");
+      if (options.memoryOnly) throw new Error("Trace Memory child read is restricted to trace://");
       return execute(id, input, signal, update, context);
     }
     signal?.throwIfAborted();

@@ -137,7 +137,7 @@ test("118: a failed knowledge delivery still completes a capacity-omitted custom
     expect(deliveries).toHaveBeenCalledTimes(1);
     expect(deliveries.mock.calls[0]![1][0]!.knowledgeCommitIds).toContain(created.commit);
     expect(h.notices.some(n => n.includes("injected delivery failure"))).toBe(true);
-    expect(result.compaction.summary).toContain("Memory is at /tm");
+    expect(result.compaction.summary).toContain("Memory is read at trace://");
     expect(result.compaction.summary).not.toContain("KNOWLEDGE_BEFORE_FAILED_DELIVERY");
     expect(result.compaction.summary).not.toContain("earlier entries omitted from the Raw window");
     expect(result.compaction.details.traceMemory.supplied).toMatchObject({ entries: [], factIds: [], knowledgeCommitIds: [] });

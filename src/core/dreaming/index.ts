@@ -129,7 +129,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
   const factText = (count: number) => ["Direct supporting facts:",
     ...renderFactGroups(facts.slice(0, count), fact => renderFact(fact, relations.get(fact.id) ?? []), times),
-    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count).map(fact => `/tm/F${fact.id}`).join(" ")}.`] : [])].join("\n");
+    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count).map(fact => `trace://F${fact.id}`).join(" ")}.`] : [])].join("\n");
   let count = facts.length;
   while (count && tokens(factText(count)) > 10_000) count--;
   const direct = factText(count);

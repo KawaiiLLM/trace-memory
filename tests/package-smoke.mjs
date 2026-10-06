@@ -96,7 +96,7 @@ try {
   try {
     assert.deepEqual(loaded.errors, [], "The installed extension must load without errors");
     assert.equal(loaded.extensions.length, 1);
-    // 118: native read/grep serve /tm; public trace is no longer registered.
+    // 118: native read/grep serve trace://; public trace is no longer registered.
     assert.deepEqual([...loaded.extensions[0].tools.keys()].sort(), ["grep", "memory", "note", "read", "search"]);
   } finally {
     for (const extension of loaded.extensions)
