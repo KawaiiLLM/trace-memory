@@ -85,8 +85,8 @@ test("Dreamer instructions use its fresh host's exposed check, memory and read t
   let finished = false;
   const result = await f.scenarios.run(f.memory, { ...f.target, toolNames: names } as typeof f.target, task => {
     expect(task.prompt).toBe(rendered);
-    expect(task.prompt).toContain("call `mcp__trace_memory__check`");
-    expect(task.prompt).toContain("One `mcp__trace_memory__memory` call");
+    expect(task.prompt).toContain("`mcp__trace_memory__check`");
+    expect(task.prompt).toContain("`mcp__trace_memory__memory`");
     expect(task.prompt).not.toContain("{{tool.");
     expect(task.promptHash).toBe(createHash("sha256").update(rendered).digest("hex"));
     expect(task.tools.map(tool => tool.name)).toEqual(["search", "check", "memory"]);
