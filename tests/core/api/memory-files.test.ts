@@ -446,7 +446,7 @@ test("only the exact trace:// prefix is a memory address; what follows it is spl
   expect(memoryGlob("S*", "trace://raw/")).toBe("trace://raw/S*");
   expect(memoryGlob("trace://K*", "/etc")).toBe("trace://K*");
   for (const [pattern, path] of [["/tm/S*", undefined], ["S*", "/tm"], ["*", "tm"], ["*", "/tmp"], ["*", "Trace://"], ["Trace://*", undefined],
-    ["trace:/*", undefined], ["*", undefined], ["", "trace://"]] as const)
+    ["trace:/*", undefined], ["*", undefined], ["", "trace://"], ["/tmp/*.ts", "trace://"], ["/tm/*", "trace://"], ["/S*", "trace://raw"]] as const)
     expect(memoryGlob(pattern, path)).toBeNull();
 });
 

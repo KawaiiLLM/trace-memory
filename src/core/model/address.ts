@@ -163,5 +163,7 @@ export function resolvedMemoryPath(value: unknown, cwd: unknown): string | null 
  * one under a `trace://` search path), or null. */
 export function memoryGlob(pattern: unknown, path?: unknown): string | null {
   if (typeof pattern !== "string" || !pattern) return null;
-  return memoryPath(pattern.startsWith(MEMORY_ROOT) ? pattern : memoryPath(path) === null ? null : `${path}/${pattern}`);
+  if (pattern.startsWith(MEMORY_ROOT)) return memoryPath(pattern);
+  // An absolute pattern names its own root whatever the search path, as before 128: a filesystem glob.
+  return pattern.startsWith("/") || memoryPath(path) === null ? null : memoryPath(`${path}/${pattern}`);
 }

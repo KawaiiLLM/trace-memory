@@ -40,7 +40,9 @@ test("every path that does not start with exactly trace:// reaches the real tool
     "./trace://K1", "/private/trace://K1", "tm/K1", undefined];
   for (const path of outside) {
     for (const [tool, event] of [["Read", { file_path: path }], ["Grep", { pattern: "x", path }], ["Glob", { pattern: path ?? "*" }],
-      ["Glob", { pattern: "*", path }], ["Edit", { file_path: path, old_string: "a", new_string: "b" }], ["Write", { file_path: path, content: "x" }],
+      // An absolute filesystem pattern stays native even when the search path is trace://.
+      ["Glob", { pattern: "*", path }], ["Glob", { pattern: path?.startsWith("/") ? path : "/tmp/*.ts", path: "trace://" }],
+      ["Edit", { file_path: path, old_string: "a", new_string: "b" }], ["Write", { file_path: path, content: "x" }],
       ["NotebookEdit", { notebook_path: path, new_source: "x" }]] as const) {
       const h = host();
       const e = { tool, ...event };

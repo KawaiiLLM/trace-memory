@@ -407,7 +407,8 @@ function memoryPath(value) {
 }
 function memoryGlob(pattern, path) {
   if (typeof pattern !== "string" || !pattern) return null;
-  return memoryPath(pattern.startsWith(MEMORY_ROOT) ? pattern : memoryPath(path) === null ? null : `${path}/${pattern}`);
+  if (pattern.startsWith(MEMORY_ROOT)) return memoryPath(pattern);
+  return pattern.startsWith("/") || memoryPath(path) === null ? null : memoryPath(`${path}/${pattern}`);
 }
 
 // plugin/hooks/index.tsx
