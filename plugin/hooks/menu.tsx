@@ -399,26 +399,15 @@ function renderTraceSettings(input) {
 }
 
 // src/core/model/address.ts
-var MEMORY_ROOT = "/tm";
-var MEMORY_READ_ONLY = `${MEMORY_ROOT}/ is read-only.`;
+var MEMORY_ROOT = "trace://";
+var MEMORY_READ_ONLY = `${MEMORY_ROOT} is read-only.`;
 function memoryPath(value) {
-  if (typeof value !== "string" || !value.startsWith("/")) return null;
-  const segments = [];
-  for (const segment of value.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") segments.pop();
-    else segments.push(segment);
-  }
-  return segments[0] === "tm" ? `/${segments.join("/")}` : null;
+  if (typeof value !== "string" || !value.startsWith(MEMORY_ROOT)) return null;
+  return MEMORY_ROOT + value.slice(MEMORY_ROOT.length).split("/").filter(Boolean).join("/");
 }
 function memoryGlob(pattern, path) {
   if (typeof pattern !== "string" || !pattern) return null;
-  const full = pattern.startsWith("/") ? pattern : typeof path === "string" && path.startsWith("/") ? `${path.replace(/\/+$/, "")}/${pattern}` : null;
-  if (!full) return null;
-  const segments = full.split("/"), wild = segments.findIndex((segment) => /[*?[\]{}]/.test(segment));
-  const literal = wild < 0 ? full : segments.slice(0, wild).join("/") || "/";
-  const root = memoryPath(literal);
-  return root === null ? null : wild < 0 ? root : [root, ...segments.slice(wild)].join("/");
+  return memoryPath(pattern.startsWith(MEMORY_ROOT) ? pattern : memoryPath(path) === null ? null : `${path}/${pattern}`);
 }
 
 // plugin/hooks/index.tsx
@@ -589,7 +578,7 @@ function watchNativeFork($, session, agent) {
 export const register = (on) => {
   on("tool.call", { tool: "Read" }, async ($, e, next) => {
     const path = memoryPath(e.file_path);
-    if (path === null || !/^\/tm\/(?:(?:knowledge|compact)\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) return next(e);
+    if (path === null || !/^trace:\/\/(?:(?:knowledge|compact)\/S[1-9]\d*(?:\/T[1-9]\d*)?|raw\/S[1-9]\d*\/T[1-9]\d*#E[1-9]\d*(?:@(user|assistant|observation))?)$/.test(path)) return next(e);
     try {
       const file = await memoryFiles($, ["read", path]);
       if (!file.unbounded) throw new Error(`not a whole memory view: ${path}`);

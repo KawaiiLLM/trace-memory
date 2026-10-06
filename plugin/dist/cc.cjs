@@ -142,7 +142,7 @@ function publicTraceTargets(expression) {
   return targets;
 }
 function parseMemoryViewPath(path) {
-  const match = /^\/tm\/(knowledge|compact|facts|raw)\/S([1-9]\d*)(?:\/T([1-9]\d*))?(?:#E([1-9]\d*))?(?:@(user|assistant|observation))?$/.exec(path);
+  const match = /^trace:\/\/(knowledge|compact|facts|raw)\/S([1-9]\d*)(?:\/T([1-9]\d*))?(?:#E([1-9]\d*))?(?:@(user|assistant|observation))?$/.exec(path);
   if (!match || match[4] && !match[3] || match[1] !== "raw" && (match[4] || match[5])) return null;
   const ids = [match[2], match[3], match[4]].filter((id) => id !== void 0).map(Number);
   if (ids.some((id) => !Number.isSafeInteger(id))) return null;
@@ -154,17 +154,16 @@ function parseMemoryViewPath(path) {
     ...match[5] ? { role: match[5] } : {}
   };
 }
-var MEMORY_ROOT = "/tm";
-var MEMORY_READ_ONLY = `${MEMORY_ROOT}/ is read-only.`;
+var MEMORY_ROOT = "trace://";
+var MEMORY_READ_ONLY = `${MEMORY_ROOT} is read-only.`;
 function memoryPath(value) {
-  if (typeof value !== "string" || !value.startsWith("/")) return null;
-  const segments = [];
-  for (const segment of value.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") segments.pop();
-    else segments.push(segment);
-  }
-  return segments[0] === "tm" ? `/${segments.join("/")}` : null;
+  if (typeof value !== "string" || !value.startsWith(MEMORY_ROOT)) return null;
+  return MEMORY_ROOT + value.slice(MEMORY_ROOT.length).split("/").filter(Boolean).join("/");
+}
+function resolvedMemoryPath(value, cwd2) {
+  if (typeof value !== "string" || typeof cwd2 !== "string" || !cwd2) return null;
+  const prefix = `${cwd2.replace(/\/+$/, "")}/trace:`;
+  return value === prefix || value.startsWith(`${prefix}/`) ? memoryPath(MEMORY_ROOT + value.slice(prefix.length)) : null;
 }
 
 // src/core/model/source.ts
@@ -4743,7 +4742,7 @@ ${archivedBody}${evidenceLine}${diffLine}`;
     }
     return index;
   }
-  /** 101: every session, for the `/tm` listing. */
+  /** 101: every session, for the `trace://` listing. */
   listSessions() {
     return this.db.prepare("SELECT * FROM sessions ORDER BY id").all().map(toSession);
   }
@@ -5915,7 +5914,7 @@ function renderTrace(turn, entries, profile, options = {}, resultText = rawResul
   }
   const receipts = omittedCalls ? [
     `T${turn.id}: ${omittedCalls} omitted calls (including partial calls)`,
-    ...[...omitted].map((address2) => `/tm/raw/S${turn.sessionId}/${address2}`)
+    ...[...omitted].map((address2) => `trace://raw/S${turn.sessionId}/${address2}`)
   ] : [];
   return { content: lines.join("\n"), receipts };
 }
@@ -6256,7 +6255,7 @@ var sessionKnowledgeNotice = (sessionId, recencyNotice = KNOWLEDGE_RECENCY_NOTIC
 Session S${sessionId}.`;
 var renderKnowledgeOmissions = (omitted) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
   const members = omitted.filter((value) => knowledgeCategoryGroup(value.revision.category) === category);
-  return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map((value) => `/tm/K${value.knowledge.id}`))}`] : [];
+  return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map((value) => `trace://K${value.knowledge.id}`))}`] : [];
 });
 var orderedKnowledge = (knowledge, line) => [...knowledge].sort((a, b) => a.revision.id - b.revision.id).map((value) => {
   const text = line(value);
@@ -6588,12 +6587,12 @@ var import_node_crypto5 = require("node:crypto");
 // src/core/render/reading-guide.ts
 function readingGuide(sessionId, names) {
   const session = sessionId === void 0 ? "<n>" : String(sessionId);
-  return `Memory is at /tm: virtual, so use ${names.read}${names.grep === void 0 ? "" : ` or ${names.grep}`}, never a shell command. /tm lists every path.
-Path: /tm/<layer>/S<n>/T<t>. Without /T<t>: the session's current head.
+  return `Memory is read at trace:// addresses with ${names.read}${names.grep === void 0 ? "" : ` or ${names.grep}`}, never a shell command. trace:// lists every address.
+Address: trace://<layer>/S<n>/T<t>. Without /T<t>: the session's current head.
 Layers: knowledge (what a fresh context there receives), compact (what compaction there injects), facts (the Turn's facts), raw (its Raw overview).
-raw only: #E<k> gives one full entry and @role keeps one role, e.g. citation T12#E3@assistant of S7 is /tm/raw/S7/T12#E3@assistant.
-/tm/K<id>, /tm/F<id>: one knowledge item or fact.
-Give a subagent /tm/knowledge/S${session} for background or /tm/compact/S${session} to continue, and tell it to use ${names.read}.`;
+raw only: #E<k> gives one full entry and @role keeps one role, e.g. citation T12#E3@assistant of S7 is trace://raw/S7/T12#E3@assistant.
+trace://K<id>, trace://F<id>: one knowledge item or fact.
+Give a subagent trace://knowledge/S${session} for background or trace://compact/S${session} to continue, and tell it to use ${names.read}.`;
 }
 
 // src/core/api/similarity.ts
@@ -6656,7 +6655,7 @@ function knowledgeReadSelection(store, options, namedProject) {
   };
   return { input, graph, path, byCommit, matches, representatives, status };
 }
-var KNOWLEDGE_REPRESENTATIVE_RECEIPT = "One representative per K. /tm/K<id>.history";
+var KNOWLEDGE_REPRESENTATIVE_RECEIPT = "One representative per K. trace://K<id>.history";
 
 // src/core/render/material.ts
 var import_node_crypto4 = require("node:crypto");
@@ -7450,7 +7449,7 @@ function readFacade(store, config3, prepare = () => {
           }
         }
       }
-      const rawReceipt = (kept) => candidates.length - kept ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window] ${expandList([...new Set(candidates.slice(0, candidates.length - kept).map((entry) => `/tm/raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
+      const rawReceipt = (kept) => candidates.length - kept ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window] ${expandList([...new Set(candidates.slice(0, candidates.length - kept).map((entry) => `trace://raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
       const rawWindowCost = (kept, receipt) => {
         const steps = rawSteps.slice(0, kept);
         return rawWindowTokens(steps.map((s) => s.content), [...steps.flatMap((s) => s.receipts), ...receipt]);
@@ -7471,7 +7470,7 @@ function readFacade(store, config3, prepare = () => {
       const factCandidates = applicable2.filter((f) => !visible.factIds.has(f.id));
       const coveredFactIds = store.factsCoveredByRaw(factCandidates, coverage);
       const eligibleFacts = factCandidates.filter((f) => !coveredFactIds.has(f.id));
-      const omission = (rest) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map((f) => `/tm/F${f.id}`))}`] : [];
+      const omission = (rest) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map((f) => `trace://F${f.id}`))}`] : [];
       const factsWindowCost = (kept, receipt) => (kept ? (rawKept ? charge([FACTS_TITLE]) : opener(FACTS_TITLE)) + charge(lines(eligibleFacts.slice(0, kept))) : 0) + receiptCharge(receipt);
       const factsTotalCost = (kept) => factsWindowCost(kept, omission(eligibleFacts.slice(kept)));
       let factsKept = 0;
@@ -7552,7 +7551,7 @@ function readFacade(store, config3, prepare = () => {
       const pending = store.pendingEntries(sessionId, branch, headTurnId);
       const raw = [];
       let omitted = pending.length, used = charge([title]);
-      const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget] ${expandList([...new Set(pending.slice(0, omitted).map((entry) => `/tm/raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
+      const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget] ${expandList([...new Set(pending.slice(0, omitted).map((entry) => `trace://raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
       for (let i = pending.length - 1; i >= 0; i--) {
         const view = renderEntry(store.getSourceEntry(pending[i].id), config3.render, resultText);
         const cost = charge([view.content, ...view.receipts]);
@@ -8002,7 +8001,7 @@ var memoryOperationSchema = { ...object2({
   }
 ] };
 var toolDefinitions = [
-  { name: "search", description: `Use literal substring search over facts, raw and knowledge commits. scope controls facts, Raw and knowledge: session selects this session's facts/Raw and session-scoped knowledge; project selects project facts/Raw and project-scoped knowledge; global selects all sessions' facts/Raw and global-scoped knowledge regardless of author. Omitted scope selects project facts/Raw and applicable global/project/session knowledge; unbound omission discovers all owners. Explicit project/session requires context. versions defaults to current applicable tips; history additionally includes applicable superseded and archived revisions; all additionally includes other branches' revisions in scope, including their history and archives. Revisions not applicable here are never write bases, and reading never bypasses write validation. Each K contributes one best matching revision: highest lexical text/topic similarity, then current, then newer commit. Admission stays literal. The batched form selects each query's capped knowledge hits by similarity so cap keeps the closest match; model-visible knowledge results then display oldest first, retaining category labels. Inspect a K's history at /tm/K<id>.history. Only category implies layer=knowledge and conflicts with every other layer; scope does not imply a layer. Fact and knowledge hits are one-line previews: fields defaults to text for current searches and to text plus status for knowledge history/all; explicit fields is authoritative. itemBudget defaults to ${SEARCH_PREVIEW_TOKENS}. Read fact quotes, sources and relations at /tm/F<id>. Raw keeps its entry profile. Every receipt states filters and omitted preview fields; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} and is capped at ${MAX_PUBLIC_READ_TOKENS} estimated tokens for one response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit frozen options or repeat their original values (changes are rejected). Search previews never count as complete knowledge reads.`, parameters: { ...object2({ maxTokens: { type: "integer", minimum: 1, maximum: MAX_PUBLIC_READ_TOKENS, default: DEFAULT_READ_TOKENS }, itemBudget: { ...contentBudget, default: SEARCH_PREVIEW_TOKENS }, fields, query: string2, queries: { type: "array", items: string2, minItems: 1, description: 'Batched form, exclusive with query: one response, each query\'s own hits under the shared options, at most cap per query (default 1), the query echoed on each hit line, queries with no hit listed as `no hit: "q"` lines after the hits and paged like them; a cursor may repeat the original cap.' }, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...readFilters, ...pagination }) } },
+  { name: "search", description: `Use literal substring search over facts, raw and knowledge commits. scope controls facts, Raw and knowledge: session selects this session's facts/Raw and session-scoped knowledge; project selects project facts/Raw and project-scoped knowledge; global selects all sessions' facts/Raw and global-scoped knowledge regardless of author. Omitted scope selects project facts/Raw and applicable global/project/session knowledge; unbound omission discovers all owners. Explicit project/session requires context. versions defaults to current applicable tips; history additionally includes applicable superseded and archived revisions; all additionally includes other branches' revisions in scope, including their history and archives. Revisions not applicable here are never write bases, and reading never bypasses write validation. Each K contributes one best matching revision: highest lexical text/topic similarity, then current, then newer commit. Admission stays literal. The batched form selects each query's capped knowledge hits by similarity so cap keeps the closest match; model-visible knowledge results then display oldest first, retaining category labels. Inspect a K's history at trace://K<id>.history. Only category implies layer=knowledge and conflicts with every other layer; scope does not imply a layer. Fact and knowledge hits are one-line previews: fields defaults to text for current searches and to text plus status for knowledge history/all; explicit fields is authoritative. itemBudget defaults to ${SEARCH_PREVIEW_TOKENS}. Read fact quotes, sources and relations at trace://F<id>. Raw keeps its entry profile. Every receipt states filters and omitted preview fields; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} and is capped at ${MAX_PUBLIC_READ_TOKENS} estimated tokens for one response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit frozen options or repeat their original values (changes are rejected). Search previews never count as complete knowledge reads.`, parameters: { ...object2({ maxTokens: { type: "integer", minimum: 1, maximum: MAX_PUBLIC_READ_TOKENS, default: DEFAULT_READ_TOKENS }, itemBudget: { ...contentBudget, default: SEARCH_PREVIEW_TOKENS }, fields, query: string2, queries: { type: "array", items: string2, minItems: 1, description: 'Batched form, exclusive with query: one response, each query\'s own hits under the shared options, at most cap per query (default 1), the query echoed on each hit line, queries with no hit listed as `no hit: "q"` lines after the hits and paged like them; a cursor may repeat the original cap.' }, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...readFilters, ...pagination }) } },
   { name: "note", description: "Write one topic's episodic slice with a nonempty single-line title and one top-level sources string: each segment starts on a line with [T12#E3@user] and a space (role suffix optional), followed by authored text until the next marker. No text may precede the first marker. Give each contributing whole native entry its own segment; Core orders segments by path and joins their texts as the body. End a slice at a topic pivot, batch end or body cap; preserve the reasoning arc and name the actual harness in agent segments. Do not put later interpretations in an earlier source or tool-result segment. Block selectors and fact-level text are not allowed. No model-supplied category, status, quote or actor. Thinking alone is not evidence. Relations are optional; manual calls cite existing F facts, N $ references name accepted earlier stable slots. Manual calls commit one fact immediately and reject slot/drop. N calls hold privately until normal terminal publication: omit slot to append, slot:$n completely replaces including a rejected item, drop:$n removes only an unreferenced slot in its own call. Failed replacement invalidates the prior value; numbers never recycle; accepted siblings survive. An empty call {} confirms use, never clears drafts or rejected slots. Receipts list held/rejected handles, including after a native schema refusal; an empty call inspects them. A valid call clears top-level call errors only. Both {{tool.note}} and {{tool.memory}} are required in N.", parameters: {
     ...object2({ ...factSchema.properties, slot: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: replace one held fact." }, drop: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: drop one unreferenced held fact in a separate call." } }),
     if: { required: ["drop"] },
@@ -8398,15 +8397,15 @@ Status: ${status}`;
 }
 
 // src/core/api/files.ts
-var VISIBLE = `${MEMORY_ROOT}/knowledge`;
-var ALL = `${MEMORY_ROOT}/knowledge-all`;
-var SESSION = /^\/tm\/S([1-9]\d*)$/;
-var LAYER = /^\/tm\/(facts|raw)$/;
-var LAYER_SESSION = /^\/tm\/(facts|raw)\/S([1-9]\d*)$/;
-var LAYER_TURN = /^\/tm\/(facts|raw)\/S([1-9]\d*)\/T([1-9]\d*)$/;
-var KNOWLEDGE = /^\/tm\/K[1-9]\d*(?:#[a-z]{4,}|@v[1-9]\d*)?$/;
-var FACT = /^\/tm\/F[1-9]\d*$/;
-var HISTORY = /^\/tm\/(K[1-9]\d*)\.history$/;
+var VISIBLE = `${MEMORY_ROOT}knowledge`;
+var ALL = `${MEMORY_ROOT}knowledge-all`;
+var SESSION = /^trace:\/\/S([1-9]\d*)$/;
+var LAYER = /^trace:\/\/(facts|raw)$/;
+var LAYER_SESSION = /^trace:\/\/(facts|raw)\/S([1-9]\d*)$/;
+var LAYER_TURN = /^trace:\/\/(facts|raw)\/S([1-9]\d*)\/T([1-9]\d*)$/;
+var KNOWLEDGE = /^trace:\/\/K[1-9]\d*(?:#[a-z]{4,}|@v[1-9]\d*)?$/;
+var FACT = /^trace:\/\/F[1-9]\d*$/;
+var HISTORY = /^trace:\/\/(K[1-9]\d*)\.history$/;
 var PREVIEW = 160;
 var preview = (text) => {
   const line = text.split("\n")[0];
@@ -8498,11 +8497,11 @@ function memoryFiles(memory, reader) {
     if (path === MEMORY_ROOT) return [
       [VISIBLE, `knowledge visible to you, current versions: ${count2(visible().length)}`],
       [ALL, `every scope and project, archived included: ${count2(store.knowledgeCount())}`],
-      [`${MEMORY_ROOT}/facts`, "every session's Turns by layer"],
-      [`${MEMORY_ROOT}/raw`, "every session's Turns by layer"],
-      ...store.sessionActivity().map(({ session: s, turns, last }) => [`${MEMORY_ROOT}/S${s.id}`, `${hostKind(s)} \xB7 ${sessionProject(s)} \xB7 ${count2(turns)} Turns \xB7 last ${utcMinute(last)}`])
+      [`${MEMORY_ROOT}facts`, "every session's Turns by layer"],
+      [`${MEMORY_ROOT}raw`, "every session's Turns by layer"],
+      ...store.sessionActivity().map(({ session: s, turns, last }) => [`${MEMORY_ROOT}S${s.id}`, `${hostKind(s)} \xB7 ${sessionProject(s)} \xB7 ${count2(turns)} Turns \xB7 last ${utcMinute(last)}`])
     ];
-    if (path === VISIBLE) return visible().map(({ knowledge, revision }) => [`${MEMORY_ROOT}/K${knowledge.id}`, `[${revision.category}/${revision.scope}] ${preview(revision.text)}`]);
+    if (path === VISIBLE) return visible().map(({ knowledge, revision }) => [`${MEMORY_ROOT}K${knowledge.id}`, `[${revision.category}/${revision.scope}] ${preview(revision.text)}`]);
     if (path === ALL) {
       const { identities, records, ordinal } = versions();
       return identities.map(([id, list]) => {
@@ -8510,15 +8509,15 @@ function memoryFiles(memory, reader) {
         const body = revisionBody(latest, list);
         const owner = latest.scope === "global" ? "" : latest.scope === "session" ? ` S${record3.originSessionId}` : ` ${projectName(record3.projectId)}`;
         const status = latest.op === "archive" ? ` (archived at v${ordinal(latest)}${latest.archiveKind ? `, ${latest.archiveKind}` : ""})` : "";
-        return [`${MEMORY_ROOT}/K${id}@v${ordinal(latest)}`, `[${latest.category}/${latest.scope}${owner}]${status} ${preview(body)}`];
+        return [`${MEMORY_ROOT}K${id}@v${ordinal(latest)}`, `[${latest.category}/${latest.scope}${owner}]${status} ${preview(body)}`];
       });
     }
     let m;
     if (m = SESSION.exec(path)) {
       session(Number(m[1]));
       return store.listTurns(Number(m[1])).flatMap((turn) => [
-        [`${MEMORY_ROOT}/facts/S${m[1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
-        [`${MEMORY_ROOT}/raw/S${m[1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`]
+        [`${MEMORY_ROOT}facts/S${m[1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
+        [`${MEMORY_ROOT}raw/S${m[1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`]
       ]);
     }
     if (LAYER.test(path)) return store.listSessions().map((s) => [`${path}/S${s.id}`, ""]);
@@ -8562,9 +8561,9 @@ function memoryFiles(memory, reader) {
       }), unbounded: false };
     }
     if (m = HISTORY.exec(path)) return { content: full(`${m[1]}.history`), unbounded: false };
-    if (KNOWLEDGE.test(path)) return { content: full(path.slice(MEMORY_ROOT.length + 1)), unbounded: false };
+    if (KNOWLEDGE.test(path)) return { content: full(path.slice(MEMORY_ROOT.length)), unbounded: false };
     if (FACT.test(path)) {
-      const id = Number(path.slice(MEMORY_ROOT.length + 2));
+      const id = Number(path.slice(MEMORY_ROOT.length + 1));
       const fact = store.getFact(id);
       if (!fact) throw new Error(`fact F${id} does not exist`);
       const owner = store.getTurn(fact.turnId);
@@ -8572,7 +8571,7 @@ function memoryFiles(memory, reader) {
       return { content: `Source session: S${owner.sessionId}
 ${full(`F${id}`)}`, unbounded: false };
     }
-    throw new Error(`no such path: ${path}; /tm`);
+    throw new Error(`no such path: ${path}; ${MEMORY_ROOT}`);
   };
   const rootText = (listing) => {
     const lines = [readingGuide(reader.sessionId, toolNames), ""];
@@ -8584,13 +8583,13 @@ ${full(`F${id}`)}`, unbounded: false };
         `This session: S${own.id} \xB7 ${hostKind(own)} \xB7 ${sessionProject(own, true)}`,
         `Current branch: ${count2(turns.length)} Turns${turns.length ? `, T${turns[0]} \u2026 T${path.headTurnId} (head)` : ""}`,
         `Recent Turns: ${turns.slice(-10).map((id) => `T${id}`).join(" ")}`,
-        `Turn list: /tm/S${own.id}`,
+        `Turn list: ${MEMORY_ROOT}S${own.id}`,
         ""
       );
     }
     lines.push(
       ...listing.slice(0, 2).map(([path, label]) => `${path}  ${label}`),
-      "/tm/facts  /tm/raw  every session's Turns by layer",
+      `${MEMORY_ROOT}facts  ${MEMORY_ROOT}raw  every session's Turns by layer`,
       "",
       "Sessions, latest activity first:",
       ...listing.slice(4).map(([path, label]) => `${path}  ${label}`)
@@ -8628,24 +8627,24 @@ ${full(`F${id}`)}`, unbounded: false };
   };
   const whole = (entry) => renderEntryWhole(entry, memory.resultText, void 0, void 0, true).content;
   function* turnFiles(sessionId, turnId, layer, role) {
-    const factPath = `${MEMORY_ROOT}/facts/S${sessionId}/T${turnId}`;
+    const factPath = `${MEMORY_ROOT}facts/S${sessionId}/T${turnId}`;
     if (layer !== "raw") yield { path: factPath, text: () => fileText(factPath).content };
     if (layer === "facts") return;
     const meta3 = entriesOf(sessionId, turnId);
     for (const entry of store.hydrateSourceEntries(meta3.map((e) => e.id))) {
       if (role && (entry.role === "toolResult" ? "observation" : entry.role) !== role) continue;
-      yield { path: `${MEMORY_ROOT}/raw/S${sessionId}/T${turnId}#E${entry.entryOrdinal}`, text: () => whole(entry) };
+      yield { path: `${MEMORY_ROOT}raw/S${sessionId}/T${turnId}#E${entry.entryOrdinal}`, text: () => whole(entry) };
     }
   }
   function* searched(path) {
     if (path === MEMORY_ROOT) {
       yield* searched(VISIBLE);
       yield* searched(ALL);
-      for (const { session: s } of store.sessionActivity()) yield* searched(`${MEMORY_ROOT}/S${s.id}`);
+      for (const { session: s } of store.sessionActivity()) yield* searched(`${MEMORY_ROOT}S${s.id}`);
       return;
     }
     if (path === VISIBLE) {
-      for (const { knowledge } of visible()) yield { path: `${MEMORY_ROOT}/K${knowledge.id}`, text: () => full(`K${knowledge.id}`) };
+      for (const { knowledge } of visible()) yield { path: `${MEMORY_ROOT}K${knowledge.id}`, text: () => full(`K${knowledge.id}`) };
       return;
     }
     if (path === ALL) {
@@ -8656,7 +8655,7 @@ ${full(`F${id}`)}`, unbounded: false };
           const address2 = `K${id}@v${ordinal(revision)}`;
           const legacyEmpty = revision.op === "archive" && !revision.text;
           yield {
-            path: `${MEMORY_ROOT}/${address2}`,
+            path: `${MEMORY_ROOT}${address2}`,
             text: () => legacyEmpty ? revisionBody(revision, list) : full(address2),
             mark: revision !== latest ? ` (historical; ${latestStatus})` : latest.op === "archive" ? " (archived)" : void 0
           };
@@ -8714,14 +8713,14 @@ ${full(`F${id}`)}`, unbounded: false };
     }
     const filter = options.glob ? globRegex(options.glob) : void 0;
     for (const file2 of searched(root2)) {
-      if (filter && !filter.test(options.glob.includes("/") ? file2.path.slice(root2.length + 1) : basename(file2.path))) continue;
+      if (filter && !filter.test(options.glob.includes("/") ? file2.path.slice(root2.length).replace(/^\//, "") : basename(file2.path))) continue;
       const lines = file2.text().split("\n");
       const hits = lines.flatMap((line, index) => regex.test(line) ? [index] : []);
       if (hits.length) yield { path: file2.path, lines, hits, ...file2.mark ? { mark: file2.mark } : {} };
     }
   }
   const glob = (pattern) => {
-    const segments = resolve5(pattern).split("/").slice(2);
+    const segments = resolve5(pattern).slice(MEMORY_ROOT.length).split("/").filter(Boolean);
     const found = /* @__PURE__ */ new Set();
     const walk = (path, rest) => {
       if (!rest.length) {
@@ -8736,7 +8735,7 @@ ${full(`F${id}`)}`, unbounded: false };
       }
       const matcher = globRegex(head);
       for (const [child] of children(path) ?? []) if (matcher.test(basename(child))) walk(child, tail);
-      if (LAYER_SESSION.test(path) && path.startsWith(`${MEMORY_ROOT}/raw/`) && head.includes("#")) {
+      if (LAYER_SESSION.test(path) && path.startsWith(`${MEMORY_ROOT}raw/`) && head.includes("#")) {
         for (const [turn] of children(path) ?? []) for (const [entry] of children(turn) ?? [])
           if (matcher.test(basename(entry))) walk(entry, tail);
       }
@@ -9316,7 +9315,7 @@ function prepareDreaming(store, input, config3, claim, path, { pools, range }) {
   const factText = (count3) => [
     "Direct supporting facts:",
     ...renderFactGroups(facts.slice(0, count3), (fact) => renderFact(fact, relations.get(fact.id) ?? []), times),
-    ...count3 < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count3).map((fact) => `/tm/F${fact.id}`).join(" ")}.`] : []
+    ...count3 < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count3).map((fact) => `trace://F${fact.id}`).join(" ")}.`] : []
   ].join("\n");
   let count2 = facts.length;
   while (count2 && tokens(factText(count2)) > 1e4) count2--;
@@ -9726,7 +9725,7 @@ function TraceMemory(dbPath, runAgent, config3 = {}, resultText = rawResultText,
         path ? `K${id} path current: ${tips.map(shown).join(", ") || "none"}` : `K${id} tips (newest-created: ${tips.length ? shown(tips.reduce((a, b) => a.id > b.id ? a : b)) : "none"}):`,
         ...tips.map((r) => (tips.length > 1 ? `Alternative ${shown(r)}${!path && r.id === Math.max(...tips.map((t) => t.id)) ? " (newest-created)" : ""}
 ` : "") + describe3(r)),
-        ...archived.map((r) => `  ${shown(r)}: ${selection.status(r)}; /tm/K${id}.history`),
+        ...archived.map((r) => `  ${shown(r)}: ${selection.status(r)}; trace://K${id}.history`),
         ...fields2.has("links") ? links.map((l) => `  ${l.kind}: ${display.modelFacing ? `K${l.toKnowledge}@v${store.versionOrdinal(l.toKnowledge, l.toCommit)}` : `K${l.toKnowledge}@${l.toCommit}`} (from ${display.modelFacing ? `K${l.fromKnowledge}@v${store.versionOrdinal(l.fromKnowledge, l.fromCommit)}` : `K${l.fromKnowledge}@${l.fromCommit}`})`) : [],
         ...versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable, fields2, shown)] : ["Commit history:", renderCommitHistory(allHistory, fields2, shown)],
         ...path && versions === "all" ? ["Other branches' tips:", ...otherTips.map(describe3), "Other branches' commits:", renderCommitHistory(otherHistory, fields2, shown)] : []
@@ -9825,7 +9824,7 @@ Knowledge: ${backlinks.join("; ")}` : "");
         }
         if (display.fileFacts) {
           const uncovered = meta3.filter((entry) => !cited.has(entry.id));
-          if (uncovered.length) lines.push(`Events without a fact: ${uncovered.map((entry) => `/tm/raw/S${turn.sessionId}/T${turn.id}#E${entry.entryOrdinal}`).join(" ")}`);
+          if (uncovered.length) lines.push(`Events without a fact: ${uncovered.map((entry) => `trace://raw/S${turn.sessionId}/T${turn.id}#E${entry.entryOrdinal}`).join(" ")}`);
         } else {
           if (uncited.length) lines.push(`Processed, not cited: ${uncited.map((entry) => `T${turn.id}#E${entry.entryOrdinal}`).join(", ")}`);
           if (meta3.length) lines.push(`Raw: T${turn.id}#E${meta3[0].entryOrdinal}..E${meta3.at(-1).entryOrdinal}`);
@@ -41044,7 +41043,7 @@ function parseGrepArgs(args) {
       } else throw new Error(`unknown grep flag -${flag}; ${usage}`);
     }
   }
-  const [pattern, path = "/tm", ...extra] = rest;
+  const [pattern, path = MEMORY_ROOT, ...extra] = rest;
   if (pattern === void 0 || extra.length) throw new Error(usage);
   if (options.lineNumbers === false && options.mode !== "content") throw new Error("--no-line-numbers requires content mode");
   return { pattern, path, options };
@@ -41084,7 +41083,7 @@ function ccGrep(files, path, options) {
   return { lines, total: all.length, matches, countFiles, pagination: pagination2, appliedLimit, offset };
 }
 function materializeCcRead(directory, content, virtualPath) {
-  const target = virtualPath === void 0 ? (0, import_node_path5.join)((0, import_node_fs6.mkdtempSync)((0, import_node_path5.join)(directory, "read-")), "memory.txt") : (0, import_node_path5.join)(directory, ...virtualPath.slice("/tm".length).split("/").filter(Boolean), "memory.txt");
+  const target = virtualPath === void 0 ? (0, import_node_path5.join)((0, import_node_fs6.mkdtempSync)((0, import_node_path5.join)(directory, "read-")), "memory.txt") : (0, import_node_path5.join)(directory, ...virtualPath.slice(MEMORY_ROOT.length).split("/").filter(Boolean), "memory.txt");
   const parent = (0, import_node_path5.dirname)(target);
   (0, import_node_fs6.mkdirSync)(parent, { recursive: true, mode: 448 });
   const temporary = `${target}.${(0, import_node_crypto13.randomUUID)()}`;
@@ -41099,7 +41098,7 @@ function materializeCcRead(directory, content, virtualPath) {
 }
 function materializeCcWorkerRead(config3, reader, path, directory) {
   const memory = TraceMemory(config3.dbPath, async () => {
-    throw new Error("/tm reads run no model work");
+    throw new Error("trace:// reads run no model work");
   }, config3.coreConfig, ccResultText);
   try {
     return materializeCcRead(directory, memoryFiles(memory, { ...reader, toolNames: ccWorkerToolNames }).read(path).content);
@@ -41110,7 +41109,7 @@ function materializeCcWorkerRead(config3, reader, path, directory) {
 function runCcFiles(config3, nativeSessionId, [op, ...args]) {
   const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
   const memory = TraceMemory(config3.dbPath, async () => {
-    throw new Error("/tm reads run no model work");
+    throw new Error("trace:// reads run no model work");
   }, config3.coreConfig, ccResultText);
   try {
     const core = binding?.dbPath === config3.dbPath ? binding.coreSessionId : null;
@@ -41121,7 +41120,7 @@ function runCcFiles(config3, nativeSessionId, [op, ...args]) {
       const rendered = files.read(args[0]);
       if (op === "read") return rendered;
       const virtual = memoryPath(args[0]);
-      if (virtual === null) throw new Error("materialize requires a /tm path");
+      if (virtual === null) throw new Error("materialize requires a trace:// address");
       return { path: materializeCcRead((0, import_node_path5.join)(config3.stateDir, "rendered", validateNativeSessionId(nativeSessionId)), rendered.content, virtual) };
     }
     if (op === "grep") {
@@ -41133,7 +41132,7 @@ function runCcFiles(config3, nativeSessionId, [op, ...args]) {
       if (args.length !== 1) throw new Error(usage);
       return files.glob(args[0]);
     }
-    throw new Error(`${op === "write" || op === "edit" ? `${op}: /tm is read-only` : `unknown operation ${String(op)}`}; ${usage}`);
+    throw new Error(`${op === "write" || op === "edit" ? `${op}: trace:// is read-only` : `unknown operation ${String(op)}`}; ${usage}`);
   } finally {
     memory.store.close();
   }
@@ -41493,29 +41492,29 @@ var CcAgentWorker = class {
       const event = raw;
       const file2 = event?.tool_input?.file_path;
       try {
-        if (event.tool_name !== "Read" || typeof file2 !== "string") return deny("CC worker accepts only Read of /tm");
-        const virtual = memoryPath(file2);
+        if (event.tool_name !== "Read" || typeof file2 !== "string") return deny("CC worker accepts only Read of trace://");
+        const virtual = memoryPath(file2) ?? resolvedMemoryPath(file2, event.cwd);
         if (virtual !== null) {
           const path = materializeCcWorkerRead(this.config, frozenReader, virtual, readDirectory);
           rendered.set(path, virtual);
           return { hookSpecificOutput: {
             hookEventName: "PreToolUse",
             permissionDecision: "allow",
-            permissionDecisionReason: "read /tm rendering",
+            permissionDecisionReason: "read trace:// rendering",
             updatedInput: { ...event.tool_input, file_path: path }
           } };
         }
-        if (!(0, import_node_path6.isAbsolute)(file2) || file2 !== (0, import_node_path6.resolve)(file2) || !rendered.has(file2)) return deny("CC worker Read is restricted to its own /tm renderings");
+        if (!(0, import_node_path6.isAbsolute)(file2) || file2 !== (0, import_node_path6.resolve)(file2) || !rendered.has(file2)) return deny("CC worker Read is restricted to its own trace:// renderings");
         const actual = (0, import_node_fs7.realpathSync)(file2);
         if (!actual.startsWith((0, import_node_fs7.realpathSync)(readDirectory) + import_node_path6.sep) || !(0, import_node_fs7.lstatSync)(file2).isFile() || (0, import_node_fs7.lstatSync)(file2).isSymbolicLink())
           return deny("CC worker Read rendering is outside its own session");
         return { hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "allow",
-          permissionDecisionReason: "continue /tm read"
+          permissionDecisionReason: "continue trace:// read"
         } };
       } catch (error3) {
-        const virtual = typeof file2 === "string" ? memoryPath(file2) ?? rendered.get(file2) : null;
+        const virtual = typeof file2 === "string" ? memoryPath(file2) ?? resolvedMemoryPath(file2, event.cwd) ?? rendered.get(file2) : null;
         if (virtual && error3 instanceof Error && "code" in error3 && typeof error3.code === "string") {
           const operation = "syscall" in error3 && typeof error3.syscall === "string" ? error3.syscall : "read";
           return deny(`${error3.code}: ${operation} '${virtual}'`);
@@ -44115,7 +44114,7 @@ async function recordCcSessionEnd(config3, input) {
           (0, import_node_fs12.rmSync)((0, import_node_path10.join)(config3.stateDir, "rendered", nativeSessionId), { recursive: true, force: true });
       }, config3.finalSyncTimeoutMs);
     } catch (error3) {
-      return { confirmed: true, reason, diagnostic: `rendered /tm cleanup failed: ${error3 instanceof Error ? error3.message : String(error3)}` };
+      return { confirmed: true, reason, diagnostic: `rendered trace:// cleanup failed: ${error3 instanceof Error ? error3.message : String(error3)}` };
     }
     return { confirmed: true, reason };
   } catch (error3) {
@@ -44959,7 +44958,7 @@ var CC_SLICE_COUNT = 24;
 var CC_SLICE_LIMIT = 1e4;
 var CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segments, order knowledge by the header's p[0] segment number, then by position within that segment: higher segments and later items are newer. Arrival order is not recency. For claims about the same object, the newer item takes precedence until maintenance merges them.";
 var ccKnowledgeHeader = (binding) => binding.coreSession === null ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
-var address = (item, sessionId) => item.kind === "knowledge" || item.kind === "state" ? `/tm/${item.address}` : item.kind === "fact" ? `/tm/F${item.factId}` : item.kind === "raw" ? `/tm/raw/S${sessionId}/${item.address}` : "";
+var address = (item, sessionId) => item.kind === "knowledge" || item.kind === "state" ? `trace://${item.address}` : item.kind === "fact" ? `trace://F${item.factId}` : item.kind === "raw" ? `trace://raw/S${sessionId}/${item.address}` : "";
 function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinity) {
   if (binding.coreSession === null && items2.some((item) => item.kind === "raw"))
     throw new Error("CC Raw transport needs a bound core session");
@@ -45029,7 +45028,7 @@ function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinit
     if (tryPlace(item)) continue;
     const count2 = item.text.match(/omitted (\d+)/)?.[1];
     const expansion = item.text.split("expand: ")[1];
-    const addresses = expansion?.match(/\/tm\/[^\s,]+/g) ?? [];
+    const addresses = expansion?.match(/trace:\/\/[^\s,]+/g) ?? [];
     const compact = {
       kind: "receipt",
       knowledge: item.knowledge,
