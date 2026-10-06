@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { skipRest } from "../../dreaming-skips.ts";
+import { dreamerWrite, skipRest } from "../../dreaming-skips.ts";
 import type { Store } from "../../../src/core/store/index.ts";
 
 const tagged = (store: Store, id: number, commit: number) => `K${id}#${store.versionTag(id, commit)}`;
@@ -85,7 +85,7 @@ async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, s
       read(tagged(f.store, survivor.knowledgeId, survivor.commit));
       operationInput = { op: "merge", id: tagged(f.store, survivor.knowledgeId, survivor.commit), absorb: [tagged(f.store, f.base.knowledgeId, f.base.commit)], ...common };
     } else operationInput = { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), ...common };
-    const receipt = write.execute({ operations: [operationInput, ...currentTriggers.map(item => ({ op: "archive", kind: "budget",
+    const receipt = dreamerWrite(write, { operations: [operationInput, ...currentTriggers.map(item => ({ op: "archive", kind: "budget",
       id: tagged(f.store, item.knowledge.id, item.revision.id), supports: [], reason: "Retire explicit trigger." }))], skipped: [] });
     expect(receipt).toContain('"committed"');
     const consumed = [history(f.store, f.base.knowledgeId, f.base.commit),
@@ -136,12 +136,12 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
     const write = input.tools.find(tool => tool.name === "memory")!;
     read(tagged(f.store, f.base.knowledgeId, f.base.commit));
     read(tagged(f.store, trigger.knowledgeId, trigger.commit));
-    const first = JSON.parse(write.execute({ operations: [
+    const first = JSON.parse(dreamerWrite(write, { operations: [
       { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), text: "first successor", category: "constraint",
         scope: "project", supports: [], topics: [], reason: "First maintenance." },
       { op: "archive", kind: "budget", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
     ], skipped: [] })).committed[0] as { version: string };
-    const stale = write.execute({ operations: [{ op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
+    const stale = dreamerWrite(write, { operations: [{ op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
       text: "unresolved stale submission", category: "constraint", scope: "project", supports: [], topics: [], reason: "Must fail." }], skipped: [] });
     expect(stale).toContain(`base is not the latest effective applicable revision; current: ${first.version}`);
     expect(stale).not.toContain(tagged(f.store, f.base.knowledgeId, f.store.resolveVersionOrdinal(f.base.knowledgeId, Number(first.version.split("@v")[1]))));
@@ -149,7 +149,7 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
     if (!corrected) return success;
     const current = f.store.resolveVersionOrdinal(f.base.knowledgeId, Number(first.version.split("@v")[1]));
     read(first.version);
-    expect(write.execute({ operations: [{ op: "update", id: tagged(f.store, f.base.knowledgeId, current),
+    expect(dreamerWrite(write, { operations: [{ slot: "M1", op: "update", id: tagged(f.store, f.base.knowledgeId, current),
       text: "corrected successor", category: "constraint", scope: "project", supports: [], topics: [], reason: "Reread and correct." }], skipped: [] }))
       .toContain('"committed"');
     return success;

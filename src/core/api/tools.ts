@@ -4,7 +4,7 @@ import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact }
 import type { Store, RunInput, FactCommitInput, KnowledgePath, SourceEntry } from "../store/index.ts";
 import { DEFAULT_READ_TOKENS, MAX_PUBLIC_READ_TOKENS, READ_FIELDS, READ_VERSIONS, SEARCH_PREVIEW_TOKENS, validateBudgets, type ListingOptions, type SearchScope } from "./read.ts";
 import type { NotingDiagnostic } from "../noting/review.ts";
-import { holdNoting } from "../noting/held.ts";
+import { holdNoting, Slots } from "../noting/held.ts";
 import { tokens, WORKER_ITEM_TOKENS } from "../render/index.ts";
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
@@ -67,10 +67,8 @@ export function pricedToolDefinitions(definitions: readonly Omit<ToolDefinition,
 export function dreamingToolDefinitions(): Omit<ToolDefinition, "execute">[] {
   const tools = structuredClone(toolDefinitions.filter(t => t.name !== "note"));
   const memory = tools.find(t => t.name === "memory")!;
-  memory.description = "Apply one atomic Dreamer maintenance batch immediately. Allowed operations are update, an exactly-two-parent merge, an atomic one-parent/two-child split, and archive; create is forbidden. Every result body is complete. Merge may omit text to copy the later exact parent's body verbatim. Non-empty supports are the exact evidence for the change; empty supports request Store-side inheritance from every exact parent. Every parent requires an exact K#tag base and must belong to one of this session's pools: global, its project's or its own. A base that is not the latest effective applicable revision on the writer path is rejected naming the current revision. skipped uses an exact untagged K@vN history address for a frozen version that was deliberated and intentionally left unchanged; it requires no full-body read and grants no mutation authority; it marks that version processed without changing it. Never skip an untouched reference or an item you did not deliberate. Archive requires kind budget (keeps parent's complete body) or invalid (substantive statement of grounds, evidence and replacement if any); category/scope/topics carry over. Earlier valid batches survive later failure.";
-  memory.parameters = object({ operations: { type: "array", items: structuredClone(memoryOperationSchema) },
-    skipped: { type: "array", items: object({ knowledge: { type: "string", pattern: "^K[1-9][0-9]*@v[1-9][0-9]*$" }, because: { type: "string", minLength: 1 } }, ["knowledge", "because"]) } }, ["operations", "skipped"]);
-  const operation = (memory.parameters.properties as any).operations.items;
+  memory.description = "One Dreamer item per call, committed at once when legal: one operation with its fields as top-level arguments, or one skip. Allowed operations are update, an exactly-two-parent merge, an atomic one-parent/two-child split, and archive; create is forbidden. Every result body is complete. Merge may omit text to copy the later exact parent's body verbatim. Non-empty supports are the exact evidence for the change; empty supports request Store-side inheritance from every exact parent. Every parent requires an exact K#tag base and must belong to one of this session's pools: global, its project's or its own. A base that is not the latest effective applicable revision on the writer path is rejected naming the current revision. skip with because names an exact untagged K@vN history address for a frozen version that was deliberated and intentionally left unchanged; it requires no full-body read and grants no mutation authority; it marks that version processed without changing it. Never skip an untouched reference or an item you did not deliberate. Archive requires kind budget (keeps parent's complete body) or invalid (substantive statement of grounds, evidence and replacement if any); category/scope/topics carry over. A refused item is numbered Mn (numbers never recycle) and blocks success until slot:Mn resubmits it (a legal resubmission commits) or drop:Mn withdraws it in its own call; another call's commit never clears it. A malformed call is a call error until the next well-formed call. Committed items survive later refusals.";
+  const operation = structuredClone(memoryOperationSchema) as any;
   operation.properties.op.enum = ["update", "merge", "split", "archive"];
   operation.properties.supports.minItems = 0;
   operation.properties.supports.items = factId;
@@ -87,7 +85,18 @@ export function dreamingToolDefinitions(): Omit<ToolDefinition, "execute">[] {
       then: { not: { anyOf: ["text", "category", "scope", "topics"].map(key => ({ required: [key] })) } },
       else: { required: ["category", "scope", "topics"], if: { properties: { op: { const: "merge" } } }, then: {}, else: { required: ["text"] } } } };
   operation.allOf.push({ if: { properties: { op: { const: "split" } } }, then: { required: ["children"] }, else: { not: { required: ["children"] } } });
-  tools.push({ name: "check", description: "Read-only pool check. Returns frozen and own revision counts, newly pending revisions, current pool sizes and blockers: rejected memory operations, any pool over its budget, and frozen versions neither operated on nor skipped. The run succeeds only with no blocker. This receipt never grants a complete-body handle or commits knowledge.", parameters: object({}) });
+  // 127: one item per call, like the Noter's (116): an operation's fields, or {skip, because}; slot/drop address a refused item.
+  // No root anyOf/oneOf/allOf: Claude Code skips an MCP tool whose input schema has one.
+  memory.parameters = { ...object({ ...operation.properties,
+    skip: { type: "string", pattern: "^K[1-9][0-9]*@v[1-9][0-9]*$", description: "A deliberated frozen version left unchanged; its own call with because." },
+    because: { type: "string", minLength: 1 },
+    slot: { type: "string", pattern: "^M[1-9][0-9]*$", description: "Resubmit one refused item under its number." },
+    drop: { type: "string", pattern: "^M[1-9][0-9]*$", description: "Withdraw one refused item in a separate call." } }),
+    if: { required: ["drop"] }, then: { maxProperties: 1 },
+    else: { if: { required: ["skip"] },
+      then: { required: ["skip", "because"], not: { anyOf: Object.keys(operation.properties).map(key => ({ required: [key] })) } },
+      else: { required: operation.required, allOf: operation.allOf, not: { required: ["because"] } } } };
+  tools.push({ name: "check", description: "Read-only pool check. Returns frozen and own revision counts, newly pending revisions, current pool sizes and blockers: refused memory items (Mn) not yet resubmitted with slot or withdrawn with drop, a pending memory call error, any pool over its budget, and frozen versions neither operated on nor skipped. The run succeeds only with no blocker. This receipt never grants a complete-body handle or commits knowledge.", parameters: object({}) });
   return tools;
 }
 
@@ -107,7 +116,7 @@ export function validateReadInput(name: "search", raw: unknown): Record<string, 
 }
 
 /** The model-facing result format, read back. A tool result is a refusal when it is a `rejected:`
- * receipt, and a writer's JSON `results` array carries one result per call (D may batch) — both
+ * receipt, and a writer's JSON `results` array carries one result per call — both
  * spellings are produced in this file. Every consumer that must classify a result rather than show it (either Pi
  * adapter deciding whether a call committed, the test host deciding whether a result is an error)
  * reads it here, so the format has one definition and one place to change. */
@@ -285,9 +294,23 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   // that tool is used legally; tool text is diagnostic, never a conflict classification.
   const toolProblems = new Map<string, string>();
   const definitions = renderToolDefinitions(dreaming ? dreamingToolDefinitions() : toolDefinitions, names);
+  // 127: D commits each legal item at once; a refused one keeps its M slot as the Noter's does (116).
+  const dreamer = dreaming ? new Slots<object>("M", names,
+    Object.keys(definitions.find(t => t.name === "memory")!.parameters.properties as object), true) : undefined;
+  const dream = (raw: unknown) => {
+    const content = raw as Record<string, unknown>, { skip, because, ...operation } = content;
+    const skipping = "skip" in content || "because" in content;
+    if (skipping && Object.keys(operation).length) throw new Error("a skip call carries only skip and because");
+    if (skipping && typeof skip !== "string") throw new Error("skip: expected an exact K@vN version");
+    const { results: [result], ...receipt } = memory.execute(skipping ? { operations: [], skipped: [{ knowledge: skip, because }] }
+      : { operations: [content], skipped: [] }, content);
+    if (result!.startsWith("rejected: ")) throw new Error(result!.slice("rejected: ".length));
+    return receipt;
+  };
   const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ ...definitions.find(t => t.name === name)!,
     execute: (raw) => {
       if (closed) return "rejected: run has finished";
+      const priorFailure = memory.failure;
       let result: string;
       try {
         if ((name === "note" || name === "memory") && !store.enabled(session.id)) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
@@ -310,7 +333,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         result = result.startsWith("{") ? JSON.stringify({ ...JSON.parse(result), status }) : `${result}\nStatus: ${status}`;
       }
       sequence.push({ name, input: structuredClone(raw), result,
-        ...(name === "memory" && memory.failure ? { problems: memory.failure.problems } : {}) });
+        ...(name === "memory" && memory.failure && memory.failure !== priorFailure ? { problems: memory.failure.problems } : {}) });
       if (context.kind === "manual" && (name === "note" || name === "memory") && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });
       return result;
     } });
@@ -322,16 +345,15 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         ...(context.maxReadChars === undefined ? {} : { maxChars: context.maxReadChars }) });
     }),
     ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error(`${names.check} expects {} only`); return dreaming.check(); })] : [definition("note", note)]),
-    definition("memory", input => held ? held.memory(input) : context.kind === "manual"
-      ? (Object.keys(input).length && ("slot" in input || "drop" in input || "operations" in input || "skipped" in input)
-          ? `rejected: manual ${names.memory} expects one create/archive operation or {}`
-          : memory.execute({ operations: Object.keys(input).length ? [input] : [], skipped: [] }, input))
-      : memory.execute(input)),
+    definition("memory", input => held ? held.memory(input) : dreamer ? dreamer.call(input, dream, () => {})
+      : Object.keys(input).length && ("slot" in input || "drop" in input || "operations" in input || "skipped" in input)
+        ? `rejected: manual ${names.memory} expects one create/archive operation or {}`
+        : JSON.stringify(memory.execute({ operations: Object.keys(input).length ? [input] : [], skipped: [] }, input))),
   ];
   const acknowledgeRequest = () => {
     if (closed) throw new Error("noting run has finished");
   };
-  return { tools, sequence, fetched, memory, get toolProblems() { return [...toolProblems.values()]; }, get committed() { return committed; }, get problems() { return held ? [...held.problems(), ...toolProblems.values()] : problems; },
+  return { tools, sequence, fetched, memory, get toolProblems() { return [...toolProblems.values()]; }, get committed() { return committed; }, get problems() { return held ? [...held.problems(), ...toolProblems.values()] : dreamer ? [...toolProblems.values(), ...dreamer.problems()] : problems; },
     get incomplete() { return held?.incomplete() ?? false; },
     passEnd: () => { if (!held) throw new Error("only a Noter has a held end pass"); return held.passEnd(toolProblems); },
     get cancelled() { return closed; },

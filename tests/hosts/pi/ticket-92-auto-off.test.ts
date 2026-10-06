@@ -1,9 +1,7 @@
 import { expect, test, vi } from "vitest";
-import { host, reply, type Reply } from "./test-host.ts";
+import { host, reply, dreamerReply, type Reply } from "./test-host.ts";
 
-function memoryCall(batch: { operations: Array<Record<string, string | string[]>>; skipped: Array<{ knowledge: string; because: string }> }): Reply {
-  return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "maintenance", name: "memory", arguments: batch }] };
-}
+const memoryCall = (batch: Parameters<typeof dreamerReply>[1]): Reply => dreamerReply("maintenance", batch);
 
 // Real Pi extension/AgentSession with the existing local provider wire; no remote API.
 test("92/07: Pi catchup third N failure cancels D, retaining its exact claim only through settlement", async () => {

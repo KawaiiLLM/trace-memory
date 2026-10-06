@@ -183,7 +183,7 @@ test("an owned D pool uses a real pending version and keeps its global seat sepa
       const version = material.match(/New (K\d+@v\d+)/)?.[1];
       if (version !== `K${due.knowledgeId}@v1`) throw new Error(`unexpected D frozen range: ${material.slice(0, 400)}`);
       item.resolve({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
-        arguments: { operations: [], skipped: [{ knowledge: version, because: "Reviewed; retain" }] } }] });
+        arguments: { skip: version, because: "Reviewed; retain" } }] });
     }
     await h.drain();
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success"]);

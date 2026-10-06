@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { fact } from "../../support/seed.ts";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { toolDefinitions, type ListingOptions } from "../../../src/core/api/index.ts";
 import type { KnowledgeCategory, KnowledgeScope } from "../../../src/core/model/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -46,7 +46,7 @@ function owner(name: string, projectId = memory.store.createProject({ name, decl
       const files = memoryFiles(memory, input.reader!);
       const baseAddress = readHandle(address => files.read(address).content, history(base)), triggerAddress = readHandle(address => files.read(address).content, history(trigger));
       const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(history(base)); supplied.delete(history(trigger));
-      const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
+      const receipt = JSON.parse(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [
         { op: "update", id: baseAddress, text, scope, category, topics, supports: supports.map(id => `F${id}`), reason: `Reason ${text}` },
         { op: "archive", kind: "budget", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit selection trigger." },
       ], skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied fixture item." })) }));
@@ -192,14 +192,14 @@ test("41 archives and merged-away identities have no current body but remain his
     const write = input.tools.find(tool => tool.name === "memory")!;
     const files = memoryFiles(memory, input.reader!);
     const survivorTag = readHandle(path => files.read(path).content, history(survivor)), absorbedTag = readHandle(path => files.read(path).content, history(absorbed));
-    const merged = JSON.parse(write.execute({ operations: [{ op: "merge", id: survivorTag,
+    const merged = JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: survivorTag,
       absorb: [absorbedTag], text: "needle combined", scope: "project", category: "reference",
       topics: [], supports: who.supports.map(id => `F${id}`), reason: "Merge" }], skipped: [] }));
     result = committedVersion(merged.committed[0]);
     expect(identities(memory.search("needle", "knowledge", who))).toEqual([`K${result.knowledgeId}@${result.commit}`]);
     expect(memory.search("absorbed", "knowledge", { ...who, versions: "history" })).toContain(`superseded on this path by K${result.knowledgeId}@${result.commit}`);
     const resultTag = readHandle(path => files.read(path).content, history(result));
-    write.execute({ operations: [{ op: "archive", kind: "budget", id: resultTag, supports: who.supports.map(id => `F${id}`), reason: "Archive" },
+    dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: resultTag, supports: who.supports.map(id => `F${id}`), reason: "Archive" },
       { op: "archive", kind: "budget", id: readHandle(path => files.read(path).content, history(trigger)), supports: who.supports.map(id => `F${id}`), reason: "Retire the explicit lifecycle trigger." }], skipped: [] });
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "lifecycle complete", request: { fixture: "lifecycle merge and archive" } };

@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory, memoryFiles, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -22,7 +23,7 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
       absorb: [`K${returned.knowledgeId}#${store.versionTag(returned.knowledgeId, returned.commit)}`], text: "Returned widget state",
       category: "constraint", scope: "project", supports: [], topics: ["widget"], reason: "Revive the returning widget identity" };
     // 92 tags identify exact bases without a read ledger; archive revival authority remains.
-    const result = writer.execute({ operations: [operation, { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`,
+    const result = dreamerWrite(writer, { operations: [operation, { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`,
       supports: [], reason: "Retire the explicit revival trigger." }], skipped: [] });
     expect(result).toContain('"committed"');
     expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");

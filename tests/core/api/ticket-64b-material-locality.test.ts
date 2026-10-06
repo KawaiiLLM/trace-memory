@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { skipRest } from "../../dreaming-skips.ts";
+import { dreamerWrite, skipRest } from "../../dreaming-skips.ts";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
@@ -75,7 +75,7 @@ async function diverge(f: Fixture, branch: "left" | "right", triggerEntryId: num
     const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
     expect(read(tag(f.base.knowledgeId, f.base.commit))).toContain("current concise parent");
     read(tag(trigger.knowledgeId, trigger.commit));
-    const receipt = write.execute({ operations: [
+    const receipt = dreamerWrite(write, { operations: [
       { op: "update", id: tag(f.base.knowledgeId, f.base.commit), text, category: "constraint", scope: "project",
         supports: [`F${f.branchFacts[branch]}`], topics: [], reason: `${branch} evidence-driven divergence.` },
       { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire trigger." },

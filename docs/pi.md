@@ -47,7 +47,7 @@ The single Core guide is shared by injection, compaction and N/D materials, once
 
 ## Noter calls and end review (116/117)
 
-Pi exposes the same flat `note` and `memory` definitions to N and manual callers. One `note` call carries one fact in top-level `title` and `sources` fields; `sources` is a string of segments, each beginning on a line with `[T12#E3@user] ` (role optional), with no text before the first marker. Core trims trailing whitespace from each source segment while preserving internal line breaks. One `memory` call carries one top-level operation (`op`, `supports`, `reason` and applicable fields); N allows create/update/archive and has no `skipped`. Manual writes commit each call immediately, with memory limited to fact-backed create/archive. Dreamer alone retains batch `memory({operations, skipped})`.
+Pi exposes the same flat `note` and `memory` definitions to N and manual callers. One `note` call carries one fact in top-level `title` and `sources` fields; `sources` is a string of segments, each beginning on a line with `[T12#E3@user] ` (role optional), with no text before the first marker. Core trims trailing whitespace from each source segment while preserving internal line breaks. One `memory` call carries one top-level operation (`op`, `supports`, `reason` and applicable fields); N allows create/update/archive and has no `skipped`. Manual writes commit each call immediately, with memory limited to fact-backed create/archive. The Dreamer's `memory` also takes one item per call: one operation, or one `{skip, because}`; each legal call commits at once, and a refused one holds an `Mn` slot until `slot` resubmits or `drop` withdraws it (127).
 
 N stages facts in `$n` slots and knowledge operations in `Mn` slots. A call without `slot` appends, an explicit `slot` replaces the entire item, and `drop: "$n"` or `drop: "Mn"` removes one slot in a separate call. `note({})` and `memory({})` explicitly confirm no item; N must call both tools even when empty. An empty call does not clear a rejected slot.
 
@@ -411,7 +411,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   `memory({op, supports, reason, ...})`
   writes one Knowledge operation immediately within the caller's authority; `note({})` and
   `memory({})` are explicit empty calls. Noter uses the same flat item fields, with its private
-  `slot`/`drop` handles; Dreamer alone keeps `{operations, skipped}` batches. Every operation
+  `slot`/`drop` handles; the Dreamer sends one operation or one `{skip, because}` per call (127). Every operation
   carries `supports` and a `reason`; create/update/merge also
   carry the revision's complete `topics` set. Noter permits create/update/archive; manual calls permit
   fact-backed create/archive; Dreamer alone may merge, split or submit support-inheriting

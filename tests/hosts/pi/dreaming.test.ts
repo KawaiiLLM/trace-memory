@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import type { JsonObject } from "@earendil-works/pi-ai";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
-import { host, reply, emptyNote, type Reply } from "./test-host.ts";
+import { host, reply, emptyNote, dreamerReply, type Reply } from "./test-host.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
@@ -11,8 +11,8 @@ import { knowledge, legacyFacts } from "../../support/seed.ts";
 
 const workflowHeadings = (JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as { promptOrder: string[] }).promptOrder;
 const call = (id: string, name: string, args: unknown): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args as JsonObject }] });
-// 59: a scripted Dreamer accounts for the supplied handles it leaves untouched with one explicit skip batch.
-const skip = (...handles: string[]): Reply => call("skip", "memory", { operations: [], skipped: handles.map(knowledge => ({ knowledge, because: "reviewed; no operation needed" })) });
+// 59/127: a scripted Dreamer accounts for the supplied handles it leaves untouched, one skip call each, in one response.
+const skip = (...handles: string[]): Reply => dreamerReply("skip", { skipped: handles.map(knowledge => ({ knowledge, because: "reviewed; no operation needed" })) });
 async function seeded(config: Record<string, unknown> = {}, text = "Keep the user constraint") {
   const h = host({ "noting.triggerTokens": 1000000, "dreaming.triggerTokens": 1, ...config });
   await h.emit("session_start"); await h.turn();
@@ -112,7 +112,7 @@ test("32d native host: pass ends after all intermediate tool turns; first memory
     let requests = 0;
     h.provider(async () => {
       requests++;
-      if (requests === 1) return call("archive", "memory", { operations: [{ op: "archive", kind: "budget", id: item.tagged, supports: [], reason: "Retire redundant active rule; history preserved" }], skipped: [] });
+      if (requests === 1) return call("archive", "memory", { op: "archive", kind: "budget", id: item.tagged, supports: [], reason: "Retire redundant active rule; history preserved" });
       expect(store.currentKnowledge(store.knowledgePath(1))).toEqual([]);
       expect(processedIn(store, pool, store.listKnowledgeRevisions().at(-1)!.id)).toBe(false);
       if (requests === 2) return call("read", "read", { path: `/tm/K${item.knowledgeId}` });
@@ -207,7 +207,7 @@ test("64c native host: stop after a commit records the frozen range and own comm
   try {
     let requests = 0;
     h.provider(async () => {
-      if (++requests === 1) return call("update", "memory", { operations: [{ op: "update", id: item.tagged, text: "Keep the user's exact constraint", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "clarify without new facts" }], skipped: [] });
+      if (++requests === 1) return call("update", "memory", { op: "update", id: item.tagged, text: "Keep the user's exact constraint", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "clarify without new facts" });
       await held; return reply("late reply");
     }, { autoStop: false });
     await h.turn();
@@ -234,7 +234,7 @@ test("64c native host: provider overflow keeps the archive and consumes the fail
   try {
     let requests = 0;
     h.provider(async () => ++requests === 1
-      ? call("archive", "memory", { operations: [{ op: "archive", kind: "budget", id: item.tagged, supports: [], reason: "Deliberate budget retirement" }], skipped: [] })
+      ? call("archive", "memory", { op: "archive", kind: "budget", id: item.tagged, supports: [], reason: "Deliberate budget retirement" })
       : { ...reply(""), stopReason: "error", errorMessage: "maximum context length exceeded" }, { autoStop: false });
     await h.turn(); const run = await terminal(h);
     expect(run.outcome).toBe("failure"); expect(requests).toBe(2);
@@ -250,8 +250,8 @@ test("64c native host: provider overflow keeps the archive and consumes the fail
 test("125: native Dreamer gets the end review once after its first pass; a second-pass operation commits and no third pass follows", async () => {
   const { h, store, item } = await seeded();
   try {
-    const update = (id: string, text: string, reason: string) => call(reason, "memory", { operations: [{ op: "update", id, text,
-      category: "constraint", scope: "project", supports: [], topics: [], reason }], skipped: [] });
+    const update = (id: string, text: string, reason: string) => call(reason, "memory", { op: "update", id, text,
+      category: "constraint", scope: "project", supports: [], topics: [], reason });
     const reviewed: boolean[] = [];
     h.provider(async conversation => {
       const review = conversation.messages.map(message => JSON.stringify(message.content))
@@ -274,6 +274,38 @@ test("125: native Dreamer gets the end review once after its first pass; a secon
   } finally { await h.dispose(); }
 });
 
+test("127: one native response's memory calls run in order and commit independently; a refused one blocks until the second pass drops it", async () => {
+  const { h, store, item } = await seeded();
+  try {
+    const results: string[][] = [];
+    let review = "";
+    h.provider(async conversation => {
+      const texts = conversation.messages.map(message => JSON.stringify(message.content));
+      review ||= texts.find(text => text.includes("Before this run ends, review it once.")) ?? "";
+      results.push(conversation.messages.filter(message => message.role === "toolResult")
+        .map(message => (message.content as { type: string; text: string }[]).map(part => part.text).join("")));
+      switch (results.length) {
+        case 1: return dreamerReply("first", { operations: [{ op: "archive", kind: "budget", id: `K${item.knowledgeId}#zzzz`, supports: [], reason: "bad tag" },
+          { op: "update", id: item.tagged, text: "Keep the user's constraint", category: "constraint", scope: "project", supports: [], topics: [], reason: "clarify" }] });
+        case 2: return reply("Done first pass");
+        case 3: return call("drop", "memory", { drop: "M1" });
+        case 4: return reply("Reviewed");
+        default: throw new Error("Unexpected third pass");
+      }
+    }, { autoStop: false });
+    await h.turn();
+    const run = await terminal(h);
+    expect(run.outcome, run.response ?? "").toBe("success");
+    const [refused, committed] = results[1]!.map(text => JSON.parse(text));
+    expect(refused.results).toEqual([expect.stringMatching(/^rejected: M1: /)]);
+    expect(committed).toMatchObject({ results: ["ok"], committed: [{ knowledgeId: item.knowledgeId }] });
+    expect(committed.rejected).toHaveProperty("M1"); // the later sibling's commit leaves the refusal outstanding
+    expect(review).toContain("Blockers:\\nM1: ");
+    expect(results[3]!.at(-1)).toContain("dropped: M1");
+    expect(store.listCommitsByRun(run.id).map(revision => revision.text)).toEqual(["Keep the user's constraint"]);
+  } finally { await h.dispose(); }
+});
+
 test("126: one native Dreamer run covers the session's pools; the end review is sent once", async () => {
   const { h, store, item, content, pool } = await seeded();
   try {
@@ -287,7 +319,7 @@ test("126: one native Dreamer run covers the session's pools; the end review is 
         .find(text => text.includes("Before this run ends, review it once."));
       if (review) { reviews.push(review); return reply("Reviewed"); }
       if (conversation.messages.some(message => message.role === "toolResult")) return reply("Done first pass");
-      return call("maintain", "memory", { operations: [{ op: "update", id: `K${global.knowledgeId}#${store.versionTag(global.knowledgeId, global.commit)}`,
+      return dreamerReply("maintain", { operations: [{ op: "update", id: `K${global.knowledgeId}#${store.versionTag(global.knowledgeId, global.commit)}`,
         text: "A global rule, clarified", category: "constraint", scope: "global", supports: [], topics: [], reason: "clarify" }],
         skipped: [history(item), history(local)].map(knowledge => ({ knowledge, because: "reviewed; no operation needed" })) });
     }, { autoStop: false });

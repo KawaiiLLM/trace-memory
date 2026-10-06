@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import type { JsonObject } from "@earendil-works/pi-ai";
-import { host, reply, notingFact, type Reply } from "./test-host.ts";
+import { host, reply, notingFact, dreamerReply, type Reply } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
@@ -39,7 +39,7 @@ function retain(c: Parameters<typeof notingFact>[0]): Reply {
   const material = String(c.messages[0]!.content);
   const handles = [...material.matchAll(/^New (K\d+@v\d+):/gm)].map(match => match[1]!);
   expect(handles.length).toBeGreaterThan(0);
-  return call("memory", { operations: [], skipped: handles.map(knowledge => ({ knowledge, because: "Reviewed unchanged" })) });
+  return dreamerReply("memory", { skipped: handles.map(knowledge => ({ knowledge, because: "Reviewed unchanged" })) });
 }
 function seed(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
@@ -142,8 +142,8 @@ test("86: ordinary D partial write survives terminal failure without a completio
       if (!dreaming(c)) return notingFact(c);
       if (!submitted) {
         submitted = true;
-        return call("memory", { operations: [{ op: "update", id: initialHandle,
-          text: "Maintained rule " + "word ".repeat(120), category: "constraint", scope: "session", supports: [], topics: [], reason: "Update before failure" }], skipped: [] });
+        return call("memory", { op: "update", id: initialHandle,
+          text: "Maintained rule " + "word ".repeat(120), category: "constraint", scope: "session", supports: [], topics: [], reason: "Update before failure" });
       }
       waiting = true; await held;
       return { ...reply(""), stopReason: "error", errorMessage: "terminal D failure after commit" };

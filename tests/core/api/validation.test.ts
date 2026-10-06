@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { hydrate, sourceSeededMemory, memoryFiles, type NotingAgentInput, type DreamingAgentInput } from "../../source-fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 // Exercise both explicit N tools and real terminal publication.
 async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string) => unknown)) {
@@ -95,9 +96,9 @@ describe("checkMemoryBatch", async () => {
       const tag = `K1#${memory.store.versionTag(1, 1)}`;
       expect(memoryFiles(memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("/tm/K1").content).toContain(tag);
       const before = memory.store.listKnowledgeRevisions();
-      const receipt = input.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "merge", id: tag,
+      const receipt = dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [{ op: "merge", id: tag,
         absorb: ["not-an-id"], text: "Merged rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Merge duplicate." }], skipped: [] });
-      expect(JSON.parse(receipt).results).toEqual(["rejected: not-an-id: supply an exact K#tag version; not-an-id: knowledge version does not exist"]);
+      expect(JSON.parse(receipt).results).toEqual(["rejected: M1: not-an-id: supply an exact K#tag version; not-an-id: knowledge version does not exist"]);
       expect(memory.store.listKnowledgeRevisions()).toEqual(before);
       reached = true;
       input.reportRequest({});
@@ -113,7 +114,7 @@ describe("checkMemoryBatch", async () => {
       const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id });
       expect(result.outcome, JSON.stringify(result)).toBe("failure");
       if (result.outcome !== "failure") throw new Error("expected refused D batch");
-      expect(result.problems).toEqual(["rejected: not-an-id: supply an exact K#tag version; not-an-id: knowledge version does not exist",
+      expect(result.problems).toEqual(["M1: not-an-id: supply an exact K#tag version; not-an-id: knowledge version does not exist",
         "frozen versions not deliberated: K1@v1"]); // 104: the refused merge left its frozen base undeliberated
       expect(reached).toBe(true);
       expect(memory.store.listKnowledgeRevisions()).toHaveLength(1);

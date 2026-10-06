@@ -3,6 +3,7 @@ import { TraceMemory, memoryFiles, type RunAgent } from "../../../src/core/api/i
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { factSources } from "../../support/seed.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 const time = "2026-09-01T00:00:00Z";
 function setup(agent: RunAgent = async () => { throw Error("offline only"); }) {
@@ -94,7 +95,7 @@ test("92 exact historical versions retain complete tags without granting stale u
       const write = input.tools.find(t => t.name === "memory")!;
       const base = `K1#${m.store.versionTag(1, 1)}`;
       expect(memoryFiles(m, input.reader!).read(`/tm/${base}`).content).toContain(base);
-      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: base, text: "Current replacement", category: "understanding", scope: "project",
+      const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: base, text: "Current replacement", category: "understanding", scope: "project",
         supports: ["F1"], reason: "Make old revision historical", topics: [] },
       { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${m.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] }));
       expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1).version).toBe("K1@v2");
@@ -109,10 +110,11 @@ test("92 exact historical versions retain complete tags without granting stale u
       const request = { fixture: "stale version authority" }; input.reportRequest(request);
       const write = input.tools.find(t => t.name === "memory")!;
       expect(memoryFiles(m, input.reader!).read("/tm/K1@v1").content).toContain(oldTag);
-      const rejected = write.execute({ operations: [{ op: "update", id: oldTag, text: "Wrong replacement", category: "understanding", scope: "project",
+      const rejected = dreamerWrite(write, { operations: [{ op: "update", id: oldTag, text: "Wrong replacement", category: "understanding", scope: "project",
         supports: ["F1"], reason: "Wrong base", topics: [] }], skipped: [] });
       expect(rejected).toContain("base is not the latest effective applicable revision; current: K1@v2");
-      write.execute({ operations: [{ op: "archive", kind: "budget", id: `K${next.knowledgeId}#${m.store.versionTag(next.knowledgeId, next.commit)}`,
+      expect(write.execute({ drop: "M1" })).toContain("dropped: M1"); // 127: a refusal blocks until withdrawn
+      dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: `K${next.knowledgeId}#${m.store.versionTag(next.knowledgeId, next.commit)}`,
         supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] });
       return { outcome: "success", output: "stale base checked", request };
     });

@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { legacyFacts } from "../../support/seed.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
@@ -151,7 +151,7 @@ test("73: real facade freezes D references to base plus the configured shared al
     admitted.push(budgets.dreamingProcessedInput + f.memory.config.compaction.sharedAllowanceTokens
       - tokens(task.material.changed) - 1);
     if (admitted.length === 1) {
-      expect(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: suppliedHandles(task.material.changed)
+      expect(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [], skipped: suppliedHandles(task.material.changed)
         .map(knowledge => ({ knowledge, because: "reviewed unchanged" })) })).toContain("committed");
       const frozen = task.admittedProcessedInputCap;
       f.memory.setKnowledgeBudget("global", 5_000);

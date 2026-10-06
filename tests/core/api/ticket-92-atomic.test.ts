@@ -500,8 +500,8 @@ test("04: converted new identity is reconciled by ordinary D merge without a spe
       const current = f.memory.store.currentKnowledge(f.path).sort((a,b) => a.knowledge.id-b.knowledge.id);
       expect(current).toHaveLength(2);
       const address = (index: number) => `K${current[index]!.knowledge.id}#${f.memory.store.versionTag(current[index]!.knowledge.id, current[index]!.revision.id)}`;
-      expect(call(task, "memory", { operations: [{ op: "merge", id: address(0), absorb: [address(1)], text: "Resolved rule",
-        category: "constraint", scope: "session", topics: [], supports: [], reason: "Reconciled concurrent proposal with current evidence" }], skipped: [] })).not.toContain("rejected:");
+      expect(call(task, "memory", { op: "merge", id: address(0), absorb: [address(1)], text: "Resolved rule",
+        category: "constraint", scope: "session", topics: [], supports: [], reason: "Reconciled concurrent proposal with current evidence" })).not.toContain("rejected:");
       task.tools.find(tool => tool.name === "check")!.execute({});
       return;
     }
@@ -548,7 +548,7 @@ for (const structural of ["merge", "split"] as const)
         const operation = structural === "merge"
           ? { op: "merge", id: tag(0), absorb: [tag(1)], text: "Merged rule", category: "constraint", scope: "session", topics: [], supports: [], reason: "combine" }
           : { op: "split", id: tag(0), children: [{ text: "First rule", category: "constraint", topics: [] }, { text: "Second rule", category: "constraint", topics: [] }], supports: [], reason: "separate" };
-        expect(call(task, "memory", { operations: [operation], skipped: [] })).not.toContain("rejected:");
+        expect(call(task, "memory", operation)).not.toContain("rejected:");
         task.tools.find(tool => tool.name === "check")!.execute({});
         return;
       }

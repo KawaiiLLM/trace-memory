@@ -10,6 +10,7 @@ import { setKnowledgeCapacity, setKnowledgeInjection, setSharedAllowance } from 
 import { charge, expandList } from "../../../src/core/render/index.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/turns.json", import.meta.url), "utf8"));
@@ -737,7 +738,7 @@ test("search marks historical, merged and archived knowledge hits so they do not
     const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
     for (const address of [tag(a, 1), tag(b, b), tag(c, c), tag(trigger1.knowledgeId, trigger1.commit)])
       expect(memoryFiles(memory, input.reader!).read(`/tm/${address}`).content).toContain(address);
-    const receipt = JSON.parse(write.execute({ operations: [
+    const receipt = JSON.parse(dreamerWrite(write, { operations: [
       { op: "update", id: tag(a, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: ["F1"] },
       { op: "merge", id: tag(b, b), absorb: [tag(c, c)], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: ["F1"] },
       { op: "archive", kind: "budget", id: tag(trigger1.knowledgeId, trigger1.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
@@ -755,7 +756,7 @@ test("search marks historical, merged and archived knowledge hits so they do not
     const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
     for (const address of [tag(b, merged.commit), tag(trigger2.knowledgeId, trigger2.commit)])
       expect(memoryFiles(memory, input.reader!).read(`/tm/${address}`).content).toContain(address);
-    write.execute({ operations: [
+    dreamerWrite(write, { operations: [
       { op: "archive", kind: "budget", id: tag(b, merged.commit), supports: ["F1"], reason: "Retired: the cited evidence withdraws this conclusion." },
       { op: "archive", kind: "budget", id: tag(trigger2.knowledgeId, trigger2.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
     ], skipped: [] });
@@ -783,7 +784,7 @@ test("reads resolve any existing address: another session's history, current rev
     const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
     for (const address of [tag(k, 1), tag(trigger.knowledgeId, trigger.commit)])
       expect(memoryFiles(memory, input.reader!).read(`/tm/${address}`).content).toContain(address);
-    const receipt = JSON.parse(write.execute({ operations: [
+    const receipt = JSON.parse(dreamerWrite(write, { operations: [
       { op: "update", id: tag(k, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
         category: "goal", scope: "session", supports: ["F1"] },
       { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },

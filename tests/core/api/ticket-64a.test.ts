@@ -6,6 +6,7 @@ import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { renderKnowledgeChange, wordLevelDiff } from "../../../src/core/render/index.ts";
 import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, memoryFiles, validateConfig, type NotingAgentInput } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 // Ticket 92 transfers ticket 76's create/update/archive authority from C to N.
 // N publishes held operations terminally; D still reviews the diff against its processed baseline.
@@ -194,14 +195,15 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       const write = input.tools.find(tool => tool.name === "memory")!;
       // D's operation on the frozen (now stale) base is refused; nothing else happens to it — no
       // fallback conversion, no automatic retry against the new base.
-      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(k5)), text: "D's edit",
+      const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(k5)), text: "D's edit",
         category: "reference", scope: "project", topics: [], supports: [`F${fact}`], reason: "D edit." }], skipped: [] }));
       expect(receipt.results[0]).toContain("base is not the latest effective applicable revision");
       expect(receipt.results[0]).toContain(history(cMoved));
       // D finishes the run through its own separate, valid submission (the per-item discipline: one
-      // rejection's blast radius stays one item).
+      // rejection's blast radius stays one item). 127: it first withdraws the refused item, which blocks until then.
       // 104: success deliberates the whole frozen range, the refused stale base included.
-      const closed = JSON.parse(write.execute({ operations: [], skipped: [
+      expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
+      const closed = JSON.parse(dreamerWrite(write, { operations: [], skipped: [
         { knowledge: history(k5), because: "Superseded by N while frozen; no operation on the stale base." },
         { knowledge: history(trigger), because: "No maintenance needed for the explicit fixture trigger." }] }));
       expect(closed.committed).toEqual([]);
@@ -306,14 +308,14 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       // Inject an exact tag without a trace call: authority depends on the current base, not read history.
       const staleTag = `K${base.knowledgeId}#${memory.store.versionTag(base.knowledgeId, base.commit)}`;
       const currentTag = `K${current.knowledgeId}#${memory.store.versionTag(current.knowledgeId, current.commit)}`;
-      const blind = memoryTool.execute({ operations: [{ op: "update", id: staleTag, text: "blind edit",
+      const blind = dreamerWrite(memoryTool, { operations: [{ op: "update", id: staleTag, text: "blind edit",
         category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: "Blind." }], skipped: [] });
       expect(blind).toContain("base is not the latest effective applicable revision");
       expect(blind).toContain(history(current));
       expect(blind).not.toContain(currentTag);
       expect(blind).not.toContain("base rule");
       expect(blind).not.toContain("moved rule");
-      const corrected = memoryTool.execute({ operations: [{ op: "update", id: currentTag, text: "corrected rule",
+      const corrected = dreamerWrite(memoryTool, { operations: [{ slot: "M1", op: "update", id: currentTag, text: "corrected rule",
         category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: "Correct." },
         { op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(trigger)), supports: [`F${fact}`], reason: "Retire the explicit fixture trigger." }], skipped: [] });
       expect(corrected).toContain('"committed"');
@@ -472,7 +474,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       const dreamed = await scenarios.run(memory, path, input => {
         input.reportRequest({});
         const write = input.tools.find(tool => tool.name === "memory")!;
-        const receipt = JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(item)), supports: [`F${fact}`], reason: "D retires it." },
+        const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(item)), supports: [`F${fact}`], reason: "D retires it." },
           { op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
         expect(receipt.committed).toHaveLength(2);
         return { outcome: "success", output: "D archived it", request: {} };
@@ -517,7 +519,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
         // Archive history is inspectable, but only its own exact tag can revive the current archive.
         expect(input.material.changed).toContain("revivable body");
         const write = input.tools.find(tool => tool.name === "memory")!;
-        const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(archiveCommit)),
+        const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(archiveCommit)),
           text: "revived body", category: "reference", scope: "project", topics: [], supports: [`F${fact}`], reason: "Revived." },
           { op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
         expect(receipt.committed).toHaveLength(2);

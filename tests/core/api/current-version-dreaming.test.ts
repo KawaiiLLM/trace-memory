@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { TraceMemory, memoryFiles, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
-import { skipRest as skipAll } from "../../dreaming-skips.ts";
+import { dreamerWrite, skipRest as skipAll } from "../../dreaming-skips.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -107,7 +107,7 @@ test("64c cancelled run after a scope-changing commit processes only its resulti
   const f = fixture(async task => {
     task.acknowledgeRequest();
     const memory = task.tools.find(tool => tool.name === "memory")!;
-    const committed = JSON.parse(memory.execute({ operations: [{ op: "update", id: `K${input.knowledgeId}#${f.store.versionTag(input.knowledgeId, input.commit)}`,
+    const committed = JSON.parse(dreamerWrite(memory, { operations: [{ op: "update", id: `K${input.knowledgeId}#${f.store.versionTag(input.knowledgeId, input.commit)}`,
       text: "moved global rule", category: "constraint", scope: "global", supports: [], topics: [], reason: "scope change" }], skipped: [] })).committed;
     output = f.store.resolveVersionOrdinal(committed[0].knowledgeId, Number(committed[0].version.split("@v")[1]));
     return await new Promise<RunAgentResult>(resolve => task.signal!.addEventListener("abort",
@@ -136,7 +136,7 @@ test.each([
   const f = fixture(async input => {
     task = input; task.acknowledgeRequest();
     if (committed) {
-      const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
+      const receipt = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [{
         op: "update", id: `K${item.knowledgeId}#${f.store.versionTag(item.knowledgeId, item.commit)}`, text: "maintained rule",
         category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain",
       }], skipped: [] }));
@@ -158,9 +158,9 @@ test.each([
     expect(f.store.getClaim(f.session.id, "dreaming")).toEqual(claim);
     expect(f.store.acquireClaim(f.target, "dreaming", "other-executor")).toBeNull();
     const before = f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions").get();
-    const late = task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
+    const late = task.tools.find(tool => tool.name === "memory")!.execute({
       op: "archive", kind: "budget", id: `K${item.knowledgeId}#${f.store.versionTag(item.knowledgeId, output || item.commit)}`, supports: [], reason: "late forbidden write",
-    }], skipped: [] });
+    });
     expect(late).toBe("rejected: run has finished");
     expect(f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions").get()).toEqual(before);
     release();
@@ -185,12 +185,12 @@ test.each(["absorbed", "survivor", "explicit"] as const)("64c merge shorthand co
     task.acknowledgeRequest();
     const write = task.tools.find(tool => tool.name === "memory")!;
     if (mode === "survivor") {
-      const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
+      const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
         text: latest, category: "constraint", scope: "project", supports: [], topics: [], reason: "newer commit of older identity" }], skipped: [] }));
       older = { knowledgeId: updated.committed[0].knowledgeId, commit: f.store.resolveVersionOrdinal(updated.committed[0].knowledgeId, Number(updated.committed[0].version.split("@v")[1])) };
       expect(memoryFiles(f.memory, task.reader!).read(`/tm/${updated.committed[0].version}`).content).toContain(latest.trim());
     }
-    const receipt = JSON.parse(write.execute({ operations: [{ op: "merge", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
+    const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
       absorb: [`K${newer.knowledgeId}#${f.store.versionTag(newer.knowledgeId, newer.commit)}`], ...(mode === "explicit" ? { text: explicit } : {}),
       category: "constraint", scope: "project", supports: [], topics: ["merged"], reason: "same conclusion" }], skipped: [] }));
     merged = f.store.resolveVersionOrdinal(receipt.committed[0].knowledgeId, Number(receipt.committed[0].version.split("@v")[1]));

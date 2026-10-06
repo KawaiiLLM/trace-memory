@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { countSourceReads, countGraphResolutions } from "../../perf/fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -127,14 +127,14 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
       const tip = tips[i]!, address = `K${tip.knowledgeId}#${store.versionTag(tip.knowledgeId, tip.commit)}`;
       consumed.add(`K${tip.knowledgeId}@v${j}`);
       expect(fullRead(sessionId, headTurnId, address)).toContain(`K${tip.knowledgeId}#`);
-      const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: address,
+      const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: address,
         text: `SEARCHNEEDLE conclusion ${i} revision ${j}`, category: "understanding", scope: "session", supports: supports.map(id => `F${id}`), reason: "corpus", topics: [] }], skipped: [] }));
       expect(updated.committed[0]!.version).toBe(`K${tip.knowledgeId}@v${j + 1}`);
       tip.commit = store.resolveVersionOrdinal(tip.knowledgeId, j + 1);
     }
     const triggerAddress = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
     const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(`K${trigger.knowledgeId}@v1`); for (const address of consumed) supplied.delete(address);
-    write.execute({ operations: [{ op: "archive", kind: "budget", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit paged-read trigger." }],
+    dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit paged-read trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No further corpus maintenance is needed." })) });
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "corpus revisions complete", request };
@@ -200,7 +200,7 @@ test("22c: continuation is complete and stable, and a commit between pages moves
         const request = { fixture: "between paged reads" }; input.reportRequest(request);
         const base = `K${last.knowledgeId}#${other.store.versionTag(last.knowledgeId, last.commit)}`;
         expect(memoryFiles(other, corpus.path).read(`/tm/${base}`).content).toContain(base);
-        input.tools.find(tool => tool.name === "memory")!.execute({ operations: [
+        dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [
           { op: "update", id: base, text: "SEARCHNEEDLE later conclusion",
             category: "understanding", scope: "session", supports: corpus.supports.map(id => `F${id}`), reason: "between pages", topics: [] },
           { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${other.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: corpus.supports.map(id => `F${id}`), reason: "Retire the explicit between-pages trigger." },

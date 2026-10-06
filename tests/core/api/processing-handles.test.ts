@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { seedSourceEntry } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 const all: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const m of all.splice(0)) m.close(); });
@@ -36,12 +37,12 @@ test("Dreamer invalidation body observes the new-write cap; budget can retain an
     const memory = input.tools.find(tool => tool.name === "memory")!;
     const id = a.tag(trigger.knowledgeId);
     const oversized = "Substantive evidence and grounds ".repeat(1000);
-    expect(memory.execute({ operations: [{ op: "archive", kind: "invalid", id, text: oversized,
+    expect(dreamerWrite(memory, { operations: [{ op: "archive", kind: "invalid", id, text: oversized,
       supports: ["F1"], reason: "Invalidated after evidence changed" }], skipped: [] })).toContain("exceeds 1000-token limit");
-    expect(memory.execute({ operations: [{ op: "archive", kind: "budget", id: a.tag(1),
+    expect(dreamerWrite(memory, { operations: [{ op: "archive", kind: "budget", id: a.tag(1),
       supports: ["F1"], reason: "Budget retirement retains full parent" }], skipped: [] })).toContain("committed");
     expect(a.m.store.currentCommit(1, a.path)[0]).toMatchObject({ op: "archive", archiveKind: "budget", text: a.content.text });
-    expect(memory.execute({ operations: [{ op: "archive", kind: "budget", id,
+    expect(dreamerWrite(memory, { operations: [{ slot: "M1", op: "archive", kind: "budget", id,
       supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] })).toContain("committed");
     return { outcome: "success", output: "cap checked", request };
   });
@@ -54,16 +55,16 @@ test("99: Dreamer invalidation commits immediately and an ordinary update revive
   const result = await a.scenarios.run(a.m, a.path, input => {
     const request = { fixture: "archive then revive" }; input.reportRequest(request);
     const memory = input.tools.find(tool => tool.name === "memory")!;
-    expect(memory.execute({ operations: [{ op: "archive", kind: "invalid", id: a.tag(1),
+    expect(dreamerWrite(memory, { operations: [{ op: "archive", kind: "invalid", id: a.tag(1),
       text: "The old claim no longer holds because the user withdrew the evidence; nothing replaces it.",
       supports: [], reason: "Withdraw prior understanding" }], skipped: [] })).toContain("committed");
     const archived = a.m.store.currentCommit(1, a.path)[0]!;
     expect(archived).toMatchObject({ op: "archive", archiveKind: "invalid", supports: [1] });
     expect(a.m.store.currentKnowledge(a.path).some(item => item.knowledge.id === 1)).toBe(false);
-    expect(memory.execute({ operations: [{ op: "update", id: a.tag(1, 2), ...a.content,
+    expect(dreamerWrite(memory, { operations: [{ op: "update", id: a.tag(1, 2), ...a.content,
       text: "A new user decision revives this identity", supports: [] }], skipped: [] })).toContain("committed");
     expect(a.m.store.currentCommit(1, a.path)[0]!.op).toBe("update");
-    expect(memory.execute({ operations: [{ op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId),
+    expect(dreamerWrite(memory, { operations: [{ op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId),
       supports: [], reason: "Retire fixture trigger" }], skipped: [] })).toContain("committed");
     return { outcome: "success", output: "revived", request };
   });
@@ -76,11 +77,13 @@ test("92 supersedes 32: mutations require exact tags, not bare identities or hum
   const result = await a.scenarios.run(a.m, a.path, input => {
     const request = { fixture: "exact maintenance address" }; input.reportRequest(request);
     const write = input.tools.find(t => t.name === "memory")!;
+    let refused = 0;
     for (const op of ["update", "archive"]) for (const id of ["K1", "K1@1", "K1@v1"]) {
       const value = op === "archive" ? { supports: ["F1"], reason: "retire" } : a.content;
-      expect(write.execute({ operations: [{ op, id, ...value }], skipped: [] })).toContain("supply an exact K#tag version");
+      expect(dreamerWrite(write, { operations: [{ op, id, ...value }], skipped: [] })).toContain("supply an exact K#tag version");
+      expect(write.execute({ drop: `M${++refused}` })).toContain("dropped"); // 127: each refusal blocks until withdrawn
     }
-    const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: a.tag(1), ...a.content },
+    const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: a.tag(1), ...a.content },
       { op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId), supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] }));
     expect(updated.committed).toHaveLength(2);
     expect(updated.committed[0].version).toBe("K1@v2");
@@ -109,33 +112,37 @@ test("92: ABA keeps different tags and archive invalidates old bases without sub
     const request = { fixture: "ABA tags" }; input.reportRequest(request);
     const write = input.tools.find(t => t.name === "memory")!;
     const original = a.tag(1);
-    expect(write.execute({ operations: [{ op: "update", id: original, ...a.content, text: "body B" }], skipped: [] })).toContain("committed");
+    expect(dreamerWrite(write, { operations: [{ op: "update", id: original, ...a.content, text: "body B" }], skipped: [] })).toContain("committed");
     const middle = a.tag(1, 2);
-    expect(write.execute({ operations: [{ op: "update", id: middle, ...a.content }], skipped: [] })).toContain("committed");
+    expect(dreamerWrite(write, { operations: [{ op: "update", id: middle, ...a.content }], skipped: [] })).toContain("committed");
     const restored = a.tag(1, 3);
     expect(new Set([original, middle, restored]).size).toBe(3);
-    expect(write.execute({ operations: [{ op: "update", id: original, ...a.content }], skipped: [] })).toContain("current: K1@v3");
-    expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: restored, supports: ["F1"], reason: "retired" }], skipped: [] })).toContain("committed");
-    expect(write.execute({ operations: [{ op: "update", id: restored, ...a.content }], skipped: [] })).toContain("current: K1@v4");
-    expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId), supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] })).toContain("committed");
+    expect(dreamerWrite(write, { operations: [{ op: "update", id: original, ...a.content }], skipped: [] })).toContain("current: K1@v3");
+    expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
+    expect(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: restored, supports: ["F1"], reason: "retired" }], skipped: [] })).toContain("committed");
+    expect(dreamerWrite(write, { operations: [{ op: "update", id: restored, ...a.content }], skipped: [] })).toContain("current: K1@v4");
+    expect(write.execute({ drop: "M2" })).toContain("dropped: M2");
+    expect(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId), supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] })).toContain("committed");
     return { outcome: "success", output: "ABA checked", request };
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");
 });
 
-test("92: every merge participant is tagged and current; one bad base rolls back the entire batch", async () => {
+// 127: one operation per call, so a bad base refuses its own merge whole; a sibling archive is its own call.
+test("92: every merge participant is tagged and current; one bad base refuses the whole merge", async () => {
   const a = setup(true), trigger = createDreamerTrigger(a.m, a.path, 1, 1);
   const result = await a.scenarios.run(a.m, a.path, input => {
     const request = { fixture: "merge tagged participants" }; input.reportRequest(request);
     const write = input.tools.find(t => t.name === "memory")!;
-    expect(write.execute({ operations: [{ op: "update", id: a.tag(2), ...a.content, text: "later merge parent" }], skipped: [] })).toContain("committed");
+    expect(dreamerWrite(write, { operations: [{ op: "update", id: a.tag(2), ...a.content, text: "later merge parent" }], skipped: [] })).toContain("committed");
     const merge = { op: "merge", id: a.tag(1), absorb: [a.tag(2, 2)], ...a.content };
     const archive = { op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId), supports: ["F1"], reason: "Retire fixture trigger" };
-    expect(write.execute({ operations: [archive, { ...merge, absorb: [a.tag(2)] }], skipped: [] })).toContain("current: K2@v2");
-    expect(a.m.store.currentCommit(trigger.knowledgeId)[0]!.op).toBe("create");
+    expect(write.execute({ ...merge, absorb: [a.tag(2)] })).toContain("current: K2@v2");
     expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");
-    expect(write.execute({ operations: [{ ...merge, absorb: ["K2"] }], skipped: [] })).toContain("supply an exact K#tag");
-    expect(JSON.parse(write.execute({ operations: [merge, archive], skipped: [] })).committed).toHaveLength(2);
+    expect(a.m.store.currentCommit(2)[0]!.op).toBe("update");
+    expect(write.execute({ ...merge, absorb: ["K2"] })).toContain("supply an exact K#tag");
+    expect(write.execute({ drop: "M2" })).toContain("dropped: M2");
+    expect(JSON.parse(dreamerWrite(write, { operations: [{ slot: "M1", ...merge }, archive], skipped: [] })).committed).toHaveLength(2);
     return { outcome: "success", output: "merged", request };
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");

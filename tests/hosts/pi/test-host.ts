@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { buildContextEntries, createEventBus, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import extension, { piResultText } from "../../../src/hosts/pi/index.ts";
 import type { ThinkingLevel } from "../../../src/hosts/pi/native.ts";
@@ -387,6 +388,12 @@ export function notingFact(conversation: Conversation): Reply {
   return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const,
     id: previous ? "note-2" : "note-1", name: "note", arguments: { title: "选择 pnpm", sources: `[${source}] 用 pnpm，不要 npm` } }, { type: "toolCall" as const, id: "memory-empty", name: "memory", arguments: {} }] };
 }
+
+/** 127: one scripted Dreamer response, one `memory` tool call per operation and then one per skip. */
+export const dreamerReply = (id: string, { operations = [], skipped = [] }: { operations?: readonly unknown[];
+  skipped?: readonly { knowledge: string; because: string }[] }): Reply => ({ ...reply(""), stopReason: "toolUse",
+  content: [...operations, ...skipped.map(({ knowledge, because }) => ({ skip: knowledge, because }))]
+    .map((input, index) => ({ type: "toolCall" as const, id: `${id}-${index + 1}`, name: "memory", arguments: input as JsonObject })) });
 
 export const consolidationBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
 export const consolidationReply = (conversation?: Conversation): Reply => {

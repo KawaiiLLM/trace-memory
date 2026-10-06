@@ -1726,8 +1726,8 @@ test("production MCP D gets the end review after its first pass; its second-pass
       const rewrite = async function* (id: string, text: string) {
         const callId = `memory-${++ordinal}`;
         yield assistant(`response-${ordinal}`, [callId], ccWorkerToolNames.memory);
-        const result = await client.callTool({ name: "memory", arguments: { operations: [{ op: "update", id, text, category: "constraint",
-          scope: "project", topics: [], supports: [], reason: "rewrite" }], skipped: [] }, _meta: { "claudecode/toolUseId": callId } });
+        const result = await client.callTool({ name: "memory", arguments: { op: "update", id, text, category: "constraint",
+          scope: "project", topics: [], supports: [], reason: "rewrite" }, _meta: { "claudecode/toolUseId": callId } });
         expect((result.content as { text: string }[])[0]!.text).not.toContain("rejected");
       };
       const result = { type: "result", subtype: "success", session_id: "dreamer-review", is_error: false, result: "done", errors: [],
@@ -1770,7 +1770,7 @@ test("126: one production MCP D run writes and skips across the session's pools 
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const reviews: string[] = [];
-  let operation!: Record<string, unknown>;
+  let calls!: Record<string, unknown>[];
   const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
     const stream = (async function* () {
       const prompts = request.prompt[Symbol.asyncIterator]();
@@ -1783,9 +1783,12 @@ test("126: one production MCP D run writes and skips across the session's pools 
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       const result = { type: "result", subtype: "success", session_id: "dreamer-pools", is_error: false, result: "done", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
-      yield assistant("response-1", ["memory-1"], ccWorkerToolNames.memory);
-      const written = await client.callTool({ name: "memory", arguments: operation, _meta: { "claudecode/toolUseId": "memory-1" } });
-      expect((written.content as { text: string }[])[0]!.text).not.toContain("rejected");
+      // 127: one response carries the update and the skip as two memory calls.
+      yield assistant("response-1", calls.map((_, index) => `memory-${index + 1}`), ccWorkerToolNames.memory);
+      for (const [index, input] of calls.entries()) {
+        const written = await client.callTool({ name: "memory", arguments: input, _meta: { "claudecode/toolUseId": `memory-${index + 1}` } });
+        expect((written.content as { text: string }[])[0]!.text).not.toContain("rejected");
+      }
       yield result;
       reviews.push((await prompts.next()).value.message.content[0].text);
       yield result;
@@ -1804,9 +1807,9 @@ test("126: one production MCP D run writes and skips across the session's pools 
   const evidence = seedFact(memory, path, "Durable CC evidence", [{ entry: memory.store.hydrateSourceEntries([target.entry.id])[0]!, text: "Durable CC evidence" }]);
   const [global, local] = knowledgeBatch(memory.store, path, (["global", "project"] as const).map(scope =>
     ({ scope, category: "constraint" as const, supports: [evidence.id], text: `Durable ${scope} constraint` })), { kind: "manual", createdAt: "now" }).committed;
-  operation = { operations: [{ op: "update", id: `K${global!.knowledgeId}#${memory.store.versionTag(global!.knowledgeId, global!.commit)}`,
-    text: "Durable global constraint, clarified", category: "constraint", scope: "global", topics: [], supports: [], reason: "clarify" }],
-    skipped: [{ knowledge: `K${local!.knowledgeId}@v${memory.store.versionOrdinal(local!.knowledgeId, local!.commit)}`, because: "Reviewed unchanged" }] };
+  calls = [{ op: "update", id: `K${global!.knowledgeId}#${memory.store.versionTag(global!.knowledgeId, global!.commit)}`,
+    text: "Durable global constraint, clarified", category: "constraint", scope: "global", topics: [], supports: [], reason: "clarify" },
+    { skip: `K${local!.knowledgeId}@v${memory.store.versionOrdinal(local!.knowledgeId, local!.commit)}`, because: "Reviewed unchanged" }];
   const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: target.turn.id, triggerEntryId: target.entry.id,
     model: "claude-sonnet-4-5", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
@@ -1815,5 +1818,68 @@ test("126: one production MCP D run writes and skips across the session's pools 
   const own = memory.store.listCommitsByRun(result.runId)[0]!;
   expect(memory.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed ORDER BY revision_id").all())
     .toEqual([{ pool: `project:${project.id}`, revision_id: local!.commit }, { pool: "global", revision_id: own.id }]);
+  memory.close();
+});
+
+test("127: one CC response's memory calls commit independently even when dispatched together; a refused one blocks until the second pass drops it", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-calls-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  let first!: Record<string, unknown>[], second!: Record<string, unknown>[], review = "";
+  const receipts: { text: string; isError: boolean }[] = [];
+  const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
+    const stream = (async function* () {
+      const prompts = request.prompt[Symbol.asyncIterator]();
+      await prompts.next();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
+      const client = new Client({ name: "dreamer-calls-test", version: "1" }); await client.connect(clientTransport);
+      yield { type: "system", subtype: "init", session_id: "dreamer-calls", messaging_socket_path: "/tmp/dreamer-calls.sock",
+        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [],
+        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      const result = { type: "result", subtype: "success", session_id: "dreamer-calls", is_error: false, result: "done", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+      const respond = async function* (response: string, calls: Record<string, unknown>[], offset: number) {
+        const ids = calls.map((_, index) => `memory-${offset + index}`);
+        yield assistant(response, ids, ccWorkerToolNames.memory);
+        // Dispatched together: each handler's execute is synchronous and commits in its own transaction.
+        for (const value of await Promise.all(calls.map((input, index) =>
+          client.callTool({ name: "memory", arguments: input, _meta: { "claudecode/toolUseId": ids[index]! } }))))
+          receipts.push({ text: (value.content as { text: string }[])[0]!.text, isError: value.isError === true });
+      };
+      yield* respond("response-1", first, 1);
+      yield result;
+      review = (await prompts.next()).value.message.content[0].text;
+      yield* respond("response-2", second, first.length + 1);
+      yield result;
+      await client.close();
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const worker = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
+  const memory = TraceMemory(join(directory, "memory.sqlite"), raw => { const task = raw as CcAgentTask; task.reportRequest({ host: "cc-dreamer-calls" });
+    return worker.run(task, 0); }, { dreaming: { triggerTokens: 1 } });
+  const project = memory.store.createProject({ name: "cc-dreamer-calls", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+  const target = append(memory, session.id, "source", "Durable CC evidence");
+  const path = { sessionId: session.id, branch: "main", headTurnId: target.turn.id };
+  const evidence = seedFact(memory, path, "Durable CC evidence", [{ entry: memory.store.hydrateSourceEntries([target.entry.id])[0]!, text: "Durable CC evidence" }]);
+  const [a, b, c] = knowledgeBatch(memory.store, path, ["A", "B", "C"].map(name =>
+    ({ scope: "project" as const, category: "constraint" as const, supports: [evidence.id], text: `Durable rule ${name}` })), { kind: "manual", createdAt: "now" }).committed;
+  const update = (item: { knowledgeId: number }, tag: string) => ({ op: "update", id: `K${item.knowledgeId}#${tag}`, text: "Durable rule, clarified",
+    category: "constraint", scope: "project", topics: [], supports: [], reason: "clarify" });
+  const version = (item: { knowledgeId: number }) => `K${item.knowledgeId}@v1`;
+  first = [update(a!, memory.store.versionTag(a!.knowledgeId, a!.commit)), update(b!, "zzzz"), { skip: version(c!), because: "Reviewed unchanged" }];
+  second = [{ drop: "M1" }, { skip: version(b!), because: "Reviewed; the refused rewrite is withdrawn" }];
+  const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: target.turn.id, triggerEntryId: target.entry.id,
+    model: "claude-sonnet-4-5", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  expect(receipts.map(receipt => receipt.isError)).toEqual([false, true, false, false, false]);
+  expect(receipts[1]!.text).toContain("rejected: M1: ");
+  expect(receipts[3]!.text).toContain("dropped: M1");
+  expect(review.split("\n\nBlockers:\n")[1]).toMatch(/^M1: /);
+  expect(memory.store.currentCommit(a!.knowledgeId, path)[0]!.text).toBe("Durable rule, clarified");
+  expect(memory.store.currentCommit(b!.knowledgeId, path)[0]!.id).toBe(b!.commit);
   memory.close();
 });

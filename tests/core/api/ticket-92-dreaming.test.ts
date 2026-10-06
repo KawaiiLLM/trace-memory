@@ -2,6 +2,7 @@ import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { expect, test } from "vitest";
 import { hydrate, sourceSeededMemory, type DreamingAgentInput } from "../../source-fixture.ts";
 import { fact as seedFact, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 test("92/03: D skips tagless diffs by history address; mutation diagnostics separate model versions from human commits", async () => {
   let scenario!: (task: DreamingAgentInput) => void;
@@ -30,7 +31,7 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
       expect(task.material.facts).toContain("Legacy mixed episode");
       expect(task.material.facts).toContain("[observation/agent]");
       expect(task.material.facts).toContain("session harness: Pi agent (context, not claim attribution)");
-      const receipt = task.tools.find(t => t.name === "memory")!.execute({ operations: [], skipped: created.committed.map(item => ({ knowledge: `K${item.knowledgeId}@v1`, because: "Reviewed unchanged" })) });
+      const receipt = dreamerWrite(task.tools.find(t => t.name === "memory")!, { operations: [], skipped: created.committed.map(item => ({ knowledge: `K${item.knowledgeId}@v1`, because: "Reviewed unchanged" })) });
       expect(receipt).not.toContain("rejected:");
     };
     expect((await memory.dream(target)).outcome).toBe("success");
@@ -46,15 +47,15 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
       for (const item of changed.committed) expect(task.material.changed).not.toContain(address(item.knowledgeId, item.commit));
       expect(task.text).not.toMatch(/K\d+@\d+/);
       const write = task.tools.find(t => t.name === "memory")!;
-      const skip = (knowledge: string) => write.execute({ operations: [], skipped: [{ knowledge, because: "Deliberated unchanged" }] });
+      const skip = (knowledge: string) => dreamerWrite(write, { operations: [], skipped: [{ knowledge, because: "Deliberated unchanged" }] });
       expect(skip(`K${b!.knowledgeId}@v1`)).toContain("exact frozen version");
       expect(skip(`K${a!.knowledgeId}@v999`)).toContain("rejected:");
-      expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: `K${a!.knowledgeId}@v2`, supports: [], reason: "not a write tag" }], skipped: [] })).toContain("exact K#tag");
-      const stale = write.execute({ operations: [{ op: "archive", kind: "budget", id: address(a!.knowledgeId, a!.commit), supports: [], reason: "stale" }], skipped: [] });
+      expect(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: `K${a!.knowledgeId}@v2`, supports: [], reason: "not a write tag" }], skipped: [] })).toContain("exact K#tag");
+      const stale = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: address(a!.knowledgeId, a!.commit), supports: [], reason: "stale" }], skipped: [] });
       expect(stale).toContain(`K${a!.knowledgeId}@v2`);
       expect(stale).not.toMatch(/K\d+@\d+/);
       expect(stale).not.toContain(address(a!.knowledgeId, changed.committed[0]!.commit));
-      const reversedMerge = write.execute({ operations: [{ op: "merge", id: address(b!.knowledgeId, b!.commit), absorb: [address(a!.knowledgeId, changed.committed[0]!.commit)], supports: [], reason: "reverse order", category: "constraint", scope: "project", topics: [] }], skipped: [] });
+      const reversedMerge = dreamerWrite(write, { operations: [{ op: "merge", id: address(b!.knowledgeId, b!.commit), absorb: [address(a!.knowledgeId, changed.committed[0]!.commit)], supports: [], reason: "reverse order", category: "constraint", scope: "project", topics: [] }], skipped: [] });
       expect(reversedMerge).toContain("swap them");
       expect(reversedMerge).not.toMatch(/K\d+@\d+/);
       // 126: the session's three pools are writable; another project's item is not.
@@ -66,13 +67,14 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
       const otherFact = seedFact(memory, otherTarget, "Other evidence", [{ entry: otherUser, text: "User gave other evidence" }]).id;
       const out = seedKnowledge(store, otherTarget, content.scope, content.category, [otherFact], "Other pool",
         { run: { kind: "manual", createdAt: "now" } });
-      const poolError = write.execute({ operations: [{ op: "archive", kind: "budget", id: address(out.knowledgeId, out.commit), supports: [], reason: "wrong pool" }], skipped: [] });
+      const poolError = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: address(out.knowledgeId, out.commit), supports: [], reason: "wrong pool" }], skipped: [] });
       expect(poolError).toContain("outside the Dreamer pools");
       expect(poolError).not.toMatch(/K\d+@\d+/);
       expect(skip(`K${a!.knowledgeId}@v2`)).not.toContain("rejected:");
       expect(skip(`K${c!.knowledgeId}@v2`)).not.toContain("rejected:");
       expect(skip(`K${a!.knowledgeId}@v2`)).toContain("already consumed");
-      expect(write.execute({ operations: [], skipped: [] })).not.toContain("rejected:");
+      // 127: each refused call keeps its M number and blocks until withdrawn; no empty batch clears it.
+      for (let n = 1; n <= 7; n++) expect(write.execute({ drop: `M${n}` })).toContain(`dropped: M${n}`);
       expect(task.tools.find(t => t.name === "check")!.execute({})).not.toMatch(/K\d+@\d+/);
       outsideCommit = `K${out.knowledgeId}@${out.commit}`;
     };

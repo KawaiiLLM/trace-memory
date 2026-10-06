@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -125,12 +125,12 @@ test("92: N auto-off fences late D writes, settles skips and own output, and pre
   let late!: () => string, own = 0;
   scenario = input => {
     const tool = input.tools.find(t => t.name === "memory")!;
-    const update = { operations: [{ op: "update", id: `K${first!.knowledgeId}#${m.store.versionTag(first!.knowledgeId, first!.commit)}`,
-      text: "maintained rule", category: "constraint", scope: "session", supports: [], reason: "maintenance", topics: [] }], skipped: [] };
+    const update = { op: "update", id: `K${first!.knowledgeId}#${m.store.versionTag(first!.knowledgeId, first!.commit)}`,
+      text: "maintained rule", category: "constraint", scope: "session", supports: [], reason: "maintenance", topics: [] };
     expect(tool.execute(update)).not.toContain("rejected:");
     own = m.store.currentCommit(first!.knowledgeId, target)[0]!.id;
     expect(own).not.toBe(first!.commit);
-    expect(tool.execute({ operations: [], skipped: [{ knowledge: `K${second!.knowledgeId}@v1`, because: "reviewed unchanged" }] })).not.toContain("rejected:");
+    expect(dreamerWrite(tool, { operations: [], skipped: [{ knowledge: `K${second!.knowledgeId}@v1`, because: "reviewed unchanged" }] })).not.toContain("rejected:");
     const claim = m.store.getClaim(target.sessionId, "dreaming")!;
     late = () => tool.execute(update);
     expect(input.signal?.aborted).toBe(false);
@@ -227,7 +227,7 @@ test("68: Dreamer terminal outcomes consume accepted skips; a later range settle
     const input = raw as DreamingAgentInput;
     if (input.kind !== "dreaming") return { outcome, output: outcome, request };
     const handles = suppliedHandles(input.material.changed);
-    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+    dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [],
       skipped: handles.map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
     return { outcome, output: outcome, request };
   });

@@ -4,8 +4,10 @@ import { renderKnowledgeDiff } from "../render/index.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
 /** Private to a single N binding. Tombstones preserve handle identity; invalid replacements
- * deliberately remove the old accepted value. No database IDs exist before publication. */
-class Slots<T> {
+ * deliberately remove the old accepted value. No database IDs exist before publication.
+ * 127: an `immediate` writer (D) commits each legal item at once, so only a refused item takes
+ * a number and keeps its row until a legal resubmission under its slot or a drop; `{}` is malformed. */
+export class Slots<T> {
   readonly rows = new Map<number, { raw: unknown; value?: T; error?: string }>();
   private next = 1;
   used = false;
@@ -13,8 +15,9 @@ class Slots<T> {
   readonly prefix: "$" | "M";
   private readonly names: ToolNames;
   private readonly fields: ReadonlySet<string>;
-  constructor(prefix: "$" | "M", names: ToolNames, fields: readonly string[]) {
-    this.prefix = prefix; this.names = names; this.fields = new Set(fields);
+  private readonly immediate: boolean;
+  constructor(prefix: "$" | "M", names: ToolNames, fields: readonly string[], immediate = false) {
+    this.prefix = prefix; this.names = names; this.fields = new Set(fields); this.immediate = immediate;
   }
   id(value: unknown): number {
     const match = typeof value === "string" && (this.prefix === "$" ? /^\$([1-9]\d*)$/ : /^M([1-9]\d*)$/).exec(value);
@@ -26,11 +29,11 @@ class Slots<T> {
     const input = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined;
     const tool = this.names[this.prefix === "$" ? "note" : "memory"];
     const unexpected = input ? Object.keys(input).filter(key => !this.fields.has(key)) : [];
-    const invalid = !input || unexpected.length > 0 ||
+    const invalid = !input || unexpected.length > 0 || (this.immediate && !Object.keys(input).length) ||
       ("drop" in input && (Object.keys(input).length !== 1 || typeof input.drop !== "string")) ||
       ("slot" in input && (typeof input.slot !== "string" || Object.keys(input).length === 1));
     if (invalid) {
-      this.error = rejection ?? `${tool} expects one item, one scalar drop, or {}${unexpected.length ? `; ${unexpected.map(key => `${key}: unexpected field`).join("; ")}` : ""}`;
+      this.error = rejection ?? `${tool} expects one item, one scalar drop${this.immediate ? "" : ", or {}"}${unexpected.length ? `; ${unexpected.map(key => `${key}: unexpected field`).join("; ")}` : ""}`;
       if (input && "slot" in input) {
         try { const id = this.id(input.slot); const { slot: _slot, ...content } = input;
           this.rows.set(id, { raw: structuredClone(content), error: this.error }); }
@@ -41,25 +44,32 @@ class Slots<T> {
     this.used = true;
     this.error = undefined;
     const results: string[] = [];
+    let receipt: object = {};
     if ("drop" in input) {
       try { const id = this.id(input.drop); if (rejection) throw new Error(rejection);
         droppable(id); this.rows.delete(id); results.push(`dropped: ${input.drop}`); }
       catch (error) { this.error = error instanceof Error ? error.message : String(error); results.push(`rejected: ${input.drop}: ${this.error}`); }
     } else if (Object.keys(input).length) {
       let id: number | undefined;
-      try { id = input.slot === undefined ? this.next++ : this.id(input.slot); }
+      // 0: an immediate writer's fresh item, numbered only if refused.
+      try { id = input.slot !== undefined ? this.id(input.slot) : this.immediate ? 0 : this.next++; }
       catch (error) { this.error = error instanceof Error ? error.message : String(error); results.push(`rejected: ${this.error}`); }
       if (id !== undefined) {
         const { slot: _slot, ...content } = input;
         const row: { raw: unknown; value?: T; error?: string } = { raw: structuredClone(content) };
-        this.rows.set(id, row);
-        try { if (rejection) throw new Error(rejection); row.value = validate(content, id); results.push(`held: ${this.prefix}${id}`); }
-        catch (error) { row.error = error instanceof Error ? error.message : String(error); results.push(`rejected: ${this.prefix}${id}: ${row.error}`); }
+        if (id) this.rows.set(id, row);
+        try { if (rejection) throw new Error(rejection); row.value = validate(content, id);
+          if (!this.immediate) results.push(`held: ${this.prefix}${id}`);
+          else { this.rows.delete(id); results.push("ok"); receipt = row.value as object; } }
+        catch (error) { row.error = error instanceof Error ? error.message : String(error);
+          if (!id) this.rows.set(id = this.next++, row);
+          results.push(`rejected: ${this.prefix}${id}: ${row.error}`); }
       }
     }
     if (rejection && !Object.keys(input).length) this.error = rejection;
-    return JSON.stringify({ results, held: [...this.rows].filter(([, row]) => row.value !== undefined).map(([id]) => `${this.prefix}${id}`),
-      rejected: Object.fromEntries([...this.rows].filter(([, row]) => row.error).map(([id, row]) => [`${this.prefix}${id}`, row.error])) });
+    const rejected = Object.fromEntries([...this.rows].filter(([, row]) => row.error).map(([id, row]) => [`${this.prefix}${id}`, row.error]));
+    return JSON.stringify(this.immediate ? { results, ...receipt, ...Object.keys(rejected).length ? { rejected } : {} }
+      : { results, held: [...this.rows].filter(([, row]) => row.value !== undefined).map(([id]) => `${this.prefix}${id}`), rejected });
   }
   problems(): string[] {
     return [...(this.error ? [this.error] : []), ...[...this.rows].flatMap(([id, row]) => row.error ? [`${this.prefix}${id}: ${row.error}`] : [])];

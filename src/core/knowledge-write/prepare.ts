@@ -133,7 +133,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       const match = typeof handle === "string" ? /^K([1-9]\d*)@v([1-9]\d*)$/.exec(handle) : null;
       let commit = NaN;
       if (match) try { commit = store.resolveVersionOrdinal(Number(match[1]), Number(match[2])); } catch { /* reported as an unknown supplied handle */ }
-      if (Object.keys(skipped).some(k => !["knowledge", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skipped requires knowledge and non-empty because only");
+      if (Object.keys(skipped).some(k => !["knowledge", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skip requires a non-empty because and no other field");
       const problem = !match || store.knowledgeRevision(commit)?.knowledgeId !== Number(match[1]) ? "not a supplied handle of this run"
         : touched.has(commit) ? "already consumed by an operation of this batch" : skippable ? skippable(commit) : "not a supplied handle of this run";
       if (problem) errors.push(`${handle}: ${problem}`);

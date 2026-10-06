@@ -3,7 +3,7 @@ import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { type KnowledgeRevision } from "../../../src/core/model/index.ts";
 import { type KnowledgePath, Store } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 
 const at = "2026-09-21T12:00:00.000Z";
 const tag = (store: Store, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`;
@@ -115,7 +115,7 @@ test("64b stateless graph: genuine alternative split operations keep only the op
       const write = input.tools.find(tool => tool.name === "memory")!;
       memoryFiles(memory, path).read(`/tm/${tag(store, base)}`);
       memoryFiles(memory, path).read(`/tm/${tag(store, trigger)}`);
-      const receipt = JSON.parse(write.execute({ operations: [
+      const receipt = JSON.parse(dreamerWrite(write, { operations: [
         { op: "split", id: tag(store, base), supports: [`F${support}`], reason: "Alternative atomic split.",
           children: labels.map(text => ({ text, category: "constraint", topics: [] })) },
         { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
@@ -170,7 +170,7 @@ test("64b stateless graph: admitted deep branch defeats a restored sibling from 
       const write = input.tools.find(tool => tool.name === "memory")!;
       memoryFiles(memory, path).read(`/tm/${tag(store, prior)}`);
       memoryFiles(memory, path).read(`/tm/${tag(store, trigger)}`);
-      const receipt = JSON.parse(write.execute({ operations: [
+      const receipt = JSON.parse(dreamerWrite(write, { operations: [
         { op: "update", id: tag(store, prior), text, category: "constraint", scope: "global",
           supports: [`F${support}`], reason: "Advance the selected branch.", topics: [] },
         { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
@@ -245,7 +245,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const operated = new Set([absorbed, splitParent, siblingTrigger]
       .map(item => history(store, item)));
     const unchangedSupplied = suppliedHandles(input.material.changed).filter(knowledge => !operated.has(knowledge));
-    const receipt = JSON.parse(write.execute({ operations: [
+    const receipt = JSON.parse(dreamerWrite(write, { operations: [
       { op: "update", id: tag(store, absorbed), text: "restorable absorbed sibling",
         category: "constraint", scope: "global", supports: [`F${cFact.id}`], reason: "Create competing merge sibling.", topics: [] },
       { op: "update", id: tag(store, splitParent), text: "restorable split-source sibling",
@@ -270,7 +270,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
       memoryFiles(memory, aPath).read(`/tm/${tag(store, item)}`);
     // 126: the run also freezes the other pools' pending items; they are deliberated unchanged.
     const operated = new Set([scopedParent, sessionTrigger].map(item => history(store, item)));
-    const receipt = JSON.parse(write.execute({ operations: [
+    const receipt = JSON.parse(dreamerWrite(write, { operations: [
       { op: "update", id: tag(store, scopedParent), text: "global child with B support",
         category: "constraint", scope: "global", supports: [`F${bFact.id}`], reason: "Direct child evidence changes scope.", topics: [] },
       { op: "archive", kind: "budget", id: tag(store, sessionTrigger), supports: [`F${aFact.id}`], reason: "Retire session trigger." },
@@ -290,7 +290,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [survivor, absorbed, splitParent, trigger])
       memoryFiles(memory, aPath).read(`/tm/${tag(store, item)}`);
-    const receipt = JSON.parse(write.execute({ operations: [
+    const receipt = JSON.parse(dreamerWrite(write, { operations: [
       { op: "merge", id: tag(store, survivor), absorb: [tag(store, absorbed)],
         text: "merged result with B support", category: "constraint", scope: "global", supports: [`F${bFact.id}`],
         reason: "Merge distinct identities.", topics: [] },

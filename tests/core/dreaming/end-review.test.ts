@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { hydrate, sourceSeededMemory, type DreamingAgentInput } from "../../source-fixture.ts";
 import { archive, fact as seedFact, knowledgeBatch } from "../../support/seed.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 const memories: { close(): void }[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -18,7 +19,9 @@ function pool(bodies: (string | { text: string; scope: "global" | "project" | "s
   const memory = sourceSeededMemory(":memory:", async raw => {
     const task = raw as DreamingAgentInput;
     task.reportRequest({ fixture: "end review" });
-    const tool: Tool = (name, input) => JSON.parse(task.tools.find(t => t.name === name)!.execute(input));
+    const find = (name: string) => task.tools.find(t => t.name === name)!;
+    // 127: a scripted write is one memory call per operation and per skip.
+    const tool: Tool = (name, input) => JSON.parse(name === "memory" ? dreamerWrite(find(name), input as Parameters<typeof dreamerWrite>[1]) : find(name).execute(input));
     pass.first(task, tool, items);
     const review = task.passEnd(1);
     reviews.push(review);

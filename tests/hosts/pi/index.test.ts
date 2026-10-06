@@ -3,7 +3,7 @@ import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { host as createHost, reply, notingFact, noteHeld, usage, type Reply } from "./test-host.ts";
+import { host as createHost, reply, notingFact, noteHeld, usage, dreamerReply, type Reply } from "./test-host.ts";
 import { compacted, seedSourceEntry } from "../../source-fixture.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
@@ -821,10 +821,9 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
         { type: "toolCall", id: `read-base-${sequence}`, name: "read", arguments: { path: `/tm/${baseAddress}` } },
         { type: "toolCall", id: `read-trigger-${sequence}`, name: "read", arguments: { path: `/tm/${triggerAddress}` } },
       ] };
-      if (round === 2) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `write-${sequence}`, name: "memory", arguments: {
+      if (round === 2) return dreamerReply(`write-${sequence}`, {
         operations: [{ op: "update", id: baseAddress, text, category: "constraint", scope: "project", topics: [], supports: [`F${factId}`], reason: `Update from ${path.branch}.` },
-          { op: "archive", kind: "budget", id: triggerAddress, supports: [], reason: "Retire explicit host trigger." }] as const, skipped: [],
-      } }] };
+          { op: "archive", kind: "budget", id: triggerAddress, supports: [], reason: "Retire explicit host trigger." }] });
       return reply("Done.");
     });
     await h.turn();

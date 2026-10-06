@@ -14,7 +14,7 @@ import { KNOWLEDGE_RECENCY_NOTICE, sessionKnowledgeNotice, budgetFacts, budgetKn
 import { budgetMaterial, compactText, rawWindowTokens, injectionText, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
@@ -83,7 +83,7 @@ async function maintain(path: { sessionId: number; branch: string; headTurnId: n
     const operatedId = Number(operated[1]), operatedCommit = memory.store.resolveVersionTag(operatedId, operated[2]!);
     supplied.delete(`K${operatedId}@v${memory.store.versionOrdinal(operatedId, operatedCommit)}`);
     supplied.delete(`K${trigger.knowledgeId}@v${memory.store.versionOrdinal(trigger.knowledgeId, trigger.commit)}`);
-    const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [operation,
+    const receipt = JSON.parse(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [operation,
       { op: "archive", kind: "budget", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit material trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied material item." })) }));
     expect(receipt.committed).toBeDefined();

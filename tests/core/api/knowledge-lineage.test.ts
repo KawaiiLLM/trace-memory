@@ -7,7 +7,7 @@ import { TraceMemory, memoryFiles, type DreamingAgentInput } from "../../../src/
 import { Store, type KnowledgeOperationInput, type KnowledgePath, type SourceInput } from "../../../src/core/store/index.ts";
 import { renderRun } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { legacyFacts } from "../../support/seed.ts";
 import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 
@@ -68,7 +68,7 @@ function fixture() {
       });
       const triggerAddress = tagged(store, trigger.knowledgeId, trigger.commit), supplied = new Set(suppliedHandles(input.material.changed));
       supplied.delete(history(store, trigger.knowledgeId, trigger.commit)); for (const address of addressed) supplied.delete(address);
-      const receipt = JSON.parse(tool.execute({ operations: [...converted, { op: "archive", kind: "budget", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit lineage trigger." }],
+      const receipt = JSON.parse(dreamerWrite(tool, { operations: [...converted, { op: "archive", kind: "budget", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit lineage trigger." }],
         skipped: [...supplied].map(knowledge => ({ knowledge, because: "No lineage maintenance is needed for this supplied item." })) }));
       committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
         .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId, commit: store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) }));
@@ -155,12 +155,13 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
     const tool = input.tools.find(tool => tool.name === "memory")!;
     for (const address of [tagged(f.store, f.created.knowledgeId, merged.commit), tagged(f.store, childOnly.knowledgeId, childOnly.commit), tagged(f.store, f.created.knowledgeId, f.created.commit)])
       read(address);
-    const malformed = tool.execute({ operations: [{ op: "merge", id: tagged(f.store, f.created.knowledgeId, merged.commit),
+    const malformed = dreamerWrite(tool, { operations: [{ op: "merge", id: tagged(f.store, f.created.knowledgeId, merged.commit),
       absorb: [tagged(f.store, childOnly.knowledgeId, childOnly.commit), tagged(f.store, f.created.knowledgeId, f.created.commit)],
       text: "illegal three-parent merge", category: "constraint", scope: "project", topics: [], supports: [`F${f.rootFact}`], reason: "invalid fixture" }], skipped: [] });
     expect(malformed).toContain("absorb as exactly one distinct other parent");
+    expect(tool.execute({ drop: "M1" })).toContain("dropped: M1"); // 127: a refusal blocks until withdrawn
     const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(history(f.store, trigger.knowledgeId, trigger.commit));
-    tool.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [`F${f.rootFact}`], reason: "Retire the explicit invalid-merge trigger." }],
+    dreamerWrite(tool, { operations: [{ op: "archive", kind: "budget", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [`F${f.rootFact}`], reason: "Retire the explicit invalid-merge trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "The rejected malformed merge makes no valid change." })) });
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "malformed merge rejected", request };
@@ -178,23 +179,24 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
     if (input.kind !== "dreaming") throw new Error("unexpected phase");
     input.reportRequest({ offline: true });
     const tool = input.tools.find(t => t.name === "memory")!;
-    const illegalCreate = tool.execute({ operations: [{ op: "create", text: "not a split", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "illegal" }], skipped: [] });
-    expect(illegalCreate).toContain("rejected:");
-    const invalid = tool.execute({ operations: [{ op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), supports: [], reason: "separate independent rules",
+    const illegalCreate = dreamerWrite(tool, { operations: [{ op: "create", text: "not a split", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "illegal" }], skipped: [] });
+    expect(illegalCreate).toContain("rejected: M1");
+    expect(tool.execute({ drop: "M1" })).toContain("dropped: M1");
+    const invalid = dreamerWrite(tool, { operations: [{ op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), supports: [], reason: "separate independent rules",
       children: [{ text: "first rule", category: "constraint", topics: [] }, { text: "", category: "goal", topics: [] }] }], skipped: [] });
-    expect(invalid).toContain("rejected:");
+    expect(invalid).toContain("rejected: M2");
     expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
-    const split = JSON.parse(tool.execute({ operations: [{ op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), supports: [], reason: "separate independent rules",
+    const split = JSON.parse(dreamerWrite(tool, { operations: [{ slot: "M2", op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), supports: [], reason: "separate independent rules",
       children: [{ text: "first rule", category: "constraint", topics: ["first"] }, { text: "second rule", category: "goal", topics: ["second"] }] }], skipped: [] }));
     expect(split.committed).toHaveLength(2);
     const [first, second] = split.committed as { knowledgeId: number; version: string }[];
     const read = (address: string) => memoryFiles(memory, input.reader!).read(`/tm/${address}`).content;
     expect(read(first!.version)).not.toContain("rejected:");
-    const update = JSON.parse(tool.execute({ operations: [{ op: "update", id: tagged(memory.store, first!.knowledgeId, memory.store.resolveVersionOrdinal(first!.knowledgeId, Number(first!.version.split("@v")[1]))),
+    const update = JSON.parse(dreamerWrite(tool, { operations: [{ op: "update", id: tagged(memory.store, first!.knowledgeId, memory.store.resolveVersionOrdinal(first!.knowledgeId, Number(first!.version.split("@v")[1]))),
       text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }], skipped: [] }));
     expect(update.committed).toHaveLength(1);
     read(history(memory.store, trigger.knowledgeId, trigger.commit));
-    expect(tool.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(memory.store, trigger.knowledgeId, trigger.commit),
+    expect(dreamerWrite(tool, { operations: [{ op: "archive", kind: "budget", id: tagged(memory.store, trigger.knowledgeId, trigger.commit),
       supports: [], reason: "Retire the explicit split trigger." }], skipped: [] })).toContain("committed");
     expect(input.tools.find(t => t.name === "check")!.execute({})).toContain("Blockers: none");
     attempted = true;

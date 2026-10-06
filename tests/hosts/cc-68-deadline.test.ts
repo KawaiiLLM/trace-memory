@@ -85,13 +85,13 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
         expect(listed.tools.find(tool => tool.name === "check")?.description).not.toContain("{{tool.");
         yield init(directory, request.options.allowedTools, "timed-child");
         yield { type: "assistant", session_id: "timed-child", message: { id: "tool-round", content: [{
-          type: "tool_use", id: "late-memory", name: "memory", input: { operations: [], skipped: [] },
+          type: "tool_use", id: "late-memory", name: "memory", input: { skip: "K1@v1", because: "late" },
         }], usage: { input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
         releaseStarted();
         const signal = request.options.abortController.signal as AbortSignal;
         await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
         try {
-          const late = await client.callTool({ name: "memory", arguments: { operations: [], skipped: [] },
+          const late = await client.callTool({ name: "memory", arguments: { skip: "K1@v1", because: "late" },
             _meta: { "claudecode/toolUseId": "late-memory" } });
           lateText = (late.content as { type: string; text: string }[])[0]?.text ?? "";
         } catch (error) {

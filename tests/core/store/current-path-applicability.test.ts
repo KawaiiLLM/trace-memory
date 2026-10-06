@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 
 const at = "2026-09-21T00:00:00.000Z";
 const directories: string[] = [];
@@ -196,7 +196,7 @@ test("64b pilot: an admitted Dreamer child uses only its direct foreground suppo
       expect(files.read(`/tm/${parentTag}`).content).toContain("parent claim");
       expect(files.read(`/tm/${directTag}`).content).toContain("second parent claim");
       expect(files.read(`/tm/${triggerTag}`).content).toContain("Fixture trigger 1");
-      const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: parentTag,
+      const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: parentTag,
         text: "child claim", category: "constraint", scope: "global", supports: [`F${childFact.id}`], topics: [], reason: "Child revision." },
       { op: "update", id: directTag,
         text: "child explicitly citing A", category: "constraint", scope: "global", supports: [`F${parentFact.id}`], topics: [], reason: "Direct A support." },
@@ -269,7 +269,7 @@ test("64b validity pilot: later applicable commit wins independent of restore or
     const triggerTag = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
     expect(files.read(`/tm/${baseTag}`).content).toContain("base body");
     files.read(`/tm/${triggerTag}`);
-    const receipt = JSON.parse(write.execute({ operations: [{ op: "update", id: baseTag,
+    const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: baseTag,
       text: "B replacement", category: "constraint", scope: "global", supports: [`F${bFact.id}`], topics: [], reason: "Replace rewound base." },
     { op: "archive", kind: "budget", id: triggerTag, supports: [`F${bFact.id}`], reason: "Retire trigger." }], skipped: [] }));
     const published = receipt.committed.find((value: { knowledgeId: number }) => value.knowledgeId === base.knowledgeId)!;
@@ -343,7 +343,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
         const write = input.tools.find(tool => tool.name === "memory")!;
         memoryFiles(memory, ownerPath).read(`/tm/${tag(prior)}`);
         memoryFiles(memory, ownerPath).read(`/tm/${tag(trigger)}`);
-        const receipt = JSON.parse(write.execute({ operations: [
+        const receipt = JSON.parse(dreamerWrite(write, { operations: [
           { op: "update", id: tag(prior), text, category: "constraint", scope,
             supports: [`F${ownerFact.id}`], reason: "Change current visibility.", topics: [] },
           { op: "archive", kind: "budget", id: tag(trigger), supports: [`F${ownerFact.id}`], reason: "Retire trigger." },
@@ -380,10 +380,11 @@ test("64b scope visibility: global current hides older visible revisions, reject
       const write = input.tools.find(tool => tool.name === "memory")!;
       memoryFiles(memory, peerPath).read(`/tm/${tag(base)}`);
       memoryFiles(memory, peerPath).read(`/tm/${tag(staleTrigger)}`);
-      expect(write.execute({ operations: [{ op: "update", id: tag(base), text: "stale peer edit",
+      expect(dreamerWrite(write, { operations: [{ op: "update", id: tag(base), text: "stale peer edit",
         category: "constraint", scope: "project", supports: [`F${peerFact.id}`], reason: "Must remain stale.", topics: [] }], skipped: [] }))
         .toContain("base is not the latest effective applicable revision");
-      write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(staleTrigger),
+      expect(write.execute({ drop: "M1" })).toContain("dropped: M1"); // 127: a refusal blocks until withdrawn
+      dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(staleTrigger),
         supports: [`F${peerFact.id}`], reason: "Retire stale probe trigger." }], skipped: [] });
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
       return { outcome: "success", output: "stale hidden base refused", request };
@@ -401,7 +402,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
       for (const item of [widened, privateParent, mergeTrigger])
         memoryFiles(memory, ownerPath).read(`/tm/${tag(item)}`);
       const before = store.listKnowledgeRevisions().length;
-      expect(write.execute({ operations: [{ op: "merge", id: tag(widened),
+      expect(dreamerWrite(write, { operations: [{ op: "merge", id: tag(widened),
         absorb: [tag(privateParent)], text: "illegal cross-scope merge",
         category: "constraint", scope: "project", supports: [`F${ownerFact.id}`], reason: "Must be refused.", topics: [] }], skipped: [] }))
         .toContain("merge parents and result must share one scope"); // 126: both parents are writable; scope still refuses
@@ -409,8 +410,9 @@ test("64b scope visibility: global current hides older visible revisions, reject
       expect(store.listKnowledgeRevisions()).toHaveLength(before);
       expect(store.currentCommit(widened.knowledgeId, ownerPath).map(item => item.id)).toEqual([widened.commit]);
       expect(store.currentCommit(privateParent.knowledgeId, ownerPath).map(item => item.id)).toEqual([privateParent.commit]);
+      expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
       const operated = history(mergeTrigger);
-      expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(mergeTrigger),
+      expect(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(mergeTrigger),
         supports: [], reason: "Retire cross-scope probe trigger." }], skipped: suppliedHandles(input.material.changed)
         .filter(knowledge => knowledge !== operated).map(knowledge => ({ knowledge, because: "Merge refused; left as it is." })) })).toContain("committed");
       return { outcome: "success", output: "cross-scope merge refused", request };
@@ -424,12 +426,13 @@ test("64b scope visibility: global current hides older visible revisions, reject
       const write = input.tools.find(tool => tool.name === "memory")!;
       for (const item of [widened, projectParent, resultScopeTrigger])
         memoryFiles(memory, ownerPath).read(`/tm/${tag(item)}`);
-      expect(write.execute({ operations: [{ op: "merge", id: tag(widened),
+      expect(dreamerWrite(write, { operations: [{ op: "merge", id: tag(widened),
         absorb: [tag(projectParent)], text: "illegal result scope",
         category: "constraint", scope: "session", supports: [`F${ownerFact.id}`], reason: "Must be refused.", topics: [] }], skipped: [] }))
         .toContain("merge parents and result must share one scope");
+      expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
       // 104: success needs every frozen version deliberated, so the untouched merge parent is skipped.
-      expect(write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(resultScopeTrigger),
+      expect(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(resultScopeTrigger),
         supports: [], reason: "Retire result-scope probe trigger." }], skipped: [{ knowledge:
         `K${projectParent.knowledgeId}@v${store.versionOrdinal(projectParent.knowledgeId, projectParent.commit)}`,
         because: "Merge refused; the parent stays as it is." }] })).toContain("committed");

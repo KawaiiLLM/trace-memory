@@ -1,5 +1,5 @@
 import { readHandle } from "../../read-handle-fixture.ts";
-import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { knowledgeStatusNotes } from "../../../src/core/api/read.ts";
 import { compacted, recorded } from "../../source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
@@ -661,7 +661,7 @@ test.each(["pending", "overflow"] as const)("2026-10-05, 126: '两个阈值中�
     // Scripted budget reduction: archive each over-budget pool's oldest item until every pool fits.
     for (let over = pools().find(pool => pool.tokens > pool.budget); over; over = pools().find(pool => pool.tokens > pool.budget)) {
       const oldest = [...over.versions].sort((a, b) => a.revision.id - b.revision.id)[0]!.revision;
-      expect(memoryTool.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(oldest.knowledgeId, oldest.id), supports: [],
+      expect(dreamerWrite(memoryTool, { operations: [{ op: "archive", kind: "budget", id: tagged(oldest.knowledgeId, oldest.id), supports: [],
         reason: "Over budget: the oldest item is retired." }], skipped: [] })).toContain("committed");
       consumed.push(history(oldest.knowledgeId, oldest.id));
     }
@@ -692,7 +692,7 @@ test("92 §§6–8: a D range excludes a later version from this run's material 
     lateCommit = commitOf(late);
     expect(input.material.changed).not.toContain("Later knowledge that did not exist at D admission");
     expect(frozen).not.toContain(history(late.knowledgeId, lateCommit));
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+    expect(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [],
       skipped: frozen.map(knowledge => ({ knowledge, because: "Reviewed only frozen versions" })) })).toContain("committed");
     return ok([]);
   });
@@ -743,6 +743,37 @@ test("2026-09-07: supports replaces, history keeps the old set", async () => {
   expect(runs.at(-1)!.id).toBe(memory.store.getKnowledgeRevision(1, commit)!.runId);
 });
 
+// 127 lifts 116's 「D 先不改」: the Dreamer's memory takes one item per call, like the Noter's.
+test("2026-10-06, 127: '为什么不能分成并行的一批工具调用' and '每条跳过也是一次单独的调用' — one Dreamer memory call is one operation or one skip", () => {
+  const schema = dreamingToolDefinitions().find(tool => tool.name === "memory")!.parameters as Record<string, any>;
+  for (const batch of ["operations", "skipped"]) expect(schema.properties).not.toHaveProperty(batch);
+  expect(schema.else.then.required).toEqual(["skip", "because"]);
+  expect(schema.else.else.required).toEqual(["op", "supports", "reason"]);
+});
+
+test("2026-10-06, 127: '每次操作最多9个工具调用' — the Dreamer prompt limits one response to 9 tool calls of every kind", () => {
+  expect(loadPrompt("dreaming.md")).toMatch(/one response carries at most 9 tool calls in total, counting every tool/);
+});
+
+test("2026-10-06, 127: 'A，你派工' — a refused Dreamer operation still blocks after a later sibling commits, until slot resubmits it", async () => {
+  const { create, write, path } = memoryWriter();
+  const created = write([create]).committed[0];
+  const trigger = createDreamerTrigger(memory, path, 1, 1);
+  const request = { fixture: "127 option A" };
+  const result = await admittedScenarios.run(memory, path, input => {
+    input.reportRequest(request);
+    const tool = input.tools.find(item => item.name === "memory")!, check = () => input.tools.find(item => item.name === "check")!.execute({});
+    const update = { ...create, op: "update", id: tagged(created.knowledgeId, commitOf(created)), reason: "Clarify the rule." };
+    expect(tool.execute({ ...update, id: `K${created.knowledgeId}#zzzz` })).toContain("rejected: M1: ");
+    expect(tool.execute({ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire the trigger." })).toContain('"committed"');
+    expect(check()).toMatch(/\nBlockers: M1: /);
+    expect(tool.execute({ slot: "M1", ...update })).toContain('"committed"');
+    expect(check()).toContain("Blockers: none");
+    return { outcome: "success", output: "resolved", request };
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+});
+
 test("2026-09-07: merge atomic", async () => {
   const { create, write, path } = memoryWriter();
   const created = (write([create, { ...create, text: "Avoid npm", supports: ["F2"] }]).committed as Array<{ knowledgeId: number; version: string }>)
@@ -758,14 +789,10 @@ test("2026-09-07: merge atomic", async () => {
     for (const item of [first, second]) readHandle(file => files.read(file).content, item.version);
     const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the survivor.",
       id: tagged(first.knowledgeId, first.commit), absorb: [tagged(second.knowledgeId, second.commit)], supports: ["F1", "F2"] };
-    expect(JSON.parse(writeTool.execute({ operations: [merge, { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.",
-      id: "K999", supports: [] }], skipped: [] })).results[1]).toContain("rejected:");
-    expect(memory.store.currentCommit(first.knowledgeId)[0]?.id).toBe(first.commit);
-    expect(memory.store.currentCommit(second.knowledgeId)[0]?.op).toBe("create");
-    expect(memory.store.listKnowledgeLinks(second.knowledgeId)).toEqual([]);
+    // 127 removed the Dreamer's batch: a refused sibling call no longer undoes a merge, so only the merge's own atomicity is checked.
     const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
     readHandle(file => files.read(file).content, triggerAddress);
-    merged = JSON.parse(writeTool.execute({ operations: [merge, { op: "archive", kind: "budget", id: triggerAddress, supports: ["F2"],
+    merged = JSON.parse(dreamerWrite(writeTool, { operations: [merge, { op: "archive", kind: "budget", id: triggerAddress, supports: ["F2"],
       reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     return { outcome: "success", output: "merged", request };
   });
@@ -967,7 +994,7 @@ async function admittedWrite(
     for (const address of exact) readHandle(file => files.read(file).content, address);
     const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
     readHandle(file => files.read(file).content, triggerAddress);
-    receipt = JSON.parse(write.execute({ operations: [...operations, { op: "archive", kind: "budget", id: triggerAddress,
+    receipt = JSON.parse(dreamerWrite(write, { operations: [...operations, { op: "archive", kind: "budget", id: triggerAddress,
       supports: [path.fact], reason: "Retire the explicit fixture trigger." }],
       skipped: skipped.map(knowledge => ({ knowledge, because: "This supplied identity is unrelated to the asserted maintenance." })) }));
     return { outcome: "success", output: "maintenance complete", request };
@@ -1052,13 +1079,13 @@ test("2026-09-07 B: reading a historical commit never refreshes the base to an u
     const files = memoryFiles(memory, input.reader!);
     const memoryTool = input.tools.find(tool => tool.name === "memory")!;
     expect(files.read("/tm/K1@v1").content).not.toContain("Unread successor");
-    const first = JSON.parse(memoryTool.execute({ operations: [{ op: "update", id: tagged(1, 1), topics: [],
+    const first = JSON.parse(dreamerWrite(memoryTool, { operations: [{ op: "update", id: tagged(1, 1), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(root.fact, "Unread successor") }], skipped: [] }));
     const successor = first.committed[0];
-    expect(memoryTool.execute({ operations: [{ op: "update", id: tagged(1, 1), topics: [],
+    expect(dreamerWrite(memoryTool, { operations: [{ op: "update", id: tagged(1, 1), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }], skipped: [] })).toContain(`current: ${successor.version}`);
     expect(files.read(`/tm/${successor.version}`).content).toContain("Unread successor");
-    const corrected = JSON.parse(memoryTool.execute({ operations: [{ op: "update", id: tagged(1, commitOf(successor)), topics: [],
+    const corrected = JSON.parse(dreamerWrite(memoryTool, { operations: [{ slot: "M1", op: "update", id: tagged(1, commitOf(successor)), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }, { op: "archive", kind: "budget",
       id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     expect(corrected.committed[0].knowledgeId).toBe(1);
@@ -1079,18 +1106,18 @@ test("92/118: search previews are tagless and do not authorize a stale base", as
     const write = input.tools.find(tool => tool.name === "memory")!;
     const files = memoryFiles(memory, input.reader!);
     readHandle(file => files.read(file).content, "K1@v1");
-    const successor = JSON.parse(write.execute({ operations: [{ op: "update", id: tagged(1, 1), topics: [], reason: "A substantive correction.",
+    const successor = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: tagged(1, 1), topics: [], reason: "A substantive correction.",
       ...content(root.fact, `Unread successor ${"中文😀".repeat(350)}`) }], skipped: [] })).committed[0];
     const preview = search.execute({ query: "Unread successor", layer: "knowledge", maxTokens: 256 });
     expect(preview).not.toContain("rejected:"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
-    const edit = (id: string) => JSON.parse(write.execute({ operations: [{ op: "update", topics: [], reason: "A substantive correction.", id,
+    const edit = (id: string, slot?: string) => JSON.parse(dreamerWrite(write, { operations: [{ ...slot ? { slot } : {}, op: "update", topics: [], reason: "A substantive correction.", id,
       ...content(other.fact) }], skipped: [] }));
     expect(edit(tagged(1, 1)).results[0]).toContain(`current: ${successor.version}`);
     const successorTag = tagged(1, commitOf(successor));
     expect(readHandle(file => files.read(file).content, successor.version)).toContain(successorTag);
-    expect(edit(successorTag).committed[0].knowledgeId).toBe(1);
+    expect(edit(successorTag, "M1").committed[0].knowledgeId).toBe(1);
     readHandle(file => files.read(file).content, history(trigger.knowledgeId, trigger.commit));
-    expect(JSON.parse(write.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit),
+    expect(JSON.parse(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit),
       supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] })).committed).toHaveLength(1);
     return { outcome: "success", output: "scenario complete", request: { fixture: "search previews and tagged bases" } };
   });
@@ -1208,7 +1235,7 @@ test("41b/92/118: search previews omit tags, while exact tags need no read ledge
     input.reportRequest(request); const search = input.tools.find(tool => tool.name === "search")!;
     const write = input.tools.find(tool => tool.name === "memory")!;
     const files = memoryFiles(memory, input.reader!);
-    const update = (id: string, text: string) => JSON.parse(write.execute({ operations: [{ op: "update", id,
+    const update = (id: string, text: string) => JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id,
       ...content(other.fact, text), topics: [], reason: "41b update" }], skipped: [] }));
     const successor = update(tagged(1, 1), "BASE-SUCCESSOR").committed[0];
     const exact = tagged(1, commitOf(successor));
@@ -1219,7 +1246,7 @@ test("41b/92/118: search previews omit tags, while exact tags need no read ledge
     const finiteTag = tagged(1, commitOf(finite));
     expect(readHandle(file => files.read(file).content, finite.version)).toContain(finiteTag);
     expect(update(finiteTag, "FULL-COMPLETE").committed[0].knowledgeId).toBe(1);
-    write.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
+    dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
       reason: "Retire the explicit fixture trigger." }], skipped: [] });
     return { outcome: "success", output: "scenario complete", request };
   });
@@ -1428,13 +1455,14 @@ test("64b: stale absorbed bases name the surviving current commit across merge l
     const files = memoryFiles(memory, input.reader!);
     readHandle(file => files.read(file).content, second.version);
     readHandle(file => files.read(file).content, history(staleTrigger.knowledgeId, staleTrigger.commit));
-    rejected = write.execute({ operations: [{ op: "update", id: tagged(second.knowledgeId, second.commit), topics: [],
+    rejected = dreamerWrite(write, { operations: [{ op: "update", id: tagged(second.knowledgeId, second.commit), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(other.fact, "Invalid absorbed edit") }], skipped: [] });
     expect(rejected).toContain(`current: ${survivor.version}`);
+    expect(write.execute({ drop: "M1" })).toContain("dropped: M1"); // 127: a refusal blocks until withdrawn
     const supplied = suppliedHandles(input.material.changed)
       .filter((knowledge: string) => knowledge !== history(staleTrigger.knowledgeId, staleTrigger.commit))
       .map((knowledge: string) => ({ knowledge, because: "The stale absorbed edit was correctly refused." }));
-    write.execute({ operations: [{ op: "archive", kind: "budget", id: tagged(staleTrigger.knowledgeId, staleTrigger.commit), supports: [other.fact],
+    dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tagged(staleTrigger.knowledgeId, staleTrigger.commit), supports: [other.fact],
       reason: "Retire explicit trigger." }], skipped: supplied });
     return { outcome: "success", output: "stale absorbed handle checked", request };
   });
@@ -2120,7 +2148,7 @@ test("19c 2026-09-08: a stored branch-mode run reads as legacy request-copy exec
 // the evidence it cites, so its applicability is read from the same field as every other commit.
 // User, 2026-09-07: "supports proves only the new text". Superseded: supports supplies the commit's
 // evidence, including the complete result's basis and the correction or withdrawal that justified it.
-test("21a/116: single-item write keeps supports and reason; Dreamer retains skipped", async () => {
+test("21a/116/127: single-item write keeps supports and reason; a Dreamer skip keeps because", async () => {
   const { create, write, path } = memoryWriter();
   const operation = toolDefinitions.find(t => t.name === "memory")!.parameters.properties as Record<string, any>;
   expect(operation.op.enum).toEqual(["create", "update", "archive"]);
@@ -2128,7 +2156,7 @@ test("21a/116: single-item write keeps supports and reason; Dreamer retains skip
   expect(operation.reason).toEqual({ type: "string", minLength: 1 });
   expect(operation).not.toHaveProperty("skipped");
   const dream = dreamingToolDefinitions().find(t => t.name === "memory")!.parameters.properties as Record<string, any>;
-  expect(dream.skipped.items.properties.because).toEqual({ type: "string", minLength: 1 });
+  expect(dream.because).toEqual({ type: "string", minLength: 1 });
   const factSchema = toolDefinitions.find(t => t.name === "note")!.parameters.properties as Record<string, any>;
   expect(factSchema).not.toHaveProperty("reason"); // facts gain no commit metadata and the surface stays four tools
   expect(write([create]).committed).toHaveLength(1);
@@ -2159,12 +2187,13 @@ test("64b/21a: an archive's supports face the same session/project/global table 
       const otherSupplied = suppliedHandles(input.material.changed)
         .filter((knowledge: string) => knowledge !== created.version && knowledge !== history(trigger.knowledgeId, trigger.commit))
         .map((knowledge: string) => ({ knowledge, because: "Unrelated current knowledge is unchanged by the archive scope check." }));
-      first = write.execute({ operations: [{ op: "archive", kind: "budget", id: address, supports: [origin.fact], reason: `Retired on ${origin.branch} evidence.` },
+      first = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: address, supports: [origin.fact], reason: `Retired on ${origin.branch} evidence.` },
         { op: "archive", kind: "budget", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }], skipped: otherSupplied });
       if (allowed) return { outcome: "success", output: "archived", request };
-      expect(first).toContain("rejected:");
-      const corrected = write.execute({ operations: [{ op: "archive", kind: "budget", id: triggerAddress,
-        supports: [c.fact], reason: "Retire explicit trigger." }], skipped: [{ knowledge: created.version, because: "Foreign support is outside this archive's scope." }, ...otherSupplied] });
+      expect(first).toContain("rejected: M1");
+      // 127: the trigger archive and the skips were their own calls and committed; only the refused archive is withdrawn.
+      expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
+      const corrected = dreamerWrite(write, { skipped: [{ knowledge: created.version, because: "Foreign support is outside this archive's scope." }] });
       expect(corrected).toContain('"committed"');
       return { outcome: "success", output: "scope refusal checked", request };
     });
@@ -2182,10 +2211,11 @@ test("64b/21a: an archive's supports face the same session/project/global table 
     const otherSupplied = suppliedHandles(input.material.changed)
       .filter((knowledge: string) => knowledge !== created.version && knowledge !== history(trigger.knowledgeId, trigger.commit))
       .map((knowledge: string) => ({ knowledge, because: "Unrelated current knowledge is unchanged by the reason-bypass check." }));
-    rejected = write.execute({ operations: [{ op: "archive", kind: "budget", id: address, supports: [outside.fact],
+    rejected = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: address, supports: [outside.fact],
       reason: `The user adopted ${outside.fact} on this path.` }], skipped: [] });
     expect(rejected).toContain("rejected:");
-    write.execute({ operations: [{ op: "archive", kind: "budget", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }],
+    expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
+    dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }],
       skipped: [{ knowledge: created.version, because: "Reason prose cannot adopt a foreign fact." }, ...otherSupplied] });
     return { outcome: "success", output: "reason refusal checked", request };
   });
@@ -2221,7 +2251,7 @@ test("64b/21b: a shared label changes no applicability and follows the owner's p
     // Read the globally selected base; labels do not grant write authority.
     readHandle(file => files.read(file).content, history(1, cCommit));
     readHandle(file => files.read(file).content, history(archiveTrigger.knowledgeId, archiveTrigger.commit));
-    const receipt = topicReceipt = JSON.parse(write.execute({ operations: [op, { op: "archive", kind: "budget", id: tagged(archiveTrigger.knowledgeId, archiveTrigger.commit),
+    const receipt = topicReceipt = JSON.parse(dreamerWrite(write, { operations: [op, { op: "archive", kind: "budget", id: tagged(archiveTrigger.knowledgeId, archiveTrigger.commit),
       supports: [third.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     const archived = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1);
     if (!archived) throw new Error(`topic archive did not commit: ${JSON.stringify(receipt)}`);
@@ -2265,7 +2295,7 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   const schema = toolDefinitions.find(t => t.name === "memory")!.parameters.properties as Record<string, any>;
   expect(schema.topics).toEqual({ type: "array", items: { type: "string", minLength: 1 } });
   // Topics stay inherited on archives; the archive branch requires an explicit kind.
-  const dreamSchema = (dreamingToolDefinitions().find(t => t.name === "memory")!.parameters.properties as Record<string, any>).operations.items;
+  const dreamSchema = (dreamingToolDefinitions().find(t => t.name === "memory")!.parameters as Record<string, any>).else.else; // 127: the operation branch
   expect(dreamSchema.allOf[2].then.required).toContain("kind");
   expect(dreamSchema.allOf[2].then.allOf[0].not.anyOf).toContainEqual({ required: ["topics"] });
   expect(dreamSchema.allOf[2].else).toHaveProperty("not", { required: ["kind"] });
@@ -2581,7 +2611,7 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
       enteredDreaming();
       await heldDreaming;
       const skipped = suppliedHandles(task.material.changed).map(knowledge => ({ knowledge, because: "Reviewed unchanged" }));
-      expect(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped })).toContain("committed");
+      expect(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [], skipped })).toContain("committed");
       return ok([]);
     }
     const input = raw as NotingAgentInput;
@@ -2710,11 +2740,8 @@ test("59: every supplied item is accounted for by an operation or a skip; New it
   expect(prompt).toContain("Every `New` and `Changed` item, and every other item the round took through A–D, ends in an operation or in a skip with a reason. Pool references the round did not take up need no skip.");
   // Step B, before the first New item: one batched history search; a hit is read in full before the revival decision.
   expect(prompt).toContain("Before the first `New` item, run one `search` with `queries`, `layer: knowledge`, `versions: history`, `cap: 3`. One query per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase.");
-  // The memory call names the skip shape; the empty-skip literal is gone.
-  expect(prompt).toContain('`memory({operations, skipped})`; a skip is `{knowledge: "K12@v3", because}` for a deliberated item left without an operation.');
+  // The empty-skip literal is gone; 127 owns the skip call's shape.
   expect(prompt).not.toContain("skipped: []");
-  // The check tool's receipt and the memory tool's description carry the same contract.
-  expect(dreamingToolDefinitions().find(tool => tool.name === "memory")!.description).toContain("skipped uses an exact untagged K@vN history address");
 });
 
 test("47/118: search keeps history and all descriptions without bypassing write validation", () => {
@@ -2822,7 +2849,7 @@ test("61: every backticked category, kind or field word used in a stage file is 
     const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8").replace(/```[\s\S]*?```/g, "");
     for (const match of raw.matchAll(/`([a-z]+)`/g)) {
       const word = match[1]!;
-      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skipped", "operations", "queries", "layer", "versions", "cap", "history", "full", "ok", "absorb", "source", "slot", "drop"].includes(word)) continue; // stage tools and operation fields, defined in the stage's Contract
+      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skip", "skipped", "operations", "queries", "layer", "versions", "cap", "history", "full", "ok", "absorb", "source", "slot", "drop"].includes(word)) continue; // stage tools and operation fields, defined in the stage's Contract
       expect(defined.has(word), `${file}: \`${word}\` is not a defined term`).toBe(true);
     }
   }

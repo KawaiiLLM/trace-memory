@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { call, fixture, piSession, say } from "./native-fixture.ts";
+import { call, calls, fixture, piSession, say } from "./native-fixture.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
 import { knowledgeBatch, legacyFacts } from "../../support/seed.ts";
@@ -82,9 +82,9 @@ test("persisted hook lifecycle: repeat, N progress, 117 knowledge commits, small
       if (!JSON.stringify(body).includes("# Dreamer")) return say("answer");
       if (dreamSubmitted) return say("Done");
       dreamSubmitted = true;
-      return call("skip-all", "memory", { operations: [], skipped: consolidated.committed.map(item => ({
-        knowledge: `K${item.knowledgeId}@v1`, because: "reviewed; retain",
-      })) });
+      return calls("skip-all", "memory", consolidated.committed.map(item => ({
+        skip: `K${item.knowledgeId}@v1`, because: "reviewed; retain",
+      })));
     });
     const knowledge = await compact();
     expect(knowledge.details.traceMemory.supplied.knowledgeCommitIds).toHaveLength(117);

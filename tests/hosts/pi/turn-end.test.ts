@@ -20,7 +20,7 @@ function seedKnowledge(h: ReturnType<typeof host>) {
     scope: "session", supports: ["F1"], topics: [], reason: "Rule" })).not.toContain("rejected:");
 }
 const skip = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "m1", name: "memory",
-  arguments: { operations: [], skipped: [{ knowledge: "K1@v1", because: "Reviewed unchanged" }] } }] });
+  arguments: { skip: "K1@v1", because: "Reviewed unchanged" } }] });
 
 test("a tool-heavy main turn launches neither phase until its final settlement", async () => {
   const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, "dreaming.triggerTokens": 1 });

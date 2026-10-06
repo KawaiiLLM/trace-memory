@@ -306,7 +306,7 @@ test.each([true, false])("92: disable during D rejects late %s mutation and pres
   await h.prompt("next main turn"); await h.answer("D opportunity"); await h.drain(); expect(h.requests).toHaveLength(1);
   await command(h, "off"); h.provider(async () => reply("Stopped"));
   release(submit ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
-    operations: [{ op: "archive", kind: "budget", id: `K${original.knowledgeId}#${h.memory.store.versionTag(original.knowledgeId, original.id)}`, supports: [], reason: "Late mutation" }], skipped: [],
+    op: "archive", kind: "budget", id: `K${original.knowledgeId}#${h.memory.store.versionTag(original.knowledgeId, original.id)}`, supports: [], reason: "Late mutation",
   } }] } : reply("No mutation"));
   await h.drain();
   expect(h.memory.store.listKnowledgeRevisions()).toEqual([original]);

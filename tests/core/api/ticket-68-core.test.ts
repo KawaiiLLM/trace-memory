@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { TraceMemory, DEFAULT_CONFIG, validateConfig, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 
 const opened: ReturnType<typeof TraceMemory>[] = [];
@@ -56,7 +56,7 @@ test("68 timeout fences tools, settles failure, releases the exact claim, and do
   expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
   expect(f.store.pendingVersions(`project:${f.project.id}`, f.target).map(value => value.revisionId)).toEqual([item.commit]);
   const memoryTool = task.tools.find(tool => tool.name === "memory")!;
-  expect(memoryTool.execute({ operations: [], skipped: [] })).toContain("run has finished");
+  expect(memoryTool.execute({ skip: `K${item.knowledgeId}@v1`, because: "late" })).toBe("rejected: run has finished");
 });
 
 test("68 timeout failure wins over a synchronous native cancelled result", async () => {
@@ -90,7 +90,7 @@ test.each(["success", "failure", "cancelled"] as const)("68 %s consumes an accep
   const f = setup(async task => {
     task.acknowledgeRequest();
     const handles = suppliedHandles(task.material.changed);
-    const receipt = task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [{ knowledge: handles[0], because: "already correct" }] });
+    const receipt = dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [], skipped: [{ knowledge: handles[0], because: "already correct" }] });
     expect(receipt).toContain("committed");
     return { outcome, output: outcome, request: exactRequest };
   });
@@ -108,7 +108,7 @@ test("68 own output is processed, its superseded parent needs no processing row,
   const f = setup(async task => {
     task.acknowledgeRequest();
     const handle = task.text.match(/K\d+#[a-z]{4,}/)![0];
-    const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
+    const receipt = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [{
       op: "update", id: handle, text: "updated", category: "constraint", scope: "project", supports: [], topics: [], reason: "maintained",
     }], skipped: [] }));
     expect(receipt.committed[0].version).toBe("K1@v2");

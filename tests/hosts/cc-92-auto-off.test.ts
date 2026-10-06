@@ -42,11 +42,11 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     let own = 0, lateWrite!: () => string, observedAbort = false;
     executeDream = task => {
       const write = task.tools.find(tool => tool.name === "memory")!;
-      const update = { operations: [{ op: "update", id: `K${changed!.knowledgeId}#${store.versionTag(changed!.knowledgeId, changed!.commit)}`,
-        text: "Rule 1 maintained", category: "constraint", scope: "session", topics: [], supports: [], reason: "maintenance" }], skipped: [] };
+      const update = { op: "update", id: `K${changed!.knowledgeId}#${store.versionTag(changed!.knowledgeId, changed!.commit)}`,
+        text: "Rule 1 maintained", category: "constraint", scope: "session", topics: [], supports: [], reason: "maintenance" };
       expect(write.execute(update)).not.toContain("rejected:");
       own = store.currentCommit(changed!.knowledgeId, target)[0]!.id;
-      expect(write.execute({ operations: [], skipped: [{ knowledge: `K${skipped!.knowledgeId}@v1`, because: "checked unchanged" }] })).not.toContain("rejected:");
+      expect(write.execute({ skip: `K${skipped!.knowledgeId}@v1`, because: "checked unchanged" })).not.toContain("rejected:");
       const claim = store.getClaim(session.id, "dreaming")!;
       const rangeId = store.openDreamingRange(session.id, "main")!.id;
       lateWrite = () => write.execute(update);

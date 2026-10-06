@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import type { KnowledgeCategory, KnowledgeScope } from "../../../src/core/model/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 interface ParentExample { text: string; category: KnowledgeCategory; scope: KnowledgeScope; topics: string[] }
 interface WorkflowExample {
@@ -64,7 +65,7 @@ test("85: a pending-triggered deterministic Dreamer still archives until its sel
   expect(state.store.dreamingDue(state.target, state.memory.config.dreaming.triggerTokens)).toBe(true);
   const outcome = await state.scenarios.run(state.memory, state.target, task => {
     task.acknowledgeRequest();
-    const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [
+    const receipt = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [
       { op: "archive", kind: "budget", id: handle(state, state.items[0]!), supports: [], reason: "Reviewed low-value routine progress retired to fit budget" }],
       skipped: [{ knowledge: history(state, state.trigger), because: "fixture trigger has no maintenance meaning" }] }));
     expect(receipt.committed).toHaveLength(1);
@@ -82,7 +83,7 @@ test("35c faithful merge keeps authority, conditions, exception and rendered top
   let merged!: { knowledgeId: number; version: string };
   const outcome = await state.scenarios.run(state.memory, state.target, task => {
     const write = task.tools.find(tool => tool.name === "memory")!;
-    merged = JSON.parse(write.execute({ operations: [{ op: "merge", id: handle(state, state.items[0]!), absorb: [handle(state, state.items[1]!)],
+    merged = JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: handle(state, state.items[0]!), absorb: [handle(state, state.items[1]!)],
       ...body, supports: [], reason: "Reviewed complete claims retain authority, condition, exception, and subjects" }],
       skipped: [{ knowledge: history(state, state.trigger), because: "fixture trigger has no maintenance meaning" }] })).committed[0];
     expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
@@ -101,7 +102,7 @@ test("35c archive and no-op skip preserve the compared survivor and original no-
   const disposition = reviewed.result as { archiveParent: number; survivorParent: number; reason: string };
   const state = seeded(reviewed.parents), archived = state.items[disposition.archiveParent]!, survivor = state.items[disposition.survivorParent]!;
   const outcome = await state.scenarios.run(state.memory, state.target, task => {
-    const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget", id: handle(state, archived), supports: [], reason: disposition.reason }],
+    const receipt = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [{ op: "archive", kind: "budget", id: handle(state, archived), supports: [], reason: disposition.reason }],
       skipped: [{ knowledge: history(state, survivor), because: "Compared survivor already states the claim" },
         { knowledge: history(state, state.trigger), because: "fixture trigger has no maintenance meaning" }] }));
     expect(receipt.committed).toHaveLength(1);

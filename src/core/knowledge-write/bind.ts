@@ -12,31 +12,29 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput,
   const skipped: { knowledge: string; because: string }[] = [];
   // Parallel to `skipped`: each entry's already-resolved numeric revision (68 fix 4 — no re-parsing).
   const skippedCommits: number[] = [];
-  let problems: string[] = [];
   let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[];
     diagnostics: import("./prepare.ts").ConsolidationDiagnostic[]; output: MemoryBatch } | undefined;
   let failure: { runId: number; problems: string[] } | undefined;
   const sequence: { name: string; input: unknown; result: string; problems?: string[] }[] = [];
+  /** One immediate submission; its receipt object is the model-facing result before serialization. */
   const execute = (input: unknown, request: unknown = input) => {
     const prepared = prepareMemory(store, sessionId, input, run, path, eligibleSupport, skippable, undefined, names);
-    problems = prepared.results.filter(r => r.startsWith("rejected:"));
-    if (problems.length) { failure = undefined; return JSON.stringify({ results: prepared.results }); }
+    if (prepared.results.some(r => r.startsWith("rejected:"))) { failure = undefined; return { results: prepared.results }; }
     const diagnostics = prepared.diagnostics;
-    const receipt = (items: import("../store/index.ts").CommittedKnowledgeOp[]) => JSON.stringify({ results: prepared.results,
-      committed: items.map(({ commit, ...item }) => ({ ...item, version: `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, commit)}` })), diagnostics });
     const result = store.commitConsolidationRun({ path, run: { ...run, response: JSON.stringify({ problems: [] }),
       request: JSON.stringify(request) }, operations: prepared.operations,
       finalizeResponse: ({ committed }) => JSON.stringify({ results: prepared.results, committed, diagnostics }) });
-    if (!result.ok) { failure = result; problems = result.readerProblems ?? result.problems;
-      return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }
+    if (!result.ok) { failure = result; const problems = result.readerProblems ?? result.problems;
+      return { results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }; }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch) };
     allCommitted.push(...result.committed);
     if (skippable) for (const skip of prepared.batch.skipped) if ("knowledge" in skip) {
       skipped.push(skip); skippedCommits.push(prepared.declinedCommits.get(skip)!);
     }
-    problems = []; failure = undefined;
-    return receipt(result.committed);
+    failure = undefined;
+    return { results: prepared.results, committed: result.committed.map(({ commit, ...item }) =>
+      ({ ...item, version: `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, commit)}` })), diagnostics };
   };
   return { execute, sequence, allCommitted, skipped, skippedCommits,
-    get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
+    get committed() { return committed; }, get failure() { return failure; } };
 }

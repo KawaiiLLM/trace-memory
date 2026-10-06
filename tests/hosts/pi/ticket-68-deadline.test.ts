@@ -13,7 +13,7 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
   // 104: the next run succeeds only by deliberating its frozen item, so it skips it before finishing.
   f.script(async () => {
     if (++requests === 1) { entered(); await gate; return say("Finished."); }
-    return requests === 2 ? call("skip", "memory", { operations: [], skipped: [{ knowledge: frozen, because: "Reviewed unchanged" }] })
+    return requests === 2 ? call("skip", "memory", { skip: frozen, because: "Reviewed unchanged" })
       : say("Finished.");
   });
   const nativeWork: Promise<unknown>[] = [];
@@ -57,7 +57,7 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
     expect(task.signal?.aborted).toBe(true);
     expect(store.getClaim(session.id, "dreaming")).toBeNull();
     expect(store.openDreamingRange(session.id, "main")).toBeNull();
-    const lateWrite = task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "archive", kind: "budget", id: `K${item.knowledgeId}@${item.commit}`, supports: [], reason: "too late" }], skipped: [] });
+    const lateWrite = task.tools.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${item.knowledgeId}@${item.commit}`, supports: [], reason: "too late" });
     expect(lateWrite).toBe("rejected: run has finished");
     expect(store.pendingVersions(`project:${project.id}`, target)).toHaveLength(1);
     vi.useRealTimers();

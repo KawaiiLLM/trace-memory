@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
-import { suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { legacyFacts } from "../../support/seed.ts";
 import fixture from "../../fixtures/trace.json";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -45,7 +45,7 @@ async function consolidation(...operations: Operation[]) {
     const triggerAddress = exact(trigger.knowledgeId, trigger.commit);
     const supplied = new Set(suppliedHandles(input.material.changed));
     for (const address of addressed) supplied.delete(address);
-    const receipt = JSON.parse(write.execute({ operations: [...converted, { op: "archive", kind: "budget", id: triggerAddress,
+    const receipt = JSON.parse(dreamerWrite(write, { operations: [...converted, { op: "archive", kind: "budget", id: triggerAddress,
       supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied fixture item." })) }));
     committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
       .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId,

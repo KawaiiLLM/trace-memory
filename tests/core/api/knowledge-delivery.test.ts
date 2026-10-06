@@ -7,6 +7,7 @@ import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 const time = "2026-09-12T00:00:00Z";
 
@@ -70,7 +71,7 @@ async function maintain(f: ReturnType<typeof fixture>, operation: Record<string,
     const triggerAddress = trigger ? `K${trigger.knowledgeId}@${trigger.commit}` : null;
     const supplied = new Set(input.material.changed.match(/K\d+@v\d+/g) ?? []);
     if (triggerAddress) supplied.delete(history(triggerAddress)); for (const address of addresses) supplied.delete(history(address));
-    const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [operation,
+    const receipt = JSON.parse(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [operation,
       ...(triggerAddress ? [{ op: "archive", kind: "budget", id: tag(triggerAddress), supports: [`F${factId}`], reason: "Retire the explicit delivery trigger." }] : [])],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied item." })) }));
     committed = receipt.committed.filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger?.knowledgeId)

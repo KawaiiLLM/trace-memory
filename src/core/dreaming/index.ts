@@ -170,7 +170,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     const runId = store.dreamingRunId(run);
     const ownRevisionIds = runId === undefined ? [] : store.listCommitsByRun(runId).map(revision => revision.id);
     const excluded = new Set([...frozen.frozenIds, ...ownRevisionIds]);
-    const operationFailures = [...binding.toolProblems, ...binding.memory.problems];
+    const operationFailures = binding.problems;
     const pools = store.knowledgePools(path);
     const done = deliberated(ownRevisionIds), open = frozen.frozenIds.filter(id => !done.has(id));
     const acceptance = [...pools.filter(pool => pool.tokens > pool.budget).map(pool => `pool ${pool.pool} over budget: ${pool.tokens}/${pool.budget} tokens`),

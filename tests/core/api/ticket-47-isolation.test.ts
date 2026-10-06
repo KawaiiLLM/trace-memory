@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory, memoryFiles, type DreamingAgentInput, type NotingAgentInput } from "../../../src/core/api/index.ts";
 import type { KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -135,7 +136,7 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
       .map(item => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`);
     for (const address of addressed) read(address);
     const change = { category: "open", scope: "project", topics: [] as string[], supports: [`F${siblingFact.id}`], reason: "sibling-only mutation" };
-    maintenanceReceipt = JSON.parse(write.execute({ operations: [
+    maintenanceReceipt = JSON.parse(dreamerWrite(write, { operations: [
       { op: "update", id: addressed[0], ...change, text: "sibling-only update" },
       { op: "archive", kind: "budget", id: addressed[1], supports: [`F${siblingFact.id}`], reason: "sibling-only archive" },
       { op: "merge", id: addressed[2], absorb: [addressed[3]], ...change, text: "sibling-only merge" },

@@ -141,7 +141,7 @@ test("D admits a real pending Knowledge pool on an entry without consuming pendi
       const version = frozen.match(/New (K\d+@v\d+)/)?.[1];
       if (!version || version !== `K${trigger.knowledgeId}@v1`) throw new Error(`unexpected frozen D range: ${frozen.slice(0, 400)}`);
       return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
-        arguments: { operations: [], skipped: [{ knowledge: version, because: "Reviewed; retain" }] } }] };
+        arguments: { skip: version, because: "Reviewed; retain" } }] };
     });
     await h.prompt("new main turn"); await h.answer("new completed entry"); await h.drain();
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success"]);

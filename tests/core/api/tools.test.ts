@@ -116,7 +116,7 @@ test("116: native schema refusal invalidates only its addressed replacement slot
   expect(memory.store.listSessionFacts(1)).toHaveLength(2);
 });
 
-test("116: public schemas distinguish full items, scalar drops and empty calls; D retains batches", () => {
+test("116: public schemas distinguish full items, scalar drops and empty calls", () => {
   const note = toolDefinitions.find(t => t.name === "note")!.parameters;
   const knowledge = toolDefinitions.find(t => t.name === "memory")!.parameters;
   for (const schema of [note, knowledge]) {
@@ -134,9 +134,23 @@ test("116: public schemas distinguish full items, scalar drops and empty calls; 
   expect(rules[2]).toMatchObject({ if: { properties: { op: { const: "archive" } } }, then: { required: ["kind"] },
     else: { required: ["text", "category", "scope", "topics"] } });
   expect((knowledge.properties as Record<string, unknown>).skipped).toBeUndefined();
-  const dreamer = dreamingToolDefinitions().find(t => t.name === "memory")!.parameters;
-  expect(dreamer.required).toEqual(["operations", "skipped"]);
-  expect((dreamer.properties as Record<string, unknown>).operations).toBeDefined();
+});
+
+test("127: the Dreamer's memory schema is one operation, one skip or one scalar drop, with no root combinator", () => {
+  const schema = dreamingToolDefinitions().find(t => t.name === "memory")!.parameters as Record<string, any>;
+  for (const key of ["anyOf", "oneOf", "allOf"]) expect(schema).not.toHaveProperty(key);
+  expect(schema.additionalProperties).toBe(false);
+  expect(schema.required).toEqual([]);
+  expect(schema.properties).not.toHaveProperty("operations");
+  expect(schema.properties).not.toHaveProperty("skipped");
+  expect(schema).toMatchObject({ if: { required: ["drop"] }, then: { maxProperties: 1 },
+    else: { if: { required: ["skip"] }, then: { required: ["skip", "because"] }, else: { required: ["op", "supports", "reason"] } } });
+  expect(schema.properties.op.enum).toEqual(["update", "merge", "split", "archive"]);
+  expect(schema.properties.skip.pattern).toBe("^K[1-9][0-9]*@v[1-9][0-9]*$");
+  expect(schema.properties.children).toMatchObject({ type: "array", minItems: 2, maxItems: 2 });
+  // A skip carries no operation field, and an operation carries no because.
+  expect(schema.else.then.not.anyOf).toContainEqual({ required: ["op"] });
+  expect(schema.else.else.not).toEqual({ required: ["because"] });
 });
 
 test("manual input and result are audited; facts enter the branch without advancing Noting", () => {

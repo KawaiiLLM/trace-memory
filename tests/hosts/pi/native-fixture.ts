@@ -22,6 +22,10 @@ export const say = (text: string, tokens = usage()) => sse([
   { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: "stop" }], usage: tokens }]);
 export const call = (id: string, name: string, args: unknown, tokens = usage()) => sse([
   { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: "tool_calls" }], usage: tokens }]);
+/** 127: one response carrying several calls of one tool, such as a Dreamer's operations and skips. */
+export const calls = (id: string, name: string, args: readonly unknown[], tokens = usage()) => sse([
+  { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta: { role: "assistant", tool_calls: args.map((value, index) =>
+    ({ index, id: `${id}-${index + 1}`, type: "function", function: { name, arguments: JSON.stringify(value) } })) }, finish_reason: "tool_calls" }], usage: tokens }]);
 /** Explicit successful Noter script: both tools execute, then the caller must return a normal terminal reply. */
 export const noteAndMemory = (id: string, args: unknown, tokens = usage()) => sse([
   { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0,

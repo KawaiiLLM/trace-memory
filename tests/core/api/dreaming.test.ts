@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
+import { dreamerWrite, skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
+import { knowledgeBatch } from "../../support/seed.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { dreamingToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
@@ -104,7 +105,7 @@ test("64c exact provider request and terminal audit are preserved while success 
     expect(task.material.changed).toContain(history(f, base));
     expect(task.material.changed).toContain(history(f, trigger));
     expect(task.tools.map(tool => tool.name)).toEqual(["search", "check", "memory"]);
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [base, trigger]
+    dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [], skipped: [base, trigger]
       .map(item => ({ knowledge: history(f, item), because: "fixture reviewed unchanged" })) });
     return { outcome: "success", output: "audited", request: exact, nativeLog: "/tmp/dream.jsonl",
       usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: { total: 0.1 } } };
@@ -174,7 +175,7 @@ test("64c cancellation after a commit consumes the frozen revisions and the own 
   const f = fixture(), base = f.create("project source");
   let own = 0;
   const { trigger, result } = await admitted(f, (task, trigger) => {
-    const committed = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
+    const committed = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [{
       op: "update", id: address(f, base), text: "moved global result", category: "constraint", scope: "global", supports: [], topics: [], reason: "scope correction",
     }], skipped: [{ knowledge: history(f, trigger), because: "fixture trigger needs no maintenance" }] })).committed;
     own = commit(f, committed[0]);
@@ -187,27 +188,101 @@ test("64c cancellation after a commit consumes the frozen revisions and the own 
   ]);
 });
 
-test("64c two schema-valid updates roll back atomically when the second hits a Store write failure", async () => {
-  const f = fixture(), first = f.create("first atomic base"), second = f.create("second atomic base");
+test("127: each call commits in its own transaction; a Store write failure refuses and rolls back only its own call, which then blocks", async () => {
+  const f = fixture(), first = f.create("first base"), second = f.create("second base");
   const before = f.store.listKnowledgeRevisions().length;
-  const { trigger, result } = await admitted(f, (task, trigger) => {
+  let firstCommit = 0;
+  const { result } = await admitted(f, (task, trigger) => {
     f.store.db.exec(`CREATE TRIGGER reject_second_legal_update BEFORE INSERT ON knowledge_revisions
       WHEN NEW.knowledge_id = ${second.knowledgeId} BEGIN SELECT RAISE(ABORT, 'injected second legal update failure'); END`);
     const update = (base: typeof first, text: string) => ({ op: "update", id: address(f, base), text, category: "constraint", scope: "project", supports: [], topics: [], reason: text });
-    const receipt = task.tools.find(tool => tool.name === "memory")!.execute({
-      operations: [update(first, "first legal update executes before the fault"), update(second, "second legal update reaches Store insertion")],
-      skipped: [{ knowledge: history(f, trigger), because: "fixture trigger" }],
-    });
-    expect(receipt).toContain("rejected:");
-    expect(receipt).toContain("injected second legal update failure");
-    expect(f.store.listKnowledgeRevisions()).toHaveLength(before + 1); // both batch inserts rolled back; only the trigger remains
+    const memory = task.tools.find(tool => tool.name === "memory")!;
+    expect(memory.execute(update(first, "first legal update commits on its own"))).toContain('"committed"');
+    firstCommit = f.store.currentCommit(first.knowledgeId, f.target)[0]!.id;
+    const refused = JSON.parse(memory.execute(update(second, "second legal update reaches Store insertion")));
+    expect(refused.results).toEqual([expect.stringMatching(/^rejected: M1: .*injected second legal update failure/)]);
+    expect(f.store.listKnowledgeRevisions()).toHaveLength(before + 2); // the trigger and the first update; the refused call wrote nothing
+    expect(memory.execute({ skip: history(f, trigger), because: "fixture trigger" })).toContain('"rejected":{"M1"');
     return success;
   });
   expect(result.outcome).toBe("failure");
-  expect(f.store.currentCommit(first.knowledgeId, f.target)[0]!.id).toBe(first.commit);
+  expect("problems" in result && result.problems[0]).toMatch(/^M1: .*injected second legal update failure/);
+  expect(f.store.currentCommit(first.knowledgeId, f.target)[0]!.id).toBe(firstCommit);
+  expect(firstCommit).not.toBe(first.commit);
   expect(f.store.currentCommit(second.knowledgeId, f.target)[0]!.id).toBe(second.commit);
-  expect(f.store.listKnowledgeRevisions()).toHaveLength(before + 1);
-  expect(processed(f)).toEqual([]);
+  expect(f.store.listKnowledgeRevisions()).toHaveLength(before + 2);
+});
+
+test("127: update, merge, split and both archive kinds are each one call that commits at once", async () => {
+  const f = fixture();
+  const [updated, survivor, absorbed, parent, budget, invalid] = knowledgeBatch(f.store, f.target,
+    ["update me", "merge survivor", "merge absorbed", "split parent", "budget archive", "invalid archive"]
+      .map(text => ({ scope: "project" as const, category: "constraint" as const, supports: [f.fact], text })), { kind: "manual", createdAt: "now" }).committed;
+  const { result } = await admitted(f, (task, trigger) => {
+    const memory = task.tools.find(tool => tool.name === "memory")!;
+    const call = (input: Record<string, unknown>, results: number) => {
+      const before = f.store.listKnowledgeRevisions().length;
+      const receipt = JSON.parse(memory.execute(input));
+      expect(receipt).toMatchObject({ results: ["ok"] });
+      expect(receipt).not.toHaveProperty("rejected");
+      expect(f.store.listKnowledgeRevisions().length - before).toBe(results); // in the store before the next call
+      return receipt;
+    };
+    const content = { category: "constraint", scope: "project", topics: [], supports: [] };
+    call({ op: "update", id: address(f, updated!), text: "updated", ...content, reason: "rewrite" }, 1);
+    call({ op: "merge", id: address(f, survivor!), absorb: [address(f, absorbed!)], text: "merged", ...content, reason: "same rule" }, 1);
+    expect(call({ op: "split", id: address(f, parent!), children: [{ text: "one", category: "constraint", topics: [] },
+      { text: "two", category: "reference", topics: [] }], supports: [], reason: "two rules" }, 2).committed).toHaveLength(2);
+    call({ op: "archive", kind: "budget", id: address(f, budget!), supports: [], reason: "over budget" }, 1);
+    call({ op: "archive", kind: "invalid", id: address(f, invalid!), text: "The rule no longer holds: the user corrected its basis; nothing replaces it.",
+      supports: [], reason: "contradicted" }, 1);
+    expect(JSON.parse(memory.execute({ skip: history(f, trigger), because: "fixture trigger" }))).toEqual({ results: ["ok"], committed: [], diagnostics: [] });
+    expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+    return success;
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const current = (item: { knowledgeId: number }) => f.store.currentCommit(item.knowledgeId, f.target)[0];
+  expect(current(updated!)?.text).toBe("updated");
+  expect(current(survivor!)?.text).toBe("merged");
+  expect(current(absorbed!)).toBeUndefined();
+  expect([current(parent!), current(budget!)?.archiveKind, current(invalid!)?.archiveKind]).toEqual([undefined, "budget", "invalid"]);
+});
+
+test("127: a refused call holds Mn and blocks check and the end pass until slot or drop; a later sibling's commit never clears it", async () => {
+  for (const resolved of [false, true]) {
+    const f = fixture();
+    const [a, b] = knowledgeBatch(f.store, f.target, ["rule A", "rule B"].map(text => ({ scope: "project" as const,
+      category: "constraint" as const, supports: [f.fact], text })), { kind: "manual", createdAt: "now" }).committed;
+    let review = "";
+    const { result } = await admitted(f, (task, trigger) => {
+      const memory = task.tools.find(tool => tool.name === "memory")!, check = () => task.tools.find(tool => tool.name === "check")!.execute({});
+      const update = (item: { knowledgeId: number; commit: number }, text: string, id = address(f, item)) =>
+        ({ op: "update", id, text, category: "constraint", scope: "project", topics: [], supports: [], reason: text });
+      // One response's calls run in order: a refused update, then two legal siblings that commit.
+      expect(JSON.parse(memory.execute(update(a!, "A rewritten", `K${a!.knowledgeId}#zzzz`))))
+        .toEqual({ results: [expect.stringMatching(/^rejected: M1: /)], rejected: { M1: expect.any(String) } });
+      expect(JSON.parse(memory.execute(update(b!, "B rewritten")))).toMatchObject({ results: ["ok"], rejected: { M1: expect.any(String) } });
+      expect(JSON.parse(memory.execute({ skip: history(f, trigger), because: "fixture trigger" }))).toHaveProperty("rejected.M1");
+      expect(check()).toMatch(/\nBlockers: M1: /);
+      review = task.passEnd(1)!;
+      if (!resolved) return success;
+      expect(memory.execute({ slot: "M1", ...update(a!, "A rewritten", "K999#zzzz") })).toContain("rejected: M1: "); // a refused resubmission keeps its number
+      expect(memory.execute(update(a!, "A rewritten", "K998#zzzz"))).toContain("rejected: M2: ");
+      expect(memory.execute({ drop: "M2" })).toContain("dropped: M2");
+      expect(memory.execute({ drop: "M2" })).toContain("rejected: M2: unknown M slot M2"); // a call error
+      expect(check()).toContain("unknown M slot M2");
+      expect(JSON.parse(memory.execute({ slot: "M1", ...update(a!, "A rewritten") }))).toMatchObject({ results: ["ok"], committed: [{ knowledgeId: a!.knowledgeId }] });
+      expect(check()).toContain("Blockers: none");
+      expect(memory.execute(update(a!, "stale", address(f, a!)))).toContain("rejected: M3: "); // numbers never recycle
+      expect(memory.execute({ drop: "M3" })).toContain("dropped: M3");
+      return success;
+    });
+    expect(review.split("\n\nBlockers:\n")[1]!.split("\n\n")[0]).toMatch(/^M1: /);
+    expect(result.outcome).toBe(resolved ? "success" : "failure");
+    if (!resolved) expect("problems" in result && result.problems[0]).toMatch(/^M1: /);
+    expect(f.store.currentCommit(b!.knowledgeId, f.target)[0]!.text).toBe("B rewritten");
+    expect(f.store.currentCommit(a!.knowledgeId, f.target)[0]!.text).toBe(resolved ? "A rewritten" : "rule A");
+  }
 });
 
 test("64c an exact version tag permits same-pool maintenance without a read grant or enlarged frozen range", async () => {
@@ -217,7 +292,7 @@ test("64c an exact version tag permits same-pool maintenance without a read gran
     late = f.create("arrived after freeze");
     // A tag identifies the revision; no per-run read registration grants authority.
     expect(f.memory.trace(address(f, late), { itemBudget: null })).toContain("arrived after freeze");
-    const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
+    const receipt = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [{
       op: "update", id: address(f, late), text: "maintained exact late item", category: "constraint", scope: "project", supports: [], topics: [], reason: "complete exact read",
     }], skipped: [{ knowledge: history(f, base), because: "unchanged" }, { knowledge: history(f, trigger), because: "fixture trigger" }] }));
     own = commit(f, receipt.committed[0]);
@@ -244,7 +319,7 @@ test.each([
   let own = 0, rangeId = 0;
   const exact = { provider: `fault-${failure}` };
   const { trigger, result } = await admitted(f, (task, trigger) => {
-    const committed = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{
+    const committed = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [{
       op: "update", id: address(f, base), text: "committed before terminal fault", category: "constraint", scope: "project", supports: [], topics: [], reason: "real committed batch",
     }], skipped: [{ knowledge: history(f, trigger), because: "fixture trigger" }] })).committed;
     own = commit(f, committed[0]);
@@ -278,7 +353,7 @@ test("64c reference material is genuinely non-empty, capped and receipted when c
     const settled = await f.scenarios.run(f.memory, f.target, task => {
       const handles = suppliedHandles(task.material.changed);
       expect(handles.length).toBeGreaterThan(0);
-      task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [],
         skipped: handles.map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
       return success;
     });
@@ -332,7 +407,7 @@ async function smallUpdateFixture() {
   const base = f.create("Already-processed project knowledge that stays after this run. ".repeat(20) + "marker-original.");
   const firstRun = await f.scenarios.run(f.memory, f.target, task => {
     task.acknowledgeRequest();
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+    dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [],
       skipped: [{ knowledge: history(f, base), because: "fixture: mark processed" }] });
     return success;
   });
@@ -360,7 +435,7 @@ test("103 order instruction: absent for a small update — the excluded size is 
   const secondRun = await f.scenarios.run(f.memory, f.target, task => {
     task.acknowledgeRequest();
     seenBound = task.material.bound;
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+    dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [],
       skipped: [{ knowledge: `K${updated.knowledgeId}@v${f.store.versionOrdinal(updated.knowledgeId, updated.commit)}`, because: "fixture reviewed unchanged" }] });
     return success;
   });
@@ -377,7 +452,7 @@ test("103 order instruction: absent at the boundary where the remainder exactly 
   const secondRun = await f.scenarios.run(f.memory, f.target, task => {
     task.acknowledgeRequest();
     seenBound = task.material.bound;
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+    dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [],
       skipped: [{ knowledge: `K${updated.knowledgeId}@v${f.store.versionOrdinal(updated.knowledgeId, updated.commit)}`, because: "fixture reviewed unchanged" }] });
     return success;
   });
@@ -396,7 +471,7 @@ test("103 order instruction: present for an archive — the excluded size is 0, 
   const victim = f.create("Project knowledge retired by a later Noter archive. ".repeat(10));
   const firstRun = await f.scenarios.run(f.memory, f.target, task => {
     task.acknowledgeRequest();
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [
+    dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [], skipped: [
       { knowledge: history(f, stays), because: "fixture: mark processed" },
       { knowledge: history(f, victim), because: "fixture: mark processed" }] });
     return success;
@@ -420,7 +495,7 @@ test("103 order instruction: present for an archive — the excluded size is 0, 
     task.acknowledgeRequest();
     seenBound = task.material.bound;
     checkReceipt = String(task.tools.find(tool => tool.name === "check")!.execute({}));
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+    dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [],
       skipped: [{ knowledge: `K${archivedItem.knowledgeId}@v${f.store.versionOrdinal(archivedItem.knowledgeId, archivedItem.commit)}`, because: "fixture reviewed unchanged" }] });
     return success;
   });
@@ -442,7 +517,7 @@ test("103 order instruction: absent when the pool without this run's pending ite
   const { result } = await admitted(f, (task, trigger) => {
     task.acknowledgeRequest();
     expect(task.material.bound).toBe(`Run wall-clock bound: ${f.memory.config.dreaming.timeoutMs} ms. Wrap up before this deadline.`);
-    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+    dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [],
       skipped: [{ knowledge: history(f, trigger), because: "fixture reviewed unchanged" }] });
     return success;
   });

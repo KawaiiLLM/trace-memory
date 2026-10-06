@@ -10,6 +10,7 @@ import { declarationContext } from "../project-declaration-context.ts";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { entry as seedEntry } from "../../support/seed.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { dreamerWrite } from "../../dreaming-skips.ts";
 
 let dir: string;
 let dbPath: string;
@@ -275,7 +276,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
       const request = { fixture: "store stale-batch atomicity", trigger }; input.reportRequest(request);
       const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
       const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
-      const updated = JSON.parse(write.execute({ operations: [{ op: "update", id: tag(knowledgeId, created.committed[0]!.commit),
+      const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: tag(knowledgeId, created.committed[0]!.commit),
         topics: [], reason: "Substantive correction of the recorded conclusion.", text: "The project uses pnpm exclusively.",
         category: "constraint", scope: "project", supports: [`F${factId}`] }],
         skipped: [{ knowledge: history(trigger.knowledgeId, trigger.commit), because: "The explicit trigger is retired after the stale-batch assertion." }] })).committed[0];
@@ -300,7 +301,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
       expect(memory.store.currentCommit(knowledgeId).map(revision => revision.id)).toEqual([updatedCommit]);
       read(tag(trigger.knowledgeId, trigger.commit));
       read(tag(second.committed[0]!.knowledgeId, second.committed[0]!.commit));
-      const corrected = write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
+      const corrected = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [{ knowledge: history(second.committed[0]!.knowledgeId, second.committed[0]!.commit), because: "The rejected archive rolled back." }] });
       expect(corrected).toContain('"committed"');
       return { outcome: "success", output: "atomicity checked", request };
@@ -485,7 +486,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
         const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
         read(tag(id, made.committed[0]!.commit));
         read(tag(trigger.knowledgeId, trigger.commit));
-        const receipt = write.execute({ operations: [
+        const receipt = dreamerWrite(write, { operations: [
           { op: "update", id: tag(id, made.committed[0]!.commit), topics: [], reason: "Substantive correction of the recorded conclusion.",
             text: "private term", category: "understanding", scope: "session", supports: [`F${peerFact}`] },
           { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${peerFact}`], reason: "Retire the explicit fixture trigger." },
@@ -520,7 +521,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
         const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
         read(tag(id, made.committed[0]!.commit));
         read(tag(trigger.knowledgeId, trigger.commit));
-        const receipt = write.execute({ operations: [
+        const receipt = dreamerWrite(write, { operations: [
           { op: "update", id: tag(id, made.committed[0]!.commit), topics: [], reason: "Substantive correction of the recorded conclusion.",
             text: "Use pnpm here.", category: "constraint", scope: "project", supports: [`F${factId}`] },
           { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." },
@@ -551,7 +552,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       const request = { fixture: "store merge cardinality", trigger }; input.reportRequest(request);
       const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
       const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
-      write.execute({ operations: [], skipped: [
+      dreamerWrite(write, { operations: [], skipped: [
         { knowledge: history(aId, a.committed[0]!.commit), because: "Hold unchanged while validating Store merge cardinality." },
         { knowledge: history(bId, b.committed[0]!.commit), because: "Hold unchanged while validating Store merge cardinality." },
         { knowledge: history(trigger.knowledgeId, trigger.commit), because: "Retire after validating Store merge cardinality." },
@@ -569,7 +570,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       expect(duplicate.ok).toBe(false);
       if (!duplicate.ok) expect(duplicate.problems.join(" ")).toContain("absorb as exactly one distinct other parent");
       read(tag(trigger.knowledgeId, trigger.commit));
-      write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
+      dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [] }); // The first call already recorded the untouched bases as skipped.
       return { outcome: "success", output: "cardinality checked", request };
     });
@@ -596,11 +597,11 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       const request = { fixture: "store merge survivor and rollback", trigger }; input.reportRequest(request);
       const read = (address: string) => memoryFiles(memory, input.reader).read(`/tm/${address}`).content;
       const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
-      olderUpdateCommit = publishedCommit(JSON.parse(write.execute({ operations: [{ op: "update", id: tag(older.knowledgeId, older.commit),
+      olderUpdateCommit = publishedCommit(JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: tag(older.knowledgeId, older.commit),
         text: "older revised", category: "reference", scope: "project", supports: [`F${factId}`], reason: "change category", topics: ["identity"] }],
         skipped: [] })).committed[0]);
       read(tag(older.knowledgeId, olderUpdateCommit));
-      mergeCommit = publishedCommit(JSON.parse(write.execute({ operations: [{ op: "merge", id: tag(older.knowledgeId, olderUpdateCommit),
+      mergeCommit = publishedCommit(JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: tag(older.knowledgeId, olderUpdateCommit),
         absorb: [tag(newer.knowledgeId, newer.commit)], text: "combined", category: "reference", scope: "project",
         supports: [`F${factId}`], reason: "merge duplicate", topics: ["identity"] }],
         skipped: [] })).committed[0]);
@@ -627,7 +628,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       read(tag(older2.knowledgeId, older2.commit));
       read(tag(newer2.knowledgeId, newer2.commit));
       read(tag(independent.knowledgeId, independent.commit));
-      const corrected = write.execute({ operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
+      const corrected = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
         skipped: [
           { knowledge: history(older2.knowledgeId, older2.commit), because: "The reverse merge rolled back." },
           { knowledge: history(newer2.knowledgeId, newer2.commit), because: "The reverse merge rolled back." },
