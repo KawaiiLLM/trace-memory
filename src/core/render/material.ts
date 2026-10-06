@@ -261,15 +261,20 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   // The `Receipts:` heading `finish` emits is charged with the receipts (review 2026-09-08: every emitted
   // component counts, the heading included; it may be charged to both budgets, which over-counts safely).
   const reserved = () => current + charge([...input.framing, ...(input.range ? [rangeLine(input.range)] : [])]) + receiptCost(receipts);
-  // Two passes: the historical-fact receipt is itself charged, and only a first pass knows whether
-  // there is one. A receipt is bounded, so the second pass is the last (ticket 20 "Budgeted receipts").
+  // The historical-fact receipt is itself charged, and only a fill knows whether there is one. Filling
+  // under its charge can omit more facts and lengthen it (eight addresses become "… and 1 more up to"),
+  // so refill until the charged receipt covers the produced one. Room only shrinks and a receipt is
+  // bounded (ticket 20 "Budgeted receipts"), so this ends.
   // `history` caps the optional historical facts below what the episodic budget would allow: a phase
   // negotiating a smaller model window trims this optional material before it drops selected evidence.
   const room = () => Math.min(input.history ?? Infinity, input.caps.episodic - reserved());
   const fill = (cap: number) => input.facts?.length
     ? budgetFacts(input.facts, input.factLine!, cap, input.factTurns!) : { recent: [] as string[], receipts: [] as string[], factIds: [] as number[] };
   let filled = fill(room());
-  if (filled.receipts.length) filled = fill(room() - charge(filled.receipts) - (receipts.length ? 0 : charge(["Receipts:"])));
+  for (let charged = 0; charge(filled.receipts) > charged;) {
+    charged = charge(filled.receipts);
+    filled = fill(room() - charged - (receipts.length ? 0 : charge(["Receipts:"])));
+  }
   receipts.push(...filled.receipts);
   const over = reserved() - input.caps.episodic;
   if (over > 0) receipts.unshift(`${label} overage: ${over} tokens; all ${kept} kept`);

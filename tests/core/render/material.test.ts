@@ -383,9 +383,7 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
  * that implements it, and then end to end through a real freeze. */
 test("25a 2026-09-09: the history and Raw allowances are independent — neither's unused space enlarges the other", () => {
   const line = "[F9] 2026-09-08T00:00:00Z [observation/user] " + "word ".repeat(20) + "\n  source: T1#user";
-  // 20 facts: both budgeting passes then omit more than the expand list's eight addresses, so the omission
-  // receipt's shape is the same in each (at 12 it flipped from eight addresses to "and 1 more" between them).
-  const facts = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, turnId: 1 }) as Fact);
+  const facts = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, turnId: 1 }) as Fact);
   const factTurns = new Map([[1, time]]);
   const range = { from: "S1/T1", to: "S1/T2" }, framing = [FACTS_TITLE, RAW_TITLE];
   const history = charge([`[T1] ${time} (selected facts)`, ...Array(4).fill(line)]); // room for about four facts
