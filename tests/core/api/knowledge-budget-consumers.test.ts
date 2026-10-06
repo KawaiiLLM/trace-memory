@@ -145,6 +145,7 @@ test("64c a larger configured Knowledge window never bypasses actual provider in
 test("73: real facade freezes D references to base plus the configured shared allowance minus Changed and separator", async () => {
   let f!: ReturnType<typeof fixture>;
   const admitted: number[] = [];
+  let firstFinished = false;
   f = fixture(async raw => {
     const task = raw as DreamingAgentInput;
     const budgets = f.memory.knowledgeBudgets();
@@ -157,6 +158,7 @@ test("73: real facade freezes D references to base plus the configured shared al
       f.memory.setKnowledgeBudget("global", 5_000);
       f.memory.config.compaction.sharedAllowanceTokens = 6_000;
       expect(task.admittedProcessedInputCap).toBe(frozen);
+      firstFinished = true; // the run's expected failure must not hide an assertion error above
     }
     return { outcome: "failure", output: "capture only", request: {} };
   });
@@ -164,6 +166,7 @@ test("73: real facade freezes D references to base plus the configured shared al
   f.memory.config.dreaming.triggerTokens = 5_000;
   f.create("一".repeat(8_000), "project");
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
+  expect(firstFinished).toBe(true);
   const first = f.captured[0]!;
   expect(first.admittedProcessedInputCap).toBe(admitted[0]);
 

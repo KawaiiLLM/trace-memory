@@ -172,6 +172,7 @@ test("the second pass is a further operation on the run's own latest version and
 
   const unresolved = pool(bodies, { first: (_task, tool, [a]) => ok(tool("memory", { operations: [update(a!.tag, "Rule A rewritten.")], skipped: [] })) });
   const failed = await unresolved.run();
+  expect(unresolved.reviews).toHaveLength(2); // both pass ends were reached, so the expected failure hides no assertion error
   expect(failed.outcome).toBe("failure");
   expect("problems" in failed && failed.problems.join(" ")).toContain("frozen versions not deliberated");
 });

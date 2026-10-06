@@ -80,6 +80,7 @@ test("68/104: untouched frozen items are not an admission failure; they fail the
 
 // 127 replaces the atomic skip batch: one skip per call, each refused on its own with today's checks.
 test("127: one skip per call keeps the skip refusals, and a malformed call refuses only itself", async () => {
+  let finished = false;
   const f = fixture(async task => {
     const memory = tool(task, "memory"), skip = (knowledge: string, because = "reviewed") => memory.execute({ skip: knowledge, because });
     const [first, second] = f.items, version = (item: { knowledgeId: number }) => `K${item.knowledgeId}@v1`;
@@ -101,9 +102,11 @@ test("127: one skip per call keeps the skip refusals, and a malformed call refus
       category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain" };
     expect(memory.execute(update)).toContain('"committed"');
     expect(skip(version(second!))).toContain(`rejected: M6: ${version(second!)}: version was already consumed by this run`);
+    finished = true; // the run's expected failure must not hide an assertion error above
     return success;
   }, ["first rule", "second rule"]);
   const result = await f.memory.dream(f.target);
+  expect(finished).toBe(true);
   expect(result.outcome).toBe("failure");
   if (!("problems" in result)) throw Error("missing problems");
   expect(result.problems.filter(problem => /^M\d+: /.test(problem)).map(problem => problem.split(":")[0])).toEqual(["M1", "M2", "M3", "M4", "M5", "M6"]);

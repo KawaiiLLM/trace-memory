@@ -131,6 +131,7 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
   const path = f.path("left");
   f.store.setCurrentPath(f.session.id, "left", f.turn.id, "test-lineage");
   const trigger = createDreamerTrigger(f.memory, path, f.fact, 1);
+  let finished = false;
   const result = await f.scenarios.run(f.memory, path, input => {
     const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`/tm/${address}`).content;
     const write = input.tools.find(tool => tool.name === "memory")!;
@@ -146,6 +147,7 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
     expect(stale).toContain(`base is not the latest effective applicable revision; current: ${first.version}`);
     expect(stale).not.toContain(tagged(f.store, f.base.knowledgeId, f.store.resolveVersionOrdinal(f.base.knowledgeId, Number(first.version.split("@v")[1]))));
     expect(stale).not.toContain("skipped");
+    finished = true; // an expected failure must not hide an assertion error above
     if (!corrected) return success;
     const current = f.store.resolveVersionOrdinal(f.base.knowledgeId, Number(first.version.split("@v")[1]));
     read(first.version);
@@ -154,6 +156,7 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
       .toContain('"committed"');
     return success;
   });
+  expect(finished).toBe(true);
   expect(result.outcome).toBe(corrected ? "success" : "failure");
   if (!corrected) {
     if (result.outcome !== "failure") throw new Error("unresolved stale submission must fail completion");

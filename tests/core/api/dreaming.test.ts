@@ -82,16 +82,19 @@ test("Dreamer instructions use its fresh host's exposed check, memory and read t
   createDreamerTrigger(f.memory, f.target, f.fact, 1);
   const names = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", grep: "Grep" };
   const rendered = loadPrompt("dreaming.md", names);
+  let finished = false;
   const result = await f.scenarios.run(f.memory, { ...f.target, toolNames: names } as typeof f.target, task => {
     expect(task.prompt).toBe(rendered);
     expect(task.prompt).toContain("call `mcp__trace_memory__check`");
-    expect(task.prompt).toContain("`mcp__trace_memory__memory({operations, skipped})`");
+    expect(task.prompt).toContain("One `mcp__trace_memory__memory` call");
     expect(task.prompt).not.toContain("{{tool.");
     expect(task.promptHash).toBe(createHash("sha256").update(rendered).digest("hex"));
     expect(task.tools.map(tool => tool.name)).toEqual(["search", "check", "memory"]);
     task.acknowledgeRequest();
+    finished = true; // the run's expected failure must not hide an assertion error above
     return { outcome: "failure", output: "fixture stopped", request: { exact: "dream names" } };
   });
+  expect(finished).toBe(true);
   expect(result.outcome).toBe("failure");
   if (!("runId" in result)) throw new Error("missing audited run");
   expect(f.store.getRun(result.runId)!.promptHash).toBe(createHash("sha256").update(rendered).digest("hex"));
@@ -191,7 +194,7 @@ test("64c cancellation after a commit consumes the frozen revisions and the own 
 test("127: each call commits in its own transaction; a Store write failure refuses and rolls back only its own call, which then blocks", async () => {
   const f = fixture(), first = f.create("first base"), second = f.create("second base");
   const before = f.store.listKnowledgeRevisions().length;
-  let firstCommit = 0;
+  let firstCommit = 0, finished = false;
   const { result } = await admitted(f, (task, trigger) => {
     f.store.db.exec(`CREATE TRIGGER reject_second_legal_update BEFORE INSERT ON knowledge_revisions
       WHEN NEW.knowledge_id = ${second.knowledgeId} BEGIN SELECT RAISE(ABORT, 'injected second legal update failure'); END`);
@@ -203,8 +206,10 @@ test("127: each call commits in its own transaction; a Store write failure refus
     expect(refused.results).toEqual([expect.stringMatching(/^rejected: M1: .*injected second legal update failure/)]);
     expect(f.store.listKnowledgeRevisions()).toHaveLength(before + 2); // the trigger and the first update; the refused call wrote nothing
     expect(memory.execute({ skip: history(f, trigger), because: "fixture trigger" })).toContain('"rejected":{"M1"');
+    finished = true;
     return success;
   });
+  expect(finished).toBe(true);
   expect(result.outcome).toBe("failure");
   expect("problems" in result && result.problems[0]).toMatch(/^M1: .*injected second legal update failure/);
   expect(f.store.currentCommit(first.knowledgeId, f.target)[0]!.id).toBe(firstCommit);
@@ -253,7 +258,7 @@ test("127: a refused call holds Mn and blocks check and the end pass until slot 
     const f = fixture();
     const [a, b] = knowledgeBatch(f.store, f.target, ["rule A", "rule B"].map(text => ({ scope: "project" as const,
       category: "constraint" as const, supports: [f.fact], text })), { kind: "manual", createdAt: "now" }).committed;
-    let review = "";
+    let review = "", finished = false;
     const { result } = await admitted(f, (task, trigger) => {
       const memory = task.tools.find(tool => tool.name === "memory")!, check = () => task.tools.find(tool => tool.name === "check")!.execute({});
       const update = (item: { knowledgeId: number; commit: number }, text: string, id = address(f, item)) =>
@@ -265,7 +270,7 @@ test("127: a refused call holds Mn and blocks check and the end pass until slot 
       expect(JSON.parse(memory.execute({ skip: history(f, trigger), because: "fixture trigger" }))).toHaveProperty("rejected.M1");
       expect(check()).toMatch(/\nBlockers: M1: /);
       review = task.passEnd(1)!;
-      if (!resolved) return success;
+      if (!resolved) { finished = true; return success; }
       expect(memory.execute({ slot: "M1", ...update(a!, "A rewritten", "K999#zzzz") })).toContain("rejected: M1: "); // a refused resubmission keeps its number
       expect(memory.execute(update(a!, "A rewritten", "K998#zzzz"))).toContain("rejected: M2: ");
       expect(memory.execute({ drop: "M2" })).toContain("dropped: M2");
@@ -275,14 +280,36 @@ test("127: a refused call holds Mn and blocks check and the end pass until slot 
       expect(check()).toContain("Blockers: none");
       expect(memory.execute(update(a!, "stale", address(f, a!)))).toContain("rejected: M3: "); // numbers never recycle
       expect(memory.execute({ drop: "M3" })).toContain("dropped: M3");
+      finished = true;
       return success;
     });
+    expect(finished).toBe(true);
     expect(review.split("\n\nBlockers:\n")[1]!.split("\n\n")[0]).toMatch(/^M1: /);
     expect(result.outcome).toBe(resolved ? "success" : "failure");
     if (!resolved) expect("problems" in result && result.problems[0]).toMatch(/^M1: /);
     expect(f.store.currentCommit(b!.knowledgeId, f.target)[0]!.text).toBe("B rewritten");
     expect(f.store.currentCommit(a!.knowledgeId, f.target)[0]!.text).toBe(resolved ? "A rewritten" : "rule A");
   }
+});
+
+test("127: an item missing required fields is numbered, not a top-level call error, and survives a later sibling's commit", async () => {
+  const f = fixture();
+  const [a] = knowledgeBatch(f.store, f.target, [{ scope: "project", category: "constraint", supports: [f.fact], text: "rule A" }],
+    { kind: "manual", createdAt: "now" }).committed;
+  let finished = false;
+  const { result } = await admitted(f, (task, trigger) => {
+    const memory = task.tools.find(tool => tool.name === "memory")!, check = () => task.tools.find(tool => tool.name === "check")!.execute({});
+    expect(memory.execute({ op: "update" })).toContain("rejected: M1: ");
+    expect(JSON.parse(memory.execute({ op: "update", id: address(f, a!), text: "rule A, clarified", category: "constraint", scope: "project",
+      topics: [], supports: [], reason: "clarify" }))).toMatchObject({ results: ["ok"], rejected: { M1: expect.any(String) } });
+    expect(memory.execute({ skip: history(f, trigger), because: "fixture trigger" })).toContain('"committed":[]');
+    expect(check()).toMatch(/\nBlockers: M1: /);
+    finished = true;
+    return success;
+  });
+  expect(finished).toBe(true);
+  expect(result.outcome).toBe("failure");
+  expect("problems" in result && result.problems).toEqual([expect.stringMatching(/^M1: /)]);
 });
 
 test("127: a host-refused Dreamer call is recorded as the Noter's: an item numbers Mn, a shapeless call is a call error, a duplicate report is ignored", async () => {

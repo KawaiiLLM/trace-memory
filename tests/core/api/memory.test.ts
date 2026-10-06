@@ -229,6 +229,7 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D 
   const manual = setup(async () => success());
   expect(JSON.parse(manual.execute(create)).committed).toHaveLength(1);
   createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
+  let finished = false;
   const result = await admittedScenarios.run(memory, dreamPath(), input => {
     input.reportRequest({ exact: "D request" });
     const receipt = JSON.parse(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [{
@@ -236,6 +237,7 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D 
     }], skipped: [] }));
     expect(receipt.committed).toHaveLength(1);
     expect(memory.store.currentCommit(1)[0]!.text).toBe("Use pnpm and its lockfile");
+    finished = true; // the run's expected failure must not hide an assertion error above
     if (mode === "throw" || mode === "abort") {
       const error = new Error("provider stopped after D commit");
       if (mode === "abort") error.name = "AbortError";
@@ -243,6 +245,7 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D 
     }
     return { outcome: mode, output: "provider stopped after D commit", request: { exact: "D request" } };
   });
+  expect(finished).toBe(true);
   expect(result.outcome).toBe(mode === "cancelled" || mode === "abort" ? "cancelled" : "failure");
   expect(memory.store.listKnowledgeRevisions(1)).toHaveLength(2);
   const revision = memory.store.currentCommit(1)[0]!;
