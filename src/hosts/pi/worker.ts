@@ -144,7 +144,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       thinkingLevel: task.thinkingLevel as ThinkingLevel | undefined,
       tools: binding.tools, read: binding.read, maxToolRounds: binding.maxToolRounds,
       signal: task.signal,
-      ...(task.kind === "noting" ? { reportToolRejection: task.reportToolRejection } : {}),
+      reportToolRejection: task.reportToolRejection,
       ...(task.kind === "dreaming" ? { passEnd: task.passEnd, reportRounds: task.reportRounds } : {}),
       onRequest: (body: unknown, contextTokens: number | undefined) => { binding.checkCapacity!(contextTokens); request = body; task.reportRequest(body); },
       onProgress: (state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: RunAgentResult["thinking"] }) => {

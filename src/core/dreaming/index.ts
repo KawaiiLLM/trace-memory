@@ -30,6 +30,8 @@ export interface DreamingAgentInput extends AgentControl {
   reportRequest(request: unknown): void;
   /** Called when a pass ends: the one end review on the first call, `undefined` after that. */
   passEnd(rounds: number): string | undefined;
+  /** 127: a `memory` call the host refused before it reached core, recorded as the Noter's are. */
+  reportToolRejection(id: string, name: "note" | "memory", input: unknown, reason: string): void;
   reportRounds(rounds: number): void;
 }
 
@@ -193,6 +195,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt: frozen.prompt, promptHash: frozen.promptHash,
       text: frozen.text, material: frozen.material, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
       tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
+      reportToolRejection: binding.reportToolRejection,
       passEnd: (used: number) => {
         rounds = used;
         if (reviewed) return undefined;

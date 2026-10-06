@@ -306,6 +306,34 @@ test("127: one native response's memory calls run in order and commit independen
   } finally { await h.dispose(); }
 });
 
+for (const resolved of [false, true]) test(`127: a Dreamer memory call Pi refuses natively is numbered and blocks the run until dropped (resolved=${resolved})`, async () => {
+  const { h, store, item } = await seeded();
+  try {
+    let review = "", round = 0;
+    h.provider(async conversation => {
+      review ||= conversation.messages.map(message => JSON.stringify(message.content))
+        .find(text => text.includes("Before this run ends, review it once.")) ?? "";
+      switch (++round) {
+        // `create` is outside the Dreamer's op enum: Pi refuses the call before it reaches core.
+        case 1: return dreamerReply("first", { operations: [{ op: "create", text: "A new rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "invalid op" },
+          { op: "update", id: item.tagged, text: "Keep the user's constraint", category: "constraint", scope: "project", supports: [], topics: [], reason: "clarify" }] });
+        case 2: return reply("Done first pass");
+        case 3: return resolved ? call("drop", "memory", { drop: "M1" }) : reply("Reviewed");
+        default: return reply("Reviewed");
+      }
+    }, { autoStop: false });
+    await h.turn();
+    const run = await terminal(h);
+    expect(run.outcome, run.response ?? "").toBe(resolved ? "success" : "failure");
+    expect(review).toMatch(/Blockers:\\nM1: /);
+    const audit = JSON.parse(run.response!);
+    const refused = audit.toolCalls.find((call: { input?: { op?: string } }) => call.input?.op === "create");
+    expect(refused.problems[0]).toContain('"rejected":{"M1"'); // recorded through the Noter's path, not by core execution
+    if (!resolved) expect(audit.problems[0]).toMatch(/^M1: /);
+    expect(store.listCommitsByRun(run.id).map(revision => revision.text)).toEqual(["Keep the user's constraint"]);
+  } finally { await h.dispose(); }
+});
+
 test("126: one native Dreamer run covers the session's pools; the end review is sent once", async () => {
   const { h, store, item, content, pool } = await seeded();
   try {

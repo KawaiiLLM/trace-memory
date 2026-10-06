@@ -285,6 +285,25 @@ test("127: a refused call holds Mn and blocks check and the end pass until slot 
   }
 });
 
+test("127: a host-refused Dreamer call is recorded as the Noter's: an item numbers Mn, a shapeless call is a call error, a duplicate report is ignored", async () => {
+  const f = fixture();
+  const [a] = knowledgeBatch(f.store, f.target, [{ scope: "project", category: "constraint", supports: [f.fact], text: "rule A" }],
+    { kind: "manual", createdAt: "now" }).committed;
+  const { result } = await admitted(f, (task, trigger) => {
+    const memory = task.tools.find(tool => tool.name === "memory")!, check = () => task.tools.find(tool => tool.name === "check")!.execute({});
+    const update = { op: "update", id: address(f, a!), text: "rule A, clarified", category: "constraint", scope: "project", topics: [], supports: [], reason: "clarify" };
+    for (let report = 0; report < 2; report++) task.reportToolRejection("native-1", "memory", { ...update, topics: "x" }, "native schema refused");
+    expect(check()).toMatch(/\nBlockers: M1: native schema refused; frozen versions/);
+    task.reportToolRejection("native-2", "memory", { operations: [] }, "native shape refused");
+    expect(check()).toMatch(/\nBlockers: native shape refused; M1: native schema refused; frozen versions/);
+    expect(JSON.parse(memory.execute({ slot: "M1", ...update }))).toMatchObject({ results: ["ok"], committed: [{ knowledgeId: a!.knowledgeId }] });
+    expect(memory.execute({ skip: history(f, trigger), because: "fixture trigger" })).toContain('"committed":[]');
+    expect(check()).toContain("Blockers: none");
+    return success;
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+});
+
 test("64c an exact version tag permits same-pool maintenance without a read grant or enlarged frozen range", async () => {
   const f = fixture(), base = f.create("frozen base");
   let late!: { knowledgeId: number; commit: number }, own = 0;

@@ -1883,3 +1883,74 @@ test("127: one CC response's memory calls commit independently even when dispatc
   expect(memory.store.currentCommit(b!.knowledgeId, path)[0]!.id).toBe(b!.commit);
   memory.close();
 });
+
+for (const variant of ["resolved", "unresolved", "unreported"] as const)
+  test(`127: a Dreamer memory call CC refuses natively is numbered and blocks until slot resubmits it (${variant})`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-native-")); dirs.push(directory);
+    const executable = join(directory, "claude");
+    writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
+    let refused!: Record<string, unknown>, valid!: Record<string, unknown>, resubmitted!: Record<string, unknown>, review = "";
+    const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
+      const stream = (async function* () {
+        const prompts = request.prompt[Symbol.asyncIterator]();
+        await prompts.next();
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+        await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
+        const client = new Client({ name: "dreamer-native-test", version: "1" }); await client.connect(clientTransport);
+        yield { type: "system", subtype: "init", session_id: "dreamer-native", messaging_socket_path: "/tmp/dreamer-native.sock",
+          claude_code_version: TEST_CC_VERSION, cwd: directory, tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [],
+          mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+        const result = { type: "result", subtype: "success", session_id: "dreamer-native", is_error: false, result: "done", errors: [],
+          usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+        yield { type: "assistant", message: { id: "response-1", content: [
+          { type: "tool_use", id: "memory-refused", name: ccWorkerToolNames.memory, input: refused },
+          { type: "tool_use", id: "memory-valid", name: ccWorkerToolNames.memory, input: valid }] } };
+        // CC refuses the first call's arguments itself: no handler dispatch, only an error result.
+        if (variant !== "unreported") {
+          const refusal = { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "memory-refused", is_error: true,
+            content: "native argument validation refused" }] } };
+          yield refusal; yield refusal; // a duplicate observation allocates no second slot
+        }
+        await client.callTool({ name: "memory", arguments: valid, _meta: { "claudecode/toolUseId": "memory-valid" } });
+        yield result;
+        review = (await prompts.next()).value.message.content[0].text;
+        if (variant === "resolved") {
+          yield assistant("response-2", ["memory-slot"], ccWorkerToolNames.memory);
+          await client.callTool({ name: "memory", arguments: resubmitted, _meta: { "claudecode/toolUseId": "memory-slot" } });
+        }
+        yield result;
+        await client.close();
+      })() as any;
+      stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+      return stream;
+    }) as any;
+    const worker = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
+    const memory = TraceMemory(join(directory, "memory.sqlite"), raw => { const task = raw as CcAgentTask; task.reportRequest({ host: "cc-dreamer-native" });
+      return worker.run(task, 0); }, { dreaming: { triggerTokens: 1 } });
+    const project = memory.store.createProject({ name: "cc-dreamer-native", declaredBy: "mark" });
+    const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+    const target = append(memory, session.id, "source", "Durable CC evidence");
+    const path = { sessionId: session.id, branch: "main", headTurnId: target.turn.id };
+    const evidence = seedFact(memory, path, "Durable CC evidence", [{ entry: memory.store.hydrateSourceEntries([target.entry.id])[0]!, text: "Durable CC evidence" }]);
+    const [a, b] = knowledgeBatch(memory.store, path, ["A", "B"].map(name =>
+      ({ scope: "project" as const, category: "constraint" as const, supports: [evidence.id], text: `Durable rule ${name}` })), { kind: "manual", createdAt: "now" }).committed;
+    const update = (item: { knowledgeId: number; commit: number }) => ({ op: "update", id: `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, item.commit)}`,
+      text: "Durable rule, clarified", category: "constraint", scope: "project", topics: [], supports: [], reason: "clarify" });
+    refused = { ...update(b!), topics: "not an array" };
+    valid = update(a!);
+    resubmitted = { slot: "M1", ...update(b!) };
+    const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: target.turn.id, triggerEntryId: target.entry.id,
+      model: "claude-sonnet-4-5", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
+    expect(result.outcome, JSON.stringify(result)).toBe(variant === "resolved" ? "success" : "failure");
+    if (variant === "unreported") expect("problems" in result && result.problems.join(" ")).toContain("neither a handler dispatch nor a correlated refusal");
+    else {
+      expect(review.split("\n\nBlockers:\n")[1]).toMatch(/^M1: .*native argument validation refused/);
+      if (!("runId" in result)) throw new Error("missing run");
+      const audit = JSON.parse(memory.store.getRun(result.runId)!.response!);
+      expect(audit.toolCalls.filter((call: { input?: { topics?: unknown } }) => call.input?.topics === "not an array")).toHaveLength(1);
+      if (variant === "unresolved") expect("problems" in result && result.problems[0]).toMatch(/^M1: /);
+    }
+    expect(memory.store.currentCommit(a!.knowledgeId, path)[0]!.text).toBe("Durable rule, clarified");
+    expect(memory.store.currentCommit(b!.knowledgeId, path)[0]!.text).toBe(variant === "resolved" ? "Durable rule, clarified" : "Durable rule B");
+    memory.close();
+  });

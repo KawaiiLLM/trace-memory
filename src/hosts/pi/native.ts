@@ -362,7 +362,8 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   };
   const unsubscribe = session.subscribe(event => {
     if (task.reportToolRejection) {
-      if (event.type === "tool_execution_start" && (event.toolName === "note" || event.toolName === "memory") && !attempts.has(event.toolCallId))
+      if (event.type === "tool_execution_start" && (event.toolName === "note" || event.toolName === "memory") && !attempts.has(event.toolCallId)
+          && (task.kind === "noting" || event.toolName === "memory")) // 127: the Dreamer exposes no note
         attempts.set(event.toolCallId, { name: event.toolName, input: structuredClone(event.args), executed: false });
       if (event.type === "tool_execution_end" && event.isError) {
         const attempt = attempts.get(event.toolCallId);

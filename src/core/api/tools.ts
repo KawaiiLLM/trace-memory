@@ -358,9 +358,10 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     passEnd: () => { if (!held) throw new Error("only a Noter has a held end pass"); return held.passEnd(toolProblems); },
     get cancelled() { return closed; },
     reportToolRejection: (id: string, name: "note" | "memory", input: unknown, reason: string) => {
-      if (closed || !held || rejectedNativeCalls.has(id)) return;
+      if (closed || !(held || dreamer) || rejectedNativeCalls.has(id)) return;
       rejectedNativeCalls.add(id);
-      const receipt = held.reject(name, input, reason);
+      // 127: a host-refused Dreamer call takes the Noter's path: a numbered slot, or a call error when shapeless.
+      const receipt = held ? held.reject(name, input, reason) : dreamer!.call(input, dream, () => {}, reason);
       sequence.push({ name, input: structuredClone(input), result: `rejected: ${reason}`, problems: [receipt] });
     },
     finalize: () => {

@@ -113,7 +113,8 @@ export class CcResponseOrigins {
         throw this.fail(new Error(`CC tool use ${block.id} is ambiguous across assistant responses`));
       this.origins.set(block.id, responseId);
       const name = block.name === ccWorkerToolNames.note ? "note" : block.name === ccWorkerToolNames.memory ? "memory" : undefined;
-      if (this.task.kind === "noting" && name !== undefined && !this.pendingWrites.has(block.id))
+      // 127: the Dreamer's memory calls are tracked as the Noter's writes are; it exposes no note.
+      if (name !== undefined && (this.task.kind === "noting" || name === "memory") && !this.pendingWrites.has(block.id))
         this.pendingWrites.set(block.id, { name, input: structuredClone(block.input) });
       for (const waiter of this.waiters.get(block.id) ?? []) {
         clearTimeout(waiter.timer); waiter.resolve(responseId);
@@ -145,14 +146,14 @@ export class CcResponseOrigins {
   rejected(id: string, reason: string): void {
     const attempt = this.pendingWrites.get(id);
     if (!attempt || this.claimed.has(id) || this.rejectedWrites.has(id)) return;
-    if (this.task.kind !== "noting" || !this.task.reportToolRejection) throw this.fail(new Error("CC Noter cannot report native tool rejection"));
+    if (!this.task.reportToolRejection) throw this.fail(new Error("CC worker cannot report native tool rejection"));
     this.task.reportToolRejection(id, attempt.name, attempt.input, reason);
     this.rejectedWrites.add(id);
   }
 
   requireDispatchedWrites(): void {
     for (const id of this.pendingWrites.keys()) if (!this.claimed.has(id) && !this.rejectedWrites.has(id))
-      throw this.fail(new Error(`CC Noter tool call ${id} has neither a handler dispatch nor a correlated refusal`));
+      throw this.fail(new Error(`CC worker write call ${id} has neither a handler dispatch nor a correlated refusal`));
   }
 
   rounds(): number { return this.toolRoundIds.size; }
