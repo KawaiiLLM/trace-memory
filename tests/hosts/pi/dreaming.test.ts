@@ -161,7 +161,7 @@ test("64c native host: a reads-only first pass ends without a repair round; 104:
     expect(store.pendingVersions(pool, store.knowledgePath(1)).map(value => value.revisionId)).toContain(item.commit);
     const log = readFileSync(audit.nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     const repairMessages = log.filter(e => JSON.stringify(e).includes("System-generated Dreamer completion check"));
-    expect(initialSystem).toContain("# Dreamer — bounded knowledge maintenance");
+    expect(initialSystem).toContain("# Dreamer — knowledge maintenance");
     expect(initialMaterial).toContain("trace://knowledge/S1");
     expect(initialSystem).not.toContain("trace://knowledge/S1");
     let priorStage = -1;
