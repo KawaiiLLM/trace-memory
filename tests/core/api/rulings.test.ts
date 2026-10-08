@@ -592,6 +592,18 @@ test("118: one identical reading guide per injection and compaction, independent
   expect(memory.inject({ projectId: memory.store.getSession(s.id)!.projectId })).not.toContain(`trace://knowledge/S${s.id}`);
 });
 
+test("2026-10-09, 132: '注入知识改为按类别分组' — foreground, compaction and CC parts group the same knowledge by category", () => {
+  const { write, create, path } = memoryWriter();
+  expect(write([{ ...create, category: "reference", text: "Docs live in docs/" }, { ...create, category: "constraint", text: "Use pnpm" }]).committed).toHaveLength(2);
+  const headers = (text: string) => [...text.matchAll(/^## .*$/gm)].map(match => match[0]);
+  const expected = ["## constraint (1)", "## reference (1)"];
+  expect(headers(memory.inject(path.sessionId))).toEqual(expected);
+  expect(headers(compacted(memory.compact(path.sessionId, "main", path.headTurnId)))).toEqual(expected);
+  const cc = sliceCcInjection({ db: "db", nativeSession: "native", coreSession: path.sessionId }, memory.injection(path.sessionId, undefined, true, ccPluginToolNames).transportItems!)
+    .filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext).join("\n");
+  expect(headers(cc)).toEqual(expected);
+});
+
 test("2026-09-28, 104: '可以让总量超过20 + 10 就可以触发' — a session is due on knowledge overflow or summed pending, not per pool", () => {
   const { path, create, write } = memoryWriter();
   const body = "Durable user constraint ".repeat(150);

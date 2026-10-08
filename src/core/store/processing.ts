@@ -1,5 +1,5 @@
 import type { Store, KnowledgeWithRevision, ApplicabilityInput } from "./index.ts";
-import { renderKnowledge, renderKnowledgeBlock } from "../render/index.ts";
+import { renderKnowledge, renderKnowledgeBlock, wholeKnowledge } from "../render/index.ts";
 import type { TriggerOrigin } from "../model/index.ts";
 
 export type KnowledgeBudgetField = "global" | "project" | "session";
@@ -96,8 +96,7 @@ export interface DreamingRange {
 
 /** Full block, never a truncated budget selection. Shared by budget reporting and Dreamer input. */
 export function processedBlock(values: KnowledgeWithRevision[], render = renderKnowledge): string {
-  const ordered = [...values].sort((a, b) => a.revision.id - b.revision.id);
-  return renderKnowledgeBlock(ordered.length ? [{ category: "items", text: ordered.map(value => render(value)).join("\n") }] : []);
+  return renderKnowledgeBlock(wholeKnowledge(values, render).groups);
 }
 
 export function placementOwner(store: Store, value: Pick<KnowledgeWithRevision, "revision">, input?: ApplicabilityInput): string {

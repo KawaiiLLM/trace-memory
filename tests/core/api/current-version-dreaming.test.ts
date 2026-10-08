@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { roomyPoolBudget } from "../../knowledge-budget-fixture.ts";
 import { TraceMemory, memoryFiles, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { dreamerWrite, skipRest as skipAll } from "../../dreaming-skips.ts";
@@ -54,7 +55,7 @@ test("64c facade freezes the due pending and terminal success processes its exac
   const f = fixture(async task => { seen = task; task.acknowledgeRequest(); skipAll(task); return ok; });
   const item = f.create("project", "project rule");
   const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
+  f.store.setKnowledgeBudget("project", roomyPoolBudget(f.store.pendingPoolWeight(pool, f.target)));
 
   expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
   const result = await f.memory.dream(f.target);
@@ -220,7 +221,7 @@ test("64c a shared global threshold can be serviced from another session while p
   const otherEntry = f.memory.appendEntry({ sessionId: otherSession.id, turnId: otherTurn.id, nativeLineage: "other", nativeId: "root", role: "user", text: "other", raw: "{}", calls: [] });
   f.memory.selectEntries(otherSession.id, "main", [otherEntry.id]);
   const other = { sessionId: otherSession.id, branch: "main", headTurnId: otherTurn.id, triggerEntryId: otherEntry.id };
-  f.store.setKnowledgeBudget("global", f.store.pendingPoolWeight("global", other) * 2);
+  f.store.setKnowledgeBudget("global", roomyPoolBudget(f.store.pendingPoolWeight("global", other)));
   expect(f.store.dreamingDue(other, 1)).toBe(true);
   expect(f.store.knowledgePools(other).map(value => value.pool)).not.toContain(`project:${f.project.id}`);
   expect((await f.memory.dream(other)).outcome).toBe("success");
@@ -273,7 +274,7 @@ test("64c successful terminal transaction persists the full provider audit", asy
   const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return { ...ok, usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.1 }, nativeLog: "/tmp/dream.jsonl" }; });
   f.create("project", "audited rule");
   const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
+  f.store.setKnowledgeBudget("project", roomyPoolBudget(f.store.pendingPoolWeight(pool, f.target)));
   const result = await f.memory.dream(f.target);
   if (!("runId" in result)) throw new Error("missing run");
   const run = f.store.getRun(result.runId)!;

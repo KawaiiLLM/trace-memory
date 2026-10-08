@@ -1,4 +1,5 @@
 import { expect, test, vi } from "vitest";
+import { roomyPoolBudget } from "../../knowledge-budget-fixture.ts";
 import type { JsonObject } from "@earendil-works/pi-ai";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { host, reply, emptyNote, dreamerReply, type Reply } from "./test-host.ts";
@@ -30,7 +31,7 @@ async function seeded(config: Record<string, unknown> = {}, text = "Keep the use
   const renderedTokens = store.pendingVersions(`project:${store.getSession(1)!.projectId}`, path)
     .find(value => value.revisionId === item.commit)!.tokens;
   const pool = `project:${store.getSession(1)!.projectId}`;
-  h.memory.setKnowledgeBudget("project", renderedTokens * 2);
+  h.memory.setKnowledgeBudget("project", roomyPoolBudget(renderedTokens));
   expect(store.dreamingDue(path, 1)).toBe(true);
   return { h, store, item, content, pool };
 }

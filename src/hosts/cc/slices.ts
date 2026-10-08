@@ -1,18 +1,23 @@
 import { ccInjectionLength, encodeCcInjection, type CcHookOutput, type CcVisibleBinding } from "./injection.ts";
-import { expandList, knowledgeBlockParts, sessionKnowledgeNotice } from "../../core/render/index.ts";
+import { expandList, knowledgeBlockParts, knowledgeGroups, sessionKnowledgeNotice } from "../../core/render/index.ts";
 import { transportItemText, type TransportItem } from "../../core/render/material.ts";
 import { tokens } from "../../core/render/tokens.ts";
 import { ccPluginToolNames } from "./tool-names.ts";
+import { KNOWLEDGE_CATEGORIES } from "../../core/model/index.ts";
 import { readingGuide } from "../../core/render/reading-guide.ts";
 
 export const CC_SLICE_COUNT = 24;
 export const CC_SLICE_LIMIT = 10_000;
-export const CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segments, order knowledge by the header's p[0] segment number, then by position within that segment: higher segments and later items are newer. Arrival order is not recency. For claims about the same object, the newer item takes precedence until maintenance merges them.";
+export const CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segments, read knowledge by the header's p[0] segment number, then by position within that segment. Items are grouped by category and a category may continue into the next segment; within a category they are ordered by last change, so higher segments and later items are newer. Position does not compare items across categories. Arrival order is not recency. For claims about the same object within a category, the newer item takes precedence until maintenance merges them.";
 
 /** 101 (ruled): a bound session's knowledge header also names it and the path a subagent inherits
  * its knowledge from. */
 export const ccKnowledgeHeader = (binding: CcVisibleBinding): string => binding.coreSession === null
   ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
+
+/** Ticket 132: knowledge is presented by category (glossary order), then oldest commit first. */
+const knowledgeOrder = (a: Extract<TransportItem, { kind: "knowledge" }>, b: Extract<TransportItem, { kind: "knowledge" }>): number =>
+  KNOWLEDGE_CATEGORIES.indexOf(a.category as never) - KNOWLEDGE_CATEGORIES.indexOf(b.category as never) || a.commitId - b.commitId;
 
 const address = (item: TransportItem, sessionId: number | null): string => item.kind === "knowledge" || item.kind === "state" ? `trace://${item.address}`
   : item.kind === "fact" ? `trace://F${item.factId}` : item.kind === "raw" ? `trace://raw/S${sessionId}/${item.address}` : "";
@@ -51,9 +56,8 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   // compute digests; each final carrier has one knowledge list with its own domain framing.
   const assemble = (items: TransportItem[], index: number) => {
     const members = [...items].sort((a, b) => rank(a) - rank(b) ||
-      (a.kind === "knowledge" && b.kind === "knowledge" ? a.commitId - b.commitId : 0));
-    const knowledge = knowledgeBlockParts(members.filter(item => item.kind === "knowledge")
-      .map(item => ({ category: "items", text: item.text })), header);
+      (a.kind === "knowledge" && b.kind === "knowledge" ? knowledgeOrder(a, b) : 0));
+    const knowledge = knowledgeBlockParts(knowledgeGroups(members.filter(item => item.kind === "knowledge")), header);
     const sections = [
       ...(index === 0 ? [[guide]] : []),
       ...members.filter(item => item.kind === "state").map(item => [itemText(item)]),
@@ -103,7 +107,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   const packKnowledge = (knowledge: typeof selected) => {
     const packed = base.map(slot => ({ items: [...slot.items] }));
     let index = 0;
-    for (const item of [...knowledge].sort((a, b) => a.commitId - b.commitId)) {
+    for (const item of [...knowledge].sort(knowledgeOrder)) {
       // Knowledge never backfills a previous segment. Facts and Raw retain first-fit below.
       while (index < packed.length) {
         const slot = packed[index]!;
@@ -116,7 +120,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     }
     return packed;
   };
-  // Preserve newest-priority admission even though the admitted bodies must be placed oldest-first.
+  // Preserve newest-priority admission even though the admitted bodies are placed by category, oldest first.
   // A rejected older/oversized item cannot evict a newer admitted version.
   for (const item of ordered) if (item.kind === "knowledge") {
     const packed = packKnowledge([...selected, item]);

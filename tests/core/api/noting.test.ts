@@ -374,7 +374,9 @@ test("64c: no knowledge category bypasses the cap, newer commits are kept, and o
   const kept = [...text.matchAll(/\[K(\d+)#[a-z]+\]/g)].map(match => Number(match[1]));
   expect(kept.length).toBeGreaterThan(0);
   expect(kept.length).toBeLessThan(categories.length); // the cap really binds
-  expect(kept).toEqual(categories.map((_, index) => index + 1).slice(-kept.length)); // one chronological list, newest retained
+  // 132: the newest commits are retained, presented in glossary category order.
+  const rank = (id: number) => ["constraint", "understanding", "goal", "open", "reference"].indexOf(categories[id - 1]!);
+  expect(kept).toEqual(categories.map((_, index) => index + 1).slice(-kept.length).sort((a, b) => rank(a) - rank(b)));
   for (const id of kept) expect(text).toContain(item(id)); // complete tagged bodies, never rewritten
   expect(text).toContain("omitted");
   for (let id = 1; id <= categories.length; id++) expect(memory.trace(`K${id}`)).toContain("word word");

@@ -622,9 +622,9 @@ no omission advances knowledge lifecycle or processing progress.
 
 The knowledge cap is hard (user confirmation 2026-09-08): constraints, open items and disputes do
 not bypass it. Retained items are whole — a claim is never rewritten to make it fit — and each omitted
-category is named in its own receipt. All Knowledge consumers keep category groups and chronological
-display, but capacity selection retains newer commits before older optional items. The shared header
-explains newer same-object claims; lexical relevance no longer controls this budget cut.
+category is named in its own receipt. All Knowledge consumers keep category groups, each opened by a `## <category> (<n>)` line charged to the
+budget, and chronological display inside a group (132), but capacity selection retains newer commits before older optional items. The shared header
+explains grouping and newer same-object claims within a category; lexical relevance no longer controls this budget cut.
 
 ## Knowledge trace and negation walks (ticket 03a)
 
@@ -791,7 +791,7 @@ add fresh facts before repeat runs; committed Knowledge participates in later du
 Knowledge marks and the mark API are retired. Trace, search and injection expose no mark field or annotation.
 
 `inject(sessionId, branch = "main")` returns attribute-free `<knowledge>` XML,
-with nonempty category tags in glossary order. Within each category, current
+with nonempty category groups in glossary order, each opened by a `## <category> (<n>)` line. Within each category, current
 revision time ascends, with knowledge-id ties. XML text is never escaped; shared lines stay byte-identical trace lines and remain the display grammar. Budgets measure
 shared lines, including framing and receipts. Every category obeys the hard cap;
 whole items retain category/time display order, while budget selection omits the oldest optional items first.

@@ -58,7 +58,7 @@ function seeded() {
   expect(seedKnowledge(memory.store, path, "project", "constraint", [1], "The project uses pnpm",
     { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [] } }).knowledgeId).toBe(1);
   // 118: identity framing stays in the block; the complete injection carries one guide.
-  knowledgeBlock = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] The project uses pnpm\n  change supports: F1\n</knowledge>`;
+  knowledgeBlock = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n## constraint (1)\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] The project uses pnpm\n  change supports: F1\n</knowledge>`;
   return { s, t, user, read: (address: string) => memoryFiles(memory, path).read(`trace://${address}`).content };
 }
 let knowledgeBlock: string;
@@ -317,7 +317,7 @@ test("21b/92: foreground, compact and N render topics through one renderer, with
   const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: tag(1, 1),
     topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.", text: "The project uses pnpm",
     category: "constraint", scope: "project", supports: ["F1"] }, tag(1, 1)))[0]!;
-  const labelled = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n[${tag(1, changed.commit)}] [constraint/project] The project uses pnpm\n  change supports: F1 · topics: ["packaging","storage"]\n</knowledge>`;
+  const labelled = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n## constraint (1)\n[${tag(1, changed.commit)}] [constraint/project] The project uses pnpm\n  change supports: F1 · topics: ["packaging","storage"]\n</knowledge>`;
   const injection = `${readingGuide(s.id, canonicalToolNames)}\n\n${labelled}`;
   expect(memory.inject(s.id)).toBe(injection);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(injection)).toBe(true);
@@ -639,23 +639,40 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   expect(squeezed.knowledgeTokens).toBe(tokens(squeezed.text.replace(`${readingGuide(s.id, canonicalToolNames)}\n\n`, "")));
 });
 
-test("64c: recency uses commit order across categories, not identity, timestamp or input order", () => {
+// 132 supersedes 64c's single chronological list: categories group, revision order only holds inside a group.
+test("132: knowledge is grouped by category with counted headers; selection and omission over a cap are unchanged", () => {
   const { s } = seeded();
   const base = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!;
-  const item = (id: number, commit: number, category: typeof base.revision.category, createdAt: string) => ({
+  const item = (id: number, commit: number, category: typeof base.revision.category, createdAt = "2000") => ({
     knowledge: { ...base.knowledge, id }, revision: { ...base.revision, id: commit, knowledgeId: id,
       category, createdAt, text: "whole body " + "word ".repeat(300) },
   });
-  const oldest = item(100, 1, "constraint", "2099"), newest = item(1, 9, "constraint", "1900"), middle = item(2, 6, "reference", "2000");
+  // Legacy mechanism renders in understanding and dispute in open; goal has no item, so renders nothing.
+  const pool = [item(1, 9, "constraint", "1900"), item(2, 6, "reference"), item(3, 4, "mechanism"), item(100, 1, "constraint", "2099"), item(4, 7, "dispute"), item(5, 8, "open")];
+  const whole = wholeKnowledge(pool);
+  expect(whole.groups.map(g => g.category)).toEqual(["constraint", "understanding", "open", "reference"]);
+  expect(whole.groups.map(g => g.text.split("\n", 1)[0])).toEqual(["## constraint (2)", "## understanding (1)", "## open (2)", "## reference (1)"]);
+  expect(whole.commits).toEqual([1, 9, 4, 7, 8, 6]); // glossary category order; oldest to newest inside a group
+  expect(wholeKnowledge([...pool].reverse())).toEqual(whole);
+  const block = renderKnowledgeBlock(whole.groups);
+  expect([...block.matchAll(/\[K\d+@(\d+)\]/g)].map(match => Number(match[1]))).toEqual(whole.commits);
+  expect(block).toContain(KNOWLEDGE_RECENCY_NOTICE);
+  // Headers are charged: the cost covers every item and every header line, and the real text fits it.
+  const headers = ["## constraint (2)", "## understanding (1)", "## open (2)", "## reference (1)"];
+  expect(whole.cost).toBe(tokens(xmlBlock("knowledge", KNOWLEDGE_RECENCY_NOTICE))
+    + pool.reduce((sum, value) => sum + tokens(renderKnowledge(value)) + 1, 0) + headers.reduce((sum, header) => sum + tokens(header) + 1, 0));
+  expect(tokens(block)).toBeLessThanOrEqual(whole.cost);
+
+  // Over a cap that holds the newest two of three, the oldest is omitted and receipted exactly as before.
+  const [newest, middle, oldest] = [item(1, 9, "constraint"), item(2, 6, "reference"), item(100, 1, "constraint")];
   const values = [newest, oldest, middle];
   const cap = wholeKnowledge([newest, middle]).cost + charge(["omitted 1 constraint knowledge; expand: trace://K100", "Receipts:"]);
   const selected = budgetKnowledge(values, cap);
-  expect(selected.commits).toEqual([6, 9]); // One chronological list crosses categories.
+  expect(selected.commits).toEqual([9, 6]);
   expect(selected.receipts).toEqual(["omitted 1 constraint knowledge; expand: trace://K100"]);
   expect(budgetKnowledge([...values].reverse(), cap)).toEqual(selected);
-  expect(wholeKnowledge(values).commits).toEqual([1, 6, 9]); // Commit order, not category grouping.
   const text = finish({ content: renderKnowledgeBlock(selected.groups), receipts: selected.receipts });
-  expect(text).toContain(KNOWLEDGE_RECENCY_NOTICE);
+  expect(text).toContain("## constraint (1)");
   expect(tokens(text)).toBeLessThanOrEqual(selected.cost);
   expect(selected.cost).toBeLessThanOrEqual(cap);
 });
@@ -705,7 +722,7 @@ test("32de: required exact versions outrank relevance; optional selection and fr
   expect(() => select(minimum - 1)).toThrow(/Knowledge capacity/);
   const atPair = select(pair);
   expect(atPair.commits).toEqual([11, 12]); // display/category order, not selection order
-  expect(atPair.groups.map(g => g.text).join("\n")).toBe(`${renderKnowledge(low)}\n${renderKnowledge(high)}`);
+  expect(atPair.groups.map(g => g.text).join("\n")).toBe(`## constraint (1)\n${renderKnowledge(low)}\n## reference (1)\n${renderKnowledge(high)}`);
   expect(select(pair - 1).commits).toEqual([11]); // incremental category framing is charged
   expect(pair).toBeGreaterThan(minimum + tokens(renderKnowledge(high)));
   for (let cap = minimum; cap <= pair + 80; cap++) {

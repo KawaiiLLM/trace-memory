@@ -22,3 +22,7 @@ export function setSharedAllowance(memory: TraceMemory, allowance: number): void
   if (!Number.isSafeInteger(allowance) || allowance < 0) throw new Error("test shared allowance must be a nonnegative safe integer");
   memory.config.compaction.sharedAllowanceTokens = allowance;
 }
+
+/** A pool budget that holds `weight` pending tokens twice over plus the block's own framing (wrapper,
+ * recency notice, category header), which a one-line fixture item would otherwise be dwarfed by. */
+export const roomyPoolBudget = (weight: number): number => weight * 2 + 100;

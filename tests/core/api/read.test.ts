@@ -83,7 +83,7 @@ const defaultWindows = () => {
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
   const { s, t } = populated();
   const next = turn(s.id, rawFixture[1].userPrompt, t.id);
-  const knowledge = `${readingGuide(s.id, canonicalToolNames)}\n\n<knowledge>\nItems are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.\nSession S${s.id}.\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
+  const knowledge = `${readingGuide(s.id, canonicalToolNames)}\n\n<knowledge>\nItems are grouped by category. Within a category they are ordered by last change, oldest to newest; position does not compare items across categories. For claims about the same object within a category, the later item takes precedence until maintenance merges them.\nSession S${s.id}.\n## constraint (1)\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
   expect(memory.inject(s.id)).toBe(knowledge);
   // The exact bound source is already supplied as Raw, so the Fact is not duplicated.
   const compact = memory.compact(s.id, "main");
@@ -142,10 +142,10 @@ test("64c category display and commit recency retain whole newer items; lines ar
   // Injected lines are trace lines byte for byte (ruling 15:14); tags only delimit blocks.
   expect(all).toContain("<&>");
   expect(all).not.toContain("&lt;");
-  expect([...all.matchAll(/\[K(\d+)#[a-z]+\]/g)].map(match => Number(match[1]))).toEqual([1, ...ids, earlier]);
+  expect([...all.matchAll(/\[K(\d+)#[a-z]+\]/g)].map(match => Number(match[1]))).toEqual([1, earlier, ids[1], ids[2], ids[3], ids[0]]); // 132: glossary category order, oldest first inside a group
   for (const category of ["constraint", ...categories]) {
     expect(all).toContain(`[${category}/project]`);
-    expect(all).not.toContain(`<${category}>`); // one chronological list, not category blocks
+    expect(all).not.toContain(`<${category}>`); // category headers, not category blocks
   }
   // 34c: the foreground cap is hard, and a zero remainder emits neither a clipped item nor an
   // omission-only block. Receipt accounting for compaction and worker material remains separate.

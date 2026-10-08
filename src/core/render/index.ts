@@ -769,7 +769,7 @@ const EXPAND_LIMIT = 8;
 export const expandList = (addresses: string[]): string => addresses.length <= EXPAND_LIMIT ? addresses.join(", ")
   : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 
-export const KNOWLEDGE_RECENCY_NOTICE = "Items are ordered oldest to newest. For claims about the same object, the later item takes precedence until maintenance merges them.";
+export const KNOWLEDGE_RECENCY_NOTICE = "Items are grouped by category. Within a category they are ordered by last change, oldest to newest; position does not compare items across categories. For claims about the same object within a category, the later item takes precedence until maintenance merges them.";
 /** Identity/recency framing only; the reading guide belongs to the complete injection once. */
 export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string =>
   `${recencyNotice}\nSession S${sessionId}.`;
@@ -794,10 +794,23 @@ const orderedKnowledge = (knowledge: KnowledgeWithRevision[], line: (knowledge: 
       category: knowledgeCategoryGroup(value.revision.category), text, id: value.knowledge.id, commit: value.revision.id, size: tokens(text) + 1,
     }; });
 
+/** Ticket 132: the one grouped layout of every knowledge block. `items` arrive oldest first; each
+ * category present gets a `## <category> (<n>)` line, then its items, in glossary category order. */
+const categoryHeader = (category: string, count: number): string => `## ${category} (${count})`;
+const byCategory = <T extends { category: string }>(items: readonly T[]): { category: string; members: T[] }[] =>
+  KNOWLEDGE_CATEGORIES.flatMap(category => {
+    const members = items.filter(item => item.category === category);
+    return members.length ? [{ category, members }] : [];
+  });
+export const knowledgeGroups = (items: readonly { category: string; text: string }[]): { category: string; text: string }[] =>
+  byCategory(items).map(({ category, members }) => ({ category, text: [categoryHeader(category, members.length), ...members.map(item => item.text)].join("\n") }));
+const groupedCost = (items: RenderedKnowledgeItem[]): number =>
+  items.reduce((sum, item) => sum + item.size, 0) + byCategory(items).reduce((sum, { category, members }) => sum + tokens(categoryHeader(category, members.length)) + 1, 0);
+
 const knowledgeBody = (items: RenderedKnowledgeItem[], recencyNotice = KNOWLEDGE_RECENCY_NOTICE): Omit<BudgetedKnowledge, "receipts"> => ({
-  groups: items.length ? [{ category: "items", text: items.map(item => item.text).join("\n") }] : [],
-  cost: items.length ? tokens(xmlBlock("knowledge", recencyNotice)) + items.reduce((sum, item) => sum + item.size, 0) : 0,
-  commits: items.map(item => item.commit),
+  groups: knowledgeGroups(items),
+  cost: items.length ? tokens(xmlBlock("knowledge", recencyNotice)) + groupedCost(items) : 0,
+  commits: byCategory(items).flatMap(({ members }) => members.map(item => item.commit)),
 });
 
 /** Linear rendering and conservative measurement of one complete, stably ordered knowledge pool.
@@ -814,7 +827,7 @@ export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowle
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
   budget = "Knowledge capacity", required?: ReadonlySet<number>,
   priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): BudgetedKnowledge {
-  // Selection remains newest-first; presentation is a single oldest-first list.
+  // Selection remains newest-first; presentation is grouped by category, oldest first inside a group.
   const ordered = orderedKnowledge(knowledge, line);
   const byCommit = new Map(knowledge.map(value => [value.revision.id, value]));
   const optional = ordered.filter(item => !required?.has(item.commit)).sort((a, b) =>
@@ -826,7 +839,7 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   const outerCost = tokens(xmlBlock("knowledge", recencyNotice));
   const bodyCost = (kept: number) => {
     const items = selected(kept);
-    return items.length ? outerCost + items.reduce((sum, item) => sum + item.size, 0) : 0;
+    return items.length ? outerCost + groupedCost(items) : 0;
   };
   // Optional omission framing cannot spend required overflow. If it cannot fit, omit it too.
   const emittedReceipts = (kept: number) => required && bodyCost(kept) + charge(receipts(kept))

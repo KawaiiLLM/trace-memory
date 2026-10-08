@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { noVisibility } from "../../src/core/api/visible.ts";
 import { injectionText, KNOWLEDGE_STATUS_TITLE, type TransportItem } from "../../src/core/render/material.ts";
-import { tokens, renderKnowledgeBlock } from "../../src/core/render/index.ts";
+import { tokens, renderKnowledgeBlock, knowledgeGroups } from "../../src/core/render/index.ts";
 import { visibleView } from "../../src/hosts/pi/visible.ts";
 import { visibility } from "../../src/hosts/pi/index.ts";
 import { decodeCcInjection, encodeCcInjection } from "../../src/hosts/cc/injection.ts";
@@ -36,8 +36,8 @@ test("92 each final CC slice charges its K framing and notices, not facts, Raw o
   for (const header of headers) {
     const parts = [
       ...(header.states.length ? [`${KNOWLEDGE_STATUS_TITLE}\n${state.text}`] : []),
-      renderKnowledgeBlock(values.filter(value => value.kind === "knowledge" && header.commits.includes(value.commitId))
-        .map(value => ({ category: "reference", text: value.text })), ccKnowledgeHeader(cc)),
+      renderKnowledgeBlock(knowledgeGroups(values.filter(value => value.kind === "knowledge" && header.commits.includes(value.commitId))
+        .map(value => ({ category: "reference", text: value.text }))), ccKnowledgeHeader(cc)),
       ...(header.slice![0] === 0 ? ["Receipts:\nomitted 1 reference knowledge; expand: trace://K3"] : []),
     ].filter(Boolean);
     expect(header.knowledgeTokens).toBe(tokens(parts.join("\n\n")));
@@ -47,7 +47,7 @@ test("92 each final CC slice charges its K framing and notices, not facts, Raw o
 
 test("92 one-block exact fit does not permit repeated K segment framing to exceed the remaining allowance", () => {
   const values = Array.from({ length: 24 }, (_, i) => knowledge(i + 1, 6000));
-  const cap = tokens(renderKnowledgeBlock(values.map(value => ({ category: "reference", text: value.text }))));
+  const cap = tokens(renderKnowledgeBlock(knowledgeGroups(values.map(value => ({ category: "reference", text: value.text })))));
   const unrestricted = sliceCcInjection(cc, values).filter(Boolean).map(slice => decodeCcInjection(slice!.hookSpecificOutput.additionalContext, cc)!);
   expect(unrestricted.reduce((sum, header) => sum + header.knowledgeTokens!, 0)).toBeGreaterThan(cap);
   for (const allowance of [cap, cap - 1000, 0]) {

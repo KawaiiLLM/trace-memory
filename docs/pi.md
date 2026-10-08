@@ -235,8 +235,8 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   consume the Knowledge base plus the shared allowance, 30,000 tokens at the default policy. Missing state
   transitions fit as a deterministic whole-item prefix before complete new bodies; only selected
   transition receipts persist. Knowledge keeps category groups and chronological display inside each
-  group. The common header says larger commit numbers are newer and a newer same-object item stands
-  until maintenance merges it. Capacity selection omits the oldest optional items first, preserving
+  group. The common header says items are grouped by category, position does not compare items across categories, and a newer same-object item within a category stands
+  until maintenance merges it; each group opens with a `## <category> (<n>)` line (132). Capacity selection omits the oldest optional items first, preserving
   newer ones. An unfit next mandatory transition is not skipped, and exact fit is accepted.
 
   Immediately before returning a publication, the host revalidates enrollment, Pi/native binding,

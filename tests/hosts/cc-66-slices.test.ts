@@ -3,7 +3,7 @@ import { ccInjectionLength, decodeCcInjection, encodeCcInjection, type CcVisible
 import { transportItemText } from "../../src/core/render/material.ts";
 import { sliceCcInjection, ccKnowledgeHeader, CC_SLICE_COUNT, CC_SLICE_LIMIT, CC_KNOWLEDGE_RECENCY_NOTICE } from "../../src/hosts/cc/slices.ts";
 import type { TransportItem } from "../../src/core/render/material.ts";
-import { renderKnowledgeBlock, tokens } from "../../src/core/render/index.ts";
+import { knowledgeGroups, renderKnowledgeBlock, tokens } from "../../src/core/render/index.ts";
 import { readingGuide } from "../../src/core/render/reading-guide.ts";
 import { ccPluginToolNames } from "../../src/hosts/cc/tool-names.ts";
 
@@ -106,7 +106,7 @@ test("92 CC placement prices the final single knowledge list, including exact UT
   const emptySecond: TransportItem = { kind: "knowledge", category: "reference", commitId: 2, address: "K2@v1", text: "[K2#bbbb] " };
   const membership = { knowledgeCommitIds: [1, 2], factIds: [], entryIds: [], slice: [0, 24] as [number, number] };
   const guide = readingGuide(binding.coreSession!, ccPluginToolNames);
-  const knowledgeBody = (second: TransportItem) => renderKnowledgeBlock([first, second].map(item => ({ category: "items", text: item.text })), ccKnowledgeHeader(binding));
+  const knowledgeBody = (second: TransportItem) => renderKnowledgeBlock(knowledgeGroups([first, second].map(item => ({ category: "reference", text: item.text }))), ccKnowledgeHeader(binding));
   const body = (second: TransportItem) => `${guide}\n\n${knowledgeBody(second)}`;
   const initial = encodeCcInjection(binding, { ...membership, text: body(emptySecond) }).length;
   for (const target of [9999, 10000, 10001]) {
@@ -152,6 +152,23 @@ test("92 CC knowledge is next-fit oldest-first by segment, while Raw and facts f
   expect(ordered[0]!.header.factIds).toEqual([9]);
   expect(ordered[0]!.header.entryIds).toEqual([8]);
   expect(sliceCcInjection(binding, values)).toEqual(outputs);
+});
+
+test("132 CC parts keep category order across segments; each part groups its own items under counted headers", () => {
+  const knowledge = (id: number, category: string, size: number): TransportItem => ({ kind: "knowledge", category, commitId: id,
+    address: `K${id}@v1`, text: `[K${id}#aaaa] [${category}/project] ${"x".repeat(size)}` });
+  // Commit order is 1..4, category order puts the constraint items before the older reference.
+  const values = [knowledge(1, "reference", 500), knowledge(2, "constraint", 6_000), knowledge(3, "constraint", 5_000), knowledge(4, "understanding", 500)];
+  const parts = sliceCcInjection(binding, values).flatMap(output => {
+    if (!output) return [];
+    const text = output.hookSpecificOutput.additionalContext;
+    return [{ header: decodeCcInjection(text, binding)!, text }];
+  }).sort((a, b) => a.header.slice![0] - b.header.slice![0]);
+  expect(parts.flatMap(part => part.header.commits)).toEqual([2, 3, 4, 1]);
+  expect(parts.map(part => part.header.commits)).toEqual([[2], [3, 4, 1]]);
+  const headers = (text: string) => [...text.matchAll(/^## .*$/gm)].map(match => match[0]);
+  expect(headers(parts[0]!.text)).toEqual(["## constraint (1)"]);
+  expect(headers(parts[1]!.text)).toEqual(["## constraint (1)", "## understanding (1)", "## reference (1)"]);
 });
 
 test("92 CC sequential overflow retains newest whole knowledge and accounts only actual carriers", () => {

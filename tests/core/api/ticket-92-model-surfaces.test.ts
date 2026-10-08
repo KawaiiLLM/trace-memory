@@ -36,7 +36,7 @@ test("92/03: model lists and compact carriers use chronological tags; exact read
     if ("native" in compacted) throw new Error("unexpected native delegation");
     for (const body of [injected.text, compacted.text, memoryFiles(memory, target).read(`trace://knowledge/S${session.id}`).content]) {
       expect(body).not.toMatch(/K\d+@\d+/);
-      expect(body.indexOf(secondTag)).toBeLessThan(body.indexOf(firstTag));
+      expect(body.indexOf(firstTag)).toBeLessThan(body.indexOf(secondTag)); // 132: constraint groups before open, whatever the commit order
       expect(body).not.toMatch(/<(constraint|open)>/);
     }
     const search = tools.find(t => t.name === "search")!.execute({ query: "Needle", layer: "knowledge", maxTokens: 8000 });
@@ -48,7 +48,7 @@ test("92/03: model lists and compact carriers use chronological tags; exact read
     const text = slices.filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext).join("\n");
     expect(text).not.toMatch(/K\d+@\d+/);
     expect(text.split(CC_KNOWLEDGE_RECENCY_NOTICE)).toHaveLength(2); // one carrier, one knowledge list
-    expect(text.indexOf(secondTag)).toBeLessThan(text.indexOf(firstTag));
+    expect(text.indexOf(firstTag)).toBeLessThan(text.indexOf(secondTag));
     expect(slices.flatMap(slice => slice ? decodeCcInjection(slice.hookSpecificOutput.additionalContext, binding)!.commits : []).sort((a, b) => a - b))
       .toEqual([second.commit, latest.commit]);
     const omitted = sliceCcInjection(binding, [

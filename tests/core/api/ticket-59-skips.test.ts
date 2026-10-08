@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "vitest";
+import { roomyPoolBudget } from "../../knowledge-budget-fixture.ts";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { dreamingToolDefinitions, toolDefinitions, validateReadInput } from "../../../src/core/api/tools.ts";
 import { knowledge } from "../../support/seed.ts";
@@ -25,7 +26,7 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, t
     operations: texts.map((_, index) => ({ op: "create" as const, handle: `$${index + 1}`, author: "test", ...content(index) })) });
   if (!created.ok) throw Error(created.problems.join());
   const pool = `project:${project.id}`;
-  store.setKnowledgeBudget("project", Math.max(1, store.pendingPoolWeight(pool, target) * 2));
+  store.setKnowledgeBudget("project", roomyPoolBudget(store.pendingPoolWeight(pool, target)));
   return { memory, store, project, pool, items: created.committed, content, target };
 }
 const handle = (item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@${item.commit}`;
