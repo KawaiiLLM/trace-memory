@@ -443,9 +443,9 @@ export class CcAgentWorker {
         strictMcpConfig: true,
         // 106: Claude Code 2.1.284 loads its builtin `agents-md@builtin` plugin even so. The `--settings`
         // layer is read whatever the setting sources, and turning the plugin off there keeps the worker
-        // plugin-free, as assertInit requires.
+        // plugin-free, as assertInit requires. 129: 2.1.293 adds `cc-plugin-plugin-authoring@builtin` the same way.
         extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking,
-          settings: JSON.stringify({ enabledPlugins: { "agents-md@builtin": false } }) },
+          settings: JSON.stringify({ enabledPlugins: { "agents-md@builtin": false, "cc-plugin-plugin-authoring@builtin": false } }) },
       } });
       for await (const message of execution) {
         if (passState === "complete")
