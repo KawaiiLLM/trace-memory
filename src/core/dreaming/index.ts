@@ -78,22 +78,10 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const pending = pools.flatMap(pool => pool.pending).filter(value => frozenIds.has(value.revisionId))
     .sort((left, right) => left.revisionId - right.revisionId);
   const changed = ["Pending current knowledge:", ...pending.map(value => value.material)].join("\n");
-  // 103, per pool since 126: a remainder excludes this run's pending current versions from the pool at
-  // the exact size `check`/`Store.knowledgePools` measures (processedBlock over the pool's versions) —
-  // not their scheduling weight (a Changed item's diff, an Archived item's removed body). An Archived
-  // item's current version is never among the versions (76), so excluding it removes nothing.
-  const overBudget = pools.flatMap(pool => {
-    const remainder = tokens(processedBlock(pool.versions.filter(value => !frozenIds.has(value.revision.id)),
-      value => pool.rendered.get(value.revision.id)!));
-    if (remainder <= pool.budget) return [];
-    return [pending.some(value => value.pool === pool.pool)
-      ? `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens; this run's pending items in it occupy ${pool.tokens - remainder}; without them it is still ${remainder}, over budget.`
-      : `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens, over budget${pending.length ? "; it has no pending items in this run" : ""}.`];
-  });
-  const these = overBudget.length === 1 ? "that pool" : "each of these pools";
-  const processedExcessOrder = !overBudget.length ? "" : ` ${overBudget.join(" ")} ${pending.length
-    ? `Reduce the already-processed knowledge of ${these} under the Over budget principle until it fits, then deliberate the pending items below.`
-    : `This run has no pending items. Reduce the already-processed knowledge of ${these} under the Over budget principle until it fits.`}`;
+  // 131: a run with pending items deliberates them first; the budget is only `check`'s verdict. A run with
+  // none (started by the three-pool total, 104) has no item to take up, so the material tells it to reduce.
+  const over = pending.length ? [] : pools.filter(pool => pool.tokens > pool.budget);
+  const noPendingOrder = !over.length ? "" : ` ${over.map(pool => `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens, over budget.`).join(" ")} This run has no pending items. Reduce the already-processed knowledge of ${over.length === 1 ? "that pool" : "each of these pools"} under the Over budget principle until it fits.`;
   const rendered = new Map(pools.flatMap(pool => [...pool.rendered]));
   const references = pools.flatMap(pool => pool.versions).filter(value => !frozenIds.has(value.revision.id));
   const budgets = store.knowledgeBudgets();
@@ -135,7 +123,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const direct = factText(count);
   if (tokens(direct) > 10_000) throw new Error("Dreaming direct fact receipts exceed 10000");
 
-  const material = { bound: `Run wall-clock bound: ${config.dreaming.timeoutMs} ms. Wrap up before this deadline.${processedExcessOrder}`,
+  const material = { bound: `Run wall-clock bound: ${config.dreaming.timeoutMs} ms. Wrap up before this deadline.${noPendingOrder}`,
     processed: old, changed, facts: direct };
   const text = [readingGuide(path.sessionId, names), ...Object.values(material)].join("\n\n");
   const prompt = loadPrompt("dreaming.md", names);

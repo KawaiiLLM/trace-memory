@@ -161,11 +161,12 @@ Dreamer has no tool-round ceiling. The shared `dreaming.timeoutMs` default is 1,
 on both hosts, including Pi where this adds a new time bound. Expiry closes writes, fails the run with
 the bound in its reason, settles partial work and releases its claim; it is not a completed pass.
 
-At the start of a run, for each pool whose size without this run's pending items already exceeds its
-budget, the task material states the pool, pending, remainder and budget numbers and directs the run to
-reduce that pool's already-processed knowledge first under the **Over budget** principle, before
-deliberating the pending items (103, per pool since 126). Both measures come from the same pool projection `check`
-reports from; the remove, coarsen, archive order applies inside either budget-reduction phase (122).
+A run deliberates its pending items first, then any other item the round needs, then calls `check`; the
+budget is a check, not a target (131, superseding 103's "reduce the processed excess first"). A pool over
+budget at that `check` gets a round of reduction under the **Over budget** principle (remove, coarsen,
+archive order, 122), then `check` again. Only a run with no pending items (started by the three-pool
+total) is told in the task material which pools are over budget, with their `check` numbers, and to reduce
+them. If the wall-clock bound ends a run before its pools fit, the run fails (126).
 
 A run reduces each pool until it fits; one pool's excess alone makes no session due.
 Project relabelling creates no processing event or knowledge revision. It removes destination-pool
