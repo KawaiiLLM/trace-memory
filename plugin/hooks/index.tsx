@@ -208,6 +208,8 @@ export const register = (on: any) => {
       console.error(`Trace Memory compact identity: ${String(error)}`);
       return next(e);
     }
+    // 130: text typed after `/compact` steers a summary, so it keeps Claude Code's own summary and its supplement.
+    if (typeof e.instructions === "string" && e.instructions.trim()) return nativeCompaction($, e, next, session);
     // 102: Trace Memory's compaction replaces Claude Code's summary, with no model call. Like Pi's, it
     // keeps no original message: the trigger is the newest Raw in the block. An unbound or disabled
     // session, or a build that fails for any reason, keeps native compaction and its supplement.

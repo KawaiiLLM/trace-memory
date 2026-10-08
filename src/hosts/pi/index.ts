@@ -1195,6 +1195,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_before_compact", async (event, context) => {
     publishedTruncation = undefined;
     ensure(context); if (!enabled()) return; flush();
+    // 130: instructions typed after `/compact` steer Pi's own summary, which we do not write; Pi compacts natively.
+    if (event.customInstructions?.trim()) return;
     const signal = (event as { signal?: AbortSignal }).signal;
     const initial = { sessionId: state.sessionId, branch: state.branch, head: state.head, projectId: state.projectId };
     const valid = () => !closed && enabled() && state.sessionId === initial.sessionId

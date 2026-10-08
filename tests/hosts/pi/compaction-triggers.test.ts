@@ -140,6 +140,29 @@ test("64c: manual compact carries current knowledge without making pending knowl
   } finally { f.dispose(); }
 });
 
+test("130: a manual compact with instructions is Pi's own summary; whitespace-only instructions are still ours", async () => {
+  const f = await session({ automatic: false });
+  try {
+    scripted(f, [() => say("answered", usage(10, 2)), () => say("answered", usage(10, 2)), () => say("native summary", usage(10, 2))]);
+    await f.session.prompt(`${big} FIRST`);
+    await f.session.prompt("SECOND");
+    const before = f.sent.length;
+    await f.session.compact("  keep the TENSOR-NAME decision  ");
+    // Pi's own summarisation request, carrying the instructions
+    expect(f.sent.slice(before).some(body => JSON.stringify(body).includes("keep the TENSOR-NAME decision"))).toBe(true);
+    expect(compactions(f)).toHaveLength(1);
+    expect(compactions(f)[0]!.summary).toContain("native summary");
+    expect(compactions(f)[0]!.details?.traceMemory).toBeUndefined();
+
+    await f.session.prompt(`${big} THIRD`);
+    const again = f.sent.length;
+    await f.session.compact("   ");
+    expect(f.sent.length).toBe(again); // no model call: Trace Memory's compaction
+    expect(compactions(f)).toHaveLength(2);
+    expect(compactions(f)[1]!.details?.traceMemory).toBeTruthy();
+  } finally { f.dispose(); }
+});
+
 async function completedStatus(f: Awaited<ReturnType<typeof session>>) {
   expect(f.notices.filter(n => n.includes("compaction used"))).toHaveLength(1);
   expect(f.notices.at(-1)).toContain("compaction used bounded entry views");

@@ -149,3 +149,19 @@ test("102: a session that changed during the build keeps native compaction", asy
   expect(f.next).toHaveBeenCalledOnce();
   expect(result.messages[0]).toBe(original.messages[0]);
 });
+
+test("130: a manual compaction with instructions stays native with them intact and appends the supplement", async () => {
+  const f = fixture();
+  const withInstructions = { ...event, instructions: "keep the decisions" };
+  const result = await compact(f.host, withInstructions, f.next);
+  expect(f.next).toHaveBeenCalledExactlyOnceWith(withInstructions);
+  expect(f.build).not.toHaveBeenCalled();
+  expect(result.messages).toEqual([original.messages[0], { role: "user", text: "knowledge", toolUses: [] }]);
+});
+
+test("130: whitespace-only instructions still get Trace Memory's compaction", async () => {
+  const f = fixture();
+  f.build.mockResolvedValue({ exitCode: 0, stdout: JSON.stringify({ text: block }) });
+  expect(await compact(f.host, { ...event, instructions: "  \n " }, f.next)).toEqual({ messages: [{ role: "user", text: block, toolUses: [] }] });
+  expect(f.next).not.toHaveBeenCalled();
+});

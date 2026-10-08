@@ -679,6 +679,7 @@ export const register = (on) => {
       console.error(`Trace Memory compact identity: ${String(error)}`);
       return next(e);
     }
+    if (typeof e.instructions === "string" && e.instructions.trim()) return nativeCompaction($, e, next, session);
     try {
       const built = JSON.parse(decode(await $.process.run(
         ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-compact", "--config", `${$.plugin.root}/cc.config.json`],
