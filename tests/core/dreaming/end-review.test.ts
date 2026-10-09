@@ -100,7 +100,7 @@ test("126: the review lists the run's changes in every pool, and a pool left ove
   for (const item of [global!, project!]) expect(changes).toContain(p.current(item));
 });
 
-test("an item changed twice shows one net diff of changed parts only, and unchanged or reverted items are absent", async () => {
+test("134: two changes show one net full-body diff, and unchanged or reverted items are absent", async () => {
   const bodies = [longBody("规则甲", "结尾甲"), longBody("规则乙", "结尾乙"), longBody("规则丙", "结尾丙")];
   const p = pool(bodies, { first(_task, tool, [a, b, c]) {
     const first = tool("memory", { operations: [update(a!.tag, longBody("规则甲", "结尾甲，新增一条边界：不 stash"))], skipped: [] });
@@ -117,10 +117,10 @@ test("an item changed twice shows one net diff of changed parts only, and unchan
   const [a, b, c] = p.items();
   const message = p.reviews[0]!;
   expect(message.match(/^\[K\d+#[a-z]+\]/gm)).toEqual([`[${p.current(a!)}]`]);
-  expect(message).toContain("{+，新增一条边界：不 stash／reset+}");
-  expect(message).not.toContain("stash+}{+"); // one net edit, not two stacked ones
-  expect(message).toContain("[...]");
-  expect(message).not.toContain(bodies[0]!); // no whole unchanged body
+  expect(message).toContain(bodies[0]!.split("。")[1]! + "。");
+  expect(message).toContain("结尾甲，新增一条边界：不 stash／reset");
+  expect(message.match(/新增一条边界/g)).toHaveLength(1);
+  expect(message).not.toContain("[...]");
   expect(message).not.toContain(`K${b!.knowledgeId}#`);
   expect(message).not.toContain(`K${c!.knowledgeId}#`);
   expect(message).not.toContain("Commits: none");
