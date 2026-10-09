@@ -635,7 +635,9 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
 }
 
 const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
-const sentences = (text: string): string[] => text.match(/[^。；！？\n]*[。；！？\n]|[^。；！？\n]+$/gu) ?? [];
+// A newline is its own row, so no row holds a line break and each body newline shows as one line.
+const sentences = (text: string): string[] => text.match(/[^。；！？\n]*[。；！？]|\n|[^。；！？\n]+/gu) ?? [];
+const showRow = (row: string): string => row === "\n" ? "" : row;
 
 interface SentenceWords { parts: string[]; words: boolean[]; count: number }
 interface SentenceHighlight { before: string; after: string; added: string; removed: string }
@@ -675,16 +677,16 @@ function sentencePair(a: SentenceWords, b: SentenceWords): SentenceHighlight | u
 
 export interface SentenceDiff { text: string; added: string; removed: string }
 /** 134: one lossless sentence-first engine for every knowledge-body diff.
- * Original newline delimiters stay inside a row; the joining newline is layout, not body text. */
+ * One row per line; a row shown empty is a body newline. */
 export function sentenceDiff(before: string, after: string): SentenceDiff {
   const changes = diffArrays(sentences(before), sentences(after)), lines: string[] = [];
   let added = "", removed = "", index = 0;
-  const add = (text: string) => { lines.push(`+ ${text}`); added += text; };
-  const remove = (text: string) => { lines.push(`- ${text}`); removed += text; };
+  const add = (text: string) => { lines.push(`+ ${showRow(text)}`); added += text; };
+  const remove = (text: string) => { lines.push(`- ${showRow(text)}`); removed += text; };
   while (index < changes.length) {
     const change = changes[index]!;
     if (!change.added && !change.removed) {
-      for (const sentence of change.value) lines.push(`  ${sentence}`);
+      for (const sentence of change.value) lines.push(`  ${showRow(sentence)}`);
       index++;
       continue;
     }
@@ -709,7 +711,7 @@ export function sentenceDiff(before: string, after: string): SentenceDiff {
       if (left) while (right < pair.next) add(next[right++]!);
       while (left < pair.old) remove(old[left++]!);
       while (right < pair.next) add(next[right++]!);
-      lines.push(`- ${pair.diff.before}`, `+ ${pair.diff.after}`);
+      lines.push(`- ${showRow(pair.diff.before)}`, `+ ${showRow(pair.diff.after)}`);
       added += pair.diff.added; removed += pair.diff.removed;
       left = pair.old + 1; right = pair.next + 1;
     }
@@ -755,7 +757,7 @@ export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRe
 
 export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity,
   fields?: ReadonlySet<string>, address: (revision: KnowledgeRevision) => string = r => `K${r.knowledgeId}@${r.id}`,
-  rangeAddress = `${address(a)}..${address(b)}`): string {
+  rangeAddress = `${address(a)}..${address(b)}`, withHistory = true): string {
   const text = sentenceDiff(a.text, b.text).text, identity = `[${rangeAddress}]`;
   if (fields) {
     const prefix = fields.has("text") ? `${identity}\n  text:\n` : identity;
@@ -766,7 +768,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
       ...(fields.has("status") && a.scope !== b.scope ? [`  scope: ${a.scope} -> ${b.scope}`] : []),
       ...(fields.has("reason") && a.reason !== b.reason ? [`  reason: ${a.reason} -> ${b.reason}`] : []),
       ...(fields.has("topics") && JSON.stringify(a.topics) !== JSON.stringify(b.topics) ? [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`] : []),
-      ...(revisions.length ? [renderCommitHistory(revisions, fields, address)] : []),
+      ...(withHistory || revisions.length ? [renderCommitHistory(revisions, fields, address)] : []),
     ];
     if (!fields.has("text")) return [prefix, ...lines].join("\n");
     const whole = [prefix + text, ...lines].join("\n");

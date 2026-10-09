@@ -139,15 +139,16 @@ Knowledge selection keeps complete items and charges framing and receipts.
 
 Dreamer reference and pending item headers show their pool item cost: the canonical version header,
 body, supports and topics, excluding the count annotation itself. Pool category framing remains part
-of the pool total. Committed shared-memory receipts report `tokens.before` and `tokens.after` arrays:
+of the pool total. An item carries this one annotation only: an `Archived` item shows it once on its removed body, and the
+Noter's `(body/1000 tokens)` annotation (cap check) never appears in the same view. Committed shared-memory receipts report `tokens.before` and `tokens.after` arrays:
 create has no parents; update has one; merge lists the survivor then the absorbed parent; split lists
 its parent once and both resulting children; archive reports the removed item cost then zero.
 Committed update, merge and split results each carry the newly authored version's `K#tag`, usable
 directly for the next mutation. Uncommitted Noter `Mn` handles and archive history addresses are unchanged.
 
 Pending changes, Dreamer end reviews, Noter held reviews and Knowledge range reads use the same
-lossless sentence-first unified diff. Sentences end after `。；！？` or a newline, retaining the
-delimiter. Unchanged text appears once with `  `; removed and added sentences use `- ` and `+ `.
+lossless sentence-first unified diff. Sentences end after `。；！？`, retaining the
+delimiter; each newline is its own row, shown as an empty line. Unchanged text appears once with `  `; removed and added sentences use `- ` and `+ `.
 Within a changed hunk, removed sentences pair in order with the first unused later added sentence
 sharing at least half the longer sentence's word tokens; paired word changes use `[-removed-]`
 and `{+added+}`. Unrelated replacements remain whole old sentences followed by whole new sentences.

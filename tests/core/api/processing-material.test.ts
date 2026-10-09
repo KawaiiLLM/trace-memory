@@ -98,7 +98,9 @@ test("N material shows each knowledge body's cap-check token count; injection do
     const body = "Short rule. ".repeat(40);
     expect(f.tools.find(tool => tool.name === "memory")!.execute({ op: "create", ...f.content, text: body })).toContain("committed");
     setKnowledgeCapacity(f.memory, 20_000);
-    expect(f.freeze().prepared?.text).toContain(`[constraint/project] (${tokens(body)}/1000 tokens) ${body}`);
+    const material = f.freeze().prepared!.text;
+    expect(material).toContain(`[constraint/project] (${tokens(body)}/1000 tokens) ${body}`);
+    expect(material).not.toMatch(/\(\d+ tokens\)/); // 134: the Dreamer's pool-cost form never joins it for the same item
     expect(f.memory.injection(f.target).text).not.toContain("tokens) ");
   } finally { f.memory.close(); }
 });

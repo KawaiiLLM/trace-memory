@@ -191,14 +191,16 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
     const split = JSON.parse(tool.execute({ slot: "M2", op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit),
       supports: [], reason: "separate independent rules",
       children: [{ text: "first rule", category: "constraint", topics: ["first"] }, { text: "second rule", category: "goal", topics: ["second"] }] }));
+    expect(split.committed).toHaveLength(2);
     expect(split.tokens.before).toEqual([parentCost]);
     const [first, second] = split.committed as { knowledgeId: number; version: string }[];
+    const read = (address: string) => memoryFiles(memory, input.reader!).read(`trace://${address}`).content;
+    expect(read(first!.version)).not.toContain("rejected:");
     const update = JSON.parse(tool.execute({ op: "update", id: first!.version,
       text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }));
     const secondUpdate = JSON.parse(tool.execute({ op: "update", id: second!.version,
       text: "second rule", category: "goal", scope: "project", topics: ["second"], supports: [], reason: "Keep the second independent ruling" }));
     expect(split.tokens.after).toEqual([update.tokens.before[0], secondUpdate.tokens.before[0]]);
-    const read = (address: string) => memoryFiles(memory, input.reader!).read(`trace://${address}`).content;
     expect(update.committed).toHaveLength(1);
     read(history(memory.store, trigger.knowledgeId, trigger.commit));
     expect(dreamerWrite(tool, { operations: [{ op: "archive", kind: "budget", id: tagged(memory.store, trigger.knowledgeId, trigger.commit),

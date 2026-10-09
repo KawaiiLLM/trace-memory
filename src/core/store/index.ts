@@ -4047,12 +4047,12 @@ export class Store {
         const archivedTokens = tokens(archivedBody);
         const shownBody = withKnowledgeCost(archivedBody, archivedTokens);
         const baseline = baselines.get(value.revision.id);
-        const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent, address(parent), archivedTokens).text}` : "";
+        const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent, address(parent)).text}` : "";
         // 76 review: the archive revision's own supports are the evidence that caused the archive
         // (e.g. F3), distinct from the archived body's own supports already inside `archivedBody`.
         // Show them explicitly, labelled as the archive's evidence, beside the body they retire.
         const evidenceLine = `\n  archive evidence: ${factAddresses(value.revision.supports)}`;
-        const material = `Archived ${address(value.revision)} (0 tokens; reason: ${value.revision.reason}):\n${shownBody}${evidenceLine}${diffLine}`;
+        const material = `Archived ${address(value.revision)} (reason: ${value.revision.reason}):\n${shownBody}${evidenceLine}${diffLine}`;
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: archivedTokens, material };
       });
       const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);

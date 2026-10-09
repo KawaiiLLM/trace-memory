@@ -441,6 +441,10 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       expect(pending.material).toContain("state B");
       expect(pending.material).toContain("[-A-]");
       expect(pending.material).toContain("{+B+}");
+      // 134: the item's pool cost is the one size annotation; the Noter's body/1000 form never joins it.
+      expect(pending.material.match(/\(\d+ tokens\)/g)).toHaveLength(1);
+      expect(pending.material).not.toContain("/1000 tokens");
+      expect(pending.material).not.toContain("0 tokens;");
       // 76 review: the archive's own supports (its evidence for archiving, distinct from state B's own
       // supports already inside the archived body) are shown explicitly, labelled as such.
       expect(pending.material).toContain(`archive evidence: F${f.fact3}`);
@@ -536,18 +540,18 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
   describe("diff material and weight", () => {
     test("two consecutive N updates show one cumulative diff against the last-processed baseline", () => {
       const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", handle: "$c", author: "noting", text: "alpha beta gamma",
+      const created0 = publishN(f.session.id, [{ op: "create", handle: "$c", author: "noting", text: "alpha beta gamma delta",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
       const pool = `project:${f.session.projectId}`;
       markProcessed(memory, pool, v1.commit); // D confirmed K@5.
-      const v2Run = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "alpha delta gamma",
+      const v2Run = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "alpha zeta gamma delta",
         category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "First edit.", createdAt: time }]);
       if (!v2Run.ok) throw new Error(v2Run.problems.join("; "));
       const v2 = v2Run.committed[0]!;
-      const v3Run = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v2.commit, text: "alpha delta epsilon",
+      const v3Run = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v2.commit, text: "alpha zeta gamma epsilon",
         category: "reference", scope: "project", topics: [], supports: [f.fact3], reason: "Second edit.", createdAt: time }]);
       if (!v3Run.ok) throw new Error(v3Run.problems.join("; "));
       const v3 = v3Run.committed[0]!;
@@ -555,8 +559,12 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       // Only the latest current version (v3) is pending; v2 was superseded and never got its own record.
       expect(pending.map(p => p.revisionId)).toEqual([v3.commit]);
       expect(pending[0]!.material).toContain(`from ${history(v1)}`);
-      expect(pending[0]!.material).toContain("alpha beta gamma");
-      expect(pending[0]!.material).toContain("alpha delta epsilon");
+      expect(pending[0]!.material).toContain("gamma"); // the shared tail survives the cumulative diff
+      expect(pending[0]!.material).toContain("[-beta-]");
+      expect(pending[0]!.material).toContain("{+epsilon+}");
+      // 134: the paired sentence lines, against v1 (v2's intermediate "zeta"-only state is not the baseline).
+      expect(pending[0]!.material).toContain("- alpha [-beta-] gamma [-delta-]");
+      expect(pending[0]!.material).toContain("+ alpha {+zeta+} gamma {+epsilon+}");
     });
 
     test("no processed ancestor: an update is shown whole as New, exactly as a create is", () => {

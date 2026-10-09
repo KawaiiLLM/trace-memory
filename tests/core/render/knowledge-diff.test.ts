@@ -57,6 +57,53 @@ test("134: pairing takes the first half-overlap candidate, not a later better ma
   expect(lines[2]).toBe("+ alpha beta gamma fox。");
 });
 
+test("134: a pair needs at least half of the longer sentence's words, not a third", () => {
+  // 3 of 7 words are shared: above a third, below a half.
+  const result = sentenceDiff("aa bb cc dd ee ff gg。", "aa bb cc xx yy zz ww。");
+  expect(result.text.split("\n")).toEqual(["- aa bb cc dd ee ff gg。", "+ aa bb cc xx yy zz ww。"]);
+});
+
+test("134: a hunk of several pairs prints each new sentence once and loses nothing", () => {
+  const before = "aa bb cc dd。aa bb cc ee。";
+  const after = "aa bb cc ff。";
+  // Both old sentences resemble the one new sentence; only the first may take it.
+  const result = sentenceDiff(before, after);
+  expect(result.text.split("\n")).toEqual(["- aa bb cc [-dd-]。", "+ aa bb cc {+ff+}。", "- aa bb cc ee。"]);
+  expect(reconstructed(result.text, "old")).toBe(before);
+  expect(reconstructed(result.text, "new")).toBe(after);
+});
+
+test("134: a semicolon and a newline each end a sentence", () => {
+  expect(sentenceDiff("甲乙；丙丁；", "甲乙；戊己；").text.split("\n")).toEqual(["  甲乙；", "- 丙丁；", "+ 戊己；"]);
+  expect(sentenceDiff("第一行\n第二行\n", "第一行\n改了\n").text.split("\n"))
+    .toEqual(["  第一行", "  ", "- 第二行", "+ 改了", "  "]);
+});
+
+test("134: every body newline is exactly one line, so a paragraph break adds no further blank lines", () => {
+  const result = sentenceDiff("alpha beta。\n\ngamma delta。", "alpha beta。\n\nepsilon zeta。");
+  expect(result.text.split("\n")).toEqual(["  alpha beta。", "  ", "  ", "- gamma delta。", "+ epsilon zeta。"]);
+});
+
+test("134: an insertion after a pair comes before the next removed sentence (K2953)", () => {
+  const before = "一词答复（如「改」「登记」）一律不引，只转述带条件的规则。仓库 ADR 规范本就是默认转述、逐字引用仅作例外。未说是否扩及其他项目，按项目处理。";
+  const after = "一词答复（如「改」「登记」）一律不引，只转述带条件的规则；作为派发许可依据的那句可保留。未说是否扩及其他项目。";
+  expect(sentenceDiff(before, after).text.split("\n")).toEqual([
+    "- 一词答复（如「改」「登记」）一律不引，只转述带条件的规则[-。-]",
+    "+ 一词答复（如「改」「登记」）一律不引，只转述带条件的规则{+；+}",
+    "+ 作为派发许可依据的那句可保留。",
+    "- 仓库 ADR 规范本就是默认转述、逐字引用仅作例外。",
+    "- 未说是否扩及其他项目[-，按项目处理-]。",
+    "+ 未说是否扩及其他项目。",
+  ]);
+});
+
+test("134: an empty change history prints History: none unless the caller omits it", () => {
+  const current: KnowledgeRevision = { ...baseline, id: 2, parentId: 1, text: "A changed explanation.", op: "update" };
+  const fields = new Set(["text"]);
+  expect(renderKnowledgeDiff(baseline, current, [], Infinity, fields)).toContain("History: none");
+  expect(renderKnowledgeDiff(baseline, current, [], Infinity, fields, undefined, undefined, false)).not.toContain("History");
+});
+
 test("134: pairing never reuses an addition before the preceding pair", () => {
   const result = sentenceDiff("alpha beta gamma delta。green yellow purple orange。",
     "green yellow purple coal。alpha beta gamma silver。");
@@ -64,14 +111,14 @@ test("134: pairing never reuses an addition before the preceding pair", () => {
   expect(result.text.split("\n")).toContain("+ green yellow purple coal。");
 });
 
+// One display line per row: a line shows its row, and an empty content is the row "\n".
 function reconstructed(text: string, side: "old" | "new") {
-  const starts = [...text.matchAll(/^(  |- |\+ )/gm)];
-  return starts.map((match, index) => {
-    const prefix = match[0];
-    if (prefix === (side === "old" ? "+ " : "- ")) return "";
-    const body = text.slice(match.index! + 2, index + 1 < starts.length ? starts[index + 1]!.index! - 1 : text.length);
-    return body.replace(/\[-([\s\S]*?)-\]/g, side === "old" ? "$1" : "")
+  const keep = side === "old" ? ["  ", "- "] : ["  ", "+ "];
+  return (text ? text.split("\n") : []).map(line => {
+    if (!keep.includes(line.slice(0, 2))) return "";
+    const body = line.slice(2).replace(/\[-([\s\S]*?)-\]/g, side === "old" ? "$1" : "")
       .replace(/\{\+([\s\S]*?)\+\}/g, side === "new" ? "$1" : "");
+    return body || "\n";
   }).join("");
 }
 
@@ -84,7 +131,11 @@ test.each([
   ["", "新增；\n"],
   ["移除。\n", ""],
   ["。；！？\n", "；！？\n。"],
-])("134: unified diff losslessly reconstructs both bodies (%s → %s)", (before, after) => {
+  ["aa bb cc dd。aa bb cc ee。aa bb cc ff。", "aa bb cc xx。aa bb cc yy。aa bb cc zz。"],
+  ["bar", "foo\n"],
+  ["bar\n", "foo\n"],
+  ["a\n\n\nb", "a\nb\n\n"],
+])("134: unified diff losslessly reconstructs both bodies (%j → %j)", (before, after) => {
   const result = sentenceDiff(before, after);
   expect(reconstructed(result.text, "old")).toBe(before);
   expect(reconstructed(result.text, "new")).toBe(after);

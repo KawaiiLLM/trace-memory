@@ -246,6 +246,8 @@ test("21a 2026-09-08: create, update, merge and archive all carry nonempty suppo
   const write = setup(async () => success());
   const first = JSON.parse(write.execute(create));
   const second = JSON.parse(write.execute({ ...create, text: "Commit the lockfile" }));
+  expect(first.results).toEqual(["ok"]);
+  expect(second.results).toEqual(["ok"]);
   const path = dreamPath();
   createDreamerTrigger(memory, path, 1, 1, "project");
   const result = await admittedScenarios.run(memory, path, input => {
@@ -256,6 +258,8 @@ test("21a 2026-09-08: create, update, merge and archive all carry nonempty suppo
     expect(files.read("trace://K2@v1").content).toContain("Commit the lockfile");
     const merge = JSON.parse(dream.execute({ op: "merge", id: read(1), absorb: [read(2)], text: "Use pnpm",
       category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Two readings of one packaging rule." }));
+    expect(merge.committed).toHaveLength(1);
+    expect(merge.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);
     expect(merge.tokens.before).toEqual([first.tokens.after[0], second.tokens.after[0]]);
     const archived = JSON.parse(dream.execute({ op: "archive", kind: "budget", id: merge.committed[0].version,
       supports: ["F1"], reason: "The user withdrew the rule." }));
