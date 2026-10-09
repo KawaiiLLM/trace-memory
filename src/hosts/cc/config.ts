@@ -51,9 +51,12 @@ export interface CcHostConfig {
   "noting.triggerTokens"?: number;
   "dreaming.triggerTokens"?: number;
   "dreaming.timeoutMs"?: number;
-  /** 73: the fixed allowance shared by Knowledge, Facts and Raw (default 10,000). Not a
-   * compaction-only overflow — injection and the Consolidator/Dreamer knowledge capacities spend it too. */
+  /** Knowledge-only shared allowance; pending Raw borrows the separate temporary allowance (133). */
   "compaction.sharedAllowanceTokens"?: number;
+  "compaction.temporaryTokens"?: number;
+  "compaction.userTurns"?: number;
+  "compaction.titleTurns"?: number;
+  "compaction.userEntryTokens"?: number;
   /** Installation baseline. Unknown or malformed values keep provisional enrollment disabled. */
   baseline?: string;
   /** Omitted preserves Claude Code's native default. No adapter retry policy is added. */
@@ -172,7 +175,13 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       ...(input["dreaming.triggerTokens"] === undefined ? {} : { triggerTokens: input["dreaming.triggerTokens"] }),
       ...(input["dreaming.timeoutMs"] === undefined ? {} : { timeoutMs: input["dreaming.timeoutMs"] }),
     } }),
-    ...(input["compaction.sharedAllowanceTokens"] === undefined ? {} : { compaction: { sharedAllowanceTokens: input["compaction.sharedAllowanceTokens"] } }),
+    compaction: {
+      ...(input["compaction.sharedAllowanceTokens"] === undefined ? {} : { sharedAllowanceTokens: input["compaction.sharedAllowanceTokens"] }),
+      ...(input["compaction.temporaryTokens"] === undefined ? {} : { temporaryTokens: input["compaction.temporaryTokens"] }),
+      ...(input["compaction.userTurns"] === undefined ? {} : { userTurns: input["compaction.userTurns"] }),
+      ...(input["compaction.titleTurns"] === undefined ? {} : { titleTurns: input["compaction.titleTurns"] }),
+      ...(input["compaction.userEntryTokens"] === undefined ? {} : { userEntryTokens: input["compaction.userEntryTokens"] }),
+    },
   } as ConfigOverride);
   return {
     removedSettings: retired.removed,

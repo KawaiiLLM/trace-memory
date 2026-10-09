@@ -5,9 +5,10 @@ import { canonicalToolNames, renderToolNames, type ToolNames } from "../prompts/
 import { parseKnowledgeAddress, publicTraceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, SourceEntryMeta, PathSnapshot } from "../store/index.ts";
+import type { HumanUserDetector } from "../model/source.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, knowledgeCategoryGroup, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
 import { formatCost, budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, sessionKnowledgeNotice, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
-import { injectionText, compactText, measuredMemory, type MemoryComposition, type SharedMaterial, type TransportItem, rawWindowTokens, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
+import { injectionText, compactText, measuredMemory, type MemoryComposition, type SharedMaterial, type TransportItem, type RunningTask, rawWindowTokens, FACTS_TITLE, FACT_TITLES_TITLE, RAW_TITLE, EARLIER_USERS_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
@@ -66,11 +67,11 @@ export interface TopicGroups {
   unclassified: { knowledgeId: number; commit: number }[];
 }
 
-/** Ticket 73 "Shared allowance": what compact can produce for one frozen read snapshot. The one
- * outcome is the complete custom replacement the host hands to Pi — knowledge fills its base and
- * borrows the shared allowance first, then the newest contiguous Raw span (pending entries borrowing
- * what knowledge left, already-noted entries filling only the Raw base), then the newest facts not
- * wholly covered by that span, within their own base without borrowing. Compact never falls back:
+/** Ticket 133: one complete custom replacement from a frozen read snapshot. Knowledge fills its
+ * base plus the Knowledge-only shared allowance; pending Raw can borrow from the separate temporary
+ * allowance. Already-noted Raw and full facts remain in their bases with unchanged selection and
+ * coverage. Missing human user words and uncovered titles fill the remaining temporary allowance
+ * within their path-turn reaches. Compact never falls back:
  * over-budget material is truncated — newest kept, oldest omitted with a receipt — rather than
  * escalated to a native delegation. Omitted pending Raw stays pending for Noting; fact omission
  * creates no extraction work. `native` remains only for a host-caught error unrelated to capacity (a
@@ -92,12 +93,12 @@ export type CompactResult = { text: string; material?: SharedMaterial; supplied:
  * small, so facts keep both a count and a token figure. */
 export interface TruncationReceipt { raw?: { entries: number }; facts?: { count: number; tokens: number } }
 
-/** 28a item 6: what one custom replacement charged, window by window, beside the text it produced.
- * Diagnostics — nothing reads this to decide the outcome. `envelope` is the sum of the three bases
- * and the shared allowance (73: a fixed configuration value), the ceiling the three charges together
- * may never exceed. The fixed reading guide is outside these windows, but inside the delivered
- * text and model-input capacity. Nothing is required any more (73): every window is optional and truncates. */
-export interface ChargedWindows { knowledge: number; facts: number; raw: number; envelope: number }
+/** Per-window accounting beside the replacement text. `envelope` sums the three bases, the
+ * Knowledge-only shared allowance and the temporary allowance. Charged Raw is capped at its base;
+ * pending overflow is charged to temporary along with user words, titles and their framing.
+ * The reading guide and live running-task block are outside these windows but inside measured text
+ * and model-input capacity. Every window is optional and truncates. */
+export interface ChargedWindows { knowledge: number; facts: number; raw: number; temporary: number; envelope: number }
 /** Foreground Knowledge delivery and the exact body/state identities its carrier may persist. */
 export interface Injection { text: string; knowledgeTokens?: number; knowledgeAllowance?: number; knowledgeCommitIds: number[]; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
 
@@ -183,7 +184,7 @@ export function knowledgeStatusNotes(store: Store, current: readonly KnowledgeWi
 }
 
 export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (address: string, options?: ListingOptions) => (() => string) = () => { throw new Error("Trace expansion requires its bound reader"); },
-  resultText: ResultExtractor = rawResultText) {
+  resultText: ResultExtractor = rawResultText, humanUser?: HumanUserDetector) {
   const expand = (address: string, options?: ListingOptions) => prepare(address, options)();
   // 22c: what a listing still owes its caller is kept as hit identities plus the formatter that turns
   // exactly one page of them into lines. The formatter carries its query's own snapshot, so a page
@@ -677,10 +678,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // One allocator: required state notices/facts/Raw first, then optional current knowledge and
     // Raw-first historical refill in each own base remainder. Scheduling pairs never affect it.
     // No worker, processing mark or coverage persistence is performed by this synchronous render.
-    // 73 "Shared allowance": one allocator, three windows, one pass — Knowledge first (borrowing the
-    // whole allowance), then the newest contiguous Raw span (pending entries borrowing what Knowledge
-    // left, already-noted entries only within the Raw base), then the newest facts before that span
-    // (facts use only their own base, irrespective of historical C processing). Nothing
+    // 133: Knowledge owns the shared allowance. Pending Raw borrows from temporary; already-noted
+    // Raw and full facts keep their base-only selection. Missing user words precede titles in the
+    // remaining temporary allowance. Nothing
     // is required any more: every window truncates — newest kept, oldest omitted with a receipt —
     // rather than escalating to a native delegation. Omitted material stays pending in the store.
     compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = [],
@@ -692,7 +692,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         /** Internal: views from this synchronous freeze under this exact profile/extractor. */
         renderedEntries?: ReadonlyMap<number, EntryView>;
         /** Internal: authoritative ordered metadata and processing state of this same freeze. */
-        preparedSources?: { path: KnowledgePath; entries: readonly SourceEntryMeta[]; pending: readonly SourceEntryMeta[] }; toolNames?: ToolNames } = {}): CompactResult => {
+        preparedSources?: { path: KnowledgePath; entries: readonly SourceEntryMeta[]; pending: readonly SourceEntryMeta[] }; toolNames?: ToolNames; runningTasks?: readonly RunningTask[] } = {}): CompactResult => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const prepared = options.preparedSources;
@@ -722,7 +722,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const budgets = store.knowledgeBudgets();
       const sharedAllowance = config.compaction.sharedAllowanceTokens;
       const caps = { knowledge: budgets.injection, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
-      const envelope = caps.knowledge + caps.facts + caps.raw + sharedAllowance;
+      const temporaryCap = config.compaction.temporaryTokens;
+      const envelope = caps.knowledge + caps.facts + caps.raw + sharedAllowance + temporaryCap;
       if (!Number.isSafeInteger(envelope)) throw new Error("compact envelope must be a safe integer");
       // Every emitted component is charged inside the window that owns it, and a window that emits
       // nothing is charged nothing: the `<episodic>` tag once, with the first of Raw and facts that
@@ -757,22 +758,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const active = budgetKnowledge(knowledge, Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
         line, "Knowledge base plus shared allowance", new Set(), undefined, notice);
       const knowledgeUsed = knowledgeNoticeCost + active.cost;
-      const sharedAfterKnowledge = sharedAllowance - Math.max(0, knowledgeUsed - caps.knowledge);
 
-      // ---- 2. Raw second: the newest contiguous span. Pending entries borrow; noted entries only
-      // fill the Raw base remainder. The walk never skips an entry to reach an older one. ----
-      // Retained (visible elsewhere in the post-compaction context) excludes an already-noted entry
-      // from optional refill; it never excludes a still-pending one (30 case 10) — pending membership
-      // is the only thing that decides whether an entry must still be represented here.
+      // 133: pending Raw borrows from its own temporary allowance, never from Knowledge's.
       const candidates = sourced.filter(e => pendingIds.has(e.id) || (options.processedRawRefill !== false && !retained.has(e.nativeId)));
       interface RawStep { entry: SourceEntryMeta; content: string; receipts: string[]; fromAllowance: number }
       const rawSteps: RawStep[] = [];
       {
         let rawBaseUsed = charge([RAW_TITLE]), allowanceUsed = 0;
         for (let i = candidates.length - 1; i >= 0; i--) {
-          // 79 item 2: newest first, hydrated one candidate at a time — the first that does not fit
-          // must still be rendered to know it does not fit (acceptance criteria), but nothing earlier
-          // (older) is ever hydrated once that happens.
           const entry = candidates[i]!;
           let rendered: EntryView;
           try { rendered = options.renderedEntries?.get(entry.id) ?? view(store.getSourceEntry(entry.id)!); }
@@ -780,7 +773,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           const cost = tokens(rendered.content) + 1;
           const availableBase = Math.max(0, caps.raw - rawBaseUsed);
           if (pendingIds.has(entry.id)) {
-            const availableAllowance = Math.max(0, sharedAfterKnowledge - allowanceUsed);
+            const availableAllowance = Math.max(0, temporaryCap - allowanceUsed);
             if (cost > availableBase + availableAllowance) break;
             const fromBase = Math.min(cost, availableBase);
             rawBaseUsed += fromBase; allowanceUsed += cost - fromBase;
@@ -794,39 +787,27 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       }
       const rawReceipt = (kept: number) => candidates.length - kept
         ? [`[... ${candidates.length - kept} earlier entries omitted from the Raw window] ${expandList([...new Set(candidates.slice(0, candidates.length - kept).map(entry => `trace://raw/S${sessionId}/T${entry.turnId}`))])}`] : [];
-      // Exactly what the Raw window adds to the output: the `<episodic>` tag and title only when it
-      // has entries, each kept entry's own view receipts, and its omission receipt.
       const rawWindowCost = (kept: number, receipt: string[]) => {
         const steps = rawSteps.slice(0, kept);
         return rawWindowTokens(steps.map(s => s.content), [...steps.flatMap(s => s.receipts), ...receipt]);
       };
-      // Only unprocessed material borrows (73): the whole window — framing and receipts included —
-      // may exceed its base by at most what its kept pending entries cost, and never by more than
-      // the allowance Knowledge left. Without pending entries it fits its base.
-      const rawLimit = (kept: number) => caps.raw + Math.min(sharedAfterKnowledge,
+      const rawLimit = (kept: number) => caps.raw + Math.min(temporaryCap,
         rawSteps.slice(0, kept).reduce((sum, s) => sum + (pendingIds.has(s.entry.id) ? tokens(s.content) + 1 : 0), 0));
       let rawKept = rawSteps.length;
       while (rawKept > 0 && rawWindowCost(rawKept, rawReceipt(rawKept)) > rawLimit(rawKept)) rawKept--;
-      // With nothing kept, a receipt that does not fit either leaves the Raw window empty.
       const rawFinalReceipt = rawWindowCost(rawKept, rawReceipt(rawKept)) <= rawLimit(rawKept) ? rawReceipt(rawKept) : [];
-      const rawFinalSteps = rawSteps.slice(0, rawKept);
       const rawCharged = rawWindowCost(rawKept, rawFinalReceipt);
-      // Displayed in source order (30: "display the selected Raw entries in source order").
-      const suppliedRaw = [...rawFinalSteps].reverse();
+      const suppliedRaw = rawSteps.slice(0, rawKept).reverse();
       const rawOmitted = candidates.slice(0, candidates.length - suppliedRaw.length);
-      // 79 item 4 (ruled): omitted pending Raw is reported as an exact count only. A token figure
-      // would render every omitted entry on every compaction (7,374 for S134's measured backlog) —
-      // the whole cost this ticket removes. Facts keep their count and tokens: fact rows are small.
       const rawOmittedPending = rawOmitted.filter(e => pendingIds.has(e.id));
+      const rawBorrowed = Math.max(0, rawCharged - caps.raw);
 
-      // ---- 3. Facts third: newest facts not wholly covered by the Raw span just chosen. ----
+      // Full facts and their source coverage retain ticket 73's selection unchanged.
       const coverage = new Set([...sourced.filter(e => retained.has(e.nativeId)).map(e => e.id), ...suppliedRaw.map(s => s.entry.id)]);
       const factCandidates = applicable.filter(f => !visible.factIds.has(f.id));
       const coveredFactIds = store.factsCoveredByRaw(factCandidates, coverage);
-      const eligibleFacts = factCandidates.filter(f => !coveredFactIds.has(f.id)); // already newest-first
+      const eligibleFacts = factCandidates.filter(f => !coveredFactIds.has(f.id));
       const omission = (rest: Fact[]) => rest.length ? [`omitted ${rest.length} older facts; expand: ${expandList(rest.map(f => `trace://F${f.id}`))}`] : [];
-      // Exactly what the facts window adds: its title only when it has facts, the `<episodic>` tag
-      // only when the Raw window did not already open it, and its omission receipt.
       const factsWindowCost = (kept: number, receipt: string[]) => (kept
         ? (rawKept ? charge([FACTS_TITLE]) : opener(FACTS_TITLE)) + charge(lines(eligibleFacts.slice(0, kept))) : 0) + receiptCharge(receipt);
       const factsTotalCost = (kept: number) => factsWindowCost(kept, omission(eligibleFacts.slice(kept)));
@@ -834,20 +815,65 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       while (factsKept < eligibleFacts.length && factsWindowCost(factsKept + 1, []) <= caps.facts) factsKept++;
       while (factsKept > 0 && factsTotalCost(factsKept) > caps.facts) factsKept--;
       const finalFacts = eligibleFacts.slice(0, factsKept);
-      // With nothing kept, a receipt that does not fit either leaves the facts window empty.
-      const finalFactReceipts = factsTotalCost(factsKept) <= caps.facts ? omission(eligibleFacts.slice(factsKept)) : [];
+      let finalFactReceipts = factsTotalCost(factsKept) <= caps.facts ? omission(eligibleFacts.slice(factsKept)) : [];
+
+      // The anchor's ancestry is newest first, including turns without displayed Raw.
+      const ancestry = [...snapshot.turns];
+      const userTurns = new Set(ancestry.slice(0, config.compaction.userTurns));
+      const titleTurns = new Set(ancestry.slice(0, config.compaction.titleTurns));
+      const displayed = new Set(suppliedRaw.map(step => step.entry.id));
+      const prefixes = /^(?:<task-notification|<system-reminder|<command-|Caveat|\[Request interrupted|Another Claude session|<local-command)/u;
+      const piUserPrefix = store.getSession(sessionId)!.host.startsWith("pi:") ? /^(?:<skill|This session is being continued)/u : undefined;
+      const userCandidates = sourced.filter(meta => userTurns.has(meta.turnId) && !displayed.has(meta.id)
+        && (!meta.addresses.length || meta.addresses.some(address => /#user$/.test(address))))
+        .map(meta => store.getSourceEntry(meta.id)!)
+        .filter(entry => entry.role === "user" && (humanUser?.(entry) ?? (!prefixes.test(entry.text) && !piUserPrefix?.test(entry.text)))).reverse();
+      const earlierUsers: { id: number; view: string }[] = [];
+      const userReceipts = (kept: number) => kept < userCandidates.length
+        ? [`omitted ${userCandidates.length - kept} earlier user messages; expand: ${expandList(userCandidates.slice(kept).map(entry => `trace://raw/S${sessionId}/T${entry.turnId}#E${entry.entryOrdinal}`))}`] : [];
+      const userCost = (receipts: string[]) => (earlierUsers.length
+        ? (rawKept || factsKept ? charge([EARLIER_USERS_TITLE]) : opener(EARLIER_USERS_TITLE)) + charge(earlierUsers.map(entry => entry.view)) : 0) + receiptCharge(receipts);
+      const afterRaw = temporaryCap - rawBorrowed;
+      for (const entry of userCandidates) {
+        const rendered = renderEntry(entry, { ...config.render, entryTokens: config.compaction.userEntryTokens }, resultText);
+        earlierUsers.push({ id: entry.id, view: rendered.content });
+        if (userCost(userReceipts(earlierUsers.length)) > afterRaw) { earlierUsers.pop(); break; }
+      }
+      const finalUserReceipts = userCost(userReceipts(earlierUsers.length)) <= afterRaw ? userReceipts(earlierUsers.length) : [];
+      const usersCharged = userCost(finalUserReceipts);
+      earlierUsers.reverse();
+
+      const titleCandidates = eligibleFacts.slice(factsKept).filter(fact => titleTurns.has(fact.turnId) && fact.title);
+      const selectedTitles: Fact[] = [];
+      const titleLines = () => factGroupLayout(selectedTitles, factTurns).map(({ fact, header }) => {
+        const value = factTurns.get(fact.turnId)!;
+        const time = typeof value === "string" ? value : value.time;
+        return `${header ? `[T${fact.turnId}] ${time}\n` : ""}[F${fact.id}] ${fact.title}`;
+      });
+      const titleCost = () => selectedTitles.length
+        ? (rawKept || factsKept || earlierUsers.length ? charge([FACT_TITLES_TITLE]) : opener(FACT_TITLES_TITLE)) + charge(titleLines()) : 0;
+      for (const fact of titleCandidates) {
+        selectedTitles.push(fact);
+        const ids = new Set(selectedTitles.map(value => value.id));
+        const receipt = omission(eligibleFacts.slice(factsKept).filter(value => !ids.has(value.id)));
+        if (titleCost() + receiptCharge(receipt) > afterRaw - usersCharged) { selectedTitles.pop(); break; }
+      }
+      const titleIds = new Set(selectedTitles.map(fact => fact.id));
+      if (selectedTitles.length) finalFactReceipts = omission(eligibleFacts.slice(factsKept).filter(fact => !titleIds.has(fact.id)));
+      const titlesCharged = titleCost() + (selectedTitles.length ? receiptCharge(finalFactReceipts) : 0);
+      const temporaryCharged = rawBorrowed + usersCharged + titlesCharged;
 
       const truncated: TruncationReceipt = {};
       if (rawOmittedPending.length) truncated.raw = { entries: rawOmittedPending.length };
 
-      const material = { knowledge: active.groups, facts: lines(finalFacts),
+      const material = { knowledge: active.groups, facts: lines(finalFacts), factTitles: titleLines(), earlierUsers,
+        ...(!prepared && options.runningTasks?.length ? { runningTasks: options.runningTasks } : {}),
         entries: suppliedRaw.map(s => ({ id: s.entry.id, view: s.content })),
-        receipts: [...suppliedRaw.flatMap(s => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...active.receipts, ...noteOmittedReceipt],
+        receipts: [...suppliedRaw.flatMap(s => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...finalUserReceipts, ...active.receipts, ...noteOmittedReceipt],
         knowledgeNotice: notice, readingGuide: guide };
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material), material,
         // Transport may repeat K framing, but cannot borrow bases reserved for facts/Raw.
-        knowledgeAllowance: knowledgeEnvelope - Math.max(0, rawCharged - caps.raw)
-          - Math.max(0, factsWindowCost(finalFacts.length, finalFactReceipts) - caps.facts),
+        knowledgeAllowance: knowledgeEnvelope,
         ...(transport ? { transportItems: [
           ...knowledge.filter(item => active.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
             text: line(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
@@ -864,14 +890,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         ] } : {}),
         // 29a "Renderers return what they kept": exactly the identities this replacement carries.
         // What a budget left out is absent here (28a item 7) and stays pending in the store.
+        // Earlier-user excerpts use a smaller profile and are not Raw coverage.
         supplied: { entries: suppliedRaw.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),
           factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.commits,
           knowledgeTokens: tokens(injectionText({ knowledge: active.groups,
             receipts: [...active.receipts, ...noteOmittedReceipt], knowledgeNotice: notice }, notes)),
           ...(noteKept ? { knowledgeStates: allNotes.slice(0, noteKept).map(note => note.receipt) } : {}) },
         // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
-        charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts), raw: rawCharged, envelope },
-        hasMaterialCandidates: Boolean(allNotes.length || knowledge.length || candidates.length || eligibleFacts.length),
+        charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts),
+          raw: Math.min(rawCharged, caps.raw), temporary: temporaryCharged, envelope },
+        hasMaterialCandidates: Boolean(allNotes.length || knowledge.length || candidates.length || eligibleFacts.length || options.runningTasks?.length),
         ...(Object.keys(truncated).length ? { truncated } : {}) };
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number, toolNames: ToolNames = canonicalToolNames): string => {

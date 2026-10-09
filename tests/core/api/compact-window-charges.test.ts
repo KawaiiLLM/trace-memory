@@ -19,30 +19,9 @@ function setup(resultText?: (text: string) => { text: string }) {
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: at, userPrompt: "old ".repeat(300) });
   return { memory, session, turn };
 }
-const windows = (charged: { knowledge: number; facts: number; raw: number }) => charged.knowledge + charged.facts + charged.raw;
+const windows = (charged: { knowledge: number; facts: number; raw: number; temporary: number }) =>
+  charged.knowledge + charged.facts + charged.raw + charged.temporary;
 
-test("73: the Raw window's receipt leaves the shared allowance with it, so facts cannot spend it again", () => {
-  const { memory, session, turn } = setup();
-  try {
-    memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeId: "new", nativeLineage: "fixture", role: "assistant",
-      text: "new ".repeat(40), raw: "", calls: [] });
-    const user = hydrate(memory.store.listSourceEntries(session.id, turn.id), memory.store).find(entry => entry.role === "user")!;
-    legacyFacts(memory.store, { kind: "noting", sessionId: session.id, branch: "main", createdAt: at }, [{
-      sources: [{ entry: user, address: `T${turn.id}#user` }], text: "fact ".repeat(45), category: "observation", actor: "user", createdAt: at,
-    }]);
-    Object.assign(memory.config.compaction, { rawTokens: 30, factsTokens: 40, sharedAllowanceTokens: 100 });
-    const result = memory.compact(session.id, "main", turn.id);
-    if ("native" in result) throw new Error("native");
-    expect(result.truncated?.raw?.entries).toBeGreaterThan(0); // the Raw window emitted an omission receipt
-    const guide = readingGuide(session.id, canonicalToolNames);
-    expect(result.text.startsWith(`${guide}\n\n`)).toBe(true);
-    const windowText = result.text.slice(guide.length + 2); // exact emitted bytes after fixed framing
-    expect(windowText).toContain("earlier entries omitted from the Raw window");
-    expect(tokens(windowText)).toBeLessThanOrEqual(result.charged!.envelope);
-    expect(tokens(windowText)).toBeLessThanOrEqual(windows(result.charged!));
-    expect(windows(result.charged!)).toBeLessThanOrEqual(result.charged!.envelope);
-  } finally { memory.close(); }
-});
 
 test("73: windows with no room even for a bare receipt emit nothing — no titles, tags or receipts", () => {
   const { memory, session, turn } = setup();
@@ -60,7 +39,7 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
       operations: [{ op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [noted.facts[0]!.id], reason: "archive", createdAt: at }] });
     if (!archived.ok) throw new Error(JSON.stringify(archived));
     const visible = noVisibility(); visible.knowledgeCommitIds.add(base.commit); // a status notice is now due
-    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, sharedAllowanceTokens: 1 });
+    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, sharedAllowanceTokens: 1, temporaryTokens: 1 });
     const result = memory.compact(session.id, "main", turn.id, visible);
     if ("native" in result) throw new Error("native");
     expect(result.text).toBe(readingGuide(session.id, canonicalToolNames)); // fixed framing, no window titles, tags or receipts
@@ -98,7 +77,7 @@ test("79: an omitted entry the walk never reaches is not rendered, and the trunc
     memory.store.appendToolCall({ turnId: turn.id, name: "bash", input: "test", result: "broken", status: "success" });
     memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeId: "new", nativeLineage: "fixture", role: "assistant",
       text: "word ".repeat(1000), raw: "", calls: [] });
-    Object.assign(memory.config.compaction, { rawTokens: 30, sharedAllowanceTokens: 1 });
+    Object.assign(memory.config.compaction, { rawTokens: 30, sharedAllowanceTokens: 1, temporaryTokens: 1 });
     let result: ReturnType<typeof memory.compact> | undefined;
     expect(() => { result = memory.compact(session.id, "main", turn.id); }).not.toThrow();
     if (!result || "native" in result) throw new Error("expected a bounded compact result");

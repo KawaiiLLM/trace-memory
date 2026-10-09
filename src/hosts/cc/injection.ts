@@ -6,10 +6,11 @@ import type { TransportItem } from "../../core/render/material.ts";
 import type { KnowledgePath, Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, sessionEnabled, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
-import { CC_AUTO_CONTINUE_SUFFIX, CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccResultText, ccSourceBlocks, readTranscriptTail, tailNodes, transcriptHead } from "./transcript.ts";
+import { CC_AUTO_CONTINUE_SUFFIX, CC_INJECTION_BEGIN, CC_INJECTION_HEADER, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccResultText, ccSourceBlocks, ccHumanUser, readTranscriptTail, tailNodes, transcriptHead } from "./transcript.ts";
 import { CcProjection } from "./importer.ts";
 import { executorLiveness } from "./control.ts";
 import { ccPluginToolNames } from "./tool-names.ts";
+import type { RunningTask } from "../../core/api/index.ts";
 
 export { CC_INJECTION_BEGIN, CC_INJECTION_HEADER };
 const BEGIN = CC_INJECTION_BEGIN;
@@ -233,7 +234,7 @@ async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput,
   if (!initial || initial.dbPath !== config.dbPath || input.transcript_path !== undefined && initial.transcriptPath !== input.transcript_path)
     throw new Error("CC native session or transcript binding is unavailable");
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); },
-    config.coreConfig, ccResultText, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined);
+    config.coreConfig, ccResultText, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined, ccHumanUser);
   try {
     const binding = options.prepared ? initial : await injectionBinding(config, initial, memory);
     if (!enabled(binding, memory)) return null;
@@ -271,7 +272,7 @@ async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput,
 export async function ccPrepareSessionStartInjection(config: ResolvedCcHostConfig, input: CcHookInput): Promise<void> {
   const initial = readBinding(config, input.session_id);
   if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); }, config.coreConfig, ccResultText);
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); }, config.coreConfig, ccResultText, undefined, ccHumanUser);
   try { await injectionBinding(config, initial, memory); } finally { memory.store.close(); }
 }
 
@@ -375,14 +376,14 @@ const TRIGGER_WAIT_MS = 10_000;
  * `auto` (requirement 14, ruled): the caller's own `manual`/`auto` event trigger, distinct from the
  * handle above; only `auto` gets the trailing continue sentence. */
 export async function ccCompaction(config: ResolvedCcHostConfig,
-  input: Pick<CcHookInput, "session_id"> & { trigger: string; auto?: boolean }):
+  input: Pick<CcHookInput, "session_id"> & { trigger: string; auto?: boolean; runningTasks?: readonly RunningTask[] }):
   Promise<{ text: string; warning?: string } | null> {
   const initial = readBinding(config, input.session_id);
   if (!initial) return null;
   if (initial.dbPath !== config.dbPath) throw new Error("CC binding uses another database");
   const lineage = initial.nativeSessionId;
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC compaction cannot run model work"); },
-    config.coreConfig, ccResultText, entry => entry.nativeLineage === lineage ? ccSourceBlocks(entry) : undefined);
+    config.coreConfig, ccResultText, entry => entry.nativeLineage === lineage ? ccSourceBlocks(entry) : undefined, ccHumanUser);
   try {
     // Enrollment is settled once a core session exists or the import has read the creation time.
     const disabled = (binding: CcSessionBinding) => (binding.coreSessionId !== null || binding.nativeCreatedAt !== null) && !enabled(binding, memory);
@@ -415,7 +416,9 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
     const headTurnId = memory.store.findSourceEntry(core, lineage, leaf)?.turnId ?? memory.store.findNativeTurn(core, lineage, leaf)?.turnId;
     if (headTurnId === undefined) throw new Error("the selected native source has no persisted core Turn");
     const { compacted, watermark } = memory.store.readSnapshot(() => ({
-      compacted: memory.compact(core, branch, headTurnId, [], false, { toolNames: ccPluginToolNames }), watermark: memory.store.deliveryWatermark(owner) }));
+      compacted: memory.compact(core, branch, headTurnId, [], false, { toolNames: ccPluginToolNames,
+        runningTasks: input.runningTasks }),
+      watermark: memory.store.deliveryWatermark(owner) }));
     if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
     // 102 (ruled): the one place the carrier is framed as Pi frames a compaction summary; the delivery
     // below is recorded from the same supplied material, and the framing is outside its Knowledge cost.

@@ -2,6 +2,8 @@
 
 - A new fact starts with `[F<id>] title`, followed by one segment per source, such as `[T12#E3@assistant] Pi agent proposed the change.` Core fills each citation and role. Legacy facts retain their saved category, actor, status and quote; displayed sources use whole-entry addresses. Inbound relations are labelled `inbound`.
 - Automatic material groups facts under `[T<id>] <Turn start time> (selected facts)`, Turns in order, ids ascending. Each fact appears under its owning Turn with all its sources; a group need not contain every fact of that Turn.
+- A title-only index appears before full facts under `Earlier facts (titles only; read trace://F<id> for the body):`, grouped by `[T<id>] <Turn start time>` with `[F<id>] <title>` lines. These are pointers, not fact bodies.
+- `Earlier user messages:` holds human user words missing from Raw, in chronological order, with a 500-token head/tail middle cut per entry. They are historical context, not additional frozen batch entries.
 - A Turn's facts view shows only that Turn's source segments; a legacy fact is shown whole. Entries not covered by a fact appear as paths.
 - A fact read links each visible knowledge identity that cited it, including in an earlier version. The link names the current version and the citing versions without expanding their bodies.
 - A complete knowledge item renders as `[K1#qfzt] [category/scope] text`, then its supports and topics; topics are absent when it has none. Injected items are grouped under `## <category> (<n>)` lines in the order constraint, understanding, goal, open, reference, and ordered oldest to newest inside a group. Knowledge views and `{{tool.search}}` show supporting fact IDs with titles; injection lists supporting IDs only.

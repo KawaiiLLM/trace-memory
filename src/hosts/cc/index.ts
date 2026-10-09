@@ -10,6 +10,7 @@ import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
 import { ccCompaction, ccDeltaInjection, ccPrepareSessionStartInjection, ccPreparedSessionStartInjection, ccSessionStartInjection, type CcHookOutput } from "./injection.ts";
 import { sliceCcInjection } from "./slices.ts";
+import { ccRunningTasksSchema } from "./tasks.ts";
 import { declareCcProject, operateCcSession } from "./operator.ts";
 import { followNativeSession, processAncestors, publishNativeSession, type CcNativeSessionFollower } from "./native-session.ts";
 import { installCcNativeRejectionGuard } from "./native-rejection.ts";
@@ -215,10 +216,11 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
   if (command === "hook-compact") {
     // 102: the `session.compact` function hook's compaction; `passThrough` keeps native compaction.
     // `auto` (requirement 14) is the caller's own event trigger, manual or auto, not the handle below.
-    const input = JSON.parse(await readStdin()) as { session_id: string; trigger: unknown; auto?: unknown };
+    const input = JSON.parse(await readStdin()) as { session_id: string; trigger: unknown; auto?: unknown; runningTasks?: unknown };
     validateNativeSessionId(input.session_id);
     if (typeof input.trigger !== "string" || !input.trigger) throw new Error("CC compaction requires the handle of its newest message");
-    const built = await ccCompaction(config, { session_id: input.session_id, trigger: input.trigger, auto: input.auto === true });
+    const runningTasks = ccRunningTasksSchema.parse(input.runningTasks);
+    const built = await ccCompaction(config, { session_id: input.session_id, trigger: input.trigger, auto: input.auto === true, runningTasks });
     process.stdout.write(`${JSON.stringify(built ?? { passThrough: true })}\n`);
     return;
   }

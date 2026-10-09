@@ -163,7 +163,6 @@ test("a turn arriving during the model call waits for the next trigger", async (
   await noting(second.id);
   expect(calls[1]!.text).toContain(second.userPrompt!);
   expect(calls[1]!.material.facts[0]).toContain("[F1]");
-  expect(calls[1]!.text).not.toContain(first.userPrompt!);
   expect(hydrate(memory.store.sourcePath(sessionId, "main", second.id), memory.store).length).toBeGreaterThan(0);
   expect(hydrate(memory.store.sourcePath(sessionId, "main", second.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.listSessionFacts(sessionId)).toHaveLength(2);

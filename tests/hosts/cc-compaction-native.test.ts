@@ -265,7 +265,7 @@ test("a prompt that is too long compacts with the block and retries on it", asyn
 
 test("a compaction that omits pending Raw warns in the foreground, never the model", async () => {
   const long = Array.from({ length: 6 }, (_, i) => `LONG turn ${i + 1}`);
-  const result = await run({ prompts: [...long, "/compact", "AFTER prompt"], settings: { "compaction.sharedAllowanceTokens": 1 },
+  const result = await run({ prompts: [...long, "/compact", "AFTER prompt"], settings: { "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 },
     reply: body => promptOf(body).startsWith("LONG") ? { blocks: [{ type: "text", text: `${promptOf(body)}: ${"many words ".repeat(3_000)}` }] } : ack(body) });
   const { block, raw } = installed(result);
   expect(raw.at(-1)).toContain("LONG turn 6"); // the newest Raw is kept; the oldest is omitted

@@ -5,6 +5,8 @@ export type SourceBlock = { kind: "text" | "thinking" | "marker"; text: string }
   | { kind: "call" | "result"; call: SourceInput["calls"][number]; texts?: string[] };
 /** A host decodes its own immutable native envelope once, not in each rendering consumer. */
 export type SourceNormalizer = (entry: SourceInput) => SourceBlock[] | undefined;
+/** Host-owned structural human-input signal; undefined uses the ruled textual exclusions. */
+export type HumanUserDetector = (entry: SourceEntry) => boolean | undefined;
 /** Recognized native/projection mismatch only. Storage and unexpected decoder errors stay fatal. */
 export class SourceNormalizationError extends Error {
   constructor() { super("native call identity lacks a unique stored mapping"); this.name = "SourceNormalizationError"; }

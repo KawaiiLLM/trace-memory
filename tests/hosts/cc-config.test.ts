@@ -161,3 +161,11 @@ test.each([
   const f = fixture(), value = executableConfig(f.home); mutate(value);
   expect(() => resolveCcHostConfig(value)).toThrow(message);
 });
+
+test.each(["temporaryTokens", "userTurns", "titleTurns", "userEntryTokens"] as const)(
+  "133: CC rejects non-positive, fractional, non-finite and unsafe compaction.%s", key => {
+    const f = fixture();
+    for (const value of [0, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])
+      expect(() => resolveCcHostConfig({ ...f.input, dbPath: f.dbPath, [`compaction.${key}`]: value }))
+        .toThrow(`Invalid compaction.${key}: expected a positive safe integer`);
+  });

@@ -97,17 +97,17 @@ For example, either settings file can contain:
 }
 ```
 
-`compaction.factsTokens` and `compaction.rawTokens` are the two file-configured 10,000-token
-material bases. The Knowledge base is database-owned: Settings edits Global, Project and Session
-pool budgets for the bound database, defaulting to 4,000, 15,000 and 1,000. Their safe-integer sum
-is the 20,000-token Knowledge base. The shared allowance across Knowledge, Raw and facts is one
-configured value, `compaction.sharedAllowanceTokens` (73), 10,000 tokens by default and no longer
-derived from the N, C or D triggers; pool budgets and trigger changes do not affect it. Knowledge
-fills its base and borrows the allowance first, for any effective knowledge above the base; then the
-newest contiguous Raw span borrows what Knowledge left, for its still-pending entries only; then the
-newest facts before that span borrow what Raw left, for unconsolidated facts only. Already-noted Raw
-and already-consolidated facts fill only their own base, never the allowance.
-The three bases never lend directly to one another.
+`compaction.factsTokens` and `compaction.rawTokens` retain their independent 10,000-token bases.
+The database-owned Knowledge base is the safe-integer sum of Global, Project and Session budgets,
+defaulting to 4,000, 15,000 and 1,000. `compaction.sharedAllowanceTokens` adds 10,000 for Knowledge
+only; it is not derived from phase triggers.
+
+Ticket 133 adds `compaction.temporaryTokens` (10,000), filled newest-first in order:
+pending Raw overflow, human user words within `compaction.userTurns` (30), then uncovered fact
+titles within `compaction.titleTurns` (100). Both reaches include the anchor and count path turns;
+unused room never reaches older turns. User entries use the renderer's middle cut with
+`compaction.userEntryTokens` (500). All four new settings require positive safe integers.
+Full facts do not borrow, and none of the bases lends to another.
 
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
 from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a named load error.
@@ -768,16 +768,16 @@ snapshot. Allocation is local and model-free: it takes no claim and advances no 
 | No material candidates | Nothing to supply or omit; the reading guide alone is not material | Delegate to Pi's native compaction without recording a custom delivery |
 | `{native: true, reason}` | An unexpected host-caught error (a store error, an invalid path) | Delegate to Pi's native compaction |
 
-The default bases are Knowledge 20,000 tokens from the database policy, facts 10,000 and Raw 10,000.
-One configured allowance, `compaction.sharedAllowanceTokens` (73), 10,000 tokens by default and not
-derived from the N, C or D triggers, is borrowed in a fixed order rather than reserved up front:
-Knowledge fills its base and borrows the allowance first, for any effective knowledge above the base;
-then the newest contiguous Raw span borrows what Knowledge left, for its still-pending entries only;
-then the newest facts before that span borrow what Raw left, for unconsolidated facts only.
-Already-noted Raw and already-consolidated facts fill only their own base, never the allowance. Each
-base remains independent; only the single shared remainder crosses windows, and each window is charged
-exactly what it emits — receipts and framing included — so a window with no room even for a bare
-receipt is emitted empty. The default maximum envelope is therefore 50,000 tokens.
+The default envelope is 60,000 tokens: Knowledge 20,000, full facts 10,000, Raw 10,000,
+Knowledge-only shared allowance 10,000 and separate temporary allowance 10,000.
+Pending Raw has first claim on the temporary allowance; earlier user words and fact titles
+fill only its remainder. Each emitted section's headings, groups and receipts are charged.
+
+Inside `<episodic>` the order is fact titles, full facts, earlier user messages, Raw, running tasks.
+The optional pi-subagents service at `Symbol.for("@gotgenes/pi-subagents:service")` supplies
+queued/running agents. With no service there is no task block or package dependency.
+Tasks count in the delivered text but not any budget. Noter uses the same allowance at its
+batch's newest turn and trims it before full historical facts when capacity must shrink.
 
 Historical Raw is displayed in source order. Historical facts are displayed in chronological Turn
 groups. A fact — consolidated or still pending — is omitted as redundant only when its complete
@@ -1051,7 +1051,7 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
 4. Run `/compact`. Expect immediate compaction with `<knowledge>` and `<episodic>`,
    pending compressed Raw views, recent facts, and no compaction model request. The
    notice says the bounded entry views were used. To see truncation, set
-   `compaction.rawTokens` and `compaction.sharedAllowanceTokens` low enough that the
+   `compaction.rawTokens` and `compaction.temporaryTokens` low enough that the
    pending views no longer fit: the compaction still succeeds with bounded entry
    views, but a second, `warning`-level notice reports the omitted pending entries
    and that they remain pending for Noting.

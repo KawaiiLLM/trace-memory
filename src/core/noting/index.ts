@@ -3,6 +3,7 @@ import { readingGuide } from "../render/reading-guide.ts";
 import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput, SourceEntry, SourceEntryMeta } from "../store/index.ts";
+import type { HumanUserDetector } from "../model/source.ts";
 import type { bindTools } from "../api/tools.ts";
 import { pricedToolDefinitions, toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
@@ -170,7 +171,7 @@ export const notingBatch = (store: Store, pending: readonly SourceEntryMeta[], c
 };
 
 export function freezeNoting(store: Store, input: NotingInput, config: TraceMemoryConfig, resultText: ResultExtractor = rawResultText,
-  pendingAll?: SourceEntryMeta[]) {
+  pendingAll?: SourceEntryMeta[], humanUser?: HumanUserDetector) {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
   if (session.host.startsWith("cc:") && !input.toolNames) throw new Error("CC Noter launch requires exposed tool names");
@@ -228,6 +229,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   };
   const historyCap = config.compaction.factsTokens;
   let history = historyCap; // lowered further by the capacity negotiation below
+  let temporary = config.compaction.temporaryTokens;
   // 29b "Same builder, different initial state": the one input that separates a fork's material from
   // a fresh child's. The host supplies the view only for a task it will really fork (hosts/pi/index.ts
   // at admission); everything else — an explicit subagent, a fork re-admitted as one after a refusal
@@ -250,7 +252,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
       model: input.model ?? "session", mode };
     const endpoint = entries.at(-1)!;
     const assembled = readFacade(store, { ...config, compaction: { ...config.compaction,
-      rawTokens: config.noting.batchTokens, factsTokens: history } }, undefined, resultText)
+      rawTokens: config.noting.batchTokens, factsTokens: history, temporaryTokens: temporary } }, undefined, resultText, humanUser)
       .compact(session.id, input.branch, endpoint.turnId, [], false,
         { endpointEntryId: endpoint.id, processedRawRefill: false, showKnowledgeSize: true, readingGuide: false, renderedEntries: rendered, preparedSources, toolNames: names });
     if ("native" in assembled || !assembled.material) throw new Error("Noting material assembly produced no material");
@@ -276,15 +278,21 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     lastPrice = priced;
     const fits = !capacity || priced <= capacity.inputTokens;
     if (fits) return { ...frozen, prepared, prompt, promptHash: createHash("sha256").update(inheriting ? forkPrompt : prompt).digest("hex"), forkPrompt, names };
-    // Optional history goes first (review 2026-09-08): trim the historical facts by the excess before
-    // a selected entry is given up; only when none are left does the batch shrink.
-    if (capacity && history && prepared.material.facts.length) { history = Math.max(0, Math.min(history - 1, charge(prepared.material.facts) - (priced - capacity.inputTokens))); continue; }
+    // 133: optional temporary user/title material goes before the historical full-fact window.
+    if (capacity && temporary && assembled.charged!.temporary) {
+      temporary = Math.max(0, Math.min(temporary - 1, assembled.charged!.temporary - Math.max(1, priced - capacity.inputTokens)));
+      continue;
+    }
+    if (capacity && history && prepared.material.facts.length) {
+      history = Math.max(0, Math.min(history - 1, charge(prepared.material.facts) - (priced - capacity.inputTokens)));
+      continue;
+    }
     // 27d (parent 27 amendment 6): under exact membership the batch never shrinks. Optional history
     // is trimmed above, as in any freeze; a batch that still does not fit leaves every frozen entry
     // pending under the diagnostic below, because a smaller batch is a membership change made after
     // execution had already started.
     if (exact) break;
-    entries.pop(); history = historyCap;
+    entries.pop(); history = historyCap; temporary = config.compaction.temporaryTokens;
   }
   // 27a: the diagnostic says what the numbers were — the last candidate the loop priced was the
   // smallest one it was allowed to reach: the oldest entry alone, or, under 27d's exact membership,
@@ -334,6 +342,8 @@ function notingMaterial(frozen: { sessionId: number; harness: string; headEntryI
     // its own context. It covers the whole frozen range, not only what was supplied.
     sources,
     facts: inheriting ? [] : assembled.facts ?? [],
+    factTitles: inheriting ? [] : assembled.factTitles ?? [],
+    earlierUsers: inheriting ? [] : assembled.earlierUsers ?? [],
     ...(inheriting ? {} : { knowledge: assembled.knowledge, knowledgeNotice: assembled.knowledgeNotice }),
     receipts,
   };

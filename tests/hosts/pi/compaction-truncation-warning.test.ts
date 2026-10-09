@@ -9,7 +9,7 @@ import { legacyFacts } from "../../support/seed.ts";
 const OMITTED = "compaction omitted";
 
 async function truncatingHost() {
-  const h = host({ "noting.triggerTokens": 1_000_000, "compaction.rawTokens": 300, "compaction.sharedAllowanceTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1_000_000, "compaction.rawTokens": 300, "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
   for (let i = 0; i < 5; i++) { await h.prompt(`pending-${i} ${"word ".repeat(250)}`); await h.answer(); }
   const warnings: string[] = [];
   const notify = h.ctx.ui.notify.bind(h.ctx.ui);

@@ -27,6 +27,7 @@ import { budgetFacts, budgetKnowledge, charge, finish, knowledgeGroups, renderKn
 export interface KnowledgeGroup { category: string; text: string }
 /** A frozen task range as a label. It is a label, never an id watermark (ticket 20). */
 export interface TaskRange { from: string; to: string }
+export interface RunningTask { id: string; kind: string; description: string; status: string }
 
 /** Display-only estimates captured while assembling a carrier. Framing stays unclassified. */
 export interface MemoryComposition { bodyHash: string; knowledge: number; facts: number; raw: number }
@@ -34,8 +35,9 @@ export const memoryBodyHash = (text: string): string => createHash("sha256").upd
 export function measuredMemory(text: string, material: SharedMaterial): { text: string; composition: MemoryComposition } {
   return { text, composition: { bodyHash: memoryBodyHash(text),
     knowledge: tokens((material.knowledge ?? []).map(group => group.text).join("\n")),
-    facts: tokens((material.facts ?? []).join("\n")),
-    raw: tokens((material.entries ?? []).map(entry => entry.view).join("\n\n")) } };
+    facts: tokens([...(material.factTitles ?? []), ...(material.facts ?? [])].join("\n")),
+    raw: tokens([...(material.earlierUsers ?? []).map(entry => entry.view),
+      ...(material.entries ?? []).map(entry => entry.view)].join("\n\n")) } };
 }
 
 /** Measure only the bytes of a renderer-produced block actually retained by a host. `offset`
@@ -57,16 +59,22 @@ export function measureRetainedMemoryText(rendered: string, original: string, of
   const episodic = original.indexOf("\n<episodic>\n");
   const closingEpisodic = episodic >= 0 ? original.indexOf("\n</episodic>", episodic) : -1;
   const episodicEnd = episodic < 0 ? -1 : closingEpisodic < 0 ? original.length : closingEpisodic;
-  const factsStart = episodic >= 0 ? original.indexOf(`\n${FACTS_TITLE}\n`, episodic) : -1;
-  const rawStart = episodic >= 0 ? original.indexOf(`\n${RAW_TITLE}\n`, episodic) : -1;
+  const sections = [
+    { title: FACT_TITLES_TITLE, key: "facts" as const },
+    { title: FACTS_TITLE, key: "facts" as const },
+    { title: EARLIER_USERS_TITLE, key: "raw" as const },
+    { title: RAW_TITLE, key: "raw" as const },
+    { title: "Running tasks:", key: null },
+  ].map(section => ({ ...section, start: episodic >= 0 ? original.indexOf(`\n${section.title}\n`, episodic) : -1 }))
+    .filter(section => section.start >= 0 && section.start < episodicEnd);
   if (episodicEnd >= 0 && original.indexOf("\n<episodic>\n", episodic + 1) < 0 &&
       (closingEpisodic < 0 || original.indexOf("\n</episodic>", closingEpisodic + 1) < 0) &&
-      (factsStart < 0 || original.indexOf(`\n${FACTS_TITLE}\n`, factsStart + 1) < 0) &&
-      (rawStart < 0 || original.indexOf(`\n${RAW_TITLE}\n`, rawStart + 1) < 0)) {
-    if (factsStart >= 0 && factsStart < episodicEnd && (rawStart < 0 || factsStart < rawStart))
-      regions.push({ start: factsStart + 1, end: rawStart >= 0 ? rawStart : episodicEnd, key: "facts" });
-    if (rawStart >= 0 && rawStart < episodicEnd)
-      regions.push({ start: rawStart + 1, end: episodicEnd, key: "raw" });
+      sections.every((section, index) => original.indexOf(`\n${section.title}\n`, section.start + 1) < 0 &&
+        (index === 0 || section.start > sections[index - 1]!.start))) {
+    for (let i = 0; i < sections.length; i++) {
+      const section = sections[i]!;
+      if (section.key) regions.push({ start: section.start + 1, end: sections[i + 1]?.start ?? episodicEnd, key: section.key });
+    }
   }
   const intervals = regions.map(region => ({ start: Math.max(offset, offset + region.start), end: Math.min(end, offset + region.end), key: region.key }))
     .filter(region => region.start < region.end).sort((a, b) => a.start - b.start);
@@ -85,17 +93,23 @@ export function measureRetainedMemoryText(rendered: string, original: string, of
 /** The parts every memory consumer shares (ticket 20, "Shared contract"): rendered knowledge,
  * historical facts, compressed Raw entries with their concrete source identity, and budget receipts.
  * A consumer whose ruled order has no knowledge, no facts or no Raw block simply omits those parts;
- * sharing this type never adds a block to a consumer's order (initial injection stays knowledge-only,
- * and since 25a neither Noter mode carries knowledge at all). */
+ * sharing this type never adds a block to a consumer's order. Ordinary injection stays Knowledge-only;
+ * fresh Noter material includes Knowledge (92), while a fork inherits it from the foreground. */
 export interface SharedMaterial {
   /** Ticket 118: one reading guide for the complete material, never one per knowledge block. */
   readingGuide?: string;
-  /** Active knowledge within the knowledge budget, in category order; absent for the Noter (25a). */
+  /** Active Knowledge within its budget, in category order; inherited rather than repeated by forks. */
   knowledge?: KnowledgeGroup[];
   /** Historical facts selected by freshness, displayed in chronological Turn groups, within budget. */
   facts?: string[];
+  /** Older fact titles are an index, not visible full fact bodies. */
+  factTitles?: string[];
   /** Compressed Raw entries, oldest first, each with the source identity of its own view. */
   entries?: { id: number; view: string }[];
+  /** Human input preceding Raw; display only, never source-span coverage. */
+  earlierUsers?: { id: number; view: string }[];
+  /** Live host state, compaction only; measured in the final text, outside every allowance. */
+  runningTasks?: readonly RunningTask[];
   /** Budget receipts for everything the views and the budgets left out. */
   receipts: string[];
   /** 101 (ruled): the knowledge block's header when it is not the plain recency notice — a session's
@@ -144,7 +158,9 @@ export function transportItemText(item: TransportItem, recencyNotice = KNOWLEDGE
 }
 
 export const FACTS_TITLE = "Recent facts (by Turn):";
+export const FACT_TITLES_TITLE = "Earlier facts (titles only; read trace://F<id> for the body):";
 export const RAW_TITLE = "Raw:";
+export const EARLIER_USERS_TITLE = "Earlier user messages:";
 export const SOURCES_TITLE = "Sources:";
 /** Title for retained versions that are no longer current authority. */
 export const KNOWLEDGE_STATUS_TITLE = "Inherited knowledge status (these commits are not current authority):";
@@ -284,7 +300,6 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
 }
 
 const block = (parts: string[]): string => parts.join(BLOCK);
-const rawText = (material: SharedMaterial): string => (material.entries ?? []).map((entry) => entry.view).join(BLOCK);
 
 /** The leading knowledge block of all four consumers, and the only knowledge layout in this
  * repository. Nothing task-specific may enter it (see "Stable prefix" above); empty knowledge
@@ -307,13 +322,16 @@ const statusBlock = (notes: readonly string[]): string[] =>
 export const injectionText = (material: SharedMaterial, knowledgeNotes: readonly string[] = []): string =>
   finish({ content: block([...leading(material), ...statusBlock(knowledgeNotes)]), receipts: material.receipts });
 
-/** Main-agent compact: knowledge, then historical facts, then the pending Raw, then receipts. Ticket
- * 30: there is one bounded view and therefore one Raw title — the second tier that renamed this block
- * is gone, and the order, the separators and the receipts are what they always were. */
+/** Main-agent compact, also reused by Noter with its exact selected batch. */
 export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TITLE, knowledgeNotes: readonly string[] = []): string => {
   // 73: a window that kept nothing emits nothing — no title, and no `<episodic>` tag when both are empty.
-  const facts = material.facts ?? [], episodic = [...(facts.length ? [FACTS_TITLE, facts.join("\n")] : []),
-    ...(material.entries?.length ? [rawTitle, rawText(material)] : [])];
+  const facts = material.facts ?? [], raw = (material.entries ?? []).map(entry => entry.view);
+  const episodic = [...(material.factTitles?.length ? [FACT_TITLES_TITLE, material.factTitles.join("\n")] : []),
+    ...(facts.length ? [FACTS_TITLE, facts.join("\n")] : []),
+    ...(material.earlierUsers?.length ? [EARLIER_USERS_TITLE, material.earlierUsers.map(entry => entry.view).join(BLOCK)] : []),
+    ...(raw.length ? [rawTitle, raw.join(BLOCK)] : []),
+    ...(material.runningTasks?.length ? ["Running tasks:", material.runningTasks.map(task =>
+      `- ${task.id} ${task.kind}: ${task.description.replace(/[\r\n]/gu, " ")} (${task.status})`).join("\n")] : [])];
   return finish({ content: block([...leading(material), ...statusBlock(knowledgeNotes),
     ...(episodic.length ? [xmlBlock("episodic", block(episodic))] : [])]), receipts: material.receipts });
 };

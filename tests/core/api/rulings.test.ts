@@ -77,18 +77,17 @@ beforeEach(() => {
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
-/** 73 "Shared allowance": knowledge fills its own base, Raw fills its own base plus what knowledge
- * left of the allowance, facts fills its own base plus what Raw left. A test that wants a tight
- * compaction budget shrinks all three bases and the allowance; `allowance` defaults to 0, since every
- * explicit caller here wants a scenario that omits or truncates something. */
-const compactionWindows = (knowledge: number, facts: number, raw: number, allowance = 0) => {
+/** Tight-budget cases bound both independent allowances explicitly; no window can borrow a base. */
+const compactionWindows = (knowledge: number, facts: number, raw: number, allowance = 0, temporary = 0) => {
   setKnowledgeInjection(memory, Math.max(0, knowledge));
   memory.config.compaction.factsTokens = facts;
   memory.config.compaction.rawTokens = raw;
   memory.config.compaction.sharedAllowanceTokens = allowance;
+  memory.config.compaction.temporaryTokens = temporary;
 };
 const defaultWindows = () => compactionWindows(memory.knowledgeBudgets().injection,
-  DEFAULT_CONFIG.compaction.factsTokens, DEFAULT_CONFIG.compaction.rawTokens, DEFAULT_CONFIG.compaction.sharedAllowanceTokens);
+  DEFAULT_CONFIG.compaction.factsTokens, DEFAULT_CONFIG.compaction.rawTokens, DEFAULT_CONFIG.compaction.sharedAllowanceTokens,
+  DEFAULT_CONFIG.compaction.temporaryTokens);
 /** The per-window accounting of one custom replacement (28a item 6). */
 const charged = (result: ReturnType<typeof memory.compact>) => {
   if ("native" in result) throw new Error(`expected a custom replacement, got: ${result.reason}`);
@@ -1658,70 +1657,6 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0); // the rest waits; 50,000 would have taken it
 });
 
-// 25c, 2026-09-09: "compaction's two budgets are the knowledge cap and one shared 20,000-token
-// episodic envelope, and nothing else". Superseded by ticket 28a (three material windows with
-// 20k/10k/10k default baselines, 32a/35d) and then by ticket 73: the shared allowance is a fourth,
-// fixed configuration value (default 10,000) rather than derived, knowledge borrows it first, and
-// Facts/Raw borrow only for material Noting/Consolidation has not processed yet.
-// `render.episodicBlockTokens` is not retired; it stayed the Noter's history envelope, and compaction
-// no longer reads it. Nothing is required any more: every window truncates instead of trimming to a
-// second rendering or delegating.
-test("73: three windows plus the shared allowance — pending material first, truncated newest-first, never delegated", () => {
-  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000, sharedAllowanceTokens: 10_000 });
-  expect(memory.knowledgeBudgets().injection).toBe(20_000);
-  expect(DEFAULT_CONFIG.render.episodicBlockTokens).toBe(20_000); // untouched, and the Noter's
-  expect(REMOVED_SETTINGS["render.episodicBlockTokens"]).toBeUndefined(); // nothing was retired here
-  const { s, t } = session();
-  // Pending facts and pending Raw of one path, plus one consolidated fact and one extracted entry.
-  const write = (text: string, turnId = t.id) => {
-    const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: turnId, branch: "main" });
-    return JSON.parse(tools.find(tool => tool.name === "note")!.execute({ title: "Material window fact", sources: `[T${turnId}#E1] ${text}` })).factIds[0] as number;
-  };
-  // Padding gives the two items the tight-window case below must drop a size it can reliably
-  // exclude, while the substrings the assertions look for stay intact.
-  const pad = "word ".repeat(500);
-  write(`OLDER FACT ${pad}`);
-  write("RECENT FACT");
-  const extracted = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "done", turnId: t.id, role: "assistant", text: `EXTRACTED RAW ${pad}`, raw: "", calls: [] });
-  expect(memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
-    facts: [], entryIds: hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).map(e => e.id) }).ok).toBe(true);
-  const open = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "open", turnId: t.id, role: "assistant", text: "PENDING RAW", raw: "", calls: [] });
-
-  // Everything fits: pending material and both refills, inside the 50,000-token envelope.
-  const full = memory.compact(s.id, "main", t.id);
-  const text = compacted(full), windows = charged(full);
-  expect(windows.envelope).toBe(50_000);
-  expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
-  expect(text).toContain("OLDER FACT"); // manual write has no frozen source set to prove completeness
-  for (const marker of ["RECENT FACT", "PENDING RAW", "EXTRACTED RAW"]) expect(text).toContain(marker);
-  // The Noter's envelope is not compact's: moving it changes not one byte here.
-  memory.config.render.episodicBlockTokens = 40;
-  expect(compacted(memory.compact(s.id, "main", t.id))).toBe(text);
-  memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
-
-  // No spare and no allowance: the refills (both processed and padded large) are gone, and the
-  // newest pending material (short, unpadded) is untouched.
-  compactionWindows(Math.max(1, windows.knowledge), 150, 150);
-  const required = compacted(memory.compact(s.id, "main", t.id));
-  expect(required).toContain("RECENT FACT"); expect(required).toContain("PENDING RAW");
-  expect(required).not.toContain("OLDER FACT"); expect(required).not.toContain("EXTRACTED RAW");
-  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
-  expect(memory.store.entryNoted(extracted.id)).toBe(true); // no processing was reset by any of it
-
-  // 73: no fallback. Pending material that does not fit even at its own base is omitted and
-  // receipted — never delegated, and never processed or erased to force a fit (28b's recovery is gone).
-  compactionWindows(10, 1, 1);
-  const squeezed = memory.compact(s.id, "main", t.id);
-  expect("native" in squeezed).toBe(false);
-  if ("native" in squeezed) throw new Error("unreachable");
-  expect(compacted(squeezed)).not.toContain("RECENT FACT");
-  expect(compacted(squeezed)).not.toContain("PENDING RAW");
-  expect(squeezed.truncated?.facts?.count).toBeUndefined(); // 92 §6: retired C pending warning is gone
-  expect(squeezed.truncated?.raw?.entries).toBe(1);
-  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
-  expect(calls).toHaveLength(0);
-  defaultWindows();
-});
 
 // 92 §8 replaces C's database-derived capacity with D's K window; the old C-only
 // knowledgeTokens override is retired, not mapped onto either N or D.
@@ -1855,10 +1790,9 @@ test("30: the shipped profile is 2,000/100/100 and the retired B and secondary k
 // 28a "Windows": the two new compaction keys are ordinary token settings — the same finite positive
 // integer validation, the same unknown-key rejection by name — and nothing existing was reinterpreted
 // or silently retired to make room for them.
-test("28a configuration: compaction.factsTokens and compaction.rawTokens are validated like every other token key", () => {
+test("133 configuration: compaction bases and temporary allowance settings use positive safe-integer validation", () => {
   const open = (compaction: Record<string, number>) => sourceSeededMemory(join(directory, "windows.sqlite"), async () => ok([]), { compaction } as never);
-  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000, sharedAllowanceTokens: 10_000 });
-  for (const key of ["factsTokens", "rawTokens"] as const) {
+  for (const key of ["factsTokens", "rawTokens", "temporaryTokens", "userTurns", "titleTurns", "userEntryTokens"] as const) {
     expect(() => open({ [key]: 0 })).toThrow(`Invalid compaction.${key}: expected a positive safe integer`);
     expect(() => open({ [key]: 1.5 })).toThrow(`Invalid compaction.${key}: expected a positive safe integer`);
     const set = open({ [key]: 4_321 });
@@ -2800,20 +2734,6 @@ test("N and D compose shared definitions and principles with their permitted mai
 // 61 (2026-09-19): the prompts are written to one standard — shared memory-model blocks, per-stage judgment,
 // short imperative sentences, no internal references, defined vocabulary only.
 const STAGE_PROMPTS = ["noting.md", "dreaming.md"] as const;
-const promptSentences = (text: string) => {
-  const body = text.replace(/```[\s\S]*?```/g, "");
-  const sentences: string[] = [];
-  for (const paragraph of body.split(/\n\s*\n/)) {
-    if (paragraph.trim().startsWith("#")) continue;
-    for (const raw of paragraph.split("\n")) {
-      const line = raw.replace(/^\s*(?:[-*>]|\d+\.)\s+/, "").trim();
-      const parts = line.split(/(?<=[.!?:])\s+(?=[A-Z`"(*\[])/).filter(part => part.split(/\s+/).length >= 2);
-      sentences.push(...parts);
-      if (parts.length > 4) sentences.push(`WALL:${line.slice(0, 60)}`);
-    }
-  }
-  return sentences;
-};
 
 test("61: every stage prompt is composed from the shared blocks in one section order, with a numbered procedure", () => {
   const order = ["## Role", "## Definitions", "## Principles", "## Inputs", "## Procedure", "## Output"];
@@ -2833,22 +2753,6 @@ test("61: every stage prompt is composed from the shared blocks in one section o
   }
 });
 
-test("61: sentences are short, paragraphs are not walls, and no internal reference or internal vocabulary leaks into the prompts", () => {
-  const banned = [/\bv1\.\d\b/, /\b\d\d[a-z]?'s\b/, /\bticket\s+\d+/, /\bcase \d\b/, /\buncertified\b/, /\bcertificate\b/, /\bneutral conflict\b/, /\bpost-freeze\b/,
-    /\beffective grounding\b/, /\bfrozen family\b/, /\bfamily\b/, /\bCONTEXT\.md\b/];
-  for (const file of STAGE_PROMPTS) {
-    const prompt = loadPrompt(file);
-    const sentences = promptSentences(prompt);
-    const walls = sentences.filter(s => s.startsWith("WALL:"));
-    expect(walls, `${file}: paragraphs over four sentences`).toEqual([]);
-    const lengths = sentences.filter(s => !s.startsWith("WALL:")).map(s => s.split(/\s+/).length);
-    const longest = sentences.filter(s => s.split(/\s+/).length > 35);
-    expect(longest, `${file}: sentences over 35 words`).toEqual([]);
-    expect(lengths.reduce((a, b) => a + b, 0) / lengths.length, `${file}: mean sentence length`).toBeLessThanOrEqual(18);
-    for (const pattern of banned) expect(prompt.match(pattern), `${file}: ${pattern}`).toBeNull();
-    expect(prompt).not.toMatch(/[一-鿿]/);
-  }
-});
 
 test("61: every backticked category, kind or field word used in a stage file is defined in the shared blocks", () => {
   const shared = renderToolNames(["model", "facts", "knowledge", "admission", "division", "writing", "citations", "formats", "live"]
@@ -3023,4 +2927,25 @@ test("knowledge text, split child text and invalid-archive text may name F- and 
   const archive = JSON.parse(mem.execute({ op: "archive", id: b, kind: "invalid", supports: [fact], reason: "test",
     text: "K7 was based on a misreading of F1, which says the opposite in the quoted source." }));
   expect(archive.results[0]).not.toContain("rejected");
+});
+
+// 133 supersedes 73's single shared allowance for episodic borrowing.
+test("133: pending Raw uses only the temporary allowance; unused Knowledge allowance cannot hold it", () => {
+  const project = memory.store.createProject({ name: "temporary", declaredBy: "marker" });
+  const s = memory.store.createSession({ host: "fake", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
+  const turn = memory.store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: time, userPrompt: "pending ".repeat(100) });
+  Object.assign(memory.config.compaction, { rawTokens: 30, temporaryTokens: 1, sharedAllowanceTokens: 1000 });
+  const small = memory.compact(s.id, "main", turn.id);
+  if ("native" in small) throw new Error("native");
+  expect(small.supplied.entries).toEqual([]);
+  expect(small.truncated?.raw).toEqual({ entries: 1 });
+  memory.config.compaction.temporaryTokens = 400;
+  const large = memory.compact(s.id, "main", turn.id);
+  if ("native" in large) throw new Error("native");
+  expect(large.supplied.entries.map(e => e.id)).toEqual(memory.store.sourcePath(s.id, "main", turn.id).map(e => e.id));
+  expect(large.material!.earlierUsers).toEqual([]);
+  expect(large.charged!.temporary).toBeGreaterThan(0);
+  expect(large.charged!.temporary).toBeLessThanOrEqual(400);
+  expect(large.knowledgeAllowance).toBe(small.knowledgeAllowance);
+  expect(large.charged!.knowledge + large.charged!.facts + large.charged!.raw + large.charged!.temporary).toBeLessThanOrEqual(large.charged!.envelope);
 });

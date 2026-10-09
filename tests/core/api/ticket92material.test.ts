@@ -60,7 +60,7 @@ test("ticket92material borrowed active target keeps original harness through rew
   expect(f.inputs[0]!.text).toContain("Target session agent: Pi agent");
 });
 
-test("ticket92material preparation loads only selected Raw, never the processed history's Turn payloads", () => {
+test("133: Noter hydrates selected Raw and reachable user context, never processed assistant history", () => {
   const f = fixture();
   for (let index = 0; index < 100; index++) seedSourceEntry(f.memory, f.turn.id, "assistant", `processed ${index}`);
   f.select();
@@ -74,7 +74,8 @@ test("ticket92material preparation loads only selected Raw, never the processed 
   const frozen = freezeNoting(f.store, { ...f.target, mode: "subagent" }, f.memory.config);
   const elapsed = performance.now() - start;
   expect(frozen.entries).toHaveLength(1);
-  expect(raw.mock.calls.map(([id]) => id)).toEqual([frozen.entries[0]!.id]);
+  const processedAssistants = new Set(older.slice(1));
+  expect(raw.mock.calls.some(([id]) => processedAssistants.has(id))).toBe(false);
   expect(turns).toHaveBeenCalledTimes(1);
   expect(snapshots.mock.calls.map(([path, endpoint]) => ({ path, endpoint }))).toEqual([
     { path: f.target, endpoint: undefined }, { path: f.target, endpoint: frozen.entries[0]!.id },
@@ -106,8 +107,10 @@ test("ticket92material capacity shrinking reuses metadata and Raw views but rebi
   expect(reduced.entries.length).toBeLessThan(complete.entries.length);
   expect(reduced.entries.length).toBeGreaterThan(0);
   expect(reduced.prepared!.selectedEntryIds).toEqual(reduced.entries.map(entry => entry.id));
-  expect(raw.mock.calls.map(([id]) => id)).toEqual(complete.entries.map(entry => entry.id));
-  expect(new Set(raw.mock.calls.map(([id]) => id)).size).toBe(raw.mock.calls.length);
+  const batchIds = new Set(complete.entries.map(entry => entry.id));
+  const batchReads = raw.mock.calls.filter(([id]) => batchIds.has(id)).map(([id]) => id);
+  expect(batchReads).toEqual([...batchIds]);
+  expect(new Set(batchReads).size).toBe(batchReads.length);
   const endpoints = snapshots.mock.calls.map(([, endpoint]) => endpoint).filter(id => id !== undefined);
   expect(endpoints[0]).toBe(complete.entries.at(-1)!.id);
   expect(endpoints.at(-1)).toBe(reduced.entries.at(-1)!.id);

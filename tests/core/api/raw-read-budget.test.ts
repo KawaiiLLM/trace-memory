@@ -46,7 +46,7 @@ const target = (): TaskTarget => ({ sessionId: base.sessionId, branch: base.bran
 test("79 item 2: compact's Raw span hydrates a bounded prefix, not the whole path or backlog", () => {
   const copy = backlogCopy("compact.db");
   const memory = TraceMemory(copy, async () => { throw new Error("no model in this test"); },
-    { compaction: { rawTokens: 5_000, factsTokens: 100, sharedAllowanceTokens: 100 } });
+    { compaction: { rawTokens: 5_000, factsTokens: 100, sharedAllowanceTokens: 100, temporaryTokens: 100 } });
   const counter = countSourceReads();
   try {
     const pendingTotal = memory.pendingEntries(base.sessionId, base.branch, base.headTurnId).length;
@@ -58,8 +58,8 @@ test("79 item 2: compact's Raw span hydrates a bounded prefix, not the whole pat
     const emitted = result.supplied.entries.length;
     expect(emitted).toBeGreaterThan(0);
     expect(hydrated).toBeGreaterThan(0);
-    // Bounded by the 5,000-token Raw budget, not by the 3,000+ entry path/backlog: at most a small
-    // multiple of what the budget can hold, and nothing close to the full path.
+    // 133: bound Raw plus its own small temporary allowance; recent user payloads may also be read.
+    // Total hydration must remain a small fraction of this 3,000+ entry path/backlog.
     expect(hydrated).toBeLessThan(base.entryCount / 10);
     expect(hydrated).toBeLessThan(100);
     expect(emitted).toBeLessThanOrEqual(hydrated); // never emits an entry it did not hydrate+render

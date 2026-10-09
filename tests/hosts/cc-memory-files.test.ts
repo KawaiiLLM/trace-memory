@@ -16,6 +16,9 @@ import { MEMORY_READ_ONLY } from "../../src/core/model/address.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { fact, knowledge } from "../support/seed.ts";
 import { TraceMemory } from "../../src/core/api/index.ts";
+import { materializeCcWorkerRead, runCcFiles } from "../../src/hosts/cc/files.ts";
+import { recorded } from "../source-fixture.ts";
+import { z } from "zod";
 
 type Hook = (host: any, event: any, next: any) => Promise<any> | any;
 const hooks = new Map<string, Hook>();
@@ -209,4 +212,32 @@ test("cc.cjs fs reads for the bound native session, accepts combined grep flags,
   expect((await unbound("read", "trace://knowledge")).content).toBe("(empty)");
   expect((await unbound("read", "trace://K1")).content).toContain("Hashline uses an LRU cache.");
   expect(digest()).toBe(before);
+});
+
+test("133: foreground and worker trace://compact reads use native human origins, not just text prefixes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm133-cc-human-read-")); dirs.push(dir);
+  const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), baseline: "2025-01-01T00:00:00.000Z" });
+  const native = "human-reader", transcriptPath = join(dir, "native.jsonl");
+  await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: native, transcript_path: transcriptPath, source: "startup" }, "2026-01-01T00:00:00.000Z");
+  const human = "<task-notification> quoted literally by a human", sdk = "SDK-generated user entry";
+  writeFileSync(transcriptPath, [
+    { uuid: "human", parentUuid: null, type: "user", timestamp: "2026-01-01T00:00:00.000Z", promptId: "p1", promptSource: "typed", message: { role: "user", content: human } },
+    { uuid: "sdk", parentUuid: "human", type: "user", timestamp: "2026-01-01T00:00:01.000Z", promptId: "p2", promptSource: "sdk", message: { role: "user", content: sdk } },
+    { uuid: "reply", parentUuid: "sdk", type: "assistant", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "Acknowledged." }] } },
+  ].map(record => JSON.stringify(record)).join("\n") + "\n");
+  const importer = new CcImporter(config, readBinding(config, native)!);
+  try { expect((await importer.reconcile()).state).toBe("ready"); } finally { importer.close(); }
+  const binding = readBinding(config, native)!, core = binding.coreSessionId!;
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("read must not run a model"); });
+  const reader = memory.store.knowledgePath(core, binding.branch);
+  try { recorded(memory, core, binding.branch, reader.headTurnId!); } finally { memory.close(); }
+  config.coreConfig.compaction.rawTokens = 1; // historical Raw cannot fit or borrow; selection happens in the user tier
+  const path = `trace://compact/S${core}`;
+  const foreground = z.object({ content: z.string() }).parse(runCcFiles(config, native, ["read", path])).content;
+  const worker = readFileSync(materializeCcWorkerRead(config, reader, path, dir), "utf8");
+  for (const text of [foreground, worker]) {
+    expect(text).toContain("Earlier user messages:");
+    expect(text).toContain(human);
+    expect(text).not.toContain(sdk);
+  }
 });

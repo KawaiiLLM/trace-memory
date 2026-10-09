@@ -43,6 +43,7 @@ test("fresh Noter prices native Read scalar, while fork counts its inherited pre
   const f = fixture([]);
   // This boundary prices mandatory input only; optional history may legitimately shrink first.
   f.memory.config.compaction.factsTokens = 0;
+  f.memory.config.compaction.temporaryTokens = 1;
   const nativeReadToolTokens = 402;
   const definitions = pricedToolDefinitions(toolDefinitions, canonicalToolNames);
   const input = { ...f.target, nativeReadToolTokens, boundary: { exactEntryIds: f.pending } };

@@ -214,11 +214,14 @@ export const register = (on: any) => {
     // keeps no original message: the trigger is the newest Raw in the block. An unbound or disabled
     // session, or a build that fails for any reason, keeps native compaction and its supplement.
     try {
+      const agents: { id: string; type: string; description: string; status: string }[] = await $.agent.list();
+      const runningTasks = agents.filter(agent => agent.status === "running" || agent.status === "waiting")
+        .map(agent => ({ id: agent.id, kind: agent.type, description: agent.description, status: agent.status }));
       const built = JSON.parse(decode(await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-compact", "--config", `${$.plugin.root}/cc.config.json`],
         // The newest message's handle is its transcript row's uuid: the trigger the build waits for.
         // `auto` (requirement 14, ruled) tells the build whether to end the block with Claude Code's
         // own native continue sentence, after its framing; a manual `/compact` gets none.
-        { stdin: JSON.stringify({ session_id: session, trigger: e.messages.at(-1)?.handle, auto: e.trigger === "auto" }) }), "Trace Memory compaction"));
+        { stdin: JSON.stringify({ session_id: session, trigger: e.messages.at(-1)?.handle, auto: e.trigger === "auto", runningTasks }) }), "Trace Memory compaction"));
       if (!built.passThrough) {
         if (typeof built.text !== "string" || !built.text) throw new Error("compaction returned no block");
         if (session !== await $.session.id()) throw new Error("native session changed during compaction");

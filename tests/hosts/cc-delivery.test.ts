@@ -12,6 +12,9 @@ import { ccCompaction, ccDeltaInjection, ccSessionStartInjection, databaseIdenti
 import { sliceCcInjection } from "../../src/hosts/cc/slices.ts";
 import { CC_AUTO_CONTINUE_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccStripAutoContinue, classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 import { readCcMenu } from "../../src/hosts/cc/menu.ts";
+import { build } from "esbuild";
+import { resolve } from "node:path";
+import { ccRunningTasksSchema } from "../../src/hosts/cc/tasks.ts";
 
 const dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -436,3 +439,39 @@ test("102 /trace splits a compaction carrier by its compaction's recorded delive
     expect(context(unrecorded)).toMatchObject({ presence: "unavailable", reason: "native function carrier provenance unavailable in Messages snapshot" });
   } finally { f.close(); }
 });
+
+test("133: a fake agent list reaches real CC compaction, preserving running/waiting tasks only", async () => {
+  const f = await fixture();
+  try {
+    const bundle = await build({ entryPoints: [resolve("plugin/hooks/index.tsx")], bundle: true, write: false,
+      format: "esm", platform: "neutral", jsx: "transform", jsxFactory: "jsx" });
+    // The native JSX hook is compiled first; this dynamic import is the test's module-loading boundary.
+    const { register } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.contents).toString("base64")}`);
+    type Hook = (host: unknown, event: unknown, next: () => never) => Promise<{ messages: { text: string }[] }>;
+    let compact!: Hook;
+    register((name: string, ...args: unknown[]) => { if (name === "session.compact") compact = args.at(-1) as Hook; });
+    const host = {
+      session: { id: async () => f.nativeSession },
+      agent: { list: async () => [
+        { id: "active", type: "Explore", description: "Inspect compaction", status: "running" },
+        { id: "waiting", type: "reviewer", description: "Wait for evidence", status: "waiting" },
+        { id: "done", type: "Explore", description: "Already finished", status: "completed" },
+      ] },
+      plugin: { root: "/fixture" },
+      ui: { log: vi.fn() },
+      process: { run: async (_args: readonly string[], options: { stdin: string }) => {
+        const input = JSON.parse(options.stdin) as { session_id: string; trigger: string; auto: boolean; runningTasks: unknown };
+        return { exitCode: 0, stdout: JSON.stringify(await ccCompaction(f.config, {
+          ...input, runningTasks: ccRunningTasksSchema.parse(input.runningTasks),
+        })) };
+      } },
+    };
+    const result = await compact(host, { trigger: "manual", messages: [{ handle: "a1" }] }, () => { throw new Error("unexpected native fallback"); });
+    const body = result.messages[0]!.text;
+    expect(body).toContain("- active Explore: Inspect compaction (running)");
+    expect(body).toContain("- waiting reviewer: Wait for evidence (waiting)");
+    expect(body).not.toContain("Already finished");
+    expect(body.indexOf("Running tasks:")).toBeGreaterThan(body.indexOf("Raw:"));
+  } finally { f.close(); }
+});
+

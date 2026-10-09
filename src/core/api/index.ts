@@ -6,7 +6,7 @@ import { knowledgeReadSelection } from "./knowledge-read.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
-import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/source.ts";
+import { sourceBlocks, resultHasText, type SourceNormalizer, type HumanUserDetector } from "../model/source.ts";
 import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
 export { memoryFiles, memoryPath, resolvedMemoryPath, memoryGlob, MEMORY_ROOT, MEMORY_READ_ONLY } from "./files.ts";
@@ -29,7 +29,8 @@ export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.
 // 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay
 // out knowledge, facts or Raw itself.
 export { notingText, injectionText, compactText, knowledgeBlock, memoryBodyHash } from "../render/material.ts";
-export type { SharedMaterial, KnowledgeGroup, TaskRange, MemoryComposition } from "../render/material.ts";
+export type { SharedMaterial, KnowledgeGroup, TaskRange, MemoryComposition, RunningTask } from "../render/material.ts";
+import type { RunningTask } from "../render/material.ts";
 export { enrollmentDefault, sourceDigest } from "../store/index.ts";
 export { directoryAllocation } from "../project/directory.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
@@ -77,17 +78,15 @@ export interface TraceMemoryConfig {
     /** Cooperative wall-clock deadline shared by every host. */
     timeoutMs: number;
   };
-  /** The two database-independent material windows, and the allowance every consumer shares. Knowledge
-   * uses the bound database policy's base sum; the maximum envelope adds all three bases and the
-   * shared allowance below. */
+  /** Episodic bases, a Knowledge-only shared allowance, and a separate temporary allowance. */
   compaction: {
-    /** The facts window: newest path facts not wholly covered by the retained Raw span; no borrowing. */
     factsTokens: number;
-    /** The Raw window: the pending entry views, then the already-extracted refill (28a items 1, 5). */
     rawTokens: number;
-    /** One fixed allowance, independent of N/D triggers. Knowledge borrows first; pending Raw may
-     * borrow the remainder, while facts stay within their base. Injection and N/D Knowledge windows
-     * use the same allowance, so it is not a compaction-only overflow. */
+    temporaryTokens: number;
+    userTurns: number;
+    titleTurns: number;
+    userEntryTokens: number;
+    /** Shared by Knowledge consumers only; pending Raw uses temporaryTokens instead. */
     sharedAllowanceTokens: number;
   };
 }
@@ -114,6 +113,10 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
   compaction: {
     factsTokens: 10_000,
     rawTokens: 10_000,
+    temporaryTokens: 10_000,
+    userTurns: 30,
+    titleTurns: 100,
+    userEntryTokens: 500,
     sharedAllowanceTokens: DEFAULT_SHARED_ALLOWANCE_TOKENS,
   },
 };
@@ -442,7 +445,7 @@ export interface TraceMemory {
    * remain accepted for Raw-only callers. A host that keeps none passes none. */
   compact(sessionId: number, branch?: string, headTurnId?: number, retainedView?: readonly string[] | VisibleView, transportItems?: boolean,
     /** 97: `knowledge: false` leaves the Knowledge window empty, for a host that cannot record its delivery. */
-    options?: { knowledge?: boolean; toolNames?: ToolNames }): CompactResult;
+    options?: { knowledge?: boolean; toolNames?: ToolNames; runningTasks?: readonly RunningTask[] }): CompactResult;
   /** Ticket 21b: the path-selected applicable knowledge grouped by topic, as commit references; a
    * read projection only — it neither reorders injection nor changes what is applicable. */
   topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;
@@ -487,7 +490,7 @@ function selectByOrdinal<T extends { entryOrdinal: number }>(entries: readonly T
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {},
   /** Ticket 23: the host's one result-text extractor, registered here (default: the stored string). */
-  resultText: ResultExtractor = rawResultText, normalizeSource?: SourceNormalizer): TraceMemory {
+  resultText: ResultExtractor = rawResultText, normalizeSource?: SourceNormalizer, humanUser?: HumanUserDetector): TraceMemory {
   const cfg = validateConfig(config);
   const store = new Store(dbPath, normalizeSource);
   const executorId = randomUUID();
@@ -767,7 +770,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       ...(display.rawTurn ? { includeThinking: display.full === true || !!parsed.entries } : {}) }, uncompressed ? rawResultText : resultText));
   };
 
-  const read = readFacade(store, cfg, prepareTrace, resultText);
+  const read = readFacade(store, cfg, prepareTrace, resultText, humanUser);
   // Ticket 80 item 1: an entry is immutable and `cfg.render`/`resultText`/`ENTRY_VIEW_VERSION` are all
   // fixed for this process, so a rendered view is a pure function of the entry id alone — computed
   // once per process and reused by every later due check or pending-weight read, never re-rendered
@@ -922,7 +925,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // 70: `pendingNow` above already read this exact session/branch/head's full pending set inside
       // this same admission transaction; nothing between there and here can mark an entry noted, so
       // the freeze reuses it instead of reading it again.
-      const frozen = freezeNoting(store, selected, cfg, resultText, pendingNow);
+      const frozen = freezeNoting(store, selected, cfg, resultText, pendingNow, humanUser);
       origin = admittedOrigin;
       const head = frozen.entries[0]?.id;
       if (head !== undefined) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head, origin }, input.executionId);

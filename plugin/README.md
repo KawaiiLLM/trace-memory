@@ -23,12 +23,28 @@ Core phase bounds use optional top-level keys in the same file:
 | `noting.forkModeDefault` | `false` | Request native fork when eligible; otherwise record the fresh fallback reason |
 | `dreaming.triggerTokens` | 10,000 | Dreamer trigger on the session's pending weight summed across its pools |
 | `dreaming.timeoutMs` | 1,800,000 | Dreamer wall-clock bound; no tool-round ceiling |
-| `compaction.sharedAllowanceTokens` | 10,000 | Shared allowance Knowledge borrows first, then unprocessed Raw |
+| `compaction.sharedAllowanceTokens` | 10,000 | Allowance lent to Knowledge only |
+| `compaction.temporaryTokens` | 10,000 | Separate allowance: pending Raw, then user words, then titles |
+| `compaction.userTurns` | 30 | User-word reach including the anchor, counted along its path |
+| `compaction.titleTurns` | 100 | Fact-title reach including the anchor, counted along its path |
+| `compaction.userEntryTokens` | 500 | Middle-cut cap for each earlier human user entry |
 
 The shared material allowance is this configured value, not derived from the N or D triggers.
 Noter publishes facts and knowledge together; facts have no later processing queue. Database pool
 budgets still size pools and decide a Dreamer run's success; a session whose knowledge exceeds their
 sum plus the shared allowance is due for a Dreamer run.
+
+Compaction retains the existing 10k Raw and 10k full-fact windows. The temporary allowance
+adds missing user words and uncovered fact titles without borrowing Knowledge's allowance
+or filling beyond the configured reaches. Noter uses the same rules at its batch endpoint,
+and reduces optional temporary material before full historical facts during capacity negotiation.
+The episodic order is titles, full facts, user words, Raw, running tasks.
+
+The compaction hook supplies running/waiting agents from `$.agent.list()`. Claude Code 2.1.293
+did not reattach task status after a hook-supplied compaction in the fenced local-provider probe.
+Background shells are not listed: historical structured launch ids have incomplete terminal
+notifications, so their presence does not establish live state. The adapter conservatively lists
+agents only rather than guessing. No running-task block is emitted when empty.
 
 Optional `retry: { "maxRetries": 2 }` configures the native request retry count. Omission preserves
 Claude Code's native default; zero disables those retries. Timing, backoff and eligible errors remain

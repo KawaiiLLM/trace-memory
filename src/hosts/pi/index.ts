@@ -1207,7 +1207,12 @@ export default function (pi: ExtensionAPI) {
         if (!valid()) return { native: true, reason: "memory enrollment or the selected path changed" };
         if (state.sessionId) return memory.store.transaction(() => {
           if (!valid()) return { native: true as const, reason: "memory enrollment, project or the selected path changed" };
-          return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION), false, { knowledge });
+          // Optional in-process service contract published by pi-subagents, not a package dependency.
+          const service = (globalThis as Record<symbol, unknown>)[Symbol.for("@gotgenes/pi-subagents:service")] as
+            { listAgents(): { id: string; type: string; description: string; status: string }[] } | undefined;
+          const runningTasks = (service?.listAgents() ?? []).filter(agent => agent.status === "queued" || agent.status === "running")
+            .map(agent => ({ id: agent.id, kind: agent.type, description: agent.description, status: agent.status }));
+          return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION), false, { knowledge, runningTasks });
         });
         if (!knowledge) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
         const block = memory.injection({ projectId: state.projectId });
@@ -1261,7 +1266,7 @@ export default function (pi: ExtensionAPI) {
       if ("native" in result || !result.text || result.hasMaterialCandidates === false) return;
     }
     publishedTruncation = result.truncated ?? (result.hasMaterialCandidates && result.charged &&
-      !result.charged.knowledge && !result.charged.facts && !result.charged.raw ? {} : undefined);
+      !result.charged.knowledge && !result.charged.facts && !result.charged.raw && !result.charged.temporary ? {} : undefined);
     return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied, prompt).traceMemory, composition: result.composition } } } };
   });
   pi.on("session_compact", (_event, context) => {

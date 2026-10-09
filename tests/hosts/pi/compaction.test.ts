@@ -54,7 +54,7 @@ test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary unde
 
 test("73: many tiny entries over the Raw window truncate to the newest span rather than delegate, and compact starts no worker", async () => {
   const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "dreaming.triggerTokens": 1,
-    "compaction.factsTokens": 50, "compaction.rawTokens": 600, "compaction.sharedAllowanceTokens": 1 });
+    "compaction.factsTokens": 50, "compaction.rawTokens": 600, "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
   try {
     h.memory.setKnowledgeBudget("global", 0);
     h.memory.setKnowledgeBudget("project", 0);
@@ -122,7 +122,7 @@ test("118: genuinely empty material delegates without a custom delivery", async 
 });
 
 test("118: a failed knowledge delivery still completes a capacity-omitted custom replacement", async () => {
-  const h = host({ ...quiet, "compaction.factsTokens": 1, "compaction.rawTokens": 1, "compaction.sharedAllowanceTokens": 1 });
+  const h = host({ ...quiet, "compaction.factsTokens": 1, "compaction.rawTokens": 1, "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
   try {
     await h.prompt("establish session"); await h.answer();
     const path = h.memory.store.knowledgePath(1, "main", 1);

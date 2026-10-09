@@ -1,0 +1,573 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`133: titles default to one hundred anchor-inclusive path turns, are configurable, and untitled facts stay bare > Noter material 1`] = `
+"Target session agent: fake
+
+Range: S1/T103..S1/T103
+
+Memory is read at trace:// addresses with read or grep, never a shell command. trace:// lists every address.
+Address: trace://<layer>/S<n>/T<t>. Without /T<t>: the session's current head.
+Layers: knowledge (what a fresh context there receives), compact (what compaction there injects), facts (the Turn's facts), raw (its Raw overview).
+raw only: #E<k> gives one full entry and @role keeps one role, e.g. citation T12#E3@assistant of S7 is trace://raw/S7/T12#E3@assistant.
+trace://K<id>, trace://F<id>: one knowledge item or fact.
+Give a subagent trace://knowledge/S1 for background or trace://compact/S1 to continue, and tell it to use read.
+
+<episodic>
+Earlier facts (titles only; read trace://F<id> for the body):
+
+[T4] 2026-10-09T00:00:00Z
+[F4] Episode 3
+[T5] 2026-10-09T00:00:00Z
+[F5] Episode 4
+[T7] 2026-10-09T00:00:00Z
+[F7] Episode 6
+[T8] 2026-10-09T00:00:00Z
+[F8] Episode 7
+[T9] 2026-10-09T00:00:00Z
+[F9] Episode 8
+[T10] 2026-10-09T00:00:00Z
+[F10] Episode 9
+[T11] 2026-10-09T00:00:00Z
+[F11] Episode 10
+[T12] 2026-10-09T00:00:00Z
+[F12] Episode 11
+[T13] 2026-10-09T00:00:00Z
+[F13] Episode 12
+[T14] 2026-10-09T00:00:00Z
+[F14] Episode 13
+[T15] 2026-10-09T00:00:00Z
+[F15] Episode 14
+[T16] 2026-10-09T00:00:00Z
+[F16] Episode 15
+[T17] 2026-10-09T00:00:00Z
+[F17] Episode 16
+[T18] 2026-10-09T00:00:00Z
+[F18] Episode 17
+[T19] 2026-10-09T00:00:00Z
+[F19] Episode 18
+[T20] 2026-10-09T00:00:00Z
+[F20] Episode 19
+[T21] 2026-10-09T00:00:00Z
+[F21] Episode 20
+[T22] 2026-10-09T00:00:00Z
+[F22] Episode 21
+[T23] 2026-10-09T00:00:00Z
+[F23] Episode 22
+[T24] 2026-10-09T00:00:00Z
+[F24] Episode 23
+[T25] 2026-10-09T00:00:00Z
+[F25] Episode 24
+[T26] 2026-10-09T00:00:00Z
+[F26] Episode 25
+[T27] 2026-10-09T00:00:00Z
+[F27] Episode 26
+[T28] 2026-10-09T00:00:00Z
+[F28] Episode 27
+[T29] 2026-10-09T00:00:00Z
+[F29] Episode 28
+[T30] 2026-10-09T00:00:00Z
+[F30] Episode 29
+[T31] 2026-10-09T00:00:00Z
+[F31] Episode 30
+[T32] 2026-10-09T00:00:00Z
+[F32] Episode 31
+[T33] 2026-10-09T00:00:00Z
+[F33] Episode 32
+[T34] 2026-10-09T00:00:00Z
+[F34] Episode 33
+[T35] 2026-10-09T00:00:00Z
+[F35] Episode 34
+[T36] 2026-10-09T00:00:00Z
+[F36] Episode 35
+[T37] 2026-10-09T00:00:00Z
+[F37] Episode 36
+[T38] 2026-10-09T00:00:00Z
+[F38] Episode 37
+[T39] 2026-10-09T00:00:00Z
+[F39] Episode 38
+[T40] 2026-10-09T00:00:00Z
+[F40] Episode 39
+[T41] 2026-10-09T00:00:00Z
+[F41] Episode 40
+[T42] 2026-10-09T00:00:00Z
+[F42] Episode 41
+[T43] 2026-10-09T00:00:00Z
+[F43] Episode 42
+[T44] 2026-10-09T00:00:00Z
+[F44] Episode 43
+[T45] 2026-10-09T00:00:00Z
+[F45] Episode 44
+[T46] 2026-10-09T00:00:00Z
+[F46] Episode 45
+[T47] 2026-10-09T00:00:00Z
+[F47] Episode 46
+[T48] 2026-10-09T00:00:00Z
+[F48] Episode 47
+[T49] 2026-10-09T00:00:00Z
+[F49] Episode 48
+[T50] 2026-10-09T00:00:00Z
+[F50] Episode 49
+[T51] 2026-10-09T00:00:00Z
+[F51] Episode 50
+[T52] 2026-10-09T00:00:00Z
+[F52] Episode 51
+[T53] 2026-10-09T00:00:00Z
+[F53] Episode 52
+[T54] 2026-10-09T00:00:00Z
+[F54] Episode 53
+[T55] 2026-10-09T00:00:00Z
+[F55] Episode 54
+[T56] 2026-10-09T00:00:00Z
+[F56] Episode 55
+[T57] 2026-10-09T00:00:00Z
+[F57] Episode 56
+[T58] 2026-10-09T00:00:00Z
+[F58] Episode 57
+[T59] 2026-10-09T00:00:00Z
+[F59] Episode 58
+[T60] 2026-10-09T00:00:00Z
+[F60] Episode 59
+[T61] 2026-10-09T00:00:00Z
+[F61] Episode 60
+[T62] 2026-10-09T00:00:00Z
+[F62] Episode 61
+[T63] 2026-10-09T00:00:00Z
+[F63] Episode 62
+[T64] 2026-10-09T00:00:00Z
+[F64] Episode 63
+[T65] 2026-10-09T00:00:00Z
+[F65] Episode 64
+[T66] 2026-10-09T00:00:00Z
+[F66] Episode 65
+[T67] 2026-10-09T00:00:00Z
+[F67] Episode 66
+[T68] 2026-10-09T00:00:00Z
+[F68] Episode 67
+[T69] 2026-10-09T00:00:00Z
+[F69] Episode 68
+[T70] 2026-10-09T00:00:00Z
+[F70] Episode 69
+[T71] 2026-10-09T00:00:00Z
+[F71] Episode 70
+[T72] 2026-10-09T00:00:00Z
+[F72] Episode 71
+[T73] 2026-10-09T00:00:00Z
+[F73] Episode 72
+[T74] 2026-10-09T00:00:00Z
+[F74] Episode 73
+[T75] 2026-10-09T00:00:00Z
+[F75] Episode 74
+[T76] 2026-10-09T00:00:00Z
+[F76] Episode 75
+[T77] 2026-10-09T00:00:00Z
+[F77] Episode 76
+[T78] 2026-10-09T00:00:00Z
+[F78] Episode 77
+[T79] 2026-10-09T00:00:00Z
+[F79] Episode 78
+[T80] 2026-10-09T00:00:00Z
+[F80] Episode 79
+[T81] 2026-10-09T00:00:00Z
+[F81] Episode 80
+[T82] 2026-10-09T00:00:00Z
+[F82] Episode 81
+[T83] 2026-10-09T00:00:00Z
+[F83] Episode 82
+[T84] 2026-10-09T00:00:00Z
+[F84] Episode 83
+[T85] 2026-10-09T00:00:00Z
+[F85] Episode 84
+[T86] 2026-10-09T00:00:00Z
+[F86] Episode 85
+[T87] 2026-10-09T00:00:00Z
+[F87] Episode 86
+[T88] 2026-10-09T00:00:00Z
+[F88] Episode 87
+[T89] 2026-10-09T00:00:00Z
+[F89] Episode 88
+[T90] 2026-10-09T00:00:00Z
+[F90] Episode 89
+[T91] 2026-10-09T00:00:00Z
+[F91] Episode 90
+[T92] 2026-10-09T00:00:00Z
+[F92] Episode 91
+[T93] 2026-10-09T00:00:00Z
+[F93] Episode 92
+[T94] 2026-10-09T00:00:00Z
+[F94] Episode 93
+[T95] 2026-10-09T00:00:00Z
+[F95] Episode 94
+[T96] 2026-10-09T00:00:00Z
+[F96] Episode 95
+[T97] 2026-10-09T00:00:00Z
+[F97] Episode 96
+[T98] 2026-10-09T00:00:00Z
+[F98] Episode 97
+[T99] 2026-10-09T00:00:00Z
+[F99] Episode 98
+[T100] 2026-10-09T00:00:00Z
+[F100] Episode 99
+
+Recent facts (by Turn):
+
+[T101] 2026-10-09T00:00:00Z (selected facts)
+[F101] Episode 100
+[T101#E1@user] evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100
+
+[T102] 2026-10-09T00:00:00Z (selected facts)
+[F102] Episode 101
+[T102#E1@user] evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101
+
+
+Earlier user messages:
+
+[T74#E1@user] user: source-73
+
+[T75#E1@user] user: source-74
+
+[T76#E1@user] user: source-75
+
+[T77#E1@user] user: source-76
+
+[T78#E1@user] user: source-77
+
+[T79#E1@user] user: source-78
+
+[T80#E1@user] user: source-79
+
+[T81#E1@user] user: source-80
+
+[T82#E1@user] user: source-81
+
+[T83#E1@user] user: source-82
+
+[T84#E1@user] user: source-83
+
+[T85#E1@user] user: source-84
+
+[T86#E1@user] user: source-85
+
+[T87#E1@user] user: source-86
+
+[T88#E1@user] user: source-87
+
+[T89#E1@user] user: source-88
+
+[T90#E1@user] user: source-89
+
+[T91#E1@user] user: source-90
+
+[T92#E1@user] user: source-91
+
+[T93#E1@user] user: source-92
+
+[T94#E1@user] user: source-93
+
+[T95#E1@user] user: source-94
+
+[T96#E1@user] user: source-95
+
+[T97#E1@user] user: source-96
+
+[T98#E1@user] user: source-97
+
+[T99#E1@user] user: source-98
+
+[T100#E1@user] user: source-99
+
+[T101#E1@user] user: source-100
+
+[T102#E1@user] user: source-101
+
+Raw:
+
+[T103#E1@user] user: new batch
+</episodic>
+
+Receipts:
+omitted 4 older facts; expand: trace://F6, trace://F3, trace://F2, trace://F1"
+`;
+
+exports[`133: titles default to one hundred anchor-inclusive path turns, are configurable, and untitled facts stay bare > compaction material 1`] = `
+"Memory is read at trace:// addresses with read or grep, never a shell command. trace:// lists every address.
+Address: trace://<layer>/S<n>/T<t>. Without /T<t>: the session's current head.
+Layers: knowledge (what a fresh context there receives), compact (what compaction there injects), facts (the Turn's facts), raw (its Raw overview).
+raw only: #E<k> gives one full entry and @role keeps one role, e.g. citation T12#E3@assistant of S7 is trace://raw/S7/T12#E3@assistant.
+trace://K<id>, trace://F<id>: one knowledge item or fact.
+Give a subagent trace://knowledge/S1 for background or trace://compact/S1 to continue, and tell it to use read.
+
+<episodic>
+Earlier facts (titles only; read trace://F<id> for the body):
+
+[T3] 2026-10-09T00:00:00Z
+[F3] Episode 2
+[T4] 2026-10-09T00:00:00Z
+[F4] Episode 3
+[T5] 2026-10-09T00:00:00Z
+[F5] Episode 4
+[T7] 2026-10-09T00:00:00Z
+[F7] Episode 6
+[T8] 2026-10-09T00:00:00Z
+[F8] Episode 7
+[T9] 2026-10-09T00:00:00Z
+[F9] Episode 8
+[T10] 2026-10-09T00:00:00Z
+[F10] Episode 9
+[T11] 2026-10-09T00:00:00Z
+[F11] Episode 10
+[T12] 2026-10-09T00:00:00Z
+[F12] Episode 11
+[T13] 2026-10-09T00:00:00Z
+[F13] Episode 12
+[T14] 2026-10-09T00:00:00Z
+[F14] Episode 13
+[T15] 2026-10-09T00:00:00Z
+[F15] Episode 14
+[T16] 2026-10-09T00:00:00Z
+[F16] Episode 15
+[T17] 2026-10-09T00:00:00Z
+[F17] Episode 16
+[T18] 2026-10-09T00:00:00Z
+[F18] Episode 17
+[T19] 2026-10-09T00:00:00Z
+[F19] Episode 18
+[T20] 2026-10-09T00:00:00Z
+[F20] Episode 19
+[T21] 2026-10-09T00:00:00Z
+[F21] Episode 20
+[T22] 2026-10-09T00:00:00Z
+[F22] Episode 21
+[T23] 2026-10-09T00:00:00Z
+[F23] Episode 22
+[T24] 2026-10-09T00:00:00Z
+[F24] Episode 23
+[T25] 2026-10-09T00:00:00Z
+[F25] Episode 24
+[T26] 2026-10-09T00:00:00Z
+[F26] Episode 25
+[T27] 2026-10-09T00:00:00Z
+[F27] Episode 26
+[T28] 2026-10-09T00:00:00Z
+[F28] Episode 27
+[T29] 2026-10-09T00:00:00Z
+[F29] Episode 28
+[T30] 2026-10-09T00:00:00Z
+[F30] Episode 29
+[T31] 2026-10-09T00:00:00Z
+[F31] Episode 30
+[T32] 2026-10-09T00:00:00Z
+[F32] Episode 31
+[T33] 2026-10-09T00:00:00Z
+[F33] Episode 32
+[T34] 2026-10-09T00:00:00Z
+[F34] Episode 33
+[T35] 2026-10-09T00:00:00Z
+[F35] Episode 34
+[T36] 2026-10-09T00:00:00Z
+[F36] Episode 35
+[T37] 2026-10-09T00:00:00Z
+[F37] Episode 36
+[T38] 2026-10-09T00:00:00Z
+[F38] Episode 37
+[T39] 2026-10-09T00:00:00Z
+[F39] Episode 38
+[T40] 2026-10-09T00:00:00Z
+[F40] Episode 39
+[T41] 2026-10-09T00:00:00Z
+[F41] Episode 40
+[T42] 2026-10-09T00:00:00Z
+[F42] Episode 41
+[T43] 2026-10-09T00:00:00Z
+[F43] Episode 42
+[T44] 2026-10-09T00:00:00Z
+[F44] Episode 43
+[T45] 2026-10-09T00:00:00Z
+[F45] Episode 44
+[T46] 2026-10-09T00:00:00Z
+[F46] Episode 45
+[T47] 2026-10-09T00:00:00Z
+[F47] Episode 46
+[T48] 2026-10-09T00:00:00Z
+[F48] Episode 47
+[T49] 2026-10-09T00:00:00Z
+[F49] Episode 48
+[T50] 2026-10-09T00:00:00Z
+[F50] Episode 49
+[T51] 2026-10-09T00:00:00Z
+[F51] Episode 50
+[T52] 2026-10-09T00:00:00Z
+[F52] Episode 51
+[T53] 2026-10-09T00:00:00Z
+[F53] Episode 52
+[T54] 2026-10-09T00:00:00Z
+[F54] Episode 53
+[T55] 2026-10-09T00:00:00Z
+[F55] Episode 54
+[T56] 2026-10-09T00:00:00Z
+[F56] Episode 55
+[T57] 2026-10-09T00:00:00Z
+[F57] Episode 56
+[T58] 2026-10-09T00:00:00Z
+[F58] Episode 57
+[T59] 2026-10-09T00:00:00Z
+[F59] Episode 58
+[T60] 2026-10-09T00:00:00Z
+[F60] Episode 59
+[T61] 2026-10-09T00:00:00Z
+[F61] Episode 60
+[T62] 2026-10-09T00:00:00Z
+[F62] Episode 61
+[T63] 2026-10-09T00:00:00Z
+[F63] Episode 62
+[T64] 2026-10-09T00:00:00Z
+[F64] Episode 63
+[T65] 2026-10-09T00:00:00Z
+[F65] Episode 64
+[T66] 2026-10-09T00:00:00Z
+[F66] Episode 65
+[T67] 2026-10-09T00:00:00Z
+[F67] Episode 66
+[T68] 2026-10-09T00:00:00Z
+[F68] Episode 67
+[T69] 2026-10-09T00:00:00Z
+[F69] Episode 68
+[T70] 2026-10-09T00:00:00Z
+[F70] Episode 69
+[T71] 2026-10-09T00:00:00Z
+[F71] Episode 70
+[T72] 2026-10-09T00:00:00Z
+[F72] Episode 71
+[T73] 2026-10-09T00:00:00Z
+[F73] Episode 72
+[T74] 2026-10-09T00:00:00Z
+[F74] Episode 73
+[T75] 2026-10-09T00:00:00Z
+[F75] Episode 74
+[T76] 2026-10-09T00:00:00Z
+[F76] Episode 75
+[T77] 2026-10-09T00:00:00Z
+[F77] Episode 76
+[T78] 2026-10-09T00:00:00Z
+[F78] Episode 77
+[T79] 2026-10-09T00:00:00Z
+[F79] Episode 78
+[T80] 2026-10-09T00:00:00Z
+[F80] Episode 79
+[T81] 2026-10-09T00:00:00Z
+[F81] Episode 80
+[T82] 2026-10-09T00:00:00Z
+[F82] Episode 81
+[T83] 2026-10-09T00:00:00Z
+[F83] Episode 82
+[T84] 2026-10-09T00:00:00Z
+[F84] Episode 83
+[T85] 2026-10-09T00:00:00Z
+[F85] Episode 84
+[T86] 2026-10-09T00:00:00Z
+[F86] Episode 85
+[T87] 2026-10-09T00:00:00Z
+[F87] Episode 86
+[T88] 2026-10-09T00:00:00Z
+[F88] Episode 87
+[T89] 2026-10-09T00:00:00Z
+[F89] Episode 88
+[T90] 2026-10-09T00:00:00Z
+[F90] Episode 89
+[T91] 2026-10-09T00:00:00Z
+[F91] Episode 90
+[T92] 2026-10-09T00:00:00Z
+[F92] Episode 91
+[T93] 2026-10-09T00:00:00Z
+[F93] Episode 92
+[T94] 2026-10-09T00:00:00Z
+[F94] Episode 93
+[T95] 2026-10-09T00:00:00Z
+[F95] Episode 94
+[T96] 2026-10-09T00:00:00Z
+[F96] Episode 95
+[T97] 2026-10-09T00:00:00Z
+[F97] Episode 96
+[T98] 2026-10-09T00:00:00Z
+[F98] Episode 97
+[T99] 2026-10-09T00:00:00Z
+[F99] Episode 98
+[T100] 2026-10-09T00:00:00Z
+[F100] Episode 99
+
+Recent facts (by Turn):
+
+[T101] 2026-10-09T00:00:00Z (selected facts)
+[F101] Episode 100
+[T101#E1@user] evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100
+
+[T102] 2026-10-09T00:00:00Z (selected facts)
+[F102] Episode 101
+[T102#E1@user] evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101
+
+
+Earlier user messages:
+
+[T73#E1@user] user: source-72
+
+[T74#E1@user] user: source-73
+
+[T75#E1@user] user: source-74
+
+[T76#E1@user] user: source-75
+
+[T77#E1@user] user: source-76
+
+[T78#E1@user] user: source-77
+
+[T79#E1@user] user: source-78
+
+[T80#E1@user] user: source-79
+
+[T81#E1@user] user: source-80
+
+[T82#E1@user] user: source-81
+
+[T83#E1@user] user: source-82
+
+[T84#E1@user] user: source-83
+
+[T85#E1@user] user: source-84
+
+[T86#E1@user] user: source-85
+
+[T87#E1@user] user: source-86
+
+[T88#E1@user] user: source-87
+
+[T89#E1@user] user: source-88
+
+[T90#E1@user] user: source-89
+
+[T91#E1@user] user: source-90
+
+[T92#E1@user] user: source-91
+
+[T93#E1@user] user: source-92
+
+[T94#E1@user] user: source-93
+
+[T95#E1@user] user: source-94
+
+[T96#E1@user] user: source-95
+
+[T97#E1@user] user: source-96
+
+[T98#E1@user] user: source-97
+
+[T99#E1@user] user: source-98
+
+[T100#E1@user] user: source-99
+
+[T101#E1@user] user: source-100
+
+[T102#E1@user] user: source-101
+</episodic>
+
+Receipts:
+omitted 3 older facts; expand: trace://F6, trace://F2, trace://F1"
+`;

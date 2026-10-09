@@ -381,8 +381,10 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
 /** Explicit successful Noter script: one fact plus empty knowledge in the same assistant message. */
 export function notingFact(conversation: Conversation): Reply {
   const input = String(conversation.messages[0]!.content);
-  const address = /S(\d+)\/T(\d+)/.exec(input)!;
-  const source = /\[(T\d+#E\d+)@user\] user:/.exec(input)?.[1] ?? `T${address[2]}#E1`;
+  // 133: earlier user words are context, not writable sources from this frozen batch.
+  const batch = input.split("\nRaw:\n")[1]?.split("\n</episodic>")[0] ?? input.split("\nSources:\n")[1] ?? "";
+  const source = /\[(T\d+#E\d+)@user\] user:/.exec(batch)?.[1] ?? /\b(T\d+#E\d+)\b/.exec(batch)?.[1];
+  if (!source) throw new Error("Noter fixture requires a source from its actual Raw batch or inherited source index");
   const previous = latestNoteResult(conversation);
   if (previous) return memoryUsed(conversation) ? reply("Done.") : emptyMemoryReply();
   return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const,

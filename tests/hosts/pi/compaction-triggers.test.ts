@@ -174,3 +174,31 @@ async function completedStatus(f: Awaited<ReturnType<typeof session>>) {
 // capacity, so there is no more terminal-event scenario to pin here — a tight Raw window truncates
 // (compaction.test.ts covers that), and the only remaining native delegation is a host-caught error
 // unrelated to capacity, which this harness has no seam to script.
+
+test("133: optional pi-subagents service supplies queued/running tasks to persisted compaction", async () => {
+  const f = await session({ automatic: false });
+  const key = Symbol.for("@gotgenes/pi-subagents:service");
+  const registry = globalThis as Record<symbol, unknown>, previous = registry[key];
+  registry[key] = { listAgents: () => [
+    { id: "queued", type: "Explore", description: "Waiting for a seat", status: "queued" },
+    { id: "running", type: "reviewer", description: "Inspecting the change", status: "running" },
+    { id: "done", type: "Explore", description: "Finished task", status: "completed" },
+  ] };
+  try {
+    f.script(() => say("answered", usage(10, 2)));
+    await f.session.prompt("FIRST");
+    await f.session.compact();
+    const summary = compactions(f)[0]!.summary;
+    expect(summary).toContain("- queued Explore: Waiting for a seat (queued)");
+    expect(summary).toContain("- running reviewer: Inspecting the change (running)");
+    expect(summary).not.toContain("Finished task");
+    expect(summary.indexOf("Running tasks:")).toBeGreaterThan(summary.indexOf("Raw:"));
+    delete registry[key];
+    await f.session.prompt("SECOND");
+    await f.session.compact();
+    expect(compactions(f)[1]!.summary).not.toContain("Running tasks:");
+  } finally {
+    if (previous === undefined) delete registry[key]; else registry[key] = previous;
+    f.dispose();
+  }
+});

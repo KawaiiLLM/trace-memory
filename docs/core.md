@@ -443,20 +443,24 @@ instructions plus the text it supplies — never the cost of a fresh representat
 guarded instead by the re-admitted subagent's own freeze, which re-prices the fresh material at the
 fresh model's capacity and refuses the batch there if it does not fit.
 
-Noting context is two independent allowances (25a): the selected raw within `noting.batchTokens`,
-and the historical facts within what remains of `render.episodicBlockTokens` once that Raw ceiling is
-reserved — 10,000 each at the defaults. Those historical facts are the facts **applicable on the
-selected path** (26 amendment 2), from the freeze's own path snapshot: a sibling branch's fact is
-never this Noter's history. The reservation is what makes them independent: an
-under-budget Raw batch never enlarges the fact slice, and unused fact space never enlarges the batch.
-Facts are selected by descending timestamp, then id. Raw is never dropped or clipped: a selected
-batch whose mandatory material (its views, the framing) cannot fit the episodic budget or the host's
-reported capacity is reduced oldest-first and re-frozen, and an oldest unit that cannot fit alone
-stays pending with a capacity error (review 2026-09-08; no overage receipt lets a task run over a
-hard budget). Older facts are dropped first. **Neither Noter mode receives a knowledge block** (25a,
-superseding ticket 20's leading knowledge block for this consumer): a Noter reads knowledge by
-address when it needs it. Every visible knowledge revision current at the start is still recorded, so
-such a read is judged against a frozen base.
+Noter's frozen Raw batch and full historical facts retain independent 10,000-token bases,
+`noting.batchTokens` and `compaction.factsTokens`. Historical facts must be applicable on the
+selected path; unused Raw space never enlarges their base. Fresh material is assembled by
+the same `compact()` allocator as main-agent compaction.
+
+Ticket 133 adds a separate `compaction.temporaryTokens` allowance, 10,000 by default.
+The anchor is the batch's newest turn. Its frozen batch already fits its Raw base, so no
+Noter Raw borrows: the allowance holds human user words from the anchor and nine preceding
+path turns, then uncovered fact titles from the anchor and 49 preceding turns.
+User entries use the normal head/tail middle cut at 500 tokens each. Neither these excerpts
+nor titles grant full-body coverage or enlarge the frozen processing batch.
+
+When the host's measured input capacity is insufficient, optional temporary material is
+trimmed first, then full historical facts, then the selected batch is reduced and re-frozen.
+An oldest admissible unit that cannot fit stays pending with a capacity diagnostic.
+Fresh Noter material also carries current Knowledge within its own base plus shared allowance;
+a fork retains its existing inherited-context adaptation. Visible revisions at admission remain
+the frozen read base.
 The budgets themselves, and what each one charges, are in "Material budgets (20b)" below.
 Historically, this ticket emitted expansion addresses for future trace support and
 implemented only `T<n>` and `F<n>` trace targets. Current model reads use `trace://`.
@@ -476,14 +480,13 @@ corrected it):
 
 | Consumer | Block order |
 | --- | --- |
-| Noter (`notingText`) | historical facts → range → selected Raw → receipts |
+| Noter (`notingText`) | target/range → knowledge/status → fact titles → full historical facts → earlier user words → selected Raw → receipts → head/source index |
 | Consolidator (`consolidationText`) | knowledge → range → selected pending facts → negation reminders → receipts |
 | Main-agent knowledge block (`injectionText`) | knowledge → inherited-knowledge status (31) → receipts |
-| Main-agent compact (`compactText`) | knowledge → historical facts → pending Raw (the one bounded entry view) → receipts |
+| Main-agent compact (`compactText`) | knowledge/status → fact titles → full historical facts → earlier user words → Raw → running tasks → receipts |
 
-25a supersedes ticket 20 on two blocks of that table: the Noter's leading knowledge block, in both
-modes, and the Consolidator's already-consolidated history block. Both consumers reach that material
-by explicit read instead, and knowledge a fork already inherited from the foreground is untouched.
+25a retired the Consolidator's already-consolidated history block. Ticket 92 restored current
+Knowledge to fresh Noter material; a fork's inherited foreground Knowledge remains untouched.
 
 ## One material builder, two initial states (29b)
 
@@ -571,10 +574,11 @@ charged once to the block that emits it:
 | main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | Knowledge base plus the shared allowance | 30,000 maximum |
 | Consolidator knowledge references, category tags, inherited status lines and omission receipts | frozen Knowledge base plus the shared allowance | 30,000 maximum |
 | Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
-| Noter: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
-| compact's facts window — unconsolidated facts borrowing the allowance Raw left, then consolidated facts within the facts base, with the `<episodic>` tag, the facts title and their receipts | `compaction.factsTokens` | 10,000 |
-| compact's Raw window — pending entries borrowing the allowance Knowledge left, then already-noted entries within the Raw base, with the Raw title | `compaction.rawTokens` | 10,000 |
-| shared allowance — Knowledge borrows first, then unprocessed Raw, then unprocessed facts (73) | `compaction.sharedAllowanceTokens`, configured, not derived | 10,000 |
+| Noter's full historical facts and framing | `compaction.factsTokens` | 10,000 |
+| compact's full facts and their framing/receipts; no borrowing | `compaction.factsTokens` | 10,000 |
+| compact's Raw, pending overflow borrowing only the temporary allowance | `compaction.rawTokens` | 10,000 |
+| Knowledge-only shared allowance (133 supersedes episodic borrowing in 73) | `compaction.sharedAllowanceTokens` | 10,000 |
+| temporary allowance: pending Raw → user words within 30 turns → fact titles within 100 turns; framing/receipts included | `compaction.temporaryTokens` | 10,000 |
 | Consolidator: its titles, range line and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
 
 Required task material is reserved first; historical facts then fill whatever episodic space is left, in the existing freshness order. A Noter batch consumes at most its own
@@ -583,7 +587,7 @@ block at all — its selected pending facts and their required framing share the
 allowance. Outer framing is never charged against the Noter's inner Raw ceiling, so an otherwise valid
 10,000-token entry stays batchable.
 
-Each database stores one Knowledge policy row: Global 4,000, Project 15,000 and Session 1,000 tokens by default. Their safe-integer sum derives the 20,000-token Knowledge base window. Knowledge, Facts and Raw have 20,000/10,000/10,000 base windows. Their shared allowance is one configuration value, `compaction.sharedAllowanceTokens`, 10,000 tokens by default (73). It is no longer derived from the Noting, Consolidation and Dreaming triggers, reads nothing from the database, and is unaffected by trigger changes; the derivation function it replaced is gone. Owner pools remain independent: each project has the full Project budget and each session has the full Session budget; they are never multiplied into one global total. Pool sizes count current visible non-archived revisions whether or not they have processing records. Processing state triggers maintenance; it does not change capacity, validity or visibility.
+Each database stores one Knowledge policy row: Global 4,000, Project 15,000 and Session 1,000 tokens by default. Their safe-integer sum derives the 20,000-token Knowledge base. Knowledge, Facts and Raw retain 20,000/10,000/10,000 base windows. `compaction.sharedAllowanceTokens` adds 10,000 for Knowledge only; `compaction.temporaryTokens` independently adds 10,000 for pending Raw, user words and titles. Neither allowance is derived from triggers or pool sizes. Owner pools remain independent: each project has the full Project budget and each session the full Session budget, never multiplied into one global total. Pool sizes count current visible non-archived revisions whether or not they have processing records. Processing state triggers maintenance; it does not change capacity, validity or visibility.
 
 Supported schema creation and upgrade, source/lineage migration, policy initialization and policy
 validation commit as one database transaction. A failed later migration or integrity check therefore
@@ -596,20 +600,13 @@ Ticket 25 amendment 3 (25c) removed compaction's inner Raw cap: a foreground bac
 batch, so `noting.batchTokens` does not bound it. Ticket 28a replaced 25c's "knowledge plus one shared
 20,000-token envelope" with three windows and its own allocator (below); compaction no longer reads
 `render.episodicBlockTokens` at all, and that key stayed exactly what it was for the Noter.
-`budgetMaterial` keeps serving the Noter and the Consolidator unchanged — it is not compaction's
-allocator any more.
-
-The Noter's two allowances are independent, and the reservation is what makes them so: its historical
-facts are capped at `render.episodicBlockTokens − noting.batchTokens` (10,000 at the defaults), so the
-Raw ceiling is subtracted whether or not this batch fills it. A small Raw batch never buys a larger
-fact slice, and a small fact slice never buys a larger Raw batch. No new configuration key expresses
-this; the cap is derived from the two that already exist.
-
-Fresh material is therefore at most 20,000 estimated tokens for the Noter and 40,000 for the
-Consolidator by default: the latter combines the frozen 20,000-token Knowledge base, its 10,000-token
-shared allowance and its independent 10,000-token fact/range allowance. System instructions, tool
-definitions, inherited native history and later tool/review messages are additional context costs,
-which is why the host's real-context capacity check stays independent of these domain limits.
+Noter now assembles through `compact()` with its own frozen batch and endpoint; the legacy
+`budgetMaterial` API does not select that batch's history. Its Raw and full-fact bases remain
+independent, with the separate temporary allowance described above. At default policy the
+main-agent envelope is 60,000 estimated tokens: Knowledge 20,000, full facts 10,000, Raw 10,000,
+Knowledge's shared allowance 10,000 and temporary allowance 10,000. Live running tasks and the
+fixed reading guide are additional measured text. System instructions, tools, inherited context
+and later model-loop messages remain subject to the host's independent real-input capacity check.
 
 Selected evidence is never dropped to fit: the reducible unit is the task itself
 (`freezeNoting`/`freezeConsolidation` take a smaller oldest-first prefix), and a current block over
@@ -835,25 +832,28 @@ since 30, one allocation since 73):
 
 | Outcome | Condition | Result |
 | --- | --- | --- |
-| `{text, supplied, charged, truncated?}` | any valid path | knowledge/status, `<episodic>` facts in chronological Turn groups, then bounded Raw in source order; `truncated` reports omitted pending Raw entries and unconsolidated facts, with counts and tokens |
+| `{text, supplied, charged, truncated?}` | any valid path | knowledge/status, then `<episodic>` title index → full facts → earlier user words → Raw → live tasks; `truncated` reports omitted pending Raw entries |
 | `{native: true, reason}` | an unexpected host-caught error (a store error, an invalid path) | explicit native delegation; never returned for capacity |
 
-**Fixed bases and shared allowance (73).** Knowledge uses the database-derived 20,000-token base;
-Facts and Raw use 10,000-token bases. One configured allowance, `compaction.sharedAllowanceTokens`,
-10,000 tokens by default and never derived from the triggers, is shared across the windows in a fixed
-order — never divided or reserved up front: Knowledge fills its base and borrows the allowance first,
-for any effective knowledge above the base; then the newest contiguous Raw span borrows what Knowledge
-left, for its still-pending entries only; then the newest facts before that span borrow what Raw left,
-for unconsolidated facts only. Already-noted Raw and already-consolidated facts fill only their own
-base, never the allowance. Unused base capacity never moves between windows. Current Knowledge is
-optional regardless of its pool's processing record; above "Knowledge base plus allowance" the oldest
-optional items are dropped. Framing, state notices and receipts are charged once to the window that
-emits them, and a window with no room even for a bare receipt is emitted empty. Compact never falls
-back: material that does not fit even with the allowance is truncated — newest kept, oldest omitted
-with a receipt — and stays pending in the store for Noting and Consolidation.
+**Independent allowances (133).** Knowledge retains its database-derived 20,000-token base;
+Facts and Raw retain 10,000-token bases. The configured 10,000-token shared allowance is
+lent to Knowledge only. The separate 10,000-token temporary allowance is filled in order:
+pending Raw overflow, missing human user entries within `compaction.userTurns` (30) path turns,
+then uncovered titles within `compaction.titleTurns` (100) path turns. Both configurable reaches
+include the anchor; no older material fills spare room.
+Each kind keeps a newest-first whole-item prefix and stops at its first non-fitting item.
+User entries use the normal renderer with `compaction.userEntryTokens` (500) as their middle-cut
+cap. All four temporary-allowance settings require positive safe integers.
+
+Full facts and Raw preserve their selection and coverage rules. Framing and receipts are
+charged in their owning window or allowance. Raw omissions stay pending and warn in the
+foreground; omitted user entries have an address receipt and omitted titles join the existing
+bare-id fact receipt. `supplied` claims ordinary Raw views and complete facts only, never
+500-token user excerpts or title-only facts. `trace://compact` has the same stored material;
+running tasks are live host state supplied only at actual compaction.
 
 **Raw-first span, then facts.** Walk the selected path newest-first and take one contiguous Raw span:
-a pending entry may use the Raw base and then the allowance Knowledge left; an already-noted entry
+a pending entry may use the Raw base and then the temporary allowance; an already-noted entry
 continues the same span only within the Raw base remainder. The walk never skips an entry to reach an
 older one — the first entry that cannot be taken (too large for the remaining budget, or whose bounded
 view cannot fit its own profile) ends the span, and everything older is omitted and counted in the
@@ -867,8 +867,8 @@ Then filter facts — consolidated and unconsolidated alike — before selection
 nonempty, complete `fact_sources` bindings are fully covered by retained Raw or the Raw span just
 chosen. Unknown, incomplete or partly covered bindings remain eligible, as does a fact whose sources
 straddle the span's start. Select eligible whole facts newest first, deduplicated against retained
-fact IDs, and display chronological Turn groups; an unconsolidated fact may use the facts base and then
-the allowance Raw left, a consolidated fact only the facts base remainder. Excluded facts gain no
+fact IDs, and display chronological Turn groups. All full facts use only the facts base,
+regardless of historical processing; excluded facts gain no
 supplied fact IDs. Pending membership is exact entry/fact processing membership, never a timestamp
 tail; old pending holes remain protected.
 

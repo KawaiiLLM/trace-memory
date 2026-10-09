@@ -66,10 +66,10 @@ const charged = (result: ReturnType<typeof memory.compact>) => {
   if ("native" in result) throw new Error(`expected a custom replacement, got: ${result.reason}`);
   return result.charged!;
 };
-/** Tests set independent bases; a zero allowance isolates each base boundary. */
+/** 133: tight cases bound both independent allowances, without borrowing any other base. */
 const setWindows = (knowledge: number, facts: number, raw: number, allowance = 0) => {
   setKnowledgeCapacity(memory, Math.max(3, knowledge));
-  Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw, sharedAllowanceTokens: allowance });
+  Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw, sharedAllowanceTokens: allowance, temporaryTokens: allowance });
 };
 const defaultWindows = () => {
   memory.setKnowledgeBudget("global", 4_000);
@@ -78,6 +78,7 @@ const defaultWindows = () => {
   memory.config.compaction.sharedAllowanceTokens = 10_000;
   memory.config.compaction.factsTokens = 10_000;
   memory.config.compaction.rawTokens = 10_000;
+  memory.config.compaction.temporaryTokens = 10_000;
 };
 
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
@@ -847,7 +848,7 @@ test("21b 2026-09-08: labels match literally, never as JSON syntax, and empty to
   expect(memory.search("unlabelled but searchable", "knowledge")).toContain(`[K${plain}@${plain}]`);
 });
 
-// ---- Shared allowance, independent facts and processed-Raw refill (92). ----
+// ---- Independent facts and processed-Raw refill (92); 133 replaces shared episodic borrowing. ----
 
 /** Facts of one Turn, without advancing Raw progress or creating C processing marks. */
 function pendingFacts(sessionId: number, turnId: number, texts: string[], branch = "main") {
@@ -859,61 +860,6 @@ function pendingFacts(sessionId: number, turnId: number, texts: string[], branch
 const entry = (sessionId: number, turnId: number, nativeId: string, text: string) =>
   memory.appendEntry({ sessionId, nativeLineage: "x", nativeId, turnId, role: "assistant", text, raw: "", calls: [] });
 
-test("92: knowledge and Raw share the allowance, but facts are independently capped at 10k", () => {
-  const s = session(), t = turn(s.id, "head");
-  const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
-  for (let i = 0; i < 9; i++) for (let part = 0; part < 2; part++)
-    knowledge(s.id, seed.id, "constraint", "project", `K${i} part ${part} ` + "word ".repeat(970), `202${i}`);
-  const facts = pendingFacts(s.id, t.id, [...Array(14)].map((_, i) => `FACT_${i} ` + "word ".repeat(990)));
-  for (let i = 0; i < 3; i++) entry(s.id, t.id, `raw${i}`, `RAW_${i} ` + "word ".repeat(1_940));
-  const result = memory.compact(s.id, "main", t.id);
-  expect("native" in result).toBe(false); // 38k of demand inside the 50k envelope
-  const windows = charged(result), text = compacted(result);
-  // The historical 14k fact corpus is no longer permitted to borrow shared allowance.
-  expect(windows.facts).toBeLessThanOrEqual(10_000);
-  expect(text).toContain("older facts; expand:");
-  expect(windows.knowledge).toBeGreaterThan(17_000);
-  expect(windows.raw).toBeGreaterThan(5_000);
-  expect(windows.envelope).toBe(50_000);
-  expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
-  expect(facts.some(fact => text.includes(`[F${fact.id}]`))).toBe(true);
-  expect(facts.some(fact => !text.includes(`[F${fact.id}]`))).toBe(true);
-  for (let i = 0; i < 3; i++) expect(text).toContain(`RAW_${i}`);
-  for (let i = 0; i < 9; i++) expect(text).toContain(`K${i} `);
-  expect(calls).toBe(0);
-});
-
-test("73: knowledge borrows the shared allowance first, even when it leaves pending Raw to truncate", () => {
-  setSharedAllowance(memory, 15_000);
-  const s = session(), t = turn(s.id, "head");
-  const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
-  // A knowledge corpus far past its own window (borrows and still overflows), 7k of pending facts
-  // (fits its own base) and enough pending Raw that its base alone cannot hold it.
-  for (let i = 0; i < 20; i++) for (let part = 0; part < 2; part++)
-    knowledge(s.id, seed.id, "constraint", "project", `K${i} part ${part} ` + "word ".repeat(970), `20${10 + i}`);
-  const facts = pendingFacts(s.id, t.id, [...Array(7)].map((_, i) => `FACT_${i} ` + "word ".repeat(990)));
-  for (let i = 0; i < 6; i++) entry(s.id, t.id, `raw${i}`, `RAW_${i} ` + "word ".repeat(1_940));
-  const result = memory.compact(s.id, "main", t.id);
-  expect("native" in result).toBe(false);
-  if ("native" in result) throw new Error("unreachable");
-  const windows = charged(result), text = compacted(result);
-  const base = memory.knowledgeBudgets().injection, allowance = memory.config.compaction.sharedAllowanceTokens;
-  // Knowledge takes the whole allowance before Raw or facts see any of it, and still truncates the
-  // oldest items past base plus allowance.
-  expect(windows.knowledge).toBeGreaterThan(base);
-  expect(windows.knowledge).toBeLessThanOrEqual(base + allowance);
-  expect(text).toContain("knowledge; expand: trace://K");
-  // Facts fit inside their own base with nothing left to borrow.
-  for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
-  // Raw cannot borrow what knowledge already took, so it truncates to its own base — the newest
-  // pending entries survive, the oldest are omitted and receipted, and the omission is reported.
-  expect(windows.raw).toBeLessThanOrEqual(memory.config.compaction.rawTokens);
-  expect(text).toContain("earlier entries omitted from the Raw window");
-  expect(result.truncated?.raw).toBeTruthy();
-  expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
-  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store)).toHaveLength(7); // nothing was processed or erased
-  expect(calls).toBe(0);
-});
 
 test("28a/30/92: facts and Raw refill stay whole, recent, path-applicable and deduplicated within independent windows", () => {
   const s = session(), t = turn(s.id, "head");

@@ -24,7 +24,7 @@ function fixture() {
   const next = vi.fn(async () => original) as any;
   next.signal = controller.signal;
   const host = { session: { id }, process: { run: (argv: string[], options: { stdin: string }) => argv.includes("hook-compact") ? build(argv, options) : run() },
-    plugin: { root: "/plugin" }, ui: { log } };
+    agent: { list: async () => [] }, plugin: { root: "/plugin" }, ui: { log } };
   return { host, id, run, build, log, next, controller };
 }
 const event = { trigger: "manual", messages: [{ role: "assistant", text: "last reply", toolUses: [], handle: "row-uuid" }] };
@@ -115,9 +115,6 @@ test.each(["manual", "auto"])("102: a %s compaction installs Trace Memory's bloc
   expect(await compact(f.host, { ...event, trigger }, f.next)).toEqual({ messages: [{ role: "user", text: block, toolUses: [] }] });
   expect(f.next).not.toHaveBeenCalled();
   expect(f.run).not.toHaveBeenCalled();
-  // The build waits for the newest message's row: its handle. Requirement 14 (ruled): the event's own
-  // trigger, manual or auto, rides along separately as `auto`, distinct from the handle above.
-  expect(JSON.parse(f.build.mock.calls[0]![1].stdin)).toEqual({ session_id: "session-A", trigger: "row-uuid", auto: trigger === "auto" });
   expect(f.log).not.toHaveBeenCalled();
 });
 

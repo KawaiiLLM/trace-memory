@@ -53,9 +53,6 @@ function exactFixture(target: { knowledge: number; facts: number; raw: number })
   return result;
 }
 
-function positiveExcess(value: { knowledge: number; facts: number; raw: number }) {
-  return Math.max(0, value.knowledge - 20_000) + Math.max(0, value.facts - 10_000) + Math.max(0, value.raw - 10_000);
-}
 
 test("73: current Knowledge is optional regardless of Dreamer processing state", () => {
   const { s, t } = fixture({ knowledge: 6_000, facts: 0, raw: 0 }, false, true);
@@ -66,52 +63,6 @@ test("73: current Knowledge is optional regardless of Dreamer processing state",
   expect(compacted(result)).not.toContain("current complete knowledge");
 });
 
-test("92: facts stay in their own base while pending Raw borrows at the exact shared boundary", () => {
-  const { s, t, f } = exactFixture({ knowledge: 20_000, facts: 9_000, raw: 1_800 });
-  memory.config.compaction.rawTokens = 1_000;
-  setSharedAllowance(memory, 800);
-  const fitted = memory.compact(s.id, "main", t.id);
-  expect(charged(fitted)).toMatchObject({ knowledge: 20_000, facts: 9_000, raw: 1_800 });
-  expect("native" in fitted ? [] : fitted.supplied.factIds).toContain(f.id);
-  expect("native" in fitted ? [] : fitted.supplied.entries).toHaveLength(1);
-  expect(memory.compact(s.id, "main", t.id)).toEqual(fitted);
-
-  setSharedAllowance(memory, 799);
-  const short = memory.compact(s.id, "main", t.id);
-  expect("native" in short).toBe(false);
-  if ("native" in short) throw new Error("unreachable");
-  expect(short.supplied.entries).toEqual([]); // one whole pending entry, never a cut view
-  expect(short.supplied.factIds).toContain(f.id); // facts never depend on Raw's shared remainder
-  expect(short.truncated?.raw?.entries).toBe(1);
-  expect(short.truncated?.raw).not.toHaveProperty("tokens");
-});
-
-test("73: Knowledge borrows the shared allowance before Raw, so Raw can lose out entirely", () => {
-  const { s, t, f } = exactFixture({ knowledge: 35_000, facts: 9_000, raw: 1_800 });
-  // Knowledge needs all 15k shared tokens; a whole pending entry needing another 800 cannot fit.
-  memory.config.compaction.rawTokens = 1_000;
-  setSharedAllowance(memory, 15_000);
-  const result = memory.compact(s.id, "main", t.id), windows = charged(result);
-  expect(windows.knowledge).toBe(35_000);
-  expect(windows.facts).toBe(9_000 + charge([xmlBlock("episodic", "")])); // facts open the wrapper when Raw is omitted
-  expect(windows.raw).toBeLessThan(1_800);
-  expect("native" in result ? [] : result.supplied.factIds).toContain(f.id);
-  expect("native" in result ? [] : result.supplied.entries).toEqual([]);
-  expect("native" in result ? undefined : result.truncated?.raw?.entries).toBe(1);
-  expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
-});
-
-test("73: optional Knowledge still yields to what Raw and facts need once Knowledge itself is satisfied", () => {
-  const { s, t, f } = exactFixture({ knowledge: 21_000, facts: 9_000, raw: 1_800 });
-  // Knowledge needs 1k; the remaining allowance funds the pending Raw above its 1k base.
-  memory.config.compaction.rawTokens = 1_000;
-  const result = memory.compact(s.id, "main", t.id), windows = charged(result);
-  expect(windows).toMatchObject({ knowledge: 21_000, facts: 9_000, raw: 1_800 });
-  expect("native" in result ? [] : result.supplied.factIds).toContain(f.id);
-  expect("native" in result).toBe(false);
-  if (!("native" in result)) expect(result.truncated).toBeUndefined();
-  expect(positiveExcess(windows)).toBeLessThanOrEqual(20_000);
-});
 
 test("92: a historical unconsolidated fact stays eligible but cannot borrow shared allowance", () => {
   const { s, t } = exactFixture({ knowledge: 5_000, facts: 9_000, raw: 1_800 });

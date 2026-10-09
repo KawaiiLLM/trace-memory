@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { TraceMemory, memoryFiles, memoryPath, MEMORY_ROOT, type MemoryGrepFile, type MemoryGrepOptions, type MemoryReader } from "../../core/api/index.ts";
 import { readBinding, validateNativeSessionId } from "./binding.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { ccResultText } from "./transcript.ts";
+import { ccResultText, ccHumanUser } from "./transcript.ts";
 import { ccPluginToolNames, ccWorkerToolNames } from "./tool-names.ts";
 
 const usage = "fs read <path> | fs materialize <path> | fs grep [-i] [-n|--no-line-numbers] [-c] [-F] [-A|-B|-C <n>] [--glob <g>] [--offset <n>] [--limit <n>] [--] <pattern> [path] | fs glob <pattern>";
@@ -103,7 +103,7 @@ function materializeCcRead(directory: string, content: string, virtualPath?: str
 
 /** A fresh worker reads with its frozen Core target, never a foreground native binding. */
 export function materializeCcWorkerRead(config: ResolvedCcHostConfig, reader: MemoryReader, path: string, directory: string): string {
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("trace:// reads run no model work"); }, config.coreConfig, ccResultText);
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("trace:// reads run no model work"); }, config.coreConfig, ccResultText, undefined, ccHumanUser);
   try {
     return materializeCcRead(directory, memoryFiles(memory, { ...reader, toolNames: ccWorkerToolNames }).read(path).content);
   } finally {
@@ -114,7 +114,7 @@ export function materializeCcWorkerRead(config: ResolvedCcHostConfig, reader: Me
 /** One `trace://` operation for a native session, as JSON: a read page, or grep/glob listing lines. */
 export function runCcFiles(config: ResolvedCcHostConfig, nativeSessionId: string, [op, ...args]: readonly string[]): unknown {
   const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("trace:// reads run no model work"); }, config.coreConfig, ccResultText);
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("trace:// reads run no model work"); }, config.coreConfig, ccResultText, undefined, ccHumanUser);
   try {
     const core = binding?.dbPath === config.dbPath ? binding.coreSessionId : null;
     const reader: MemoryReader = core !== null && memory.store.getSession(core)
