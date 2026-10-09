@@ -1,10 +1,11 @@
 import { expect, test } from "vitest";
 import { sourceSeededMemory, recorded } from "../../source-fixture.ts";
 import { facts, legacyFacts } from "../../support/seed.ts";
-import { tokens } from "../../../src/core/render/index.ts";
+import { charge, renderEntry, tokens, xmlBlock } from "../../../src/core/render/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { pricedToolDefinitions, toolDefinitions } from "../../../src/core/api/tools.ts";
-import { measureRetainedMemoryText } from "../../../src/core/render/material.ts";
+import { FACT_TITLES_TITLE, measureRetainedMemoryText, rawWindowTokens } from "../../../src/core/render/material.ts";
+import { noVisibility } from "../../../src/core/api/visible.ts";
 
 const at = "2026-10-09T00:00:00Z";
 function setup() {
@@ -99,6 +100,44 @@ test("133: titles default to one hundred anchor-inclusive path turns, are config
   } finally { memory.close(); }
 });
 
+test("133: titles stop at the newest non-fitting title, skip untitled facts, and charge their omission receipt only to facts", () => {
+  const { memory, session } = setup();
+  try {
+    const old = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: at, userPrompt: "<task-notification>old source" });
+    const olderSource = memory.store.getSourceEntry(memory.store.listSourceEntries(session.id, old.id)[0]!.id)!;
+    const [small] = facts(memory, { sessionId: session.id, branch: "main", headTurnId: old.id },
+      [{ title: "Small older episode", sources: [{ entry: olderSource, text: "older evidence" }] }]);
+    const untitledTurn = memory.store.appendTurn({ sessionId: session.id, parentTurnId: old.id, kind: "turn", startedAt: at, userPrompt: "<task-notification>untitled source" });
+    const untitledSource = memory.store.getSourceEntry(memory.store.listSourceEntries(session.id, untitledTurn.id)[0]!.id)!;
+    const untitled = legacyFacts(memory.store, { kind: "noting", sessionId: session.id, branch: "main", createdAt: at },
+      [{ sources: [{ entry: untitledSource, address: `T${untitledTurn.id}#user` }], text: "untitled evidence", category: "observation", actor: "user", createdAt: at }]).facts[0]!;
+    const latest = memory.store.appendTurn({ sessionId: session.id, parentTurnId: untitledTurn.id, kind: "turn", startedAt: at, userPrompt: "<task-notification>latest source" });
+    const newestSource = memory.store.getSourceEntry(memory.store.listSourceEntries(session.id, latest.id)[0]!.id)!;
+    const [large] = facts(memory, { sessionId: session.id, branch: "main", headTurnId: latest.id },
+      [{ title: "Oversized ".repeat(400), sources: [{ entry: newestSource, text: "newest evidence" }] }]);
+    recorded(memory, session.id, "main", latest.id);
+    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 200 });
+    const stopped = memory.compact(session.id, "main", latest.id);
+    if ("native" in stopped) throw new Error("native");
+    expect(stopped.material!.factTitles).toEqual([]); // break, not continue to the older small title
+    expect(stopped.supplied.factIds).toEqual([]);
+
+    const visible = noVisibility(); visible.factIds.add(large!.id);
+    const olderFits = memory.compact(session.id, "main", latest.id, visible);
+    if ("native" in olderFits) throw new Error("native");
+    expect(olderFits.material!.earlierUsers).toEqual([]);
+    expect(olderFits.material!.entries).toEqual([]);
+    expect(olderFits.material!.factTitles).toEqual([`[T${old.id}] ${at}\n[F${small!.id}] Small older episode`]);
+    expect(olderFits.material!.receipts).toHaveLength(1);
+    const receipt = olderFits.material!.receipts[0]!;
+    expect(receipt).toContain(`trace://F${untitled.id}`);
+    expect(receipt).not.toContain(`trace://F${small!.id}`);
+    expect(olderFits.charged!.facts).toBe(charge([receipt]) + charge(["Receipts:"]));
+    expect(olderFits.charged!.temporary).toBe(
+      charge([xmlBlock("episodic", ""), FACT_TITLES_TITLE]) + charge(olderFits.material!.factTitles!));
+  } finally { memory.close(); }
+});
+
 test("133: pending Raw has first claim, user words next, and fact titles take only their remainder", () => {
   const { memory, session } = setup();
   try {
@@ -125,6 +164,32 @@ test("133: pending Raw has first claim, user words next, and fact titles take on
     if ("native" in roomy) throw new Error("native");
     expect(roomy.material!.factTitles).toEqual([`[T${old.id}] ${at}\n[F${olderFact!.id}] An older episode to locate after compaction`]);
     expect(roomy.supplied.factIds).toEqual([]);
+  } finally { memory.close(); }
+});
+
+test("133: default pending Raw fills its 20k base-plus-temporary window, within the emitted 60k envelope", () => {
+  const { memory, session } = setup();
+  try {
+    const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: at, userPrompt: "pending source" });
+    for (let index = 0; index < 12; index++) memory.appendEntry({ sessionId: session.id, turnId: turn.id,
+      nativeLineage: "fixture", nativeId: `pending-${index}`, role: "assistant", text: `entry-${index} ${"word ".repeat(1750)}`, raw: "", calls: [] });
+    const source = memory.store.sourcePath(session.id, "main", turn.id);
+    const result = memory.compact(session.id, "main", turn.id);
+    if ("native" in result) throw new Error("native");
+    expect(result.charged!.envelope).toBe(60_000);
+    expect(result.charged!.raw).toBe(10_000);
+    const rawCharge = result.charged!.raw + result.charged!.temporary;
+    expect(rawCharge).toBeGreaterThan(18_000);
+    expect(rawCharge).toBeLessThanOrEqual(20_000);
+    const kept = result.material!.entries!;
+    const omitted = source.filter(entry => !result.supplied.entries.some(supplied => supplied.id === entry.id));
+    expect(result.truncated?.raw).toEqual({ entries: omitted.length });
+    expect(omitted.length).toBeGreaterThan(0);
+    const next = renderEntry(memory.store.getSourceEntry(omitted.at(-1)!.id)!, memory.config.render);
+    const rawReceipts = result.material!.receipts.filter(receipt => receipt.includes("earlier entries omitted from the Raw window"));
+    expect(rawWindowTokens([next.content, ...kept.map(entry => entry.view)], [...next.receipts, ...rawReceipts])).toBeGreaterThan(20_000);
+    const charged = result.charged!;
+    expect(charged.knowledge + charged.facts + charged.raw + charged.temporary).toBeLessThanOrEqual(charged.envelope);
   } finally { memory.close(); }
 });
 

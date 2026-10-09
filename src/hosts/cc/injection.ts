@@ -338,13 +338,10 @@ export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConf
   return { ...delivered, snapshot };
 }
 
-/** 73 "Truncation is announced in the foreground": the warning for a compaction that omitted
- * unprocessed material, Pi's notice in Claude Code. 79 item 4 (ruled): Raw is an exact count only. */
+/** Host compactions can still omit facts; R1 sends any pending-Raw omission native instead. */
 export function ccTruncationWarning(omitted: TruncationReceipt | undefined): string | undefined {
-  return omitted ? `Trace Memory: compaction omitted ${[
-    ...(omitted.raw ? [`${omitted.raw.entries} pending Raw ${omitted.raw.entries === 1 ? "entry" : "entries"}`] : []),
-    ...(omitted.facts ? [`${omitted.facts.count} ${omitted.facts.count === 1 ? "fact" : "facts"} (${omitted.facts.tokens} tokens)`] : []),
-  ].join(" and ")}${omitted.raw ? "; omitted Raw remains pending for Noting." : "."}` : undefined;
+  const facts = omitted?.facts;
+  return facts ? `Trace Memory: compaction omitted ${facts.count} ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens).` : undefined;
 }
 
 /** 97: the tail after the stored leaf holds no source record: the import has reached the end. */
@@ -372,7 +369,7 @@ const TRIGGER_WAIT_MS = 10_000;
  * starts), so the build waits for the row and for the live executor to import it, reading only the
  * tail after the stored leaf (97); without a live executor the importer runs here. The block's
  * Knowledge is recorded as the delivery of the compaction the import will append after that leaf,
- * before the text is returned. Null: an unbound or disabled session, which keeps native compaction.
+ * before the text is returned. Null: an unbound/disabled session or pending Raw overflow, which keeps native compaction.
  * `auto` (requirement 14, ruled): the caller's own `manual`/`auto` event trigger, distinct from the
  * handle above; only `auto` gets the trailing continue sentence. */
 export async function ccCompaction(config: ResolvedCcHostConfig,
@@ -420,6 +417,8 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
         runningTasks: input.runningTasks }),
       watermark: memory.store.deliveryWatermark(owner) }));
     if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
+    // 133 R1: before framing or recording any delivery, let the native summary and supplement run.
+    if (compacted.truncated?.raw) return null;
     // 102 (ruled): the one place the carrier is framed as Pi frames a compaction summary; the delivery
     // below is recorded from the same supplied material, and the framing is outside its Knowledge cost.
     // Requirement 14 (ruled): an automatic compaction's block also ends with Claude Code's own native

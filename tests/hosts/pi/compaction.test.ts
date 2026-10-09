@@ -52,7 +52,7 @@ test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary unde
   } finally { await h.dispose(); }
 });
 
-test("73: many tiny entries over the Raw window truncate to the newest span rather than delegate, and compact starts no worker", async () => {
+test("133 R1: pending Raw overflow delegates without a delivery or an extra Noter; the next Noter observes the native boundary", async () => {
   const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "dreaming.triggerTokens": 1,
     "compaction.factsTokens": 50, "compaction.rawTokens": 600, "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
   try {
@@ -60,35 +60,30 @@ test("73: many tiny entries over the Raw window truncate to the newest span rath
     h.memory.setKnowledgeBudget("project", 0);
     h.memory.setKnowledgeBudget("session", 0);
     failing(h);
-    for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i} ` + "word ".repeat(250)); await h.answer(); await h.emit("agent_settled"); await h.drain(); }
+    for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i} ` + "word ".repeat(250)); await h.answer(); await h.drain(); }
     await h.commands.get("trace").handler("on", h.ctx);
-    expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
     const runsBefore = h.memory.store.listRuns(1).length;
     const pendingBefore = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
-    const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
-    expect(result.compaction.summary).toContain("earlier entries omitted from the Raw window");
-    expect(h.notices.some(n => n.includes("compaction preparing bounded entry views"))).toBe(true);
-    expect(h.notices.some(n => n.includes("compaction omitted"))).toBe(false);
-    const entry = { id: "compact", parentId: h.entries.at(-1)!.id, timestamp: "now", type: "compaction",
-      summary: result.compaction.summary, firstKeptEntryId: "", tokensBefore: 100_000, details: result.compaction.details };
-    h.entries.push(entry as never); h.allEntries.push(entry as never);
+    expect(pendingBefore.length).toBeGreaterThan(0);
+    const deliveries = vi.spyOn(Store.prototype, "recordKnowledgeDelivery");
+    expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } })).toBeUndefined();
+    expect(deliveries).not.toHaveBeenCalled();
+    const entry = h.compaction("native summary");
+    expect(entry).not.toHaveProperty("details.traceMemory");
     await h.emit("session_compact", { compactionEntry: entry });
-    const warning = h.notices.find(n => n.includes("compaction omitted"));
-    expect(warning).toContain("pending Raw");
-    expect(warning).toContain("omitted Raw remains pending for Noting.");
-    expect(warning).not.toMatch(/Consolidation|unconsolidated/);
+    expect(h.notices.some(n => n.includes("compaction omitted"))).toBe(false);
     expect(h.memory.store.listRuns(1)).toHaveLength(runsBefore);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pendingBefore);
-    await h.emit("session_compact", { compactionEntry: h.compaction(result.compaction.summary), fromExtension: true });
     await work(h, long("more"));
     expect(response(h).requestedMode).toBe("fork");
     expect(lastRun(h).mode).toBe("subagent");
     expect(String(response(h).fallbackReason)).toContain("Raw availability: entry ");
-  } finally { await h.dispose(); }
+  } finally { vi.restoreAllMocks(); await h.dispose(); }
 });
 
-test("73: a Raw window too small for its omission receipt still completes custom compaction and warns", async () => {
-  const h = host({ ...quiet, "compaction.factsTokens": 1, "compaction.rawTokens": 1, "compaction.sharedAllowanceTokens": 1 });
+test("133 R1: pending Raw overflow goes native even when its omission receipt cannot fit", async () => {
+  const h = host({ ...quiet, "compaction.factsTokens": 1, "compaction.rawTokens": 1,
+    "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
   try {
     h.memory.setKnowledgeBudget("global", 0);
     h.memory.setKnowledgeBudget("project", 0);
@@ -96,21 +91,68 @@ test("73: a Raw window too small for its omission receipt still completes custom
     await h.prompt(long("PENDING")); await h.answer();
     const pending = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
     expect(pending.length).toBeGreaterThan(0);
-    const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
-    expect(result.compaction.summary).not.toContain("earlier entries omitted from the Raw window");
-    expect(result.compaction.details.traceMemory).toBeDefined();
+    const deliveries = vi.spyOn(Store.prototype, "recordKnowledgeDelivery");
+    expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } })).toBeUndefined();
+    expect(deliveries).not.toHaveBeenCalled();
+    await h.emit("session_compact", { compactionEntry: h.compaction("native summary") });
     expect(h.notices.some(n => n.includes("compaction omitted"))).toBe(false);
-    const entry = { id: "compact-small", parentId: h.entries.at(-1)!.id, timestamp: "now", type: "compaction",
-      summary: result.compaction.summary, firstKeptEntryId: "", tokensBefore: 100_000, details: result.compaction.details };
-    h.entries.push(entry as never); h.allEntries.push(entry as never);
-    await h.emit("session_compact", { compactionEntry: entry });
-    expect(h.notices.find(n => n.includes("compaction omitted"))).toContain("pending Raw");
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pending);
+    expect(h.requests).toEqual([]);
+  } finally { vi.restoreAllMocks(); await h.dispose(); }
+});
+
+test.each(["compaction preparing", "compaction Knowledge was not recorded"])(
+  "133 R1: pending Raw arriving during %s is checked again before publication", async notification => {
+    const h = host({ ...quiet, "compaction.rawTokens": 300, "compaction.temporaryTokens": 1 });
+    let imported: Promise<unknown> | undefined;
+    try {
+      await h.prompt("small pending entry"); await h.answer();
+      const deliveries = vi.spyOn(Store.prototype, "recordKnowledgeDelivery");
+      if (notification.includes("Knowledge")) deliveries.mockImplementationOnce(() => { throw new Error("injected delivery failure"); });
+      const notify = h.ctx.ui.notify.bind(h.ctx.ui);
+      h.ctx.ui.notify = ((message, level) => {
+        notify(message, level);
+        if (!message.includes(notification)) return;
+        // The next completed native assistant message arrives while the host notification runs.
+        // Its real import boundary extends the current Turn; no source/progress rows are fabricated.
+        h.persist(reply(`NEW_PENDING ${"word ".repeat(12_000)}`));
+        imported = h.emit("agent_end");
+      }) as typeof h.ctx.ui.notify;
+      expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } })).toBeUndefined();
+      await imported;
+      expect(deliveries).toHaveBeenCalledTimes(notification.includes("Knowledge") ? 1 : 0);
+      const entry = h.compaction("native summary");
+      expect(entry).not.toHaveProperty("details.traceMemory");
+      await h.emit("session_compact", { compactionEntry: entry });
+      expect(h.notices.some(message => message.includes("compaction omitted"))).toBe(false);
+      expect(h.memory.store.listRuns(1)).toEqual([]);
+      expect(h.memory.pendingEntries(1, "main", 1).some(source => h.memory.store.getSourceEntry(source.id)!.text.includes("NEW_PENDING"))).toBe(true);
+    } finally { vi.restoreAllMocks(); await h.dispose(); }
+  },
+);
+
+test("133 R1: cancelling a pending-Raw overflow does not start native compaction", async () => {
+  const h = host({ ...quiet, "compaction.rawTokens": 1, "compaction.temporaryTokens": 1 });
+  try {
+    await h.prompt(long("PENDING")); await h.answer();
+    const controller = new AbortController();
+    const notify = h.ctx.ui.notify.bind(h.ctx.ui);
+    h.ctx.ui.notify = ((message, level) => {
+      notify(message, level);
+      if (message.includes("compaction preparing")) controller.abort();
+    }) as typeof h.ctx.ui.notify;
+    expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 }, signal: controller.signal })).toEqual({ cancel: true });
+    expect(h.entries.some(entry => entry.type === "compaction")).toBe(false);
+    expect(h.requests).toEqual([]);
+    expect(h.notices.some(message => message.includes("compaction omitted"))).toBe(false);
   } finally { await h.dispose(); }
 });
 
-test("118: genuinely empty material delegates without a custom delivery", async () => {
+test("133: a live task alone does not turn genuinely empty Pi memory into a custom delivery", async () => {
   const h = host(quiet);
+  const key = Symbol.for("@gotgenes/pi-subagents:service");
+  const registry = globalThis as Record<symbol, unknown>, previous = registry[key];
+  registry[key] = { listAgents: () => [{ id: "running", type: "Explore", description: "Still working", status: "running" }] };
   try {
     await h.emit("session_start"); // no reply, source, fact or knowledge has been created
     const deliveries = vi.spyOn(Store.prototype, "recordKnowledgeDelivery");
@@ -118,11 +160,14 @@ test("118: genuinely empty material delegates without a custom delivery", async 
     expect(deliveries).not.toHaveBeenCalled();
     expect(h.notices.some(n => n.includes("compaction omitted"))).toBe(false);
     expect(h.memory.store.listSessions()).toEqual([]);
-  } finally { vi.restoreAllMocks(); await h.dispose(); }
+  } finally {
+    if (previous === undefined) delete registry[key]; else registry[key] = previous;
+    vi.restoreAllMocks(); await h.dispose();
+  }
 });
 
-test("118: a failed knowledge delivery still completes a capacity-omitted custom replacement", async () => {
-  const h = host({ ...quiet, "compaction.factsTokens": 1, "compaction.rawTokens": 1, "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
+test("133 R1: an under-budget replacement survives a failed Knowledge delivery without claiming its body", async () => {
+  const h = host(quiet);
   try {
     await h.prompt("establish session"); await h.answer();
     const path = h.memory.store.knowledgePath(1, "main", 1);
@@ -131,23 +176,64 @@ test("118: a failed knowledge delivery still completes a capacity-omitted custom
     const created = knowledge(h.memory.store, path, "project", "constraint", [support.id], "KNOWLEDGE_BEFORE_FAILED_DELIVERY");
     const pending = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
     expect(pending.length).toBeGreaterThan(0);
-    // The extension and the observer own separate Stores; inject at their shared writer seam.
     const deliveries = vi.spyOn(Store.prototype, "recordKnowledgeDelivery").mockImplementationOnce(() => { throw new Error("injected delivery failure"); });
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     expect(deliveries).toHaveBeenCalledTimes(1);
     expect(deliveries.mock.calls[0]![1][0]!.knowledgeCommitIds).toContain(created.commit);
-    expect(h.notices.some(n => n.includes("injected delivery failure"))).toBe(true);
-    expect(result.compaction.summary).toContain("Memory is read at trace://");
+    expect(result.compaction.summary).toContain("establish session");
     expect(result.compaction.summary).not.toContain("KNOWLEDGE_BEFORE_FAILED_DELIVERY");
-    expect(result.compaction.summary).not.toContain("earlier entries omitted from the Raw window");
-    expect(result.compaction.details.traceMemory.supplied).toMatchObject({ entries: [], factIds: [], knowledgeCommitIds: [] });
-    expect(result.compaction.details.traceMemory.composition).toMatchObject({ knowledge: 0, facts: 0, raw: 0 });
+    expect(result.compaction.details.traceMemory.supplied.knowledgeCommitIds).toEqual([]);
     expect(result.compaction.details.traceMemory.prompt).toBeUndefined();
-    const entry = h.compaction(result.compaction.summary);
-    await h.emit("session_compact", { compactionEntry: entry });
-    expect(h.notices.find(n => n.includes("compaction omitted"))).toContain("pending Raw");
+    await h.emit("session_compact", { compactionEntry: h.compaction(result.compaction.summary) });
+    expect(h.notices.some(n => n.includes("compaction omitted"))).toBe(false);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pending);
+    const next = await h.prompt("after compaction");
+    expect(next.message.content).toContain("KNOWLEDGE_BEFORE_FAILED_DELIVERY");
+    expect(deliveries).toHaveBeenCalledTimes(2);
   } finally { vi.restoreAllMocks(); await h.dispose(); }
+});
+
+test("133 R1: native fallback leaves Knowledge recovery at the next ordinary prompt", async () => {
+  const h = host({ ...quiet, "compaction.rawTokens": 1, "compaction.temporaryTokens": 1 });
+  try {
+    await h.prompt("establish support"); await h.answer();
+    const path = h.memory.store.knowledgePath(1, "main", 1);
+    const source = h.memory.store.sourcePath(1, "main", 1).map(entry => h.memory.store.getSourceEntry(entry.id)!).find(entry => entry.role === "user")!;
+    const support = fact(h.memory, path, "Support", [{ entry: source, text: "establish support" }]);
+    const created = knowledge(h.memory.store, path, "project", "constraint", [support.id], "RECOVER_AFTER_NATIVE");
+    expect((await h.prompt("deliver before compaction")).message.content).toContain("RECOVER_AFTER_NATIVE");
+    await h.answer();
+    const runs = h.memory.store.listRuns(1).length;
+    expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } })).toBeUndefined();
+    const entry = h.compaction("native summary");
+    expect(entry).not.toHaveProperty("details.traceMemory");
+    await h.emit("session_compact", { compactionEntry: entry });
+    expect(h.memory.store.listRuns(1)).toHaveLength(runs);
+    expect(h.notices.some(notice => notice.includes("compaction omitted"))).toBe(false);
+    const recovered = (await h.prompt("after native compaction")).message;
+    expect(recovered.content).toContain("RECOVER_AFTER_NATIVE");
+    expect(recovered.details.traceMemory.supplied.knowledgeCommitIds).toEqual([created.commit]);
+    await h.answer();
+    expect((await h.prompt("already recovered"))?.message).toBeUndefined();
+  } finally { await h.dispose(); }
+});
+
+test.each([
+  "<task-notification", "<system-reminder", "<command-", "Caveat", "[Request interrupted",
+  "Another Claude session", "<local-command", "<skill", "This session is being continued",
+])("133: Pi compaction excludes synthetic earlier user words beginning with %s", async prefix => {
+  const h = host({ "noting.triggerTokens": 1, "noting.forkModeDefault": false, "compaction.rawTokens": 1 });
+  try {
+    await h.prompt(`${prefix} EXCLUDED_HISTORICAL_WORDS`); await h.answer(); await h.drain();
+    await h.prompt("HUMAN_HISTORICAL_WORDS"); await h.answer(); await h.drain();
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting").every(run => run.outcome === "success")).toBe(true);
+    const head = h.memory.store.listTurns(1).at(-1)!.id;
+    expect(h.memory.pendingEntries(1, "main", head)).toEqual([]);
+    const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
+    expect(result.compaction.summary).toContain("Earlier user messages:");
+    expect(result.compaction.summary).toContain("HUMAN_HISTORICAL_WORDS");
+    expect(result.compaction.summary).not.toContain("EXCLUDED_HISTORICAL_WORDS");
+  } finally { await h.dispose(); }
 });
 
 test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter, a concurrent commit survives it, and no summary re-enters the source queue", async () => {

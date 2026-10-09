@@ -9,7 +9,7 @@ import { pricedToolDefinitions, toolDefinitions, type ToolDefinition, type ToolC
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderEntryIndex, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor } from "../render/index.ts";
+import { renderEntryIndex, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type EntryView, type ResultExtractor } from "../render/index.ts";
 import { notingText, rawWindowTokens, type NotingMaterial, type SharedMaterial } from "../render/material.ts";
 import { readFacade } from "../api/read.ts";
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
@@ -207,6 +207,10 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${forkInstructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`}`
       + ` already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
   const { entries, rendered } = notingBatch(store, pending, config, resultText);
+  // The Raw profile and the historical-user excerpt profile are distinct. Reuse hydrated batch
+  // users and retain each historical source/excerpt only inside this synchronous freeze.
+  const historicalUserEntries = new Map<number, { entry: SourceEntry; view?: EntryView }>(
+    entries.filter(entry => entry.role === "user").map(entry => [entry.id, { entry }]));
   if (pending.length && !entries.length)
     throw new Error(`${NOTING_CAPACITY}oldest entry and Raw framing exceed noting.batchTokens (${config.noting.batchTokens}); left pending`);
   // 27d: the same whole-or-nothing rule against the batch ceiling the selection loop above stops at.
@@ -254,7 +258,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const assembled = readFacade(store, { ...config, compaction: { ...config.compaction,
       rawTokens: config.noting.batchTokens, factsTokens: history, temporaryTokens: temporary } }, undefined, resultText, humanUser)
       .compact(session.id, input.branch, endpoint.turnId, [], false,
-        { endpointEntryId: endpoint.id, processedRawRefill: false, showKnowledgeSize: true, readingGuide: false, renderedEntries: rendered, preparedSources, toolNames: names });
+        { endpointEntryId: endpoint.id, processedRawRefill: false, showKnowledgeSize: true, readingGuide: false,
+          renderedEntries: rendered, historicalUserEntries, preparedSources, toolNames: names });
     if ("native" in assembled || !assembled.material) throw new Error("Noting material assembly produced no material");
     if (assembled.supplied.entries.length !== entries.length
       || assembled.supplied.entries.some((entry, index) => entry.id !== entries[index]!.id))
@@ -279,7 +284,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const fits = !capacity || priced <= capacity.inputTokens;
     if (fits) return { ...frozen, prepared, prompt, promptHash: createHash("sha256").update(inheriting ? forkPrompt : prompt).digest("hex"), forkPrompt, names };
     // 133: optional temporary user/title material goes before the historical full-fact window.
-    if (capacity && temporary && assembled.charged!.temporary) {
+    if (capacity && temporary && assembled.charged!.temporary
+      && (prepared.material.factTitles?.length || prepared.material.earlierUsers?.length)) {
       temporary = Math.max(0, Math.min(temporary - 1, assembled.charged!.temporary - Math.max(1, priced - capacity.inputTokens)));
       continue;
     }

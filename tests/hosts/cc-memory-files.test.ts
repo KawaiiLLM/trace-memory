@@ -14,7 +14,7 @@ import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { runCcCommand } from "../../src/hosts/cc/index.ts";
 import { MEMORY_READ_ONLY } from "../../src/core/model/address.ts";
 import { Store } from "../../src/core/store/index.ts";
-import { fact, knowledge } from "../support/seed.ts";
+import { entry, fact, knowledge } from "../support/seed.ts";
 import { TraceMemory } from "../../src/core/api/index.ts";
 import { materializeCcWorkerRead, runCcFiles } from "../../src/hosts/cc/files.ts";
 import { recorded } from "../source-fixture.ts";
@@ -220,16 +220,28 @@ test("133: foreground and worker trace://compact reads use native human origins,
   const native = "human-reader", transcriptPath = join(dir, "native.jsonl");
   await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: native, transcript_path: transcriptPath, source: "startup" }, "2026-01-01T00:00:00.000Z");
   const human = "<task-notification> quoted literally by a human", sdk = "SDK-generated user entry";
+  const queued = "<system-reminder> queued human words", originHuman = "<command- quoted by origin human";
+  const meta = "Meta user words are not human";
   writeFileSync(transcriptPath, [
     { uuid: "human", parentUuid: null, type: "user", timestamp: "2026-01-01T00:00:00.000Z", promptId: "p1", promptSource: "typed", message: { role: "user", content: human } },
     { uuid: "sdk", parentUuid: "human", type: "user", timestamp: "2026-01-01T00:00:01.000Z", promptId: "p2", promptSource: "sdk", message: { role: "user", content: sdk } },
-    { uuid: "reply", parentUuid: "sdk", type: "assistant", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "Acknowledged." }] } },
+    { uuid: "queued", parentUuid: "sdk", type: "user", timestamp: "2026-01-01T00:00:02.000Z", promptId: "p3", promptSource: "queued", message: { role: "user", content: queued } },
+    { uuid: "origin-human", parentUuid: "queued", type: "user", timestamp: "2026-01-01T00:00:03.000Z", promptId: "p4", origin: { kind: "human" }, message: { role: "user", content: originHuman } },
+    { uuid: "meta", parentUuid: "origin-human", type: "user", timestamp: "2026-01-01T00:00:04.000Z", promptId: "p5", promptSource: "typed", isMeta: true, message: { role: "user", content: meta } },
+    { uuid: "reply", parentUuid: "meta", type: "assistant", timestamp: "2026-01-01T00:00:05.000Z", message: { role: "assistant", content: [{ type: "text", text: "Acknowledged." }] } },
   ].map(record => JSON.stringify(record)).join("\n") + "\n");
   const importer = new CcImporter(config, readBinding(config, native)!);
   try { expect((await importer.reconcile()).state).toBe("ready"); } finally { importer.close(); }
   const binding = readBinding(config, native)!, core = binding.coreSessionId!;
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("read must not run a model"); });
   const reader = memory.store.knowledgePath(core, binding.branch);
+  const prefixes = ["<task-notification", "<system-reminder", "<command-", "Caveat",
+    "[Request interrupted", "Another Claude session", "<local-command"];
+  const excluded = prefixes.map((prefix, index) => `${prefix} fallback-only-${index}`);
+  for (const [index, text] of excluded.entries()) entry(memory.store, core, reader.headTurnId!, `fallback-${index}`, "user", text);
+  const ordinary = "Ordinary fallback human words";
+  entry(memory.store, core, reader.headTurnId!, "fallback-human", "user", ordinary);
+  memory.store.selectSourcePath(core, binding.branch, memory.store.listSourceEntries(core).map(source => source.id));
   try { recorded(memory, core, binding.branch, reader.headTurnId!); } finally { memory.close(); }
   config.coreConfig.compaction.rawTokens = 1; // historical Raw cannot fit or borrow; selection happens in the user tier
   const path = `trace://compact/S${core}`;
@@ -239,5 +251,10 @@ test("133: foreground and worker trace://compact reads use native human origins,
     expect(text).toContain("Earlier user messages:");
     expect(text).toContain(human);
     expect(text).not.toContain(sdk);
+    expect(text).toContain(queued);
+    expect(text).toContain(originHuman);
+    expect(text).not.toContain(meta);
+    for (const omitted of excluded) expect(text).not.toContain(omitted);
+    expect(text).toContain(ordinary);
   }
 });

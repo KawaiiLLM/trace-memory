@@ -118,9 +118,9 @@ test.each(["manual", "auto"])("102: a %s compaction installs Trace Memory's bloc
   expect(f.log).not.toHaveBeenCalled();
 });
 
-test("102: omitted material is announced in the foreground and stays out of the block", async () => {
+test("102: reachable fact omissions are announced in the foreground and stay out of the block", async () => {
   const f = fixture();
-  const warning = "Trace Memory: compaction omitted 3 pending Raw entries; omitted Raw remains pending for Noting.";
+  const warning = "Trace Memory: compaction omitted 3 facts (100 tokens).";
   f.build.mockResolvedValue({ exitCode: 0, stdout: JSON.stringify({ text: block, warning }) });
   expect((await compact(f.host, event, f.next)).messages).toEqual([{ role: "user", text: block, toolUses: [] }]);
   expect(f.log).toHaveBeenCalledExactlyOnceWith(warning);
@@ -162,3 +162,13 @@ test("130: whitespace-only instructions still get Trace Memory's compaction", as
   expect(await compact(f.host, { ...event, instructions: "  \n " }, f.next)).toEqual({ messages: [{ role: "user", text: block, toolUses: [] }] });
   expect(f.next).not.toHaveBeenCalled();
 });
+
+test("133 R2: a thrown live-agent lookup keeps native compaction and its Knowledge supplement", async () => {
+  const f = fixture();
+  f.host.agent.list = async () => { throw new Error("agent lookup failed"); };
+  const result = await compact(f.host, event, f.next);
+  expect(f.build).not.toHaveBeenCalled();
+  expect(f.next).toHaveBeenCalledExactlyOnceWith(event);
+  expect(result.messages).toEqual([original.messages[0], { role: "user", text: "knowledge", toolUses: [] }]);
+});
+

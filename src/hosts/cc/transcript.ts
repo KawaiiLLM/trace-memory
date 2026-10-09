@@ -4,7 +4,6 @@ import { performance } from "node:perf_hooks";
 import { SourceNormalizationError, type SourceBlock, type SourceNormalizer } from "../../core/model/source.ts";
 import type { SourceInput } from "../../core/store/index.ts";
 import type { ResultExtractor } from "../../core/render/index.ts";
-import { z } from "zod";
 
 /** Ticket 107: this host's result-text extractor, registered at every `TraceMemory(` call site so all
  * views render a result identically. Storage keeps `{content, toolUseResult}` (`classifySourceRecord`);
@@ -926,21 +925,20 @@ export function selectedNativePath(records: readonly CcNativeRecord[]): { leafUu
   return { leafUuid, records: reverse.reverse() };
 }
 
-const humanRecordSchema = z.object({ type: z.string().optional(), isMeta: z.boolean().optional(),
-  promptSource: z.string().optional(), origin: z.object({ kind: z.string().optional() }).optional() });
-
 /** 133: unlike role=user, the native input origin distinguishes typed input from task reports. */
 export function ccHumanUser(entry: SourceInput): boolean | undefined {
   let value: unknown;
   try { value = JSON.parse(entry.raw); } catch { return undefined; }
-  const parsed = humanRecordSchema.safeParse(value);
-  if (!parsed.success) return undefined;
-  const record = parsed.data;
+  const record = object(value);
+  if (!record || (record.isMeta !== undefined && typeof record.isMeta !== "boolean") ||
+      (record.promptSource !== undefined && typeof record.promptSource !== "string")) return undefined;
+  const origin = record.origin === undefined ? undefined : object(record.origin);
+  if (origin === null || (origin?.kind !== undefined && typeof origin.kind !== "string")) return undefined;
   if (record.type !== "user") return undefined;
   if (record.isMeta === true) return false;
-  if (record.origin?.kind === "human") return true;
+  if (origin?.kind === "human") return true;
   if (typeof record.promptSource === "string") return record.promptSource === "typed" || record.promptSource === "queued";
-  if (record.origin?.kind !== undefined) return false;
+  if (origin?.kind !== undefined) return false;
   return undefined;
 }
 

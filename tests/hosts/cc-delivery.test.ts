@@ -14,7 +14,7 @@ import { CC_AUTO_CONTINUE_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_
 import { readCcMenu } from "../../src/hosts/cc/menu.ts";
 import { build } from "esbuild";
 import { resolve } from "node:path";
-import { ccRunningTasksSchema } from "../../src/hosts/cc/tasks.ts";
+import { spawnSync } from "node:child_process";
 
 const dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -440,7 +440,7 @@ test("102 /trace splits a compaction carrier by its compaction's recorded delive
   } finally { f.close(); }
 });
 
-test("133: a fake agent list reaches real CC compaction, preserving running/waiting tasks only", async () => {
+test.each(["manual", "auto"])("133: a %s hook delivers its row trigger and live tasks through the built hook-compact command", async trigger => {
   const f = await fixture();
   try {
     const bundle = await build({ entryPoints: [resolve("plugin/hooks/index.tsx")], bundle: true, write: false,
@@ -456,22 +456,78 @@ test("133: a fake agent list reaches real CC compaction, preserving running/wait
         { id: "active", type: "Explore", description: "Inspect compaction", status: "running" },
         { id: "waiting", type: "reviewer", description: "Wait for evidence", status: "waiting" },
         { id: "done", type: "Explore", description: "Already finished", status: "completed" },
+        null, {}, { id: "malformed", type: "Explore", status: "running" },
       ] },
-      plugin: { root: "/fixture" },
+      plugin: { root: resolve("plugin") },
       ui: { log: vi.fn() },
-      process: { run: async (_args: readonly string[], options: { stdin: string }) => {
-        const input = JSON.parse(options.stdin) as { session_id: string; trigger: string; auto: boolean; runningTasks: unknown };
-        return { exitCode: 0, stdout: JSON.stringify(await ccCompaction(f.config, {
-          ...input, runningTasks: ccRunningTasksSchema.parse(input.runningTasks),
-        })) };
+      process: { run: async (args: readonly string[], options: { stdin: string }) => {
+        const configPath = join(f.dir, "cc.config.json");
+        writeFileSync(configPath, JSON.stringify({ dbPath: f.config.dbPath, stateDir: f.config.stateDir, baseline: "2025-01-01T00:00:00.000Z" }));
+        const result = spawnSync(process.execPath, [args[1]!, "hook-compact", "--config", configPath],
+          { input: options.stdin, encoding: "utf8" });
+        return { exitCode: result.status, stdout: result.stdout, stderr: result.stderr };
       } },
     };
-    const result = await compact(host, { trigger: "manual", messages: [{ handle: "a1" }] }, () => { throw new Error("unexpected native fallback"); });
+    const result = await compact(host, { trigger, messages: [{ handle: "a1" }] }, () => { throw new Error("unexpected native fallback"); });
     const body = result.messages[0]!.text;
     expect(body).toContain("- active Explore: Inspect compaction (running)");
     expect(body).toContain("- waiting reviewer: Wait for evidence (waiting)");
     expect(body).not.toContain("Already finished");
     expect(body.indexOf("Running tasks:")).toBeGreaterThan(body.indexOf("Raw:"));
+    expect(body.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(trigger === "auto");
+    const raw = body.split("\nRaw:\n")[1]!.split("\nRunning tasks:")[0]!;
+    expect(raw.trim().split("\n").at(-1)).toMatch(/@assistant\] assistant: a1$/);
   } finally { f.close(); }
 });
+
+test.each([
+  ["absent", undefined, false],
+  ["malformed", [null, {}, { id: "", kind: "Explore", description: "Empty id", status: "running" },
+    { id: "no-kind", description: "Missing kind", status: "waiting" },
+    { id: "bad-kind", kind: 1, description: "Invalid kind", status: "running" },
+    { id: "no-description", kind: "Explore", status: "running" },
+    { id: "bad-description", kind: "Explore", description: false, status: "waiting" },
+    { id: "no-status", kind: "Explore", description: "Missing status" },
+    { id: "completed", kind: "Explore", description: "Completed", status: "completed" }], false],
+  ["mixed", [null, { id: "broken", kind: "Explore", status: "running" },
+    { id: "active", kind: "Explore", description: "Inspect", status: "running" },
+    { id: "waiting", kind: "reviewer", description: "Wait", status: "waiting" }], true],
+])("133 R3: built hook-compact accepts %s tasks without native fallback", async (_label, runningTasks, hasTasks) => {
+  const f = await fixture();
+  try {
+    const configPath = join(f.dir, "cc.config.json");
+    writeFileSync(configPath, JSON.stringify({ dbPath: f.config.dbPath, stateDir: f.config.stateDir, baseline: "2025-01-01T00:00:00.000Z" }));
+    const result = spawnSync(process.execPath, [resolve("plugin/dist/cc.cjs"), "hook-compact", "--config", configPath],
+      { input: JSON.stringify({ session_id: f.nativeSession, trigger: "a1", auto: false, runningTasks }), encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.passThrough).toBeUndefined();
+    expect(decodeCcInjection(carrierIn(output.text), f.visible())).not.toBeNull();
+    if (hasTasks) {
+      expect(output.text).toContain("- active Explore: Inspect (running)");
+      expect(output.text).toContain("- waiting reviewer: Wait (waiting)");
+      expect(output.text).not.toContain("broken");
+    } else expect(output.text).not.toContain("Running tasks:");
+  } finally { f.close(); }
+});
+
+test.each([["overflow", 1, true], ["fits", 10_000, false]] as const)(
+  "133 R1 supersedes 73: %s pending Raw decides native before any custom carrier or Knowledge delivery", async (_label, temporaryTokens, native) => {
+    const f = await fixture(["Use pnpm."], { "compaction.temporaryTokens": temporaryTokens });
+    f.config.coreConfig.compaction.rawTokens = 100;
+    try {
+      await f.append({ ...user("u2", "a1", "p2"), message: { role: "user", content: "pending ".repeat(200) } }, assistant("a2", "u2"));
+      const before = f.store.deliveryWatermark(`cc:${f.nativeSession}`);
+      const built = await f.build("a2");
+      if (native) {
+        expect(built).toBeNull();
+        expect(f.store.deliveryWatermark(`cc:${f.nativeSession}`)).toBe(before);
+        expect(f.commits(await f.compact())).toEqual(f.versions.map(version => version.commit));
+      } else {
+        expect(built).not.toBeNull();
+        expect(decodeCcInjection(carrierIn(built!.text), f.visible())).not.toBeNull();
+        expect(f.store.deliveryWatermark(`cc:${f.nativeSession}`)).not.toBe(before);
+      }
+    } finally { f.close(); }
+  });
 

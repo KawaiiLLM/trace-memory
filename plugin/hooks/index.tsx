@@ -214,9 +214,15 @@ export const register = (on: any) => {
     // keeps no original message: the trigger is the newest Raw in the block. An unbound or disabled
     // session, or a build that fails for any reason, keeps native compaction and its supplement.
     try {
-      const agents: { id: string; type: string; description: string; status: string }[] = await $.agent.list();
-      const runningTasks = agents.filter(agent => agent.status === "running" || agent.status === "waiting")
-        .map(agent => ({ id: agent.id, kind: agent.type, description: agent.description, status: agent.status }));
+      const agents: unknown = await $.agent.list();
+      const runningTasks: { id: string; kind: string; description: string; status: "running" | "waiting" }[] = [];
+      if (Array.isArray(agents)) for (const agent of agents) {
+        if (agent === null || typeof agent !== "object" || Array.isArray(agent)) continue;
+        const record = agent as Record<string, unknown>;
+        if (typeof record.id !== "string" || !record.id || typeof record.type !== "string" ||
+            typeof record.description !== "string" || (record.status !== "running" && record.status !== "waiting")) continue;
+        runningTasks.push({ id: record.id, kind: record.type, description: record.description, status: record.status });
+      }
       const built = JSON.parse(decode(await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-compact", "--config", `${$.plugin.root}/cc.config.json`],
         // The newest message's handle is its transcript row's uuid: the trigger the build waits for.
         // `auto` (requirement 14, ruled) tells the build whether to end the block with Claude Code's
@@ -225,7 +231,7 @@ export const register = (on: any) => {
       if (!built.passThrough) {
         if (typeof built.text !== "string" || !built.text) throw new Error("compaction returned no block");
         if (session !== await $.session.id()) throw new Error("native session changed during compaction");
-        // 73: omitted unprocessed material is announced in the foreground, never sent to the model.
+        // Reachable fact omissions are announced in the foreground, never sent to the model.
         if (typeof built.warning === "string") try { $.ui.log(built.warning); }
         catch (error) { console.error(`Trace Memory compaction warning: ${String(error)}`); }
         return { messages: [{ role: "user", text: built.text, toolUses: [] }] };

@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { sourceSeededMemory, seedSourceEntry, type NotingAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, seedSourceEntry, recorded, type NotingAgentInput } from "../../source-fixture.ts";
 import { readFacade } from "../../../src/core/api/read.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
@@ -9,6 +9,7 @@ import { validateConfig, toolDefinitions } from "../../../src/core/api/index.ts"
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
+import { facts } from "../../support/seed.ts";
 
 const memories: ReturnType<typeof sourceSeededMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -76,6 +77,7 @@ test("133: Noter hydrates selected Raw and reachable user context, never process
   expect(frozen.entries).toHaveLength(1);
   const processedAssistants = new Set(older.slice(1));
   expect(raw.mock.calls.some(([id]) => processedAssistants.has(id))).toBe(false);
+  expect(raw.mock.calls.map(([id]) => id)).toEqual([frozen.entries[0]!.id, older[0]!]);
   expect(turns).toHaveBeenCalledTimes(1);
   expect(snapshots.mock.calls.map(([path, endpoint]) => ({ path, endpoint }))).toEqual([
     { path: f.target, endpoint: undefined }, { path: f.target, endpoint: frozen.entries[0]!.id },
@@ -95,11 +97,21 @@ test("133: Noter hydrates selected Raw and reachable user context, never process
 
 test("ticket92material capacity shrinking reuses metadata and Raw views but rebinds each endpoint", () => {
   const f = fixture();
+  seedSourceEntry(f.memory, f.turn.id, "user", "another historical human message");
+  seedSourceEntry(f.memory, f.turn.id, "user", "latest historical human message");
+  seedSourceEntry(f.memory, f.turn.id, "assistant", "processed assistant history");
+  const processedAssistant = f.store.listSourceEntries(f.session.id, f.turn.id).at(-1)!.id;
+  f.select();
+  recorded(f.memory, f.session.id, "main", f.turn.id);
   for (let index = 0; index < 6; index++) seedSourceEntry(f.memory, f.turn.id, "assistant", `entry-${index} ${"words ".repeat(80)}`);
   f.select();
   const config = { ...f.memory.config, compaction: { ...f.memory.config.compaction, factsTokens: 1 } };
   const complete = freezeNoting(f.store, { ...f.target, mode: "subagent" }, config);
+  const batchIds = new Set(complete.entries.map(entry => entry.id));
   const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
+  const historicalUsers = f.store.sourcePath(f.session.id, "main", f.turn.id)
+    .filter(entry => !batchIds.has(entry.id) && entry.addresses.some(address => /#user$/.test(address)))
+    .map(entry => entry.id);
   const raw = vi.spyOn(f.store, "getSourceEntry"), snapshots = vi.spyOn(f.store, "pathSnapshot");
   const statements = vi.spyOn(f.store.db, "prepare");
   const reduced = freezeNoting(f.store, { ...f.target, mode: "subagent", capacity: {
@@ -107,10 +119,11 @@ test("ticket92material capacity shrinking reuses metadata and Raw views but rebi
   expect(reduced.entries.length).toBeLessThan(complete.entries.length);
   expect(reduced.entries.length).toBeGreaterThan(0);
   expect(reduced.prepared!.selectedEntryIds).toEqual(reduced.entries.map(entry => entry.id));
-  const batchIds = new Set(complete.entries.map(entry => entry.id));
   const batchReads = raw.mock.calls.filter(([id]) => batchIds.has(id)).map(([id]) => id);
   expect(batchReads).toEqual([...batchIds]);
   expect(new Set(batchReads).size).toBe(batchReads.length);
+  expect(raw.mock.calls.filter(([id]) => !batchIds.has(id)).map(([id]) => id)).toEqual(historicalUsers);
+  expect(raw.mock.calls.some(([id]) => id === processedAssistant)).toBe(false);
   const endpoints = snapshots.mock.calls.map(([, endpoint]) => endpoint).filter(id => id !== undefined);
   expect(endpoints[0]).toBe(complete.entries.at(-1)!.id);
   expect(endpoints.at(-1)).toBe(reduced.entries.at(-1)!.id);
@@ -241,6 +254,43 @@ test("ticket92material fork adds no Knowledge or historical-fact supplement", ()
   expect(frozen.prepared!.material.knowledge).toBeUndefined();
   expect(frozen.prepared!.material.facts).toEqual([]);
   expect(frozen.prepared!.material.sources).toHaveLength(pending.length);
+});
+
+test("133: an over-capacity fork does bounded assembly work instead of shedding temporary history it never sends", () => {
+  const f = fixture();
+  let head = f.turn.id;
+  for (let index = 0; index < 40; index++) {
+    const turn = f.store.appendTurn({ sessionId: f.session.id, parentTurnId: head, kind: "turn", startedAt: "now",
+      userPrompt: `historical user ${index}` });
+    head = turn.id;
+    const source = f.store.getSourceEntry(f.store.listSourceEntries(f.session.id, head)[0]!.id)!;
+    f.select();
+    facts(f.memory, { sessionId: f.session.id, branch: "main", headTurnId: head },
+      [{ title: `Episode ${index}: ${"historical context ".repeat(20)}`, sources: [{ entry: source, text: `historical evidence ${index}` }] }]);
+    seedSourceEntry(f.memory, head, "assistant", `processed assistant ${index}`);
+  }
+  f.select();
+  recorded(f.memory, f.session.id, "main", head);
+  f.memory.config.compaction.factsTokens = 1; // force titles rather than fitting every short full fact
+  seedSourceEntry(f.memory, head, "assistant", "pending final reply");
+  const entry = f.store.listSourceEntries(f.session.id, head).at(-1)!;
+  f.select();
+  const target = { sessionId: f.session.id, branch: "main", headTurnId: head };
+  const fresh = freezeNoting(f.store, { ...target, mode: "subagent" }, f.memory.config);
+  expect(fresh.prepared!.material.earlierUsers!.length).toBeGreaterThan(0);
+  expect(fresh.prepared!.material.factTitles!.length).toBeGreaterThan(0);
+  const visible = { ...noVisibility(), raw: new Map([[entry.nativeId, "source" as const]]) };
+  const fork = freezeNoting(f.store, { ...target, mode: "fork", visible }, f.memory.config);
+  expect(fork.prepared!.material.earlierUsers).toEqual([]);
+  expect(fork.prepared!.material.factTitles).toEqual([]);
+  const price = tokens(fork.forkPrompt) + tokens(fork.prepared!.text);
+  const snapshots = vi.spyOn(f.store, "pathSnapshot");
+  expect(() => freezeNoting(f.store, { ...target, mode: "fork", visible,
+    boundary: { exactEntryIds: [entry.id] }, capacity: { inputTokens: price - 1, prefixTokens: 0 } }, f.memory.config))
+    .toThrow("Noting capacity");
+  expect(snapshots.mock.calls.filter(([, endpoint]) => endpoint !== undefined)).toHaveLength(1);
+  expect(snapshots.mock.calls.length).toBeLessThanOrEqual(2);
+  expect(f.store.pendingEntryIds(f.session.id, "main", head)).toEqual([entry.id]);
 });
 
 test("ticket92material due checks never call compact or read already-counted Raw", () => {

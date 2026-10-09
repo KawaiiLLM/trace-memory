@@ -760,13 +760,18 @@ The extension extends Pi's native `read` and `grep` for the read-only virtual `t
 ## Compaction and the post-compaction boundary
 
 `session_before_compact` reconciles persisted history and asks core to allocate one frozen selected-path
-snapshot. Allocation is local and model-free: it takes no claim and advances no phase. Core truncates material to its windows rather than delegating for capacity. Pi delegates only when there are no eligible material candidates and nothing was omitted, or on an unexpected host-caught error. An empty window caused by capacity still completes custom compaction and warns in the foreground, even if its omission receipt does not fit.
+snapshot. Allocation is local and model-free: it takes no claim and advances no phase. Under 133 R1,
+Pi returns no replacement when `truncated.raw` reports any omitted pending entry, so Pi compacts
+natively. Absent material or unexpected host-caught errors, including a live-task lookup error,
+also delegate. Optional historical omissions alone remain custom; a capacity-empty window with
+no omitted pending Raw may still produce the existing foreground omission notice.
 
 | Outcome | Condition | Adapter result |
 |---|---|---|
-| `{text, supplied, charged, truncated?}` | Eligible material exists, even if all windows are empty because of capacity | Return the text as `compaction.summary`; omitted pending Raw and facts remain pending and cause a foreground warning |
-| No material candidates | Nothing to supply or omit; the reading guide alone is not material | Delegate to Pi's native compaction without recording a custom delivery |
-| `{native: true, reason}` | An unexpected host-caught error (a store error, an invalid path) | Delegate to Pi's native compaction |
+| `{text, supplied, charged, truncated?}` with no pending Raw omission | Eligible material exists | Return `compaction.summary` with its custom carrier |
+| `truncated.raw` | At least one pending Raw entry cannot fit Raw base plus temporary | Delegate without a custom delivery; Raw stays pending |
+| No material candidates | Nothing to supply or omit; guide or tasks alone are not material | Delegate without a custom delivery |
+| `{native: true, reason}` | Unexpected host-caught error, including a live-task lookup failure | Delegate to Pi's native compaction |
 
 The default envelope is 60,000 tokens: Knowledge 20,000, full facts 10,000, Raw 10,000,
 Knowledge-only shared allowance 10,000 and separate temporary allowance 10,000.
@@ -792,24 +797,23 @@ entry labels, budgets and truncation markers are used by Noting and `trace://raw
 records only the entries, fact ids and Knowledge commits actually emitted. Native compaction writes
 no Trace Memory carrier.
 
-### Truncation and the foreground warning
+### Native fallback and omission notices
 
-Compact no longer falls back (73, deleting the recovery machinery of tickets 28, 28b and 32f): when
-pending Raw or unconsolidated facts exceed their base plus the allowance left after earlier windows, it
-keeps the newest ones that fit and omits the rest with a receipt, rather than running Noting,
-Consolidation or Dreaming to shrink the backlog first or escalating to native compaction. Omitted
-material stays pending in the store; Noting and Consolidation process it as usual.
+133 R1 supersedes ticket 73's host policy for pending Raw: if its bounded views cannot all fit
+the Raw base plus temporary allowance, Pi compacts natively. The core `trace://compact` view
+still truncates with receipts. Neither path runs Noting or Dreaming during compaction, and
+pending entries remain in the store. N is unchanged because its frozen batch fits its Raw base.
 
-Whenever a compaction omits unprocessed material, the user is warned in the foreground at `warning`
-level, with the counts and tokens omitted per kind and a note that the material stays pending. The
-warning describes exactly the carrier Pi appended and is given in `session_compact`, once Pi has
-appended it: no callback runs between the final reprice and the returned carrier, and a compaction
-that is cancelled or never appended warns about nothing.
+Native compaction carries no Trace Memory delivery; ordinary Knowledge publication recovers
+at the next prompt, as after ticket 130's native compaction. No pending-Raw truncation warning
+can accompany a custom carrier, because that carrier is no longer returned. Any other reachable
+omission notice is given only after Pi appends the matching custom carrier; cancelled or failed
+attempts warn about nothing.
 
 `event.signal` is Pi's compaction abort controller (behind Esc and `session.abortCompaction()`). A
 cancelled compaction returns `{cancel: true}`, publishes nothing and starts no native fallback; compact
 itself launches no worker, so there is no in-flight recovery task to cancel. An unexpected host-caught
-error still surfaces as `native delegation — …` in the preparing notice; capacity never does.
+error or omitted pending Raw surfaces as `native delegation — …` in the preparing notice.
 
 Pi reaches this sequence from its automatic compaction points and `/compact`. Preparation notifications
 are not completion. Only `session_compact`, after Pi persists the result, updates `lastCompaction` and

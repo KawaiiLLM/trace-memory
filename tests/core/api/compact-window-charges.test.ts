@@ -19,8 +19,33 @@ function setup(resultText?: (text: string) => { text: string }) {
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: at, userPrompt: "old ".repeat(300) });
   return { memory, session, turn };
 }
-const windows = (charged: { knowledge: number; facts: number; raw: number; temporary: number }) =>
-  charged.knowledge + charged.facts + charged.raw + charged.temporary;
+
+test("133/73: Raw overflow and its receipt are charged once, and facts cannot spend the temporary allowance", () => {
+  const { memory, session, turn } = setup();
+  try {
+    memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeId: "new", nativeLineage: "fixture", role: "assistant",
+      text: "new ".repeat(40), raw: "", calls: [] });
+    const user = hydrate(memory.store.listSourceEntries(session.id, turn.id), memory.store).find(entry => entry.role === "user")!;
+    legacyFacts(memory.store, { kind: "noting", sessionId: session.id, branch: "main", createdAt: at }, [{
+      sources: [{ entry: user, address: `T${turn.id}#user` }], text: "fact ".repeat(45), category: "observation", actor: "user", createdAt: at,
+    }]);
+    Object.assign(memory.config.compaction, { rawTokens: 30, factsTokens: 40, sharedAllowanceTokens: 100, temporaryTokens: 100 });
+    const result = memory.compact(session.id, "main", turn.id);
+    if ("native" in result) throw new Error("native");
+    expect(result.truncated?.raw?.entries).toBeGreaterThan(0);
+    const guide = readingGuide(session.id, canonicalToolNames);
+    expect(result.text.startsWith(`${guide}\n\n`)).toBe(true);
+    const windowText = result.text.slice(guide.length + 2);
+    expect(windowText).toContain("earlier entries omitted from the Raw window");
+    const charged = result.charged!;
+    const total = charged.knowledge + charged.facts + charged.raw + charged.temporary;
+    expect(tokens(windowText)).toBeLessThanOrEqual(total);
+    expect(total).toBeLessThanOrEqual(charged.envelope);
+    expect(charged.facts).toBeLessThanOrEqual(40);
+    expect(charged.temporary).toBeGreaterThan(0);
+    expect(charged.temporary).toBeLessThanOrEqual(100);
+  } finally { memory.close(); }
+});
 
 
 test("73: windows with no room even for a bare receipt emit nothing — no titles, tags or receipts", () => {
@@ -62,6 +87,12 @@ test("empty compaction has no candidates or omissions, unlike a zero-charge capa
     expect(result.supplied.entries).toEqual([]);
     expect(result.supplied.factIds).toEqual([]);
     expect(result.supplied.knowledgeCommitIds).toEqual([]);
+    const withTask = memory.compact(empty.id, "main", undefined, [], false,
+      { runningTasks: [{ id: "live", kind: "Explore", description: "Still running", status: "running" }] });
+    if ("native" in withTask) throw new Error("native");
+    expect(withTask.hasMaterialCandidates).toBe(false); // live state alone is not stored material
+    expect(withTask.truncated).toBeUndefined();
+    expect(withTask.charged).toEqual(result.charged);
   } finally { memory.close(); }
 });
 

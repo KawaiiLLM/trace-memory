@@ -263,16 +263,23 @@ test("a prompt that is too long compacts with the block and retries on it", asyn
   expect(block.endsWith(CC_AUTO_CONTINUE_SUFFIX)).toBe(true); // requirement 14: prompt-too-long is Claude Code's own auto path too
 }, 180_000);
 
-test("a compaction that omits pending Raw warns in the foreground, never the model", async () => {
+test("133 R1 supersedes 73: pending Raw overflow keeps the native summary and Knowledge supplement", async () => {
   const long = Array.from({ length: 6 }, (_, i) => `LONG turn ${i + 1}`);
   const result = await run({ prompts: [...long, "/compact", "AFTER prompt"], settings: { "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 },
     reply: body => promptOf(body).startsWith("LONG") ? { blocks: [{ type: "text", text: `${promptOf(body)}: ${"many words ".repeat(3_000)}` }] } : ack(body) });
-  const { block, raw } = installed(result);
-  expect(raw.at(-1)).toContain("LONG turn 6"); // the newest Raw is kept; the oldest is omitted
-  const warning = /Trace Memory: compaction omitted (\d+) pending Raw entr(y|ies); omitted Raw remains pending for Noting\./.exec(result.debug);
-  expect(warning, "the engine's transcript notice").not.toBeNull();
+  const summary = result.requests.findIndex(summarises);
+  expect(summary).toBeGreaterThan(0);
+  const after = result.requests.slice(summary + 1);
+  expect(after.length).toBeGreaterThan(0);
+  expect(JSON.stringify(after[0]!.messages)).toContain("NATIVE-SUMMARY");
+  expect(result.requests.some(body => blockOf(body) !== undefined)).toBe(false);
+  const supplement = (after[0]!.messages ?? []).filter(message => message.role === "user")
+    .flatMap(message => texts(message.content)).find(isCarrier)!;
+  expect(decodeCcInjection(supplement.replace(/\n$/, ""), result.visible)!.commits).toEqual([result.rule]);
+  for (const body of after) expect(carriers(body)).toBe(1);
+  expect(stored(result).carriersInRaw).toBe(0);
+  expect(result.debug).not.toContain("pending Raw entries; omitted Raw");
   expect(JSON.stringify(result.requests)).not.toContain("compaction omitted");
-  expect(block).toContain("omitted");
 }, 180_000);
 
 test("a build that fails keeps native compaction and today's knowledge supplement", async () => {

@@ -9,8 +9,7 @@ import extension from "../../../src/hosts/pi/index.ts";
 // and between tool rounds … tests cover all three triggers, not only `agent_end`." These cases run
 // the REAL extension inside a real Pi `AgentSession` (only the wire is stubbed) and drive each of the
 // three code paths that reach `_runAutoCompaction`, so each one really enters this host's
-// `session_before_compact` — 73: one allocation, no recovery — and Pi really persists what it hands
-// back.
+// `session_before_compact` — 133 R1: one allocation, no Noter recovery — and Pi really persists its result.
 //
 //   agent-session.js:1634 `_checkCompaction`      after `agent_end` (the post-run loop)
 //   agent-session.js:891  `_checkCompaction(…, false)` before prompt submission
@@ -19,7 +18,7 @@ import extension from "../../../src/hosts/pi/index.ts";
 // abort controller's `signal` and honours `{cancel: true}` (:1770).
 
 const big = "word ".repeat(4_000);
-const worker = (body: unknown) => JSON.stringify(body).includes("# Dreamer");
+const worker = (body: unknown) => /# (?:Noting|Dreamer)/u.test(JSON.stringify(body));
 const traceMemory = (dir: string, rawTokens = 10_000) => ({
   dbPath: join(dir, "trace.db"),
   "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000,
@@ -170,10 +169,28 @@ async function completedStatus(f: Awaited<ReturnType<typeof session>>) {
   expect(f.notices.at(-1)).toContain("Compaction: bounded entry views");
 }
 
-// 73 "No fallback, in either host": Pi no longer delegates a compaction to its native compactor for
-// capacity, so there is no more terminal-event scenario to pin here — a tight Raw window truncates
-// (compaction.test.ts covers that), and the only remaining native delegation is a host-caught error
-// unrelated to capacity, which this harness has no seam to script.
+test.each([true, false])("133 R1: pending Raw overflow uses Pi's native compactor (automatic=%s) without a custom carrier or an extra Noter", async automatic => {
+  const f = await session({ automatic, rawTokens: 1, memoryConfig: { "compaction.temporaryTokens": 1 } });
+  try {
+    const replies = automatic
+      ? [() => say("answered", usage(2_950, 2)), () => say("native overflow summary", usage(10, 2))]
+      : [() => say("answered", usage(10, 2)), () => say("answered", usage(10, 2)), () => say("native overflow summary", usage(10, 2))];
+    scripted(f, replies);
+    await f.session.prompt(`${big} FIRST`);
+    if (!automatic) {
+      await f.session.prompt("SECOND");
+      await f.session.compact();
+    }
+    expect(compactions(f)).toHaveLength(1);
+    expect(compactions(f)[0]!.summary).toContain("native overflow summary");
+    expect(compactions(f)[0]!.details?.traceMemory).toBeUndefined();
+    expect(f.sent.some(worker)).toBe(false);
+    expect(f.notices.some(message => message.includes("compaction omitted"))).toBe(false);
+    expect(f.notices.at(-1)).toContain("compaction used native delegation");
+    await f.session.prompt("/trace");
+    expect(f.notices.at(-1)).toContain("Compaction: native delegation");
+  } finally { f.dispose(); }
+});
 
 test("133: optional pi-subagents service supplies queued/running tasks to persisted compaction", async () => {
   const f = await session({ automatic: false });
@@ -183,6 +200,11 @@ test("133: optional pi-subagents service supplies queued/running tasks to persis
     { id: "queued", type: "Explore", description: "Waiting for a seat", status: "queued" },
     { id: "running", type: "reviewer", description: "Inspecting the change", status: "running" },
     { id: "done", type: "Explore", description: "Finished task", status: "completed" },
+    { id: "missing-description", type: "Explore", status: "running" },
+    { id: "missing-type", description: "Missing kind", status: "queued" },
+    { type: "Explore", description: "Missing id", status: "running" },
+    { id: "bad-description", type: "Explore", description: 42, status: "running" },
+    null,
   ] };
   try {
     f.script(() => say("answered", usage(10, 2)));
@@ -192,11 +214,41 @@ test("133: optional pi-subagents service supplies queued/running tasks to persis
     expect(summary).toContain("- queued Explore: Waiting for a seat (queued)");
     expect(summary).toContain("- running reviewer: Inspecting the change (running)");
     expect(summary).not.toContain("Finished task");
+    expect(summary).not.toContain("missing-description");
+    expect(summary).not.toContain("missing-type");
+    expect(summary).not.toContain("bad-description");
+    expect(summary).not.toContain("Missing id");
     expect(summary.indexOf("Running tasks:")).toBeGreaterThan(summary.indexOf("Raw:"));
     delete registry[key];
     await f.session.prompt("SECOND");
     await f.session.compact();
     expect(compactions(f)[1]!.summary).not.toContain("Running tasks:");
+    expect(compactions(f)[1]!.details?.traceMemory).toBeTruthy();
+    expect(f.sent).toHaveLength(2); // two foreground answers, no compaction or worker requests
+    expect(f.notices.some(message => message.includes("native delegation"))).toBe(false);
+  } finally {
+    if (previous === undefined) delete registry[key]; else registry[key] = previous;
+    f.dispose();
+  }
+});
+
+test("133 R2: a throwing optional Pi agent lookup keeps native fallback", async () => {
+  const f = await session({ automatic: false });
+  const key = Symbol.for("@gotgenes/pi-subagents:service");
+  const registry = globalThis as Record<symbol, unknown>, previous = registry[key];
+  registry[key] = { listAgents: () => { throw new Error("agent registry unavailable"); } };
+  try {
+    scripted(f, [() => say("answered", usage(10, 2)), () => say("answered", usage(10, 2)),
+      () => say("native lookup-error summary", usage(10, 2))]);
+    await f.session.prompt("FIRST");
+    await f.session.prompt("SECOND");
+    await f.session.compact();
+    expect(compactions(f)).toHaveLength(1);
+    expect(compactions(f)[0]!.summary).toContain("native lookup-error summary");
+    expect(compactions(f)[0]!.details?.traceMemory).toBeUndefined();
+    expect(f.sent.some(worker)).toBe(false);
+    expect(f.notices.some(message => message.includes("agent registry unavailable"))).toBe(true);
+    expect(f.notices.some(message => message.includes("compaction omitted"))).toBe(false);
   } finally {
     if (previous === undefined) delete registry[key]; else registry[key] = previous;
     f.dispose();

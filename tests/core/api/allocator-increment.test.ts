@@ -63,6 +63,44 @@ test("73: current Knowledge is optional regardless of Dreamer processing state",
   expect(compacted(result)).not.toContain("current complete knowledge");
 });
 
+test("133/92: pending Raw fits exactly at the temporary boundary; one below omits the whole entry deterministically", () => {
+  const { s, t, f } = exactFixture({ knowledge: 20_000, facts: 9_000, raw: 1_800 });
+  memory.config.compaction.rawTokens = 1_000;
+  memory.config.compaction.temporaryTokens = 800;
+  setSharedAllowance(memory, 0);
+  const fitted = memory.compact(s.id, "main", t.id);
+  if ("native" in fitted) throw new Error(fitted.reason);
+  expect(fitted.charged).toMatchObject({ knowledge: 20_000, facts: 9_000, raw: 1_000, temporary: 800 });
+  expect(fitted.supplied.factIds).toContain(f.id);
+  expect(fitted.supplied.entries).toHaveLength(1);
+  expect(fitted.material!.entries![0]!.view).not.toMatch(/\[\.\.\. \d+ characters truncated\]/);
+  expect(memory.compact(s.id, "main", t.id)).toEqual(fitted);
+
+  memory.config.compaction.temporaryTokens = 799;
+  const short = memory.compact(s.id, "main", t.id);
+  if ("native" in short) throw new Error(short.reason);
+  expect(short.supplied.entries).toEqual([]); // a pending entry is never cut to consume a partial remainder
+  expect(short.supplied.factIds).toEqual(fitted.supplied.factIds);
+  expect(short.material!.facts).toEqual(fitted.material!.facts);
+  expect(short.truncated?.raw).toEqual({ entries: 1 }); // exact count, no token figure
+  expect(memory.compact(s.id, "main", t.id)).toEqual(short);
+});
+
+test.each([21_000, 35_000])("133: Knowledge using all its shared allowance (%i tokens) leaves Raw's temporary allowance independent", knowledge => {
+  const { s, t, f } = exactFixture({ knowledge, facts: 9_000, raw: 1_800 });
+  memory.config.compaction.rawTokens = 1_000;
+  memory.config.compaction.temporaryTokens = 800;
+  setSharedAllowance(memory, knowledge - 20_000);
+  const result = memory.compact(s.id, "main", t.id);
+  if ("native" in result) throw new Error(result.reason);
+  expect(result.charged).toMatchObject({ knowledge, facts: 9_000, raw: 1_000, temporary: 800 });
+  expect(result.supplied.factIds).toContain(f.id);
+  expect(result.supplied.entries).toHaveLength(1);
+  expect(result.truncated).toBeUndefined();
+  const charged = result.charged!;
+  expect(charged.knowledge + charged.facts + charged.raw + charged.temporary).toBeLessThanOrEqual(charged.envelope);
+});
+
 
 test("92: a historical unconsolidated fact stays eligible but cannot borrow shared allowance", () => {
   const { s, t } = exactFixture({ knowledge: 5_000, facts: 9_000, raw: 1_800 });

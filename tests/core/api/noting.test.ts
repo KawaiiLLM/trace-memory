@@ -162,6 +162,8 @@ test("a turn arriving during the model call waits for the next trigger", async (
   script.push(async () => success([batch(second.id, [fact({ sources: `[T${second.id}#E1] ${memories.base}`, support: [["F1", "weak"]] })])]));
   await noting(second.id);
   expect(calls[1]!.text).toContain(second.userPrompt!);
+  const rawSection = calls[1]!.text.split("Raw:\n")[1]!.split("</episodic>")[0]!;
+  expect(rawSection).not.toContain(first.userPrompt!); // historical words may appear earlier, not as processed Raw
   expect(calls[1]!.material.facts[0]).toContain("[F1]");
   expect(hydrate(memory.store.sourcePath(sessionId, "main", second.id), memory.store).length).toBeGreaterThan(0);
   expect(hydrate(memory.store.sourcePath(sessionId, "main", second.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);

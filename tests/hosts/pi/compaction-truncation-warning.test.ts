@@ -1,16 +1,22 @@
 import { expect, test } from "vitest";
 import { host } from "./test-host.ts";
-import { legacyFacts } from "../../support/seed.ts";
+import { fact } from "../../support/seed.ts";
 
-// Ticket 73, Pi reviews of c03010e and 8ac7be8: the truncation warning describes exactly the carrier
-// Pi appended, and is given once it has been appended (`session_compact`). No callback runs between
-// the final reprice and the carrier, and a compaction that is cancelled or never appended warns
-// about nothing.
+// 133 R1 supersedes pending-Raw warnings. Optional omissions still describe exactly the
+// carrier Pi appended, and cancelled or unappended compactions warn about nothing.
 const OMITTED = "compaction omitted";
 
 async function truncatingHost() {
-  const h = host({ "noting.triggerTokens": 1_000_000, "compaction.rawTokens": 300, "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
-  for (let i = 0; i < 5; i++) { await h.prompt(`pending-${i} ${"word ".repeat(250)}`); await h.answer(); }
+  const h = host({ "noting.triggerTokens": 1, "noting.forkModeDefault": false,
+    "compaction.factsTokens": 1, "compaction.rawTokens": 1,
+    "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
+  const sourceText = `fact source ${"word ".repeat(250)}`;
+  await h.prompt(sourceText); await h.answer(); await h.drain();
+  expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("success");
+  expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
+  const path = h.memory.store.knowledgePath(1, "main", 1);
+  const source = h.memory.store.sourcePath(1, "main", 1).map(entry => h.memory.store.getSourceEntry(entry.id)!).find(entry => entry.role === "user")!;
+  fact(h.memory, path, "Optional history", [{ entry: source, text: sourceText }]);
   const warnings: string[] = [];
   const notify = h.ctx.ui.notify.bind(h.ctx.ui);
   let onInfo = (_message: string) => {};
@@ -20,28 +26,26 @@ async function truncatingHost() {
     if (level === "info") onInfo(message);
   }) as typeof h.ctx.ui.notify;
   const append = async (result: { compaction: { summary: string; details: unknown } }) => {
-    const entry = { id: `compact-${h.entries.length}`, parentId: h.entries.at(-1)!.id, timestamp: "now", type: "compaction",
-      summary: result.compaction.summary, firstKeptEntryId: "", tokensBefore: 100_000, details: result.compaction.details };
-    h.entries.push(entry as never); h.allEntries.push(entry as never);
+    const entry = h.compaction(result.compaction.summary);
     await h.emit("session_compact", { compactionEntry: entry });
   };
   return { h, warnings, append, setOnInfo: (fn: (message: string) => void) => { onInfo = fn; } };
 }
 
-test("73: the truncation warning is given once Pi appends the carrier, not before", async () => {
+test("133 R1: an optional capacity omission warns once Pi appends its carrier, not before", async () => {
   const { h, warnings, append } = await truncatingHost();
   try {
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     expect(result.compaction).toBeDefined();
-    expect(result.compaction.summary).toContain("earlier entries omitted from the Raw window");
-    expect(warnings).toEqual([]); // nothing is said while the compaction may still be cancelled
+    expect(warnings).toEqual([]);
     await append(result);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("pending Raw");
+    expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
+    expect(warnings[0]).not.toContain("pending Raw");
   } finally { await h.dispose(); }
 });
 
-test("73: a compaction cancelled from a notification callback warns about nothing", async () => {
+test("133 R1: a compaction cancelled from a notification callback warns about nothing", async () => {
   const { h, warnings, setOnInfo } = await truncatingHost();
   try {
     const controller = new AbortController();
@@ -52,24 +56,15 @@ test("73: a compaction cancelled from a notification callback warns about nothin
   } finally { await h.dispose(); }
 });
 
-test("73: when the pending set changes during a callback, the warning follows the carrier Pi appends", async () => {
+test("133 R1: an optional omission warning follows the final repriced carrier", async () => {
   const { h, warnings, append, setOnInfo } = await truncatingHost();
   try {
-    // Another executor notes every pending entry while the preparing notice is shown: the first
-    // allocation truncated pending Raw, the final one has nothing pending to truncate.
-    setOnInfo(message => {
-      if (!message.includes("compaction preparing")) return;
-      const store = h.memory.store, sessionId = 1;
-      const head = store.listTurns(sessionId).at(-1)!.id;
-      const user = store.sourcePath(sessionId, "main", head).find(value => value.turnId === head && store.getSourceEntry(value.id)?.role === "user")!;
-      legacyFacts(store, { kind: "manual", sessionId, branch: "main", createdAt: "2026-09-23T00:00:00Z" },
-        [{ sources: [{ entry: user, address: `T${head}#E${user.entryOrdinal}` }], text: "noted elsewhere",
-          category: "observation", actor: "user", createdAt: "2026-09-23T00:00:00Z" }],
-        store.pendingEntryIds(sessionId, "main", head));
-    });
+    h.memory.config.compaction.factsTokens = 10_000;
+    setOnInfo(message => { if (message.includes("compaction preparing")) h.memory.config.compaction.factsTokens = 1; });
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     expect(result.compaction).toBeDefined();
     await append(result);
-    expect(warnings).toEqual([]); // the appended carrier truncated nothing pending
+    expect(warnings).toHaveLength(1);
+    expect(result.compaction.summary).not.toContain("fact source");
   } finally { await h.dispose(); }
 });

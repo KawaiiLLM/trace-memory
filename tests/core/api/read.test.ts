@@ -860,6 +860,29 @@ function pendingFacts(sessionId: number, turnId: number, texts: string[], branch
 const entry = (sessionId: number, turnId: number, nativeId: string, text: string) =>
   memory.appendEntry({ sessionId, nativeLineage: "x", nativeId, turnId, role: "assistant", text, raw: "", calls: [] });
 
+// 133 moves episodic borrowing to temporary; the full-fact base stays independent.
+test("92/133: Knowledge uses shared allowance while full facts remain independently capped at 10k", () => {
+  const s = session(), t = turn(s.id, "head");
+  const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
+  for (let i = 0; i < 9; i++) for (let part = 0; part < 2; part++)
+    knowledge(s.id, seed.id, "constraint", "project", `K${i} part ${part} ` + "word ".repeat(970), `202${i}`);
+  const facts = pendingFacts(s.id, t.id, [...Array(14)].map((_, i) => `FACT_${i} ` + "word ".repeat(990)));
+  for (let i = 0; i < 3; i++) entry(s.id, t.id, `raw${i}`, `RAW_${i} ` + "word ".repeat(1_940));
+  const result = memory.compact(s.id, "main", t.id);
+  const windows = charged(result), text = compacted(result);
+  expect(windows.facts).toBeLessThanOrEqual(10_000);
+  expect(text).toContain("older facts; expand:");
+  expect(windows.knowledge).toBeGreaterThan(17_000);
+  expect(windows.raw).toBeGreaterThan(5_000);
+  expect(windows.envelope).toBe(60_000);
+  expect(windows.knowledge + windows.facts + windows.raw + windows.temporary).toBeLessThanOrEqual(windows.envelope);
+  expect(facts.some(fact => text.includes(`[F${fact.id}]`))).toBe(true);
+  expect(facts.some(fact => !text.includes(`[F${fact.id}]`))).toBe(true);
+  for (let i = 0; i < 3; i++) expect(text).toContain(`RAW_${i}`);
+  for (let i = 0; i < 9; i++) expect(text).toContain(`K${i} `);
+  expect(calls).toBe(0);
+});
+
 
 test("28a/30/92: facts and Raw refill stay whole, recent, path-applicable and deduplicated within independent windows", () => {
   const s = session(), t = turn(s.id, "head");

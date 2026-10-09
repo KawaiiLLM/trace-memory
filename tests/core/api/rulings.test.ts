@@ -1657,6 +1657,52 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0); // the rest waits; 50,000 would have taken it
 });
 
+// 133 changes the borrowing pool, not the core trace view's windows or processing invariants.
+// R1 delegates at the host boundary; this read-only allocator still reports pending omissions.
+test("73/133: core material uses independent windows, truncates newest-first and changes no progress", () => {
+  expect(memory.knowledgeBudgets().injection).toBe(20_000);
+  expect(DEFAULT_CONFIG.render.episodicBlockTokens).toBe(20_000);
+  expect(REMOVED_SETTINGS["render.episodicBlockTokens"]).toBeUndefined();
+  const { s, t } = session();
+  const write = (text: string, turnId = t.id) => {
+    const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: turnId, branch: "main" });
+    return JSON.parse(tools.find(tool => tool.name === "note")!.execute({ title: "Material window fact", sources: `[T${turnId}#E1] ${text}` })).factIds[0] as number;
+  };
+  const pad = "word ".repeat(500);
+  write(`OLDER FACT ${pad}`);
+  write("RECENT FACT");
+  const extracted = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "done", turnId: t.id,
+    role: "assistant", text: `EXTRACTED RAW ${pad}`, raw: "", calls: [] });
+  expect(memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
+    facts: [], entryIds: hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).map(e => e.id) }).ok).toBe(true);
+  const open = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "open", turnId: t.id,
+    role: "assistant", text: "PENDING RAW", raw: "", calls: [] });
+  const full = memory.compact(s.id, "main", t.id);
+  const text = compacted(full), windows = charged(full);
+  expect(windows.envelope).toBe(60_000);
+  expect(windows.knowledge + windows.facts + windows.raw + windows.temporary).toBeLessThanOrEqual(windows.envelope);
+  for (const marker of ["OLDER FACT", "RECENT FACT", "PENDING RAW", "EXTRACTED RAW"]) expect(text).toContain(marker);
+  memory.config.render.episodicBlockTokens = 40;
+  expect(compacted(memory.compact(s.id, "main", t.id))).toBe(text);
+  memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
+  compactionWindows(Math.max(1, windows.knowledge), 150, 150);
+  const required = compacted(memory.compact(s.id, "main", t.id));
+  expect(required).toContain("RECENT FACT"); expect(required).toContain("PENDING RAW");
+  expect(required).not.toContain("OLDER FACT"); expect(required).not.toContain("EXTRACTED RAW");
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
+  expect(memory.store.entryNoted(extracted.id)).toBe(true);
+  compactionWindows(10, 1, 1);
+  const squeezed = memory.compact(s.id, "main", t.id);
+  if ("native" in squeezed) throw new Error(squeezed.reason);
+  expect(squeezed.text).not.toContain("RECENT FACT");
+  expect(squeezed.text).not.toContain("PENDING RAW");
+  expect(squeezed.truncated?.facts?.count).toBeUndefined();
+  expect(squeezed.truncated?.raw?.entries).toBe(1);
+  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual([open.id]);
+  expect(calls).toHaveLength(0);
+  defaultWindows();
+});
+
 
 // 92 §8 replaces C's database-derived capacity with D's K window; the old C-only
 // knowledgeTokens override is retired, not mapped onto either N or D.
@@ -2734,6 +2780,20 @@ test("N and D compose shared definitions and principles with their permitted mai
 // 61 (2026-09-19): the prompts are written to one standard — shared memory-model blocks, per-stage judgment,
 // short imperative sentences, no internal references, defined vocabulary only.
 const STAGE_PROMPTS = ["noting.md", "dreaming.md"] as const;
+const promptSentences = (text: string) => {
+  const body = text.replace(/```[\s\S]*?```/g, "");
+  const sentences: string[] = [];
+  for (const paragraph of body.split(/\n\s*\n/)) {
+    if (paragraph.trim().startsWith("#")) continue;
+    for (const raw of paragraph.split("\n")) {
+      const line = raw.replace(/^\s*(?:[-*>]|\d+\.)\s+/, "").trim();
+      const parts = line.split(/(?<=[.!?:])\s+(?=[A-Z`"(*\[])/).filter(part => part.split(/\s+/).length >= 2);
+      sentences.push(...parts);
+      if (parts.length > 4) sentences.push(`WALL:${line.slice(0, 60)}`);
+    }
+  }
+  return sentences;
+};
 
 test("61: every stage prompt is composed from the shared blocks in one section order, with a numbered procedure", () => {
   const order = ["## Role", "## Definitions", "## Principles", "## Inputs", "## Procedure", "## Output"];
@@ -2750,6 +2810,23 @@ test("61: every stage prompt is composed from the shared blocks in one section o
     expect(raw).toMatch(/## Inputs\n\n<!-- include: formats -->/);
     expect(raw).toMatch(/## Principles\n\n(<!-- include: |### )/);
     expect(loadPrompt(file)).not.toContain("<!-- include:");
+  }
+});
+
+test("61: sentences are short, paragraphs are not walls, and no internal reference or internal vocabulary leaks into the prompts", () => {
+  const banned = [/\bv1\.\d\b/, /\b\d\d[a-z]?'s\b/, /\bticket\s+\d+/, /\bcase \d\b/, /\buncertified\b/, /\bcertificate\b/, /\bneutral conflict\b/, /\bpost-freeze\b/,
+    /\beffective grounding\b/, /\bfrozen family\b/, /\bfamily\b/, /\bCONTEXT\.md\b/];
+  for (const file of STAGE_PROMPTS) {
+    const prompt = loadPrompt(file);
+    const sentences = promptSentences(prompt);
+    const walls = sentences.filter(s => s.startsWith("WALL:"));
+    expect(walls, `${file}: paragraphs over four sentences`).toEqual([]);
+    const lengths = sentences.filter(s => !s.startsWith("WALL:")).map(s => s.split(/\s+/).length);
+    const longest = sentences.filter(s => s.split(/\s+/).length > 35);
+    expect(longest, `${file}: sentences over 35 words`).toEqual([]);
+    expect(lengths.reduce((a, b) => a + b, 0) / lengths.length, `${file}: mean sentence length`).toBeLessThanOrEqual(18);
+    for (const pattern of banned) expect(prompt.match(pattern), `${file}: ${pattern}`).toBeNull();
+    expect(prompt).not.toMatch(/[一-鿿]/);
   }
 });
 

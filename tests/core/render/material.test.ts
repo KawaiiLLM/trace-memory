@@ -180,6 +180,9 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   const noting = calls[0]! as NotingAgentInput;
   expect(knowledgeBlockOf(noting.material)).toBe(withSize(knowledgeBlock));
   expect(noting.material.facts).toEqual([]);
+  expect(noting.material.receipts).toEqual([factReceipt]);
+  expect(noting.material.entries.map(entry => entry.view).join("\n\n")).toBe(views(s.id, t.id));
+  expect(noting.text.indexOf("\nReceipts:\n")).toBeGreaterThan(noting.text.indexOf("\nRaw:\n"));
   memory.config.compaction.factsTokens = 10_000;
   // A legal oversized manual item pressures the same Knowledge selector used by N.
   const receipt = "omitted 2 constraint knowledge; expand: trace://K2, trace://K1";

@@ -13,7 +13,7 @@ import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggle
 import { agentDirectory, configuration, configuredMode, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
-import { TraceMemory, cacheMissWarning, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt } from "../../core/api/index.ts";
+import { TraceMemory, cacheMissWarning, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -1184,9 +1184,8 @@ export default function (pi: ExtensionAPI) {
     return visibleView(at < 0 ? [] : entries.slice(at), binding());
   };
   const PHASE_LABEL = { noting: "Noting", dreaming: "Dreamer" } as const;
-  // Ticket 73 "Shared allowance": core allocates once and never falls back — compact truncates
-  // unprocessed material instead of asking for recovery or native delegation. This handler freezes the
-  // path, allocates, and either publishes the replacement or (a host-caught error only) delegates.
+  // 133 R1: core still truncates for readers, but a host replacement that omits pending Raw
+  // delegates to Pi. Compaction never runs a Noter; native Knowledge recovery stays at the next prompt.
   //
   // Cancellation is Pi's own. `event.signal` is the compaction abort controller behind Esc and
   // `session.abortCompaction()`. The compaction launches no task, so the signal is only checked here:
@@ -1209,20 +1208,26 @@ export default function (pi: ExtensionAPI) {
           if (!valid()) return { native: true as const, reason: "memory enrollment, project or the selected path changed" };
           // Optional in-process service contract published by pi-subagents, not a package dependency.
           const service = (globalThis as Record<symbol, unknown>)[Symbol.for("@gotgenes/pi-subagents:service")] as
-            { listAgents(): { id: string; type: string; description: string; status: string }[] } | undefined;
-          const runningTasks = (service?.listAgents() ?? []).filter(agent => agent.status === "queued" || agent.status === "running")
-            .map(agent => ({ id: agent.id, kind: agent.type, description: agent.description, status: agent.status }));
+            { listAgents(): unknown[] } | undefined;
+          const runningTasks: RunningTask[] = [];
+          const agents = service?.listAgents();
+          if (agents) for (const record of agents) {
+            if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+            const agent = record as Record<string, unknown>;
+            if (typeof agent.id !== "string" || !agent.id || typeof agent.type !== "string"
+              || typeof agent.description !== "string" || (agent.status !== "queued" && agent.status !== "running")) continue;
+            runningTasks.push({ id: agent.id, kind: agent.type, description: agent.description, status: agent.status });
+          }
           return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION), false, { knowledge, runningTasks });
         });
         if (!knowledge) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
         const block = memory.injection({ projectId: state.projectId });
         return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
           knowledgeTokens: block.knowledgeTokens, knowledgeStates: block.knowledgeStates } };
-      } catch (error) { return { native: true, reason: String(error) }; } // an unexpected store error is a reason to delegate, never oversized material
+      } catch (error) { return { native: true, reason: String(error) }; } // 133 R2: store and live-task lookup errors delegate.
     };
-    const path = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
-    // 28 "Failure and persistence": user cancellation cancels this operation's own work — the signal
-    // did that through core — publishes nothing and starts no native fallback. Committed progress
+    // 28 "Failure and persistence": user cancellation publishes nothing and starts no native fallback.
+    // No Noter runs during compaction. Committed progress
     // stays committed; a cancelled compaction appends no entry, so no carrier and no baseline moves.
     if (signal?.aborted) {
       context.ui.notify("Trace Memory: compaction was cancelled; no native compaction was started.", "info");
@@ -1231,15 +1236,15 @@ export default function (pi: ExtensionAPI) {
     if (closed) return { cancel: true };
     let result = allocate();
     if (signal?.aborted || closed) return { cancel: true };
-    context.ui.notify(`Trace Memory: compaction preparing ${"native" in result ? `native delegation — ${result.reason}` : "bounded entry views"}.`, "info");
+    context.ui.notify(`Trace Memory: compaction preparing ${"native" in result ? `native delegation — ${result.reason}`
+      : result.truncated?.raw ? "native delegation — pending Raw does not fit" : "bounded entry views"}.`, "info");
     // Notification callbacks may themselves cancel or change the binding. No await or callback
     // separates this final coherent reprice from constructing the exact publication carrier.
     if (signal?.aborted || closed) return { cancel: true };
     result = allocate();
     if (signal?.aborted || closed) return { cancel: true };
-    if ("native" in result) return;
-    // Only genuinely absent material delegates; capacity omissions remain custom compactions
-    // even when none of the windows can fit an omission receipt.
+    if ("native" in result || result.truncated?.raw) return;
+    // Optional-material omissions can still publish; genuinely absent material delegates.
     if (!result.text || result.hasMaterialCandidates === false) return;
     // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the
     // compaction entry Pi appends for it, so a cancelled or failed attempt — which appends no entry —
@@ -1263,7 +1268,7 @@ export default function (pi: ExtensionAPI) {
       if (signal?.aborted || closed) return { cancel: true };
       result = allocate(false);
       if (signal?.aborted || closed) return { cancel: true };
-      if ("native" in result || !result.text || result.hasMaterialCandidates === false) return;
+      if ("native" in result || result.truncated?.raw || !result.text || result.hasMaterialCandidates === false) return;
     }
     publishedTruncation = result.truncated ?? (result.hasMaterialCandidates && result.charged &&
       !result.charged.knowledge && !result.charged.facts && !result.charged.raw && !result.charged.temporary ? {} : undefined);
@@ -1280,15 +1285,9 @@ export default function (pi: ExtensionAPI) {
     const omitted = custom ? publishedTruncation : undefined;
     publishedTruncation = undefined;
     if (omitted) {
-      const { raw, facts } = omitted;
-      // 79 item 4 (ruled): Raw is an exact count only, never a token figure -- rendering every omitted
-      // entry to size it would read the whole omitted backlog on every compaction. Facts keep both.
-      const parts = [
-        ...(raw ? [`${raw.entries} pending Raw ${raw.entries === 1 ? "entry" : "entries"}`] : []),
-        ...(facts ? [`${facts.count} ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens)`] : []),
-      ];
-      context.ui.notify(parts.length
-        ? `Trace Memory: compaction omitted ${parts.join(" and ")}${raw ? "; omitted Raw remains pending for Noting." : "."}`
+      const { facts } = omitted;
+      context.ui.notify(facts
+        ? `Trace Memory: compaction omitted ${facts.count} ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens).`
         : "Trace Memory: compaction omitted material that did not fit even as an omission receipt; it remains in memory.", "warning");
     }
     if (enabled() && state.sessionId) {

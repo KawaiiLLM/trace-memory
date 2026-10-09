@@ -450,8 +450,8 @@ the same `compact()` allocator as main-agent compaction.
 
 Ticket 133 adds a separate `compaction.temporaryTokens` allowance, 10,000 by default.
 The anchor is the batch's newest turn. Its frozen batch already fits its Raw base, so no
-Noter Raw borrows: the allowance holds human user words from the anchor and nine preceding
-path turns, then uncovered fact titles from the anchor and 49 preceding turns.
+Noter Raw borrows: the allowance holds human user words from the anchor and 29 preceding
+path turns, then uncovered fact titles from the anchor and 99 preceding turns, by default.
 User entries use the normal head/tail middle cut at 500 tokens each. Neither these excerpts
 nor titles grant full-body coverage or enlarge the frozen processing batch.
 
@@ -846,8 +846,9 @@ User entries use the normal renderer with `compaction.userEntryTokens` (500) as 
 cap. All four temporary-allowance settings require positive safe integers.
 
 Full facts and Raw preserve their selection and coverage rules. Framing and receipts are
-charged in their owning window or allowance. Raw omissions stay pending and warn in the
-foreground; omitted user entries have an address receipt and omitted titles join the existing
+charged in their owning window or allowance. Raw omissions stay pending; hosts delegate to
+native compaction whenever `truncated.raw` reports an omitted pending entry (133 R1).
+Omitted user entries have an address receipt and omitted titles join the existing
 bare-id fact receipt. `supplied` claims ordinary Raw views and complete facts only, never
 500-token user excerpts or title-only facts. `trace://compact` has the same stored material;
 running tasks are live host state supplied only at actual compaction.
@@ -872,24 +873,24 @@ regardless of historical processing; excluded facts gain no
 supplied fact IDs. Pending membership is exact entry/fact processing membership, never a timestamp
 tail; old pending holes remain protected.
 
-An item that does not fit its window (base plus what the allowance still has) is omitted with a
-receipt; that omission starts no worker, causes no native delegation, resets no processing and enters
-no carrier. Spare space left over stays empty. `charged` reports what each window spent and the
-envelope — diagnostics only, never a second outcome.
+An item that does not fit its window is omitted with a receipt; core rendering starts no worker
+and resets no processing. `trace://compact` retains that bounded view. At the CC/Pi host boundary,
+pending Raw omission instead selects native compaction before recording a custom delivery.
+Optional fact/user/title omission alone does not delegate. Spare space stays empty; `charged`
+reports each window's spend and the envelope, not a second allocator outcome.
 
 Facts and knowledge are the ones **applicable on the selected path** (26 amendment 2), in
 `listSessionFacts`' freshness order: a sibling branch's fact is not a candidate here, and its absence
 is membership, not a budget omission. One path snapshot answers that membership for the whole
 operation, the knowledge block included.
 
-Ticket 30 removed the second, tighter rendering that used to stand between a custom replacement and
-the fallback; ticket 73 then removed the fallback itself. Nothing here selects a smaller pending set,
-advances extraction progress or touches injection state, and a native delegation (host-caught error
-only) builds no custom summary at all. Compaction never hides a selected entry to fit, falsifies an
-omission count or relaxes a cap; the core allocator calls no provider and contains no summarizer.
-Pi's bounded recovery — which ran Noting, Consolidation or Dreaming before allocating, to shrink
-pending material — is deleted (73): a compaction allocates once and succeeds, and the host warns the
-user in the foreground instead when it truncated unprocessed material.
+Ticket 30 removed the second, tighter rendering; ticket 73 removed native fallback for capacity.
+Ticket 133 R1 restores host-native fallback only when pending Raw would be omitted. The core
+allocator still calls no provider and contains no summarizer. It never falsifies omission counts,
+relaxes a cap or changes processing to force a fit. A native fallback records no custom carrier.
+Pi's bounded recovery — Noting, Consolidation or Dreaming during a compaction — stays deleted:
+neither capacity nor errors launch an extraction worker. Live-task lookup errors retain the
+existing host-native fallback (133 R2); malformed individual agent records are left out.
 
 The views it emits are `renderEntry` under the configured profile, the same bytes Noter input,
 the token counters and the internal renderer behind `trace://` use, and no view or summary
@@ -1027,8 +1028,8 @@ The optional Raw sub-block keeps the newest whole suffix within `render.episodic
 including its title, separators and omission receipt. An oversized newest entry may leave no Raw
 body; an envelope too small even for the title and required omission receipt raises a capacity
 error. Omission neither processes entries nor supplies coverage identities. This is not compact's
-Raw window, which prioritizes pending entries over already-noted ones and truncates with a receipt
-rather than delegating (73).
+Raw window, which prioritizes pending entries over already-noted ones and reports truncation
+with a receipt. Hosts delegate when that report includes pending Raw (133 R1).
 The host passes the block immediately as Pi's summary, launching
 neither phase and awaiting no Noting; unprocessed entries remain Raw views. Injected messages
 are never raw sources for new facts.

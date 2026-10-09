@@ -46,6 +46,12 @@ Background shells are not listed: historical structured launch ids have incomple
 notifications, so their presence does not establish live state. The adapter conservatively lists
 agents only rather than guessing. No running-task block is emitted when empty.
 
+If any pending Raw entry cannot fit its base plus temporary allowance, `hook-compact`
+passes through to native compaction, then the existing Knowledge supplement (133 R1).
+The read-only `trace://compact` view still truncates with receipts, and no compaction starts N.
+Task-list lookup errors retain native fallback. Malformed individual agent records are
+skipped without discarding the custom compaction; the boundary uses hand-written checks.
+
 Optional `retry: { "maxRetries": 2 }` configures the native request retry count. Omission preserves
 Claude Code's native default; zero disables those retries. Timing, backoff and eligible errors remain
 native policy. The adapter records retry events, specific API errors and received usage, but adds no
