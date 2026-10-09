@@ -283,9 +283,9 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     lastPrice = priced;
     const fits = !capacity || priced <= capacity.inputTokens;
     if (fits) return { ...frozen, prepared, prompt, promptHash: createHash("sha256").update(inheriting ? forkPrompt : prompt).digest("hex"), forkPrompt, names };
-    // 133: optional temporary user/title material goes before the historical full-fact window.
-    if (capacity && temporary && assembled.charged!.temporary
-      && (prepared.material.factTitles?.length || prepared.material.earlierUsers?.length)) {
+    // 133: fresh temporary context, including receipt-only omissions, goes before full facts.
+    // A fork inherits that context and sends neither its bodies nor its receipts.
+    if (capacity && temporary && assembled.charged!.temporary && !inheriting) {
       temporary = Math.max(0, Math.min(temporary - 1, assembled.charged!.temporary - Math.max(1, priced - capacity.inputTokens)));
       continue;
     }

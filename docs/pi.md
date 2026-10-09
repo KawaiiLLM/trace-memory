@@ -766,6 +766,9 @@ natively. Absent material or unexpected host-caught errors, including a live-tas
 also delegate. Optional historical omissions alone remain custom; a capacity-empty window with
 no omitted pending Raw may still produce the existing foreground omission notice.
 
+A failed initial allocation stays native even if a later live-task lookup could recover.
+Successful allocations are repriced before publication; cancellation still publishes nothing.
+
 | Outcome | Condition | Adapter result |
 |---|---|---|
 | `{text, supplied, charged, truncated?}` with no pending Raw omission | Eligible material exists | Return `compaction.summary` with its custom carrier |

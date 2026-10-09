@@ -131,6 +131,33 @@ test("ticket92material capacity shrinking reuses metadata and Raw views but rebi
   expect(statements.mock.calls.filter(([sql]) => sql.startsWith("SELECT id, session_id, native_lineage, native_id, turn_id, entry_ordinal, addresses, digest FROM source_entries"))).toHaveLength(2);
 });
 
+test("133: fresh receipt-only temporary context trims before rejecting an exact pending batch", () => {
+  const f = fixture();
+  seedSourceEntry(f.memory, f.turn.id, "user", "historical context ".repeat(300));
+  f.select();
+  recorded(f.memory, f.session.id, "main", f.turn.id);
+  seedSourceEntry(f.memory, f.turn.id, "assistant", "pending reply");
+  f.select();
+  const config = { ...f.memory.config, compaction: { ...f.memory.config.compaction, factsTokens: 1, temporaryTokens: 100 } };
+  const input = { ...f.target, mode: "subagent" as const };
+  const complete = freezeNoting(f.store, input, config);
+  expect(complete.prepared!.material.earlierUsers).toEqual([]);
+  expect(complete.prepared!.material.factTitles).toEqual([]);
+  expect(complete.prepared!.material.receipts.join("\n")).toContain("user");
+  const withoutTemporary = freezeNoting(f.store, input,
+    { ...config, compaction: { ...config.compaction, temporaryTokens: 0 } });
+  const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
+  const inputTokens = fixed + tokens(withoutTemporary.prepared!.text);
+  expect(fixed + tokens(complete.prepared!.text)).toBeGreaterThan(inputTokens);
+  const entryIds = complete.entries.map(entry => entry.id);
+  const reduced = freezeNoting(f.store, { ...input, boundary: { exactEntryIds: entryIds },
+    capacity: { inputTokens, prefixTokens: 0 } }, config);
+  expect(reduced.entries.map(entry => entry.id)).toEqual(entryIds);
+  expect(reduced.prepared!.selectedEntryIds).toEqual(entryIds);
+  expect(reduced.prepared!.text).toBe(withoutTemporary.prepared!.text);
+  expect(f.store.pendingEntries(f.session.id, "main", f.turn.id).map(entry => entry.id)).toEqual(entryIds);
+});
+
 test("ticket92material hard input capacity rejects before invoking the worker and leaves Raw pending", async () => {
   const f = fixture();
   seedSourceEntry(f.memory, f.turn.id, "assistant", "new evidence"); f.select();

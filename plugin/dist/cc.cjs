@@ -9017,7 +9017,7 @@ ${renderToolNames(input.forkGuidance, names)}` : prompt;
     lastPrice = priced;
     const fits = !capacity || priced <= capacity.inputTokens;
     if (fits) return { ...frozen, prepared, prompt, promptHash: (0, import_node_crypto6.createHash)("sha256").update(inheriting ? forkPrompt : prompt).digest("hex"), forkPrompt, names };
-    if (capacity && temporary && assembled.charged.temporary && (prepared.material.factTitles?.length || prepared.material.earlierUsers?.length)) {
+    if (capacity && temporary && assembled.charged.temporary && !inheriting) {
       temporary = Math.max(0, Math.min(temporary - 1, assembled.charged.temporary - Math.max(1, priced - capacity.inputTokens)));
       continue;
     }

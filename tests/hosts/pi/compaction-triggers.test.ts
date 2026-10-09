@@ -232,11 +232,15 @@ test("133: optional pi-subagents service supplies queued/running tasks to persis
   }
 });
 
-test("133 R2: a throwing optional Pi agent lookup keeps native fallback", async () => {
+test.each(["persistent", "transient"])("133 R2: a %s Pi agent lookup failure keeps native fallback", async failure => {
   const f = await session({ automatic: false });
   const key = Symbol.for("@gotgenes/pi-subagents:service");
   const registry = globalThis as Record<symbol, unknown>, previous = registry[key];
-  registry[key] = { listAgents: () => { throw new Error("agent registry unavailable"); } };
+  let attempts = 0;
+  registry[key] = { listAgents: () => {
+    if (++attempts === 1 || failure === "persistent") throw new Error("agent registry unavailable");
+    return [];
+  } };
   try {
     scripted(f, [() => say("answered", usage(10, 2)), () => say("answered", usage(10, 2)),
       () => say("native lookup-error summary", usage(10, 2))]);

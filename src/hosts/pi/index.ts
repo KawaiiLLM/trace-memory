@@ -1241,6 +1241,7 @@ export default function (pi: ExtensionAPI) {
     // Notification callbacks may themselves cancel or change the binding. No await or callback
     // separates this final coherent reprice from constructing the exact publication carrier.
     if (signal?.aborted || closed) return { cancel: true };
+    if ("native" in result) return;
     result = allocate();
     if (signal?.aborted || closed) return { cancel: true };
     if ("native" in result || result.truncated?.raw) return;
