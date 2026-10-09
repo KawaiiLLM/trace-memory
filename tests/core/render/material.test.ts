@@ -172,6 +172,7 @@ test("20a/92: N tasks with different Raw and facts retain byte-identical Knowled
 
 test("20a/92: N facts and Knowledge budget receipts follow the dynamic material", async () => {
   const { s, t, user } = seeded();
+  const raw = views(s.id, t.id);
   memory.config.compaction.temporaryTokens = 1; // isolate full-fact receipts from the new title index
   // Facts have an independent window; its omission receipt follows the complete Raw block.
   const factReceipt = "omitted 1 older facts; expand: trace://F1";
@@ -181,8 +182,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   expect(knowledgeBlockOf(noting.material)).toBe(withSize(knowledgeBlock));
   expect(noting.material.facts).toEqual([]);
   expect(noting.material.receipts).toEqual([factReceipt]);
-  expect(noting.material.entries.map(entry => entry.view).join("\n\n")).toBe(views(s.id, t.id));
-  expect(noting.text.indexOf("\nReceipts:\n")).toBeGreaterThan(noting.text.indexOf("\nRaw:\n"));
+  expect(noting.text.endsWith(`Raw:\n\n${raw}\n</episodic>\n\nReceipts:\n${factReceipt}`)).toBe(true);
   memory.config.compaction.factsTokens = 10_000;
   // A legal oversized manual item pressures the same Knowledge selector used by N.
   const receipt = "omitted 2 constraint knowledge; expand: trace://K2, trace://K1";
@@ -282,6 +282,7 @@ test("25a/92: default N material has independent 10k facts and Raw windows plus 
   expect(knowledgeBlockOf(material)).toContain("<knowledge>");
   expect(tokens(knowledgeBlockOf(material))).toBeLessThanOrEqual(memory.knowledgeBudgets().injection + memory.config.compaction.sharedAllowanceTokens);
   const historyCap = memory.config.compaction.factsTokens;
+  expect(historyCap).toBe(10_000);
   expect(tokens(compactText({ facts: material.facts, receipts: factReceipts }))).toBeLessThanOrEqual(historyCap);
   const rawReceipts = material.receipts.filter(receipt => !factReceipts.includes(receipt));
   expect(rawWindowTokens(material.entries.map(e => e.view), rawReceipts)).toBeLessThanOrEqual(memory.config.noting.batchTokens);
