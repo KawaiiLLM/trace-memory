@@ -115,9 +115,10 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const times = store.factTurnTimes(facts), snapshot = store.pathSnapshot(path);
   const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
+  // 134: trim the oldest ids, retaining a whole newest-first selection in the existing display order.
   const factText = (count: number) => ["Direct supporting facts:",
-    ...renderFactGroups(facts.slice(0, count), fact => renderFact(fact, relations.get(fact.id) ?? []), times),
-    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count).map(fact => `trace://F${fact.id}`).join(" ")}.`] : [])].join("\n");
+    ...renderFactGroups(facts.slice(facts.length - count), fact => renderFact(fact, relations.get(fact.id) ?? []), times),
+    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(0, facts.length - count).map(fact => `trace://F${fact.id}`).join(" ")}.`] : [])].join("\n");
   let count = facts.length;
   while (count && tokens(factText(count)) > 10_000) count--;
   const direct = factText(count);

@@ -3,6 +3,7 @@
 // the page cap before it formats a hit and resolves the commit graph once per query, so a later page
 // still carries the labels that query established. Nothing here changes what the reads print.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { receiptCommit } from "../../support/seed.ts";
 import * as render from "../../../src/core/render/index.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -129,8 +130,7 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
       expect(fullRead(sessionId, headTurnId, address)).toContain(`K${tip.knowledgeId}#`);
       const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: address,
         text: `SEARCHNEEDLE conclusion ${i} revision ${j}`, category: "understanding", scope: "session", supports: supports.map(id => `F${id}`), reason: "corpus", topics: [] }], skipped: [] }));
-      expect(updated.committed[0]!.version).toBe(`K${tip.knowledgeId}@v${j + 1}`);
-      tip.commit = store.resolveVersionOrdinal(tip.knowledgeId, j + 1);
+      tip.commit = receiptCommit(store, updated.committed[0]!);
     }
     const triggerAddress = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
     const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(`K${trigger.knowledgeId}@v1`); for (const address of consumed) supplied.delete(address);

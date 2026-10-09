@@ -4,7 +4,7 @@ import { hydrate, sourceSeededMemory, type DreamingAgentInput } from "../../sour
 import { fact as seedFact, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
 
-test("92/03: D skips tagless diffs by history address; mutation diagnostics separate model versions from human commits", async () => {
+test("134/92: D skips complete diffs by history address; mutation diagnostics separate model versions from human commits", async () => {
   let scenario!: (task: DreamingAgentInput) => void;
   const memory = sourceSeededMemory(":memory:", async raw => {
     const task = raw as DreamingAgentInput;
@@ -44,7 +44,7 @@ test("92/03: D skips tagless diffs by history address; mutation diagnostics sepa
     scenario = task => {
       expect(task.material.changed).toContain(`Changed K${a!.knowledgeId}@v2`);
       expect(task.material.changed).toContain(`Archived K${c!.knowledgeId}@v2`);
-      for (const item of changed.committed) expect(task.material.changed).not.toContain(address(item.knowledgeId, item.commit));
+      expect(task.material.changed).not.toContain(address(c!.knowledgeId, changed.committed[1]!.commit));
       expect(task.text).not.toMatch(/K\d+@\d+/);
       const write = task.tools.find(t => t.name === "memory")!;
       const skip = (knowledge: string) => dreamerWrite(write, { operations: [], skipped: [{ knowledge, because: "Deliberated unchanged" }] });

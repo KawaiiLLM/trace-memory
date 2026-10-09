@@ -15,7 +15,7 @@ import { budgetMaterial, compactText, rawWindowTokens, injectionText, knowledgeB
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
-import { fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
+import { fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts, receiptCommit } from "../../support/seed.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { canonicalToolNames, validateToolNames } from "../../../src/core/prompts/tool-names.ts";
@@ -89,7 +89,7 @@ async function maintain(path: { sessionId: number; branch: string; headTurnId: n
     expect(receipt.committed).toBeDefined();
     committed = receipt.committed.filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
       .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId,
-        commit: memory.store.resolveVersionOrdinal(item.knowledgeId, Number(/@v(\d+)$/.exec(item.version)![1])) }));
+        commit: receiptCommit(memory.store, item) }));
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "material maintenance complete", request };
   });
@@ -687,7 +687,7 @@ test("64c/92: foreground and fresh N keep the same newer items and receipt omitt
     return receipt.committed;
   });
   const commits = committed.map((value: { knowledgeId: number; version: string }) =>
-    memory.store.resolveVersionOrdinal(value.knowledgeId, Number(/@v(\d+)$/.exec(value.version)![1])));
+    receiptCommit(memory.store, value));
   setKnowledgeCapacity(memory, 5_000);
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const injected = memory.injection(target);

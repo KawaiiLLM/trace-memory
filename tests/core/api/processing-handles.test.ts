@@ -86,7 +86,6 @@ test("92 supersedes 32: mutations require exact tags, not bare identities or hum
     const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: a.tag(1), ...a.content },
       { op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId), supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] }));
     expect(updated.committed).toHaveLength(2);
-    expect(updated.committed[0].version).toBe("K1@v2");
     return { outcome: "success", output: "corrected", request };
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");

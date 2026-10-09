@@ -8,7 +8,7 @@ import { Store, type KnowledgeOperationInput, type KnowledgePath, type SourceInp
 import { renderRun } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
-import { legacyFacts } from "../../support/seed.ts";
+import { legacyFacts, receiptCommit } from "../../support/seed.ts";
 import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 
 const stores: Store[] = [], dirs: string[] = [];
@@ -71,7 +71,7 @@ function fixture() {
       const receipt = JSON.parse(dreamerWrite(tool, { operations: [...converted, { op: "archive", kind: "budget", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit lineage trigger." }],
         skipped: [...supplied].map(knowledge => ({ knowledge, because: "No lineage maintenance is needed for this supplied item." })) }));
       committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
-        .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId, commit: store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) }));
+        .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId, commit: receiptCommit(store, item) }));
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
       return { outcome: "success", output: "lineage maintenance complete", request };
     });
@@ -186,14 +186,19 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
       children: [{ text: "first rule", category: "constraint", topics: [] }, { text: "", category: "goal", topics: [] }] }], skipped: [] });
     expect(invalid).toContain("rejected: M2");
     expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
-    const split = JSON.parse(dreamerWrite(tool, { operations: [{ slot: "M2", op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), supports: [], reason: "separate independent rules",
-      children: [{ text: "first rule", category: "constraint", topics: ["first"] }, { text: "second rule", category: "goal", topics: ["second"] }] }], skipped: [] }));
-    expect(split.committed).toHaveLength(2);
+    const parentCost = Number(new RegExp(`\\[K${parent.knowledgeId}#[a-z]+\\] \\[[^\\]]+\\] \\((\\d+) tokens\\)`)
+      .exec(input.material.changed)![1]);
+    const split = JSON.parse(tool.execute({ slot: "M2", op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit),
+      supports: [], reason: "separate independent rules",
+      children: [{ text: "first rule", category: "constraint", topics: ["first"] }, { text: "second rule", category: "goal", topics: ["second"] }] }));
+    expect(split.tokens.before).toEqual([parentCost]);
     const [first, second] = split.committed as { knowledgeId: number; version: string }[];
+    const update = JSON.parse(tool.execute({ op: "update", id: first!.version,
+      text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }));
+    const secondUpdate = JSON.parse(tool.execute({ op: "update", id: second!.version,
+      text: "second rule", category: "goal", scope: "project", topics: ["second"], supports: [], reason: "Keep the second independent ruling" }));
+    expect(split.tokens.after).toEqual([update.tokens.before[0], secondUpdate.tokens.before[0]]);
     const read = (address: string) => memoryFiles(memory, input.reader!).read(`trace://${address}`).content;
-    expect(read(first!.version)).not.toContain("rejected:");
-    const update = JSON.parse(dreamerWrite(tool, { operations: [{ op: "update", id: tagged(memory.store, first!.knowledgeId, memory.store.resolveVersionOrdinal(first!.knowledgeId, Number(first!.version.split("@v")[1]))),
-      text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }], skipped: [] }));
     expect(update.committed).toHaveLength(1);
     read(history(memory.store, trigger.knowledgeId, trigger.commit));
     expect(dreamerWrite(tool, { operations: [{ op: "archive", kind: "budget", id: tagged(memory.store, trigger.knowledgeId, trigger.commit),

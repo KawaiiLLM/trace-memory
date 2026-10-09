@@ -105,13 +105,8 @@ test("92: no Knowledge window explicitly rejects a mandatory pending header and 
   zeroBase(f.memory);
   f.memory.config.compaction.sharedAllowanceTokens = 0;
   const pool = `project:${f.memory.store.getSession(f.session.id)!.projectId}`;
-  const pending = f.memory.store.pendingVersions(pool, f.target);
-  const changedCost = tokens(["Pending current knowledge:", ...pending.map(value => value.material)].join("\n"));
   const knowledgeWindow = f.memory.knowledgeBudgets().injection + f.memory.config.compaction.sharedAllowanceTokens;
   expect(knowledgeWindow).toBe(0);
-  expect(changedCost).toBe(35);
-  expect(tokens("Current pool knowledge outside this range:\n")).toBe(8);
-  expect(changedCost + 1 + 8).toBe(44);
   const failure = await f.memory.dream(f.target).then(() => "resolved", error => String(error));
   expect(f.captured).toEqual([]);
   expect(f.memory.store.openDreamingRange(f.session.id, "main")).toBeNull();

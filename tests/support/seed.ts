@@ -2,6 +2,18 @@ import type { TraceMemory } from "../source-fixture.ts";
 import { commitNoterKnowledge } from "../noting-knowledge-fixture.ts";
 import type { Store, KnowledgePath, SourceEntry, SourceEntryMeta, FactCommitInput, RunInput } from "../../src/core/store/index.ts";
 import type { Fact, FactCategory, KnowledgeCategory } from "../../src/core/model/index.ts";
+import { parseKnowledgeAddress } from "../../src/core/model/address.ts";
+import type { MemoryReceipt } from "../../src/core/knowledge-write/bind.ts";
+
+/** Resolve the shared tool receipt: authored update/merge/split tags, other history addresses. */
+export function receiptCommit(store: Store, item: Pick<MemoryReceipt["committed"][number], "knowledgeId" | "version">): number {
+  const version = parseKnowledgeAddress(item.version);
+  if (!version || version.id !== item.knowledgeId || version.history || version.to !== undefined)
+    throw new Error(`invalid committed receipt version: ${item.version}`);
+  if (version.tag) return store.resolveVersionTag(version.id, version.tag);
+  if (version.ordinal && version.from !== undefined) return store.resolveVersionOrdinal(version.id, version.from);
+  throw new Error(`receipt has no exact version: ${item.version}`);
+}
 
 const at = "2026-09-21T00:00:00.000Z";
 

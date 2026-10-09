@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { receiptCommit } from "../../support/seed.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { TraceMemory, memoryFiles, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
@@ -61,8 +62,7 @@ test.each(["success", "failure", "cancelled", "timeout"] as const)("68: 86 froze
     for (const id of ids.slice(0, 34)) {
       const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: readHandle(path => memoryFiles(f.memory, f.target).read(path).content, id), text: `Maintained rule ${outputs.length + 1}`, category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain" }], skipped: [] }));
       expect(receipt.committed).toHaveLength(1);
-      const version = /^K(\d+)@v(\d+)$/.exec(receipt.committed[0].version)!;
-      outputs.push(f.store.resolveVersionOrdinal(Number(version[1]), Number(version[2])));
+      outputs.push(receiptCommit(f.store, receipt.committed[0]));
     }
     expect(dreamerWrite(write, { operations: [], skipped: [{ knowledge: ids[34], because: "already correct" }] })).toContain("committed");
     if (outcome === "timeout") return new Promise<RunAgentResult>(() => {});

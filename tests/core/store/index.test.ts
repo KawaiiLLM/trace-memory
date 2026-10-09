@@ -8,7 +8,7 @@ import { Store } from "../../../src/core/store/index.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
-import { entry as seedEntry } from "../../support/seed.ts";
+import { entry as seedEntry, receiptCommit } from "../../support/seed.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
 
@@ -18,7 +18,7 @@ let store: Store;
 const tag = (knowledgeId: number, commit: number) => `K${knowledgeId}#${store.versionTag(knowledgeId, commit)}`;
 const history = (knowledgeId: number, commit: number) => `K${knowledgeId}@v${store.versionOrdinal(knowledgeId, commit)}`;
 const publishedCommit = (item: { knowledgeId: number; version: string }) =>
-  store.resolveVersionOrdinal(item.knowledgeId, Number(/@v(\d+)$/.exec(item.version)![1]));
+  receiptCommit(store, item);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "trace-memory-store-"));

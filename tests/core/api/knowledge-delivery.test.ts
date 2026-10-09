@@ -8,6 +8,7 @@ import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
+import { receiptCommit } from "../../support/seed.ts";
 
 const time = "2026-09-12T00:00:00Z";
 
@@ -76,7 +77,7 @@ async function maintain(f: ReturnType<typeof fixture>, operation: Record<string,
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied item." })) }));
     committed = receipt.committed.filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger?.knowledgeId)
       .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId,
-        commit: f.memory.store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) }));
+        commit: receiptCommit(f.memory.store, item) }));
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "delivery maintenance complete", request: { fixture: "knowledge delivery maintenance" } };
   });

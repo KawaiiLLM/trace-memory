@@ -95,10 +95,9 @@ test("92 exact historical versions retain complete tags without granting stale u
       const write = input.tools.find(t => t.name === "memory")!;
       const base = `K1#${m.store.versionTag(1, 1)}`;
       expect(memoryFiles(m, input.reader!).read(`trace://${base}`).content).toContain(base);
-      const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: base, text: "Current replacement", category: "understanding", scope: "project",
+      dreamerWrite(write, { operations: [{ op: "update", id: base, text: "Current replacement", category: "understanding", scope: "project",
         supports: ["F1"], reason: "Make old revision historical", topics: [] },
-      { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${m.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] }));
-      expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1).version).toBe("K1@v2");
+      { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${m.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] });
       return { outcome: "success", output: "settled", request };
     });
     if (settled.outcome !== "success") throw Error(JSON.stringify(settled));

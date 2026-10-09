@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { memoryFiles } from "../../source-fixture.ts";
-import { fact as seedFact, legacyFacts } from "../../support/seed.ts";
+import { fact as seedFact, legacyFacts, receiptCommit } from "../../support/seed.ts";
 import { readFileSync } from "node:fs";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { readFacade } from "../../../src/core/api/read.ts";
@@ -744,10 +744,8 @@ test("search marks historical, merged and archived knowledge hits so they do not
       { op: "merge", id: tag(b, b), absorb: [tag(c, c)], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: ["F1"] },
       { op: "archive", kind: "budget", id: tag(trigger1.knowledgeId, trigger1.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
     ], skipped: [] }));
-    expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === a)!.version).toBe(`K${a}@v2`);
-    expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === b)!.version).toBe(`K${b}@v2`);
-    updated = { knowledgeId: a, commit: memory.store.resolveVersionOrdinal(a, 2) };
-    merged = { knowledgeId: b, commit: memory.store.resolveVersionOrdinal(b, 2) };
+    updated = { knowledgeId: a, commit: receiptCommit(memory.store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === a)) };
+    merged = { knowledgeId: b, commit: receiptCommit(memory.store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === b)) };
     return { outcome: "success", output: "maintenance complete", request: { fixture: "history statuses", trigger: trigger1 } };
   });
   expect(maintained.outcome, JSON.stringify(maintained)).toBe("success");
@@ -790,8 +788,7 @@ test("reads resolve any existing address: another session's history, current rev
         category: "goal", scope: "session", supports: ["F1"] },
       { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
     ], skipped: [] }));
-    expect(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === k)!.version).toBe(`K${k}@v2`);
-    privateRevision = { knowledgeId: k, commit: memory.store.resolveVersionOrdinal(k, 2) };
+    privateRevision = { knowledgeId: k, commit: receiptCommit(memory.store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === k)) };
     return { outcome: "success", output: "maintenance complete", request: { fixture: "cross-session history", trigger } };
   });
   expect(scoped.outcome, JSON.stringify(scoped)).toBe("success");

@@ -133,7 +133,29 @@ schema migration in parent-before-child order; an all-empty ancestry remains emp
 ### Material, maintenance and completion
 
 Changed items and current same-scope references share the Knowledge base plus shared allowance;
-direct facts have a separate 10k cap. Selection keeps complete items and charges framing and receipts.
+direct facts have a separate 10k cap. Direct-fact selection keeps the newest whole facts by descending
+F-id, emits them in the existing chronological groups, and names omitted older facts honestly.
+Knowledge selection keeps complete items and charges framing and receipts.
+
+Dreamer reference and pending item headers show their pool item cost: the canonical version header,
+body, supports and topics, excluding the count annotation itself. Pool category framing remains part
+of the pool total. Committed shared-memory receipts report `tokens.before` and `tokens.after` arrays:
+create has no parents; update has one; merge lists the survivor then the absorbed parent; split lists
+its parent once and both resulting children; archive reports the removed item cost then zero.
+Committed update, merge and split results each carry the newly authored version's `K#tag`, usable
+directly for the next mutation. Uncommitted Noter `Mn` handles and archive history addresses are unchanged.
+
+Pending changes, Dreamer end reviews, Noter held reviews and Knowledge range reads use the same
+lossless sentence-first unified diff. Sentences end after `。；！？` or a newline, retaining the
+delimiter. Unchanged text appears once with `  `; removed and added sentences use `- ` and `+ `.
+Within a changed hunk, removed sentences pair in order with the first unused later added sentence
+sharing at least half the longer sentence's word tokens; paired word changes use `[-removed-]`
+and `{+added+}`. Unrelated replacements remain whole old sentences followed by whole new sentences.
+No character-context collapse hides body text. Metadata and added/removed change-weight accounting
+are unchanged; merge, split and archive reviews still show the full removed parent body (125).
+A complete `Changed` body carries its current `K#tag`; its comparison baseline and the current
+tagless `Archived` notice remain history addresses. An archived parent's tag is not the archive tag.
+
 The Dreamer processes each supplied item through split, merge, conflict resolution and rewrite,
 committing one decision before moving to the next. It compares only within a scope. A later user
 ruling can displace an older ruling; an assistant proposal or report cannot. Archiving preserves a

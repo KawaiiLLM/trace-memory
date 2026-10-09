@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
-import { fact } from "../../support/seed.ts";
+import { fact, receiptCommit } from "../../support/seed.ts";
 import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { toolDefinitions, type ListingOptions } from "../../../src/core/api/index.ts";
 import type { KnowledgeCategory, KnowledgeScope } from "../../../src/core/model/index.ts";
@@ -13,8 +13,7 @@ function history(version: { knowledgeId: number; commit: number }) {
   return `K${version.knowledgeId}@v${memory.store.versionOrdinal(version.knowledgeId, version.commit)}`;
 }
 function committedVersion(item: { knowledgeId: number; version: string }) {
-  const ordinal = Number(/@v(\d+)$/.exec(item.version)![1]);
-  return { knowledgeId: item.knowledgeId, commit: memory.store.resolveVersionOrdinal(item.knowledgeId, ordinal) };
+  return { knowledgeId: item.knowledgeId, commit: receiptCommit(memory.store, item) };
 }
 let memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios;
 beforeEach(() => {

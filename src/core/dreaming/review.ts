@@ -2,9 +2,6 @@ import type { KnowledgeRevision } from "../model/index.ts";
 import { renderKnowledgeDiff } from "../render/index.ts";
 import type { Store } from "../store/index.ts";
 
-/** Unchanged characters kept beside each change, so a diff never reprints an unchanged body. */
-const CONTEXT = 20;
-
 /** 125: the one end review a Dreamer run gets: what still blocks success, and the net change this
  * run made to each knowledge item (from the version it started from to its latest version). */
 export function renderDreamingReview(store: Store, runId: number | undefined, blockers: readonly string[]): string {
@@ -42,7 +39,7 @@ export function renderDreamingReview(store: Store, runId: number | undefined, bl
     if (!bodyChanged && start.category === last.category && start.scope === last.scope &&
         JSON.stringify(start.topics) === JSON.stringify(last.topics)) return [];
     return [renderKnowledgeDiff(start, last, [], Infinity, new Set([...bodyChanged ? ["text"] : [], "status", "topics"]),
-      undefined, address(last), CONTEXT)];
+      undefined, address(last))];
   });
   return `Before this run ends, review it once.\n\nBlockers:\n${blockers.join("\n") || "None."}\n\nKnowledge changes committed in this run:\n${blocks.join("\n\n") || "None."}\n\nCheck each change against your Principles: a removed line must be redundant or reliably retrievable, and no ruling, condition, confirmed next step or execution boundary may be lost. These changes are already committed; correct one with a further operation on its current version. Resolve every blocker. Leave compliant changes as they are. Then end.`;
 }

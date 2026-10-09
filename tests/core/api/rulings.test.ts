@@ -21,6 +21,7 @@ import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-bud
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
+import { receiptCommit } from "../../support/seed.ts";
 import { resolveCcHostConfig } from "../../../src/hosts/cc/config.ts";
 import { readBinding, recordSessionStart } from "../../../src/hosts/cc/binding.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../../src/hosts/cc/lifecycle.ts";
@@ -55,11 +56,9 @@ const time = "2026-09-06T00:00:00Z";
 const ok = (output: unknown): RunAgentResult => ({ outcome: "success", output: JSON.stringify(output), request: { fake: true } });
 const tagged = (knowledgeId: number, commitId: number) => `K${knowledgeId}#${memory.store.versionTag(knowledgeId, commitId)}`;
 const history = (knowledgeId: number, commitId: number) => `K${knowledgeId}@v${memory.store.versionOrdinal(knowledgeId, commitId)}`;
-/** Public receipts name per-identity history; database assertions resolve it explicitly. */
+/** Resolve the shared receipt's exact committed version for database assertions. */
 const commitOf = (item: { knowledgeId: number; version: string }): number => {
-  const match = /^K([1-9][0-9]*)@v([1-9][0-9]*)$/.exec(item.version);
-  expect(Number(match?.[1])).toBe(item.knowledgeId);
-  return memory.store.resolveVersionOrdinal(item.knowledgeId, Number(match![2]));
+  return receiptCommit(memory.store, item);
 };
 
 beforeEach(() => {
@@ -1094,7 +1093,7 @@ test("2026-09-07 B: reading a historical commit never refreshes the base to an u
       reason: "Substantive correction of the recorded conclusion.", ...content(root.fact, "Unread successor") }], skipped: [] }));
     const successor = first.committed[0];
     expect(dreamerWrite(memoryTool, { operations: [{ op: "update", id: tagged(1, 1), topics: [],
-      reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }], skipped: [] })).toContain(`current: ${successor.version}`);
+      reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }], skipped: [] })).toContain(`current: ${history(successor.knowledgeId, commitOf(successor))}`);
     expect(files.read(`trace://${successor.version}`).content).toContain("Unread successor");
     const corrected = JSON.parse(dreamerWrite(memoryTool, { operations: [{ slot: "M1", op: "update", id: tagged(1, commitOf(successor)), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }, { op: "archive", kind: "budget",
@@ -1123,7 +1122,7 @@ test("92/118: search previews are tagless and do not authorize a stale base", as
     expect(preview).not.toContain("rejected:"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
     const edit = (id: string, slot?: string) => JSON.parse(dreamerWrite(write, { operations: [{ ...slot ? { slot } : {}, op: "update", topics: [], reason: "A substantive correction.", id,
       ...content(other.fact) }], skipped: [] }));
-    expect(edit(tagged(1, 1)).results[0]).toContain(`current: ${successor.version}`);
+    expect(edit(tagged(1, 1)).results[0]).toContain(`current: ${history(1, commitOf(successor))}`);
     const successorTag = tagged(1, commitOf(successor));
     expect(readHandle(file => files.read(file).content, successor.version)).toContain(successorTag);
     expect(edit(successorTag, "M1").committed[0].knowledgeId).toBe(1);
@@ -1468,7 +1467,7 @@ test("64b: stale absorbed bases name the surviving current commit across merge l
     readHandle(file => files.read(file).content, history(staleTrigger.knowledgeId, staleTrigger.commit));
     rejected = dreamerWrite(write, { operations: [{ op: "update", id: tagged(second.knowledgeId, second.commit), topics: [],
       reason: "Substantive correction of the recorded conclusion.", ...content(other.fact, "Invalid absorbed edit") }], skipped: [] });
-    expect(rejected).toContain(`current: ${survivor.version}`);
+    expect(rejected).toContain(`current: ${history(survivor.knowledgeId, commitOf(survivor))}`);
     expect(write.execute({ drop: "M1" })).toContain("dropped: M1"); // 127: a refusal blocks until withdrawn
     const supplied = suppliedHandles(input.material.changed)
       .filter((knowledge: string) => knowledge !== history(staleTrigger.knowledgeId, staleTrigger.commit))

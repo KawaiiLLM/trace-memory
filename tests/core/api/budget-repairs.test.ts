@@ -2,6 +2,7 @@
 // and for receipts too. Reduce the task and re-freeze, or leave it pending with a capacity error; never
 // receipt an overage and run anyway.
 import { expect, test } from "vitest";
+import { receiptCommit } from "../../support/seed.ts";
 import { sourceSeededMemory, tokens, renderEntry, type NotingAgentInput , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { renderFact, renderKnowledgeDiff } from "../../../src/core/render/index.ts";
@@ -193,8 +194,7 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
       const base = `K1#${f.m.store.versionTag(1, 1)}`;
       expect(memoryFiles(f.m, input.reader!).read("trace://K1@v1").content).toContain(base);
       const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: base, ...content, topics: ["a", "b"] }], skipped: [] }));
-      expect(receipt.committed[0].version).toBe("K1@v2");
-      updatedCommit = f.m.store.resolveVersionOrdinal(1, 2);
+      updatedCommit = receiptCommit(f.m.store, receipt.committed[0]);
       expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
       return { outcome: "success", output: "updated", request };
     });

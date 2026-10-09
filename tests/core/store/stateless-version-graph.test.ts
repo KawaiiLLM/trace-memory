@@ -4,12 +4,13 @@ import { type KnowledgeRevision } from "../../../src/core/model/index.ts";
 import { type KnowledgePath, Store } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
+import { receiptCommit } from "../../support/seed.ts";
 
 const at = "2026-09-21T12:00:00.000Z";
 const tag = (store: Store, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`;
 const history = (store: Store, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`;
 const publishedCommit = (store: Store, item: { knowledgeId: number; version: string }) =>
-  store.resolveVersionOrdinal(item.knowledgeId, Number(/@v(\d+)$/.exec(item.version)![1]));
+  receiptCommit(store, item);
 const open: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const memory of open.splice(0)) memory.close(); });
 

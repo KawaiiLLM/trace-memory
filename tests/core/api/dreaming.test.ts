@@ -4,10 +4,11 @@ import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../..
 import { tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite, skipRest, suppliedHandles } from "../../dreaming-skips.ts";
-import { knowledgeBatch } from "../../support/seed.ts";
+import { knowledgeBatch, receiptCommit } from "../../support/seed.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { dreamingToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -39,8 +40,7 @@ function fixture() {
 const address = (f: ReturnType<typeof fixture>, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${f.store.versionTag(item.knowledgeId, item.commit)}`;
 const history = (f: ReturnType<typeof fixture>, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@v${f.store.versionOrdinal(item.knowledgeId, item.commit)}`;
 const commit = (f: ReturnType<typeof fixture>, item: { knowledgeId: number; version: string }) => {
-  expect(item.version).toMatch(new RegExp(`^K${item.knowledgeId}@v\\d+$`));
-  return f.store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1]));
+  return receiptCommit(f.store, item);
 };
 const processed = (f: ReturnType<typeof fixture>) => f.store.db.prepare("SELECT pool, revision_id, run_id FROM knowledge_processed ORDER BY pool, revision_id").all();
 
@@ -420,7 +420,44 @@ test("64c reference material is genuinely non-empty, capped and receipted when c
   expect(result).toMatchObject({ outcome: "failure", problems: [expect.stringContaining("over budget")] });
 });
 
-test("64c frozen material preserves changed and direct-fact capacity guarantees with honest omission", async () => {
+test("134: Changed material supplies its current tag for a committed update without a read", async () => {
+  const f = fixture();
+  f.memory.config.dreaming.triggerTokens = 1;
+  const base = f.create("保留范围。使用 red tiles。");
+  const reference = JSON.parse(f.memory.tools({ kind: "manual", sessionId: f.session.id,
+    branch: "main", currentTurnId: f.turn.id }).find(tool => tool.name === "memory")!.execute({
+    op: "create", text: "Keep the independent reference unchanged.", category: "constraint", scope: "project",
+    topics: ["retrieval context"], supports: [`F${f.fact}`], reason: "An unchanged reference for the next D",
+  }));
+  const first = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest(); skipRest(task); return success;
+  });
+  expect(first.outcome, JSON.stringify(first)).toBe("success");
+  const changed = commitNoterKnowledge(f.store, { path: f.target,
+    run: { sessionId: f.session.id, branch: "main", createdAt: "now" },
+    operations: [{ op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit,
+      text: "保留范围。使用 blue tiles。", category: "constraint", scope: "project", topics: [],
+      supports: [f.fact], reason: "New evidence changes one word", createdAt: "now" }] });
+  if (!changed.ok) throw new Error(changed.problems.join("; "));
+  const result = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    const tag = new RegExp(`\\[(K${base.knowledgeId}#[a-z]+)\\]`).exec(task.material.changed)?.[1];
+    expect(tag, task.material.changed).toBe(`K${base.knowledgeId}#${f.store.versionTag(base.knowledgeId, changed.committed[0]!.commit)}`);
+    expect(task.material.processed).toMatch(new RegExp(`\\[K${reference.committed[0].knowledgeId}#[a-z]+\\] \\[[^\\]]+\\] \\(${reference.tokens.after[0]} tokens\\)`));
+    const shownCost = Number(new RegExp(`\\[${tag}\\] \\[[^\\]]+\\] \\((\\d+) tokens\\)`).exec(task.material.changed)![1]);
+    const receipt = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({
+      op: "update", id: tag, text: "保留范围。使用 blue tiles，并保留条件。",
+      category: "constraint", scope: "project", topics: [], supports: [], reason: "Keep the confirmed condition",
+    }));
+    expect(receipt.committed[0].knowledgeId).toBe(base.knowledgeId);
+    expect(receipt.tokens.before).toEqual([shownCost]);
+    return success;
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  expect(f.store.currentCommit(base.knowledgeId)[0]!.text).toContain("并保留条件");
+});
+
+test("134: frozen material keeps newest whole direct facts within capacity and honestly omits older facts", async () => {
   const f = fixture();
   const hugeFacts = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: ["first", "second"].map(label => ({
     turnId: f.turn.id, entryIds: [f.entry.id], category: "decision" as const, actor: "user" as const,
@@ -432,9 +469,9 @@ test("64c frozen material preserves changed and direct-fact capacity guarantees 
     expect(tokens(task.material.processed)).toBeLessThanOrEqual(task.admittedProcessedInputCap);
     expect(tokens(task.material.changed)).toBeLessThanOrEqual(15_000);
     expect(tokens(task.material.facts)).toBeLessThanOrEqual(10_000);
-    expect(task.material.facts).toContain("first-direct-fact");
+    expect(task.material.facts).toContain("second-direct-fact");
     expect(task.material.facts).toContain("Omitted whole direct facts beyond 10000");
-    expect(task.material.facts).not.toContain("second-direct-fact");
+    expect(task.material.facts).not.toContain("first-direct-fact");
     skipRest(task); // 104: success deliberates the whole frozen range
     return success;
   });

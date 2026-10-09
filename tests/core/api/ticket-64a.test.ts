@@ -3,7 +3,7 @@ import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import type { KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
-import { renderKnowledgeChange, wordLevelDiff } from "../../../src/core/render/index.ts";
+import { renderKnowledgeChange } from "../../../src/core/render/index.ts";
 import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, memoryFiles, validateConfig, type NotingAgentInput } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
@@ -555,9 +555,8 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       // Only the latest current version (v3) is pending; v2 was superseded and never got its own record.
       expect(pending.map(p => p.revisionId)).toEqual([v3.commit]);
       expect(pending[0]!.material).toContain(`from ${history(v1)}`);
-      expect(pending[0]!.material).toContain("gamma"); // the shared tail survives the cumulative diff
-      expect(pending[0]!.material).toContain("[-beta-]");
-      expect(pending[0]!.material).toContain("{+epsilon+}");
+      expect(pending[0]!.material).toContain("alpha beta gamma");
+      expect(pending[0]!.material).toContain("alpha delta epsilon");
     });
 
     test("no processed ancestor: an update is shown whole as New, exactly as a create is", () => {
@@ -575,16 +574,6 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       expect(pending.material.startsWith(`New ${history(updated.committed[0]!)}:`)).toBe(true);
       expect(pending.material).toContain("v2");
       expect(pending.tokens).toBeGreaterThan(3); // the whole rendered item, not a small diff
-    });
-
-    test("word-level diff over mixed Chinese and English text", () => {
-      const cases: [string, string, string][] = [
-        ["a b a", "a a", "a [-b -]a"],
-        ["", "hello", "{+hello+}"],
-        ["中国人民银行发布公告", "中国银行发布公告", "中国[-人民-]银行发布公告"],
-        ["use red tiles now", "use blue tiles now", "use [-red-]{+blue+} tiles now"],
-      ];
-      for (const [before, after, expected] of cases) expect(wordLevelDiff(before, after).text).toBe(expected);
     });
 
     test("a Changed item shows the current revision's full topics and supports beside the diff, not only what changed", () => {

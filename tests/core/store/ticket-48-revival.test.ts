@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "vitest";
+import { receiptCommit } from "../../support/seed.ts";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -71,8 +72,8 @@ test("48: a trusted Dreamer revives an archived older identity through merge onl
       text: "Object state after return", category: "constraint", scope: "project", supports: [], reason: "Object returned", topics: ["object"] };
     const receipt = JSON.parse(dreamerWrite(write, { operations: [operation,
       { op: "archive", kind: "budget", id: f.tag(trigger), supports: [], reason: "Retire revival trigger" }], skipped: [] }));
-    expect(receipt.committed.find((value: { knowledgeId: number }) => value.knowledgeId === old.knowledgeId)).toMatchObject({ version: `K${old.knowledgeId}@v3` });
-    revived = { knowledgeId: old.knowledgeId, commit: f.store.resolveVersionOrdinal(old.knowledgeId, 3) };
+    revived = { knowledgeId: old.knowledgeId,
+      commit: receiptCommit(f.store, receipt.committed.find((value: { knowledgeId: number }) => value.knowledgeId === old.knowledgeId)) };
     return { outcome: "success", output: "revived", request };
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");

@@ -6,6 +6,7 @@ import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
+import { receiptCommit } from "../../support/seed.ts";
 
 const at = "2026-09-21T00:00:00.000Z";
 const directories: string[] = [];
@@ -202,7 +203,7 @@ test("64b pilot: an admitted Dreamer child uses only its direct foreground suppo
         text: "child explicitly citing A", category: "constraint", scope: "global", supports: [`F${parentFact.id}`], topics: [], reason: "Direct A support." },
       { op: "archive", kind: "budget", id: triggerTag, supports: [`F${childFact.id}`], reason: "Retire explicit trigger." }], skipped: [] }));
       const published = receipt.committed.map((value: { knowledgeId: number; version: string }) => ({ knowledgeId: value.knowledgeId,
-        commit: store.resolveVersionOrdinal(value.knowledgeId, Number(/@v(\d+)$/.exec(value.version)![1])) }));
+        commit: receiptCommit(store, value) }));
       child = published.find((value: { knowledgeId: number }) => value.knowledgeId === parent.knowledgeId)!;
       childCitingA = published.find((value: { knowledgeId: number }) => value.knowledgeId === parentForDirectA.knowledgeId)!;
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
@@ -273,7 +274,7 @@ test("64b validity pilot: later applicable commit wins independent of restore or
       text: "B replacement", category: "constraint", scope: "global", supports: [`F${bFact.id}`], topics: [], reason: "Replace rewound base." },
     { op: "archive", kind: "budget", id: triggerTag, supports: [`F${bFact.id}`], reason: "Retire trigger." }], skipped: [] }));
     const published = receipt.committed.find((value: { knowledgeId: number }) => value.knowledgeId === base.knowledgeId)!;
-    replacement = { knowledgeId: base.knowledgeId, commit: store.resolveVersionOrdinal(base.knowledgeId, Number(/@v(\d+)$/.exec(published.version)![1])) };
+    replacement = { knowledgeId: base.knowledgeId, commit: receiptCommit(store, published) };
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "replaced", request };
   });
@@ -349,7 +350,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
           { op: "archive", kind: "budget", id: tag(trigger), supports: [`F${ownerFact.id}`], reason: "Retire trigger." },
         ], skipped: [] }));
         const published = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === prior.knowledgeId);
-        changed = { knowledgeId: prior.knowledgeId, commit: store.resolveVersionOrdinal(prior.knowledgeId, Number(/@v(\d+)$/.exec(published.version)![1])) };
+        changed = { knowledgeId: prior.knowledgeId, commit: receiptCommit(store, published) };
         expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
         return { outcome: "success", output: text, request };
       });

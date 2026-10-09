@@ -3,6 +3,7 @@ import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite, skipRest } from "../../dreaming-skips.ts";
 import type { Store } from "../../../src/core/store/index.ts";
+import { receiptCommit } from "../../support/seed.ts";
 
 const tagged = (store: Store, id: number, commit: number) => `K${id}#${store.versionTag(id, commit)}`;
 const history = (store: Store, id: number, commit: number) => `K${id}@v${store.versionOrdinal(id, commit)}`;
@@ -49,7 +50,7 @@ function pathFixture(seedOlderSurvivor = false) {
       category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: `Create ${text}.` }));
     expect(receipt.committed).toHaveLength(1);
     const item = receipt.committed[0] as { knowledgeId: number; version: string };
-    return { knowledgeId: item.knowledgeId, commit: store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) };
+    return { knowledgeId: item.knowledgeId, commit: receiptCommit(store, item) };
   };
   const older = seedOlderSurvivor ? create("older survivor") : undefined;
   const base = create("base");
@@ -141,15 +142,15 @@ test.each([false, true])("64b: stale Dreamer completion fails unless corrected (
       { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), text: "first successor", category: "constraint",
         scope: "project", supports: [], topics: [], reason: "First maintenance." },
       { op: "archive", kind: "budget", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
-    ], skipped: [] })).committed[0] as { version: string };
+    ], skipped: [] })).committed[0] as { knowledgeId: number; version: string };
     const stale = dreamerWrite(write, { operations: [{ op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
       text: "unresolved stale submission", category: "constraint", scope: "project", supports: [], topics: [], reason: "Must fail." }], skipped: [] });
-    expect(stale).toContain(`base is not the latest effective applicable revision; current: ${first.version}`);
-    expect(stale).not.toContain(tagged(f.store, f.base.knowledgeId, f.store.resolveVersionOrdinal(f.base.knowledgeId, Number(first.version.split("@v")[1]))));
+    const current = receiptCommit(f.store, first);
+    expect(stale).toContain(`base is not the latest effective applicable revision; current: ${history(f.store, f.base.knowledgeId, current)}`);
+    expect(stale).not.toContain(tagged(f.store, f.base.knowledgeId, current));
     expect(stale).not.toContain("skipped");
     finished = true; // an expected failure must not hide an assertion error above
     if (!corrected) return success;
-    const current = f.store.resolveVersionOrdinal(f.base.knowledgeId, Number(first.version.split("@v")[1]));
     read(first.version);
     expect(dreamerWrite(write, { operations: [{ slot: "M1", op: "update", id: tagged(f.store, f.base.knowledgeId, current),
       text: "corrected successor", category: "constraint", scope: "project", supports: [], topics: [], reason: "Reread and correct." }], skipped: [] }))

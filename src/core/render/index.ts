@@ -566,6 +566,12 @@ export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevisio
   return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size} ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
+/** Canonical headings contain an address and category/scope; price without re-rendering metadata. */
+export function withKnowledgeCost(body: string, cost: number): string {
+  const headerEnd = body.indexOf("]", body.indexOf("]") + 1) + 1;
+  return `${body.slice(0, headerEnd)} (${cost} tokens)${body.slice(headerEnd)}`;
+}
+
 export const factAddresses = (ids: number[], titles?: ReadonlyMap<number, string>): string => ids.map(id =>
   `F${id}${titles?.get(id) ? ` ${titles.get(id)}` : ""}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
@@ -628,72 +634,99 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
     : renderSemantic(`[K${value.knowledge.id}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] `, r.text, suffix, cap);
 }
 
-// Lossless lexical tokens: Han characters, other words/numbers, whitespace runs, punctuation.
-// Unlike whitespace splitting, this exposes edits inside unspaced Chinese memory content.
-function diffText(before: string, after: string, context?: number): string {
-  const split = (text: string) => text.match(/\p{Script=Han}|[\p{L}\p{N}\p{M}_]+|\s+|[^\s]/gu) ?? [];
-  // Exclude Han from the word alternative so a Latin prefix cannot swallow a Han suffix.
-  const tokenize = (text: string) => split(text).flatMap((part) =>
-    part.match(/\p{Script=Han}|[^\p{Script=Han}]+/gu) ?? []);
-  const a = tokenize(before), b = tokenize(after);
-  const lengths = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      lengths[i]![j] = a[i] === b[j] ? 1 + lengths[i + 1]![j + 1]!
-        : Math.max(lengths[i + 1]![j]!, lengths[i]![j + 1]!);
+const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+const sentences = (text: string): string[] => text.match(/[^。；！？\n]*[。；！？\n]|[^。；！？\n]+$/gu) ?? [];
+
+interface SentenceWords { parts: string[]; words: boolean[]; count: number }
+interface SentenceHighlight { before: string; after: string; added: string; removed: string }
+
+function sentenceWords(text: string): SentenceWords {
+  const parts: string[] = [], words: boolean[] = [];
+  let count = 0;
+  for (const part of wordSegmenter.segment(text)) {
+    parts.push(part.segment); words.push(!!part.isWordLike);
+    if (part.isWordLike) count++;
+  }
+  return { parts, words, count };
+}
+
+/** Highlight only a pair sharing at least half the longer sentence's words.
+ * Separators are retained in the diff, but alone cannot make a rewrite look related. */
+function sentencePair(a: SentenceWords, b: SentenceWords): SentenceHighlight | undefined {
+  const changes = diffArrays(a.parts, b.parts);
+  let position = 0, commonWords = 0, commonParts = 0;
+  for (const change of changes) {
+    if (change.added) continue;
+    if (change.removed) { position += change.value.length; continue; }
+    commonParts += change.value.length;
+    for (let index = 0; index < change.value.length; index++) if (a.words[position++]) commonWords++;
+  }
+  const longer = Math.max(a.count, b.count);
+  if (longer ? commonWords * 2 < longer : commonParts * 2 < Math.max(a.parts.length, b.parts.length)) return;
+  let before = "", after = "", added = "", removed = "";
+  for (const change of changes) {
+    const text = change.value.join("");
+    if (change.added) { after += `{+${text}+}`; added += text; }
+    else if (change.removed) { before += `[-${text}-]`; removed += text; }
+    else { before += text; after += text; }
+  }
+  return { before, after, added, removed };
+}
+
+export interface SentenceDiff { text: string; added: string; removed: string }
+/** 134: one lossless sentence-first engine for every knowledge-body diff.
+ * Original newline delimiters stay inside a row; the joining newline is layout, not body text. */
+export function sentenceDiff(before: string, after: string): SentenceDiff {
+  const changes = diffArrays(sentences(before), sentences(after)), lines: string[] = [];
+  let added = "", removed = "", index = 0;
+  const add = (text: string) => { lines.push(`+ ${text}`); added += text; };
+  const remove = (text: string) => { lines.push(`- ${text}`); removed += text; };
+  while (index < changes.length) {
+    const change = changes[index]!;
+    if (!change.added && !change.removed) {
+      for (const sentence of change.value) lines.push(`  ${sentence}`);
+      index++;
+      continue;
     }
+    const old: string[] = [], next: string[] = [];
+    while (index < changes.length && (changes[index]!.added || changes[index]!.removed)) {
+      const part = changes[index++]!;
+      (part.removed ? old : next).push(...part.value);
+    }
+    const oldWords = old.map(sentenceWords), nextWords = next.map(sentenceWords);
+    const pairs: { old: number; next: number; diff: SentenceHighlight }[] = [];
+    let nextPair = 0;
+    for (let left = 0; left < old.length; left++) for (let right = nextPair; right < next.length; right++) {
+      const pair = sentencePair(oldWords[left]!, nextWords[right]!);
+      if (!pair) continue;
+      pairs.push({ old: left, next: right, diff: pair }); nextPair = right + 1;
+      break;
+    }
+    let left = 0, right = 0;
+    for (const pair of pairs) {
+      // Insertions after a preceding pair precede the next removed sentence, without reordering
+      // either original text. With no pair, the entire old hunk precedes the entire new hunk.
+      if (left) while (right < pair.next) add(next[right++]!);
+      while (left < pair.old) remove(old[left++]!);
+      while (right < pair.next) add(next[right++]!);
+      lines.push(`- ${pair.diff.before}`, `+ ${pair.diff.after}`);
+      added += pair.diff.added; removed += pair.diff.removed;
+      left = pair.old + 1; right = pair.next + 1;
+    }
+    while (left < old.length) remove(old[left++]!);
+    while (right < next.length) add(next[right++]!);
   }
-  const spans: { kind: "same" | "remove" | "add"; text: string }[] = [];
-  const append = (kind: "same" | "remove" | "add", text: string) => {
-    if (spans.at(-1)?.kind === kind) spans.at(-1)!.text += text;
-    else spans.push({ kind, text });
-  };
-  let i = 0, j = 0;
-  while (i < a.length || j < b.length) {
-    if (i < a.length && j < b.length && a[i] === b[j]) { append("same", a[i++]!); j++; }
-    else if (i < a.length && (j === b.length || lengths[i + 1]![j]! >= lengths[i]![j + 1]!)) append("remove", a[i++]!);
-    else append("add", b[j++]!);
-  }
-  return spans.map(({ kind, text }, index) => {
-    if (kind !== "same") return kind === "remove" ? `[-${text}-]` : `{+${text}+}`;
-    // With `context`, an unchanged span keeps that many characters beside each neighbouring change.
-    if (context === undefined) return text;
-    const chars = [...text], head = index > 0 ? context : 0, tail = index < spans.length - 1 ? context : 0;
-    return chars.length <= head + tail ? text : `${chars.slice(0, head).join("")}[...]${chars.slice(chars.length - tail).join("")}`;
-  }).join("");
+  return { text: lines.join("\n"), added, removed };
 }
 
-// Ticket 76: the Dreamer's pending-material diff is a distinct surface from `renderKnowledgeDiff`
-// above (an exact `trace K@a..K@b` history read, which keeps its Han-per-character engine so an
-// existing single-character pin stays exact). Intl.Segmenter's word granularity groups CJK text into
-// dictionary words (measured: "中国人民银行" -> "中国"/"人民"/"银行"), which is what the maintainer asked
-// for here; the two diffs intentionally disagree on granularity because they answer different
-// questions (exact-history byte tracking vs. a reviewable word-level change).
-function wordSegments(text: string): string[] {
-  return [...new Intl.Segmenter(undefined, { granularity: "word" }).segment(text)].map(part => part.segment);
-}
-
-export interface WordDiff { text: string; added: string; removed: string }
-/** jsdiff's array diff over Intl.Segmenter word tokens (Pi's own edit tool already depends on `diff`). */
-export function wordLevelDiff(before: string, after: string): WordDiff {
-  let text = "", added = "", removed = "";
-  for (const change of diffArrays(wordSegments(before), wordSegments(after))) {
-    const value = change.value.join("");
-    if (change.added) { text += `{+${value}+}`; added += value; }
-    else if (change.removed) { text += `[-${value}-]`; removed += value; }
-    else text += value;
-  }
-  return { text, added, removed };
-}
-
-/** What the Dreamer sees for a Consolidator change with a processing baseline in this pool: the body
- * as one inline word-level diff, plus any change of category, scope, topics or supports (76 "What D
- * sees"). Weight is the tokens of every inserted and deleted segment across all of those — never
+/** What the Dreamer sees for a change with a processing baseline in this pool: a complete sentence
+ * diff, plus any change of category, scope, topics or supports (76 "What D sees", 134).
+ * Weight is the tokens of every inserted and deleted segment across all of those — never
  * zero for a real change, far less than the whole item for a metadata-only one (76 ruling "(a)"); the
  * `K@commit` address itself is never part of the comparison. */
 export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRevision, current: KnowledgeRevision,
-  address = `K${knowledgeId}@${current.id}`): { text: string; addedTokens: number; removedTokens: number } {
-  const body = wordLevelDiff(baseline.text, current.text);
+  address = `K${knowledgeId}@${current.id}`, poolTokens?: number): { text: string; addedTokens: number; removedTokens: number } {
+  const body = sentenceDiff(baseline.text, current.text);
   const categoryChanged = knowledgeCategoryGroup(baseline.category) !== knowledgeCategoryGroup(current.category), scopeChanged = baseline.scope !== current.scope;
   const supportsAdded = current.supports.filter(id => !baseline.supports.includes(id));
   const supportsRemoved = baseline.supports.filter(id => !current.supports.includes(id));
@@ -701,7 +734,7 @@ export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRe
   const topicsRemoved = baseline.topics.filter(t => !current.topics.includes(t));
   const supportLabel = current.supportSemantics === "change" ? "change supports" : "supports";
   const lines = [
-    `[${address}] [${knowledgeCategoryGroup(current.category)}/${current.scope}] ${body.text}`,
+    `[${address}] [${knowledgeCategoryGroup(current.category)}/${current.scope}]${poolTokens === undefined ? "" : ` (${poolTokens} tokens)`}\n${body.text}`,
     `  ${supportLabel} added: ${factAddresses(supportsAdded)} removed: ${factAddresses(supportsRemoved)}`,
     ...(categoryChanged ? [`  category: ${knowledgeCategoryGroup(baseline.category)} -> ${knowledgeCategoryGroup(current.category)}`] : []),
     ...(scopeChanged ? [`  scope: ${baseline.scope} -> ${current.scope}`] : []),
@@ -722,10 +755,10 @@ export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRe
 
 export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity,
   fields?: ReadonlySet<string>, address: (revision: KnowledgeRevision) => string = r => `K${r.knowledgeId}@${r.id}`,
-  rangeAddress = `${address(a)}..${address(b)}`, context?: number): string {
-  const text = diffText(a.text, b.text, context), identity = `[${rangeAddress}]`;
+  rangeAddress = `${address(a)}..${address(b)}`): string {
+  const text = sentenceDiff(a.text, b.text).text, identity = `[${rangeAddress}]`;
   if (fields) {
-    const prefix = fields.has("text") ? `${identity}\n  text: ` : identity;
+    const prefix = fields.has("text") ? `${identity}\n  text:\n` : identity;
     const lines = [
       ...(fields.has("supports") ? [`  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
         `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`] : []),
@@ -733,13 +766,13 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
       ...(fields.has("status") && a.scope !== b.scope ? [`  scope: ${a.scope} -> ${b.scope}`] : []),
       ...(fields.has("reason") && a.reason !== b.reason ? [`  reason: ${a.reason} -> ${b.reason}`] : []),
       ...(fields.has("topics") && JSON.stringify(a.topics) !== JSON.stringify(b.topics) ? [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`] : []),
-      ...(context !== undefined && !revisions.length ? [] : [renderCommitHistory(revisions, fields, address)]),
+      ...(revisions.length ? [renderCommitHistory(revisions, fields, address)] : []),
     ];
     if (!fields.has("text")) return [prefix, ...lines].join("\n");
     const whole = [prefix + text, ...lines].join("\n");
     return renderSemantic(prefix, text, whole.slice(prefix.length + text.length), cap);
   }
-  const prefix = `${identity}\n  text: `;
+  const prefix = `${identity}\n  text:\n`;
   const whole = [prefix + text,
     `  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
     `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,

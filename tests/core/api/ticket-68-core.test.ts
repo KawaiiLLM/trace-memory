@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { receiptCommit } from "../../support/seed.ts";
 import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { TraceMemory, DEFAULT_CONFIG, validateConfig, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 
@@ -111,8 +112,7 @@ test("68 own output is processed, its superseded parent needs no processing row,
     const receipt = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [{
       op: "update", id: handle, text: "updated", category: "constraint", scope: "project", supports: [], topics: [], reason: "maintained",
     }], skipped: [] }));
-    expect(receipt.committed[0].version).toBe("K1@v2");
-    output = f.store.resolveVersionOrdinal(1, 2);
+    output = receiptCommit(f.store, receipt.committed[0]);
     return { outcome: "failure", output: "cut", request: exactRequest };
   });
   const first = f.create("project", "first ".repeat(20));

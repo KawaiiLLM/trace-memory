@@ -15,7 +15,7 @@ import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecuti
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, dreamingDue, ALL_POOLS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize } from "./processing.ts";
-import { factAddresses, renderKnowledge, renderKnowledgeChange, tokens, WORKER_ITEM_TOKENS } from "../render/index.ts";
+import { factAddresses, renderKnowledge, renderKnowledgeChange, withKnowledgeCost, tokens, WORKER_ITEM_TOKENS } from "../render/index.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement } from "../model/index.ts";
 import type {
   Actor,
@@ -4013,6 +4013,15 @@ export class Store {
       const values = versions.get(pool)!;
       const rendered = new Map(values.map(value => [value.revision.id, renderKnowledge(value, tagged(value.revision))]));
       const size = tokens(processedBlock(values, value => rendered.get(value.revision.id)!));
+      // 134: item counts describe the same canonical rendering charged by the pool. Material-only
+      // annotations are never fed back into its size or an existing change/archive weight.
+      const itemTokens = new Map<number, number>();
+      for (const value of values) {
+        const body = rendered.get(value.revision.id)!;
+        const count = tokens(body);
+        itemTokens.set(value.revision.id, count);
+        rendered.set(value.revision.id, withKnowledgeCost(body, count));
+      }
       // 76: baseline lookup, segmentation and diff run only for a pending version that has a
       // processed ancestor in this pool; a version with none is shown and weighed whole ("New").
       const pendingUpdates = values.filter(value => unprocessed.get(pool)!.has(value.revision.id)).map(value => {
@@ -4021,7 +4030,8 @@ export class Store {
           const material = `New ${address(value.revision)}:\n${rendered.get(value.revision.id)!}`;
           return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
         }
-        const change = renderKnowledgeChange(value.revision.knowledgeId, baseline, value.revision, address(value.revision));
+        const change = renderKnowledgeChange(value.revision.knowledgeId, baseline, value.revision,
+          tagged(value.revision), itemTokens.get(value.revision.id));
         const material = `Changed ${address(value.revision)} (from ${address(baseline)}):\n${change.text}`;
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: change.addedTokens + change.removedTokens, material };
       });
@@ -4032,15 +4042,18 @@ export class Store {
       const pendingArchives = archivedVersions.get(pool)!.map(value => {
         const parent = value.revision.parentId === null ? undefined : input.metadata.revisions!.get(value.revision.parentId);
         if (!parent) throw new Error(`K${value.revision.knowledgeId}@${value.revision.id}: archive has no archived body`);
-        const archivedBody = renderKnowledge({ knowledge: value.knowledge, revision: parent }, tagged(parent));
+        const parentValue = { knowledge: value.knowledge, revision: parent };
+        const archivedBody = renderKnowledge(parentValue, tagged(parent));
+        const archivedTokens = tokens(archivedBody);
+        const shownBody = withKnowledgeCost(archivedBody, archivedTokens);
         const baseline = baselines.get(value.revision.id);
-        const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent, address(parent)).text}` : "";
+        const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent, address(parent), archivedTokens).text}` : "";
         // 76 review: the archive revision's own supports are the evidence that caused the archive
         // (e.g. F3), distinct from the archived body's own supports already inside `archivedBody`.
         // Show them explicitly, labelled as the archive's evidence, beside the body they retire.
         const evidenceLine = `\n  archive evidence: ${factAddresses(value.revision.supports)}`;
-        const material = `Archived ${address(value.revision)} (reason: ${value.revision.reason}):\n${archivedBody}${evidenceLine}${diffLine}`;
-        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(archivedBody), material };
+        const material = `Archived ${address(value.revision)} (0 tokens; reason: ${value.revision.reason}):\n${shownBody}${evidenceLine}${diffLine}`;
+        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: archivedTokens, material };
       });
       const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);
       return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool)!, pending };

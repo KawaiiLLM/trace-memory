@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
-import { legacyFacts } from "../../support/seed.ts";
+import { legacyFacts, receiptCommit } from "../../support/seed.ts";
 import fixture from "../../fixtures/trace.json";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -49,7 +49,7 @@ async function consolidation(...operations: Operation[]) {
       supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied fixture item." })) }));
     committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
       .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId,
-        commit: memory.store.resolveVersionOrdinal(item.knowledgeId, Number(/@v(\d+)$/.exec(item.version)![1])) }));
+        commit: receiptCommit(memory.store, item) }));
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "maintenance complete", request };
   });
