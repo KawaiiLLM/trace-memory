@@ -54,14 +54,15 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
     const allowed = dreaming ? ["update", "merge", "split", "archive"]
-      : run.kind === "noting" ? ["create", "update", "archive"] : ["create", "archive"];
+      : ["create", "update", "archive"];
     if (!allowed.includes(op)) errors.push(
       ["update", "merge", "split", "archive"].includes(op)
         ? `${op} belongs to the Dreamer and is not available to ${run.kind === "noting" ? "the Noter" : "manual memory"}`
         : "invalid op");
     const structural = op === "split";
     const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []),
-      ...(structural ? ["children"] : op === "archive" ? ["kind", ...(value.kind === "invalid" ? ["text"] : [])] : ["text", "category", "scope", "topics"])];
+      ...(structural ? ["children"] : op === "archive" ? ["kind", ...(value.kind === "invalid" ? ["text"] : [])]
+        : ["text", ...(op === "update" ? ["edits"] : []), "category", "scope", "topics"])];
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
     // model still writing the old shape is told which two fields replace it.
     for (const key of Object.keys(value)) if (key === "because") errors.push('because: removed field; supply "reason" (a string) and "supports" (the commit\'s evidence)');
@@ -98,16 +99,44 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (value.kind === "invalid" && !substantiveArchiveStatement(value.text))
         errors.push("invalid archive requires a substantive statement of grounds and evidence");
     }
-    if (op !== "archive" && op !== "split") {
-      if (!(op === "merge" && value.text === undefined)
-          && (typeof value.text !== "string" || !value.text.length))
-        errors.push("text: expected non-empty text");
-      if (!isKnowledgeCategory(value.category)) errors.push("invalid category");
-      if (!KNOWLEDGE_SCOPES.includes(value.scope!)) errors.push("invalid scope");
+    const editing = op === "update" && "edits" in value;
+    const base = editing && dest ? store.getKnowledgeRevision(dest.knowledgeId, dest.baseCommit) : null;
+    let text = value.text;
+    if (op === "update" && ("text" in value) === editing) errors.push("update requires exactly one of text or edits");
+    if (editing) {
+      if (!Array.isArray(value.edits) || !value.edits.length) errors.push("edits: expected a non-empty array of {old, new}");
+      else {
+        if (base) text = base.text;
+        for (const [editIndex, edit] of value.edits.entries()) {
+          const position = `edit ${editIndex + 1}`;
+          if (!edit || typeof edit !== "object" || Array.isArray(edit) ||
+              Object.keys(edit).some(key => key !== "old" && key !== "new") ||
+              typeof edit.old !== "string" || !edit.old.length || typeof edit.new !== "string") {
+            errors.push(`${position}: expected {old, new} strings with non-empty old`); break;
+          }
+          if (!base || "text" in value) continue;
+          const first = text!.indexOf(edit.old);
+          if (first === -1) { errors.push(`${position}: old matched nothing (0 occurrences)`); break; }
+          if (text!.indexOf(edit.old, first + 1) !== -1) { errors.push(`${position}: old matched several places (multiple occurrences)`); break; }
+          text = text!.slice(0, first) + edit.new + text!.slice(first + edit.old.length);
+        }
+      }
     }
-    const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: facts(value.supports, errors, !dreaming), reason: value.reason!,
-      topics: op === "archive" || op === "split" ? [] : labels(value.topics, errors), createdAt: run.createdAt };
-    const scope = op === "archive" || op === "split" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : value.scope;
+    const inheritedCategory = editing && !("category" in value) && base !== null;
+    const category = inheritedCategory ? base.category : value.category;
+    const contentScope = editing && !("scope" in value) ? base?.scope : value.scope;
+    const topics = op === "archive" || op === "split" ? []
+      : editing && !("topics" in value) && base ? base.topics : labels(value.topics, errors);
+    if (op !== "archive" && op !== "split") {
+      if (!(op === "merge" && text === undefined)
+          && (typeof text !== "string" || !text.length))
+        errors.push("text: expected non-empty text");
+      if (!inheritedCategory && !isKnowledgeCategory(category)) errors.push("invalid category");
+      if (!KNOWLEDGE_SCOPES.includes(contentScope!)) errors.push("invalid scope");
+    }
+    const content = { text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !dreaming), reason: value.reason!,
+      topics, createdAt: run.createdAt };
+    const scope = op === "archive" || op === "split" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : contentScope;
     if (scope && content.supports.every(Number.isSafeInteger)) {
       const bad = store.citationProblem(content.supports.filter(id => id > 0), scope, path);
       if (bad) errors.push(bad);

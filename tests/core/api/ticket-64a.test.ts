@@ -692,16 +692,6 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     });
   });
 
-  test("manual memory shares the N schema but enforces immediate create/archive only", () => {
-    const f = fixture(() => {});
-    const tools = memory.tools({ kind: "manual", sessionId: f.session.id, branch: "main", currentTurnId: f.turn.id });
-    const memoryTool = tools.find(tool => tool.name === "memory")!;
-    expect((memoryTool.parameters.properties as any).op.enum).toEqual(["create", "update", "archive"]);
-    expect(memoryTool.execute(created(f.fact, "manual item"))).toContain('"committed"');
-    const tag = readHandle(address => memoryFiles(memory, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id }).read(address).content, "K1");
-    expect(memoryTool.execute({ ...created(f.fact, "changed"), op: "update", id: tag })).toContain("Dreamer");
-    expect(memoryTool.execute({ op: "archive", kind: "budget", id: tag, supports: [`F${f.fact}`], reason: "Retired." })).toContain('"committed"');
-  });
 
   test("prompt and material contain no second-round cues", async () => {
     const f = fixture(input => {

@@ -1,5 +1,5 @@
 // Ticket 118 rulings 6/7 and Paging retire public trace cursors, mixed-address lists and
-// Core-owned item/page ceilings. Keep the independent whole-entry and write-authority contracts.
+// Core-owned item/page ceilings. Keep the independent whole-entry contracts.
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 
@@ -51,16 +51,3 @@ test.each(["😀", "𠮷", "👨‍👩‍👧‍👦", "é", "\\\\uD83D\\\\uDE0
   expect(exact.unbounded).toBe(true);
 });
 
-test("118/92: reading an exact tagged knowledge body does not grant manual update authority", () => {
-  const { sessionId, turn } = corpus();
-  const tools = memory.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" });
-  const note = tools.find(tool => tool.name === "note")!, write = tools.find(tool => tool.name === "memory")!;
-  const fact = JSON.parse(note.execute({ title: "Script decision", sources: `[T${turn.id}#E1] USER-ONLY` })).factIds[0];
-  const created = JSON.parse(write.execute({ op: "create", text: "Keep exact scripts", category: "constraint", scope: "project",
-    topics: [], supports: [`F${fact}`], reason: "User decision" }));
-  const id = created.committed[0].knowledgeId;
-  const tag = `K${id}#${memory.store.versionTag(id, memory.store.resolveVersionOrdinal(id, 1))}`;
-  expect(memoryFiles(memory, { sessionId, branch: "main", headTurnId: turn.id }).read(`trace://${tag}`).content).toContain("Keep exact scripts");
-  expect(write.execute({ op: "update", id: tag, text: "Unauthorized rewrite", category: "constraint", scope: "project",
-    topics: [], supports: [`F${fact}`], reason: "Read is not authority" })).toContain("Dreamer");
-});

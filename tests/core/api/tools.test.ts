@@ -128,11 +128,6 @@ test("116: public schemas distinguish full items, scalar drops and empty calls",
   }
   expect(note.else).toMatchObject({ then: { required: ["title", "sources"] } });
   expect(knowledge.else).toMatchObject({ then: { required: ["op", "supports", "reason"] } });
-  const rules = (knowledge.else as any).then.allOf as any[];
-  expect(rules).toHaveLength(3);
-  expect(rules[0]).toMatchObject({ if: { properties: { op: { const: "create" } } }, else: { required: ["id"] } });
-  expect(rules[2]).toMatchObject({ if: { properties: { op: { const: "archive" } } }, then: { required: ["kind"] },
-    else: { required: ["text", "category", "scope", "topics"] } });
   expect((knowledge.properties as Record<string, unknown>).skipped).toBeUndefined();
 });
 

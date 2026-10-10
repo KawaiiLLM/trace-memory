@@ -220,7 +220,7 @@ test("exact knowledge reads are whole rather than Core item-budgeted", async () 
   expect(file.content).not.toContain("characters truncated");
 });
 
-test("92 complete collections expose tags, metadata and history references do not; tags never override writer authority", async () => {
+test("135/92: complete collections expose tags, metadata and history references do not; stale tags remain unwritable", async () => {
   const who = owner("authority");
   const old = await who.put("old body"), current = await who.put("new body", "project", [], old);
   const tools = memory.tools({ kind: "manual", sessionId: who.sessionId, currentTurnId: who.turn.id, branch: who.branch });
@@ -233,9 +233,6 @@ test("92 complete collections expose tags, metadata and history references do no
   expect(historyText).toContain("K1@v1");
   expect(historyText).toContain("reason: Reason old body");
   const write = tools.find(tool => tool.name === "memory")!;
-  const update = write.execute({ op: "update", id: currentTag,
-    text: "edited", category: "reference", scope: "project", supports: [`F${who.factId}`], topics: [], reason: "Edit" });
-  expect(update).toContain("update belongs to the Dreamer");
   const archive = (id: string) => write.execute({ op: "archive", kind: "budget", id,
     supports: [`F${who.factId}`], reason: "Retire" });
   expect(archive(oldTag)).toContain("base is not the latest effective applicable revision");

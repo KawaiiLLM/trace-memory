@@ -14,6 +14,7 @@ import * as api from "../../source-fixture.ts";
 import { tokens, hydrate } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
 import { dreamingToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
+import type { MemoryReceipt } from "../../../src/core/knowledge-write/bind.ts";
 import { canonicalToolNames, renderToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { ccPluginToolNames } from "../../../src/hosts/cc/tool-names.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
@@ -434,8 +435,6 @@ test("2026-10-02: only search and writers are model-facing Core tools", () => {
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   expect(tools.map(tool => tool.name)).toEqual(["search", "note", "memory"]);
   for (const tool of tools) { expect(tool.parameters.type).toBe("object"); expect(typeof tool.execute).toBe("function"); }
-  expect(tools.find(tool => tool.name === "note")!.description).toContain("Both note and memory are required in N");
-  expect(tools.find(tool => tool.name === "memory")!.description).toContain("Manual writers may create/archive only");
   expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", topics: [], reason: "Initial admission of this conclusion." })).toContain("rejected:");
 });
 
@@ -784,7 +783,7 @@ test("2026-10-06, 127: 'A，你派工' — a refused Dreamer operation still blo
   expect(result.outcome, JSON.stringify(result)).toBe("success");
 });
 
-test("2026-09-07: merge atomic", async () => {
+test("135/2026-09-07: a reversed live merge is atomic and keeps the older identity with an explicit swap receipt", async () => {
   const { create, write, path } = memoryWriter();
   const created = (write([create, { ...create, text: "Avoid npm", supports: ["F2"] }]).committed as Array<{ knowledgeId: number; version: string }>)
     .map(item => ({ ...item, commit: commitOf(item) }));
@@ -792,13 +791,13 @@ test("2026-09-07: merge atomic", async () => {
   if (!first || !second) throw new Error(`merge fixture needs two identities: ${JSON.stringify(created)}`);
   const trigger = createDreamerTrigger(memory, path, 2, 1);
   const request = { fixture: "merge atomic" };
-  let merged: { results: string[]; committed: Array<{ knowledgeId: number; version: string }> } | undefined;
+  let merged: Pick<MemoryReceipt, "results" | "committed"> | undefined;
   const result = await admittedScenarios.run(memory, path, input => {
     input.reportRequest(request); const writeTool = input.tools.find(tool => tool.name === "memory")!;
     const files = memoryFiles(memory, input.reader!);
     for (const item of [first, second]) readHandle(file => files.read(file).content, item.version);
     const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the survivor.",
-      id: tagged(first.knowledgeId, first.commit), absorb: [tagged(second.knowledgeId, second.commit)], supports: ["F1", "F2"] };
+      id: tagged(second.knowledgeId, second.commit), absorb: [tagged(first.knowledgeId, first.commit)], supports: ["F1", "F2"] };
     // 127 removed the Dreamer's batch: a refused sibling call no longer undoes a merge, so only the merge's own atomicity is checked.
     const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
     readHandle(file => files.read(file).content, triggerAddress);
@@ -811,6 +810,7 @@ test("2026-09-07: merge atomic", async () => {
   expect(merged.results).toEqual(["ok", "ok"]);
   const mergedIdentity = merged.committed[0];
   if (!mergedIdentity) throw new Error(`merge fixture committed nothing: ${JSON.stringify(merged)}`);
+  expect(mergedIdentity).toMatchObject({ knowledgeId: first.knowledgeId, swappedFrom: tagged(second.knowledgeId, second.commit) });
   const mergeCommit = commitOf(mergedIdentity);
   expect(memory.store.currentCommit(second.knowledgeId)).toEqual([]);
   expect(memory.store.getKnowledge(second.knowledgeId)).toMatchObject({ id: second.knowledgeId });

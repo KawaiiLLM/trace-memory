@@ -152,7 +152,7 @@ the runtime-derived shared allowance; they are not production defaults.
    one review message; Consolidation receives no corresponding review round.
 5. Exercise a manual `note` and `memory` call; check immediate kind `manual`
    receipts and native source entries for the calls and results. Manual `memory` permits
-   create and archive only. Exercise `/trace project <name>`; verify `/trace` alone
+   create/update/archive (135). Exercise `/trace project <name>`; verify `/trace` alone
    (which prints status in rpc mode) changes neither stored runs nor progress, and
    that `/trace off` then `/trace on` pause and resume this session alone.
 

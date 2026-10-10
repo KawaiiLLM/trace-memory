@@ -23,7 +23,7 @@ Ordinary reads use host-native limits; offset/limit continuations use the origin
 
 This contract supersedes the older immediate-Noting and NEAR descriptions below. Live Consolidation is retired; historical C records remain readable. The numbered sections retain implementation history, not permission to use superseded schemas or stages. In particular, ticket 02's `note({facts})`, `note({facts: []})`, immediate N commit and NEAR descriptions below are historical, not current tool guidance.
 
-- Foreground and N advertise identical `note`/`memory` definitions. Each call carries one fact or one knowledge operation in top-level fields, rather than `facts` or `operations` arrays. Core enforces role permissions. Manual writes remain immediate and reject N-only slots, drops and local knowledge supports; manual fact relations cite existing F IDs. Manual `memory` allows fact-backed create/archive only; D's own `memory` takes one operation or one `{skip, because}` per call and commits each legal call at once; a refused one holds an `Mn` slot that blocks success until `slot` resubmits or `drop` withdraws it (127).
+- Foreground and N advertise identical `note`/`memory` definitions. Each call carries one fact or one knowledge operation in top-level fields, rather than `facts` or `operations` arrays. Core enforces role permissions. Manual writes remain immediate and reject N-only slots, drops and local knowledge supports; manual fact relations cite existing F IDs. Manual `memory` allows fact-backed create/update/archive (135); D's own `memory` takes one operation or one `{skip, because}` per call and commits each legal call at once; a refused one holds an `Mn` slot that blocks success until `slot` resubmits or `drop` withdraws it (127).
 - N holds facts in stable `$n` slots and knowledge operations in `Mn` slots. Omitted slot appends; explicit slot fully replaces. `drop: "$n"` or `drop: "Mn"` is a separate call. A rejected replacement invalidates the prior value. Drop leaves a gap and cannot remove a referenced fact. N has no `skipped` field. Empty `note({})` and `memory({})` calls confirm use but do not clear drafts or slot errors.
 - A valid call clears top-level errors only. Host schema refusals are correlated by native call ID and original arguments, including failures before core execution. Duplicate refusal events cannot allocate another slot. A missing CC dispatch/refusal fails the run explicitly.
 - Every non-fork N run with a normally completed first pass receives one fixed end-review message, even if publishable or empty. It lists real held blockers (rejected slots, call errors and missing tools with their host-specific empty calls) and every held knowledge change: update parent-to-new-body diff and changed metadata, full create body, or archive kind and text. The model may replace or drop a slot in the second pass. Provider failure and cancellation receive no supplement; a CC fork receives none. There is no third pass; D keeps its existing pass-end conditions.
@@ -118,11 +118,36 @@ historical reads do not make stale revisions writable.
 
 ### Operations and supports
 
-N may `update` a visible current tagged base; only the Dreamer may `merge` or `split`. Dreamer also archives but cannot create a parentless identity.
-A merge joins two identities of one scope and keeps the older identity. It may omit `text`, in which
-case the later parent's body is copied verbatim. A split atomically creates two continuation
-identities and both inherit the parent's scope. Manual Knowledge writes expose only fact-backed
-`create` and `archive`; the retired Consolidation stage historically exposed only `create`.
+N and manual writers may update a visible current tagged base; only the Dreamer may merge or split.
+Dreamer also archives but cannot create a parentless identity. Manual Knowledge writes expose
+fact-backed create/update/archive; the retired Consolidation stage historically exposed only create.
+
+An update accepts exactly one body form (135):
+- **Full text:** `text` is the complete replacement; category, scope and topics remain required.
+- **Exact edits:** `edits` is a non-empty array of `{old, new}`. Each non-empty `old` must occur
+  exactly once in the exact tagged base body as it stands at that step; edits apply in order.
+  An empty `new` deletes. A failed edit refuses the whole operation and names its position and
+  zero/multiple matches, including overlapping occurrences. N and D retain the normal refused `Mn`.
+- **Metadata:** omitted category, scope or topics inherit only with edits; supplied fields replace
+  them under the existing rules. Inherited legacy categories remain unchanged, not reclassified.
+  Supports and reason retain the role's existing requirements.
+
+The complete result passes the same admission, supports, scope and 1,000-token checks as a full-text
+update, including a manual update. Manual creates and archives keep their existing size rules.
+N holds the complete result and `slot:Mn` replaces it against the exact base, not the previous draft.
+The audited concurrent update-to-create conversion retains inherited legacy classification too;
+ordinary creates still cannot author a legacy category.
+Storage, Knowledge history, injection and both end reviews use complete revisions, never edit lists;
+the original request remains in the human audit. Immediate update receipts carry the new tag and
+pool item cost before/after without echoing the result body.
+
+A merge joins two identities of one scope and keeps the older identity. If a call names the newer
+survivor and neither exact base is archived, Store swaps the parents without changing submitted text,
+supports or reason. The committed receipt's `swappedFrom` names the requested survivor; `knowledgeId`
+and `version` name the actual older survivor. Before-costs remain in requested `id`, `absorb` order.
+An archived base retains the direction refusal: swapping would change the revival identity.
+A merge may omit `text`, in which case the later exact parent's body is copied verbatim.
+A split atomically creates two continuation identities and both inherit the parent's scope.
 
 Evidence-driven maintenance stores the submitted direct facts. A trusted Dreamer maintenance
 operation may submit empty `supports`; core materializes the parents' supports in the same commit:

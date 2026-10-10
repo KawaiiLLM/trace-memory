@@ -668,18 +668,11 @@ test("21a 2026-09-08: the memory schema the child re-registers requires reason, 
     expect(operation.properties).not.toHaveProperty("operations");
     expect(operation.properties.reason).toEqual({ type: "string", minLength: 1 });
     expect(operation.additionalProperties).toBe(false);
-    // Topics remain required for content writes and inherited for archives; archive kind is mandatory.
     expect(operation.properties.topics).toEqual({ type: "array", items: { type: "string", minLength: 1 } });
     const archiveRule = operation.else.then.allOf[2];
-    expect(archiveRule.else.required).toEqual(["text", "category", "scope", "topics"]);
     expect(archiveRule.then.required).toContain("kind");
     expect(archiveRule.then.allOf[0].not.anyOf).toContainEqual({ required: ["topics"] });
     expect(operation.properties).not.toHaveProperty("skipped");
-    expect(memory.description).toContain("reason (commit message, not evidence)");
-    expect(memory.description).toContain("complete text/category/scope/topics");
-    expect(memory.description).toContain("Manual writers may create/archive only");
-    expect(memory.description).toContain("normal termination with both note and memory used");
-    expect(memory.description).not.toContain("archive inherits its parent body");
   } finally { await f.dispose(); }
 });
 

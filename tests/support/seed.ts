@@ -1,9 +1,10 @@
 import type { TraceMemory } from "../source-fixture.ts";
 import { commitNoterKnowledge } from "../noting-knowledge-fixture.ts";
-import type { Store, KnowledgePath, SourceEntry, SourceEntryMeta, FactCommitInput, RunInput } from "../../src/core/store/index.ts";
+import type { Store, KnowledgePath, SourceEntry, SourceEntryMeta, FactCommitInput, RunInput, CommittedKnowledgeOp } from "../../src/core/store/index.ts";
 import type { Fact, FactCategory, KnowledgeCategory } from "../../src/core/model/index.ts";
 import { parseKnowledgeAddress } from "../../src/core/model/address.ts";
 import type { MemoryReceipt } from "../../src/core/knowledge-write/bind.ts";
+import { assignVersionTag } from "../../src/core/store/version-tags.ts";
 
 /** Resolve the shared tool receipt: authored update/merge/split tags, other history addresses. */
 export function receiptCommit(store: Store, item: Pick<MemoryReceipt["committed"][number], "knowledgeId" | "version">): number {
@@ -120,6 +121,21 @@ export function knowledge(store: Store, path: KnowledgePath, scope: "global" | "
   options: { run?: KnowledgeRun; operation?: { createdAt?: string; topics?: string[] } } = {}) {
   return knowledgeBatch(store, path, [{ scope, category, supports, text, topics: options.operation?.topics,
     createdAt: options.operation?.createdAt }], options.run).committed[0]!;
+}
+
+/** An imported legacy revision attached to its real supporting fact's run, without inventing worker progress. */
+export function legacyKnowledge(store: Store, path: KnowledgePath, item: KnowledgeSeed): Pick<CommittedKnowledgeOp, "knowledgeId" | "commit"> {
+  const factRun = store.db.prepare("SELECT run_id FROM facts WHERE id=?").get(item.supports[0]!);
+  if (!factRun || typeof factRun.run_id !== "number") throw new Error("legacy knowledge requires an existing supporting fact run");
+  const runId = factRun.run_id;
+  const knowledgeId = Number(store.db.prepare("INSERT INTO knowledge (project_id,origin_session_id,author) VALUES (?,?,?)")
+    .run(store.getSession(path.sessionId)!.projectId, path.sessionId, item.author ?? "legacy").lastInsertRowid);
+  const commit = Number(store.db.prepare(`INSERT INTO knowledge_revisions
+    (knowledge_id,parent_id,text,category,scope,supports,support_semantics,op,reason,topics,run_id,created_at,actor_role)
+    VALUES (?,NULL,?,?,?,?,'change','create',?,?,?,?,'manual')`).run(knowledgeId, item.text, item.category, item.scope,
+      JSON.stringify(item.supports), item.reason ?? "legacy", JSON.stringify(item.topics ?? []), runId, item.createdAt ?? at).lastInsertRowid);
+  assignVersionTag(store.db, knowledgeId, commit);
+  return { knowledgeId, commit };
 }
 
 /** One manual archive of an exact base (99): `budget` keeps the parent's body, `invalid` states why. */

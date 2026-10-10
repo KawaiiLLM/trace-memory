@@ -47,7 +47,7 @@ The single Core guide is shared by injection, compaction and N/D materials, once
 
 ## Noter calls and end review (116/117)
 
-Pi exposes the same flat `note` and `memory` definitions to N and manual callers. One `note` call carries one fact in top-level `title` and `sources` fields; `sources` is a string of segments, each beginning on a line with `[T12#E3@user] ` (role optional), with no text before the first marker. Core trims trailing whitespace from each source segment while preserving internal line breaks. One `memory` call carries one top-level operation (`op`, `supports`, `reason` and applicable fields); N allows create/update/archive and has no `skipped`. Manual writes commit each call immediately, with memory limited to fact-backed create/archive. The Dreamer's `memory` also takes one item per call: one operation, or one `{skip, because}`; each legal call commits at once, and a refused one holds an `Mn` slot until `slot` resubmits or `drop` withdraws it (127).
+Pi exposes the same flat `note` and `memory` definitions to N and manual callers. One `note` call carries one fact in top-level `title` and `sources` fields; `sources` is a string of segments, each beginning on a line with `[T12#E3@user] ` (role optional), with no text before the first marker. Core trims trailing whitespace from each source segment while preserving internal line breaks. One `memory` call carries one top-level operation (`op`, `supports`, `reason` and applicable fields); N allows create/update/archive and has no `skipped`. Manual writes commit each call immediately, with memory limited to fact-backed create/update/archive (135). An update uses exactly one of complete `text` with required metadata or ordered exact `edits:[{old,new}]`; edits inherit omitted category/scope/topics. Every update result has the 1,000-token cap, including manual updates; manual create/archive size rules are unchanged. The Dreamer's `memory` also takes one item per call: one operation, or one `{skip, because}`; each legal call commits at once, and a refused one holds an `Mn` slot until `slot` resubmits or `drop` withdraws it (127). See [update and merge contracts](core.md#operations-and-supports) for atomic match refusals, complete-result storage and live merge swapping.
 
 N stages facts in `$n` slots and knowledge operations in `Mn` slots. A call without `slot` appends, an explicit `slot` replaces the entire item, and `drop: "$n"` or `drop: "Mn"` removes one slot in a separate call. `note({})` and `memory({})` explicitly confirm no item; N must call both tools even when empty. An empty call does not clear a rejected slot.
 
@@ -318,7 +318,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   first-Noting gate and no scalar fact cursor. An oldest fact larger than the batch ceiling stays
   pending with a capacity problem rather than being clipped or skipped. Consolidator accepts only
   `create`; its first valid submission commits. A changed claim is a new identity until Dreamer later
-  reconciles it. Manual `memory` writes allow fact-backed `create` and `archive` only.
+  reconciles it. Current manual `memory` writes allow fact-backed create/update/archive (135).
 - `consolidation.triggerUnconsolidatedFacts` is **removed** (ticket 20). Any layer that still supplies
   it fails the load with `Removed setting consolidation.triggerUnconsolidatedFacts: use
   consolidation.triggerTokens (tokens, not a count)`; an old fact count is never reinterpreted as a

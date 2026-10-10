@@ -329,8 +329,8 @@ export interface SearchCorpus { query: string; revisions: number; historical: nu
 /** Knowledge for the search workload (ticket 22c): `revisions` commits that all match one literal
  * query, on top of an existing long-history fixture, so applicability is decided against real facts
  * and Turns. Every fifth commit opens a new knowledge; the rest are explicitly imported historical
- * Dreamer updates, preserving the immutable revision graph without pretending that a current
- * manual writer may update. Every tenth knowledge ends in two imported updates grounded in
+ * Dreamer updates, preserving their original actor and immutable graph without inventing a current
+ * Dreamer run. Every tenth knowledge ends in two imported updates grounded in
  * two sibling Turns of the head instead of one: two tips of the same base that no single path carries
  * together — the divergent revisions, which read as "another branch" from main. */
 export function searchCorpus(dbPath: string, options: { revisions: number; sessionId: number; branch: string; headTurnId: number }): SearchCorpus {
@@ -365,10 +365,9 @@ export function searchCorpus(dbPath: string, options: { revisions: number; sessi
         if (!done.ok) throw new Error(done.problems.join("; "));
         return done.committed[0]!;
       };
-      // This workload deliberately needs immutable history which current APIs correctly refuse to
-      // author through manual create/archive authority. Import only those old update rows, just as a
-      // migrated database preserves them. Reusing the root's real run preserves session ownership;
-      // no Dreamer success or processing record is fabricated.
+      // Import the historical Dreamer actor and divergent immutable graph, as migration preserves
+      // them. A current manual update is not that historical event. Reusing the root's real run
+      // preserves session ownership; no Dreamer success or processing record is fabricated.
       const importHistoricalUpdate = (knowledgeId: number, parentId: number, originRunId: number, text: string, evidence: number[]) =>
         Number(store.db.prepare(`INSERT INTO knowledge_revisions
           (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role)

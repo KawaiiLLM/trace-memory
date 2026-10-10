@@ -2862,6 +2862,7 @@ var Store = class {
               knowledgeAudit.push({ requested, applied: null, committed: [] });
               continue;
             }
+            const inheritedCreateCategory = requested.op === "update" && op.op === "create" && !isKnowledgeCategory(op.category) ? this.getKnowledgeRevision(requested.knowledgeId, requested.baseCommit).category : void 0;
             const result2 = this.applyKnowledgeOperation(
               op,
               runId,
@@ -2869,7 +2870,9 @@ var Store = class {
               sessionId,
               input.held.path,
               false,
-              "noting"
+              "noting",
+              null,
+              inheritedCreateCategory
             );
             if (!result2.ok) throw result2.reason instanceof Error ? result2.reason : new Error(result2.reason);
             knowledgeAudit.push({ requested, applied: op, committed: result2.value });
@@ -4232,7 +4235,7 @@ var Store = class {
         } else {
           if (input.run.kind !== "manual")
             throw new Error(`${input.run.kind} has no knowledge commit authority`);
-          const allowed = /* @__PURE__ */ new Set(["create", "archive"]);
+          const allowed = /* @__PURE__ */ new Set(["create", "update", "archive"]);
           const forbidden = input.operations.find((op) => !allowed.has(op.op));
           if (forbidden) throw new Error(`${forbidden.op} belongs to the Dreamer and is not available to manual memory`);
           if (input.run.kind === "manual" && input.operations.some((op) => op.op === "archive") && this.dreamerSeatHeld(Date.now()))
@@ -4310,12 +4313,23 @@ ${annotation}`;
     const size = tokens(text);
     if (size > WORKER_ITEM_TOKENS) throw new Error(`${label} exceeds ${WORKER_ITEM_TOKENS}-token limit: ${size} tokens${label === "Knowledge item" ? ". Recheck it against Admission and Division: progress keeps only the necessary goal, the latest evidenced state, key open points and where to check; detail that retained clues lead back to stays in facts, Raw or documents; record separately what must be maintained separately." : ""}`);
   }
-  applyKnowledgeOperation(op, runId, projectId, sessionId, path, dreaming = false, role = "manual", dreamingPools = null) {
+  applyKnowledgeOperation(op, runId, projectId, sessionId, path, dreaming = false, role = "manual", dreamingPools = null, inheritedCreateCategory) {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
     if (op.op === "merge" && (op.absorb.length !== 1 || op.absorb[0].baseCommit === op.intoBaseCommit))
       return { ok: false, reason: "merge requires id as the survivor and absorb as exactly one distinct other parent" };
-    if (op.op === "merge" && op.intoKnowledgeId > op.absorb[0].knowledgeId)
-      return { ok: false, reason: new KnowledgeVersionProblem((address2) => `merge survivor K${op.intoKnowledgeId} is newer than absorbed K${op.absorb[0].knowledgeId}; swap them: use ${address2(op.absorb[0].knowledgeId, op.absorb[0].baseCommit)} as the survivor and absorb ${address2(op.intoKnowledgeId, op.intoBaseCommit)}`) };
+    let reversed;
+    if (op.op === "merge" && op.intoKnowledgeId > op.absorb[0].knowledgeId) {
+      const merge3 = op, older = merge3.absorb[0];
+      if (this.getKnowledgeRevision(merge3.intoKnowledgeId, merge3.intoBaseCommit)?.op === "archive" || this.getKnowledgeRevision(older.knowledgeId, older.baseCommit)?.op === "archive")
+        return { ok: false, reason: new KnowledgeVersionProblem((address2) => `merge survivor K${merge3.intoKnowledgeId} is newer than absorbed K${older.knowledgeId}; swap them: use ${address2(older.knowledgeId, older.baseCommit)} as the survivor and absorb ${address2(merge3.intoKnowledgeId, merge3.intoBaseCommit)}`) };
+      reversed = merge3;
+      op = {
+        ...merge3,
+        intoKnowledgeId: older.knowledgeId,
+        intoBaseCommit: older.baseCommit,
+        absorb: [{ knowledgeId: merge3.intoKnowledgeId, baseCommit: merge3.intoBaseCommit }]
+      };
+    }
     const targets = op.op === "create" ? [] : op.op === "merge" ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb] : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];
     const revivalTarget = op.op === "merge" ? { knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit } : op.op === "update" ? { knowledgeId: op.knowledgeId, baseCommit: op.baseCommit } : void 0;
     const revivalSurvivor = dreaming && revivalTarget !== void 0 && this.getKnowledgeRevision(revivalTarget.knowledgeId, revivalTarget.baseCommit)?.op === "archive";
@@ -4360,9 +4374,9 @@ ${annotation}`;
     const bad = op.supports.length ? this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId)) : null;
     if (bad) return { ok: false, reason: bad };
     const insertRevision = (knowledgeId3, parentId, text2, category, topics, revisionOp) => {
-      if (!isKnowledgeCategory(category) && !(revisionOp === "archive" && category === prior?.category))
+      if (!isKnowledgeCategory(category) && !((revisionOp === "archive" || revisionOp === "update") && category === prior?.category) && !(revisionOp === "create" && role === "noting" && inheritedCreateCategory !== void 0 && category === inheritedCreateCategory))
         throw new Error(`invalid new knowledge category ${category}`);
-      if (role !== "manual" && !(revisionOp === "archive" && op.op === "archive" && op.kind === "budget"))
+      if ((role !== "manual" || op.op === "update") && !(revisionOp === "archive" && op.op === "archive" && op.kind === "budget"))
         this.requireWorkerItemSize(text2, "Knowledge item");
       const info = this.db.prepare(`INSERT INTO knowledge_revisions
         (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role, archive_kind)
@@ -4413,7 +4427,13 @@ ${annotation}`;
     if (op.op === "merge") for (const parent of op.absorb) {
       this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)").run(parent.knowledgeId, parent.baseCommit, knowledgeId2, commitId);
     }
-    return { ok: true, value: [{ op: op.op, ...op.op === "create" ? { handle: op.handle } : {}, knowledgeId: knowledgeId2, commit: commitId }] };
+    return { ok: true, value: [{
+      op: op.op,
+      ...op.op === "create" ? { handle: op.handle } : {},
+      knowledgeId: knowledgeId2,
+      commit: commitId,
+      ...reversed ? { swappedFrom: `K${reversed.intoKnowledgeId}#${this.versionTag(reversed.intoKnowledgeId, reversed.intoBaseCommit)}` } : {}
+    }] };
   }
   // -- shared exact Dreamer processing; no automatic worker is launched by these primitives --
   knowledgeRevision(commitId) {
@@ -6488,7 +6508,7 @@ function prepareMemory(store, sessionId, raw, run, path = store.knowledgePath(se
     const errors = [];
     const value = raw2 && typeof raw2 === "object" && !Array.isArray(raw2) ? raw2 : {};
     const op = value.op;
-    const allowed = dreaming ? ["update", "merge", "split", "archive"] : run.kind === "noting" ? ["create", "update", "archive"] : ["create", "archive"];
+    const allowed = dreaming ? ["update", "merge", "split", "archive"] : ["create", "update", "archive"];
     if (!allowed.includes(op)) errors.push(
       ["update", "merge", "split", "archive"].includes(op) ? `${op} belongs to the Dreamer and is not available to ${run.kind === "noting" ? "the Noter" : "manual memory"}` : "invalid op"
     );
@@ -6499,7 +6519,7 @@ function prepareMemory(store, sessionId, raw, run, path = store.knowledgePath(se
       "supports",
       ...op !== "create" ? ["id"] : [],
       ...op === "merge" ? ["absorb"] : [],
-      ...structural ? ["children"] : op === "archive" ? ["kind", ...value.kind === "invalid" ? ["text"] : []] : ["text", "category", "scope", "topics"]
+      ...structural ? ["children"] : op === "archive" ? ["kind", ...value.kind === "invalid" ? ["text"] : []] : ["text", ...op === "update" ? ["edits"] : [], "category", "scope", "topics"]
     ];
     for (const key of Object.keys(value)) if (key === "because") errors.push(`because: removed field; supply "reason" (a string) and "supports" (the commit's evidence)`);
     else if (key === "slot") errors.push("slot is N-only; this role uses immediate memory writes");
@@ -6508,18 +6528,18 @@ function prepareMemory(store, sessionId, raw, run, path = store.knowledgePath(se
     const target = (address2) => {
       const match = typeof address2 === "string" ? /^K([1-9]\d*)#([a-z]{4,})$/.exec(address2) : null;
       const id = Number(match?.[1]);
-      let base = 0;
+      let base2 = 0;
       if (!match || !Number.isSafeInteger(id)) errors.push(`${address2}: supply an exact K#tag version`);
       else try {
-        base = store.resolveVersionTag(id, match[2]);
+        base2 = store.resolveVersionTag(id, match[2]);
       } catch (error3) {
         errors.push(error3.message);
       }
-      const revision = base ? store.getKnowledgeRevision(id, base) : null;
+      const revision = base2 ? store.getKnowledgeRevision(id, base2) : null;
       if (!revision) errors.push(`${address2}: knowledge version does not exist`);
-      if (touched.has(base)) errors.push(`${address2}: duplicate operation target`);
-      touched.add(base);
-      return { knowledgeId: id, baseCommit: base };
+      if (touched.has(base2)) errors.push(`${address2}: duplicate operation target`);
+      touched.add(base2);
+      return { knowledgeId: id, baseCommit: base2 };
     };
     const dest = op !== "create" ? target(value.id) : void 0;
     const absorb = op === "merge" ? Array.isArray(value.absorb) && value.absorb.length === 1 ? value.absorb.map(target) : (errors.push("merge requires id as the survivor and absorb as exactly one distinct other parent"), []) : [];
@@ -6535,22 +6555,54 @@ function prepareMemory(store, sessionId, raw, run, path = store.knowledgePath(se
       if (value.kind === "invalid" && !substantiveArchiveStatement(value.text))
         errors.push("invalid archive requires a substantive statement of grounds and evidence");
     }
+    const editing = op === "update" && "edits" in value;
+    const base = editing && dest ? store.getKnowledgeRevision(dest.knowledgeId, dest.baseCommit) : null;
+    let text = value.text;
+    if (op === "update" && "text" in value === editing) errors.push("update requires exactly one of text or edits");
+    if (editing) {
+      if (!Array.isArray(value.edits) || !value.edits.length) errors.push("edits: expected a non-empty array of {old, new}");
+      else {
+        if (base) text = base.text;
+        for (const [editIndex, edit] of value.edits.entries()) {
+          const position = `edit ${editIndex + 1}`;
+          if (!edit || typeof edit !== "object" || Array.isArray(edit) || Object.keys(edit).some((key) => key !== "old" && key !== "new") || typeof edit.old !== "string" || !edit.old.length || typeof edit.new !== "string") {
+            errors.push(`${position}: expected {old, new} strings with non-empty old`);
+            break;
+          }
+          if (!base || "text" in value) continue;
+          const first = text.indexOf(edit.old);
+          if (first === -1) {
+            errors.push(`${position}: old matched nothing (0 occurrences)`);
+            break;
+          }
+          if (text.indexOf(edit.old, first + 1) !== -1) {
+            errors.push(`${position}: old matched several places (multiple occurrences)`);
+            break;
+          }
+          text = text.slice(0, first) + edit.new + text.slice(first + edit.old.length);
+        }
+      }
+    }
+    const inheritedCategory = editing && !("category" in value) && base !== null;
+    const category = inheritedCategory ? base.category : value.category;
+    const contentScope = editing && !("scope" in value) ? base?.scope : value.scope;
+    const topics = op === "archive" || op === "split" ? [] : editing && !("topics" in value) && base ? base.topics : labels(value.topics, errors);
     if (op !== "archive" && op !== "split") {
-      if (!(op === "merge" && value.text === void 0) && (typeof value.text !== "string" || !value.text.length))
+      if (!(op === "merge" && text === void 0) && (typeof text !== "string" || !text.length))
         errors.push("text: expected non-empty text");
-      if (!isKnowledgeCategory(value.category)) errors.push("invalid category");
-      if (!KNOWLEDGE_SCOPES.includes(value.scope)) errors.push("invalid scope");
+      if (!inheritedCategory && !isKnowledgeCategory(category)) errors.push("invalid category");
+      if (!KNOWLEDGE_SCOPES.includes(contentScope)) errors.push("invalid scope");
     }
     const content = {
-      text: value.text,
-      category: value.category,
-      scope: value.scope,
+      text,
+      category,
+      scope: contentScope,
       supports: facts(value.supports, errors, !dreaming),
       reason: value.reason,
-      topics: op === "archive" || op === "split" ? [] : labels(value.topics, errors),
+      topics,
       createdAt: run.createdAt
     };
-    const scope = op === "archive" || op === "split" ? store.getKnowledgeRevision(dest.knowledgeId, dest.baseCommit)?.scope : value.scope;
+    const scope = op === "archive" || op === "split" ? store.getKnowledgeRevision(dest.knowledgeId, dest.baseCommit)?.scope : contentScope;
     if (scope && content.supports.every(Number.isSafeInteger)) {
       const bad = store.citationProblem(content.supports.filter((id) => id > 0), scope, path);
       if (bad) errors.push(bad);
@@ -8151,12 +8203,17 @@ var readFilters = {
 };
 var factId = { type: "string", pattern: "^F[1-9][0-9]*$" };
 var knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*#[a-z]{4,}$" };
+var updateBodySchema = { oneOf: [
+  { required: ["text", "category", "scope", "topics"], not: { required: ["edits"] } },
+  { required: ["edits"], not: { required: ["text"] } }
+] };
 var memoryOperationSchema = { ...object2({
   op: { enum: ["create", "update", "archive"] },
   id: knowledgeId,
   absorb: { type: "array", items: knowledgeId, minItems: 1, maxItems: 1, uniqueItems: true },
   kind: { enum: ["budget", "invalid"] },
   text: { type: "string", minLength: 1 },
+  edits: { type: "array", minItems: 1, items: object2({ old: { type: "string", minLength: 1 }, new: { type: "string" } }, ["old", "new"]) },
   category: { enum: KNOWLEDGE_CATEGORIES },
   scope: { enum: KNOWLEDGE_SCOPES },
   supports: { type: "array", items: { type: "string", pattern: "^(F[1-9][0-9]*|\\$[1-9][0-9]*)$", description: "Existing F fact, or N-only accepted local $ fact." }, minItems: 1 },
@@ -8174,8 +8231,14 @@ var memoryOperationSchema = { ...object2({
         { if: { properties: { kind: { const: "invalid" } } }, then: { required: ["text"] }, else: { not: { required: ["text"] } } }
       ]
     },
-    else: { required: ["text", "category", "scope", "topics"], not: { required: ["kind"] } }
-  }
+    else: {
+      not: { required: ["kind"] },
+      if: { properties: { op: { const: "update" } } },
+      then: updateBodySchema,
+      else: { required: ["text", "category", "scope", "topics"] }
+    }
+  },
+  { if: { properties: { op: { const: "update" } } }, then: {}, else: { not: { required: ["edits"] } } }
 ] };
 var toolDefinitions = [
   { name: "search", description: `Use literal substring search over facts, raw and knowledge commits. scope controls facts, Raw and knowledge: session selects this session's facts/Raw and session-scoped knowledge; project selects project facts/Raw and project-scoped knowledge; global selects all sessions' facts/Raw and global-scoped knowledge regardless of author. Omitted scope selects project facts/Raw and applicable global/project/session knowledge; unbound omission discovers all owners. Explicit project/session requires context. versions defaults to current applicable tips; history additionally includes applicable superseded and archived revisions; all additionally includes other branches' revisions in scope, including their history and archives. Revisions not applicable here are never write bases, and reading never bypasses write validation. Each K contributes one best matching revision: highest lexical text/topic similarity, then current, then newer commit. Admission stays literal. The batched form selects each query's capped knowledge hits by similarity so cap keeps the closest match; model-visible knowledge results then display oldest first, retaining category labels. Inspect a K's history at trace://K<id>.history. Only category implies layer=knowledge and conflicts with every other layer; scope does not imply a layer. Fact and knowledge hits are one-line previews: fields defaults to text for current searches and to text plus status for knowledge history/all; explicit fields is authoritative. itemBudget defaults to ${SEARCH_PREVIEW_TOKENS}. Read fact quotes, sources and relations at trace://F<id>. Raw keeps its entry profile. Every receipt states filters and omitted preview fields; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} and is capped at ${MAX_PUBLIC_READ_TOKENS} estimated tokens for one response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit frozen options or repeat their original values (changes are rejected). Search previews never count as complete knowledge reads.`, parameters: { ...object2({ maxTokens: { type: "integer", minimum: 1, maximum: MAX_PUBLIC_READ_TOKENS, default: DEFAULT_READ_TOKENS }, itemBudget: { ...contentBudget, default: SEARCH_PREVIEW_TOKENS }, fields, query: string2, queries: { type: "array", items: string2, minItems: 1, description: 'Batched form, exclusive with query: one response, each query\'s own hits under the shared options, at most cap per query (default 1), the query echoed on each hit line, queries with no hit listed as `no hit: "q"` lines after the hits and paged like them; a cursor may repeat the original cap.' }, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...readFilters, ...pagination }) } },
@@ -8185,7 +8248,7 @@ var toolDefinitions = [
     then: { maxProperties: 1 },
     else: { if: { minProperties: 1 }, then: { required: factSchema.required } }
   } },
-  { name: "memory", description: "Role-bound knowledge writing. Manual writers may create/archive only and commit one valid operation immediately; rejected calls write nothing. N holds create/update/archive privately until normal termination with both {{tool.note}} and {{tool.memory}} used and every refusal resolved. Merge/split remain D-only. N-only fields: operation slot:Mn fully replaces a held operation; omit it to append; drop:Mn removes one in a separate call without recycling numbers; supports may cite accepted local $ fact slots. Manual writers reject slot/drop/local knowledge supports with a reason and have no drafts. N does not send skipped; an empty call {} confirms use without clearing drafts or rejected slots. A legitimately advanced tagged base converts N update to annotated create or archive to an audited no-op; other errors do not convert. Update/archive requires exact K#tag. Every operation has nonempty fact supports and reason (commit message, not evidence). Create/update supplies complete text/category/scope/topics; archive requires kind budget (retains exact parent body) or invalid (requires substantive text explaining grounds, evidence and replacement if any). Archive inherits category/scope/topics. Tagged bases still require valid scope, path and evidence. N receipts list held/rejected handles; after native schema refusal an empty call inspects them.", parameters: {
+  { name: "memory", description: "Role-bound knowledge writing. Manual writers may create/update/archive and commit one valid operation immediately; rejected calls write nothing. N holds create/update/archive privately until normal termination with both {{tool.note}} and {{tool.memory}} used and every refusal resolved. Merge/split remain D-only. N-only fields: operation slot:Mn fully replaces a held operation; omit it to append; drop:Mn removes one in a separate call without recycling numbers; supports may cite accepted local $ fact slots. Manual writers reject slot/drop/local knowledge supports with a reason and have no drafts. N does not send skipped; an empty call {} confirms use without clearing drafts or rejected slots. A legitimately advanced tagged base converts N update to annotated create or archive to an audited no-op; other errors do not convert. Update/archive requires exact K#tag. Every operation has nonempty fact supports and reason (commit message, not evidence). Create supplies complete text/category/scope/topics. Update supplies exactly one of complete text (with category/scope/topics) or nonempty edits:[{old,new}]. Edits apply in order to the exact base body; each nonempty old must match exactly once at that step, and empty new deletes. A failed edit refuses the whole operation naming its position and zero/multiple matches. Omitted category/scope/topics inherit from the base only with edits; supplied fields replace them. The complete update result passes the existing admission, 1000-token, supports and scope checks. Only the complete result is stored; immediate update receipts give its new K#tag and pool item tokens before/after without echoing the body. Archive requires kind budget (retains exact parent body) or invalid (requires substantive text explaining grounds, evidence and replacement if any). Archive inherits category/scope/topics. Tagged bases still require valid scope, path and evidence. N receipts list held/rejected handles; after native schema refusal an empty call inspects them.", parameters: {
     ...object2({ ...memoryOperationSchema.properties, slot: { type: "string", pattern: "^M[1-9][0-9]*$", description: "N only: replace one held operation." }, drop: { type: "string", pattern: "^M[1-9][0-9]*$", description: "N only: drop one held operation in a separate call." } }),
     if: { required: ["drop"] },
     then: { maxProperties: 1 },
@@ -8202,7 +8265,7 @@ function pricedToolDefinitions(definitions, names) {
 function dreamingToolDefinitions() {
   const tools = structuredClone(toolDefinitions.filter((t) => t.name !== "note"));
   const memory = tools.find((t) => t.name === "memory");
-  memory.description = "One Dreamer item per call, committed at once when legal: one operation with its fields as top-level arguments, or one skip. Allowed operations are update, an exactly-two-parent merge, an atomic one-parent/two-child split, and archive; create is forbidden. Every result body is complete. Merge may omit text to copy the later exact parent's body verbatim. Non-empty supports are the exact evidence for the change; empty supports request Store-side inheritance from every exact parent. Every parent requires an exact K#tag base and must belong to one of this session's pools: global, its project's or its own. A base that is not the latest effective applicable revision on the writer path is rejected naming the current revision. skip with because names an exact untagged K@vN history address for a frozen version that was deliberated and intentionally left unchanged; it requires no full-body read and grants no mutation authority; it marks that version processed without changing it. Never skip an untouched reference or an item you did not deliberate. Archive requires kind budget (keeps parent's complete body) or invalid (substantive statement of grounds, evidence and replacement if any); category/scope/topics carry over. A refused item, including one missing required fields, is numbered Mn (numbers never recycle) and blocks success until slot:Mn resubmits it (a legal resubmission commits) or drop:Mn withdraws it in its own call; another call's commit never clears it. A call that is not structurally one item gets no number and is a top-level call error until a subsequent structurally valid call. Committed items survive later refusals.";
+  memory.description = "One Dreamer item per call, committed at once when legal: one operation with its fields as top-level arguments, or one skip. Allowed operations are update, an exactly-two-parent merge, an atomic one-parent/two-child split, and archive; create is forbidden. Update supplies exactly one of complete text (with category/scope/topics) or nonempty edits:[{old,new}]. Edits apply in order to the exact base body; each nonempty old must match exactly once at that step, and empty new deletes. A failed edit refuses the whole operation naming its position and zero/multiple matches. Omitted category/scope/topics inherit from the base only with edits; supplied fields replace them. The complete update result passes the existing admission, 1000-token, supports and scope checks. Only the complete result is stored; update receipts give its new K#tag and pool item tokens before/after without echoing the body. Merge and split use complete bodies. Merge may omit text to copy the later exact parent's body verbatim. The older identity survives a merge; a live newer-as-survivor call is automatically swapped and the receipt states swappedFrom and the actual survivor. An archived base keeps the merge-direction refusal. Non-empty supports are the exact evidence for the change; empty supports request Store-side inheritance from every exact parent. Every parent requires an exact K#tag base and must belong to one of this session's pools: global, its project's or its own. A base that is not the latest effective applicable revision on the writer path is rejected naming the current revision. skip with because names an exact untagged K@vN history address for a frozen version that was deliberated and intentionally left unchanged; it requires no full-body read and grants no mutation authority; it marks that version processed without changing it. Never skip an untouched reference or an item you did not deliberate. Archive requires kind budget (keeps parent's complete body) or invalid (substantive statement of grounds, evidence and replacement if any); category/scope/topics carry over. A refused item, including one missing required fields, is numbered Mn (numbers never recycle) and blocks success until slot:Mn resubmits it (a legal resubmission commits) or drop:Mn withdraws it in its own call; another call's commit never clears it. A call that is not structurally one item gets no number and is a top-level call error until a subsequent structurally valid call. Committed items survive later refusals.";
   const operation = structuredClone(memoryOperationSchema);
   operation.properties.op.enum = ["update", "merge", "split", "archive"];
   operation.properties.supports.minItems = 0;
@@ -8222,7 +8285,11 @@ function dreamingToolDefinitions() {
       not: { required: ["kind"] },
       if: { properties: { op: { const: "split" } } },
       then: { not: { anyOf: ["text", "category", "scope", "topics"].map((key) => ({ required: [key] })) } },
-      else: { required: ["category", "scope", "topics"], if: { properties: { op: { const: "merge" } } }, then: {}, else: { required: ["text"] } }
+      else: {
+        if: { properties: { op: { const: "update" } } },
+        then: updateBodySchema,
+        else: { required: ["category", "scope", "topics"] }
+      }
     }
   };
   operation.allOf.push({ if: { properties: { op: { const: "split" } } }, then: { required: ["children"] }, else: { not: { required: ["children"] } } });
@@ -8500,7 +8567,7 @@ Status: ${status}`;
       return dreaming.check();
     })] : [definition("note", note)],
     definition("memory", (input) => held ? held.memory(input) : dreamer ? dreamer.call(input, dream, () => {
-    }) : Object.keys(input).length && ("slot" in input || "drop" in input || "operations" in input || "skipped" in input) ? `rejected: manual ${names.memory} expects one create/archive operation or {}` : JSON.stringify(memory.execute({ operations: Object.keys(input).length ? [input] : [], skipped: [] }, input)))
+    }) : Object.keys(input).length && ("slot" in input || "drop" in input || "operations" in input || "skipped" in input) ? `rejected: manual ${names.memory} expects one create/update/archive operation or {}` : JSON.stringify(memory.execute({ operations: Object.keys(input).length ? [input] : [], skipped: [] }, input)))
   ];
   const acknowledgeRequest = () => {
     if (closed) throw new Error("noting run has finished");

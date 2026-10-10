@@ -77,7 +77,7 @@ test("CC foreground lists only search and writers, with no trace or Dreamer capa
   } finally { f.importer.close(); }
 });
 
-test("CC foreground rejects removed trace and keeps search separate from write authority", async () => {
+test("135: CC foreground rejects removed trace and history write bases but commits exact tagged edits", async () => {
   const f = await fixture();
   try {
     const note = await f.tools.call("note", { title: "Persisted write", sources: `[T${f.exact.headTurnId}#E2] Claude Code dispatched the persisted write call` }, { "claudecode/toolUseId": "call-note" });
@@ -94,9 +94,10 @@ test("CC foreground rejects removed trace and keeps search separate from write a
       supports: ["F1"], reason: "history is not a write base", topics: [] }, { "claudecode/toolUseId": "call-memory" });
     expect(refused.isError).toBe(true);
     const tagged = `K1#${f.importer.memory.store.versionTag(1, 1)}`;
-    const update = await f.tools.call("memory", { op: "update", id: tagged, text: "updated", category: "reference", scope: "session",
-      supports: ["F1"], reason: "tagged base does not grant manual update", topics: [] }, { "claudecode/toolUseId": "call-memory" });
-    expect(update.isError).toBe(true); expect(text(update)).toContain("update belongs to the Dreamer");
+    const update = await f.tools.call("memory", { op: "update", id: tagged, edits: [{ old: "body ".repeat(3000), new: "updated" }],
+      supports: ["F1"], reason: "Replace the oversized historical body with the complete edited result" }, { "claudecode/toolUseId": "call-memory" });
+    expect(update.isError).toBeUndefined();
+    expect(f.importer.memory.store.currentCommit(1)[0]).toMatchObject({ text: "updated", category: "reference", scope: "session", topics: [] });
   } finally { f.importer.close(); }
 });
 
@@ -106,10 +107,6 @@ test("ticket 41 filters, representatives, cursors and ceilings execute through t
     expect((await f.tools.call("note", { title: "Surface evidence", sources: `[T${f.exact.headTurnId}#E1] surface evidence` }, { "claudecode/toolUseId": "call-note" })).isError).toBeUndefined();
     expect((await f.tools.call("memory", { op: "create", text: "session alpha ".repeat(200), category: "reference", scope: "session", supports: ["F1"], reason: "seed", topics: ["alpha"] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
     expect((await f.tools.call("memory", { op: "create", text: "global beta", category: "open", scope: "global", supports: ["F1"], reason: "seed", topics: ["beta"] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
-    const maintenance = await f.tools.call("memory", { op: "update", id: `K1#${f.importer.memory.store.versionTag(1, 1)}`, text: "session alpha current",
-      category: "reference", scope: "session", supports: ["F1"], reason: "current", topics: ["alpha"] },
-      { "claudecode/toolUseId": "call-memory" });
-    expect(maintenance.isError).toBe(true); expect(text(maintenance)).toContain("update belongs to the Dreamer");
     const defaults = text(await f.tools.call("search", { query: "", layer: "knowledge" }, undefined));
     expect(defaults).toContain("One representative per K"); expect(defaults).toContain("session alpha"); expect(defaults).toContain("global beta");
     const session = text(await f.tools.call("search", { query: "", layer: "knowledge", scope: "session" }, undefined));
