@@ -61,7 +61,8 @@ test("79 item 2: compact's Raw span hydrates a bounded prefix, not the whole pat
     // 133: bound Raw plus its own small temporary allowance; recent user payloads may also be read.
     // Total hydration must remain a small fraction of this 3,000+ entry path/backlog.
     expect(hydrated).toBeLessThan(base.entryCount / 10);
-    expect(hydrated).toBeLessThan(100);
+    // 140: the old 100 bound, plus one read per turn of the user reach (100 turns by default).
+    expect(hydrated).toBeLessThan(100 + memory.config.compaction.userTurns);
     expect(emitted).toBeLessThanOrEqual(hydrated); // never emits an entry it did not hydrate+render
     expect(result.truncated?.raw?.entries).toBeGreaterThan(0); // most of the backlog stayed unread, not just unrendered
   } finally { memory.close(); counter.restore(); rmSync(copy, { force: true }); }

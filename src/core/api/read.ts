@@ -836,19 +836,15 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         })
         .filter(({ entry }) => entry.role === "user" && (humanUser?.(entry) ?? (!prefixes.test(entry.text) && !piUserPrefix?.test(entry.text)))).reverse();
       const earlierUsers: { id: number; view: string }[] = [];
-      const userReceipts = (kept: number) => kept < userCandidates.length
-        ? [`omitted ${userCandidates.length - kept} earlier user messages; expand: ${expandList(userCandidates.slice(kept).map(({ entry }) => `trace://raw/S${sessionId}/T${entry.turnId}#E${entry.entryOrdinal}`))}`] : [];
+      // The walk selects by turn rank, not as a prefix of userCandidates: omit what was not selected.
+      const userReceipts = (): string[] => {
+        const shown = new Set(earlierUsers.map(entry => entry.id));
+        const rest = userCandidates.filter(({ entry }) => !shown.has(entry.id));
+        return rest.length ? [`omitted ${rest.length} earlier user messages; expand: ${expandList(rest.map(({ entry }) => `trace://raw/S${sessionId}/T${entry.turnId}#E${entry.entryOrdinal}`))}`] : [];
+      };
       const userCost = (receipts: string[]) => (earlierUsers.length
         ? (rawKept || factsKept ? charge([EARLIER_USERS_TITLE]) : opener(EARLIER_USERS_TITLE)) + charge(earlierUsers.map(entry => entry.view)) : 0) + receiptCharge(receipts);
       const afterRaw = temporaryCap - rawBorrowed;
-      for (const candidate of userCandidates) {
-        const rendered = candidate.view ??= renderEntry(candidate.entry, { ...config.render, entryTokens: config.compaction.userEntryTokens }, resultText);
-        earlierUsers.push({ id: candidate.entry.id, view: rendered.content });
-        if (userCost(userReceipts(earlierUsers.length)) > afterRaw) { earlierUsers.pop(); break; }
-      }
-      const finalUserReceipts = userCost(userReceipts(earlierUsers.length)) <= afterRaw ? userReceipts(earlierUsers.length) : [];
-      const usersCharged = userCost(finalUserReceipts);
-      earlierUsers.reverse();
 
       const titleCandidates = eligibleFacts.slice(factsKept).filter(fact => titleTurns.has(fact.turnId) && fact.title);
       const selectedTitles: Fact[] = [];
@@ -859,12 +855,30 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       });
       const titleCost = () => selectedTitles.length
         ? (rawKept || factsKept || earlierUsers.length ? charge([FACT_TITLES_TITLE]) : opener(FACT_TITLES_TITLE)) + charge(titleLines()) : 0;
-      for (const fact of titleCandidates) {
-        selectedTitles.push(fact);
+      // 140: the user's words and the titles fill together, one turn at a time, newest turn first:
+      // that turn's user entries, then its titles. A kind past its own reach drops out of the walk
+      // and the other continues. The first item that does not fit stops both kinds.
+      const depth = new Map(ancestry.map((turnId, index) => [turnId, index]));
+      const walk: ({ user: (typeof userCandidates)[number]; rank: number } | { fact: Fact; rank: number })[] = [
+        ...userCandidates.map(user => ({ user, rank: depth.get(user.entry.turnId)! * 2 })),
+        ...titleCandidates.map(fact => ({ fact, rank: depth.get(fact.turnId)! * 2 + 1 })),
+      ].sort((x, y) => x.rank - y.rank);
+      for (const item of walk) {
+        if ("user" in item) {
+          const rendered = item.user.view ??= renderEntry(item.user.entry, { ...config.render, entryTokens: config.compaction.userEntryTokens }, resultText);
+          earlierUsers.push({ id: item.user.entry.id, view: rendered.content });
+        } else selectedTitles.push(item.fact);
         const ids = new Set(selectedTitles.map(value => value.id));
         const receipt = omission(eligibleFacts.slice(factsKept).filter(value => !ids.has(value.id)));
-        if (titleCost() + receiptCharge(receipt) > afterRaw - usersCharged) { selectedTitles.pop(); break; }
+        // Title fitting reserves room for the shared fact omission receipt, but facts charge it once.
+        if (userCost(userReceipts()) + titleCost() + (selectedTitles.length ? receiptCharge(receipt) : 0) > afterRaw) {
+          if ("user" in item) earlierUsers.pop(); else selectedTitles.pop();
+          break;
+        }
       }
+      const finalUserReceipts = userCost(userReceipts()) <= afterRaw ? userReceipts() : [];
+      const usersCharged = userCost(finalUserReceipts);
+      earlierUsers.reverse();
       const titleIds = new Set(selectedTitles.map(fact => fact.id));
       if (selectedTitles.length) finalFactReceipts = omission(eligibleFacts.slice(factsKept).filter(fact => !titleIds.has(fact.id)));
       // Title fitting reserves room for the shared fact omission receipt, but facts charge it once.

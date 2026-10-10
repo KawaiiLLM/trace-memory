@@ -103,10 +103,11 @@ defaulting to 4,000, 15,000 and 1,000. `compaction.sharedAllowanceTokens` adds 1
 only; it is not derived from phase triggers.
 
 Ticket 133 adds `compaction.temporaryTokens` (10,000), filled newest-first in order:
-pending Raw overflow, human user words within `compaction.userTurns` (30), then uncovered fact
-titles within `compaction.titleTurns` (100). Both reaches include the anchor and count path turns;
-unused room never reaches older turns. User entries use the renderer's middle cut with
-`compaction.userEntryTokens` (500). All four new settings require positive safe integers.
+pending Raw overflow, then human user words within `compaction.userTurns` (100) and uncovered fact
+titles within `compaction.titleTurns` (100), filled together turn by turn, newest first (each turn's
+user entries, then its titles), so both reach the same depth; the first item that does not fit stops
+both. Both reaches include the anchor and count path turns; unused room never reaches older turns.
+User entries use the renderer's middle cut with `compaction.userEntryTokens` (300). All four new settings require positive safe integers.
 Full facts do not borrow, and none of the bases lends to another.
 
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys

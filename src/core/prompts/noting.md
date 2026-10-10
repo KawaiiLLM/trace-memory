@@ -60,7 +60,7 @@ Keep enough for a newcomer to recover the discussion's main line, important bran
 <!-- include: formats -->
 
 - **Earlier facts of this session**: the most recent slice, within its own 10,000-token allowance. Older facts may be left out; a receipt says so.
-- **Temporary historical context**: a separate allowance holds missing human user words, then fact titles, within their recent path turns. Both reaches include the batch's newest turn and never fill older material. User entries retain head and tail; title-only facts can be read at their addresses.
+- **Temporary historical context**: a separate allowance holds missing human user words and fact titles within their recent path turns, filled turn by turn from the newest so both reach the same depth. Both reaches include the batch's newest turn and never fill older material. User entries retain head and tail; title-only facts can be read at their addresses.
 - **This batch**: the oldest pending whole Raw entries within their own 10,000-token allowance. A batch may span Turns and a Turn may span batches. Only the listed frozen entries belong to it. You see the current batch and the past, nothing later.
 - **Entry views**: a tool-call part shows at most 100 tokens, a tool-result part at most 100, an entry at most 2,000, labels and markers included; results are cut first, then arguments, then natural language.
 - **Visible knowledge**: a fresh run receives current visible versions within the main context's Knowledge base plus shared allowance. A fork inherits the parent's already-published knowledge, without an extra block. In a fresh run each visible item header shows its body's estimated tokens against the 1,000 limit, as `(912/1000 tokens)` after the `[category/scope]` tag.
