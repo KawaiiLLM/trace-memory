@@ -12,8 +12,8 @@ import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, type SourceNormalizer, type HumanUserDetector } from "../model/source.ts";
 import { readFacade, readProfile, type ListingOptions, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
 export type { ListingOptions, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
-export { memoryFiles, memoryPath, resolvedMemoryPath, memoryGlob, MEMORY_ROOT, MEMORY_READ_ONLY } from "./files.ts";
-export type { MemoryReader, MemoryFile, MemoryGrepMode, MemoryGrepOptions, MemoryGrepFile, MemoryListing } from "./files.ts";
+export { memoryFiles, memoryPath, resolvedMemoryPath, MEMORY_ROOT, MEMORY_READ_ONLY } from "./files.ts";
+export type { MemoryReader, MemoryFile, MemoryGrepMode, MemoryGrepOptions, MemoryGrepFile } from "./files.ts";
 // 29a/53: core owns only the host-neutral visibility contract; each host reads its own envelopes.
 import type { VisibleView } from "./visible.ts";
 export { KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode } from "./fork.ts";

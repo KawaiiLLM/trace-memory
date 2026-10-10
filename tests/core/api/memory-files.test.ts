@@ -3,7 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { memoryFiles, memoryGlob, memoryPath, resolvedMemoryPath, recorded, sourceSeededMemory } from "../../source-fixture.ts";
+import { memoryFiles, memoryPath, resolvedMemoryPath, recorded, sourceSeededMemory } from "../../source-fixture.ts";
 import { entry, fact, knowledge, legacyFact, session } from "../../support/seed.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { tokens } from "../../../src/core/render/tokens.ts";
@@ -184,7 +184,6 @@ test("explicit sibling Turn remains readable outside the selected cursor, while 
     .toEqual([`T${main.id}`, "09-23 00:00Z", "1 ev", "(not yet noted)"]);
   const explicit = `trace://raw/S${x.owner.id}/T${sibling.id}`;
   expect(files.read(x.S).content.split("\n").find(line => line.startsWith(`T${sibling.id} `))).toContain("Sibling decision");
-  expect(files.glob(`trace://raw/S${x.owner.id}/*`).lines).toContain(`trace://raw/S${x.owner.id}/T${sibling.id}`);
   expect(files.read(`trace://raw/S${x.owner.id}`).content).toContain("MAIN_PATH_ONLY");
   expect(files.read(`trace://raw/S${x.owner.id}`).content).not.toContain("SIBLING_ORIGINAL_TEXT");
   expect(files.read(`trace://raw/S${x.owner.id}/T${sibling.id}`).content).toContain("SIBLING_ORIGINAL_TEXT");
@@ -225,8 +224,6 @@ test("explicit Turn prefers its containing current branch, then source HWM and p
   let files = memoryFiles(x.memory, x.store.currentPath(x.owner.id));
   const assertViews = (branch: "early" | "late", selected: typeof a | typeof b, absent: string, entryCount = 2) => {
     const node = { ...early, branch };
-    expect(files.glob(`${target}#E*`).lines).toContain(`${target}#E${selected.entryOrdinal}`);
-    expect(files.glob(`${target}#E*`).lines).not.toContain(`${target}#E${branch === "early" ? b.entryOrdinal : a.entryOrdinal}`);
     const raw = `trace://raw/S${x.owner.id}/T${shared.id}`;
     expect(files.read(raw).content).toContain(branch === "early" ? "EARLY_BRANCH_ONLY" : "LATE_BRANCH_ONLY");
     expect(files.read(raw).content).not.toContain(absent);
@@ -343,7 +340,6 @@ test("an orphan Turn exposes all its stored entries through read, recursive Grep
     expect(x.files.read(raw).content).toContain("ORPHAN_FIRST");
     expect(x.files.read(raw).content).toContain("ORPHAN_SECOND");
     expect(x.files.read(`trace://facts/S${x.owner.id}/T${orphan.id}`).content).toContain(`${raw}#E${b.entryOrdinal}`);
-    expect(x.files.glob(`trace://raw/S${x.owner.id}/**`).lines).toEqual(expect.arrayContaining([`${raw}#E${a.entryOrdinal}`, `${raw}#E${b.entryOrdinal}`]));
     for (const root of ["trace://", x.S, `trace://raw/S${x.owner.id}`])
       expect([...x.files.grep("ORPHAN_SECOND", root)].map(hit => hit.path)).toContain(`${raw}#E${b.entryOrdinal}`);
   } finally { x.memory.close(); }
@@ -388,10 +384,6 @@ test("layer listing coexists with exact reads; recursive Grep uses facts and who
   expect(x.files.read(`trace://facts/S${x.owner.id}`).content).toContain("The agent answers LRU.");
   expect(x.files.read(`trace://raw/S${x.owner.id}`).content).toContain("What cache policy?");
   expect(x.files.read(raw).content).toContain("LRU.");
-  expect(x.files.glob(`trace://raw/S${x.owner.id}/*`).lines).toEqual([raw]);
-  expect(x.files.glob(`${raw}#E*`).lines).toEqual([`${raw}#E1`, `${raw}#E2`, `${raw}#E3`]);
-  expect(x.files.glob(`trace://raw/S${x.owner.id}/**`).lines).toContain(`${raw}#E2`);
-  expect(x.files.glob(`trace://facts/S${x.owner.id}/*`).lines).toEqual([facts]);
   expect([...x.files.grep("LRU", x.S)].map(file => file.path)).toEqual([facts, `${raw}#E2`]);
   expect([...x.files.grep("LRU", "trace://")].filter(file => file.path === facts || file.path === `${raw}#E2`)
     .map(file => file.path)).toEqual([facts, `${raw}#E2`]);
@@ -400,7 +392,7 @@ test("layer listing coexists with exact reads; recursive Grep uses facts and who
   expect([...x.files.grep("pending", x.S, { ignoreCase: true })].map(file => file.path)).toEqual([`${raw}#E3`]);
   const injection = vi.spyOn(x.memory, "injection"), compact = vi.spyOn(x.memory, "compact");
   const before = x.store.db.prepare("SELECT * FROM knowledge_deliveries").all();
-  [...x.files.grep("cache", "trace://")]; x.files.glob("trace://**");
+  [...x.files.grep("cache", "trace://")];
   expect(injection).not.toHaveBeenCalled(); expect(compact).not.toHaveBeenCalled();
   expect(x.store.db.prepare("SELECT * FROM knowledge_deliveries").all()).toEqual(before);
 });
@@ -439,15 +431,6 @@ test("only the exact trace:// prefix is a memory address; what follows it is spl
   for (const [value, cwd] of [["/w/cwd/Trace:/K1", "/w/cwd"], ["/w/other/trace:/K1", "/w/cwd"], ["/w/cwd/trace:x/K1", "/w/cwd"],
     ["/w/cwd/tm/K1", "/w/cwd"], ["/tm/K1", "/w/cwd"], ["trace://K1", "/w/cwd"], ["/w/cwd/trace:/K1", undefined], [undefined, "/w/cwd"]] as const)
     expect(resolvedMemoryPath(value, cwd)).toBeNull();
-  expect(memoryGlob("trace://S*")).toBe("trace://S*");
-  expect(memoryGlob("S1/T*", "trace://")).toBe("trace://S1/T*");
-  expect(memoryGlob("raw/S1/T2#E*", "trace://")).toBe("trace://raw/S1/T2#E*");
-  expect(memoryGlob("**/E2", "trace:///")).toBe("trace://**/E2");
-  expect(memoryGlob("S*", "trace://raw/")).toBe("trace://raw/S*");
-  expect(memoryGlob("trace://K*", "/etc")).toBe("trace://K*");
-  for (const [pattern, path] of [["/tm/S*", undefined], ["S*", "/tm"], ["*", "tm"], ["*", "/tmp"], ["*", "Trace://"], ["Trace://*", undefined],
-    ["trace:/*", undefined], ["*", undefined], ["", "trace://"], ["/tmp/*.ts", "trace://"], ["/tm/*", "trace://"], ["/S*", "trace://raw"]] as const)
-    expect(memoryGlob(pattern, path)).toBeNull();
 });
 
 test("root indexes nonempty sessions by latest activity and binds navigation to the reader's branch", () => {

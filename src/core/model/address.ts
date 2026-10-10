@@ -158,12 +158,3 @@ export function resolvedMemoryPath(value: unknown, cwd: unknown): string | null 
   const prefix = `${cwd.replace(/\/+$/, "")}/trace:`;
   return value === prefix || value.startsWith(`${prefix}/`) ? memoryPath(MEMORY_ROOT + value.slice(prefix.length)) : null;
 }
-
-/** 101, 128: the `trace://` glob a Glob call names (a pattern starting with `trace://`, or a relative
- * one under a `trace://` search path), or null. */
-export function memoryGlob(pattern: unknown, path?: unknown): string | null {
-  if (typeof pattern !== "string" || !pattern) return null;
-  if (pattern.startsWith(MEMORY_ROOT)) return memoryPath(pattern);
-  // An absolute pattern names its own root whatever the search path, as before 128: a filesystem glob.
-  return pattern.startsWith("/") || memoryPath(path) === null ? null : memoryPath(`${path}/${pattern}`);
-}

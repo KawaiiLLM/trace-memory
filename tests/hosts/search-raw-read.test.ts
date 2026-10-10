@@ -57,3 +57,23 @@ test.each([["Claude Code", ccResultText, envelopes.cc], ["Pi", piResultText, env
     expect(marker[0]!.text).toContain("RAW-ONLY-MARKER");
     expect(await memory.search("RAW-ONLY-MARKER", "raw", path)).toMatch(/^\[S\d+\/T\d+#E\d@observation\] /);
   });
+
+// 138: the `trace://` grep renders Raw the way an exact Read does, so the `path:line:` it reports numbers the lines
+// a Read of that path shows, whichever host's extractor the memory was built with.
+test.each([["Claude Code", ccResultText, envelopes.cc], ["Pi", piResultText, envelopes.pi]] as const)(
+  "%s: grep's lines and matching line numbers are those of an exact Read of the same path", (_host, resultText, envelope) => {
+    const { path, session } = corpus(resultText, envelope);
+    const files = memoryFiles(memory, path);
+    for (const pattern of ["NEEDLE-LINE", "RAW-ONLY-MARKER", "second line"]) {
+      const found = [...files.grep(pattern, `trace://raw/S${session.id}`, { literal: true })];
+      expect(found.length, pattern).toBeGreaterThan(0);
+      for (const file of found) {
+        const read = files.read(file.path).content.split("\n");
+        expect(file.lines, `${pattern} ${file.path}`).toEqual(read);
+        expect(file.hits.map(index => index + 1), `${pattern} ${file.path}`)
+          .toEqual(read.flatMap((line, i) => line.includes(pattern) ? [i + 1] : []));
+      }
+    }
+    // Pi's envelope wraps the text in a content array, Claude Code's in a `content` string: either way one line.
+    expect([...files.grep("NEEDLE-LINE", `trace://raw/S${session.id}`, { literal: true })].flatMap(file => file.hits.map(index => index + 1))).toEqual([1]);
+  });

@@ -3,11 +3,11 @@ import type { TraceMemory } from "./index.ts";
 import type { KnowledgeRevision, Session } from "../model/index.ts";
 import type { SourceEntry } from "../store/index.ts";
 import { MEMORY_ROOT, memoryPath, parseMemoryViewPath } from "../model/address.ts";
-import { renderEntryWhole } from "../render/index.ts";
+import { renderEntryWhole, rawResultText } from "../render/index.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import { readingGuide } from "../render/reading-guide.ts";
 
-export { MEMORY_ROOT, MEMORY_READ_ONLY, memoryPath, resolvedMemoryPath, memoryGlob } from "../model/address.ts";
+export { MEMORY_ROOT, MEMORY_READ_ONLY, memoryPath, resolvedMemoryPath } from "../model/address.ts";
 
 /** Whose view a `trace://` file shows: the reader's own path, as a host binds `trace`. */
 export interface MemoryReader { sessionId?: number; branch?: string; headTurnId?: number | null; projectId?: number; toolNames?: ToolNames }
@@ -20,7 +20,6 @@ export interface MemoryGrepOptions {
 }
 /** Unformatted matches: each host owns output modes, context, pagination and truncation. */
 export interface MemoryGrepFile { path: string; lines: string[]; hits: number[]; mark?: string }
-export interface MemoryListing { lines: string[]; total: number }
 
 const VISIBLE = `${MEMORY_ROOT}knowledge`, ALL = `${MEMORY_ROOT}knowledge-all`;
 const SESSION = /^trace:\/\/S([1-9]\d*)$/;
@@ -135,21 +134,7 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
         return [`${MEMORY_ROOT}K${id}@v${ordinal(latest)}`, `[${latest.category}/${latest.scope}${owner}]${status} ${preview(body)}`];
       });
     }
-    let m: RegExpExecArray | null;
-    if ((m = SESSION.exec(path))) {
-      session(Number(m[1]));
-      return store.listTurns(Number(m[1])).flatMap(turn => [
-        [`${MEMORY_ROOT}facts/S${m![1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
-        [`${MEMORY_ROOT}raw/S${m![1]}/T${turn.id}`, `${turn.kind} ${turn.startedAt}`],
-      ] as [string, string][]);
-    }
     if (LAYER.test(path)) return store.listSessions().map(s => [`${path}/S${s.id}`, ""]);
-    if ((m = LAYER_SESSION.exec(path))) {
-      session(Number(m[2]));
-      return store.listTurns(Number(m[2])).map(turn => [`${path}/T${turn.id}`, ""]);
-    }
-    if ((m = LAYER_TURN.exec(path)) && m[1] === "raw") return entriesOf(Number(m[2]), Number(m[3]))
-      .map(entry => [`${path}#E${entry.entryOrdinal}`, ""]);
     return null;
   };
 
@@ -239,7 +224,8 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
 
   /** Search enumerable leaves only; full entry bodies and full fact/knowledge text. */
   type Searched = { path: string; text: () => string; mark?: string };
-  const whole = (entry: SourceEntry) => renderEntryWhole(entry, memory.resultText, undefined, undefined, true).content;
+  // 138: an entry's text is the exact Read's (`rawResultText`, never the host's extractor), so grep's line numbers are Read's.
+  const whole = (entry: SourceEntry) => renderEntryWhole(entry, rawResultText, undefined, undefined, true).content;
   function* turnFiles(sessionId: number, turnId: number, layer?: "facts" | "raw", role?: "user" | "assistant" | "observation"): Generator<Searched> {
     const factPath = `${MEMORY_ROOT}facts/S${sessionId}/T${turnId}`;
     if (layer !== "raw") yield { path: factPath, text: () => fileText(factPath).content };
@@ -328,23 +314,5 @@ export function memoryFiles(memory: TraceMemory, reader: MemoryReader) {
     }
   }
 
-  const glob = (pattern: string): MemoryListing => {
-    const segments = resolve(pattern).slice(MEMORY_ROOT.length).split("/").filter(Boolean);
-    const found = new Set<string>();
-    const walk = (path: string, rest: string[]) => {
-      if (!rest.length) { found.add(path); return; }
-      const [head, ...tail] = rest;
-      if (head === "**") { walk(path, tail); for (const [child] of children(path) ?? []) walk(child, rest); return; }
-      const matcher = globRegex(head!);
-      for (const [child] of children(path) ?? []) if (matcher.test(basename(child))) walk(child, tail);
-      // An E suffix is part of the T segment, not a further slash component.
-      if (LAYER_SESSION.test(path) && path.startsWith(`${MEMORY_ROOT}raw/`) && head!.includes("#"))
-        for (const [turn] of children(path) ?? []) for (const [entry] of children(turn) ?? [])
-          if (matcher.test(basename(entry))) walk(entry, tail);
-    };
-    walk(MEMORY_ROOT, segments);
-    return { lines: [...found], total: found.size };
-  };
-
-  return { read, grep, glob };
+  return { read, grep };
 }
