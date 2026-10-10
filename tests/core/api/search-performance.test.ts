@@ -3,11 +3,19 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { SEARCH_CHUNK_TURNS } from "../../../src/core/api/search.ts";
 import { CODE_DEADLINE_MS } from "../../../src/core/api/code.ts";
 import { countHydratedRows, generate, type Fixture } from "../../perf/fixture.ts";
+
+// Counts the questions the script's thread puts to the host (ticket 138), by passing every call through.
+const asked = vi.hoisted(() => ({ fields: [] as string[] }));
+vi.mock("../../../src/core/api/code.ts", async importOriginal => {
+  const original = await importOriginal<typeof import("../../../src/core/api/code.ts")>();
+  return { ...original, runCode: (source: string, host: Parameters<typeof original.runCode>[1], limits?: Parameters<typeof original.runCode>[2]) =>
+    original.runCode(source, { ...host, field: (index, name) => { asked.fields.push(name); return host.field(index, name); } }, limits) };
+});
 
 let directory: string, fixture: Fixture, memory: ReturnType<typeof TraceMemory>;
 beforeAll(() => {
@@ -65,5 +73,23 @@ test("a search with no query lists the newest entries cheaply and counts the who
     expect(counted.reads()).toBeGreaterThan(0);
     expect(counted.reads()).toBeLessThanOrEqual(chunkEntries);
     expect(chunkEntries).toBeLessThan(fixture.entryCount / 10);
+  } finally { counted.restore(); }
+}, 30_000);
+
+// 138: the first read of a lazy field answers for the whole chunk of Turns the hit sits in, so reading `role` of every
+// hit costs one request per chunk and not one per hit; a second field costs one more request per chunk.
+test("a script reading a lazy field of every hit asks the host once per chunk", async () => {
+  const chunks = Math.ceil(memory.store.listTurns(fixture.sessionId).length / SEARCH_CHUNK_TURNS);
+  asked.fields.length = 0;
+  const counted = countHydratedRows();
+  try {
+    const out = await memory.search(undefined, "raw", { ...scope(), code: "let n = 0; for (const h of hits) if (h.role === 'observation') n++; return n + ' of ' + hits.length" }) as string;
+    expect(out).toMatch(/Output:\n\d+ of \d+$/);
+    expect(Number(/of (\d+)$/.exec(out)![1])).toBeGreaterThanOrEqual(fixture.entryCount);
+    expect(asked.fields).toEqual(Array(chunks).fill("role"));
+    expect(counted.reads()).toBeLessThanOrEqual(fixture.entryCount + 1_000); // each body read once, none twice
+    asked.fields.length = 0;
+    await memory.search(undefined, "raw", { ...scope(), code: "return hits.length" });
+    expect(asked.fields).toEqual([]);
   } finally { counted.restore(); }
 }, 30_000);

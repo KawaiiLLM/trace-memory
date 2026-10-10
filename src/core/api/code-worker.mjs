@@ -9,7 +9,7 @@
 // the Claude Code bundle embeds this file's built text (scripts/build-cc.mjs).
 //
 // Messages to the host: {type: "output", console: boolean, text} | {type: "ask", kind: "field" | "render",
-// index, name?} (then wait) | {type: "done", ok: true, payload?} | {type: "done", ok: false, error}.
+// index, name?} (then wait; a "field" answer is {index: value} for the asked hit and its chunk) | {type: "done", ok: true, payload?} | {type: "done", ok: false, error}.
 // The host answers an ask on `replyPort` with {ok, payload}, then sets sync[0] to 1 and notifies it.
 import { parentPort, receiveMessageOnPort, workerData } from "node:worker_threads";
 import { JSException, MAX_STACK_SIZE, QuickJS } from "quickjs-wasi";
@@ -98,16 +98,18 @@ const PRELUDE = `(function (bridge, metaJson) {
 
   const meta = parse(metaJson);
   const index = new Map();
+  // Field values the host has sent, by field name then hit index. One reply covers a whole chunk of hits.
+  const known = new Map();
+  function field(i, name) {
+    let values = known.get(name);
+    if (!values) known.set(name, values = new Map());
+    if (!values.has(i)) { const batch = parse(bridge("field", i, name)); for (const key in batch) values.set(Number(key), batch[key]); if (!values.has(i)) values.set(i, undefined); }
+    return values.get(i);
+  }
   const hits = meta.map((item, i) => {
     const lazy = item.lazy || [];
     delete item.lazy;
-    for (const name of lazy) {
-      let loaded = false, value;
-      Object.defineProperty(item, name, { enumerable: true, get() {
-        if (!loaded) { value = parse(bridge("field", i, name)); loaded = true; }
-        return value;
-      } });
-    }
+    for (const name of lazy) Object.defineProperty(item, name, { enumerable: true, get() { return field(i, name); } });
     index.set(item, i);
     return Object.freeze(item);
   });

@@ -1007,7 +1007,7 @@ full text written to a file whose path the result gives and the caller's own Rea
 Every caller has such a place: a Claude Code session's render directory for `trace://` reads (made when first needed), Pi's
 temporary directory, and for a fresh Noter or Dreamer the run's own: Claude Code's worker render directory, whose files
 its restricted Read may open, and a Pi worker's temporary directory, which its `trace://`-only Read may also open and which
-is removed when the run ends. Raw `text`, `role` and `matchLines` (1-based, numbered as a Read of the hit's address) load on first access.
+is removed when the run ends. Raw `text`, `role` and `matchLines` (1-based, numbered as a Read of the hit's address) load on first access: the first read of one of them answers for every hit of that hit's chunk of 25 Turns in a single reply, which the worker keeps, so reading it for every hit of a project costs one request per chunk and not one per hit.
 
 Raw matching includes tool names, inputs, and results; `%` and `_` are escaped. A miss says that no hit does
 not mean absent. `trace://` reads use host-native limits, not search budgets.

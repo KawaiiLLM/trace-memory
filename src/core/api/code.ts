@@ -17,10 +17,12 @@ export const CODE_MEMORY_BYTES = 256 * 1024 * 1024;
 export const CODE_OUTPUT_TOKENS = 10_000;
 
 /** What a script sees. `items` are plain JSON; a field named in an item's `lazy` list is read on first
- * access through `field`, so a hit's large body crosses into the VM only when the script asks. */
+ * access through `field`, so a hit's large body crosses into the VM only when the script asks. `field`
+ * answers by item index and may include other items' values for the same field (138: the rest of the asked
+ * item's chunk); the worker keeps every value it receives and asks again only for an index it has none for. */
 export interface CodeHost {
   items: readonly Record<string, unknown>[];
-  field(index: number, name: string): unknown;
+  field(index: number, name: string): Record<number, unknown>;
   render(index: number): string;
 }
 export interface CodeOutput { ok: boolean; items: { text: string; console?: true }[]; error?: string; wallMs: number }

@@ -25,7 +25,9 @@ export const SEARCH_CHUNK_TURNS = 25;
 const CHUNK_TURNS = SEARCH_CHUNK_TURNS;
 
 /** One hit: the fields code receives (`lazy` names those read on first access) and its one-line print. */
-interface Hit { item: Record<string, unknown>; line: () => string; load?: Record<"role" | "text" | "matchLines", () => unknown> }
+interface Hit { item: Record<string, unknown>; line: () => string; load?: Record<"role" | "text" | "matchLines", () => unknown>;
+  /** Hits of one chunk share a number; the first read of a lazy field answers it for all of them. */
+  chunk?: number }
 const raise = (message: string): never => { throw new Error(message); };
 
 export function validateSearchInput(raw: unknown): { query?: string; layer?: SearchLayer; options: Pick<SearchOptions, "scope" | "topk" | "code"> } {
@@ -151,7 +153,7 @@ export function searchFacade(store: Store) {
             const snippetBody = () => text().replace(new RegExp(`^\\[T${turnId}#E${entryOrdinal}@${role()}\\] (?:${role()}: )?`), "");
             yield { item: { layer: "raw", address: `trace://raw/${label}`, session: turn.sessionId, turn: turnId, time: turn.startedAt,
                 entry: entryOrdinal, citedBy: cited.get(id) ?? [], lazy: ["role", "text", "matchLines"] },
-              line: () => `[${label}@${role()}] ${snippet(snippetBody(), query)}`, load: { role, text, matchLines } };
+              line: () => `[${label}@${role()}] ${snippet(snippetBody(), query)}`, load: { role, text, matchLines }, chunk: from };
           }
         }
       }
@@ -171,9 +173,17 @@ export function searchFacade(store: Store) {
       if (hits.length >= limit && Number.isFinite(limit)) lines.push(`(topk ${limit} reached; more may match. Raise topk or add code to filter.)`);
       return capOutput(lines.join("\n"), options.spill);
     }
+    const chunks = new Map<number, number[]>();
+    hits.forEach((hit, index) => { if (hit.chunk !== undefined) chunks.set(hit.chunk, [...chunks.get(hit.chunk) ?? [], index]); });
     return runCode(options.code, {
       items: hits.map(hit => ({ ...hit.item })),
-      field: (index, name) => hits[index]!.load?.[name as "role" | "text" | "matchLines"]?.(),
+      // 138: one reply carries the field for every hit of the asked hit's chunk, so a script that reads it for each
+      // hit crosses the thread once per chunk, not once per hit. A chunk's bodies are already read together.
+      field: (index, name) => {
+        const answer: Record<number, unknown> = {};
+        for (const i of chunks.get(hits[index]!.chunk!) ?? [index]) answer[i] = hits[i]!.load?.[name as "role" | "text" | "matchLines"]?.();
+        return answer;
+      },
       render: index => hits[index]!.line(),
     }).then(output => formatCodeResult(output, options.spill));
   };

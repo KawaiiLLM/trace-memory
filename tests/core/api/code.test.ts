@@ -21,7 +21,7 @@ afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: tr
 const spill = (text: string) => { const path = join(directory, `spill-${existsSync(join(directory, "spill-1.txt")) ? 2 : 1}.txt`); writeFileSync(path, text); return path; };
 const run = (code: string, options: { topk?: number } = {}) =>
   Promise.resolve(memory.search("alpha", "raw", { ...options, code, spill })) as Promise<string>;
-const host = { items: [{ layer: "raw", n: 1 }, { layer: "facts", n: 2, lazy: ["text"] }], field: (index: number, name: string) => `${name} of ${index}`, render: (index: number) => `rendered ${index}` };
+const host = { items: [{ layer: "raw", n: 1 }, { layer: "facts", n: 2, lazy: ["text"] }], field: (index: number, name: string) => ({ [index]: `${name} of ${index}` }), render: (index: number) => `rendered ${index}` };
 
 test("limits are the ruled ones: 10 s, 256 MB, 10,000 tokens", () => {
   expect([CODE_DEADLINE_MS, CODE_MEMORY_BYTES, CODE_OUTPUT_TOKENS]).toEqual([10_000, 256 * 1024 * 1024, 10_000]);
@@ -86,7 +86,7 @@ test("the host's event loop keeps running while a script spins until its deadlin
   let last = performance.now();
   const timer = setInterval(() => { const now = performance.now(); gaps.push(now - last); last = now; }, 10);
   try {
-    const out = await runCode("for (;;) {}", { items: [], field: () => null, render: () => "" }, { deadlineMs: 1_500 });
+    const out = await runCode("for (;;) {}", { items: [], field: () => ({}), render: () => "" }, { deadlineMs: 1_500 });
     expect(out.error).toContain("timed out");
   } finally { clearInterval(timer); }
   expect(gaps.length).toBeGreaterThan(60); // about 150 ticks in 1.5 s
@@ -94,12 +94,12 @@ test("the host's event loop keeps running while a script spins until its deadlin
 });
 
 test("the engine stack is Pi's 512 KiB: recursion goes about twice as deep as with 256 KiB, then throws", async () => {
-  const out = await runCode("let depth = 0; function f() { depth++; f(); } try { f(); } catch (e) { return e.name + ' ' + depth; }", { items: [], field: () => null, render: () => "" });
+  const out = await runCode("let depth = 0; function f() { depth++; f(); } try { f(); } catch (e) { return e.name + ' ' + depth; }", { items: [], field: () => ({}), render: () => "" });
   const [name, depth] = out.items[0]!.text.split(" ");
   expect(name).toBe("RangeError");
   expect(Number(depth)).toBeGreaterThan(1_500); // about 1,100 at 256 KiB, about 2,200 at 512 KiB
   // Native recursion in a built-in ends the same way, never in a crash of the host.
-  const deep = await runCode("let a = []; for (let i = 0; i < 100000; i++) a = [a]; try { return JSON.stringify(a).length; } catch (e) { return e.name; }", { items: [], field: () => null, render: () => "" });
+  const deep = await runCode("let a = []; for (let i = 0; i < 100000; i++) a = [a]; try { return JSON.stringify(a).length; } catch (e) { return e.name; }", { items: [], field: () => ({}), render: () => "" });
   expect(deep.error ?? deep.items[0]!.text).toMatch(/RangeError|call stack/);
 });
 
@@ -108,7 +108,7 @@ test("the deadline also ends loops a try/catch, a regex or an async chain would 
   for (const code of ["for (;;) { try { for (;;) {} } catch (e) {} }", "/(a+)+$/.test('a'.repeat(80) + 'b')",
     "for (;;) await 0;", "[1, 2, 3].sort(() => { for (;;) {} })"]) {
     const started = performance.now();
-    const out = await runCode(code, { items: [], field: () => null, render: () => "" }, limits);
+    const out = await runCode(code, { items: [], field: () => ({}), render: () => "" }, limits);
     expect(out.ok, code).toBe(false);
     expect(out.error, code).toContain("timed out");
     expect(performance.now() - started, code).toBeLessThan(5_000);
@@ -147,8 +147,17 @@ test("output past 10,000 tokens keeps its start and end and names a file holding
 
 test("a field read inside the script crosses the VM boundary only on first access", async () => {
   const reads: string[] = [];
-  const out = await runCode("const a = hits[1].text, b = hits[1].text; return hits[0].n + a + b", { ...host, field: (i, name) => { reads.push(`${i}.${name}`); return `${name}!`; } });
+  const out = await runCode("const a = hits[1].text, b = hits[1].text; return hits[0].n + a + b", { ...host, field: (i, name) => { reads.push(`${i}.${name}`); return { [i]: `${name}!` }; } });
   expect(out.items.map(i => i.text)).toEqual(["1text!text!"]);
   expect(reads).toEqual(["1.text"]);
   expect(formatCodeResult({ ...out, wallMs: 1234 })).toMatch(/^Script completed\nWall time 1\.2 seconds\nOutput:\n1text!text!$/);
+});
+
+test("one field reply serves every hit it names: the worker asks again only for an index it has no value for", async () => {
+  const reads: string[] = [];
+  const items = [0, 1, 2].map(n => ({ n, lazy: ["text", "role"] }));
+  const out = await runCode("return hits.map(h => h.text + '/' + h.role).join(' ') + ' ' + hits[2].text", { items, render: () => "",
+    field: (i, name) => { reads.push(`${i}.${name}`); return Object.fromEntries([0, 1, 2].map(n => [n, `${name}${n}`])); } });
+  expect(out.items.map(i => i.text)).toEqual(["text0/role0 text1/role1 text2/role2 text2"]);
+  expect(reads).toEqual(["0.text", "0.role"]);
 });
