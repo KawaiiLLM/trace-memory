@@ -138,6 +138,20 @@ export function legacyKnowledge(store: Store, path: KnowledgePath, item: Knowled
   return { knowledgeId, commit };
 }
 
+/** A legacy revision that cites nothing: the write protocol refuses to create one, so the row is made by clearing the column. */
+export function clearSupports(store: Store, commit: number): void {
+  store.db.prepare("UPDATE knowledge_revisions SET supports = '[]' WHERE id = ?").run(commit);
+}
+
+/** One manual update of an exact base: the new body, with the supports it cites. */
+export function updateKnowledge(store: Store, path: KnowledgePath, knowledgeId: number, baseCommit: number, text: string,
+  supports: number[], category: KnowledgeCategory = "constraint", scope: "global" | "project" | "session" = "project"): CommittedKnowledgeOp {
+  const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
+    operations: [{ op: "update", knowledgeId, baseCommit, text, category, scope, supports, topics: [], reason: "fixture update", createdAt: at }] });
+  if (!result.ok) throw new Error(result.problems.join("; "));
+  return result.committed[0]!;
+}
+
 /** One manual archive of an exact base (99): `budget` keeps the parent's body, `invalid` states why. */
 export function archive(store: Store, path: KnowledgePath, knowledgeId: number, baseCommit: number, supports: number[],
   kind: "budget" | "invalid", text?: string): number {

@@ -4,7 +4,7 @@ import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../..
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite, skipRest, suppliedHandles } from "../../dreaming-skips.ts";
-import { knowledgeBatch, receiptCommit } from "../../support/seed.ts";
+import { knowledgeBatch, legacyFacts, receiptCommit } from "../../support/seed.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
@@ -478,23 +478,25 @@ test("134: Changed material supplies its current tag for a committed update with
   expect(f.store.currentCommit(base.knowledgeId)[0]!.text).toContain("并保留条件");
 });
 
+/** 139: facts on the fixture's entry, each created at the given time (a time that cannot be parsed yields no date). */
+const datedFacts = (f: ReturnType<typeof fixture>, times: readonly string[]) => legacyFacts(f.store,
+  { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" }, times.map((createdAt, index) => ({
+    sources: [{ entry: f.entry, address: `T${f.turn.id}#E1` }], text: `dated fact ${index}`, category: "decision" as const, actor: "user" as const, createdAt,
+  }))).facts.map(fact => fact.id);
+
 test("139: the frozen material shows the dates of each item's supporting facts beside its token cost, and the cost does not move", async () => {
   const f = fixture();
   f.memory.config.dreaming.triggerTokens = 1;
-  const [early, late] = ["2026-10-02T08:00:00.000Z", "2026-10-04T08:00:00.000Z"].map(createdAt => {
-    const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [{
-      turnId: f.turn.id, entryIds: [f.entry.id], category: "decision", actor: "user", text: `rule at ${createdAt}`, source: [`T${f.turn.id}#E1`], createdAt }] });
-    if (!noted.ok) throw new Error(noted.problems.join("; "));
-    return noted.facts[0]!.id;
-  }) as [number, number];
-  const reference = f.create("Keep the reference rule.", "project", [early]);
+  const [early, late] = datedFacts(f, ["2026-10-02T08:00:00.000Z", "2026-10-04T08:00:00.000Z"]) as [number, number];
+  const reference = knowledgeBatch(f.store, f.target, [{ scope: "project", category: "constraint", supports: [early], text: "Keep the reference rule." }],
+    { kind: "manual", createdAt: "now" }).committed[0]!;
   const first = await f.scenarios.run(f.memory, f.target, task => {
     task.acknowledgeRequest();
     expect(task.material.changed).toMatch(/\(\d+ tokens; facts 2026-10-02\)/);
     skipRest(task); return success;
   });
   expect(first.outcome, JSON.stringify(first)).toBe("success");
-  f.create("Add the new rule.", "project", [early, late]);
+  knowledgeBatch(f.store, f.target, [{ scope: "project", category: "constraint", supports: [early, late], text: "Add the new rule." }], { kind: "manual", createdAt: "now" });
   const result = await f.scenarios.run(f.memory, f.target, task => {
     task.acknowledgeRequest();
     const cost = (tag: string) => Number(new RegExp(`\\[${tag}\\] \\[[^\\]]+\\] \\((\\d+) tokens`).exec(task.text)![1]);
@@ -506,6 +508,34 @@ test("139: the frozen material shows the dates of each item's supporting facts b
     skipRest(task); return success;
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");
+});
+
+// Pending material that fits the 10,000-token slice without dates and exceeds it with them, run through the
+// real admission (`memory.dream()`): the dates must not change which versions are frozen or delivered.
+async function admission(dates: boolean) {
+  const f = fixture();
+  f.memory.config.dreaming.triggerTokens = 1;
+  const supports = datedFacts(f, dates ? ["2026-10-02T08:00:00.000Z", "2026-10-04T08:00:00.000Z"] : ["now", "now"]);
+  knowledgeBatch(f.store, f.target, Array.from({ length: 90 }, (_, index) => ({ scope: "project" as const, category: "constraint" as const,
+    supports, text: `rule ${index}: ${"word ".repeat(90)}` })), { kind: "manual", createdAt: "now" });
+  let changed = "";
+  const result = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    changed = task.material.changed; skipRest(task); return success;
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  return { changed, handles: suppliedHandles(changed), frozen: processed(f).map(row => row.revision_id) };
+}
+
+test("139: dates that push the pending material past 10,000 tokens change neither what is frozen nor what is delivered", async () => {
+  const plain = await admission(false), dated = await admission(true);
+  expect(tokens(plain.changed)).toBeLessThanOrEqual(10_000);
+  expect(tokens(dated.changed)).toBeGreaterThan(10_000);
+  expect(plain.handles.length).toBeGreaterThan(0);
+  expect(plain.handles.length).toBeLessThan(90); // the slice binds: a later pending version is left for the next run
+  expect(dated.handles).toEqual(plain.handles);
+  expect(dated.frozen).toEqual(plain.frozen);
+  expect(plain.frozen).toHaveLength(plain.handles.length);
 });
 
 test("134: frozen material keeps newest whole direct facts within capacity and honestly omits older facts", async () => {

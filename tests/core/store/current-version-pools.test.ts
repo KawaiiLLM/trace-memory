@@ -9,6 +9,7 @@ import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { Store, type RunInput, type TaskClaim } from "../../../src/core/store/index.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { ALL_POOLS } from "../../../src/core/store/processing.ts";
+import { archive, clearSupports, entry, knowledgeBatch, legacyFacts, updateKnowledge } from "../../support/seed.ts";
 
 const stores: Store[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); });
@@ -562,38 +563,25 @@ test.each(["A", "B"] as const)("126: two sessions due at once on the shared glob
 // facts are dated `times` (a time that cannot be parsed yields no date). The ids and texts do not depend on `times`.
 function datedStory(times: readonly [string, string, string]) {
   const f = setup(), pool = `project:${f.project.id}`;
-  let head = f.turn.id; // the facts must lie on the path the items are written from
-  const [a, b, c] = times.map((createdAt, i) => {
-    const turn = f.store.appendTurn({ sessionId: f.session.id, parentTurnId: head, kind: "turn", userPrompt: `fact ${i}`, startedAt: "now" });
-    head = turn.id;
-    const entry = f.store.appendSourceEntry({ sessionId: f.session.id, turnId: turn.id, nativeLineage: "fixture",
-      nativeId: `dated-${i}`, role: "user", text: `fact ${i}`, raw: "x", calls: [] });
-    const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [{
-      turnId: turn.id, category: "decision", actor: "user", text: `fact ${i}`, source: [`T${turn.id}#user`], entryIds: [entry.id], createdAt }] });
-    if (!noted.ok) throw new Error(noted.problems.join("; "));
-    return noted.facts[0]!.id;
-  }) as [number, number, number];
-  f.target = { ...f.target, headTurnId: head };
-  const write = (run: RunInput, operation: object) => {
-    const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [{ author: "test", category: "constraint",
-      scope: "project", topics: [], reason: "test", createdAt: "now", ...operation } as never] });
-    if (!result.ok) throw new Error(result.problems.join("; "));
-    return result.committed[0]!;
-  };
-  const manual: RunInput = { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" };
-  const create = (text: string, supports: number[]) => write(manual, { op: "create", handle: "$1", text, supports });
-  const reference = create("reference rule", [a, b]), changed = create("changed rule", [a]), retired = create("retired rule", [a, b]);
+  const source = entry(f.store, f.session.id, f.turn.id, "dated-evidence", "user");
+  const [a, b, c] = legacyFacts(f.store, { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" }, times.map((createdAt, i) => ({
+    sources: [{ entry: source, address: `T${f.turn.id}#E${source.entryOrdinal}` }], text: `fact ${i}`, category: "decision" as const, actor: "user" as const, createdAt,
+  }))).facts.map(fact => fact.id) as [number, number, number];
+  const make = (text: string, supports: number[]) => knowledgeBatch(f.store, f.target,
+    [{ text, supports, scope: "project", category: "constraint" }], { kind: "manual", createdAt: "now" }).committed[0]!;
+  const reference = make("reference rule", [a, b]), changed = make("changed rule", [a]), retired = make("retired rule", [a, b]);
   consume(f);
-  const updated = write(manual, { op: "update", knowledgeId: changed.knowledgeId, baseCommit: changed.commit, text: "changed rule, newer", supports: [c] });
-  const archive = write(manual, { op: "archive", kind: "budget", knowledgeId: retired.knowledgeId, baseCommit: retired.commit, supports: [c] });
-  const fresh = create("new rule", [c]), bare = create("supportless rule", [c]);
-  f.store.db.prepare("UPDATE knowledge_revisions SET supports = '[]' WHERE id = ?").run(bare.commit);
+  const updated = updateKnowledge(f.store, f.target, changed.knowledgeId, changed.commit, "changed rule, newer", [c]);
+  const archived = archive(f.store, f.target, retired.knowledgeId, retired.commit, [c], "budget");
+  const fresh = make("new rule", [c]), bare = make("supportless rule", [c]);
+  clearSupports(f.store, bare.commit);
   const read = () => f.store.knowledgePools(f.target).find(value => value.pool === pool)!;
-  return { read, ids: { reference, updated, archive, fresh, bare }, facts: { a, b, c }, spy: () => vi.spyOn(f.store.db, "prepare") };
+  const weight = () => f.store.pendingPoolWeight(pool, f.target);
+  return { read, weight, ids: { reference, updated, archive: { commit: archived }, fresh, bare }, facts: { a, b, c }, spy: () => vi.spyOn(f.store.db, "prepare") };
 }
 
 test("139: the Dreamer's material shows the UTC date range of the supports of the version shown, for every kind of item", () => {
-  const story = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T12:00:00.000Z"]), pool = story.read();
+  const story = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T23:30:00.000Z"]), pool = story.read();
   const pending = new Map(pool.pending.map(item => [item.revisionId, item.shown]));
   const range = "(\\d+ tokens; facts 2026-10-02\\.\\.2026-10-05)";
   expect(pool.rendered.get(story.ids.reference.commit)).toMatch(new RegExp(range));
@@ -605,7 +593,7 @@ test("139: the Dreamer's material shows the UTC date range of the supports of th
 });
 
 test("139: the dates never count toward pool size, item tokens, pending weights or the pending cap", () => {
-  const dated = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T12:00:00.000Z"]);
+  const dated = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T23:30:00.000Z"]);
   const plain = datedStory(["now", "now", "now"]);
   const withDates = dated.read(), without = plain.read();
   expect(without.pending.some(item => item.shown.includes("facts 20"))).toBe(false);
@@ -616,13 +604,15 @@ test("139: the dates never count toward pool size, item tokens, pending weights 
   // The label on every item states the same cost, with or without dates.
   const cost = (text: string) => [...text.matchAll(/\((\d+) tokens[;)]/g)].map(match => match[1]);
   expect([...withDates.rendered.values()].map(cost)).toEqual([...without.rendered.values()].map(cost));
-  // The pending slice is cut on the plain material: the shown text is longer, the cap does not move.
-  for (const item of withDates.pending) expect(tokens(item.shown)).toBeGreaterThanOrEqual(tokens(item.material));
-  expect(withDates.pending.map(item => item.material.includes("facts 20"))).toEqual(withDates.pending.map(() => false));
+  // The weights the Dreamer is admitted by are the plain ones. What it is shown is longer, and the real
+  // admission boundary is tested in dreaming.test.ts.
+  expect(dated.weight()).toBeGreaterThan(0);
+  expect(dated.weight()).toBe(plain.weight());
+  for (const item of withDates.pending) expect(item.material).not.toContain("facts 20");
 });
 
 test("139: the fact dates of the whole material cost no per-item or per-fact query", () => {
-  const story = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T12:00:00.000Z"]);
+  const story = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T23:30:00.000Z"]);
   const prepare = story.spy();
   try {
     story.read();
