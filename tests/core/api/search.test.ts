@@ -101,7 +101,26 @@ test("the default print is one line per hit, centred on the first match, with th
   expect(lines(memory.search(undefined, "raw", { ...f.path, topk: 1 }))[0]).toMatch(/^\[S\d+\/T\d+#E\d@(user|assistant)\] .*(reply 3 widgets|third prompt)/);
   expect(lines(memory.search(undefined, "facts", f.path))).toEqual([`[F${f.widgetFact.id}] Widgets discussed`, `[F${f.deepFact.id}] Font width settled`]);
   // One snapshot per layer (ids and times are fixed by the fixture).
-  expect(memory.search("advance width", "facts", f.path)).toMatchInlineSnapshot(`"[F1] Font width settled — …The mono font has one fixed advance width.…"`);
+  expect(memory.search("advance width", "facts", f.path)).toMatchInlineSnapshot(`"[F1] Font width settled — The mono font has one fixed advance width."`);
+});
+
+test("a Raw line opens with its address once: the entry's own label and role word are not repeated", () => {
+  const f = corpus();
+  const id = `S${f.session.id}/T${f.turns[1]!.id}`;
+  expect(lines(memory.search("second prompt", "raw", f.path))).toEqual([`[${id}#E1@user] second prompt about widgets`]);
+  expect(lines(memory.search("reply 2", "raw", f.path))).toEqual([`[${id}#E2@assistant] reply 2 widgets`]);
+  // A match only in the stripped label does not centre the snippet there.
+  expect(lines(memory.search("user", "raw", { ...f.path, topk: 100 })).every(l => !/^\[S\d+\/T\d+#E\d+@user\] (\[T|user:)/.test(l))).toBe(true);
+});
+
+test("a fact line is the shared centred snippet of about 200 characters, as knowledge and Raw lines are", () => {
+  const f = corpus();
+  const long = `${"before ".repeat(60)}NEEDLE-136${" after".repeat(60)}`;
+  const [fact] = facts(memory, f.path, [{ title: "Long fact", sources: [{ entry: f.first, text: long }] }]);
+  const line = memory.search("NEEDLE-136", "facts", f.path) as string;
+  expect(line).toMatch(new RegExp(`^\\[F${fact!.id}\\] Long fact — ….*NEEDLE-136.*…$`));
+  expect(line.length).toBeLessThan(260);
+  expect(lines(line)).toHaveLength(1);
 });
 
 test("a Raw hit carries its line numbers as a Read of its address numbers them, and the facts that cite it", () => {

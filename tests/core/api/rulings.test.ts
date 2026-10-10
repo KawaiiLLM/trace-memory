@@ -1184,7 +1184,8 @@ test("41b: a fact preview is one line of its text, without the long evidence met
   const search = c.tools.find(tool => tool.name === "search")!;
   const preview = search.execute({ query: "PREVIEW-FACT", layer: "facts" }) as string;
   expect(preview).toContain(`[F${factId}] [observation/user]`);
-  expect(preview).toContain("characters truncated");
+  // 136 ruling 3: a fact hit is the shared centred snippet of about 200 characters, cut with an ellipsis.
+  expect(preview).toMatch(/^\[F\d+\] \[observation\/user\] PREVIEW-FACT .*…$/); expect(preview.length).toBeLessThan(260);
   expect(preview).not.toContain("quote:"); expect(preview).not.toContain("source:");
   expect(preview.split("\n").filter((line: string) => line.startsWith(`[F${factId}]`))).toHaveLength(1);
 });
@@ -1205,7 +1206,10 @@ test("41 review: fact and knowledge previews are one physical line with head-onl
   const search = c.tools.find(tool => tool.name === "search")!;
 
   const fact = search.execute({ query: "FACT-LONG-41", layer: "facts" }) as string;
-  expect(fact).not.toContain("\n"); expect(fact).toContain("characters truncated"); expect(fact).not.toContain("FACT-LONG-TAIL");
+  // 136 ruling 3: a fact hit is the shared centred snippet of about 200 characters, cut with an ellipsis.
+  expect(fact).not.toContain("\n"); expect(fact).toMatch(/^\[F\d+\] \[observation\/user\] FACT-LONG-41 .*…$/); expect(fact).not.toContain("FACT-LONG-TAIL");
+  expect(fact.length).toBeLessThan(260);
+  expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(fact)).toBe(false);
   // 136: a knowledge hit is one line of about 200 characters centred on the match, cut with an ellipsis.
   const knowledge = search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge" }) as string;
   expect(knowledge).not.toContain("\n"); expect(knowledge).toMatch(/^\[K\d+@v\d+\] \[reference\/project\] KNOWLEDGE-LONG-41 .*…$/);

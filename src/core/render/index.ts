@@ -547,12 +547,12 @@ function renderPreview(prefix: string, body: string, suffix: string, cap: number
 export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80, query?: string): string {
   if (fact.title !== undefined) {
     if (query === undefined) return renderPreview(`[F${fact.id}] `, fact.title, "", cap, true);
-    const at = fact.text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
-    const excerpt = at < 0 ? fact.title : `…${fact.text.slice(Math.max(0, at - 30), at + query.length + 30)}…`;
-    return renderPreview(`[F${fact.id}] ${fact.title} — `, excerpt, "", cap, fields.has("text"));
+    // A fact whose text lacks the query matched by its title, which is already shown.
+    if (!fact.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())) return renderPreview(`[F${fact.id}] `, fact.title, "", cap, true);
+    return renderPreview(`[F${fact.id}] ${fact.title} — `, snippet(fact.text, query), "", cap, fields.has("text"));
   }
   const prefix = `[F${fact.id}] ${fact.category && fact.actor ? `[${fact.category}/${fact.actor}] ` : ""}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`;
-  return renderPreview(prefix, fact.text, "", cap, fields.has("text"));
+  return renderPreview(prefix, snippet(fact.text, query), "", cap, fields.has("text"));
 }
 
 // 21b: the labels ride the metadata line, beside the evidence, so they are never read as conclusion
@@ -961,3 +961,15 @@ export const knowledgeBlockParts = (groups: { category: string; text: string }[]
 export const renderKnowledgeBlock = (groups: { category: string; text: string }[], recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string =>
   knowledgeBlockParts(groups, recencyNotice).join("");
 export const listingLine = (text: string): string => text.replaceAll("\n", " ⏎ ");
+
+const SNIPPET_CHARS = 200;
+/** About 200 characters centred on the first match (the start of the text without one), cut with `…`. */
+export function snippet(text: string, query?: string): string {
+  const at = query ? text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase()) : -1;
+  let start = at < 0 ? 0 : Math.max(0, at + Math.floor(query!.length / 2) - SNIPPET_CHARS / 2);
+  let end = Math.min(text.length, start + SNIPPET_CHARS);
+  if (end === text.length) start = Math.max(0, end - SNIPPET_CHARS);
+  if (start > 0 && /[\uDC00-\uDFFF]/.test(text[start]!)) start++;
+  if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]!)) end--;
+  return `${start > 0 ? "…" : ""}${listingLine(text.slice(start, end))}${end < text.length ? "…" : ""}`;
+}

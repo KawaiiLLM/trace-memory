@@ -5,7 +5,7 @@
 import type { KnowledgeRevision } from "../model/index.ts";
 import { knowledgeCategoryGroup, KNOWLEDGE_SCOPES, type KnowledgeScope } from "../model/index.ts";
 import type { Store } from "../store/index.ts";
-import { listingLine, renderEntryWhole, renderFactPreview, type ResultExtractor, rawResultText } from "../render/index.ts";
+import { renderEntryWhole, renderFactPreview, snippet, type ResultExtractor, rawResultText } from "../render/index.ts";
 import { capOutput, formatCodeResult, runCode } from "./code.ts";
 import { knowledgeReadSelection } from "./knowledge-read.ts";
 import { similarity } from "./similarity.ts";
@@ -19,22 +19,11 @@ export interface SearchOptions {
   /** Writes an over-long output to a file and returns its path; absent where a host has no render directory. */
   spill?: (text: string) => string;
 }
-export const SEARCH_DEFAULT_TOPK = 10, SEARCH_SNIPPET_CHARS = 200, FACT_PREVIEW_TOKENS = 80;
+export const SEARCH_DEFAULT_TOPK = 10;
 const CHUNK_TURNS = 25;
 
 /** One hit: the fields code receives (`lazy` names those read on first access) and its one-line print. */
 interface Hit { item: Record<string, unknown>; line: () => string; load?: { text: () => string; matchLines: () => number[] } }
-
-/** About 200 characters centred on the first match (the start of the text without one), cut with `…`. */
-export function snippet(text: string, query?: string): string {
-  const at = query ? text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase()) : -1;
-  let start = at < 0 ? 0 : Math.max(0, at + Math.floor(query!.length / 2) - SEARCH_SNIPPET_CHARS / 2);
-  let end = Math.min(text.length, start + SEARCH_SNIPPET_CHARS);
-  if (end === text.length) start = Math.max(0, end - SEARCH_SNIPPET_CHARS);
-  if (start > 0 && /[\uDC00-\uDFFF]/.test(text[start]!)) start++;
-  if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]!)) end--;
-  return `${start > 0 ? "…" : ""}${listingLine(text.slice(start, end))}${end < text.length ? "…" : ""}`;
-}
 
 export function validateSearchInput(raw: unknown): { query?: string; layer?: SearchLayer; options: Pick<SearchOptions, "scope" | "topk" | "code"> } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
@@ -72,8 +61,10 @@ export function searchFacade(store: Store, resultText: ResultExtractor = rawResu
     const reader = options.sessionId === undefined ? undefined : store.getSession(options.sessionId) ?? undefined;
     if (options.sessionId !== undefined && !reader) throw new Error(`session S${options.sessionId} does not exist`);
     if (options.scope === "session" && !reader) throw new Error("scope:session requires a session context");
-    if (options.scope === "project" && !reader) throw new Error("scope:project requires a project context");
-    const sessionIds = options.scope === "global" || !reader ? undefined : options.scope === "session" ? [reader.id]
+    // The default scope is `project`, so omitting it and writing it are one thing: everything this project can see,
+    // that is its sessions' facts and Raw, and the knowledge of every scope applicable here (global, project, session).
+    const scope = options.scope === "project" ? undefined : options.scope;
+    const sessionIds = scope === "global" || !reader ? undefined : scope === "session" ? [reader.id]
       : store.projectSessionIds(reader.projectId);
     const limit = options.topk ?? (query === undefined ? Infinity : SEARCH_DEFAULT_TOPK);
     const wants = (name: "knowledge" | "facts" | "raw") => layer === "all" || layer === name;
@@ -86,7 +77,7 @@ export function searchFacade(store: Store, resultText: ResultExtractor = rawResu
 
     function* knowledge(): Generator<Hit> {
       const selection = knowledgeReadSelection(store, { sessionId: options.sessionId, branch: options.branch, headTurnId: options.headTurnId,
-        ...(options.scope ? { scope: options.scope } : {}), versions: "history" });
+        ...(scope ? { scope } : {}), versions: "history" });
       const candidates = query === undefined ? [...selection.byCommit.values()]
         : store.searchAddresses(query, "knowledge", sessionIds).map(address => selection.byCommit.get(Number(address.split("@")[1]))!);
       const eligible = candidates.filter(revision => revision && selection.eligible(revision));
@@ -120,7 +111,7 @@ export function searchFacade(store: Store, resultText: ResultExtractor = rawResu
           role: fact.roles?.[i]?.role ?? null, text }));
         yield { item: { layer: "facts", address: `trace://F${fact.id}`, session, turn: fact.turnId, time: fact.createdAt, text: fact.text,
             id: fact.id, title: fact.title ?? null, sources, citedBy: [...(citing.get(fact.id)?.keys() ?? [])] },
-          line: () => renderFactPreview(fact, new Set(["text"]), FACT_PREVIEW_TOKENS, query) };
+          line: () => renderFactPreview(fact, new Set(["text"]), Infinity, query) };
       }
     }
 
@@ -142,14 +133,18 @@ export function searchFacade(store: Store, resultText: ResultExtractor = rawResu
           for (const id of entryIds.get(turnId) ?? []) {
             const entry = entries.get(id);
             if (!entry) continue;
-            const text = renderEntryWhole(entry, resultText, undefined, undefined, true).content;
-            if (needle !== undefined && !text.toLocaleLowerCase().includes(needle)) continue;
+            // The body is rendered when first needed: a search without a query that only counts never renders one.
+            let rendered: string | undefined;
+            const text = () => rendered ??= renderEntryWhole(entry, resultText, undefined, undefined, true).content;
+            if (needle !== undefined && !text().toLocaleLowerCase().includes(needle)) continue;
             const role = entry.role === "toolResult" ? "observation" : entry.role;
             const label = `S${turn.sessionId}/T${turnId}#E${entry.entryOrdinal}`;
-            const matchLines = () => needle === undefined ? [] : text.split("\n").flatMap((line, index) => line.toLocaleLowerCase().includes(needle) ? [index + 1] : []);
+            const matchLines = () => needle === undefined ? [] : text().split("\n").flatMap((line, index) => line.toLocaleLowerCase().includes(needle) ? [index + 1] : []);
+            // The line opens with its own label, so the snippet leaves out the label the entry's text opens with.
+            const body = () => text().replace(new RegExp(`^\\[T${turnId}#E${entry.entryOrdinal}@${role}\\] (?:${role}: )?`), "");
             yield { item: { layer: "raw", address: `trace://raw/${label}`, session: turn.sessionId, turn: turnId, time: turn.startedAt,
                 entry: entry.entryOrdinal, role, citedBy: cited.get(id) ?? [], lazy: ["text", "matchLines"] },
-              line: () => `[${label}@${role}] ${snippet(text, query)}`, load: { text: () => text, matchLines } };
+              line: () => `[${label}@${role}] ${snippet(body(), query)}`, load: { text, matchLines } };
           }
         }
       }
@@ -196,7 +191,7 @@ ${SEARCH_HIT_TYPES}
 Example: code: "for (const h of hits) if (h.layer === 'knowledge' && h.status === 'archived') text(render(h))"`,
   parameters: { type: "object", additionalProperties: false, required: [], properties: {
     query: { type: "string", minLength: 1 },
-    scope: { enum: [...KNOWLEDGE_SCOPES], description: "session, project or global. Omitted: this project's sessions and every knowledge scope applicable here." },
+    scope: { enum: [...KNOWLEDGE_SCOPES], default: "project", description: "project (default): everything this project can see, that is its facts and Raw and the knowledge of every scope applicable here. session: this session's facts and Raw and session knowledge. global: every session's facts and Raw and global knowledge." },
     layer: { enum: ["knowledge", "facts", "raw", "all"], default: "all" },
     topk: { type: "integer", minimum: 1 },
     code: { type: "string" },

@@ -71,7 +71,9 @@ for (const scope of [undefined, "session", "project", "global"] as const) {
   for (const layer of ["facts", "knowledge", "raw", "all"] as const) test(`41 scope table: ${scope ?? "omitted"} / ${layer}`, async () => {
     const { own, peer, foreign, knowledge } = await scopeCorpus();
     const selectedOwners = scope === "global" ? [own, peer, foreign] : scope === "session" ? [own] : [own, peer];
-    const selectedKnowledge = knowledge.filter(k => (!scope || k.scope === scope) && (k.scope === "global"
+    // 136 ruling 1 (2026-10-10, supersedes the strict `project` row of 41): `project` is the default, so it selects what
+    // omitting scope selects: everything this project can see.
+    const selectedKnowledge = knowledge.filter(k => (!scope || scope === "project" || k.scope === scope) && (k.scope === "global"
       || k.scope === "project" && k.owner.projectId === own.projectId || k.scope === "session" && k.owner.sessionId === own.sessionId));
     const expected = [...(layer === "knowledge" || layer === "all" ? selectedKnowledge.map(k => `K${k.knowledgeId}@v1`) : []),
       ...(layer === "facts" || layer === "all" ? selectedOwners.map(who => `F${who.factId}`) : []),
@@ -80,6 +82,7 @@ for (const scope of [undefined, "session", "project", "global"] as const) {
     const result = memory.search("needle", layer, { ...own, scope, topk: 100 });
     expect(identities(result).sort()).toEqual(expected.sort());
     if (layer === "all") expect(identities(memory.search("needle", undefined, { ...own, scope, topk: 100 })).sort()).toEqual(expected.sort());
+    if (scope === "project") expect(result).toEqual(memory.search("needle", layer, { ...own, topk: 100 }));
   });
 }
 
@@ -87,8 +90,11 @@ test("41 unbound discovery, missing contexts and obsolete input are explicit", a
   const { own, knowledge } = await scopeCorpus();
   expect(identities(memory.search("needle", "knowledge", { topk: 100 }))).toHaveLength(knowledge.length);
   expect(identities(memory.search("needle", "knowledge", { scope: "global" }))).toHaveLength(3);
-  for (const scope of ["session", "project"] as const) for (const layer of ["facts", "raw", "knowledge", "all"] as const)
-    expect(() => memory.search("needle", layer, { scope })).toThrow(`scope:${scope} requires`);
+  for (const layer of ["facts", "raw", "knowledge", "all"] as const) {
+    expect(() => memory.search("needle", layer, { scope: "session" })).toThrow("scope:session requires");
+    // 136 ruling 1: `project` is the default, so unbound it discovers every owner, as omitting it does.
+    expect(memory.search("needle", layer, { scope: "project", topk: 100 })).toEqual(memory.search("needle", layer, { topk: 100 }));
+  }
   for (const definition of toolDefinitions.filter(tool => tool.name === "search"))
     expect(definition.parameters.properties).not.toHaveProperty("where");
   const tools = memory.tools({ kind: "manual", sessionId: own.sessionId, currentTurnId: own.turn.id, branch: "main" });
@@ -110,7 +116,9 @@ test("41 revision scope filters every version, and a global filter sees only glo
   const read = (options: SearchOptions) => identities(memory.search("needle", "knowledge", { ...who, ...options }));
   // Both versions are candidates; the scope filter judges each revision by its own scope.
   expect(read({}).sort()).toEqual([`K${old.knowledgeId}@v1`, `K${current.knowledgeId}@v2`].sort());
-  expect(read({ scope: "project" })).toEqual([`K${current.knowledgeId}@v2`]);
+  // 136 ruling 1 (supersedes 41's strict project filter): `project` is the default, every applicable scope.
+  expect(read({ scope: "project" }).sort()).toEqual(read({}).sort());
+  expect(read({ scope: "session" })).toEqual([]);
   expect(read({ scope: "global" })).toEqual([`K${old.knowledgeId}@v1`]);
 });
 
@@ -124,7 +132,8 @@ test("64b global current ignores parent scope while every version remains filter
   const files = memoryFiles(memory, foreign);
   expect(files.read(`trace://${history(old)}`).content).toContain("needle private parent");
   expect(files.read(`trace://${history(widened)}`).content).toContain("needle global child");
-  expect(identities(memory.search("needle", "knowledge", { ...foreign, scope: "project" }))).toEqual([]);
+  // 136 ruling 1: `project` is what omitting scope gives, so the global version shows and the other project's does not.
+  expect(identities(memory.search("needle", "knowledge", { ...foreign, scope: "project" }))).toEqual([`K${widened.knowledgeId}@v2`]);
 });
 
 test("41 archives and merged-away identities have no current body but remain candidates, marked", async () => {

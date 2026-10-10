@@ -935,16 +935,15 @@ organization, not a second injection order. This reference projection is distinc
 
 | Scope | Facts and Raw | Knowledge |
 |---|---|---|
-| omitted, bound | current project's sessions | global + current project's project-scoped + current session's session-scoped |
+| project (the default; omitted means the same) | current project's sessions | global + current project's project-scoped + current session's session-scoped |
 | session | current session | this session's session-scoped |
-| project | current project's sessions | this project's project-scoped |
 | global | every session | global-scoped, regardless of author project |
 
-The ruling names `project` as the default scope; the omitted row is today's project selection, which
-includes the knowledge of every scope that applies here, and is kept so that a default search and the
-Dreamer's all-pool revival search still reach global and session knowledge. An unbound omitted scope
-discovers all owners. Explicit project/session scope requires that context; a missing context is an error,
-never an inferred project or session. Exact `trace://F<n>` and raw-entry reads remain independent of search
+`project` is the default and means everything this project can see (ticket 136 ruling, 2026-10-10): the project's
+facts and Raw, and the knowledge of every scope applicable here, so a default search and the Dreamer's all-pool
+revival search reach global and session knowledge. Writing it and omitting it give identical results. An unbound
+reader discovers all owners. `session` requires a session context; a missing one is an error, never an inferred
+session. Exact `trace://F<n>` and raw-entry reads remain independent of search
 selection; selection grants no source or write authority.
 
 `layer` is `knowledge`, `facts`, `raw` or `all` (default). `topk` caps the hits across the layers together:
@@ -957,8 +956,9 @@ contains the query, found newest Turn first a chunk at a time, so a small `topk`
 Each hit is one structured item (`layer`, `address`, `session`, `time`, `text`, plus the fields of its
 layer, declared as TypeScript in the tool description) and prints as one line:
 `[K12@v3] (archived) [category/scope] …snippet…` (no mark for the current version), `[F25081] title — …snippet…`
-(the fact preview, as before) or `[S173/T8727#E1@user] …snippet…`. A snippet is about 200 characters centred on
-the first match, cut with `…`; without a query it is the start of the body (a fact shows its title alone).
+or `[S173/T8727#E1@user] …snippet…`. One snippet rule serves all three layers: about 200 characters centred on
+the first match, cut with `…`; without a query it is the start of the body (a fact shows its title alone). A Raw
+snippet starts after the entry's own `[T..#E..@role]` label and role word, which the line's label already says.
 Search never grants a knowledge write handle; read the complete `trace://K<id>` body for a tagged mutation base.
 
 `code` is the body of an async function run over the hits in a QuickJS sandbox (no Node API, file system,
