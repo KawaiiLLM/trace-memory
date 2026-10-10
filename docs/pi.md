@@ -375,7 +375,8 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   line per hit, and runs `code` over the structured hits in a QuickJS sandbox. Only a call with `code` answers
   asynchronously. An over-long output keeps its start and end and is saved to a file made on first use under the
   temporary directory (Pi has no per-session render directory for `trace://`, which is virtual) and removed at
-  session shutdown; subagent workers have none, so they are told the rest is not saved. Search returns no
+  session shutdown. A Noter or Dreamer worker saves into a temporary directory of its own, made on first use and
+  removed when the run ends; its `trace://`-only `read` may also open files under that directory. Search returns no
   knowledge write handle; use `trace://K<id>` for a complete tagged current body and `trace://K<id>.history`
   for its history. `trace://` rejects the retired comma lists and `K..` forms and reads with native offset/limit
   on the original virtual path.

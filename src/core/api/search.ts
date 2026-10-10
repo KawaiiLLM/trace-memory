@@ -4,8 +4,8 @@
 // first (knowledge), then current, then newer.
 import type { KnowledgeRevision } from "../model/index.ts";
 import { knowledgeCategoryGroup, KNOWLEDGE_SCOPES, type KnowledgeScope } from "../model/index.ts";
-import type { Store } from "../store/index.ts";
-import { renderEntryWhole, renderFactPreview, snippet, type ResultExtractor, rawResultText } from "../render/index.ts";
+import type { SourceEntry, Store } from "../store/index.ts";
+import { renderEntryWhole, renderFactPreview, snippet, rawResultText } from "../render/index.ts";
 import { capOutput, formatCodeResult, runCode } from "./code.ts";
 import { knowledgeReadSelection } from "./knowledge-read.ts";
 import { similarity } from "./similarity.ts";
@@ -20,10 +20,13 @@ export interface SearchOptions {
   spill?: (text: string) => string;
 }
 export const SEARCH_DEFAULT_TOPK = 10;
-const CHUNK_TURNS = 25;
+/** Raw is read this many newest Turns at a time. */
+export const SEARCH_CHUNK_TURNS = 25;
+const CHUNK_TURNS = SEARCH_CHUNK_TURNS;
 
 /** One hit: the fields code receives (`lazy` names those read on first access) and its one-line print. */
-interface Hit { item: Record<string, unknown>; line: () => string; load?: { text: () => string; matchLines: () => number[] } }
+interface Hit { item: Record<string, unknown>; line: () => string; load?: Record<"role" | "text" | "matchLines", () => unknown> }
+const raise = (message: string): never => { throw new Error(message); };
 
 export function validateSearchInput(raw: unknown): { query?: string; layer?: SearchLayer; options: Pick<SearchOptions, "scope" | "topk" | "code"> } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
@@ -54,7 +57,7 @@ function* newest(streams: Iterable<Hit>[]): Generator<Hit> {
 
 function* chain(streams: Iterable<Hit>[]): Generator<Hit> { for (const stream of streams) yield* stream; }
 
-export function searchFacade(store: Store, resultText: ResultExtractor = rawResultText) {
+export function searchFacade(store: Store) {
   return (query: string | undefined, layer: SearchLayer = "all", options: SearchOptions = {}): string | Promise<string> => {
     if (!SEARCH_LAYERS.includes(layer)) throw new Error("invalid search layer");
     if (options.scope !== undefined && !KNOWLEDGE_SCOPES.includes(options.scope)) throw new Error("invalid knowledge scope filter");
@@ -91,8 +94,7 @@ export function searchFacade(store: Store, resultText: ResultExtractor = rawResu
         // 101: a legacy archive written before 99 has no body of its own; its parent's stands in.
         const text = r.op === "archive" && !r.text ? selection.byCommit.get(r.parentId ?? -1)?.text ?? "" : r.text;
         const group = knowledgeCategoryGroup(r.category), version = ordinals.get(r.id)!;
-        const owner = r.runId === null ? undefined : selection.input.metadata.runs.get(r.runId);
-        yield { item: { layer: "knowledge", address: `trace://K${r.knowledgeId}@v${version}`, session: owner ?? null, time: r.createdAt, text,
+        yield { item: { layer: "knowledge", address: `trace://K${r.knowledgeId}@v${version}`, time: r.createdAt, text,
             id: r.knowledgeId, version, status, archiveKind: r.archiveKind ?? null, category: group, scope: r.scope, topics: r.topics,
             supports: r.supports, reason: r.reason },
           line: () => `[K${r.knowledgeId}@v${version}] ${status === "current" ? "" : `(${status}) `}[${group}/${r.scope}] ${snippet(text, query)}` };
@@ -124,27 +126,32 @@ export function searchFacade(store: Store, resultText: ResultExtractor = rawResu
       // Newest Turns first, a chunk at a time, so a small `topk` reads a few Turns' bodies and not the project's.
       for (let from = 0; from < turnIds.length; from += CHUNK_TURNS) {
         const chunk = turnIds.slice(from, from + CHUNK_TURNS);
-        const entryIds = store.listSourceEntryIdsOf(chunk);
-        const entries = new Map(store.hydrateSourceEntries([...entryIds.values()].flat()).map(entry => [entry.id, entry]));
-        const cited = store.factsCitingEntries([...entries.keys()]);
+        // Candidates come from metadata alone (id and ordinal). A chunk's bodies are read together, once, the
+        // first time any of its entries needs its text, role or matching lines: by the query filter below, a
+        // default print, or a script. A search that only counts its hits reads none.
+        const refs = store.listSourceEntryRefsOf(chunk);
+        const ids = [...refs.values()].flatMap(list => list.map(ref => ref.id));
+        let bodies: Map<number, SourceEntry> | undefined;
+        const body = (id: number) => (bodies ??= new Map(store.hydrateSourceEntries(ids).map(entry => [entry.id, entry]))).get(id);
+        const cited = store.factsCitingEntries(ids);
         for (const turnId of chunk) {
           const turn = store.getTurn(turnId);
           if (!turn) continue;
-          for (const id of entryIds.get(turnId) ?? []) {
-            const entry = entries.get(id);
-            if (!entry) continue;
-            // The body is rendered when first needed: a search without a query that only counts never renders one.
+          for (const { id, entryOrdinal } of refs.get(turnId) ?? []) {
+            const entry = () => body(id) ?? raise(`source entry ${id} has no stored body`);
+            // The text is the entry's exact Read: the same renderer and result extractor as `trace://raw/...#E<k>`
+            // (never the host's), so `matchLines` number that Read's lines.
             let rendered: string | undefined;
-            const text = () => rendered ??= renderEntryWhole(entry, resultText, undefined, undefined, true).content;
-            if (needle !== undefined && !text().toLocaleLowerCase().includes(needle)) continue;
-            const role = entry.role === "toolResult" ? "observation" : entry.role;
-            const label = `S${turn.sessionId}/T${turnId}#E${entry.entryOrdinal}`;
+            const text = () => rendered ??= renderEntryWhole(entry(), rawResultText, undefined, undefined, true).content;
+            if (needle !== undefined && !(body(id) && text().toLocaleLowerCase().includes(needle))) continue;
+            const role = () => entry().role === "toolResult" ? "observation" : entry().role;
+            const label = `S${turn.sessionId}/T${turnId}#E${entryOrdinal}`;
             const matchLines = () => needle === undefined ? [] : text().split("\n").flatMap((line, index) => line.toLocaleLowerCase().includes(needle) ? [index + 1] : []);
             // The line opens with its own label, so the snippet leaves out the label the entry's text opens with.
-            const body = () => text().replace(new RegExp(`^\\[T${turnId}#E${entry.entryOrdinal}@${role}\\] (?:${role}: )?`), "");
+            const snippetBody = () => text().replace(new RegExp(`^\\[T${turnId}#E${entryOrdinal}@${role()}\\] (?:${role()}: )?`), "");
             yield { item: { layer: "raw", address: `trace://raw/${label}`, session: turn.sessionId, turn: turnId, time: turn.startedAt,
-                entry: entry.entryOrdinal, role, citedBy: cited.get(id) ?? [], lazy: ["text", "matchLines"] },
-              line: () => `[${label}@${role}] ${snippet(body(), query)}`, load: { text, matchLines } };
+                entry: entryOrdinal, citedBy: cited.get(id) ?? [], lazy: ["role", "text", "matchLines"] },
+              line: () => `[${label}@${role()}] ${snippet(snippetBody(), query)}`, load: { role, text, matchLines } };
           }
         }
       }
@@ -166,7 +173,7 @@ export function searchFacade(store: Store, resultText: ResultExtractor = rawResu
     }
     return runCode(options.code, {
       items: hits.map(hit => ({ ...hit.item })),
-      field: (index, name) => hits[index]!.load?.[name as "text" | "matchLines"]?.(),
+      field: (index, name) => hits[index]!.load?.[name as "role" | "text" | "matchLines"]?.(),
       render: index => hits[index]!.line(),
     }).then(output => formatCodeResult(output, options.spill));
   };
@@ -175,10 +182,10 @@ export function searchFacade(store: Store, resultText: ResultExtractor = rawResu
 /** The model-facing definition. The hit types are declared as TypeScript (as Pi's codemode and omp's
  * Code Mode declare theirs); a test holds the declaration to the fields real hits carry. */
 export const SEARCH_HIT_TYPES = `type Hit = Knowledge | Fact | Raw;
-interface Base { address: string; session: number | null; time: string; text: string }
+interface Base { address: string; time: string; text: string }
 interface Knowledge extends Base { layer: "knowledge"; id: number; version: number; status: "current" | "superseded" | "archived"; archiveKind: "budget" | "invalid" | null; category: string; scope: "global" | "project" | "session"; topics: string[]; supports: number[]; reason: string }
-interface Fact extends Base { layer: "facts"; turn: number; id: number; title: string | null; sources: { address: string; role: string | null; text: string }[]; citedBy: number[] }
-interface Raw extends Base { layer: "raw"; turn: number; entry: number; role: "user" | "assistant" | "observation"; matchLines: number[]; citedBy: number[] }`;
+interface Fact extends Base { layer: "facts"; session: number; turn: number; id: number; title: string | null; sources: { address: string; role: string | null; text: string }[]; citedBy: number[] }
+interface Raw extends Base { layer: "raw"; session: number; turn: number; entry: number; role: "user" | "assistant" | "observation"; matchLines: number[]; citedBy: number[] }`;
 
 export const searchToolDefinition = {
   name: "search" as const,

@@ -136,10 +136,12 @@ test("output past 10,000 tokens keeps its start and end and names a file holding
   const saved = readFileSync(path, "utf8");
   expect(saved.startsWith("HEAD word")).toBe(true); expect(saved.endsWith(" TAIL")).toBe(true);
   expect(saved.length).toBeGreaterThan(300_000);
-  // The default print is capped the same way; a host with no render directory says the rest is not saved.
-  const plain = capOutput("line\n".repeat(80_000));
-  expect(plain).toContain("[The full output is not saved");
+  // The default print is capped the same way and saved the same way. 136 review SPEC4 superseded the "not saved"
+  // message: every host and every worker has a place to save, so a caller without one gets the kept text alone.
+  const plain = capOutput("line\n".repeat(80_000), spill);
+  expect(plain).toMatch(/\n\n\[Full output: .+\]$/);
   expect(tokens(plain)).toBeLessThanOrEqual(CODE_OUTPUT_TOKENS + 200);
+  expect(capOutput("line\n".repeat(80_000))).not.toContain("not saved");
   expect(capOutput("short")).toBe("short");
 });
 

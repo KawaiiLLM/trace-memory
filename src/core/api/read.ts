@@ -955,7 +955,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         title, ...raw.map(r => r.content), ...raw.flatMap(r => r.receipts), ...receipt()].join("\n");
       return xmlBlock("branch_carry", content); // Tags delimit; content stays byte-identical to shared trace lines.
     },
-    search: searchFacade(store, resultText),
+    search: searchFacade(store),
     status: (sessionId: number, branch?: string, headTurnId?: number | null): string => {
       const s = session(sessionId), runs = store.listRuns(sessionId);
       const totals = spend(sessionId);

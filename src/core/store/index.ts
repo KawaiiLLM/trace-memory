@@ -4735,13 +4735,14 @@ export class Store {
     return rows.map(toSourceEntryMeta);
   }
   /** 22c "complete snapshot": the source-entry identities of many Turns in one read, in the order an
-   * unbound `listSourceEntries` returns them. Identities only — no Raw is loaded to freeze which
-   * occurrences a read saw, so the cost follows the hit count, not the conversation's volume. */
-  listSourceEntryIdsOf(turnIds: number[]): Map<number, number[]> {
-    const entries = new Map<number, number[]>([...new Set(turnIds)].map(id => [id, []]));
+   * unbound `listSourceEntries` returns them. Identities only (id and ordinal) -- no Raw is loaded to freeze
+   * which occurrences a read saw, so the cost follows the hit count, not the conversation's volume. */
+  listSourceEntryRefsOf(turnIds: number[]): Map<number, { id: number; entryOrdinal: number }[]> {
+    const entries = new Map<number, { id: number; entryOrdinal: number }[]>([...new Set(turnIds)].map(id => [id, []]));
     if (!entries.size) return entries;
-    for (const row of this.db.prepare("SELECT id, turn_id FROM source_entries WHERE turn_id IN (SELECT value FROM json_each(?)) ORDER BY id")
-      .all(JSON.stringify([...entries.keys()])) as { id: number; turn_id: number }[]) entries.get(row.turn_id)!.push(row.id);
+    for (const row of this.db.prepare("SELECT id, turn_id, entry_ordinal FROM source_entries WHERE turn_id IN (SELECT value FROM json_each(?)) ORDER BY id")
+      .all(JSON.stringify([...entries.keys()])) as { id: number; turn_id: number; entry_ordinal: number }[])
+      entries.get(row.turn_id)!.push({ id: Number(row.id), entryOrdinal: Number(row.entry_ordinal) });
     return entries;
   }
   sourcePathState(sessionId: number, branch: string): SourcePathState | null {

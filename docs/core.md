@@ -951,10 +951,16 @@ selection; selection grants no source or write authority.
 knowledge comes first (closest lexical match to its text or a topic, then current, then newer), then facts
 and Raw, each newest first. Every knowledge version applicable on the reader's path is a candidate, current,
 superseded and archived alike; other branches' versions are not. Raw hits are entries: the unit whose text
-contains the query, found newest Turn first a chunk at a time, so a small `topk` reads a few Turns.
+contains the query, found newest Turn first a chunk at a time, so a small `topk` reads a few Turns. Raw
+candidates are listed from metadata alone (entry id and ordinal): a body is read, for the whole chunk of Turns at
+once, when a query filter, a printed line or a script first needs a hit's `text`, `role` or `matchLines`, so
+a search that only counts its hits reads none. A Raw hit's `text` is the exact Read of its `address` (the same
+renderer and result extractor as `trace://raw/…#E<k>`, never the host's), and its matching and `matchLines`
+are taken from that text.
 
-Each hit is one structured item (`layer`, `address`, `session`, `time`, `text`, plus the fields of its
-layer, declared as TypeScript in the tool description) and prints as one line:
+Each hit is one structured item (`layer`, `address`, `time`, `text`, plus the fields of its layer, declared as
+TypeScript in the tool description). Facts and Raw also carry `session` and `turn`; a knowledge version belongs
+to no single Turn, so knowledge carries neither (a script reaches a Turn through `supports`). It prints as one line:
 `[K12@v3] (archived) [category/scope] …snippet…` (no mark for the current version), `[F25081] title — …snippet…`
 or `[S173/T8727#E1@user] …snippet…`. One snippet rule serves all three layers: about 200 characters centred on
 the first match, cut with `…`; without a query it is the start of the body (a fact shows its title alone). A Raw
@@ -970,8 +976,11 @@ worker asks for them and waits for the answer. The engine stack is Pi's 512 KiB.
 with `Script completed` or `Script failed` and the wall time; text items are numbered when there are several,
 console lines come in one block, and a failure keeps its partial output before `Script error:`. A script is
 ended at 10 s (the engine is interrupted, and the worker terminated if it does not stop) or at 256 MB; output is capped at 10,000 estimated tokens, keeping its start and end, with the
-full text written to a file where the host has one. A search without `code` is capped the same way. Raw
-`text` and `matchLines` (1-based, numbered as a Read of the hit's address) load on first access.
+full text written to a file whose path the result gives and the caller's own Read can open. A search without `code` is capped the same way.
+Every caller has such a place: a Claude Code session's render directory for `trace://` reads (made when first needed), Pi's
+temporary directory, and for a fresh Noter or Dreamer the run's own: Claude Code's worker render directory, whose files
+its restricted Read may open, and a Pi worker's temporary directory, which its `trace://`-only Read may also open and which
+is removed when the run ends. Raw `text`, `role` and `matchLines` (1-based, numbered as a Read of the hit's address) load on first access.
 
 Raw matching includes tool names, inputs, and results; `%` and `_` are escaped. A miss says that no hit does
 not mean absent. `trace://` reads use host-native limits, not search budgets.

@@ -3,7 +3,7 @@ import { roomyPoolBudget } from "../../knowledge-budget-fixture.ts";
 import type { JsonObject } from "@earendil-works/pi-ai";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { host, reply, emptyNote, dreamerReply, type Reply } from "./test-host.ts";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
@@ -104,6 +104,32 @@ test("32d native host: turn settlement starts a fresh Dreamer and records its fr
     expect(processedIn(store, pool, item.commit)).toBe(true);
     expect(JSON.parse(readFileSync(join(h.dir, "agent", "settings.json"), "utf8")).compaction.enabled).toBe(true);
     expect(h.requests).toHaveLength(3); // skip batch, pass-ending reply, and the reply to the end review (125)
+  } finally { await h.dispose(); }
+});
+
+test("136 review SPEC4: a Pi Dreamer's over-long search output is saved and its path is readable by the worker's Read", async () => {
+  const { h, store, item, pool } = await seeded();
+  try {
+    const toolText = (message: { content?: unknown } | undefined) => ((message?.content as { text?: string }[] | undefined) ?? []).map(part => part.text ?? "").join("");
+    let requests = 0, path = "", readBack = "";
+    h.provider(async c => {
+      requests++;
+      const results = c.messages.filter(m => m.role === "toolResult");
+      if (requests === 1) return call("s1", "search", { layer: "knowledge", code: "text(Array.from({ length: 40000 }, (_, i) => 'line ' + i + ' word').join('\\n'))" });
+      if (requests === 2) {
+        path = /\[Full output: (.+)\]/.exec(toolText(results.at(-1)))![1]!;
+        return call("r1", "read", { path });
+      }
+      if (requests === 3) { readBack = toolText(results.at(-1)); return skip(`K${item.knowledgeId}@v1`); }
+      return reply("Reviewed without changes");
+    }, { autoStop: false });
+    await h.turn();
+    const run = await terminal(h);
+    expect(run.outcome).toBe("success");
+    expect(path).toMatch(/trace-memory-worker-[^/]+\/output-[^/]+\.txt$/);
+    expect(readBack).toContain("line 0 word");
+    expect(existsSync(path)).toBe(false); // removed with the run
+    expect(processedIn(store, pool, item.commit)).toBe(true);
   } finally { await h.dispose(); }
 });
 

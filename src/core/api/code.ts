@@ -77,7 +77,8 @@ export async function runCode(source: string, host: CodeHost, limits: CodeLimits
   });
 }
 
-/** Keep the start and end of an over-long output; the full text goes to `spill`'s file when the host has one. */
+/** Keep the start and end of an over-long output; the full text goes to `spill`'s file. Every host and worker
+ * supplies a `spill`; one is absent only for a direct caller of the facade, which gets the kept text alone. */
 export function capOutput(text: string, spill?: (text: string) => string, maxTokens = CODE_OUTPUT_TOKENS): string {
   const total = tokens(text);
   if (total <= maxTokens) return text;
@@ -88,10 +89,12 @@ export function capOutput(text: string, spill?: (text: string) => string, maxTok
     kept = `${head}…${Math.max(0, total - tokens(head) - tokens(tail))} tokens truncated…${tail}`;
     if (tokens(kept) <= maxTokens) break;
   }
-  let saved: string;
-  try { saved = spill ? `[Full output: ${spill(text)}]` : "[The full output is not saved; filter or summarize in code]"; }
-  catch (error) { saved = `[Could not save the full output: ${error instanceof Error ? error.message : String(error)}]`; }
-  return `Warning: truncated output (original token count: ${total})\n\n${kept}\n\n${saved}`;
+  let saved = "";
+  if (spill) {
+    try { saved = `\n\n[Full output: ${spill(text)}]`; }
+    catch (error) { saved = `\n\n[Could not save the full output: ${error instanceof Error ? error.message : String(error)}]`; }
+  }
+  return `Warning: truncated output (original token count: ${total})\n\n${kept}${saved}`;
 }
 
 /** Pi's result layout: the verdict and wall time, then text items (numbered when several), then the

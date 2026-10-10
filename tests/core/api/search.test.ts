@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import { archive, facts, knowledge } from "../../support/seed.ts";
 import { SEARCH_HIT_TYPES, toolDefinitions } from "../../../src/core/api/index.ts";
+import { countHydratedRows } from "../../perf/fixture.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>;
 beforeEach(() => { memory = sourceSeededMemory(":memory:", async () => { throw new Error("no model calls"); }); });
@@ -156,22 +157,48 @@ function declaredFields(declaration: string): Record<string, string[]> {
   return Object.fromEntries(["Knowledge", "Fact", "Raw"].map(name => [name, own(name)]));
 }
 
-test("the declared hit types match the fields real hits carry, layer by layer", async () => {
+test("the declared hit types match the fields real hits carry, layer by layer: none missing, none undeclared", async () => {
   const f = corpus();
   const old = knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], "declared widget");
+  knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], "declared widget too");
   archive(memory.store, f.path, old.knowledgeId, old.commit, [f.widgetFact.id], "budget");
   const declared = declaredFields(SEARCH_HIT_TYPES);
   expect(Object.keys(declared)).toEqual(["Knowledge", "Fact", "Raw"]);
+  // 136 ruling (SPEC3): a knowledge version belongs to no single Turn, so only facts and Raw carry session and turn.
+  expect(declared.Knowledge).not.toEqual(expect.arrayContaining(["session"]));
+  expect(declared.Knowledge).not.toEqual(expect.arrayContaining(["turn"]));
+  expect(declared.Fact).toEqual(expect.arrayContaining(["session", "turn"]));
+  expect(declared.Raw).toEqual(expect.arrayContaining(["session", "turn"]));
   const description = toolDefinitions.find(t => t.name === "search")!.description;
   expect(description).toContain(SEARCH_HIT_TYPES);
   const tool = memory.tools({ kind: "manual", sessionId: f.session.id, branch: "main", currentTurnId: f.turns.at(-1)!.id }).find(t => t.name === "search")!;
+  // Every real item of every layer, in the sandbox where a script sees it: each declared field is an own property
+  // (a lazily read one too) and the item has no other.
   const seen = await tool.execute({ query: "widget", topk: 50,
-    code: "return JSON.stringify(['knowledge', 'facts', 'raw'].map(layer => { const h = hits.find(x => x.layer === layer); return h && { layer, keys: Object.keys(h), archived: layer === 'knowledge' ? hits.some(x => x.status === 'archived' && x.archiveKind === 'budget') : null }; }))" });
+    code: `const declared = ${JSON.stringify(declared)}; const names = { knowledge: 'Knowledge', facts: 'Fact', raw: 'Raw' };
+      return JSON.stringify(hits.map(h => { const fields = declared[names[h.layer]];
+        return { layer: h.layer, status: h.status, missing: fields.filter(k => !Object.hasOwn(h, k)), undeclared: Object.keys(h).filter(k => !fields.includes(k)) }; }))` });
   const items = JSON.parse(/\[.*\]/.exec(seen as string)![0].replaceAll("\\\"", "\""));
-  expect(items.every(Boolean)).toBe(true);
-  for (const item of items) {
-    const name = { knowledge: "Knowledge", facts: "Fact", raw: "Raw" }[item.layer as string]!;
-    expect([...item.keys].sort(), `${name} item fields`).toEqual([...declared[name]!].sort());
-  }
-  expect(items[0].archived).toBe(true);
+  expect(new Set(items.map((item: { layer: string }) => item.layer))).toEqual(new Set(["knowledge", "facts", "raw"]));
+  expect(items.some((item: { status: string }) => item.status === "archived")).toBe(true);
+  for (const item of items) expect(item, `${item.layer} item`).toMatchObject({ missing: [], undeclared: [] });
+});
+
+test("candidates come from metadata: counting hits reads no Raw body, and a body is read when text, role or lines are first needed", async () => {
+  const f = corpus();
+  const entries = memory.store.listSourceEntries(f.session.id).length;
+  const search = (code: string) => memory.search(undefined, "raw", { ...f.path, code }) as Promise<string>;
+  const hydrated = countHydratedRows();
+  try {
+    expect(await search("return hits.length + ' ' + hits.map(h => h.address + h.entry + h.turn + h.session + h.time + h.citedBy.length).length")).toContain(`${entries} ${entries}`);
+    expect(await search("return hits[0].address")).toContain("trace://raw/");
+    expect(hydrated.reads()).toBe(0);
+    expect(await search("return hits[0].text")).toMatch(/Output:\n.+/);
+    expect(hydrated.reads()).toBeGreaterThan(0);
+    expect(hydrated.reads()).toBeLessThanOrEqual(entries);
+    hydrated.reset();
+    // The default print needs bodies; a query search needs them to filter, and only for the Turns its index returns.
+    memory.search(undefined, "raw", { ...f.path, topk: 1 });
+    expect(hydrated.reads()).toBeGreaterThan(0);
+  } finally { hydrated.restore(); }
 });

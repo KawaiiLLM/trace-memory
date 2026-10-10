@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { toolDefinitions } from "../../src/core/api/index.ts";
 import { renderToolDefinitions } from "../../src/core/api/tools.ts";
 import { ccPluginToolNames } from "../../src/hosts/cc/tool-names.ts";
@@ -35,6 +35,7 @@ async function fixture(nativePrefix = "mcp__traceMemory__", forkToolCall: (id: s
   const importer = new CcImporter(config, binding), result = await importer.reconcile();
   const exact = importer.persistedCall("call-note", "note")!;
   const coordinator = {
+    spill: new CcCoordinator(config, nativeSessionId, () => {}).spill,
     forkToolCall,
     toolProjection: async () => ({ memory: importer.memory, binding: { coreSessionId: result.coreSessionId!, branch: result.branch,
       headTurnId: result.headTurnId!, triggerEntryId: result.selectedEntryIds.at(-1)! } }),
@@ -121,6 +122,21 @@ test("search scope, layer and code execute through the CC surface; removed param
     expect(scripted).toContain("Script completed"); expect(scripted).toContain("trace://K1@v1 session"); expect(scripted).toContain("trace://K2@v1 global");
     for (const removed of [{ cursor: "x" }, { cap: 1 }, { maxTokens: 8000 }, { versions: "all" }, { category: "open" }, { fields: [] }])
       expect((await f.tools.call("search", { layer: "knowledge", ...removed }, undefined)).isError).toBe(true);
+  } finally { f.importer.close(); }
+});
+
+test("136 review STD1: the first over-long search output of a brand-new native session is saved and readable", async () => {
+  const f = await fixture();
+  try {
+    const rendered = join(f.config.stateDir, "rendered", f.nativeSessionId);
+    expect(existsSync(rendered)).toBe(false); // no trace:// Read has rendered anything for this session yet
+    const out = text(await f.tools.call("search", { layer: "knowledge", code: "text('HEAD ' + 'word '.repeat(60000) + ' TAIL')" }, undefined));
+    expect(out).not.toContain("Could not save");
+    const path = /\[Full output: (.+)\]/.exec(out)![1]!;
+    expect(path.startsWith(rendered + sep)).toBe(true);
+    const saved = readFileSync(path, "utf8");
+    expect(saved.startsWith("HEAD word")).toBe(true); expect(saved.endsWith(" TAIL")).toBe(true);
+    expect(saved.length).toBeGreaterThan(300_000);
   } finally { f.importer.close(); }
 });
 

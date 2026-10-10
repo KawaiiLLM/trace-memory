@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { TraceMemory, renderEntry, tokens, toolDefinitions, DEFAULT_CONFIG, type SourceEntry, type NotingAgentInput } from "../../../src/core/api/index.ts";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { conversationOf, host, reply, usage } from "./test-host.ts";
@@ -340,3 +341,34 @@ test("20b 2026-09-08 scenario 5: a small oldest entry is not joined with a near-
 
 // Retired C-only fact-capacity admission has no live worker. N's oldest-entry and per-round
 // capacity refusals above remain active; D's real pending-version admission is exercised here.
+
+// 136 review SPEC4: a Noter's search output past the cap is saved, and the path in the result opens with the
+// worker's own `read`, which otherwise opens trace:// only. The directory is removed when the run ends.
+test("136 review SPEC4: a Pi Noter's over-long search output is saved and its path is readable by the worker's Read", async () => {
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  try {
+    const toolText = (message: { content?: unknown } | undefined) => ((message?.content as { text?: string }[] | undefined) ?? []).map(part => part.text ?? "").join("");
+    let path = "", readBack = "", stranger = "";
+    h.provider(async conversation => {
+      const results = conversation.messages.filter(m => m.role === "toolResult");
+      if (!results.length) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "s1", name: "search",
+        arguments: { layer: "raw", code: "text(Array.from({ length: 40000 }, (_, i) => 'line ' + i + ' word').join('\\n'))" } }] };
+      if (results.length === 1) {
+        path = /\[Full output: (.+)\]/.exec(toolText(results[0]))![1]!;
+        return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "r1", name: "read", arguments: { path } }] };
+      }
+      if (results.length === 2) {
+        readBack = toolText(results[1]);
+        return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "r2", name: "read", arguments: { path: join(path, "..", "..", "elsewhere.txt") } }] };
+      }
+      if (results.length === 3) stranger = toolText(results[2]);
+      return reply("Done.");
+    });
+    await h.prompt("word ".repeat(500)); await h.answer("word ".repeat(500));
+    await h.emit("agent_settled"); await h.drain();
+    expect(path).toMatch(/trace-memory-worker-[^/]+\/output-[^/]+\.txt$/);
+    expect(readBack).toContain("line 0 word"); // Pi's Read pages a long file; the first page opens
+    expect(stranger).toMatch(/restricted to trace:\/\//);
+    expect(existsSync(path)).toBe(false); // removed with the run
+  } finally { await h.dispose(); }
+});

@@ -8,7 +8,7 @@ import { memoryPath, resolvedMemoryPath, toolRejected } from "../../core/api/ind
 import { CC_AGENT_SDK_VERSION, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
-import { materializeCcWorkerRead } from "./files.ts";
+import { materializeCcWorkerRead, saveCcWorkerOutput } from "./files.ts";
 import { CC_WORKER_SERVER_NAME, ccWorkerToolNames } from "./tool-names.ts";
 
 export type CcAgentTask = NotingAgentInput | DreamingAgentInput;
@@ -368,6 +368,9 @@ export class CcAgentWorker {
     mkdirSync(renderedRoot, { recursive: true, mode: 0o700 });
     const readDirectory = mkdtempSync(join(renderedRoot, "worker-"));
     const rendered = new Map<string, string>();
+    // Ticket 136: an over-long search output lands in this directory and is registered as a rendering, so the
+    // worker's restricted Read may open it.
+    task.setSpill?.(text => { const path = saveCcWorkerOutput(readDirectory, text); rendered.set(path, "search output"); return path; });
     const onRead = async (raw: unknown) => {
       const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse" as const,
         permissionDecision: "deny" as const, permissionDecisionReason: reason } });

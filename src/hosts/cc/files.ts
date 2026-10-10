@@ -88,6 +88,8 @@ function ccGrep(files: Iterable<MemoryGrepFile>, path: string, options: CcGrepOp
 }
 
 function materializeCcRead(directory: string, content: string, virtualPath?: string): string {
+  // The directory may not exist yet: a session's first render, or a worker's first saved output.
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
   // Main reads share one file per normalized virtual path; fresh workers keep their per-run files.
   const target = virtualPath === undefined ? join(mkdtempSync(join(directory, "read-")), "memory.txt")
     : join(directory, ...virtualPath.slice(MEMORY_ROOT.length).split("/").filter(Boolean), "memory.txt");
@@ -106,6 +108,10 @@ function materializeCcRead(directory: string, content: string, virtualPath?: str
 export function spillCcOutput(config: ResolvedCcHostConfig, nativeSessionId: string, text: string): string {
   return materializeCcRead(join(config.stateDir, "rendered", validateNativeSessionId(nativeSessionId)), text);
 }
+
+/** Ticket 136: an over-long `search` output of a fresh Noter or Dreamer, saved in that run's own render
+ * directory, the only place its restricted Read reaches (worker.ts registers the returned path). */
+export const saveCcWorkerOutput = (directory: string, text: string): string => materializeCcRead(directory, text);
 
 /** A fresh worker reads with its frozen Core target, never a foreground native binding. */
 export function materializeCcWorkerRead(config: ResolvedCcHostConfig, reader: MemoryReader, path: string, directory: string): string {

@@ -5160,12 +5160,13 @@ ${shownBody}${evidenceLine}${diffLine}`;
     return rows.map(toSourceEntryMeta);
   }
   /** 22c "complete snapshot": the source-entry identities of many Turns in one read, in the order an
-   * unbound `listSourceEntries` returns them. Identities only — no Raw is loaded to freeze which
-   * occurrences a read saw, so the cost follows the hit count, not the conversation's volume. */
-  listSourceEntryIdsOf(turnIds) {
+   * unbound `listSourceEntries` returns them. Identities only (id and ordinal) -- no Raw is loaded to freeze
+   * which occurrences a read saw, so the cost follows the hit count, not the conversation's volume. */
+  listSourceEntryRefsOf(turnIds) {
     const entries = new Map([...new Set(turnIds)].map((id) => [id, []]));
     if (!entries.size) return entries;
-    for (const row of this.db.prepare("SELECT id, turn_id FROM source_entries WHERE turn_id IN (SELECT value FROM json_each(?)) ORDER BY id").all(JSON.stringify([...entries.keys()]))) entries.get(row.turn_id).push(row.id);
+    for (const row of this.db.prepare("SELECT id, turn_id, entry_ordinal FROM source_entries WHERE turn_id IN (SELECT value FROM json_each(?)) ORDER BY id").all(JSON.stringify([...entries.keys()])))
+      entries.get(row.turn_id).push({ id: Number(row.id), entryOrdinal: Number(row.entry_ordinal) });
     return entries;
   }
   sourcePathState(sessionId, branch) {
@@ -6787,17 +6788,21 @@ function capOutput(text, spill, maxTokens = CODE_OUTPUT_TOKENS) {
     kept = `${head}\u2026${Math.max(0, total - tokens(head) - tokens(tail))} tokens truncated\u2026${tail}`;
     if (tokens(kept) <= maxTokens) break;
   }
-  let saved;
-  try {
-    saved = spill ? `[Full output: ${spill(text)}]` : "[The full output is not saved; filter or summarize in code]";
-  } catch (error3) {
-    saved = `[Could not save the full output: ${error3 instanceof Error ? error3.message : String(error3)}]`;
+  let saved = "";
+  if (spill) {
+    try {
+      saved = `
+
+[Full output: ${spill(text)}]`;
+    } catch (error3) {
+      saved = `
+
+[Could not save the full output: ${error3 instanceof Error ? error3.message : String(error3)}]`;
+    }
   }
   return `Warning: truncated output (original token count: ${total})
 
-${kept}
-
-${saved}`;
+${kept}${saved}`;
 }
 function formatCodeResult(output, spill) {
   const texts = output.items.filter((item) => !item.console), lines = output.items.filter((item) => item.console).map((item) => item.text);
@@ -6875,7 +6880,11 @@ function similarity(a, b) {
 // src/core/api/search.ts
 var SEARCH_LAYERS = ["knowledge", "facts", "raw", "all"];
 var SEARCH_DEFAULT_TOPK = 10;
-var CHUNK_TURNS = 25;
+var SEARCH_CHUNK_TURNS = 25;
+var CHUNK_TURNS = SEARCH_CHUNK_TURNS;
+var raise = (message) => {
+  throw new Error(message);
+};
 function validateSearchInput(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
   const input = raw;
@@ -6912,7 +6921,7 @@ function* newest(streams) {
 function* chain(streams) {
   for (const stream of streams) yield* stream;
 }
-function searchFacade(store, resultText = rawResultText) {
+function searchFacade(store) {
   return (query2, layer = "all", options = {}) => {
     if (!SEARCH_LAYERS.includes(layer)) throw new Error("invalid search layer");
     if (options.scope !== void 0 && !KNOWLEDGE_SCOPES.includes(options.scope)) throw new Error("invalid knowledge scope filter");
@@ -6946,12 +6955,10 @@ function searchFacade(store, resultText = rawResultText) {
         const status = selection.current.has(r.id) ? r.op === "archive" ? "archived" : "current" : "superseded";
         const text = r.op === "archive" && !r.text ? selection.byCommit.get(r.parentId ?? -1)?.text ?? "" : r.text;
         const group = knowledgeCategoryGroup(r.category), version3 = ordinals.get(r.id);
-        const owner = r.runId === null ? void 0 : selection.input.metadata.runs.get(r.runId);
         yield {
           item: {
             layer: "knowledge",
             address: `trace://K${r.knowledgeId}@v${version3}`,
-            session: owner ?? null,
             time: r.createdAt,
             text,
             id: r.knowledgeId,
@@ -7002,22 +7009,23 @@ function searchFacade(store, resultText = rawResultText) {
       const needle = query2?.toLocaleLowerCase();
       for (let from = 0; from < turnIds.length; from += CHUNK_TURNS) {
         const chunk = turnIds.slice(from, from + CHUNK_TURNS);
-        const entryIds = store.listSourceEntryIdsOf(chunk);
-        const entries = new Map(store.hydrateSourceEntries([...entryIds.values()].flat()).map((entry) => [entry.id, entry]));
-        const cited = store.factsCitingEntries([...entries.keys()]);
+        const refs = store.listSourceEntryRefsOf(chunk);
+        const ids = [...refs.values()].flatMap((list) => list.map((ref) => ref.id));
+        let bodies;
+        const body = (id) => (bodies ??= new Map(store.hydrateSourceEntries(ids).map((entry) => [entry.id, entry]))).get(id);
+        const cited = store.factsCitingEntries(ids);
         for (const turnId of chunk) {
           const turn = store.getTurn(turnId);
           if (!turn) continue;
-          for (const id of entryIds.get(turnId) ?? []) {
-            const entry = entries.get(id);
-            if (!entry) continue;
+          for (const { id, entryOrdinal } of refs.get(turnId) ?? []) {
+            const entry = () => body(id) ?? raise(`source entry ${id} has no stored body`);
             let rendered;
-            const text = () => rendered ??= renderEntryWhole(entry, resultText, void 0, void 0, true).content;
-            if (needle !== void 0 && !text().toLocaleLowerCase().includes(needle)) continue;
-            const role = entry.role === "toolResult" ? "observation" : entry.role;
-            const label = `S${turn.sessionId}/T${turnId}#E${entry.entryOrdinal}`;
+            const text = () => rendered ??= renderEntryWhole(entry(), rawResultText, void 0, void 0, true).content;
+            if (needle !== void 0 && !(body(id) && text().toLocaleLowerCase().includes(needle))) continue;
+            const role = () => entry().role === "toolResult" ? "observation" : entry().role;
+            const label = `S${turn.sessionId}/T${turnId}#E${entryOrdinal}`;
             const matchLines = () => needle === void 0 ? [] : text().split("\n").flatMap((line, index) => line.toLocaleLowerCase().includes(needle) ? [index + 1] : []);
-            const body = () => text().replace(new RegExp(`^\\[T${turnId}#E${entry.entryOrdinal}@${role}\\] (?:${role}: )?`), "");
+            const snippetBody = () => text().replace(new RegExp(`^\\[T${turnId}#E${entryOrdinal}@${role()}\\] (?:${role()}: )?`), "");
             yield {
               item: {
                 layer: "raw",
@@ -7025,13 +7033,12 @@ function searchFacade(store, resultText = rawResultText) {
                 session: turn.sessionId,
                 turn: turnId,
                 time: turn.startedAt,
-                entry: entry.entryOrdinal,
-                role,
+                entry: entryOrdinal,
                 citedBy: cited.get(id) ?? [],
-                lazy: ["text", "matchLines"]
+                lazy: ["role", "text", "matchLines"]
               },
-              line: () => `[${label}@${role}] ${snippet(body(), query2)}`,
-              load: { text, matchLines }
+              line: () => `[${label}@${role()}] ${snippet(snippetBody(), query2)}`,
+              load: { role, text, matchLines }
             };
           }
         }
@@ -7058,10 +7065,10 @@ function searchFacade(store, resultText = rawResultText) {
   };
 }
 var SEARCH_HIT_TYPES = `type Hit = Knowledge | Fact | Raw;
-interface Base { address: string; session: number | null; time: string; text: string }
+interface Base { address: string; time: string; text: string }
 interface Knowledge extends Base { layer: "knowledge"; id: number; version: number; status: "current" | "superseded" | "archived"; archiveKind: "budget" | "invalid" | null; category: string; scope: "global" | "project" | "session"; topics: string[]; supports: number[]; reason: string }
-interface Fact extends Base { layer: "facts"; turn: number; id: number; title: string | null; sources: { address: string; role: string | null; text: string }[]; citedBy: number[] }
-interface Raw extends Base { layer: "raw"; turn: number; entry: number; role: "user" | "assistant" | "observation"; matchLines: number[]; citedBy: number[] }`;
+interface Fact extends Base { layer: "facts"; session: number; turn: number; id: number; title: string | null; sources: { address: string; role: string | null; text: string }[]; citedBy: number[] }
+interface Raw extends Base { layer: "raw"; session: number; turn: number; entry: number; role: "user" | "assistant" | "observation"; matchLines: number[]; citedBy: number[] }`;
 var searchToolDefinition = {
   name: "search",
   description: `Literal substring search over knowledge (every version, marked with its status), facts and raw. Without query it lists the newest. topk caps hits across layers (default 10 with a query). A hit prints as one line; pass code to filter and print instead. No hit does not mean absent.
@@ -8739,7 +8746,7 @@ function readFacade(store, config3, prepare = () => {
       ].join("\n");
       return xmlBlock("branch_carry", content);
     },
-    search: searchFacade(store, resultText),
+    search: searchFacade(store),
     status: (sessionId, branch, headTurnId) => {
       const s = session(sessionId), runs = store.listRuns(sessionId);
       const totals = spend(sessionId);
@@ -10417,6 +10424,10 @@ Knowledge: ${backlinks.join("; ")}` : "");
     };
     if (external?.aborted) onExternalAbort();
     else external?.addEventListener("abort", onExternalAbort, { once: true });
+    let hostSpill;
+    const spill = (text) => (hostSpill ?? (() => {
+      throw new Error("this run has no place to save output");
+    }))(text);
     const bind = (context, run, dreaming) => {
       run.claim = claim;
       run.projectId = projectId;
@@ -10428,7 +10439,7 @@ Knowledge: ${backlinks.join("; ")}` : "");
       const binding = bindTools(
         store,
         read,
-        input.maxReadChars === void 0 ? context : { ...context, maxReadChars: input.maxReadChars },
+        { ...context, ...input.maxReadChars === void 0 ? {} : { maxReadChars: input.maxReadChars }, spill },
         run,
         dreaming,
         frozen.names
@@ -10449,6 +10460,9 @@ Knowledge: ${backlinks.join("; ")}` : "");
         cancellation: generation,
         reportProgress: (value) => {
           Object.assign(progress, value);
+        },
+        setSpill: (save) => {
+          hostSpill = save;
         }
       }), forced]);
     };
@@ -12308,6 +12322,7 @@ function ccGrep(files, path, options) {
   return { lines, total: all.length, matches, countFiles, pagination, appliedLimit, offset };
 }
 function materializeCcRead(directory, content, virtualPath) {
+  (0, import_node_fs6.mkdirSync)(directory, { recursive: true, mode: 448 });
   const target = virtualPath === void 0 ? (0, import_node_path5.join)((0, import_node_fs6.mkdtempSync)((0, import_node_path5.join)(directory, "read-")), "memory.txt") : (0, import_node_path5.join)(directory, ...virtualPath.slice(MEMORY_ROOT.length).split("/").filter(Boolean), "memory.txt");
   const parent = (0, import_node_path5.dirname)(target);
   (0, import_node_fs6.mkdirSync)(parent, { recursive: true, mode: 448 });
@@ -12324,6 +12339,7 @@ function materializeCcRead(directory, content, virtualPath) {
 function spillCcOutput(config3, nativeSessionId, text) {
   return materializeCcRead((0, import_node_path5.join)(config3.stateDir, "rendered", validateNativeSessionId(nativeSessionId)), text);
 }
+var saveCcWorkerOutput = (directory, text) => materializeCcRead(directory, text);
 function materializeCcWorkerRead(config3, reader, path, directory) {
   const memory = TraceMemory(config3.dbPath, async () => {
     throw new Error("trace:// reads run no model work");
@@ -41897,6 +41913,11 @@ var CcAgentWorker = class {
     (0, import_node_fs7.mkdirSync)(renderedRoot, { recursive: true, mode: 448 });
     const readDirectory = (0, import_node_fs7.mkdtempSync)((0, import_node_path6.join)(renderedRoot, "worker-"));
     const rendered = /* @__PURE__ */ new Map();
+    task.setSpill?.((text) => {
+      const path = saveCcWorkerOutput(readDirectory, text);
+      rendered.set(path, "search output");
+      return path;
+    });
     const onRead = async (raw) => {
       const deny = (reason) => ({ hookSpecificOutput: {
         hookEventName: "PreToolUse",

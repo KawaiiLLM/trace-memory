@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
-import { searchFacade } from "../../../src/core/api/search.ts";
+import { SEARCH_CHUNK_TURNS } from "../../../src/core/api/search.ts";
 import { CODE_DEADLINE_MS } from "../../../src/core/api/code.ts";
 import { countHydratedRows, generate, type Fixture } from "../../perf/fixture.ts";
 
@@ -52,11 +52,18 @@ test("a search with no query lists the newest entries cheaply and counts the who
   const whole = await timed(() => memory.search(undefined, "raw", { ...scope(), code: "text(hits.length)" }));
   expect(Number((whole.value as string).split("Output:\n")[1])).toBeGreaterThanOrEqual(fixture.entryCount);
   expect(whole.ms).toBeLessThan(CODE_DEADLINE_MS / 2);
-  // Text is fetched on access: counting every hit renders no body, reading one hit renders that one.
-  let rendered = 0;
-  const counting = searchFacade(memory.store, result => { rendered++; return { text: result }; });
-  expect(Number((await counting(undefined, "raw", { ...scope(), code: "text(hits.length)" }) as string).split("Output:\n")[1])).toBeGreaterThanOrEqual(fixture.entryCount);
-  expect(rendered).toBe(0);
-  expect(await counting(undefined, "raw", { ...scope(), code: "return hits[0].text.length > 0" })).toMatch(/Output:\ntrue$/);
-  expect(rendered).toBeLessThanOrEqual(1); // the newest entry's one tool result, if it has one
+  // 136 review SPEC1, by counting hydrated bodies and not by time: listing candidates reads none, so counting every
+  // hit of the project hydrates 0, and reading one hit's text hydrates at most the chunk of Turns it sits in.
+  const counted = countHydratedRows();
+  try {
+    const printed = await memory.search(undefined, "raw", { ...scope(), code: "return hits.length" }) as string;
+    expect(Number(printed.split("Output:\n")[1])).toBeGreaterThanOrEqual(fixture.entryCount);
+    expect(counted.reads()).toBe(0);
+    expect(await memory.search(undefined, "raw", { ...scope(), code: "return hits[0].text.length > 0" })).toMatch(/Output:\ntrue$/);
+    const newest = memory.store.listTurns(fixture.sessionId).map(turn => turn.id).sort((a, b) => b - a).slice(0, SEARCH_CHUNK_TURNS);
+    const chunkEntries = [...memory.store.listSourceEntryRefsOf(newest).values()].reduce((sum, list) => sum + list.length, 0);
+    expect(counted.reads()).toBeGreaterThan(0);
+    expect(counted.reads()).toBeLessThanOrEqual(chunkEntries);
+    expect(chunkEntries).toBeLessThan(fixture.entryCount / 10);
+  } finally { counted.restore(); }
 }, 30_000);

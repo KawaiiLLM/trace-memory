@@ -197,13 +197,22 @@ export default function (pi: ExtensionAPI) {
     // Everything the run needs, resolved now and frozen: the model, the runs directory, the tool
     // round cap and the fork launch cannot be re-read by a run already in flight, and this host
     // keeps its own state behind the callbacks below.
+    // Ticket 136: a worker's Read opens trace:// only, so an over-long search output is saved in a directory
+    // made for this run on first use, which that Read may also open; it is removed when the run ends.
+    let outputDirectory: string | undefined;
+    input.setSpill?.(text => {
+      outputDirectory ??= mkdtempSync(join(tmpdir(), "trace-memory-worker-"));
+      const path = join(outputDirectory, `output-${randomUUID()}.txt`);
+      writeFileSync(path, text, { mode: 0o600 });
+      return path;
+    });
     return runWorker(input, {
       model: model as unknown as WorkerModel | undefined, checkCapacity, tools,
       runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
       read: memoryReadTool(callContext.cwd, path => {
         if (!input.reader) throw new Error("Memory worker read requires its frozen reader");
         return memoryFiles(memory, input.reader).read(path);
-      }, { memoryOnly: true }),
+      }, { memoryOnly: true, readableDirectory: () => outputDirectory }),
       maxToolRounds: memory.config[input.kind].maxToolRounds,
       // 27b/27c: a task carrying a reason was admitted as a subagent — the configured model, that
       // model's capacity, fresh material — because something already refused its fork. It is offered
@@ -224,7 +233,7 @@ export default function (pi: ExtensionAPI) {
         callContext.ui.notify(`Trace Memory: ${input.kind} retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${event.error}`, "warning");
       },
       onRetryEnd: () => showSpend(callContext), // the same refresh point as before; only the colour is gone
-    });
+    }).finally(() => { if (outputDirectory) rmSync(outputDirectory, { recursive: true, force: true }); });
   }, core, piResultText, piSourceBlocks);
   /** One fork-to-subagent notice per Pi session, whatever refused the fork: the live state at
    * admission (29c's Raw availability), the launch, the native runner's own

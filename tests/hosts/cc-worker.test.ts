@@ -196,6 +196,41 @@ test("fresh CC Read uses Core's frozen reader, denies other files, and re-render
   expect(observed).toBe(true);
 });
 
+test.each(["noting", "dreaming"] as const)("136 review SPEC4: a fresh %s worker's saved search output is a rendering its own Read may open", async kind => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-spill-")); dirs.push(directory);
+  const config = workerConfig(directory);
+  const cwd = join(directory, "private-cwd"); mkdirSync(cwd);
+  config.worker!.cwd = cwd;
+  let spill: ((text: string) => string) | undefined;
+  const full = `HEAD ${"word ".repeat(60_000)} TAIL`;
+  let observed = false;
+  const fakeQuery = ((request: { options: Record<string, any> }) => {
+    const stream = (async function* () {
+      const hook = request.options.hooks.PreToolUse[0].hooks[0];
+      const path = spill!(full);
+      expect(realpathSync(path).startsWith(realpathSync(join(cwd, "rendered")) + sep)).toBe(true);
+      expect(readFileSync(path, "utf8")).toBe(full);
+      expect((await hook({ tool_name: "Read", cwd, tool_input: { file_path: path } })).hookSpecificOutput.permissionDecision).toBe("allow");
+      // Only what this run saved or rendered: a sibling file in the same directory, another run's file and other paths stay denied.
+      const sibling = join(path, "..", "..", "stranger.txt"); writeFileSync(sibling, "not saved by this run");
+      expect((await hook({ tool_name: "Read", cwd, tool_input: { file_path: sibling } })).hookSpecificOutput.permissionDecision).toBe("deny");
+      expect((await hook({ tool_name: "Read", cwd, tool_input: { file_path: "/etc/passwd" } })).hookSpecificOutput.permissionDecision).toBe("deny");
+      observed = true;
+      yield { type: "system", subtype: "init", session_id: "spill-worker", claude_code_version: TEST_CC_VERSION, cwd,
+        tools: ["Read"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "success", session_id: "spill-worker", is_error: false, result: "ok", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind, text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(), reportRounds: vi.fn(),
+    passEnd: vi.fn(() => kind === "noting" ? "Review this run once." : undefined), setSpill: (save: (text: string) => string) => { spill = save; },
+    reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
+  expect((await new NativeCcAgentWorker(config, { query: kind === "noting" ? withNoterReview(fakeQuery, task) : fakeQuery }).run(task, 0)).outcome).toBe("success");
+  expect(observed).toBe(true);
+});
+
 test("production worker serves original schemas and raw arguments, publishes the result bound, and maps origins and usage", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-real-")); dirs.push(directory);
   const executable = join(directory, "claude");

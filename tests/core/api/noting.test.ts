@@ -120,6 +120,26 @@ test("worker tool names are rendered before capacity, audit and held-result stat
   expect(memory.store.listRuns(sessionId).at(-1)!.promptHash).toBe(createHash("sha256").update(expected).digest("hex"));
 });
 
+test("136 review SPEC4: a Noter's over-long search output is saved where its host says, and the path is in the result", async () => {
+  const first = turn();
+  const saved: string[] = [];
+  let answer = "", unplaced = "";
+  script.push(async input => {
+    const search = input.tools.find(tool => tool.name === "search")!;
+    const overflow = { layer: "raw", code: "text('HEAD ' + 'word '.repeat(60000) + ' TAIL')" };
+    unplaced = await search.execute(overflow); // before the host has named a place
+    input.setSpill!(text => { saved.push(text); return "/where/the/host/saved/it"; });
+    answer = await search.execute(overflow);
+    return { outcome: "success", output: "done", request };
+  });
+  await noting(first.id);
+  expect(answer).toContain("[Full output: /where/the/host/saved/it]");
+  expect(answer).not.toContain("not saved");
+  expect(saved).toHaveLength(1);
+  expect(saved[0]!.startsWith("HEAD word")).toBe(true); expect(saved[0]!.endsWith(" TAIL")).toBe(true);
+  expect(unplaced).toContain("[Could not save the full output: this run has no place to save output]");
+});
+
 test("fork and refused-fork fresh admissions freeze distinct namespaces, guidance, exact costs and hashes", () => {
   const first = turn();
   const target = { sessionId, branch: "main", headTurnId: first.id, mode: "fork" as const };

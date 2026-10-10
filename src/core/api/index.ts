@@ -362,6 +362,9 @@ export interface AgentControl {
   reader?: import("./files.ts").MemoryReader;
   signal?: AbortSignal;
   reportProgress?: (progress: Partial<RunAgentResult>) => void;
+  /** Ticket 136: the host calls this once, before the run's first tool call, with a function that saves an
+   * over-long `search` output where this run's own Read can read it and returns the path. */
+  setSpill?: (spill: (text: string) => string) => void;
   /** 26b: the level frozen at admission (`TaskOptions.thinkingLevel`), returned to the host with the
    * frozen task so a level changed while the run is in flight cannot reach it. */
   thinkingLevel?: string;
@@ -964,13 +967,15 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     if (external?.aborted) onExternalAbort();
     else external?.addEventListener("abort", onExternalAbort, { once: true });
+    let hostSpill: ((text: string) => string) | undefined;
+    const spill = (text: string) => (hostSpill ?? (() => { throw new Error("this run has no place to save output"); }))(text);
     const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, dreaming?: Parameters<typeof bindTools>[4]) => {
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
       run.executionId = executionId!;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
       Object.assign(run, store.bindRunOrigin(run, origin));
       if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
-      const binding = bindTools(store, read, input.maxReadChars === undefined ? context : { ...context, maxReadChars: input.maxReadChars },
+      const binding = bindTools(store, read, { ...context, ...(input.maxReadChars === undefined ? {} : { maxReadChars: input.maxReadChars }), spill },
         run, dreaming, frozen!.names);
       task.close = binding.close;
       return binding;
@@ -980,7 +985,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       return Promise.race([runAgent({ ...raw as object,
         reader: { sessionId: target.sessionId, branch: target.branch, headTurnId: target.headTurnId, projectId, toolNames: { ...frozen!.names } },
         signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel, fallbackReason: input.fallbackReason, forkAttempt: input.forkAttempt, cancellation: generation,
-        reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
+        reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); },
+        setSpill: (save: (text: string) => string) => { hostSpill = save; } }), forced]);
     };
     let result: NotingResult | DreamingResult | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined, timedOut = false;

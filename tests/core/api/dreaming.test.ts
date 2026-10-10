@@ -76,6 +76,23 @@ test("native Read token estimate counts in Dreamer capacity before dispatch", as
   expect(processed(f)).toEqual([]);
 });
 
+test("136 review SPEC4: a Dreamer's over-long search output is saved where its host says, and the path is in the result", async () => {
+  const f = fixture();
+  const saved: string[] = [];
+  let answer = "";
+  const { result } = await admitted(f, async task => {
+    task.setSpill!(text => { saved.push(text); return "/where/the/host/saved/it"; });
+    answer = await task.tools.find(tool => tool.name === "search")!.execute({ layer: "knowledge", code: "text('HEAD ' + 'word '.repeat(60000) + ' TAIL')" });
+    task.acknowledgeRequest();
+    return { outcome: "failure", output: "fixture stopped", request: { exact: "spill" } };
+  });
+  expect(result.outcome).toBe("failure");
+  expect(answer).toContain("[Full output: /where/the/host/saved/it]");
+  expect(answer).not.toContain("not saved");
+  expect(saved).toHaveLength(1);
+  expect(saved[0]!.startsWith("HEAD word")).toBe(true); expect(saved[0]!.endsWith(" TAIL")).toBe(true);
+});
+
 test("Dreamer instructions use its fresh host's exposed check, memory and read tools in the audited prompt", async () => {
   const f = fixture();
   createDreamerTrigger(f.memory, f.target, f.fact, 1);
