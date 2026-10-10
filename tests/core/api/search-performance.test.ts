@@ -10,11 +10,16 @@ import { CODE_DEADLINE_MS } from "../../../src/core/api/code.ts";
 import { countHydratedRows, generate, type Fixture } from "../../perf/fixture.ts";
 
 // Counts the questions the script's thread puts to the host (ticket 138), by passing every call through.
-const asked = vi.hoisted(() => ({ fields: [] as string[] }));
+const asked = vi.hoisted(() => ({ fields: [] as string[], answered: [] as number[] }));
 vi.mock("../../../src/core/api/code.ts", async importOriginal => {
   const original = await importOriginal<typeof import("../../../src/core/api/code.ts")>();
   return { ...original, runCode: (source: string, host: Parameters<typeof original.runCode>[1], limits?: Parameters<typeof original.runCode>[2]) =>
-    original.runCode(source, { ...host, field: (index, name) => { asked.fields.push(name); return host.field(index, name); } }, limits) };
+    original.runCode(source, { ...host, field: (index, name) => {
+      asked.fields.push(name);
+      const answer = host.field(index, name);
+      asked.answered.push(Object.keys(answer as object).length);
+      return answer;
+    } }, limits) };
 });
 
 let directory: string, fixture: Fixture, memory: ReturnType<typeof TraceMemory>;
@@ -92,4 +97,15 @@ test("a script reading a lazy field of every hit asks the host once per chunk", 
     await memory.search(undefined, "raw", { ...scope(), code: "return hits.length" });
     expect(asked.fields).toEqual([]);
   } finally { counted.restore(); }
+}, 30_000);
+
+// 138 fix: `text` is answered for the asked hit alone. Batching it per chunk copied every body of a chunk into the
+// script's thread, which kept them, so reading only the user messages' text of a large session ran out of memory.
+test("a script reading the text of some hits receives only those texts", async () => {
+  asked.fields.length = 0; asked.answered.length = 0;
+  const out = await memory.search(undefined, "raw", { ...scope(), code: "let n = 0, read = 0; for (let i = 0; i < hits.length; i += 100) { n += hits[i].text.length; read++; } return read + ' read'" }) as string;
+  const read = Number(/Output:\n(\d+) read$/.exec(out)![1]);
+  expect(read).toBeGreaterThan(100);
+  expect(asked.fields).toEqual(Array(read).fill("text"));
+  expect(asked.answered).toEqual(Array(read).fill(1));
 }, 30_000);

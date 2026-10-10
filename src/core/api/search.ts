@@ -177,11 +177,15 @@ export function searchFacade(store: Store) {
     hits.forEach((hit, index) => { if (hit.chunk !== undefined) chunks.set(hit.chunk, [...chunks.get(hit.chunk) ?? [], index]); });
     return runCode(options.code, {
       items: hits.map(hit => ({ ...hit.item })),
-      // 138: one reply carries the field for every hit of the asked hit's chunk, so a script that reads it for each
-      // hit crosses the thread once per chunk, not once per hit. A chunk's bodies are already read together.
+      // 138: one reply carries a small field (role, matchLines) for every hit of the asked hit's chunk, so a script
+      // that reads it for each hit crosses the thread once per chunk, not once per hit. A chunk's bodies are already
+      // read together. `text` answers for the asked hit alone: the worker keeps every reply, so batching texts would
+      // copy bodies the script never reads into its 256 MB (reading the user messages' text of a 43,000-entry
+      // session ran out of memory).
       field: (index, name) => {
         const answer: Record<number, unknown> = {};
-        for (const i of chunks.get(hits[index]!.chunk!) ?? [index]) answer[i] = hits[i]!.load?.[name as "role" | "text" | "matchLines"]?.();
+        const asked = name === "text" ? [index] : chunks.get(hits[index]!.chunk!) ?? [index];
+        for (const i of asked) answer[i] = hits[i]!.load?.[name as "role" | "text" | "matchLines"]?.();
         return answer;
       },
       render: index => hits[index]!.line(),
