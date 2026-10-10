@@ -7,6 +7,7 @@ import { freezeDreaming } from "../../../src/core/dreaming/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { validateConfig, toolDefinitions } from "../../../src/core/api/index.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { facts } from "../../support/seed.ts";
@@ -108,7 +109,7 @@ test("ticket92material capacity shrinking reuses metadata and Raw views but rebi
   const config = { ...f.memory.config, compaction: { ...f.memory.config.compaction, factsTokens: 1 } };
   const complete = freezeNoting(f.store, { ...f.target, mode: "subagent" }, config);
   const batchIds = new Set(complete.entries.map(entry => entry.id));
-  const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
+  const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
   const historicalUsers = f.store.sourcePath(f.session.id, "main", f.turn.id)
     .filter(entry => !batchIds.has(entry.id) && entry.addresses.some(address => /#user$/.test(address)))
     .map(entry => entry.id);
@@ -146,7 +147,7 @@ test("133: fresh receipt-only temporary context trims before rejecting an exact 
   expect(complete.prepared!.material.receipts.join("\n")).toContain("user");
   const withoutTemporary = freezeNoting(f.store, input,
     { ...config, compaction: { ...config.compaction, temporaryTokens: 0 } });
-  const fixed = tokens(loadPrompt("noting.md")) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
+  const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
   const inputTokens = fixed + tokens(withoutTemporary.prepared!.text);
   expect(fixed + tokens(complete.prepared!.text)).toBeGreaterThan(inputTokens);
   const entryIds = complete.entries.map(entry => entry.id);

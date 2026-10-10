@@ -9,6 +9,7 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
 import { ccWorkerToolNames, CC_WORKER_SERVER_NAME } from "../../src/hosts/cc/tool-names.ts";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
+import { withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { TEST_CC_VERSION } from "../support/cc-version.ts";
 
 const dirs: string[] = [];
@@ -81,7 +82,7 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
         expect(request.options.tools).toEqual(["Read"]);
         expect(request.options.allowedTools).toEqual(["Read", ...listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`)]);
         expect(new Set(request.options.allowedTools)).toEqual(new Set(["Read", ccWorkerToolNames.search, ccWorkerToolNames.memory, ccWorkerToolNames.check]));
-        expect(request.options.systemPrompt).toBe(loadPrompt("dreaming.md", ccWorkerToolNames));
+        expect(request.options.systemPrompt).toBe(withRetrievalPolicy(loadPrompt("dreaming.md", ccWorkerToolNames), ccWorkerToolNames));
         expect(listed.tools.find(tool => tool.name === "check")?.description).not.toContain("{{tool.");
         yield init(directory, request.options.allowedTools, "timed-child");
         yield { type: "assistant", session_id: "timed-child", message: { id: "tool-round", content: [{

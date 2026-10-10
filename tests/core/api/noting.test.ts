@@ -10,6 +10,7 @@ import fixture from "../../fixtures/noting/turns.json";
 import memories from "../../fixtures/noting/facts.json";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { pricedToolDefinitions, toolDefinitions } from "../../../src/core/api/tools.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
@@ -84,7 +85,7 @@ test("a hosted CC launch cannot silently use canonical names or accept an incomp
 test("worker tool names are rendered before capacity, audit and held-result status", async () => {
   const first = turn();
   const names = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", grep: "Grep" };
-  const expected = loadPrompt("noting.md", names);
+  const expected = withRetrievalPolicy(loadPrompt("noting.md", names), names);
   const canonical = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent" }, memory.config);
   const priced = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent", toolNames: names }, memory.config);
   expect(priced.prompt).toBe(expected);
@@ -92,7 +93,7 @@ test("worker tool names are rendered before capacity, audit and held-result stat
   expect(priced.prompt).not.toContain("mcp__trace_memory__check"); // Noter cannot check.
   expect(priced.prompt).not.toContain("`note(");
   expect(priced.prompt).not.toContain("{{tool.");
-  expect(canonical.prompt).toBe(loadPrompt("noting.md"));
+  expect(canonical.prompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
   const price = tokens(expected) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, names))) + tokens(priced.prepared!.text);
   expect(price).toBeGreaterThan(tokens(canonical.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(canonical.prepared!.text));
   expect(() => freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent", toolNames: names,
@@ -157,7 +158,12 @@ test("fork and refused-fork fresh admissions freeze distinct namespaces, guidanc
   expect(freezeNoting(memory.store, { ...target, toolNames: forkNames, forkGuidance, effectiveMode: "fork", boundary,
     capacity: { inputTokens: price, prefixTokens: 71 } }, memory.config).forkPrompt).toBe(forkPrompt);
   const fresh = freezeNoting(memory.store, { ...target, toolNames: freshNames, effectiveMode: "subagent", boundary }, memory.config);
-  expect(fresh.prompt).toBe(loadPrompt("noting.md", freshNames));
+  // 137: a fresh child carries the retrieval policy once, in its system prompt; a fork inherits it from its
+  // parent's system prompt, so its task prompt carries none. Both are priced as sent.
+  expect(fresh.prompt).toBe(withRetrievalPolicy(loadPrompt("noting.md", freshNames), freshNames));
+  expect(fresh.prompt!.split("When to look up memory").length).toBe(2);
+  expect(fresh.prompt).toContain(`with ${freshNames.search};`);
+  expect(fork.forkPrompt).not.toContain("When to look up memory");
   expect(fresh.prompt).not.toContain("mcp__plugin_trace-memory_traceMemory__");
   expect(fresh.promptHash).toBe(createHash("sha256").update(fresh.prompt!).digest("hex"));
   expect(fresh.promptHash).not.toBe(fork.promptHash);

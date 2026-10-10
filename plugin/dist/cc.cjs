@@ -7806,6 +7806,22 @@ Status: ${status}`;
   };
 }
 
+// src/core/render/retrieval-policy.ts
+var RETRIEVAL_POLICY = `When to look up memory: only when the answer would change your next step. Do not open every listed address.
+- Before asking the user something that may already be recorded.
+- When the user refers to earlier work, or something seems familiar, that is not in view.
+- When a knowledge item or fact title bears on a decision but is too compressed to act on: read its supporting facts, then the raw entries they cite.
+- When you need exact wording, values, paths, commands, errors or commits behind a remembered claim, or the user asks why you believe it.
+- Before stating what the user decided: follow the supports down to the user's own words.
+Find topics and exact strings with {{tool.search}}; pass code to filter its hits.
+Memory is a past record: open items may be stale, and current files, tool output and the user's latest message win when they conflict.`;
+function retrievalPolicy(names) {
+  return renderToolNames(RETRIEVAL_POLICY, validateToolNames(names));
+}
+var withRetrievalPolicy = (instructions, names) => `${instructions}
+
+${retrievalPolicy(names)}`;
+
 // src/core/api/read.ts
 var import_node_crypto5 = require("node:crypto");
 
@@ -9247,8 +9263,10 @@ var fixedCost = (names, nativeReadToolTokens) => {
   const key = JSON.stringify([names, nativeReadToolTokens]);
   let cost = fixed.get(key);
   if (!cost) {
-    const prompt = loadPrompt("noting.md", names);
+    const domain2 = loadPrompt("noting.md", names), prompt = withRetrievalPolicy(domain2, names);
     cost = {
+      domain: domain2,
+      domainTokens: tokens(domain2),
       prompt,
       instructions: tokens(prompt),
       tools: tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, names))) + (nativeReadToolTokens ?? 0)
@@ -9294,12 +9312,12 @@ function freezeNoting(store, input, config3, resultText = rawResultText, pending
     throw new Error(`${NOTING_MEMBERSHIP}entries ${exact.filter((id) => !pending.some((e) => e.id === id)).join(", ")} of the frozen batch ${exact.join(", ")} are no longer pending; nothing was re-processed`);
   const mode = input.mode ?? (config3.noting.forkModeDefault ? "fork" : "subagent");
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
-  const { prompt, instructions, tools } = fixedCost(names, input.nativeReadToolTokens);
+  const { domain: domain2, domainTokens, prompt, instructions, tools } = fixedCost(names, input.nativeReadToolTokens);
   const inheriting = (input.effectiveMode ?? mode) === "fork";
-  const forkPrompt = input.forkGuidance ? `${prompt}
+  const forkPrompt = input.forkGuidance ? `${domain2}
 
-${renderToolNames(input.forkGuidance, names)}` : prompt;
-  const forkInstructions = input.forkGuidance ? tokens(forkPrompt) : instructions;
+${renderToolNames(input.forkGuidance, names)}` : domain2;
+  const forkInstructions = input.forkGuidance ? tokens(forkPrompt) : domainTokens;
   const mandatory = inheriting ? (input.capacity?.prefixTokens ?? 0) + forkInstructions : instructions + tools;
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
     throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${forkInstructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`} already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
@@ -9783,7 +9801,7 @@ function prepareDreaming(store, input, config3, claim, path, { pools, range }) {
     facts: direct2
   };
   const text = [readingGuide(path.sessionId, names), ...Object.values(material)].join("\n\n");
-  const prompt = loadPrompt("dreaming.md", names);
+  const prompt = withRetrievalPolicy(loadPrompt("dreaming.md", names), names);
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 || tokens(prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingToolDefinitions(), names))) + (input.nativeReadToolTokens ?? 0) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
   return {
@@ -12301,93 +12319,7 @@ var ccWorkerToolNames = exposed(`mcp__${CC_WORKER_SERVER_NAME}__`);
 var ccPluginToolNames = exposed(`mcp__plugin_${CC_PLUGIN_NAME}_${CC_MCP_SERVER_NAME}__`);
 
 // src/hosts/cc/files.ts
-var usage = "fs read <path> | fs materialize <path> | fs grep [-i] [-n|--no-line-numbers] [-c] [-F] [-A|-B|-C <n>] [--glob <g>] [--offset <n>] [--limit <n>] [--] <pattern> [path] | fs glob <pattern>";
-var integer = (value, name) => {
-  const number5 = Number(value);
-  if (value === void 0 || !Number.isSafeInteger(number5) || number5 < 0) throw new Error(`${name} must be a non-negative integer`);
-  return number5;
-};
-function parseGrepArgs(args) {
-  const options = {}, rest = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--") {
-      rest.push(...args.slice(i + 1));
-      break;
-    }
-    if (arg === "--no-line-numbers") {
-      options.mode = "content";
-      options.lineNumbers = false;
-      continue;
-    }
-    if (arg === "--glob" || arg === "--offset" || arg === "--limit") {
-      const value = args[++i];
-      if (arg === "--glob") {
-        if (!value) throw new Error("--glob needs a pattern");
-        options.glob = value;
-      } else options[arg === "--offset" ? "offset" : "limit"] = integer(value, arg);
-      continue;
-    }
-    if (!/^-[A-Za-z]/.test(arg)) {
-      rest.push(arg);
-      continue;
-    }
-    for (let j = 1; j < arg.length; j++) {
-      const flag = arg[j];
-      if (flag === "i") options.ignoreCase = true;
-      else if (flag === "n") {
-        options.mode = "content";
-        options.lineNumbers = true;
-      } else if (flag === "c") options.mode = "count";
-      else if (flag === "l") options.mode = "files_with_matches";
-      else if (flag === "F") options.literal = true;
-      else if (flag === "A" || flag === "B" || flag === "C") {
-        const value = integer(arg.slice(j + 1) || args[++i], `-${flag}`);
-        if (flag !== "A") options.before = value;
-        if (flag !== "B") options.after = value;
-        break;
-      } else throw new Error(`unknown grep flag -${flag}; ${usage}`);
-    }
-  }
-  const [pattern, path = MEMORY_ROOT, ...extra] = rest;
-  if (pattern === void 0 || extra.length) throw new Error(usage);
-  if (options.lineNumbers === false && options.mode !== "content") throw new Error("--no-line-numbers requires content mode");
-  return { pattern, path, options };
-}
-function ccGrep(files, path, options) {
-  const mode = options.mode ?? "files_with_matches", offset = options.offset ?? 0, limit = options.limit ?? 250;
-  const all = [];
-  let matches = 0, countFiles = 0;
-  for (const file2 of files) {
-    if (mode === "files_with_matches") {
-      all.push(file2.path + (file2.mark ?? ""));
-      continue;
-    }
-    if (mode === "count") {
-      all.push(`${file2.path}:${file2.hits.length}`);
-      matches += file2.hits.length;
-      countFiles++;
-      continue;
-    }
-    const selected = /* @__PURE__ */ new Set(), hits = new Set(file2.hits);
-    for (const hit of file2.hits)
-      for (let line = Math.max(0, hit - (options.before ?? 0)); line <= Math.min(file2.lines.length - 1, hit + (options.after ?? 0)); line++) selected.add(line);
-    let previous = -1;
-    for (const line of [...selected].sort((a, b) => a - b)) {
-      if ((options.before || options.after) && (previous < 0 ? all.length > 0 : line > previous + 1)) all.push("--");
-      previous = line;
-      const isHit = hits.has(line), text = file2.lines[line];
-      const value = text.length > 500 ? isHit ? "[Omitted long matching line]" : "[Omitted long context line]" : text;
-      const prefix = file2.path === path ? "" : `${file2.path}${isHit ? ":" : "-"}`;
-      all.push(`${prefix}${options.lineNumbers === false ? "" : `${line + 1}${isHit ? ":" : "-"}`}${value}`);
-    }
-  }
-  if (mode === "files_with_matches") all.sort((a, b) => a.localeCompare(b));
-  const lines = limit === 0 ? all.slice(offset) : all.slice(offset, offset + limit);
-  const appliedLimit = limit > 0 && all.length - offset > limit ? limit : void 0;
-  const pagination = [appliedLimit === void 0 ? "" : `limit: ${appliedLimit}`, offset ? `offset: ${offset}` : ""].filter(Boolean).join(", ");
-  return { lines, total: all.length, matches, countFiles, pagination, appliedLimit, offset };
-}
+var usage = "fs read <path> | fs materialize <path>";
 function materializeCcRead(directory, content, virtualPath) {
   (0, import_node_fs6.mkdirSync)(directory, { recursive: true, mode: 448 });
   const target = virtualPath === void 0 ? (0, import_node_path5.join)((0, import_node_fs6.mkdtempSync)((0, import_node_path5.join)(directory, "read-")), "memory.txt") : (0, import_node_path5.join)(directory, ...virtualPath.slice(MEMORY_ROOT.length).split("/").filter(Boolean), "memory.txt");
@@ -12433,15 +12365,6 @@ function runCcFiles(config3, nativeSessionId, [op, ...args]) {
       const virtual = memoryPath(args[0]);
       if (virtual === null) throw new Error("materialize requires a trace:// address");
       return { path: materializeCcRead((0, import_node_path5.join)(config3.stateDir, "rendered", validateNativeSessionId(nativeSessionId)), rendered.content, virtual) };
-    }
-    if (op === "grep") {
-      const { pattern, path, options } = parseGrepArgs(args);
-      const { mode: _mode, before: _before, after: _after, offset: _offset, limit: _limit, lineNumbers: _lineNumbers, ...coreOptions } = options;
-      return ccGrep(files.grep(pattern, path, coreOptions), path, options);
-    }
-    if (op === "glob") {
-      if (args.length !== 1) throw new Error(usage);
-      return files.glob(args[0]);
     }
     throw new Error(`${op === "write" || op === "edit" ? `${op}: trace:// is read-only` : `unknown operation ${String(op)}`}; ${usage}`);
   } finally {
@@ -25147,7 +25070,7 @@ var string2 = (params) => {
   const regex = params ? `[\\s\\S]{${params?.minimum ?? 0},${params?.maximum ?? ""}}` : `[\\s\\S]*`;
   return new RegExp(`^${regex}$`);
 };
-var integer2 = /^\d+$/;
+var integer = /^\d+$/;
 var number = /^-?\d+(?:\.\d+)?/i;
 var boolean = /true|false/i;
 var _null = /null/i;
@@ -25254,7 +25177,7 @@ var $ZodCheckNumberFormat = /* @__PURE__ */ $constructor("$ZodCheckNumberFormat"
     bag.minimum = minimum;
     bag.maximum = maximum;
     if (isInt)
-      bag.pattern = integer2;
+      bag.pattern = integer;
   });
   inst._zod.check = (payload) => {
     const input = payload.value;
@@ -34180,7 +34103,7 @@ __export(regexes_exports, {
   hostname: () => hostname2,
   html5Email: () => html5Email,
   idnEmail: () => idnEmail,
-  integer: () => integer3,
+  integer: () => integer2,
   ipv4: () => ipv42,
   ipv6: () => ipv62,
   ksuid: () => ksuid2,
@@ -34282,7 +34205,7 @@ var string3 = (params) => {
   return new RegExp(`^${regex}$`);
 };
 var bigint = /^-?\d+n?$/;
-var integer3 = /^-?\d+$/;
+var integer2 = /^-?\d+$/;
 var number3 = /^-?\d+(?:\.\d+)?$/;
 var boolean3 = /^(?:true|false)$/i;
 var _null4 = /^null$/i;
@@ -34414,7 +34337,7 @@ var $ZodCheckNumberFormat2 = /* @__PURE__ */ $constructor2("$ZodCheckNumberForma
     bag.minimum = minimum;
     bag.maximum = maximum;
     if (isInt)
-      bag.pattern = integer3;
+      bag.pattern = integer2;
   });
   inst._zod.check = (payload) => {
     const input = payload.value;
@@ -47672,7 +47595,9 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
       if (request2.method === "initialize") reply(request2.id, {
         protocolVersion: request2.params?.protocolVersion ?? "2025-11-25",
         capabilities: { tools: {} },
-        serverInfo: { name: "trace-memory", version: "0.1.0-beta.7" }
+        serverInfo: { name: "trace-memory", version: "0.1.0-beta.7" },
+        // 137: Claude Code puts a plugin server's instructions in the main session's system prompt, once.
+        instructions: retrievalPolicy(ccPluginToolNames)
       });
       else if (request2.method === "tools/list") reply(request2.id, { tools: foreground.list() });
       else if (request2.method === "tools/call") {
@@ -47732,7 +47657,7 @@ async function readStdin() {
 async function runCcCommand(argv = process.argv.slice(2)) {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
   if (command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" && command !== "hook-compact" && command !== "hook-capable" && command !== "hook-turn" && command !== "hook-sources" && command !== "hook-fork" && command !== "hook-fork-watch" && command !== "cli" && command !== "fs" || configFlag !== "--config" || !configPath)
-    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|grep|glob ...");
+    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|materialize ...");
   const config3 = readConfig(configPath);
   if (command === "mcp") {
     await runCcStdioMcp(config3, void 0, configPath);

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
+import { withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { TraceMemory, toolDefinitions, type NotingAgentInput, type RunAgentResult, type TaskTarget, type ToolDefinition } from "../../src/core/api/index.ts";
 import { resolveCcHostConfig, CC_CONTEXT_HEADROOM } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker as NativeCcAgentWorker, CcResponseOrigins, ccNativeTranscriptPath, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
@@ -874,7 +875,10 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
       const listed = await client.listTools();
       const exposed = listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`);
       expect(request.options.allowedTools).toEqual(["Read", ...exposed]);
-      expect(request.options.systemPrompt).toBe(loadPrompt("noting.md", ccWorkerToolNames));
+      // 137: Claude Code adds a server's instructions to a custom-system-prompt run too (native probe), so the worker
+      // server sends none: the policy reaches the worker once, in its system prompt.
+      expect(client.getInstructions()).toBeUndefined();
+      expect(request.options.systemPrompt).toBe(withRetrievalPolicy(loadPrompt("noting.md", ccWorkerToolNames), ccWorkerToolNames));
       for (const tool of listed.tools) {
         const role = tool.name as keyof typeof ccWorkerToolNames;
         expect(exposed.find(name => name.endsWith(`__${role}`))).toBe(ccWorkerToolNames[role]);

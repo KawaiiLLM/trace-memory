@@ -7,6 +7,7 @@ import { expect, test, vi } from "vitest";
 import { noteAndMemory, stableForkFixture as fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
 import { toolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 
@@ -85,7 +86,7 @@ test("25a 2026-09-09: the same task in subagent mode carries full history and ti
     const { run, child } = await thirdPrompt(f);
     expect(run.mode).toBe("subagent");
     // A fresh child: core's prompt as the system message, the whole fresh material as the task.
-    expect(String(child.messages[0].content)).toBe(loadPrompt("noting.md"));
+    expect(String(child.messages[0].content)).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
     expect(child.tools.map((tool: Body) => tool.function.name)).toEqual(expect.arrayContaining(["read", "search", "note", "memory"]));
     expect(String(child.messages[0].content)).toContain("`note({})`");
     const body = text(child.messages.at(-1)!);
@@ -115,6 +116,6 @@ test("25a 2026-09-09: a fork that cannot be prepared sends the complete subagent
     expect(fresh).toContain("Recent facts (by Turn):");
     expect(fresh).toContain("Raw:");
     expect(fresh).not.toContain("<knowledge>");
-    expect(String(child.messages[0].content)).toBe(loadPrompt("noting.md")); // a fresh child, not a fork
+    expect(String(child.messages[0].content)).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)); // a fresh child, not a fork
   } finally { await f.dispose(); }
 });

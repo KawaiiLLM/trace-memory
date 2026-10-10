@@ -2,6 +2,7 @@ export { toolDefinitions, toolRejected, reviewFeedback, renderToolDefinitions } 
 export { validateSearchInput, SEARCH_HIT_TYPES, type SearchLayer, type SearchOptions } from "./search.ts";
 import type { SearchLayer, SearchOptions } from "./search.ts";
 export { canonicalToolNames } from "../prompts/tool-names.ts";
+export { retrievalPolicy } from "../render/retrieval-policy.ts";
 export type { ToolNames } from "../prompts/tool-names.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 import { knowledgeReadSelection } from "./knowledge-read.ts";

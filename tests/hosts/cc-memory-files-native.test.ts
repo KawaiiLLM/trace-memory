@@ -1,6 +1,7 @@
 // 101: the real, installed Claude Code (any version; 106) with this plugin reads Trace Memory under trace:// through its own
-// Read, Grep and Glob — in the main thread and inside a general-purpose and an Explore subagent — with no
+// Read — in the main thread and inside a general-purpose and an Explore subagent — with no
 // permission prompt, while a real file still reaches the real Read and an Edit under trace:// is refused.
+// 137: the plugin has no Grep or Glob hook; a Grep or Glob on a trace:// path reaches Claude Code's own tool.
 // Behind the network fence (cc-native-fence.ts), against a loopback provider; run at the outer level
 // like cc-compaction-native.test.ts, since the fence cannot nest.
 import { afterAll, expect, test } from "vitest";
@@ -50,22 +51,22 @@ test("the main thread and its general-purpose and Explore subagents read trace:/
   writeFileSync(join(cwd, "notes.txt"), "a real file in the working directory\n");
   // Memory from an earlier session: its Raw, one fact and one global knowledge item.
   const memory = TraceMemory(dbPath, async () => { throw new Error("no model work"); });
-  let seed: number;
+  let seed: number, seedTurn: number;
   try {
     const project = memory.store.createProject({ name: "seed", declaredBy: "mark" }), s = session(memory.store, project.id, "pi:seed");
     seed = s.id;
     const turn = memory.store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00.000Z" });
     const source = entry(memory.store, s.id, turn.id, "seed-1", "user", "Use pnpm, never npm, for hashline.");
     memory.selectEntries(s.id, "main", [source.id]);
+    seedTurn = turn.id;
     memory.store.setCurrentPath(s.id, "main", turn.id, "seed");
     const path = { sessionId: s.id, branch: "main", headTurnId: turn.id };
     knowledge(memory.store, path, "global", "constraint", [fact(memory, path, "Package manager", [{ entry: source, text: "The user rules pnpm." }]).id],
       "Use pnpm, never npm.");
   } finally { memory.close(); }
 
-  const S = `trace://S${seed!}`;
   const subagent = (who: string) => [use(`${who}_read`, "Read", { file_path: "trace://knowledge-all" }),
-    use(`${who}_grep`, "Grep", { pattern: "hashline", path: S }), use(`${who}_inherit`, "Read", { file_path: `trace://knowledge/S${seed!}` }),
+    use(`${who}_raw`, "Read", { file_path: `trace://raw/S${seed!}/T${seedTurn!}#E1` }), use(`${who}_inherit`, "Read", { file_path: `trace://knowledge/S${seed!}` }),
     use(`${who}_compact`, "Read", { file_path: `trace://compact/S${seed!}` }), use(`${who}_item`, "Read", { file_path: "trace://K1" })];
   const main = [use("main_read", "Read", { file_path: "trace://K1" }), use("main_view", "Read", { file_path: `trace://knowledge/S${seed!}` }),
     use("main_old", "Read", { file_path: "/tm/K1" }), use("main_glob", "Glob", { pattern: "S*/T*#E*", path: "trace://raw" }),
@@ -131,15 +132,15 @@ test("the main thread and its general-purpose and Explore subagents read trace:/
   expect(seen.get("main_old")).toMatchObject({ isError: true });
   expect(seen.get("main_old")?.text).not.toContain("pnpm");
   expect(seen.get("main_old")?.text).not.toContain("trace://");
-  expect(seen.get("main_glob")?.text).toContain(`trace://raw/S${seed!}/T`);
-  expect(seen.get("main_lines")?.text).toMatch(/trace:\/\/K1@v1:1:.*Use pnpm, never npm\./);
+  // 137: no hook answers Grep or Glob on trace://; Claude Code's own tools run and find nothing there.
+  expect(seen.get("main_glob")?.text).not.toContain(`trace://raw/S${seed!}/T`);
+  expect(seen.get("main_lines")?.text).not.toContain("Use pnpm, never npm.");
   expect(seen.get("main_real")?.text).toContain("a real file in the working directory");
   expect(seen.get("main_edit")).toMatchObject({ isError: true, text: expect.stringContaining(MEMORY_READ_ONLY) });
   // Each subagent: the all-scope listing, a search reaching Raw, and the inheritance view.
   for (const who of ["gp", "explore"]) {
     expect(seen.get(`${who}_read`)?.text, who).toMatch(/trace:\/\/K1@v1\s+\[constraint\/global\] Use pnpm, never npm\./);
-    expect(seen.get(`${who}_grep`)?.text, who).toContain(`trace://raw/S${seed!}/T`);
-    expect(seen.get(`${who}_grep`)?.text, who).toMatch(/#E1\b/);
+    expect(seen.get(`${who}_raw`)?.text, who).toContain("Use pnpm, never npm, for hashline.");
     expect(seen.get(`${who}_inherit`)?.text, who).toContain("Use pnpm, never npm.");
     expect(seen.get(`${who}_compact`)?.text, who).toContain("Use pnpm, never npm.");
     expect(seen.get(`${who}_item`)?.text, who).toContain("Use pnpm, never npm.");
@@ -148,7 +149,7 @@ test("the main thread and its general-purpose and Explore subagents read trace:/
   const mainRequests = requests.filter(body => opening(body).includes("MAIN-PROMPT"));
   expect(seen.get("main_gp")?.text).toContain("GP-FINAL-ANSWER");
   expect(seen.get("main_explore")?.text).toContain("EXPLORE-FINAL-ANSWER");
-  expect(mainRequests.some(body => /(?:gp|explore)_(?:read|grep|inherit|compact|item)/.test(JSON.stringify(body.messages)))).toBe(false);
+  expect(mainRequests.some(body => /(?:gp|explore)_(?:read|raw|inherit|compact|item)/.test(JSON.stringify(body.messages)))).toBe(false);
   // No permission prompt for any trace:// call; the real Read inside cwd needs none either.
   expect(prompts.filter(prompt => JSON.stringify(prompt.input).includes("trace://"))).toEqual([]);
   expect(result?.permission_denials ?? []).toEqual([]);

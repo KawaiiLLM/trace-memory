@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createConnection } from "node:net";
 import { TraceMemory, noVisibility } from "../../src/core/api/index.ts";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
+import { retrievalPolicy, withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, readBinding, recordSessionStart, updateBinding, withCcBindingLock, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
@@ -1303,6 +1304,8 @@ test("stdio MCP stays protocol-clean and only prompt_input_exit confirms close a
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25" } })}\n`);
   for (let i = 0; i < 100 && !stdout.includes('"id":1'); i++) await sleep(5);
   expect(stdout).toContain('"name":"trace-memory"');
+  // 137: the main session's system prompt carries the retrieval policy once, as the plugin server's instructions.
+  expect(JSON.parse(stdout.split("\n")[0]!).result.instructions).toBe(retrievalPolicy(ccPluginToolNames));
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
   for (let i = 0; i < 100 && !readBinding(f.config, f.nativeSessionId)?.selectedLeafUuid; i++) await sleep(5);
   expect(readBinding(f.config, f.nativeSessionId)).toMatchObject({ executor: { pid: child.pid }, selectedLeafUuid: "a1" });
@@ -1698,7 +1701,12 @@ test("112: scheduler freezes actual Core Noter instructions and lifecycle emits 
     scheduler.reconcile(projection);
     scheduler.turnEnd(projection, scheduler.catchupTicket(), { model: "synthetic", capacity: { inputTokens: 150_000, prefixTokens: 0 }, visible });
     await vi.waitFor(() => expect(frozen).toBeDefined());
-    expect(frozen.prompt).toBe(loadPrompt("noting.md", ccPluginToolNames));
+    // 137: the policy is a fresh child's system text; this fork inherits it from the main session's system
+    // prompt (the plugin executor's MCP instructions), so its leading message carries the instructions alone.
+    const domain = loadPrompt("noting.md", ccPluginToolNames);
+    expect(frozen.prompt).toBe(withRetrievalPolicy(domain, ccPluginToolNames));
+    expect(frozen.forkPrompt.startsWith(domain)).toBe(true);
+    expect(frozen.forkPrompt).not.toContain("When to look up memory");
     expect(frozen.forkPrompt).toContain(ccPluginToolNames.note);
     expect(frozen.forkPrompt).toContain(ccPluginToolNames.memory);
     expect(frozen.forkPrompt).toContain("ToolSearch");
@@ -1709,7 +1717,8 @@ test("112: scheduler freezes actual Core Noter instructions and lifecycle emits 
     expect(frozen.tools.map(tool => ccPluginToolNames[tool.name as keyof typeof ccPluginToolNames]))
       .toEqual(registered.map(tool => `mcp__plugin_${pluginName}_${serverName}__${tool.name}`));
     expect(directive.prompt).toBe(`${frozen.forkPrompt}\n\n${frozen.text}`);
-    expect(directive.prompt.split(frozen.prompt)).toHaveLength(2);
+    expect(directive.prompt.split(domain)).toHaveLength(2);
+    expect(directive.prompt).not.toContain("When to look up memory");
     expect(directive.prompt).toContain("Sources:");
     release({ outcome: "cancelled" }); await scheduler.settle();
   } finally { if (release) release({ outcome: "cancelled" }); await coordinator.shutdown("test"); }

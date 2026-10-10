@@ -1,4 +1,4 @@
-// 101: Claude Code's Read, Grep and Glob on trace://. The function hook answers only an exact trace:// path and
+// 101: Claude Code's Read on trace://. The function hook answers only an exact trace:// path and
 // hands every other call to `next` untouched, since its own answer skips Claude Code's permission and
 // path checks; `cc.cjs fs` serves the files for the native session's bound reader and writes nothing.
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
@@ -42,9 +42,7 @@ test("every path that does not start with exactly trace:// reaches the real tool
   const outside = ["/tm", "/tm/K1", "/tm/knowledge/S1", "/tmp/K1", "Trace://K1", "TRACE://K1", "trace:/K1", "trace:K1", "xtrace://K1",
     "./trace://K1", "/private/trace://K1", "tm/K1", undefined];
   for (const path of outside) {
-    for (const [tool, event] of [["Read", { file_path: path }], ["Grep", { pattern: "x", path }], ["Glob", { pattern: path ?? "*" }],
-      // An absolute filesystem pattern stays native even when the search path is trace://.
-      ["Glob", { pattern: "*", path }], ["Glob", { pattern: path?.startsWith("/") ? path : "/tmp/*.ts", path: "trace://" }],
+    for (const [tool, event] of [["Read", { file_path: path }],
       ["Edit", { file_path: path, old_string: "a", new_string: "b" }], ["Write", { file_path: path, content: "x" }],
       ["NotebookEdit", { notebook_path: path, new_source: "x" }]] as const) {
       const h = host();
@@ -57,7 +55,14 @@ test("every path that does not start with exactly trace:// reaches the real tool
   }
 });
 
-test("Read, Grep and Glob under trace:// are answered by cc.cjs fs for this session, in their tools' own result shapes", async () => {
+// 137: Claude Code main sessions have no Grep or Glob tool, so no hook answers them; a call on a trace://
+// path reaches the host unchanged, and the host rejects it.
+test("no hook is registered for Grep or Glob", () => {
+  for (const tool of ["Read", "Edit", "Write", "NotebookEdit"]) expect(hooks.has(tool), tool).toBe(true);
+  for (const tool of ["Grep", "Glob"]) expect(hooks.has(tool), tool).toBe(false);
+});
+
+test("Read under trace:// is answered by cc.cjs fs for this session, in its own result shape", async () => {
   let h = host();
   const ordinary = { tool: "Read", file_path: "trace:///K1/", offset: 3, limit: 2 };
   expect(await hooks.get("Read")!(h.$, ordinary, h.next)).toEqual({ result: "native" });
@@ -79,33 +84,6 @@ test("Read, Grep and Glob under trace:// are answered by cc.cjs fs for this sess
   const exact = { tool: "Read", file_path: "trace://raw/S2/T3#E4@assistant" };
   expect(await hooks.get("Read")!(h.$, exact, h.next)).toMatchObject({ result: { file: { filePath: exact.file_path, content: "whole\nentry" } } });
   expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("read", exact.file_path));
-
-  h = host({ lines: ["trace://facts/S1/T2", "trace://raw/S1/T2#E4"], total: 2, offset: 0 });
-  expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "-hashline", path: "trace://S1", "-i": true }, h.next))
-    .toEqual({ result: { mode: "files_with_matches", numFiles: 2, totalFiles: 2, filenames: ["trace://facts/S1/T2", "trace://raw/S1/T2#E4"] } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "-l", "-i", "--", "-hashline", "trace://S1"));
-
-  h = host({ lines: ["trace://K1:1:x"], total: 11, offset: 4, appliedLimit: 10 });
-  expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "x", path: "trace://", output_mode: "content", "-C": 2, "-A": 1,
-    glob: "E*", offset: 4, head_limit: 10 }, h.next)).toEqual({ result: { mode: "content", numFiles: 0, filenames: [],
-    content: "trace://K1:1:x", numLines: 1, totalLines: 11, appliedLimit: 10, appliedOffset: 4 } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "-n", "-C", "2", "-A", "1", "--glob", "E*", "--offset", "4", "--limit", "10", "--", "x", "trace://"));
-  h = host({ lines: ["trace://raw/S1/T2#E1:match"], total: 1 });
-  expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "match", path: "trace://raw/S1", output_mode: "content", "-n": false }, h.next))
-    .toMatchObject({ result: { content: "trace://raw/S1/T2#E1:match" } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("grep", "--no-line-numbers", "--", "match", "trace://raw/S1"));
-  for (const unsupported of [{ "-o": true }, { multiline: true }, { type: "ts" }]) {
-    h = host();
-    expect(await hooks.get("Grep")!(h.$, { tool: "Grep", pattern: "x", path: "trace://raw/S1", ...unsupported }, h.next))
-      .toEqual({ deny: "unsupported virtual Grep input: trace://raw/S1" });
-    expect(h.run).not.toHaveBeenCalled();
-  }
-
-  h = host({ lines: ["trace://facts/S1/T2", "trace://facts/S1/T3"], total: 2 });
-  expect(await hooks.get("Glob")!(h.$, { tool: "Glob", pattern: "S1/T*", path: "trace://facts" }, h.next))
-    .toEqual({ result: { durationMs: 0, numFiles: 2, filenames: ["trace://facts/S1/T2", "trace://facts/S1/T3"], truncated: false,
-      totalMatches: 2, countIsComplete: true } });
-  expect(h.run).toHaveBeenCalledExactlyOnceWith(fs("glob", "trace://facts/S1/T*"));
 });
 
 test("edits and writes under trace:// are refused with a pointer to note and memory; a failed read is refused with its reason", async () => {
@@ -141,7 +119,7 @@ test("the command hook sees Claude Code's cwd-resolved path, rewrites only trace
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-test("cc.cjs fs reads for the bound native session, accepts combined grep flags, and leaves the database unchanged", async () => {
+test("cc.cjs fs reads for the bound native session and leaves the database unchanged", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-cc-files-")); dirs.push(dir);
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), baseline: "2025-01-01T00:00:00.000Z" });
   const configPath = join(dir, "cc.config.json"), transcriptPath = join(dir, "native.jsonl"), native = "files-native";
@@ -179,14 +157,6 @@ test("cc.cjs fs reads for the bound native session, accepts combined grep flags,
   };
   // The bound reader's own knowledge, and its session's Turns.
   expect((await cli("read", "trace://knowledge")).content).toMatch(/^trace:\/\/K1  \[constraint\/project\] Hashline uses an LRU cache\.$/);
-  const combined = await cli("grep", "-in", "HASHLINE", `trace://S${core}`);
-  expect(combined).toEqual(await cli("grep", "-n", "-i", "HASHLINE", `trace://S${core}`));
-  expect(combined.lines.length).toBeGreaterThan(1);
-  for (const line of combined.lines) expect(line).toMatch(new RegExp(`^trace://(?:facts|raw)/S${core}/T\\d+(?:#E\\d+)?:\\d+:.*hashline`, "i"));
-  expect((await cli("grep", "-ic", "hashline", `trace://S${core}`)).lines.every((line: string) => /:\d+$/.test(line))).toBe(true);
-  const withoutNumbers = await cli("grep", "--no-line-numbers", "-i", "hashline", `trace://S${core}`);
-  expect(withoutNumbers.lines.length).toBeGreaterThan(0);
-  expect(withoutNumbers.lines.every((line: string) => !/:\d+:/.test(line))).toBe(true);
   expect((await cli("read", `trace://knowledge/S${core}`)).content).toContain("Hashline uses an LRU cache.");
   const compact = await cli("read", `trace://compact/S${core}`);
   expect(compact.unbounded).toBe(true);
@@ -200,7 +170,8 @@ test("cc.cjs fs reads for the bound native session, accepts combined grep flags,
   const other = await cli("materialize", "trace://F1");
   expect(other.path).not.toBe(first.path);
   expect(first.path.startsWith(join(config.stateDir, "rendered", native))).toBe(true);
-  expect((await cli("glob", `trace://raw/S${core}/T*#E*`)).lines).toEqual([expect.stringMatching(new RegExp(`^trace://raw/S${core}/T\\d+#E1$`)), expect.stringMatching(/#E2$/)]);
+  // 137: grep and glob were subcommands only for the Grep and Glob hooks, which are gone.
+  for (const op of ["grep", "glob"]) await expect(cli(op, "x", "trace://")).rejects.toThrow(/unknown operation/);
   await expect(cli("write", "trace://K1")).rejects.toThrow(/read-only/);
   // A native session with no binding reads unbound: explicit addresses, and no visible knowledge.
   const unbound = async (...args: string[]) => {

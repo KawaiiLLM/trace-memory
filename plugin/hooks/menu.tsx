@@ -405,11 +405,6 @@ function memoryPath(value) {
   if (typeof value !== "string" || !value.startsWith(MEMORY_ROOT)) return null;
   return MEMORY_ROOT + value.slice(MEMORY_ROOT.length).split("/").filter(Boolean).join("/");
 }
-function memoryGlob(pattern, path) {
-  if (typeof pattern !== "string" || !pattern) return null;
-  if (pattern.startsWith(MEMORY_ROOT)) return memoryPath(pattern);
-  return pattern.startsWith("/") || memoryPath(path) === null ? null : memoryPath(`${path}/${pattern}`);
-}
 
 // plugin/hooks/index.tsx
 var screen = "main";
@@ -501,7 +496,6 @@ async function memoryFiles($, args) {
   return JSON.parse(run.stdout);
 }
 var failure = (error) => ({ deny: error instanceof Error ? error.message : String(error) });
-var listed = (listing) => listing.lines;
 async function forkEvent($, session, verb, detail) {
   const result = await $.process.run(
     ["node", `${$.plugin.root}/dist/cc.cjs`, "hook-fork", "--config", `${$.plugin.root}/cc.config.json`],
@@ -591,78 +585,6 @@ export const register = (on) => {
         startLine: 1,
         totalLines: lines.length
       } } };
-    } catch (error) {
-      return failure(error);
-    }
-  });
-  on("tool.call", { tool: "Grep" }, async ($, e, next) => {
-    const path = memoryPath(e.path);
-    if (path === null) return next(e);
-    const mode = e.output_mode === "content" || e.output_mode === "count" ? e.output_mode : "files_with_matches";
-    const context = e["-C"] ?? e.context;
-    try {
-      if (e["-o"] || e.multiline || e.type) throw new Error(`unsupported virtual Grep input: ${path}`);
-      const listing = await memoryFiles($, [
-        "grep",
-        mode === "content" ? e["-n"] === false ? "--no-line-numbers" : "-n" : mode === "count" ? "-c" : "-l",
-        ...e["-i"] ? ["-i"] : [],
-        ...context !== void 0 ? ["-C", String(context)] : [],
-        ...e["-A"] !== void 0 ? ["-A", String(e["-A"])] : [],
-        ...e["-B"] !== void 0 ? ["-B", String(e["-B"])] : [],
-        ...e.glob ? ["--glob", e.glob] : [],
-        ...e.offset !== void 0 ? ["--offset", String(e.offset)] : [],
-        ...e.head_limit !== void 0 ? ["--limit", String(e.head_limit)] : [],
-        "--",
-        e.pattern,
-        path
-      ]);
-      const lines = listed(listing);
-      const page = {
-        ...listing.appliedLimit !== void 0 && { appliedLimit: listing.appliedLimit },
-        ...listing.offset > 0 && { appliedOffset: listing.offset }
-      };
-      if (mode === "files_with_matches") return { result: {
-        mode,
-        numFiles: lines.length,
-        filenames: lines,
-        totalFiles: listing.total,
-        ...page
-      } };
-      if (mode === "count") return { result: {
-        mode,
-        numFiles: listing.countFiles,
-        filenames: [],
-        content: lines.join("\n"),
-        numMatches: listing.matches,
-        ...page
-      } };
-      return { result: {
-        mode,
-        numFiles: 0,
-        filenames: [],
-        content: lines.join("\n"),
-        numLines: lines.length,
-        totalLines: listing.total,
-        ...page
-      } };
-    } catch (error) {
-      return failure(error);
-    }
-  });
-  on("tool.call", { tool: "Glob" }, async ($, e, next) => {
-    const pattern = memoryGlob(e.pattern, e.path);
-    if (pattern === null) return next(e);
-    try {
-      const listing = await memoryFiles($, ["glob", pattern]);
-      const filenames = listing.lines.slice(0, 100);
-      return { result: {
-        durationMs: 0,
-        numFiles: filenames.length,
-        filenames,
-        truncated: listing.total > 100,
-        totalMatches: listing.total,
-        countIsComplete: true
-      } };
     } catch (error) {
       return failure(error);
     }

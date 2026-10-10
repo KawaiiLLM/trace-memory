@@ -1,5 +1,6 @@
 import { loadPrompt } from "../prompts/load.ts";
 import { readingGuide } from "../render/reading-guide.ts";
+import { withRetrievalPolicy } from "../render/retrieval-policy.ts";
 import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput, SourceEntry, SourceEntryMeta } from "../store/index.ts";
@@ -17,13 +18,13 @@ import type { NotingDiagnostic } from "./review.ts";
 
 // Pricing includes the launch's rendered names, not the canonical template. The lazy per-map cache
 // avoids repeatedly tokenizing static schemas through the source-selection loop.
-const fixed = new Map<string, { prompt: string; instructions: number; tools: number }>();
+const fixed = new Map<string, { domain: string; domainTokens: number; prompt: string; instructions: number; tools: number }>();
 const fixedCost = (names: ToolNames, nativeReadToolTokens: TaskOptions["nativeReadToolTokens"]) => {
   const key = JSON.stringify([names, nativeReadToolTokens]);
   let cost = fixed.get(key);
   if (!cost) {
-    const prompt = loadPrompt("noting.md", names);
-    cost = { prompt, instructions: tokens(prompt),
+    const domain = loadPrompt("noting.md", names), prompt = withRetrievalPolicy(domain, names);
+    cost = { domain, domainTokens: tokens(domain), prompt, instructions: tokens(prompt),
       tools: tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, names))) + (nativeReadToolTokens ?? 0) };
     fixed.set(key, cost);
   }
@@ -41,8 +42,9 @@ export interface NotingInput extends TaskOptions {
   capacity?: { inputTokens: number; prefixTokens: number };
   model?: string;
   mode?: "fork" | "subagent";
-  /** Instruction deviations: fresh uses the unchanged prompt as system text and rendered material;
-   * fork uses the same prompt leading its user message and inherited material (core supplies its
+  /** Instruction deviations: fresh uses the prompt (instructions plus, 137, the retrieval policy) as system text
+   * and rendered material; fork uses the instructions alone leading its user message, since the policy
+   * is already in the system prompt it inherits, and inherited material (core supplies its
    * range/index/head increment). CC fork alone adds ToolSearch guidance, priced here before admission.
    * No other host instruction text is permitted. */
   forkGuidance?: string;
@@ -61,10 +63,11 @@ export interface NotingAgentInput extends AgentControl {
   range: { from: string; to: string };
   model: string;
   mode: "fork" | "subagent";
-  /** The domain instructions; core owns the prompt file and its hash. */
+  /** A fresh child's system prompt: the domain instructions plus the retrieval policy (137); core owns
+   * the prompt file and its hash. */
   prompt: string;
   promptHash: string;
-  /** Priced leading fork message: audited prompt plus optional host guidance. */
+  /** Priced leading fork message: the domain instructions plus optional host guidance, without the policy. */
   forkPrompt: string;
   material: NotingMaterial;
   /** Core's prepared domain text: the one material this task supplies, whatever mode runs it (29b).
@@ -194,10 +197,11 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // budget check inside the loop below is unchanged and still decides every freeze that passes here
   // (parent 22: "A fast preflight supplements the final guard; it does not replace it").
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
-  const { prompt, instructions, tools } = fixedCost(names, input.nativeReadToolTokens);
+  const { domain, domainTokens, prompt, instructions, tools } = fixedCost(names, input.nativeReadToolTokens);
   const inheriting = (input.effectiveMode ?? mode) === "fork";
-  const forkPrompt = input.forkGuidance ? `${prompt}\n\n${renderToolNames(input.forkGuidance, names)}` : prompt;
-  const forkInstructions = input.forkGuidance ? tokens(forkPrompt) : instructions;
+  // 137: the retrieval policy is the fresh child's system text; a fork inherits it from its parent's.
+  const forkPrompt = input.forkGuidance ? `${domain}\n\n${renderToolNames(input.forkGuidance, names)}` : domain;
+  const forkInstructions = input.forkGuidance ? tokens(forkPrompt) : domainTokens;
   // 29b: the floor is the price of the mode that will run, as the loop below prices it — a fork pays
   // its inherited measure and its full sent instructions (including host guidance), a fresh child the
   // unchanged instructions and the tools. Keeping

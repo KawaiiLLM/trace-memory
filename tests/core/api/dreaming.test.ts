@@ -7,6 +7,7 @@ import { dreamerWrite, skipRest, suppliedHandles } from "../../dreaming-skips.ts
 import { knowledgeBatch, receiptCommit } from "../../support/seed.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
 import { dreamingToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 
@@ -97,13 +98,16 @@ test("Dreamer instructions use its fresh host's exposed check, memory and read t
   const f = fixture();
   createDreamerTrigger(f.memory, f.target, f.fact, 1);
   const names = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", grep: "Grep" };
-  const rendered = loadPrompt("dreaming.md", names);
+  const rendered = withRetrievalPolicy(loadPrompt("dreaming.md", names), names); // 137: the policy is part of a fresh Dreamer's system prompt
+
   let finished = false;
   const result = await f.scenarios.run(f.memory, { ...f.target, toolNames: names } as typeof f.target, task => {
     expect(task.prompt).toBe(rendered);
     expect(task.prompt).toContain("`mcp__trace_memory__check`");
     expect(task.prompt).toContain("`mcp__trace_memory__memory`");
     expect(task.prompt).not.toContain("{{tool.");
+    expect(task.prompt.split("When to look up memory").length).toBe(2);
+    expect(task.prompt).toContain("Find topics and exact strings with mcp__trace_memory__search;");
     expect(task.promptHash).toBe(createHash("sha256").update(rendered).digest("hex"));
     expect(task.tools.map(tool => tool.name)).toEqual(["search", "check", "memory"]);
     task.acknowledgeRequest();

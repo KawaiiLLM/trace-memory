@@ -115,7 +115,7 @@ test("22d: the preflight is a floor and not the guard — an allowance over the 
 // prefix is the host's context measure and is counted once.
 test("27a 2026-09-10: the freeze admits material the allowance exactly fits and refuses the same material one token above it", async () => {
   const price = (input: NotingAgentInput, prefix = 0) =>
-    prefix ? prefix + tokens(input.prompt) + tokens(input.text)
+    prefix ? prefix + tokens(input.forkPrompt) + tokens(input.text)
       : tokens(input.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(input.text);
   // What this batch costs, priced by the same terms the freeze prices it by.
   expect((await noting({ inputTokens: 60_000, prefixTokens: 0 })).outcome).toBe("success");
@@ -150,8 +150,9 @@ test("112: CC fork guidance is part of the frozen prompt and the pre-admission c
   const original = calls[0]!;
   const guidance = "Use ToolSearch to load note and memory before writing.";
   const prefix = 20_000;
-  const withoutGuidance = prefix + tokens(original.prompt) + tokens(original.text);
-  const withGuidance = prefix + tokens(`${original.prompt}\n\n${guidance}`) + tokens(original.text);
+  // 137: a fork's leading message is the instructions alone; the retrieval policy is in the system prompt it inherits.
+  const withoutGuidance = prefix + tokens(original.forkPrompt) + tokens(original.text);
+  const withGuidance = prefix + tokens(`${original.forkPrompt}\n\n${guidance}`) + tokens(original.text);
   expect(withGuidance).toBeGreaterThan(withoutGuidance);
 
   memory.close(); open();
@@ -162,7 +163,8 @@ test("112: CC fork guidance is part of the frozen prompt and the pre-admission c
 
   memory.close(); open();
   expect((await noting({ inputTokens: withGuidance, prefixTokens: prefix }, { ...fork, forkGuidance: guidance })).outcome).toBe("success");
-  expect(calls[0]!.forkPrompt).toBe(`${calls[0]!.prompt}\n\n${guidance}`);
+  expect(calls[0]!.forkPrompt).toBe(`${original.forkPrompt}\n\n${guidance}`);
+  expect(calls[0]!.forkPrompt).not.toContain("When to look up memory");
   expect(calls[0]!.entryIds).toHaveLength(original.entryIds.length);
 });
 

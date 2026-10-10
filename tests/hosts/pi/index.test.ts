@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
-import { memoryFiles } from "../../../src/core/api/index.ts";
+import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
+import { memoryFiles, canonicalToolNames } from "../../../src/core/api/index.ts";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { host as createHost, reply, notingFact, noteHeld, usage, dreamerReply, type Reply } from "./test-host.ts";
@@ -116,7 +117,9 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   expect(JSON.parse(run.request!)).toEqual(h.requests.at(-1));
   expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult", "assistant", "user"]);
   expect(String(h.conversations.at(-1)!.messages.at(-1)!.content)).toContain("Before publication, review this run once.");
-  expect(h.conversations[0]!.systemPrompt).toBe(loadPrompt("noting.md"));
+  // 137: a fresh Noter's system prompt is its instructions plus the retrieval policy, once.
+  expect(h.conversations[0]!.systemPrompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
+  expect(h.conversations[0]!.systemPrompt!.split("When to look up memory")).toHaveLength(2);
   expect(h.conversations[0]!.messages).toHaveLength(1);
   expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["search", "note", "memory", "read"]);
   // Usage is summed over every model call of the run, not the last reply's alone.

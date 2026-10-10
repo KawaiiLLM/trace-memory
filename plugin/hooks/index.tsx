@@ -1,7 +1,7 @@
 // Function-hooks module for Claude Code (last verified version: src/hosts/cc/verified-version.ts). Bundled from this source for the isolated hooks VM.
 import { buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type SettingsRowId, type TraceMenuInput, type SettingsInput } from "../../src/hosts/trace-menu.ts";
 import { renderTraceMenu, renderTraceMenuText, renderTraceSettings, type CcContextBreakdown, type CcMemorySplit } from "../../src/hosts/cc/trace-menu-render.ts";
-import { MEMORY_READ_ONLY, memoryGlob, memoryPath } from "../../src/core/model/address.ts";
+import { MEMORY_READ_ONLY, memoryPath } from "../../src/core/model/address.ts";
 
 type Reply = { menu: TraceMenuInput; settings: SettingsInput; models: string[]; context: { presence: "confirmed" | "unavailable"; estimatedMessagesTokens?: number; memory?: CcMemorySplit }; runs: { id: number; phase: string; status: string; cost: number | null; partial: boolean; at: string }[] };
 type Screen = "main" | "settings" | "runs" | "project" | "confirm" | "edit" | "model-other";
@@ -78,7 +78,7 @@ async function nativeCompaction($: any, e: any, next: any, session: string) {
   }
 }
 
-// Virtual grep/glob and whole node/entry views use the bound native reader. Other Read
+// Whole node/entry views use the bound native reader. Other Read
 // calls are re-rendered by the command PreToolUse hook, then paged by Claude Code's own Read.
 async function memoryFiles($: any, args: string[]): Promise<any> {
   const root = $.plugin.root, session = await $.session.id();
@@ -87,7 +87,6 @@ async function memoryFiles($: any, args: string[]): Promise<any> {
   return JSON.parse(run.stdout);
 }
 const failure = (error: unknown) => ({ deny: error instanceof Error ? error.message : String(error) });
-const listed = (listing: { lines: string[] }) => listing.lines;
 async function forkEvent($: any, session: string, verb: string, detail: Record<string, unknown>): Promise<boolean> {
   const result = await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-fork", "--config", `${$.plugin.root}/cc.config.json`],
     { stdin: JSON.stringify({ session_id: session, verb, ...detail }) });
@@ -161,38 +160,6 @@ export const register = (on: any) => {
       const lines = file.content.split("\n");
       return { result: { type: "text", file: { filePath: e.file_path, content: file.content,
         numLines: lines.length, startLine: 1, totalLines: lines.length } } };
-    } catch (error) { return failure(error); }
-  });
-  on("tool.call", { tool: "Grep" }, async ($: any, e: any, next: any) => {
-    const path = memoryPath(e.path);
-    if (path === null) return next(e);
-    const mode = e.output_mode === "content" || e.output_mode === "count" ? e.output_mode : "files_with_matches";
-    const context = e["-C"] ?? e.context;
-    try {
-      if (e["-o"] || e.multiline || e.type) throw new Error(`unsupported virtual Grep input: ${path}`);
-      const listing = await memoryFiles($, ["grep", mode === "content" ? e["-n"] === false ? "--no-line-numbers" : "-n" : mode === "count" ? "-c" : "-l", ...(e["-i"] ? ["-i"] : []),
-        ...(context !== undefined ? ["-C", String(context)] : []), ...(e["-A"] !== undefined ? ["-A", String(e["-A"])] : []),
-        ...(e["-B"] !== undefined ? ["-B", String(e["-B"])] : []), ...(e.glob ? ["--glob", e.glob] : []),
-        ...(e.offset !== undefined ? ["--offset", String(e.offset)] : []), ...(e.head_limit !== undefined ? ["--limit", String(e.head_limit)] : []), "--", e.pattern, path]);
-      const lines = listed(listing);
-      const page = { ...(listing.appliedLimit !== undefined && { appliedLimit: listing.appliedLimit }),
-        ...(listing.offset > 0 && { appliedOffset: listing.offset }) };
-      if (mode === "files_with_matches") return { result: { mode, numFiles: lines.length, filenames: lines,
-        totalFiles: listing.total, ...page } };
-      if (mode === "count") return { result: { mode, numFiles: listing.countFiles, filenames: [],
-        content: lines.join("\n"), numMatches: listing.matches, ...page } };
-      return { result: { mode, numFiles: 0, filenames: [], content: lines.join("\n"),
-        numLines: lines.length, totalLines: listing.total, ...page } };
-    } catch (error) { return failure(error); }
-  });
-  on("tool.call", { tool: "Glob" }, async ($: any, e: any, next: any) => {
-    const pattern = memoryGlob(e.pattern, e.path);
-    if (pattern === null) return next(e);
-    try {
-      const listing = await memoryFiles($, ["glob", pattern]);
-      const filenames = listing.lines.slice(0, 100);
-      return { result: { durationMs: 0, numFiles: filenames.length, filenames, truncated: listing.total > 100,
-        totalMatches: listing.total, countIsComplete: true } };
     } catch (error) { return failure(error); }
   });
   on("tool.call", { tool: "Edit" }, ($: any, e: any, next: any) => memoryPath(e.file_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
