@@ -117,9 +117,9 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     factsTokens: 10_000,
     rawTokens: 10_000,
     temporaryTokens: 10_000,
-    userTurns: 30,
+    userTurns: 100,
     titleTurns: 100,
-    userEntryTokens: 500,
+    userEntryTokens: 300,
     sharedAllowanceTokens: DEFAULT_SHARED_ALLOWANCE_TOKENS,
   },
 };

@@ -500,9 +500,9 @@ the same `compact()` allocator as main-agent compaction.
 
 Ticket 133 adds a separate `compaction.temporaryTokens` allowance, 10,000 by default.
 The anchor is the batch's newest turn. Its frozen batch already fits its Raw base, so no
-Noter Raw borrows: the allowance holds human user words from the anchor and 29 preceding
-path turns, then uncovered fact titles from the anchor and 99 preceding turns, by default.
-User entries use the normal head/tail middle cut at 500 tokens each. Neither these excerpts
+Noter Raw borrows: the allowance holds human user words and uncovered fact titles, filled
+together by turn as in compaction (140), each from the anchor and 99 preceding path turns by
+default. User entries use the normal head/tail middle cut at 300 tokens each. Neither these excerpts
 nor titles grant full-body coverage or enlarge the frozen processing batch.
 
 When the host's measured input capacity is insufficient, optional temporary material is
@@ -628,7 +628,7 @@ charged once to the block that emits it:
 | compact's full facts and their framing/receipts; no borrowing | `compaction.factsTokens` | 10,000 |
 | compact's Raw, pending overflow borrowing only the temporary allowance | `compaction.rawTokens` | 10,000 |
 | Knowledge-only shared allowance (133 supersedes episodic borrowing in 73) | `compaction.sharedAllowanceTokens` | 10,000 |
-| temporary allowance: pending Raw → user words within 30 turns → fact titles within 100 turns; framing/receipts included | `compaction.temporaryTokens` | 10,000 |
+| temporary allowance: pending Raw → user words within 100 turns and fact titles within 100 turns, filled together by turn; framing/receipts included | `compaction.temporaryTokens` | 10,000 |
 | Consolidator: its titles, range line and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
 
 Required task material is reserved first; historical facts then fill whatever episodic space is left, in the existing freshness order. A Noter batch consumes at most its own
@@ -888,12 +888,14 @@ since 30, one allocation since 73):
 **Independent allowances (133).** Knowledge retains its database-derived 20,000-token base;
 Facts and Raw retain 10,000-token bases. The configured 10,000-token shared allowance is
 lent to Knowledge only. The separate 10,000-token temporary allowance is filled in order:
-pending Raw overflow, missing human user entries within `compaction.userTurns` (30) path turns,
-then uncovered titles within `compaction.titleTurns` (100) path turns. Both configurable reaches
-include the anchor; no older material fills spare room.
-Each kind keeps a newest-first whole-item prefix and stops at its first non-fitting item.
-User entries use the normal renderer with `compaction.userEntryTokens` (500) as their middle-cut
-cap. All four temporary-allowance settings require positive safe integers.
+pending Raw overflow first; then the user's words and uncovered titles together, turn by turn,
+newest first (140). For each turn on the anchor's path, that turn's missing human user entries
+within `compaction.userTurns` (100) path turns, then its titles within `compaction.titleTurns`
+(100) path turns, so both kinds reach the same depth while the allowance lasts. A kind past its
+own reach drops out and the other continues alone to its reach. Both configurable reaches include
+the anchor; no older material fills spare room. Each kind keeps a newest-first whole-item prefix,
+and the first item that does not fit stops both kinds. User entries use the normal renderer with
+`compaction.userEntryTokens` (300) as their middle-cut cap. All four temporary-allowance settings require positive safe integers.
 
 Full facts and Raw preserve their selection and coverage rules. Framing and receipts are
 charged in their owning window or allowance. Raw omissions stay pending; hosts delegate to

@@ -24,10 +24,10 @@ Core phase bounds use optional top-level keys in the same file:
 | `dreaming.triggerTokens` | 10,000 | Dreamer trigger on the session's pending weight summed across its pools |
 | `dreaming.timeoutMs` | 1,800,000 | Dreamer wall-clock bound; no tool-round ceiling |
 | `compaction.sharedAllowanceTokens` | 10,000 | Allowance lent to Knowledge only |
-| `compaction.temporaryTokens` | 10,000 | Separate allowance: pending Raw, then user words, then titles |
-| `compaction.userTurns` | 30 | User-word reach including the anchor, counted along its path |
+| `compaction.temporaryTokens` | 10,000 | Separate allowance: pending Raw, then user words and titles together, turn by turn |
+| `compaction.userTurns` | 100 | User-word reach including the anchor, counted along its path |
 | `compaction.titleTurns` | 100 | Fact-title reach including the anchor, counted along its path |
-| `compaction.userEntryTokens` | 500 | Middle-cut cap for each earlier human user entry |
+| `compaction.userEntryTokens` | 300 | Middle-cut cap for each earlier human user entry |
 
 The shared material allowance is this configured value, not derived from the N or D triggers.
 Noter publishes facts and knowledge together; facts have no later processing queue. Database pool
