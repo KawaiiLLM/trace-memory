@@ -836,8 +836,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         })
         .filter(({ entry }) => entry.role === "user" && (humanUser?.(entry) ?? (!prefixes.test(entry.text) && !piUserPrefix?.test(entry.text)))).reverse();
       const earlierUsers: { id: number; view: string }[] = [];
-      const userReceipts = (kept: number) => kept < userCandidates.length
-        ? [`omitted ${userCandidates.length - kept} earlier user messages; expand: ${expandList(userCandidates.slice(kept).map(({ entry }) => `trace://raw/S${sessionId}/T${entry.turnId}#E${entry.entryOrdinal}`))}`] : [];
+      // The walk selects by turn rank, not as a prefix of userCandidates: omit what was not selected.
+      const userReceipts = (): string[] => {
+        const shown = new Set(earlierUsers.map(entry => entry.id));
+        const rest = userCandidates.filter(({ entry }) => !shown.has(entry.id));
+        return rest.length ? [`omitted ${rest.length} earlier user messages; expand: ${expandList(rest.map(({ entry }) => `trace://raw/S${sessionId}/T${entry.turnId}#E${entry.entryOrdinal}`))}`] : [];
+      };
       const userCost = (receipts: string[]) => (earlierUsers.length
         ? (rawKept || factsKept ? charge([EARLIER_USERS_TITLE]) : opener(EARLIER_USERS_TITLE)) + charge(earlierUsers.map(entry => entry.view)) : 0) + receiptCharge(receipts);
       const afterRaw = temporaryCap - rawBorrowed;
@@ -867,12 +871,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const ids = new Set(selectedTitles.map(value => value.id));
         const receipt = omission(eligibleFacts.slice(factsKept).filter(value => !ids.has(value.id)));
         // Title fitting reserves room for the shared fact omission receipt, but facts charge it once.
-        if (userCost(userReceipts(earlierUsers.length)) + titleCost() + (selectedTitles.length ? receiptCharge(receipt) : 0) > afterRaw) {
+        if (userCost(userReceipts()) + titleCost() + (selectedTitles.length ? receiptCharge(receipt) : 0) > afterRaw) {
           if ("user" in item) earlierUsers.pop(); else selectedTitles.pop();
           break;
         }
       }
-      const finalUserReceipts = userCost(userReceipts(earlierUsers.length)) <= afterRaw ? userReceipts(earlierUsers.length) : [];
+      const finalUserReceipts = userCost(userReceipts()) <= afterRaw ? userReceipts() : [];
       const usersCharged = userCost(finalUserReceipts);
       earlierUsers.reverse();
       const titleIds = new Set(selectedTitles.map(fact => fact.id));

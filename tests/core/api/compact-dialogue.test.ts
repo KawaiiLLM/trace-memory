@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { sourceSeededMemory, recorded } from "../../source-fixture.ts";
+import { sourceSeededMemory, recorded, seedSourceEntry } from "../../source-fixture.ts";
 import { facts, legacyFacts } from "../../support/seed.ts";
 import { charge, renderEntry, tokens, xmlBlock } from "../../../src/core/render/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
@@ -297,4 +297,32 @@ test("140: pending Raw still borrows first, and the two kinds fill what it leave
   const free = depth(false), borrowing = depth(true);
   expect(borrowing.users).toBeGreaterThan(free.users); // the borrowed Raw took its share first
   expect(borrowing.titles).toBeGreaterThan(free.titles);
+});
+
+test("140: an entry appended to an older turn after a newer turn was written keeps the user receipt true to what was shown", () => {
+  const { memory, session } = setup();
+  try {
+    const t1 = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: at, userPrompt: "first" });
+    const t2 = memory.store.appendTurn({ sessionId: session.id, parentTurnId: t1.id, kind: "turn", startedAt: at, userPrompt: "second" });
+    seedSourceEntry(memory, t1.id, "user", `later ${"word ".repeat(150)}`); // written last, on the older turn
+    const [e1, e2] = memory.store.listSourceEntries(session.id, t1.id); // the turns carry user entries alone
+    const [second] = memory.store.listSourceEntries(session.id, t2.id);
+    const address = (e: { turnId: number; entryOrdinal: number }) => `T${e.turnId}#E${e.entryOrdinal}`;
+    recorded(memory, session.id, "main", t2.id);
+    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 150 });
+    const result = memory.compact(session.id, "main", t2.id);
+    if ("native" in result) throw new Error("native");
+    expect(result.material!.entries).toEqual([]);
+    expect(result.material!.earlierUsers!.map(e => e.id)).toEqual([second!.id]); // only the newest turn's entry fits
+    const receipt = result.material!.receipts.filter(line => line.includes("earlier user messages"));
+    expect(receipt).toHaveLength(1);
+    expect(receipt[0]!.match(/trace:\/\/raw\/S\d+\/(T\d+#E\d+)/g)!.map(link => link.split("/").pop())).toEqual([address(e2!), address(e1!)]);
+    expect(receipt[0]).toContain("omitted 2 earlier");
+    expect(result.charged!.temporary).toBeLessThanOrEqual(150);
+    // With room for all three, they display by path (turn, then entry), not by write order.
+    memory.config.compaction.temporaryTokens = 3000;
+    const all = memory.compact(session.id, "main", t2.id);
+    if ("native" in all) throw new Error("native");
+    expect(all.material!.earlierUsers!.map(e => e.id)).toEqual([e1!.id, e2!.id, second!.id]);
+  } finally { memory.close(); }
 });
