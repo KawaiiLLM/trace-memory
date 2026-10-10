@@ -278,6 +278,7 @@ export interface MemoryOperation {
   absorb?: string[];
   children?: { text: string; category: KnowledgeCategory; topics: string[] }[];
   text?: string;
+  edits?: { old: string; new: string }[];
   category?: KnowledgeCategory;
   scope?: KnowledgeScope;
   supports?: string[];

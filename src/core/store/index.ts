@@ -664,6 +664,8 @@ export interface CommittedKnowledgeOp {
   handle?: string;
   knowledgeId: number;
   commit: number;
+  /** A live merge reversed its requested survivor; the actual survivor is knowledgeId. */
+  swappedFrom?: string;
 }
 
 export type CommitConsolidationResult =
@@ -2378,8 +2380,10 @@ export class Store {
           for (const requested of input.held.knowledge(mapping)) {
             const op = this.normalizeNotingOperation(requested, input.held.path);
             if (!op) { knowledgeAudit.push({ requested, applied: null, committed: [] }); continue; }
+            const inheritedCreateCategory = requested.op === "update" && op.op === "create" && !isKnowledgeCategory(op.category)
+              ? this.getKnowledgeRevision(requested.knowledgeId, requested.baseCommit)!.category : undefined;
             const result = this.applyKnowledgeOperation(op, runId, this.getSession(sessionId)!.projectId,
-              sessionId, input.held.path, false, "noting");
+              sessionId, input.held.path, false, "noting", null, inheritedCreateCategory);
             if (!result.ok) throw result.reason instanceof Error ? result.reason : new Error(result.reason);
             knowledgeAudit.push({ requested, applied: op, committed: result.value });
           }
@@ -3736,7 +3740,7 @@ export class Store {
         } else {
           if (input.run.kind !== "manual")
             throw new Error(`${input.run.kind} has no knowledge commit authority`);
-          const allowed = new Set(["create", "archive"]);
+          const allowed = new Set(["create", "update", "archive"]);
           const forbidden = input.operations.find(op => !allowed.has(op.op));
           if (forbidden) throw new Error(`${forbidden.op} belongs to the Dreamer and is not available to manual memory`);
           if (input.run.kind === "manual" && input.operations.some(op => op.op === "archive") && this.dreamerSeatHeld(Date.now()))
@@ -3822,12 +3826,20 @@ export class Store {
 
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,
     sessionId: number, path: KnowledgePath | null, dreaming = false, role: "noting" | "dreaming" | "manual" = "manual",
-    dreamingPools: readonly string[] | null = null): { ok: true; value: CommittedKnowledgeOp[] } | { ok: false; reason: string | KnowledgeVersionProblem } {
+    dreamingPools: readonly string[] | null = null, inheritedCreateCategory?: KnowledgeCategory): { ok: true; value: CommittedKnowledgeOp[] } | { ok: false; reason: string | KnowledgeVersionProblem } {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
     if (op.op === "merge" && (op.absorb.length !== 1 || op.absorb[0]!.baseCommit === op.intoBaseCommit))
       return { ok: false, reason: "merge requires id as the survivor and absorb as exactly one distinct other parent" };
-    if (op.op === "merge" && op.intoKnowledgeId > op.absorb[0]!.knowledgeId)
-      return { ok: false, reason: new KnowledgeVersionProblem(address => `merge survivor K${op.intoKnowledgeId} is newer than absorbed K${op.absorb[0]!.knowledgeId}; swap them: use ${address(op.absorb[0]!.knowledgeId, op.absorb[0]!.baseCommit)} as the survivor and absorb ${address(op.intoKnowledgeId, op.intoBaseCommit)}`) };
+    let reversed: Extract<KnowledgeOperationInput, { op: "merge" }> | undefined;
+    if (op.op === "merge" && op.intoKnowledgeId > op.absorb[0]!.knowledgeId) {
+      const merge = op, older = merge.absorb[0]!;
+      if (this.getKnowledgeRevision(merge.intoKnowledgeId, merge.intoBaseCommit)?.op === "archive" ||
+          this.getKnowledgeRevision(older.knowledgeId, older.baseCommit)?.op === "archive")
+        return { ok: false, reason: new KnowledgeVersionProblem(address => `merge survivor K${merge.intoKnowledgeId} is newer than absorbed K${older.knowledgeId}; swap them: use ${address(older.knowledgeId, older.baseCommit)} as the survivor and absorb ${address(merge.intoKnowledgeId, merge.intoBaseCommit)}`) };
+      reversed = merge;
+      op = { ...merge, intoKnowledgeId: older.knowledgeId, intoBaseCommit: older.baseCommit,
+        absorb: [{ knowledgeId: merge.intoKnowledgeId, baseCommit: merge.intoBaseCommit }] };
+    }
     const targets = op.op === "create" ? [] : op.op === "merge"
       ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb]
       : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];
@@ -3876,7 +3888,9 @@ export class Store {
     const bad = op.supports.length ? this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId)) : null;
     if (bad) return { ok: false, reason: bad };
     const insertRevision = (knowledgeId: number, parentId: number | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp) => {
-      if (!isKnowledgeCategory(category) && !(revisionOp === "archive" && category === prior?.category))
+      if (!isKnowledgeCategory(category) &&
+          !((revisionOp === "archive" || revisionOp === "update") && category === prior?.category) &&
+          !(revisionOp === "create" && role === "noting" && inheritedCreateCategory !== undefined && category === inheritedCreateCategory))
         throw new Error(`invalid new knowledge category ${category}`);
       // Budget stores the exact parent body; old valid parents may exceed the new-write cap.
       if (role !== "manual" && !(revisionOp === "archive" && op.op === "archive" && op.kind === "budget"))
@@ -3918,7 +3932,8 @@ export class Store {
       this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")
         .run(parent.knowledgeId, parent.baseCommit, knowledgeId, commitId);
     }
-    return { ok: true, value: [{ op: op.op, ...(op.op === "create" ? { handle: op.handle } : {}), knowledgeId, commit: commitId }] };
+    return { ok: true, value: [{ op: op.op, ...(op.op === "create" ? { handle: op.handle } : {}), knowledgeId, commit: commitId,
+      ...(reversed ? { swappedFrom: `K${reversed.intoKnowledgeId}#${this.versionTag(reversed.intoKnowledgeId, reversed.intoBaseCommit)}` } : {}) }] };
   }
 
   // -- shared exact Dreamer processing; no automatic worker is launched by these primitives --

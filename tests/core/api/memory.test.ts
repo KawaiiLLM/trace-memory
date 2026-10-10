@@ -1,5 +1,5 @@
 import { readHandle } from "../../read-handle-fixture.ts";
-import { fact as seedFact, receiptCommit } from "../../support/seed.ts";
+import { fact as seedFact, legacyKnowledge, receiptCommit } from "../../support/seed.ts";
 import { afterEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
@@ -109,6 +109,155 @@ test("N normal stop without explicit tools is incomplete", async () => {
   expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
 });
 
+test("135: a manual exact update applies sequential edits and deletion, inherits metadata and stores the full result", () => {
+  const write = setup(async () => success());
+  const original = "Use pnpm; retain the lockfile. Legacy clause.";
+  const created = JSON.parse(write.execute({ ...create, text: original, topics: ["lockfiles", "package-tools"] }));
+  const base = read(1);
+  const beforePool = memory.store.knowledgePools(dreamPath()).find(pool => pool.pool === "project:1")!.tokens;
+  const result = JSON.parse(write.execute({ op: "update", id: base, supports: ["F1"], reason: "Clarify the invocation and remove an obsolete clause",
+    edits: [{ old: "pnpm", new: "bun" }, { old: "bun", new: "corepack pnpm" }, { old: "Legacy clause.", new: "" }] }));
+  expect(result.committed).toMatchObject([{ op: "update", knowledgeId: 1, version: expect.stringMatching(/^K1#[a-z]{4,}$/) }]);
+  const revision = memory.store.currentCommit(1)[0]!;
+  expect(revision).toMatchObject({ text: "Use corepack pnpm; retain the lockfile. ", category: "constraint", scope: "project",
+    topics: ["lockfiles", "package-tools"], supports: [1], reason: "Clarify the invocation and remove an obsolete clause" });
+  expect(receiptCommit(memory.store, result.committed[0])).toBe(revision.id);
+  expect(result.tokens.before).toEqual(created.tokens.after);
+  const afterPool = memory.store.knowledgePools(dreamPath()).find(pool => pool.pool === "project:1")!.tokens;
+  expect(Math.abs((result.tokens.after[0] - result.tokens.before[0]) - (afterPool - beforePool))).toBeLessThanOrEqual(1);
+  expect(result).not.toHaveProperty("text");
+  expect(result.committed[0]).not.toHaveProperty("text");
+  expect(result.committed[0].version).not.toBe(base);
+});
+
+test.each([
+  { old: "absent clause", matches: /nothing|0 occurrences/ },
+  { old: "duplicate", matches: /several|multiple occurrences/ },
+  { old: "aa", matches: /several|multiple occurrences/ },
+])("135: D refuses edit 2 matching $old atomically, including overlapping matches", async ({ old, matches }) => {
+  const write = setup(async () => success());
+  const original = "Use pnpm; aaa; duplicate duplicate.";
+  write.execute({ ...create, text: original });
+  const base = read(1), path = dreamPath();
+  createDreamerTrigger(memory, path, 1, 1);
+  const before = memory.store.listKnowledgeRevisions();
+  const result = await admittedScenarios.run(memory, path, input => {
+    input.reportRequest({ fixture: "135 exact match refusal" });
+    const tool = input.tools.find(tool => tool.name === "memory")!;
+    const refused = JSON.parse(tool.execute({ op: "update", id: base, supports: [], reason: "Attempt an exact edit",
+      edits: [{ old: "Use", new: "Prefer" }, { old, new: "replacement" }] }));
+    expect(refused.rejected.M1).toContain("edit 2");
+    expect(refused.rejected.M1).toMatch(matches);
+    expect(memory.store.listKnowledgeRevisions()).toEqual(before);
+    expect(memory.store.currentCommit(1)[0]!.text).toBe(original);
+    tool.execute({ drop: "M1" });
+    skipRest(input);
+    return success();
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  expect(memory.store.currentCommit(1)[0]!.text).toBe(original);
+});
+
+test("135: update rejects both body forms, neither, malformed edits and missing full-text metadata without changing the base", () => {
+  const write = setup(async () => success());
+  write.execute(create);
+  const base = read(1), before = memory.store.listKnowledgeRevisions();
+  const update = { op: "update", id: base, supports: ["F1"], reason: "Exact update" };
+  for (const body of [
+    { text: create.text, category: create.category, scope: create.scope, topics: [], edits: [{ old: "pnpm", new: "yarn" }] },
+    {},
+    { edits: [] }, { edits: null }, { edits: [{ old: "", new: "yarn" }] },
+    { edits: [{ old: "pnpm" }] }, { edits: [{ old: "pnpm", new: null }] },
+    { edits: [{ old: "pnpm", new: "yarn", extra: true }] }, { edits: ["pnpm"] },
+    { edits: [{ old: create.text, new: "" }] },
+    { edits: [{ old: "pnpm", new: "yarn" }], supports: [] },
+    { edits: [{ old: "pnpm", new: "yarn" }], reason: "" },
+    { text: "Use yarn" },
+    { edits: [{ old: "pnpm", new: "" }], category: undefined },
+    { edits: [{ old: "pnpm", new: "" }], scope: undefined },
+    { edits: [{ old: "pnpm", new: "" }], topics: undefined },
+  ]) {
+    expect(write.execute({ ...update, ...body })).toContain("rejected:");
+    expect(memory.store.listKnowledgeRevisions()).toEqual(before);
+  }
+});
+
+test("135: supplied edit metadata replaces the inherited fields and a manual update result is not capped", () => {
+  const write = setup(async () => success());
+  write.execute({ ...create, topics: ["packaging"] });
+  const base = read(1);
+  const update = { op: "update", supports: ["F1"], reason: "Clarify the package manager" };
+  const result = JSON.parse(write.execute({ ...update, id: base, edits: [{ old: "pnpm", new: "corepack pnpm" }],
+    category: "reference", scope: "session", topics: [] }));
+  expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, result.committed[0]))).toMatchObject({
+    text: "Use corepack pnpm", category: "reference", scope: "session", topics: [], supports: [1],
+  });
+  // A manual create is not capped, so a manual update result is not either (a Noter or Dreamer result is).
+  const long = "word ".repeat(1_100);
+  const grown = JSON.parse(write.execute({ ...update, id: result.committed[0].version, edits: [{ old: "corepack", new: long }] }));
+  expect(grown.committed).toHaveLength(1);
+  expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, grown.committed[0]))!.text).toBe(`Use ${long} pnpm`);
+});
+
+test("135: N numbers a failed edit and replaces held edits under the same slot against the exact base", async () => {
+  let base = "";
+  const original = "Use pnpm; retain the lockfile.";
+  const write = setup(async input => {
+    input.reportRequest({ fixture: "135 held exact edits" });
+    input.tools.find(tool => tool.name === "note")!.execute({});
+    const tool = input.tools.find(tool => tool.name === "memory")!;
+    const update = { op: "update", id: base, supports: ["F1"], reason: "Clarify the invocation" };
+    const refused = JSON.parse(tool.execute({ ...update, edits: [{ old: "Use", new: "Prefer" }, { old: "absent", new: "" }] }));
+    expect(refused.rejected.M1).toMatch(/edit 2.*(?:nothing|0 occurrences)/);
+    expect(JSON.parse(tool.execute({ ...update, slot: "M1", edits: [{ old: "pnpm", new: "yarn" }] })).held).toEqual(["M1"]);
+    const replaced = JSON.parse(tool.execute({ ...update, slot: "M1", edits: [{ old: "pnpm", new: "corepack pnpm" }] }));
+    expect(replaced.held).toEqual(["M1"]);
+    expect(replaced.rejected).toEqual({});
+    expect(memory.store.currentCommit(1)[0]!.text).toBe(original);
+    const review = input.passEnd();
+    const resultBody = review.split("\n").filter(line => line.startsWith("+ "))
+      .map(line => line.slice(2).replace(/\{\+([\s\S]*?)\+\}/g, "$1")).join("\n");
+    expect(resultBody).toBe("Use corepack pnpm; retain the lockfile.");
+    expect(review).not.toContain('"old":');
+    expect(review).not.toContain('"new":');
+    return success();
+  });
+  write.execute({ ...create, text: original, topics: ["lockfiles"] });
+  base = read(1);
+  const result = await integrate();
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  expect(memory.store.currentCommit(1)[0]!).toMatchObject({ text: "Use corepack pnpm; retain the lockfile.", topics: ["lockfiles"] });
+  expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
+});
+
+test("135: D checks the edited full-body cap and a numbered resubmission inherits metadata and parent supports", async () => {
+  const write = setup(async () => success());
+  write.execute({ ...create, topics: ["packaging"] });
+  const base = read(1), path = dreamPath();
+  createDreamerTrigger(memory, path, 1, 1);
+  const before = memory.store.listKnowledgeRevisions();
+  const result = await admittedScenarios.run(memory, path, input => {
+    input.reportRequest({ fixture: "135 immediate exact edits" });
+    const tool = input.tools.find(tool => tool.name === "memory")!;
+    const update = { op: "update", id: base, supports: [], reason: "Clarify the invocation" };
+    const refused = JSON.parse(tool.execute({ ...update, edits: [{ old: "pnpm", new: "word ".repeat(1_100) }] }));
+    expect(refused.rejected.M1).toContain("1000-token limit");
+    expect(memory.store.listKnowledgeRevisions()).toEqual(before);
+    const committed = JSON.parse(tool.execute({ ...update, slot: "M1", edits: [{ old: "pnpm", new: "corepack pnpm" }] }));
+    expect(committed.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);
+    expect(committed.tokens.before).toHaveLength(1);
+    expect(committed.tokens.after).toHaveLength(1);
+    expect(committed.rejected).toBeUndefined();
+    expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, committed.committed[0]))).toMatchObject({
+      text: "Use corepack pnpm", category: "constraint", scope: "project", topics: ["packaging"], supports: [1],
+    });
+    expect(committed.committed[0]).not.toHaveProperty("text");
+    skipRest(input, ["K1@v1"]);
+    return success();
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+});
+
 test("134: an update receipt carries its new tag for another write and counts metadata in pool cost", async () => {
   const write = setup(async () => success());
   const created = JSON.parse(write.execute(create));
@@ -182,16 +331,17 @@ test("116: N rejects skipped without publishing its held operation", async () =>
   expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
 });
 
-test("manual memory accepts create and archive but rejects Dreamer maintenance operations", () => {
+test("135: manual memory accepts create/update/archive but rejects merge and split", () => {
   const write = setup(async () => success());
   expect(JSON.parse(write.execute(create)).committed).toHaveLength(1);
   expect(JSON.parse(write.execute(create)).committed).toHaveLength(1);
+  const updated = JSON.parse(write.execute({ ...create, op: "update", id: read(1), text: "Use pnpm and retain the lockfile" }));
+  expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, updated.committed[0]))!.text).toBe("Use pnpm and retain the lockfile");
   for (const operation of [
-    { ...create, op: "update", id: read(1) },
-    { ...create, op: "merge", id: read(1), absorb: [read(2)] },
-    { op: "split", id: read(1), supports: ["F1"], reason: "split", children: [] },
+    { ...create, op: "merge", id: updated.committed[0].version, absorb: [read(2)] },
+    { op: "split", id: updated.committed[0].version, supports: ["F1"], reason: "split", children: [] },
   ]) expect(write.execute(operation)).toContain("belongs to the Dreamer");
-  expect(JSON.parse(write.execute({ op: "archive", kind: "budget", reason: "Retired by the user.", id: read(1), supports: ["F1"] })).committed).toHaveLength(1);
+  expect(JSON.parse(write.execute({ op: "archive", kind: "budget", reason: "Retired by the user.", id: updated.committed[0].version, supports: ["F1"] })).committed).toHaveLength(1);
 });
 
 test("N terminal success-audit failure rolls back facts, knowledge and Raw progress", async () => {
@@ -469,4 +619,86 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", archiveKind: "budget", topics: ["packaging"] });
   const archivedCommit = memory.store.currentCommit(1)[0]!.id;
   expect(archivedCommit).toBeGreaterThan(mergedCommit);
+});
+
+test.each(["authored", "later-parent"] as const)("135: a live reversed merge swaps to the older identity with $0 text and states the swap", async body => {
+  const write = setup(async () => success());
+  const older = JSON.parse(write.execute({ ...create, text: "Use pnpm.", topics: ["old"] }));
+  const newer = JSON.parse(write.execute({ ...create, text: "Use corepack pnpm.", topics: ["new"] }));
+  const olderTag = read(1), newerTag = read(2), path = dreamPath();
+  const olderCommit = receiptCommit(memory.store, older.committed[0]), newerCommit = receiptCommit(memory.store, newer.committed[0]);
+  const expected = body === "authored" ? "Use pnpm and retain the lockfile." : "Use corepack pnpm.";
+  createDreamerTrigger(memory, path, 1, 1);
+  const result = await admittedScenarios.run(memory, path, input => {
+    input.reportRequest({ fixture: "135 automatic merge direction" });
+    const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({
+      op: "merge", id: newerTag, absorb: [olderTag], supports: [], reason: "Unify without losing the older identity",
+      category: "reference", scope: "project", topics: ["packages"], ...(body === "authored" ? { text: expected } : {}),
+    }));
+    expect(receipt.committed).toMatchObject([{ op: "merge", knowledgeId: 1, version: expect.stringMatching(/^K1#[a-z]{4,}$/), swappedFrom: newerTag }]);
+    expect(receipt.tokens.before).toEqual([newer.tokens.after[0], older.tokens.after[0]]);
+    const commit = receiptCommit(memory.store, receipt.committed[0]);
+    expect(memory.store.getKnowledgeRevision(1, commit)).toMatchObject({ parentId: olderCommit, text: expected, supports: [1],
+      reason: "Unify without losing the older identity", category: "reference", scope: "project", topics: ["packages"] });
+    expect(memory.store.listKnowledgeLinks(2)).toContainEqual({ fromKnowledge: 2, fromCommit: newerCommit, kind: "merged_into", toKnowledge: 1, toCommit: commit });
+    expect(memory.store.currentCommit(2)).toEqual([]);
+    expect(receipt.committed[0]).not.toHaveProperty("text");
+    skipRest(input, ["K1@v1", "K2@v1"]);
+    return success();
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+});
+
+test.each(["survivor", "absorbed"] as const)("135: a reversed merge with an archived $0 refuses without reviving either identity", async archived => {
+  const write = setup(async () => success());
+  write.execute({ ...create, text: "Use pnpm." });
+  write.execute({ ...create, text: "Retain the lockfile." });
+  const archiveId = archived === "survivor" ? 2 : 1;
+  write.execute({ op: "archive", id: read(archiveId), kind: "budget", supports: ["F1"], reason: "Retire this identity" });
+  const olderTag = read(1, archiveId === 1 ? 2 : 1), newerTag = read(2, archiveId === 2 ? 2 : 1), path = dreamPath();
+  createDreamerTrigger(memory, path, 1, 1);
+  const before = memory.store.listKnowledgeRevisions();
+  const result = await admittedScenarios.run(memory, path, input => {
+    input.reportRequest({ fixture: "135 archived merge direction" });
+    const tool = input.tools.find(tool => tool.name === "memory")!;
+    const refused = JSON.parse(tool.execute({ op: "merge", id: newerTag, absorb: [olderTag], text: "Use pnpm and retain the lockfile.",
+      supports: [], reason: "Attempt a reversed revival", category: "constraint", scope: "project", topics: [] }));
+    expect(refused.rejected).toHaveProperty("M1");
+    expect(refused.committed).toBeUndefined();
+    expect(memory.store.listKnowledgeRevisions()).toEqual(before);
+    expect(memory.store.currentCommit(archiveId)[0]!.op).toBe("archive");
+    tool.execute({ drop: "M1" });
+    skipRest(input);
+    return success();
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+});
+
+test("135: N preserves inherited legacy metadata through its existing concurrent update-to-create conversion", async () => {
+  let base = "";
+  const manual = setup(async input => {
+    const request = { fixture: "135 legacy inherited category concurrency" }; input.reportRequest(request);
+    input.tools.find(tool => tool.name === "note")!.execute({});
+    const tool = input.tools.find(tool => tool.name === "memory")!;
+    expect(JSON.parse(tool.execute({ op: "update", id: base, edits: [{ old: "pnpm", new: "corepack pnpm" }],
+      supports: ["F1"], reason: "Clarify the invocation" })).held).toEqual(["M1"]);
+    const advanced = JSON.parse(manual.execute({ op: "update", id: base, text: "Use the newer confirmed invocation",
+      category: "understanding", scope: "project", topics: [], supports: ["F1"], reason: "A genuine concurrent update" }));
+    expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, advanced.committed[0]))!.text).toBe("Use the newer confirmed invocation");
+    return { outcome: "success", output: "done", request };
+  });
+  const imported = legacyKnowledge(memory.store, dreamPath(), { text: "Use pnpm", category: "mechanism", scope: "project",
+    supports: [1], topics: ["packages"] });
+  base = `K1#${memory.store.versionTag(imported.knowledgeId, imported.commit)}`;
+  const beforeCreate = memory.store.listKnowledgeRevisions();
+  expect(manual.execute({ ...create, category: "mechanism" })).toContain("invalid category");
+  expect(memory.store.listKnowledgeRevisions()).toEqual(beforeCreate);
+  const result = await integrate();
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  expect(memory.store.currentCommit(1)[0]!.text).toBe("Use the newer confirmed invocation");
+  const converted = memory.store.currentCommit(2)[0]!;
+  expect(converted).toMatchObject({ op: "create", category: "mechanism", scope: "project", topics: ["packages"], supports: [1] });
+  expect(converted.text).toBe(`Use corepack pnpm\n[Concurrent update converted to create; originally targeted ${base}; pending reconciliation.]`);
+  expect(memory.store.getKnowledgeRevision(1, imported.commit)!.text).toBe("Use pnpm");
+  expect(memory.pendingEntries(1, "main", 1)).toEqual([]);
 });

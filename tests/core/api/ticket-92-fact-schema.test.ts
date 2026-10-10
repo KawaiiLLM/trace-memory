@@ -3,10 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, memoryFiles, type NotingAgentInput } from "../../source-fixture.ts";
-import { factSources } from "../../support/seed.ts";
+import { factSources, legacyKnowledge, receiptCommit } from "../../support/seed.ts";
 import { renderFact, renderFactPreview, renderFactGroups } from "../../../src/core/render/index.ts";
 import { toolDefinitions, canonicalToolNames } from "../../../src/core/api/index.ts";
-import { assignVersionTag } from "../../../src/core/store/version-tags.ts";
 import { CcForegroundTools } from "../../../src/hosts/cc/tools.ts";
 import type { CcCoordinator } from "../../../src/hosts/cc/lifecycle.ts";
 
@@ -109,28 +108,30 @@ test("92: entry-only citations reject legacy, whole-Turn and multi-entry selecto
   } finally { f.memory.close(); }
 });
 
-test("92: legacy knowledge is found as understanding in search and exact history without rewriting category", () => {
+test("135/92: exact edits inherit legacy metadata without rewriting history, search grouping or archive category", () => {
   const f = fixture();
   try {
     const written = JSON.parse(f.note.execute(slice("User identified a lasting design mechanism", [f.source[0]!])));
     const factId = written.factIds[0];
-    const runId = Number((f.memory.store.db.prepare("SELECT run_id FROM facts WHERE id=?").get(factId) as { run_id: number }).run_id);
-    const knowledgeId = Number(f.memory.store.db.prepare("INSERT INTO knowledge (project_id,origin_session_id,author) VALUES (?,?,'legacy')")
-      .run(f.session.projectId, f.session.id).lastInsertRowid);
-    const commit = Number(f.memory.store.db.prepare(`INSERT INTO knowledge_revisions
-      (knowledge_id,parent_id,text,category,scope,supports,support_semantics,op,reason,topics,run_id,created_at,actor_role)
-      VALUES (?,NULL,'legacy mechanism needle','mechanism','session',?,'change','create','legacy','[]',?,'now','manual')`)
-      .run(knowledgeId, JSON.stringify([factId]), runId).lastInsertRowid);
-    assignVersionTag(f.memory.store.db, knowledgeId, commit);
+    const { knowledgeId, commit } = legacyKnowledge(f.memory.store, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id },
+      { text: "legacy mechanism needle", category: "mechanism", scope: "session", supports: [factId], createdAt: "now" });
     const options = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
     expect(f.memory.search("legacy mechanism needle", "knowledge", options)).toContain(`[K${knowledgeId}@v1] [understanding/session]`);
     expect(memoryFiles(f.memory, options).read(`trace://K${knowledgeId}@v1`).content).toContain("[understanding/session]");
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, commit)!.category).toBe("mechanism");
     const tools = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" });
     expect(memoryFiles(f.memory, options).read(`trace://K${knowledgeId}@v1`).content).toContain("legacy mechanism needle");
-    const archived = JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#${f.memory.store.versionTag(knowledgeId, commit)}`, supports: [`F${factId}`], reason: "Legacy item retired" }));
+    const write = tools.find(tool => tool.name === "memory")!, tag = `K${knowledgeId}#${f.memory.store.versionTag(knowledgeId, commit)}`;
+    const update = { op: "update", id: tag, edits: [{ old: "needle", new: "updated needle" }], supports: [`F${factId}`], reason: "Clarify the legacy body" };
+    expect(write.execute({ ...update, category: "mechanism" })).toContain("invalid category");
+    const updated = JSON.parse(write.execute(update));
+    expect(f.memory.store.getKnowledgeRevision(knowledgeId, receiptCommit(f.memory.store, updated.committed[0]))).toMatchObject({
+      text: "legacy mechanism updated needle", category: "mechanism", scope: "session", topics: [],
+    });
+    expect(f.memory.store.getKnowledgeRevision(knowledgeId, commit)).toMatchObject({ text: "legacy mechanism needle", category: "mechanism" });
+    const archived = JSON.parse(write.execute({ op: "archive", kind: "budget", id: updated.committed[0].version, supports: [`F${factId}`], reason: "Legacy item retired" }));
     expect(archived.committed).toHaveLength(1);
-    expect(f.memory.store.getKnowledgeRevision(knowledgeId, f.memory.store.resolveVersionOrdinal(knowledgeId, 2))!.category).toBe("mechanism");
+    expect(f.memory.store.getKnowledgeRevision(knowledgeId, receiptCommit(f.memory.store, archived.committed[0]))!.category).toBe("mechanism");
   } finally { f.memory.close(); }
 });
 
@@ -147,14 +148,8 @@ test("92: CC adapter writes against the borrowed target and renders legacy categ
     expect(written.isError).toBeUndefined();
     const id = JSON.parse(written.content[0]!.text).factIds[0];
     expect(f.memory.store.getFact(id)!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }, { role: "observation" }]);
-    const runId = Number((f.memory.store.db.prepare("SELECT run_id FROM facts WHERE id=?").get(id) as { run_id: number }).run_id);
-    const knowledgeId = Number(f.memory.store.db.prepare("INSERT INTO knowledge (project_id,origin_session_id,author) VALUES (?,?,'legacy')")
-      .run(f.session.projectId, f.session.id).lastInsertRowid);
-    const commit = Number(f.memory.store.db.prepare(`INSERT INTO knowledge_revisions
-      (knowledge_id,parent_id,text,category,scope,supports,support_semantics,op,reason,topics,run_id,created_at,actor_role)
-      VALUES (?,NULL,'borrowed legacy reference','term','session',?,'change','create','legacy','[]',?,'now','manual')`)
-      .run(knowledgeId, JSON.stringify([id]), runId).lastInsertRowid);
-    assignVersionTag(f.memory.store.db, knowledgeId, commit);
+    const { knowledgeId } = legacyKnowledge(f.memory.store, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id },
+      { text: "borrowed legacy reference", category: "term", scope: "session", supports: [id], createdAt: "now" });
     const searched = await adapter.call("search", { query: "borrowed legacy reference", layer: "knowledge" }, null);
     expect(searched.content[0]!.text).toContain(`[K${knowledgeId}@v1] [understanding/session]`);
     const injected = f.memory.injection({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });

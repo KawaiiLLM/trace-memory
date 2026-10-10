@@ -87,7 +87,8 @@ One `{{tool.memory}}` call carries one operation, its fields as top-level argume
 
 - Write knowledge in the language of its facts. Field names, category names and status words stay as given here.
 - Every mutation names an explicit `K#tag` whose complete body you received, and has a non-empty `reason` stating the archive ground or the change. A base that is not the latest effective applicable revision on this path is rejected naming the current revision; read it and decide again.
-- `update` and `merge` submit the complete resulting text, category, scope and topics. A merge has exactly two distinct exact parents and one result; its survivor may be an applicable archived identity, which the merge admits back into the writable set. A merge may omit `text`: the later parent's body then becomes the survivor's next version verbatim.
+- An `update` submits either the complete resulting text with category, scope and topics, or exact `edits` (`[{old, new}]`, each old string matching the base body exactly once). With `edits`, omitted category, scope and topics are inherited.
+- A `merge` submits the complete resulting text, category, scope and topics. A merge has exactly two distinct exact parents and one result; its survivor may be an applicable archived identity, which the merge admits back into the writable set. A merge may omit `text`: the later parent's body then becomes the survivor's next version verbatim.
 - `split` has one exact parent and creates exactly two identities atomically; each child submits complete text, category and topics; both inherit the parent's scope and share the operation's supports and reason.
 - `archive` carries op, id, an explicit kind, supports and reason; an invalid archive also carries its `text`. Both kinds inherit category, scope and topics.
 - There is no `create`: a new identity comes only from `split`.

@@ -108,5 +108,10 @@ test("92: held N create/update cap resulting text at 1000; manual memory remains
       operations: [{ op: "create", handle: "$manual", author: "test", text: over, category: "constraint", scope: "project",
         supports: [store.listTurnFacts(turn.id)[0]!.id], topics: [], reason: "manual exception", createdAt: "now" }] });
     expect(manual.ok).toBe(true);
+    // 135: a manual update result is as unrestricted as a manual create.
+    const manualUpdate = store.commitConsolidationRun({ path: nextPath, run: { kind: "manual", sessionId: session.id, createdAt: "now" },
+      operations: [{ op: "update", knowledgeId: base.knowledge.id, baseCommit: store.currentKnowledge(nextPath)[0]!.revision.id, text: over,
+        category: "constraint", scope: "project", supports: [store.listTurnFacts(turn.id)[0]!.id], topics: [], reason: "manual exception", createdAt: "now" }] });
+    expect(manualUpdate.ok).toBe(true);
   } finally { memory.close(); }
 });

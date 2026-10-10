@@ -4,7 +4,7 @@ import { hydrate, sourceSeededMemory, type DreamingAgentInput } from "../../sour
 import { fact as seedFact, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
 
-test("134/92: D skips complete diffs by history address; mutation diagnostics separate model versions from human commits", async () => {
+test("135/134/92: D skips complete diffs by history address; mutation diagnostics separate model versions from human commits", async () => {
   let scenario!: (task: DreamingAgentInput) => void;
   const memory = sourceSeededMemory(":memory:", async raw => {
     const task = raw as DreamingAgentInput;
@@ -55,9 +55,6 @@ test("134/92: D skips complete diffs by history address; mutation diagnostics se
       expect(stale).toContain(`K${a!.knowledgeId}@v2`);
       expect(stale).not.toMatch(/K\d+@\d+/);
       expect(stale).not.toContain(address(a!.knowledgeId, changed.committed[0]!.commit));
-      const reversedMerge = dreamerWrite(write, { operations: [{ op: "merge", id: address(b!.knowledgeId, b!.commit), absorb: [address(a!.knowledgeId, changed.committed[0]!.commit)], supports: [], reason: "reverse order", category: "constraint", scope: "project", topics: [] }], skipped: [] });
-      expect(reversedMerge).toContain("swap them");
-      expect(reversedMerge).not.toMatch(/K\d+@\d+/);
       // 126: the session's three pools are writable; another project's item is not.
       const otherProject = store.createProject({ name: "dream-tags-other", declaredBy: "mark" });
       const otherSession = store.createSession({ projectId: otherProject.id, host: "pi:other", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
@@ -74,7 +71,7 @@ test("134/92: D skips complete diffs by history address; mutation diagnostics se
       expect(skip(`K${c!.knowledgeId}@v2`)).not.toContain("rejected:");
       expect(skip(`K${a!.knowledgeId}@v2`)).toContain("already consumed");
       // 127: each refused call keeps its M number and blocks until withdrawn; no empty batch clears it.
-      for (let n = 1; n <= 7; n++) expect(write.execute({ drop: `M${n}` })).toContain(`dropped: M${n}`);
+      for (let n = 1; n <= 6; n++) expect(write.execute({ drop: `M${n}` })).toContain(`dropped: M${n}`);
       expect(task.tools.find(t => t.name === "check")!.execute({})).not.toMatch(/K\d+@\d+/);
       outsideCommit = `K${out.knowledgeId}@${out.commit}`;
     };

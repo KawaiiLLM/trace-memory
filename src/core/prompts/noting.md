@@ -101,7 +101,9 @@ A relation in a later batch — the user withdraws the pnpm rule recorded as F34
 - `drop: "$n"` or `drop: "Mn"` in its own call removes slots without recycling numbers. A fact referenced by another fact or operation cannot be dropped.
 - A relation names an existing `F<id>` or an accepted earlier `$n` slot. Knowledge supports may cite any accepted fact slot in this run.
 - Empty calls confirm use but neither clear drafts nor resolve rejected slots. A subsequent structurally valid call clears a top-level call error only. Correct or drop rejected slots separately.
-- Knowledge create/update carries complete text, category, scope, topics, nonempty supports and reason. Archive carries op, id, kind, supports and reason, plus text for an invalid archive, and inherits category, scope and topics. Each newly written fact and knowledge body is at most 1,000 estimated tokens.
+- Knowledge create/update carries nonempty supports and reason; create carries complete text, category, scope and topics.
+- An update carries either the complete resulting text with category, scope and topics, or exact `edits` (`[{old, new}]`, each old string matching the base body exactly once). With `edits`, omitted category, scope and topics are inherited.
+- Archive carries op, id, kind, supports and reason, plus text for an invalid archive, and inherits category, scope and topics. Each newly written fact and knowledge body is at most 1,000 estimated tokens.
 - Ending without both tools, with unresolved errors, after failure or cancellation publishes nothing.
 - Each source cites a whole frozen entry of this batch, never a guessed ordinal, a collection, a range or a later entry of the same Turn.
 - The plugin's injected messages (knowledge block, compaction block, branch carry) and synthetic compaction summaries are never fact sources. Facts come only from this branch's conversation.
