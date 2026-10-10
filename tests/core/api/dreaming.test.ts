@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { createHash } from "node:crypto";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
-import { tokens } from "../../../src/core/render/index.ts";
+import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite, skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { knowledgeBatch, receiptCommit } from "../../support/seed.ts";
@@ -476,6 +476,36 @@ test("134: Changed material supplies its current tag for a committed update with
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");
   expect(f.store.currentCommit(base.knowledgeId)[0]!.text).toContain("并保留条件");
+});
+
+test("139: the frozen material shows the dates of each item's supporting facts beside its token cost, and the cost does not move", async () => {
+  const f = fixture();
+  f.memory.config.dreaming.triggerTokens = 1;
+  const [early, late] = ["2026-10-02T08:00:00.000Z", "2026-10-04T08:00:00.000Z"].map(createdAt => {
+    const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [{
+      turnId: f.turn.id, entryIds: [f.entry.id], category: "decision", actor: "user", text: `rule at ${createdAt}`, source: [`T${f.turn.id}#E1`], createdAt }] });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    return noted.facts[0]!.id;
+  }) as [number, number];
+  const reference = f.create("Keep the reference rule.", "project", [early]);
+  const first = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    expect(task.material.changed).toMatch(/\(\d+ tokens; facts 2026-10-02\)/);
+    skipRest(task); return success;
+  });
+  expect(first.outcome, JSON.stringify(first)).toBe("success");
+  f.create("Add the new rule.", "project", [early, late]);
+  const result = await f.scenarios.run(f.memory, f.target, task => {
+    task.acknowledgeRequest();
+    const cost = (tag: string) => Number(new RegExp(`\\[${tag}\\] \\[[^\\]]+\\] \\((\\d+) tokens`).exec(task.text)![1]);
+    expect(task.material.processed).toMatch(new RegExp(`\\[${address(f, reference)}\\] \\[[^\\]]+\\] \\(\\d+ tokens; facts 2026-10-02\\)`));
+    expect(task.material.changed).toMatch(/New .*\n\[[^\n]*\(\d+ tokens; facts 2026-10-02\.\.2026-10-04\)/);
+    expect(task.text).toContain(task.material.changed);
+    const item = f.store.knowledgePools(f.target).flatMap(pool => pool.versions).find(value => value.revision.id === reference.commit)!;
+    expect(cost(address(f, reference))).toBe(tokens(renderKnowledge(item, address(f, reference))));
+    skipRest(task); return success;
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
 });
 
 test("134: frozen material keeps newest whole direct facts within capacity and honestly omits older facts", async () => {

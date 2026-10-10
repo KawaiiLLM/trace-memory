@@ -186,7 +186,7 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
       children: [{ text: "first rule", category: "constraint", topics: [] }, { text: "", category: "goal", topics: [] }] }], skipped: [] });
     expect(invalid).toContain("rejected: M2");
     expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
-    const parentCost = Number(new RegExp(`\\[K${parent.knowledgeId}#[a-z]+\\] \\[[^\\]]+\\] \\((\\d+) tokens\\)`)
+    const parentCost = Number(new RegExp(`\\[K${parent.knowledgeId}#[a-z]+\\] \\[[^\\]]+\\] \\((\\d+) tokens(?:; facts [^)]*)?\\)`)
       .exec(input.material.changed)![1]);
     const split = JSON.parse(tool.execute({ slot: "M2", op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit),
       supports: [], reason: "separate independent rules",

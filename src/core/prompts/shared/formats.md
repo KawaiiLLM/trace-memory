@@ -10,6 +10,7 @@
 - Previews, omissions and state notices carry no tag. A tag identifies an exact version, not proof that its complete body was received.
 - History reads also show the item's own `K1@v3` address. Committed `update`, `merge` and `split` receipts carry each newly written version's `K#tag`, usable for the next mutation without a read; other body-free receipts retain history addresses. Uncommitted Noter receipts remain `Mn` handles.
 - `(N tokens)` is an item's pool cost, as write receipts report it; `(B/1000 tokens)` is its body against the item cap.
+- In Dreamer material the pool cost may read `(N tokens; facts 2026-10-01..2026-10-05)`: the UTC date range of the conversations its supporting facts cite, a single date when they share one.
 - Raw labels address whole entries, with optional role filters: `[T12#E1@user] user: <text>` or `[T12#E2@assistant] assistant: <text>`. An assistant entry also contains its tool calls; a separate result entry uses `@observation`. Explicit reads include stored thinking; automatic material omits it.
 - Calls render as `<tool>(<key>=<value>, …)` after their entry label; results render as `<tool> <status>: <result text>`. E ordinals stay stable within a Turn, including branch gaps. Copy the entry address, never a block selector or call ID.
 - Arguments are `key=JSON` in stored order. Dropped structured data is marked by its size, non-text content by its type (`[<type> omitted]`).

@@ -15,7 +15,7 @@ import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecuti
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, dreamingDue, ALL_POOLS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize } from "./processing.ts";
-import { factAddresses, renderKnowledge, renderKnowledgeChange, withKnowledgeCost, tokens, WORKER_ITEM_TOKENS } from "../render/index.ts";
+import { factAddresses, renderKnowledge, renderKnowledgeChange, withKnowledgeCost, withFactDates, tokens, WORKER_ITEM_TOKENS } from "../render/index.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement } from "../model/index.ts";
 import type {
   Actor,
@@ -4033,6 +4033,13 @@ export class Store {
     };
     const address = (revision: KnowledgeRevision) => `K${revision.knowledgeId}@v${version(revision).ordinal}`;
     const tagged = (revision: KnowledgeRevision) => `K${revision.knowledgeId}#${version(revision).tag}`;
+    // 139: the dates the Dreamer sees beside each item. The graph input already holds every cited fact,
+    // read in one batch for the whole projection, and a fact's `createdAt` is its `source_time`.
+    const dayOf = (id: number) => { const time = input.metadata.facts.get(id)?.fact.createdAt; return time && !isNaN(Date.parse(time)) ? new Date(time).toISOString().slice(0, 10) : undefined; };
+    const factDates = (revision: KnowledgeRevision): string | undefined => {
+      const days = revision.supports.flatMap(id => dayOf(id) ?? []).sort();
+      return days.length ? (days[0] === days.at(-1) ? days[0] : `${days[0]}..${days.at(-1)}`) : undefined;
+    };
     return pools.map(([pool, budget]) => {
       const values = versions.get(pool)!;
       const rendered = new Map(values.map(value => [value.revision.id, renderKnowledge(value, tagged(value.revision))]));
@@ -4052,12 +4059,14 @@ export class Store {
         const baseline = baselines.get(value.revision.id);
         if (!baseline) {
           const material = `New ${address(value.revision)}:\n${rendered.get(value.revision.id)!}`;
-          return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
+          return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material,
+            shown: withFactDates(material, factDates(value.revision)) };
         }
         const change = renderKnowledgeChange(value.revision.knowledgeId, baseline, value.revision,
           tagged(value.revision), itemTokens.get(value.revision.id));
         const material = `Changed ${address(value.revision)} (from ${address(baseline)}):\n${change.text}`;
-        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: change.addedTokens + change.removedTokens, material };
+        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: change.addedTokens + change.removedTokens, material,
+          shown: withFactDates(material, factDates(value.revision)) };
       });
       // 76: an archive shows the body it removed (its parent, since the archive itself stores empty
       // text) whole, plus the diff from the baseline to that body when a baseline exists and differs
@@ -4076,11 +4085,14 @@ export class Store {
         // (e.g. F3), distinct from the archived body's own supports already inside `archivedBody`.
         // Show them explicitly, labelled as the archive's evidence, beside the body they retire.
         const evidenceLine = `\n  archive evidence: ${factAddresses(value.revision.supports)}`;
-        const material = `Archived ${address(value.revision)} (reason: ${value.revision.reason}):\n${shownBody}${evidenceLine}${diffLine}`;
-        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: archivedTokens, material };
+        const archived = (body: string) => `Archived ${address(value.revision)} (reason: ${value.revision.reason}):\n${body}${evidenceLine}${diffLine}`;
+        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: archivedTokens, material: archived(shownBody),
+          shown: archived(withFactDates(shownBody, factDates(parent))) };
       });
       const pending = [...pendingUpdates, ...pendingArchives].sort((left, right) => left.revisionId - right.revisionId);
-      return { pool, budget, tokens: size, versions: values, rendered, archived: archivedVersions.get(pool)!, pending };
+      // 139: `rendered` and each pending `shown` carry the dates for the Dreamer; every size, weight and cap reads the plain texts.
+      const dated = new Map(values.map(value => [value.revision.id, withFactDates(rendered.get(value.revision.id)!, factDates(value.revision))]));
+      return { pool, budget, tokens: size, versions: values, rendered: dated, archived: archivedVersions.get(pool)!, pending };
     });
   }
 

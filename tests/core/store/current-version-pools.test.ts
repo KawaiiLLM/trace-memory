@@ -557,3 +557,77 @@ test.each(["A", "B"] as const)("126: two sessions due at once on the shared glob
   expect(runs[1]).toEqual({ sessionId: second.session.id, frozen: [secondOwn.commit, late.commit].sort((x, y) => x - y) });
   for (const f of [a, b]) expect(memory.store.knowledgePools(f.target).flatMap(pool => pool.pending)).toEqual([]);
 });
+
+// 139: a story with a processed reference, a Changed, an Archived, a New and a supportless item, whose
+// facts are dated `times` (a time that cannot be parsed yields no date). The ids and texts do not depend on `times`.
+function datedStory(times: readonly [string, string, string]) {
+  const f = setup(), pool = `project:${f.project.id}`;
+  let head = f.turn.id; // the facts must lie on the path the items are written from
+  const [a, b, c] = times.map((createdAt, i) => {
+    const turn = f.store.appendTurn({ sessionId: f.session.id, parentTurnId: head, kind: "turn", userPrompt: `fact ${i}`, startedAt: "now" });
+    head = turn.id;
+    const entry = f.store.appendSourceEntry({ sessionId: f.session.id, turnId: turn.id, nativeLineage: "fixture",
+      nativeId: `dated-${i}`, role: "user", text: `fact ${i}`, raw: "x", calls: [] });
+    const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [{
+      turnId: turn.id, category: "decision", actor: "user", text: `fact ${i}`, source: [`T${turn.id}#user`], entryIds: [entry.id], createdAt }] });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    return noted.facts[0]!.id;
+  }) as [number, number, number];
+  f.target = { ...f.target, headTurnId: head };
+  const write = (run: RunInput, operation: object) => {
+    const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [{ author: "test", category: "constraint",
+      scope: "project", topics: [], reason: "test", createdAt: "now", ...operation } as never] });
+    if (!result.ok) throw new Error(result.problems.join("; "));
+    return result.committed[0]!;
+  };
+  const manual: RunInput = { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" };
+  const create = (text: string, supports: number[]) => write(manual, { op: "create", handle: "$1", text, supports });
+  const reference = create("reference rule", [a, b]), changed = create("changed rule", [a]), retired = create("retired rule", [a, b]);
+  consume(f);
+  const updated = write(manual, { op: "update", knowledgeId: changed.knowledgeId, baseCommit: changed.commit, text: "changed rule, newer", supports: [c] });
+  const archive = write(manual, { op: "archive", kind: "budget", knowledgeId: retired.knowledgeId, baseCommit: retired.commit, supports: [c] });
+  const fresh = create("new rule", [c]), bare = create("supportless rule", [c]);
+  f.store.db.prepare("UPDATE knowledge_revisions SET supports = '[]' WHERE id = ?").run(bare.commit);
+  const read = () => f.store.knowledgePools(f.target).find(value => value.pool === pool)!;
+  return { read, ids: { reference, updated, archive, fresh, bare }, facts: { a, b, c }, spy: () => vi.spyOn(f.store.db, "prepare") };
+}
+
+test("139: the Dreamer's material shows the UTC date range of the supports of the version shown, for every kind of item", () => {
+  const story = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T12:00:00.000Z"]), pool = story.read();
+  const pending = new Map(pool.pending.map(item => [item.revisionId, item.shown]));
+  const range = "(\\d+ tokens; facts 2026-10-02\\.\\.2026-10-05)";
+  expect(pool.rendered.get(story.ids.reference.commit)).toMatch(new RegExp(range));
+  expect(pending.get(story.ids.fresh.commit)).toMatch(/\(\d+ tokens; facts 2026-10-03\)/);
+  expect(pending.get(story.ids.updated.commit)).toMatch(/Changed .*\n\[[^\n]*\(\d+ tokens; facts 2026-10-03\)/); // its own support, not merged with the earlier version's
+  expect(pending.get(story.ids.archive.commit)).toMatch(new RegExp(`Archived .*:\\n[^\\n]*${range}`)); // the archived body's supports, not the archive's evidence
+  expect(pending.get(story.ids.archive.commit)).toContain(`archive evidence: F${story.facts.c}`);
+  expect(pending.get(story.ids.bare.commit)).not.toContain("facts 20");
+});
+
+test("139: the dates never count toward pool size, item tokens, pending weights or the pending cap", () => {
+  const dated = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T12:00:00.000Z"]);
+  const plain = datedStory(["now", "now", "now"]);
+  const withDates = dated.read(), without = plain.read();
+  expect(without.pending.some(item => item.shown.includes("facts 20"))).toBe(false);
+  const normalised = (text: string) => text.replace(/#[a-z]+\]/g, "#tag]");
+  expect(withDates.pending.some(item => item.shown.includes("facts 20"))).toBe(true);
+  expect(withDates.tokens).toBe(without.tokens);
+  expect(withDates.pending.map(item => [item.tokens, normalised(item.material)])).toEqual(without.pending.map(item => [item.tokens, normalised(item.material)]));
+  // The label on every item states the same cost, with or without dates.
+  const cost = (text: string) => [...text.matchAll(/\((\d+) tokens[;)]/g)].map(match => match[1]);
+  expect([...withDates.rendered.values()].map(cost)).toEqual([...without.rendered.values()].map(cost));
+  // The pending slice is cut on the plain material: the shown text is longer, the cap does not move.
+  for (const item of withDates.pending) expect(tokens(item.shown)).toBeGreaterThanOrEqual(tokens(item.material));
+  expect(withDates.pending.map(item => item.material.includes("facts 20"))).toEqual(withDates.pending.map(() => false));
+});
+
+test("139: the fact dates of the whole material cost no per-item or per-fact query", () => {
+  const story = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T12:00:00.000Z"]);
+  const prepare = story.spy();
+  try {
+    story.read();
+    const reads = prepare.mock.calls.map(([sql]) => sql).filter(sql => /\bFROM facts\b/.test(sql));
+    expect(reads.length).toBeLessThanOrEqual(1); // the single batched read of the graph input, shared with the citation checks
+    for (const sql of reads) expect(sql).toContain("json_each");
+  } finally { prepare.mockRestore(); }
+});

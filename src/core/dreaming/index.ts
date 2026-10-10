@@ -78,7 +78,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const frozenIds = new Set(range.eventIds);
   const pending = pools.flatMap(pool => pool.pending).filter(value => frozenIds.has(value.revisionId))
     .sort((left, right) => left.revisionId - right.revisionId);
-  const changed = ["Pending current knowledge:", ...pending.map(value => value.material)].join("\n");
+  const changed = ["Pending current knowledge:", ...pending.map(value => value.shown)].join("\n");
   // 131: a run with pending items deliberates them first; the budget is only `check`'s verdict. A run with
   // none (started by the three-pool total, 104) has no item to take up, so the material tells it to reduce.
   const over = pending.length ? [] : pools.filter(pool => pool.tokens > pool.budget);
@@ -103,7 +103,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   old = `${referenceTitle}${old}`;
   if (tokens(old) > processedInputCap)
     throw new Error(`Dreaming current reference input exceeds ${processedInputCap} tokens including framing`);
-  if (tokens(changed) > 10_000 || tokens([old, changed].join("\n\n")) > knowledgeCapacity)
+  if (tokens(["Pending current knowledge:", ...pending.map(value => value.material)].join("\n")) > 10_000 || tokens([old, changed].join("\n\n")) > knowledgeCapacity)
     throw new Error("Dreaming capacity: complete Knowledge rendering exceeds its pending slice or total Knowledge window; left pending");
 
   const frozenValues = pools.flatMap(pool => pool.versions).filter(value => frozenIds.has(value.revision.id));

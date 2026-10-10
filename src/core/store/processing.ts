@@ -74,7 +74,10 @@ export interface PendingKnowledgeVersion {
   knowledgeId: number;
   pool: string;
   tokens: number;
+  /** What every size, weight and cap measures. */
   material: string;
+  /** `material` plus the supporting facts' dates, as the Dreamer is shown it (139). */
+  shown: string;
 }
 export interface KnowledgePoolSize { pool: string; tokens: number; budget: number }
 export interface DreamingRange {

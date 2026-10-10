@@ -572,6 +572,9 @@ export function withKnowledgeCost(body: string, cost: number): string {
   return `${body.slice(0, headerEnd)} (${cost} tokens)${body.slice(headerEnd)}`;
 }
 
+/** 139: the dates of an item's supporting facts ride in its `(N tokens)` label, for the Dreamer's material only. */
+export const withFactDates = (text: string, dates?: string): string => dates ? text.replace(" tokens)", ` tokens; facts ${dates})`) : text;
+
 export const factAddresses = (ids: number[], titles?: ReadonlyMap<number, string>): string => ids.map(id =>
   `F${id}${titles?.get(id) ? ` ${titles.get(id)}` : ""}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
