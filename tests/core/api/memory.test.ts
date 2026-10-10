@@ -182,18 +182,21 @@ test("135: update rejects both body forms, neither, malformed edits and missing 
   }
 });
 
-test("135: supplied edit metadata replaces the inherited fields and manual updates enforce the result cap", () => {
+test("135: supplied edit metadata replaces the inherited fields and a manual update result is not capped", () => {
   const write = setup(async () => success());
   write.execute({ ...create, topics: ["packaging"] });
-  const base = read(1), before = memory.store.listKnowledgeRevisions();
-  const update = { op: "update", id: base, supports: ["F1"], reason: "Clarify the package manager" };
-  expect(write.execute({ ...update, edits: [{ old: "pnpm", new: "word ".repeat(1_100) }] })).toContain("1000-token limit");
-  expect(memory.store.listKnowledgeRevisions()).toEqual(before);
-  const result = JSON.parse(write.execute({ ...update, edits: [{ old: "pnpm", new: "corepack pnpm" }],
+  const base = read(1);
+  const update = { op: "update", supports: ["F1"], reason: "Clarify the package manager" };
+  const result = JSON.parse(write.execute({ ...update, id: base, edits: [{ old: "pnpm", new: "corepack pnpm" }],
     category: "reference", scope: "session", topics: [] }));
   expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, result.committed[0]))).toMatchObject({
     text: "Use corepack pnpm", category: "reference", scope: "session", topics: [], supports: [1],
   });
+  // A manual create is not capped, so a manual update result is not either (a Noter or Dreamer result is).
+  const long = "word ".repeat(1_100);
+  const grown = JSON.parse(write.execute({ ...update, id: result.committed[0].version, edits: [{ old: "corepack", new: long }] }));
+  expect(grown.committed).toHaveLength(1);
+  expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, grown.committed[0]))!.text).toBe(`Use ${long} pnpm`);
 });
 
 test("135: N numbers a failed edit and replaces held edits under the same slot against the exact base", async () => {

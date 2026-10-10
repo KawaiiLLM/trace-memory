@@ -8,7 +8,7 @@ import { Store } from "../../../src/core/store/index.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
-import { entry as seedEntry, receiptCommit } from "../../support/seed.ts";
+import { entry as seedEntry, legacyKnowledge, receiptCommit } from "../../support/seed.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
 
@@ -581,6 +581,79 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_links WHERE from_knowledge = ?").get(bId)).toEqual({ n: 0 });
   });
 
+  test("44/135: a merge keeps the older identity; a mixed batch whose reversed merge has an archived base rolls back with swap guidance", async () => {
+    const { s, factId, path } = seed();
+    const run = { kind: "manual" as const, sessionId: s.id, createdAt: consolidationAt };
+    const create = (text: string) => {
+      const result = store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "$e1", author: "test",
+        text, category: "understanding", scope: "project", supports: [factId], reason: "admit identity", topics: [], createdAt: consolidationAt }] });
+      if (!result.ok) throw new Error(result.problems.join("; "));
+      return result.committed[0]!;
+    };
+    const older = create("older"), newer = create("newer");
+    const older2Created = create("older second pair"), newer2 = create("newer second pair"), independent = create("independent");
+    // 135: a live reversed merge now swaps; only an archived base (revival) keeps the direction refusal.
+    const archivedOlder2 = store.commitConsolidationRun({ run, operations: [{ op: "archive", kind: "budget", knowledgeId: older2Created.knowledgeId,
+      baseCommit: older2Created.commit, supports: [factId], reason: "retire the older identity", createdAt: consolidationAt }] });
+    if (!archivedOlder2.ok) throw new Error(archivedOlder2.problems.join("; "));
+    const older2 = { knowledgeId: older2Created.knowledgeId, commit: archivedOlder2.committed[0]!.commit };
+    let olderUpdateCommit = 0, mergeCommit = 0;
+    const admitted = await runAdmittedStoreScenario(path, factId, 1, (input, trigger, memory, commit) => {
+      const request = { fixture: "store merge survivor and rollback", trigger }; input.reportRequest(request);
+      const read = (address: string) => memoryFiles(memory, input.reader).read(`trace://${address}`).content;
+      const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
+      olderUpdateCommit = publishedCommit(JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: tag(older.knowledgeId, older.commit),
+        text: "older revised", category: "reference", scope: "project", supports: [`F${factId}`], reason: "change category", topics: ["identity"] }],
+        skipped: [] })).committed[0]);
+      read(tag(older.knowledgeId, olderUpdateCommit));
+      mergeCommit = publishedCommit(JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: tag(older.knowledgeId, olderUpdateCommit),
+        absorb: [tag(newer.knowledgeId, newer.commit)], text: "combined", category: "reference", scope: "project",
+        supports: [`F${factId}`], reason: "merge duplicate", topics: ["identity"] }],
+        skipped: [] })).committed[0]);
+      const admittedRun = commit.mock.calls.at(-1)![0].run;
+      const revisionsBefore = memory.store.listKnowledgeRevisions();
+      const linksBefore = memory.store.listKnowledgeLinks(older2.knowledgeId);
+      const rejected = memory.store.commitConsolidationRun({ path, run: admittedRun, operations: [
+        { op: "archive", kind: "budget", knowledgeId: independent.knowledgeId, baseCommit: independent.commit, supports: [factId],
+          reason: "independent batch item must roll back", createdAt: consolidationAt },
+        { op: "merge", intoKnowledgeId: newer2.knowledgeId, intoBaseCommit: newer2.commit,
+          absorb: [{ knowledgeId: older2.knowledgeId, baseCommit: older2.commit }], text: "wrong survivor", category: "understanding",
+          scope: "project", supports: [factId], reason: "reverse revival merge", topics: [], createdAt: consolidationAt },
+      ] });
+      expect(rejected.ok).toBe(false);
+      if (rejected.ok) throw new Error("reverse Store merge unexpectedly committed");
+      expect(rejected.problems.join(" ")).toBe(`merge survivor K${newer2.knowledgeId} is newer than absorbed K${older2.knowledgeId}; swap them: use K${older2.knowledgeId}@${older2.commit} as the survivor and absorb K${newer2.knowledgeId}@${newer2.commit}`);
+      expect(memory.store.getRun(rejected.runId)).toMatchObject({ kind: "dreaming", outcome: "failure" });
+      expect(memory.store.listKnowledgeRevisions()).toEqual(revisionsBefore);
+      expect(memory.store.listKnowledgeLinks(older2.knowledgeId)).toEqual(linksBefore);
+      expect(memory.store.currentCommit(independent.knowledgeId).map(revision => revision.id)).toEqual([independent.commit]);
+      expect(memory.store.currentCommit(older2.knowledgeId).map(revision => revision.id)).toEqual([older2.commit]);
+      expect(memory.store.currentCommit(newer2.knowledgeId).map(revision => revision.id)).toEqual([newer2.commit]);
+      read(tag(trigger.knowledgeId, trigger.commit));
+      read(tag(older2.knowledgeId, older2.commit));
+      read(tag(newer2.knowledgeId, newer2.commit));
+      read(tag(independent.knowledgeId, independent.commit));
+      const corrected = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
+        skipped: [
+          { knowledge: history(older2.knowledgeId, older2.commit), because: "The reverse merge rolled back." },
+          { knowledge: history(newer2.knowledgeId, newer2.commit), because: "The reverse merge rolled back." },
+          { knowledge: history(independent.knowledgeId, independent.commit), because: "The archive rolled back." },
+        ] });
+      expect(corrected).toContain('"committed"');
+      return { outcome: "success", output: "merge contracts checked", request };
+    });
+    if (admitted.result.outcome !== "success") throw new Error(JSON.stringify(admitted.result));
+    expect(store.getRun(admitted.result.runId)?.outcome).toBe("success");
+    expect(admitted.commitCalls).toBeGreaterThan(0);
+    const revision = store.knowledgeRevision(mergeCommit)!;
+    expect(revision).toMatchObject({ knowledgeId: older.knowledgeId, parentId: olderUpdateCommit, category: "reference" });
+    expect(store.listKnowledgeLinks(newer.knowledgeId)).toContainEqual({ fromKnowledge: newer.knowledgeId,
+      fromCommit: newer.commit, kind: "merged_into", toKnowledge: older.knowledgeId, toCommit: revision.id });
+    expect(store.revisionGrounds(revision)).toEqual(new Set([factId]));
+    expect(store.currentCommit(independent.knowledgeId)[0]?.op).toBe("create");
+    expect(store.listKnowledgeLinks(older2.knowledgeId)).toEqual([]);
+  });
+
   test("135: Store swaps a live newer survivor inside an otherwise valid atomic batch", async () => {
     const { s, factId, path } = seed();
     const run = { kind: "manual" as const, sessionId: s.id, createdAt: consolidationAt };
@@ -611,6 +684,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
         text: "combined", supports: [factId], reason: "Reverse merge", topics: ["identity"] });
       expect(memory.store.listKnowledgeLinks(newer.knowledgeId)).toContainEqual({ fromKnowledge: newer.knowledgeId,
         fromCommit: newer.commit, kind: "merged_into", toKnowledge: older.knowledgeId, toCommit: merged.commit });
+      expect(memory.store.revisionGrounds(memory.store.knowledgeRevision(merged.commit)!)).toEqual(new Set([factId]));
       expect(memory.store.currentCommit(newer.knowledgeId)).toEqual([]);
       expect(memory.store.currentCommit(independent.knowledgeId)[0]?.op).toBe("archive");
       dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit),
@@ -620,6 +694,35 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(admitted.result.outcome, JSON.stringify(admitted.result)).toBe("success");
     expect(store.currentCommit(older.knowledgeId)[0]?.op).toBe("merge");
     expect(store.currentCommit(independent.knowledgeId)[0]?.op).toBe("archive");
+  });
+
+  test("135: a Noter create may carry a legacy category only as the audited conversion of its own update to that base", () => {
+    const { s, factId, path } = seed();
+    const legacy = legacyKnowledge(store, path, { text: "legacy rule", category: "mechanism", scope: "project", supports: [factId], topics: ["packages"] });
+    const noter = { sessionId: s.id, createdAt: consolidationAt };
+    const content = { scope: "project" as const, supports: [factId], reason: "Clarify the legacy rule", topics: ["packages"], createdAt: consolidationAt };
+    const create = (category: string) => commitNoterKnowledge(store, { path, run: noter, operations: [{ op: "create", handle: "$e1", author: "test",
+      text: "new rule", ...content, category: category as never }] });
+    const update = (category: string) => commitNoterKnowledge(store, { path, run: noter, operations: [{ op: "update", knowledgeId: legacy.knowledgeId,
+      baseCommit: legacy.commit, text: "edited legacy rule", ...content, category: category as never }] });
+    const before = store.listKnowledgeRevisions();
+    // A plain create has no base to inherit from, so a legacy category is refused.
+    expect(create("mechanism").ok).toBe(false);
+    expect(store.listKnowledgeRevisions()).toEqual(before);
+    // A current base is updated in place, keeping its own legacy category and no other.
+    expect(update("term").ok).toBe(false);
+    expect(store.listKnowledgeRevisions()).toEqual(before);
+    // Once a descendant advances the base, the same update converts to a create that keeps the base's category.
+    const advanced = store.commitConsolidationRun({ path, run: { kind: "manual", ...noter }, operations: [{ op: "update", knowledgeId: legacy.knowledgeId,
+      baseCommit: legacy.commit, text: "advanced rule", ...content, category: "understanding" }] });
+    if (!advanced.ok) throw new Error(advanced.problems.join("; "));
+    expect(update("term").ok).toBe(false);
+    expect(create("mechanism").ok).toBe(false);
+    const converted = update("mechanism");
+    if (!converted.ok) throw new Error(converted.problems.join("; "));
+    expect(store.knowledgeRevision(converted.committed[0]!.commit)).toMatchObject({ op: "create", category: "mechanism", topics: ["packages"] });
+    expect(store.knowledgeRevision(converted.committed[0]!.commit)!.text).toContain("edited legacy rule");
+    expect(store.currentCommit(legacy.knowledgeId)[0]!.text).toBe("advanced rule");
   });
 
   test("92: an N batch commits create and archive together; a forbidden op still rolls back the whole batch atomically", () => {

@@ -132,8 +132,8 @@ An update accepts exactly one body form (135):
   them under the existing rules. Inherited legacy categories remain unchanged, not reclassified.
   Supports and reason retain the role's existing requirements.
 
-The complete result passes the same admission, supports, scope and 1,000-token checks as a full-text
-update, including a manual update. Manual creates and archives keep their existing size rules.
+The complete result passes the same admission, supports and scope checks as a full-text update, and
+the 1,000-token check for a Noter or Dreamer result. Manual writes, updates included, are not capped.
 N holds the complete result and `slot:Mn` replaces it against the exact base, not the previous draft.
 The audited concurrent update-to-create conversion retains inherited legacy classification too;
 ordinary creates still cannot author a legacy category.

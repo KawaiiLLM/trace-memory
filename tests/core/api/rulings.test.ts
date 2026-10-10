@@ -435,6 +435,8 @@ test("2026-10-02: only search and writers are model-facing Core tools", () => {
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   expect(tools.map(tool => tool.name)).toEqual(["search", "note", "memory"]);
   for (const tool of tools) { expect(tool.parameters.type).toBe("object"); expect(typeof tool.execute).toBe("function"); }
+  expect(tools.find(tool => tool.name === "note")!.description).toContain("Both note and memory are required in N");
+  expect(tools.find(tool => tool.name === "memory")!.description).toContain("Manual writers may create/update/archive");
   expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", topics: [], reason: "Initial admission of this conclusion." })).toContain("rejected:");
 });
 
@@ -2841,7 +2843,7 @@ test("61: every backticked category, kind or field word used in a stage file is 
     const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8").replace(/```[\s\S]*?```/g, "");
     for (const match of raw.matchAll(/`([a-z]+)`/g)) {
       const word = match[1]!;
-      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skip", "skipped", "operations", "queries", "layer", "versions", "cap", "history", "full", "ok", "absorb", "source", "slot", "drop"].includes(word)) continue; // stage tools and operation fields, defined in the stage's Contract
+      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skip", "skipped", "operations", "queries", "layer", "versions", "cap", "history", "full", "ok", "absorb", "edits", "source", "slot", "drop"].includes(word)) continue; // stage tools and operation fields, defined in the stage's Contract
       expect(defined.has(word), `${file}: \`${word}\` is not a defined term`).toBe(true);
     }
   }

@@ -3884,7 +3884,7 @@ export class Store {
           !(revisionOp === "create" && role === "noting" && inheritedCreateCategory !== undefined && category === inheritedCreateCategory))
         throw new Error(`invalid new knowledge category ${category}`);
       // Budget stores the exact parent body; old valid parents may exceed the new-write cap.
-      if ((role !== "manual" || op.op === "update") && !(revisionOp === "archive" && op.op === "archive" && op.kind === "budget"))
+      if (role !== "manual" && !(revisionOp === "archive" && op.op === "archive" && op.kind === "budget"))
         this.requireWorkerItemSize(text, "Knowledge item");
       const info = this.db.prepare(`INSERT INTO knowledge_revisions
         (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role, archive_kind)

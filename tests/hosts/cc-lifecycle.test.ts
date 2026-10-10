@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { createConnection } from "node:net";
-import { TraceMemory, noVisibility, type NotingAgentInput } from "../../src/core/api/index.ts";
+import { TraceMemory, noVisibility } from "../../src/core/api/index.ts";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
@@ -179,7 +179,6 @@ test("function-hook child requires the exact live SessionStart assignment and ow
   expect(processStartedAt(process.pid)).toBe(owner.startedAt);
 });
 
-// Thirteen serial real child boots; individual IPC/exit waits keep their 3s bound.
 test("reloaded executor clears only an unconfirmed close for the same live native assignment", async () => {
   const f = fixture("reload-close"); f.write();
   const input = { hook_event_name: "SessionStart" as const, session_id: f.nativeSessionId, transcript_path: f.transcriptPath };
@@ -283,7 +282,7 @@ test("reloaded executor clears only an unconfirmed close for the same live nativ
   const { child } = await attempt();
   try { expect(readBinding(f.config, f.nativeSessionId)!.lastClose).toEqual(close); }
   finally { child.send({ type: "close" }); await childExit(child); }
-}, 10_000);
+}, 5_000);
 
 test("live function-hook turns check once across both import orders and do not replay bootstrap", async () => {
   const f = fixture("turn-hook"); enableSyntheticWorker(f);
@@ -416,8 +415,6 @@ test.each(["hook", "transcript"] as const)("accepted CC scan race preserves turn
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
   const diagnostics: string[] = [];
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostics.push(message));
-  let releaseFirst!: () => void;
-  const firstHeld = new Promise<void>(resolve => { releaseFirst = resolve; });
   try {
     await coordinator.start();
     const importer = (coordinator as any).importer;
@@ -425,14 +422,17 @@ test.each(["hook", "transcript"] as const)("accepted CC scan race preserves turn
     const sessionId = readBinding(f.config, f.nativeSessionId)!.coreSessionId!;
     // Keep the real Core Noting publication path. Only the model transport is deterministic.
     const batches: number[][] = [];
-    let firstEntered = false;
-    importer.runAgent = async (input: NotingAgentInput) => {
+    let releaseFirst!: () => void;
+    let firstEntered!: () => void;
+    const firstHeld = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const firstRunning = new Promise<void>(resolve => { firstEntered = resolve; });
+    importer.runAgent = async (input: any) => {
       expect(input.kind).toBe("noting");
       batches.push(input.entryIds);
       input.reportRequest({ fixture: "CC scan race" });
-      expect(input.tools.find(tool => tool.name === "note")!.execute({})).toContain("held");
-      expect(input.tools.find(tool => tool.name === "memory")!.execute({})).toContain("held");
-      if (mode === "hook" && batches.length === 1) { firstEntered = true; await firstHeld; }
+      expect(input.tools.find((tool: any) => tool.name === "note").execute({})).toContain("held");
+      expect(input.tools.find((tool: any) => tool.name === "memory").execute({})).toContain("held");
+      if (mode === "hook" && batches.length === 1) { firstEntered(); await firstHeld; }
       return { outcome: "success", output: "done", request: { fixture: "CC scan race" } };
     };
     const dream = vi.fn(async () => ({ outcome: "success", revisions: [] }));
@@ -447,7 +447,7 @@ test.each(["hook", "transcript"] as const)("accepted CC scan race preserves turn
     f.write();
     if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "native-event-A", "answer");
     else await coordinator.requestReconcile("A terminal and B user in one scan");
-    if (mode === "hook") await vi.waitFor(() => expect(firstEntered, diagnostics.join("\n")).toBe(true));
+    if (mode === "hook") await firstRunning;
     const selected = memory.store.selectedSourceEntryIds(sessionId, "main")!;
     const bQuestion = selected.at(-1)!;
     expect(selected).toHaveLength(4);
@@ -496,11 +496,7 @@ test.each(["hook", "transcript"] as const)("accepted CC scan race preserves turn
     expect(batches).toHaveLength(mode === "hook" ? 2 : 1);
     expect(dream).toHaveBeenCalledTimes(mode === "hook" ? 2 : 1);
     expect(eligibility).toHaveBeenCalledTimes(mode === "hook" ? 4 : 2);
-  } finally {
-    const closing = coordinator.shutdown("test");
-    releaseFirst();
-    await closing;
-  }
+  } finally { await coordinator.shutdown("test"); }
 });
 
 test("without function hooks, only proven native ends check once", async () => {

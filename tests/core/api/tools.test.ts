@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import { hydrate, sourceSeededMemory, toolRejected, type NotingAgentInput, type RunAgent, type ToolContext } from "../../source-fixture.ts";
 import { dreamingToolDefinitions, toolDefinitions } from "../../../src/core/api/tools.ts";
 import { factSources } from "../../support/seed.ts";
@@ -128,7 +129,56 @@ test("116: public schemas distinguish full items, scalar drops and empty calls",
   }
   expect(note.else).toMatchObject({ then: { required: ["title", "sources"] } });
   expect(knowledge.else).toMatchObject({ then: { required: ["op", "supports", "reason"] } });
+  const rules = (knowledge.else as any).then.allOf as any[];
+  expect(rules).toHaveLength(4);
+  expect(rules[0]).toMatchObject({ if: { properties: { op: { const: "create" } } }, else: { required: ["id"] } });
+  expect(rules[2]).toMatchObject({ if: { properties: { op: { const: "archive" } } }, then: { required: ["kind"] },
+    else: { if: { properties: { op: { const: "update" } } }, else: { required: ["text", "category", "scope", "topics"] } } });
+  expect(rules[3]).toMatchObject({ if: { properties: { op: { const: "update" } } }, else: { not: { required: ["edits"] } } });
   expect((knowledge.properties as Record<string, unknown>).skipped).toBeUndefined();
+});
+
+// 135: Pi and Claude Code validate a call against the advertised schema before it reaches Core, so this
+// is the contract of `edits` itself. It runs Pi's own validator over both variants, not Core's checks.
+test("135: the advertised memory schema accepts exactly one body form per update and edits only on update", () => {
+  const dreamer = dreamingToolDefinitions().find(t => t.name === "memory")!;
+  const noter = toolDefinitions.find(t => t.name === "memory")!;
+  const valid = (tool: typeof noter, args: Record<string, unknown>) => {
+    try { validateToolArguments(tool as never, { type: "toolCall", id: "call", name: tool.name, arguments: args as never }); return true; }
+    catch { return false; }
+  };
+  const base = { supports: ["F1"], reason: "Clarify" };
+  const update = { ...base, op: "update", id: "K1#abcd" };
+  const full = { text: "Use pnpm", category: "reference", scope: "project", topics: [] };
+  const edits = [{ old: "npm", new: "pnpm" }];
+  const archive = { ...base, op: "archive", id: "K1#abcd", kind: "budget" };
+  const accepted: Array<[string, Record<string, unknown>]> = [
+    ["complete text with its metadata", { ...update, ...full }],
+    ["one edit, metadata inherited", { ...update, edits }],
+    ["an edit deleting text", { ...update, edits: [{ old: "npm", new: "" }] }],
+    ["ordered edits with replacement metadata", { ...update, edits: [...edits, { old: "a", new: "b" }], category: "open", scope: "session", topics: ["x"] }],
+  ];
+  const rejected: Array<[string, Record<string, unknown>]> = [
+    ["text and edits together", { ...update, ...full, edits }],
+    ["neither text nor edits", update],
+    ["text without its metadata", { ...update, text: "Use pnpm" }],
+    ["an empty edit list", { ...update, edits: [] }],
+    ["an edit with an empty old", { ...update, edits: [{ old: "", new: "pnpm" }] }],
+    ["an edit without new", { ...update, edits: [{ old: "npm" }] }],
+    ["an edit with another field", { ...update, edits: [{ old: "npm", new: "pnpm", all: true }] }],
+    ["edits on an archive", { ...archive, edits }],
+  ];
+  const noterOnly: Array<[string, Record<string, unknown>]> = [
+    ["edits on a create", { ...base, op: "create", ...full, edits }],
+  ];
+  const dreamerOnly: Array<[string, Record<string, unknown>]> = [
+    ["edits on a merge", { ...base, op: "merge", id: "K1#abcd", absorb: ["K2#efgh"], ...full, edits }],
+    ["edits on a split", { ...base, op: "split", id: "K1#abcd", edits, children: [1, 2].map(() => ({ text: "Part", category: "open", topics: [] })) }],
+  ];
+  for (const [name, tool, extra] of [["Noter and manual", noter, noterOnly], ["Dreamer", dreamer, dreamerOnly]] as const) {
+    for (const [what, args] of accepted) expect(valid(tool, args), `${name} accepts ${what}`).toBe(true);
+    for (const [what, args] of [...rejected, ...extra]) expect(valid(tool, args), `${name} rejects ${what}`).toBe(false);
+  }
 });
 
 test("127: the Dreamer's memory schema is one operation, one skip or one scalar drop, with no root combinator", () => {

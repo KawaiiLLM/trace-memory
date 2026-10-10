@@ -47,7 +47,7 @@ test("virtual files never return internal 100-line cursor pages before host pagi
       ...x.store.sourcePath(x.owner.id, "main", x.turn.id).map(e => e.id), source.id, ...extra.map(e => e.id),
     ]);
     const f = fact(x.memory, path, "Long fact", [{ entry: source, text: body }]);
-    // Long stored/manual creates are legal; N/D writes and every update result have the 1k cap.
+    // Long stored/manual knowledge is legal; only N/D result bodies have the 1k write cap.
     const k = knowledge(x.store, path, "project", "reference", [x.f.id], body,
       { run: { kind: "manual", createdAt: "2026-09-21T00:00:00.000Z" } });
     for (const virtual of [`trace://F${f.id}`, `trace://K${k.knowledgeId}`, `trace://K${k.knowledgeId}@v1`,
