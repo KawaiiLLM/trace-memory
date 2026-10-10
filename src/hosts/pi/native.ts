@@ -245,7 +245,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       if (reading) return task.read.execute(_id, raw as never, task.signal, undefined, { cwd: task.cwd } as never);
       if (!bound) throw new Error(`rejected: ${tool.name} is not available to a Trace Memory worker`);
       let content: string;
-      try { content = bound.execute(raw); }
+      try { content = await bound.execute(raw); }
       catch (error) { content = `rejected: ${String(error)}`; }
       // Held N receipts are not business commits, including the explicit empty calls.
       let held = false;

@@ -14,7 +14,7 @@ export function suppliedHandles(changed: string): string[] {
 /** 127: a scripted Dreamer's writes, one `memory` call per operation and then one per skip, each
  * committed or refused on its own. The receipts read back together: every call's result in order,
  * and `committed`/`diagnostics` only when every call committed. */
-export function dreamerWrite(memory: Pick<ToolDefinition, "execute">,
+export function dreamerWrite(memory: { execute(input: unknown): string },
   { operations = [], skipped = [] }: { operations?: readonly unknown[]; skipped?: readonly { knowledge?: unknown; because?: unknown }[] }): string {
   const receipts = [...operations, ...skipped.map(({ knowledge, because }) => ({ skip: knowledge, because }))].map(input => {
     const text = memory.execute(input);

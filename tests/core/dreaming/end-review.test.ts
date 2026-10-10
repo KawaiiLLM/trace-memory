@@ -19,7 +19,7 @@ function pool(bodies: (string | { text: string; scope: "global" | "project" | "s
   const memory = sourceSeededMemory(":memory:", async raw => {
     const task = raw as DreamingAgentInput;
     task.reportRequest({ fixture: "end review" });
-    const find = (name: string) => task.tools.find(t => t.name === name)!;
+    const find = (name: string) => task.tools.find(t => t.name === name)! as { execute(input: unknown): string };
     // 127: a scripted write is one memory call per operation and per skip.
     const tool: Tool = (name, input) => JSON.parse(name === "memory" ? dreamerWrite(find(name), input as Parameters<typeof dreamerWrite>[1]) : find(name).execute(input));
     pass.first(task, tool, items);

@@ -1,6 +1,5 @@
 import type { Store } from "../store/index.ts";
 import { knowledgeCategoryGroup, type KnowledgeRevision } from "../model/index.ts";
-import { similarity } from "./similarity.ts";
 import type { ListingOptions } from "./read.ts";
 
 /** One read's ownership, DAG and representative policy. Selection never grants read authority.
@@ -30,23 +29,17 @@ export function knowledgeReadSelection(store: Store, options: ListingOptions, na
   const eligible = (r: KnowledgeRevision) => matches(r) && ((options.versions ?? "current") === "all"
     || options.versions === "history" && graph.applicable.has(r.id)
     || (options.versions ?? "current") === "current" && current.has(r.id) && r.op !== "archive");
-  // 59b: the batched search orders each query's hits by that similarity (rarest match first), so
-  // `cap` keeps the most relevant K rather than the lowest id; the single form keeps K-id order.
-  const representatives = (candidates: readonly KnowledgeRevision[], query = "", order: "id" | "score" = "id") => {
-    const chosen = new Map<number, { revision: KnowledgeRevision; score: number }>();
+  // One exact representative per K (trace collections and project listings): a path-current candidate, then the
+  // larger commit ID, in K-id order. `search` no longer reduces: it lists every version (ticket 136).
+  const representatives = (candidates: readonly KnowledgeRevision[]) => {
+    const chosen = new Map<number, KnowledgeRevision>();
     for (const revision of candidates) {
       if (!eligible(revision)) continue;
-      const score = query ? Math.max(similarity(query, revision.text), ...revision.topics.map(topic => similarity(query, topic))) : 0;
       const previous = chosen.get(revision.knowledgeId);
-      if (!previous || score > previous.score || score === previous.score &&
-        (Number(current.has(revision.id)) > Number(current.has(previous.revision.id))
-          || current.has(revision.id) === current.has(previous.revision.id) && revision.id > previous.revision.id))
-        chosen.set(revision.knowledgeId, { revision, score });
+      if (!previous || Number(current.has(revision.id)) > Number(current.has(previous.id))
+        || current.has(revision.id) === current.has(previous.id) && revision.id > previous.id) chosen.set(revision.knowledgeId, revision);
     }
-    const ranked = [...chosen.values()];
-    if (order === "score") ranked.sort((a, b) => b.score - a.score || Number(current.has(b.revision.id)) - Number(current.has(a.revision.id)) || b.revision.id - a.revision.id);
-    else ranked.sort((a, b) => a.revision.knowledgeId - b.revision.knowledgeId);
-    return ranked.map(value => value.revision);
+    return [...chosen.values()].sort((a, b) => a.knowledgeId - b.knowledgeId);
   };
   const status = (hit: KnowledgeRevision) => {
     if (!graph.applicable.has(hit.id)) return "another branch";
@@ -64,7 +57,7 @@ export function knowledgeReadSelection(store: Store, options: ListingOptions, na
         ? `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}` : `K${r.knowledgeId}@${r.id}`).join(", ")}`
       : path ? "not current on this path" : "not globally current";
   };
-  return { input, graph, path, byCommit, matches, representatives, status };
+  return { input, graph, path, byCommit, matches, eligible, current, representatives, status };
 }
 
 export const KNOWLEDGE_REPRESENTATIVE_RECEIPT = "One representative per K. trace://K<id>.history";

@@ -1,5 +1,5 @@
 import { ccPluginToolNames } from "./tool-names.ts";
-import { toolDefinitions, renderToolDefinitions, toolRejected, validateReadInput, type SearchScope, type ToolDefinition } from "../../core/api/index.ts";
+import { toolDefinitions, renderToolDefinitions, toolRejected, validateSearchInput, type ToolDefinition } from "../../core/api/index.ts";
 import type { CcCoordinator, CcReadProjection, CcToolProjection } from "./lifecycle.ts";
 
 export interface CcMcpToolResult {
@@ -36,15 +36,14 @@ export class CcForegroundTools {
   private boundTools(projection: CcToolProjection): ToolDefinition[] {
     return projection.memory.tools({ kind: "manual", sessionId: projection.coreSessionId, branch: projection.branch,
       currentTurnId: projection.headTurnId, triggerEntryId: projection.triggerEntryId, entryIds: projection.entryIds,
-      maxReadChars: CC_MAX_RESULT_CHARS, toolNames: ccPluginToolNames });
+      maxReadChars: CC_MAX_RESULT_CHARS, toolNames: ccPluginToolNames, spill: this.coordinator.spill });
   }
 
-  private read(projection: CcReadProjection, name: "search", input: unknown): string {
+  private read(projection: CcReadProjection, name: "search", input: unknown): string | Promise<string> {
     if (projection.binding) return this.boundTools({ memory: projection.memory, ...projection.binding })
       .find(candidate => candidate.name === name)!.execute(input);
-    const value = validateReadInput(name, input);
-    const options = { ...value, modelFacing: true, toolNames: ccPluginToolNames, maxChars: CC_MAX_RESULT_CHARS };
-    return projection.memory.search(value.query as string, value.layer as SearchScope | undefined, options);
+    const { query, layer, options } = validateSearchInput(input);
+    return projection.memory.search(query, layer, { ...options, spill: this.coordinator.spill });
   }
 
   async call(name: unknown, input: unknown, meta: unknown, signal?: AbortSignal): Promise<CcMcpToolResult> {
@@ -59,9 +58,9 @@ export class CcForegroundTools {
         : await this.coordinator.toolProjection();
       signal?.throwIfAborted();
       fork?.signal?.throwIfAborted();
-      const text = fork ? fork.tools.find(candidate => candidate.name === name)!.execute(input)
+      const text = await (fork ? fork.tools.find(candidate => candidate.name === name)!.execute(input)
         : writeTool(name) ? this.boundTools(projection as CcToolProjection).find(candidate => candidate.name === name)!.execute(input)
-        : this.read(projection as CcReadProjection, name as "search", input);
+        : this.read(projection as CcReadProjection, name as "search", input));
       return { content: [{ type: "text", text }], ...(toolRejected(name, text) ? { isError: true as const } : {}) };
     } catch (error) {
       const message = (error as { name?: string }).name === "AbortError" ? "tool call cancelled"

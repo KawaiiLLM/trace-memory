@@ -215,7 +215,7 @@ function workerServer(task: CcAgentTask, origins: CcResponseOrigins, toolsAllowe
     task.signal?.throwIfAborted();
     if (!toolsAllowed()) throw new Error("CC worker pass authorization ended before its tool call completed");
     const input = request.params.arguments ?? {};
-    const text = definition.execute(input);
+    const text = await definition.execute(input);
     return { content: [{ type: "text" as const, text }], ...(toolRejected(definition.name as ToolDefinition["name"], text) ? { isError: true } : {}) };
   });
   return config;

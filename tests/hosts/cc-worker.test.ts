@@ -757,7 +757,7 @@ test("production worker preserves legitimate all-zero usage", async () => {
   expect(result.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } });
 });
 
-test("production worker reads a trace:// snapshot, preserves search cursors and accounts usage", async () => {
+test("production worker reads a trace:// snapshot, runs search code and accounts usage", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-core-")); dirs.push(directory);
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
@@ -783,13 +783,12 @@ test("production worker reads a trace:// snapshot, preserves search cursors and 
       expect(read.permissionDecision).toBe("allow");
       expect(readFileSync(read.updatedInput.file_path, "utf8")).toContain("trace://S");
       yield assistant(`search-${++id}`, [`search-${id}`], ccWorkerToolNames.search);
-      let page = await call(`search-${id}`, `search-${id}`, "search", { query: "needle", layer: "raw", maxTokens: 256 });
-      expect(page).toContain("cursor=");
-      while (/cursor=(\S+)/.exec(page)?.[1]) {
-        const cursor = /cursor=(\S+)/.exec(page)![1];
-        yield assistant(`search-${++id}`, [`search-${id}`], ccWorkerToolNames.search);
-        page = await call(`search-${id}`, `search-${id}`, "search", { cursor });
-      }
+      // The worker's MCP server awaits an answer that is asynchronous when the call carries code.
+      const scripted = await call(`search-${id}`, `search-${id}`, "search", { query: "needle", layer: "raw", code: "text(hits.length + ' ' + hits[0].role)" });
+      expect(scripted).toContain("Script completed"); expect(scripted).toMatch(/\d+ user/);
+      yield assistant(`search-${++id}`, [`search-${id}`], ccWorkerToolNames.search);
+      const plain = await call(`search-${id}`, `search-${id}`, "search", { query: "needle", layer: "raw" });
+      expect(plain).toMatch(/^\[S\d+\/T\d+#E1@user\] .*needle word word/);
       yield assistant(`note-${++id}`, [`note-${id}`]);
       await call(`note-${id}`, `note-${id}`, "note", {});
       yield assistant(`memory-${++id}`, [`memory-${id}`], ccWorkerToolNames.memory);
@@ -817,9 +816,7 @@ test("production worker reads a trace:// snapshot, preserves search cursors and 
   expect(listed.map((value: { name: string }) => value.name)).not.toContain("trace");
   expect(listed.find((value: { name: string }) => value.name === "search").inputSchema)
     .toEqual(toolDefinitions.find(value => value.name === "search")!.parameters);
-  const continuations = rawInputs.filter(input => typeof input.cursor === "string");
-  expect(continuations.length).toBeGreaterThanOrEqual(1);
-  expect(continuations.every(input => !("pageBudget" in input) && !("maxTokens" in input))).toBe(true);
+  expect(rawInputs.some(input => typeof input.code === "string")).toBe(true);
   expect(memory.spend(session.id)).toMatchObject({ input: 11, output: 7, cacheRead: 5, cacheWrite: 3, cost: 0.125 });
   expect(memory.trace(`R${result.runId}`, { full: true })).toContain("cost $0.1250");
   memory.close();

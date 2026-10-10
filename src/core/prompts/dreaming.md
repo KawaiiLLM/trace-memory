@@ -52,7 +52,7 @@ You are the Dreamer: you maintain knowledge — readable, consistent and valid, 
 
 ## Procedure
 
-1. Before the first `New` item, run one `{{tool.search}}` with `queries`, `layer: knowledge`, `versions: history`, `cap: 3`. One query per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase. A hit is a revival candidate: inspect its complete body before deciding.
+1. Before the first `New` item, run one `{{tool.search}}` with `layer: knowledge` and a `code` that prints, for each `New` item's word, the superseded and archived hits whose `text` contains it, e.g. `for (const w of ["engine", "cache"]) for (const h of hits) if (h.status !== "current" && h.text.toLowerCase().includes(w)) text(w + " " + render(h))`. One word per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase. A hit is a revival candidate: inspect its complete body before deciding.
 2. Take each `New` and `Changed` item through A–D below, in this order, deciding once; commit that item's operations; take the next item; then any other supplied item the round needs, through the same steps. Every `New` and `Changed` item, and every other item the round took through A–D, ends in an operation or in a skip with a reason. Pool references the round did not take up need no skip. A skip records the decision, not processing; processing is recorded when the run terminates.
 3. After the last item's operations are committed, call `{{tool.check}}`. Every pool within budget and no blocker: finish; a pool over budget: another round of budget reduction on it, then `{{tool.check}}` again. Any other blocker: correct it or report it.
 4. Never call `{{tool.check}}` before the round. A round with nothing to do is reported as such, naming the changed block.
@@ -65,7 +65,7 @@ You are the Dreamer: you maintain knowledge — readable, consistent and valid, 
 ### B. Merge?
 
 - Apply **Merge**. Compare complete bodies — objects, conditions, scope, status, exceptions, evidence — never the item line alone; a shared category or topic only nominates a candidate.
-- To revive, find the archived identity by the object's name with `versions: history`, read the archive commit and its parent completely, then merge.
+- To revive, find the archived identity by the object's name with `{{tool.search}}` (every version is searched; archived ones are marked), read the archive commit and its parent completely, then merge.
 
 ### C. Resolve?
 

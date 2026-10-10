@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { brotliCompressSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -26,6 +27,18 @@ export const promptLoader = {
     });
   },
 };
+// Ticket 136: `search`'s code sandbox runs on the QuickJS binary of the `quickjs-wasi` package. A bundle
+// has no `node_modules` beside it, so the binary (Brotli-compressed, about a third of its size) rides
+// inside the bundle and replaces the loader that reads it from the package.
+export const quickjsLoader = {
+  name: "trace-memory-quickjs",
+  setup(build) {
+    build.onLoad({ filter: /src\/core\/api\/quickjs-wasm\.ts$/ }, () => {
+      const packed = brotliCompressSync(readFileSync(resolve(root, "node_modules/quickjs-wasi/quickjs.wasm"))).toString("base64");
+      return { contents: `import { brotliDecompressSync } from "node:zlib";\nconst engine = globalThis.WebAssembly;\nlet compiled;\nexport function quickjsWasm() { return compiled ??= engine.compile(brotliDecompressSync(Buffer.from(${JSON.stringify(packed)}, "base64"))); }\n`, loader: "ts" };
+    });
+  },
+};
 const runtimeBoundary = `
 const [__ccMajor, __ccMinor] = process.versions.node.split(".").map(Number);
 if (__ccMajor < 24 || (__ccMajor === 24 && __ccMinor < 6)) {
@@ -44,7 +57,7 @@ try {
     target: "node24",
     sourcemap: false,
     legalComments: "none",
-    plugins: [promptLoader],
+    plugins: [promptLoader, quickjsLoader],
     // jsonc-parser's default UMD entry loads its own modules through a runtime `require`, which the
     // bundle cannot follow; its ESM entry bundles whole.
     alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },

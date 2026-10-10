@@ -370,42 +370,15 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
 - Main-agent registration and subagent requests share Core's `search`, `note` and `memory`
   definitions; model reads use Pi's native `read` (and `grep` on the main session) over `trace://`.
   Pi execution fields are non-enumerable, so provider serialization includes only shared metadata.
-  Search remains `search({query, layer?, versions?, category?, scope?,
-  fields?, itemBudget?, maxTokens?, cursor?, cap?})`.
-
-  `scope` alone controls material selection; obsolete `where` is rejected. Omitted
-  search scope selects project facts/Raw and applicable global/project/session
-  knowledge. Session/project/global selects that scope's knowledge and respectively
-  session/project/all-session facts and Raw. Global knowledge is shared regardless
-  of author project. Only category implies the knowledge layer; scope does not.
-  Explicit project/session scope requires context; unbound omission discovers all owners.
-
-  `versions` selects current/history/all candidates within each K. Search returns
-  one representative per K, chosen before pagination. Literal admission is unchanged;
-  lexical text/topic similarity chooses only among matching revisions of the same K.
-  Ties prefer current, then newer commit; empty queries use that tie order without scoring.
-  K-ID ordering remains. `trace://K<id>.history` reads the named identity's history;
-  `trace://` rejects the retired comma lists and `K..` forms.
-
-  These search scope and representative rules do not widen exact `trace://` reads or grant
-  mutation authority. Collections grant no handles; omitted alternative versions and
-  history reference lines never prove a full-body read. Current search defaults to text-only one-line fact and knowledge
-  previews; knowledge history/all defaults to text plus the existing computed status.
-  Explicit fields, including text-only or none, remain authoritative. The item budget
-  defaults to 80 tokens; embedded line breaks render as ` ⏎ ` and long bodies keep a
-  head plus the inline character-truncation marker. Raw search
-  hits keep their entry profile. Search returns no knowledge write handle; use `trace://K<id>`
-  for a complete tagged current body and `trace://K<id>.history` for its history.
-
-  Search defaults to 2,000 estimated tokens per response; `maxTokens` is capped at 8,000
-  and `cap` separately counts output lines. Every search receipt names its effective filters,
-  preview fields and the one-representative/history route. Search cursors freeze representatives,
-  owner selection, statuses, filters, fields, content budgets and line cap; omitted or equivalent
-  repeated values continue, while a changed value rejects without consuming the cursor.
-  Oversized transport content continues in lossless Unicode-safe fragments, but a fragment
-  is not a complete hit. Continue search with an empty query and its cursor. `trace://` reads instead
-  use native offset/limit on the original virtual path. See [the core search contract](core.md)
-  for budget rejection and joining rules.
+  Search is `search({query?, scope?, layer?, topk?, code?})` (ticket 136); see
+  [the core search contract](core.md). It lists every applicable knowledge version with its status, prints one
+  line per hit, and runs `code` over the structured hits in a QuickJS sandbox. Only a call with `code` answers
+  asynchronously. An over-long output keeps its start and end and is saved to a file made on first use under the
+  temporary directory (Pi has no per-session render directory for `trace://`, which is virtual) and removed at
+  session shutdown; subagent workers have none, so they are told the rest is not saved. Search returns no
+  knowledge write handle; use `trace://K<id>` for a complete tagged current body and `trace://K<id>.history`
+  for its history. `trace://` rejects the retired comma lists and `K..` forms and reads with native offset/limit
+  on the original virtual path.
   Manual `note({title, sources: "[T1#E1@user] Authored text", ...})` takes one top-level
   string of `[address] text` segments (multiline segments allowed, no preamble) and writes one fact;
   `memory({op, supports, reason, ...})`

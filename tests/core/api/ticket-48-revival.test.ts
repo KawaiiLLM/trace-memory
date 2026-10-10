@@ -13,7 +13,14 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
   let trigger!: { knowledgeId: number; commit: number };
   const memory = TraceMemory(":memory:", async raw => {
     const task = raw as DreamingAgentInput;
-    expect(task.prompt).toContain("find the archived identity by the object's name with `versions: history`");
+    expect(task.prompt).toContain("find the archived identity by the object's name with `search` (every version is searched; archived ones are marked)");
+    // Step 1 as the prompt writes it: its example code, run with this New item's word, finds the revival candidate.
+    const example = /e\.g\. `(for \(const w of \[[^\]]*\][^`]*)`/.exec(task.prompt)![1]!.replace(/\[[^\]]*\]/, '["widget"]');
+    const found = await task.tools.find(tool => tool.name === "search")!.execute({ layer: "knowledge", code: example });
+    expect(found).toContain("Script completed");
+    expect(found).toContain(`widget [K${old.knowledgeId}@v2] (archived)`);
+    expect(found).toContain(`widget [K${old.knowledgeId}@v1] (superseded)`);
+    expect(found).not.toContain(`K${returned.knowledgeId}@v1`); // the New item itself is current, not a candidate
     expect(task.prompt).toContain("read the archive commit and its parent completely");
     expect(task.material.changed).toContain(`New K${returned.knowledgeId}@v1:`);
     expect(task.material.changed).toContain("Returned widget state");

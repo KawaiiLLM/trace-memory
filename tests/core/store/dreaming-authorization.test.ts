@@ -272,7 +272,7 @@ test("64b: inherited archive provenance and direct-support applicability survive
   expect(memory.trace(`K${f.item.knowledgeId}@v2`)).toContain(`change supports: F${supports[0]}`);
   expect(memory.trace(`K${f.item.knowledgeId}@v1`)).toContain("rule");
   expect(memory.trace("F1")).toContain("rule");
-  expect(memory.search("rule", "knowledge", { versions: "all", fields: ["text", "status"] })).toContain("status: archived");
+  expect(memory.search("rule", "knowledge")).toContain("(archived)");
 });
 
 test("64b: the seat claim, not a frozen family, fences the atomic Store write", () => {

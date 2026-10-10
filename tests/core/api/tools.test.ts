@@ -230,16 +230,20 @@ test("tools freeze the N range, reject sibling sources, and keep no read ledger"
   expect(JSON.parse(memory.store.getRun(1)!.response!)).not.toHaveProperty("readKnowledgeCommits");
 });
 
-test("search keeps its parameters, scoped pagination and input validation after trace removal", () => {
+test("search keeps query, scope, layer, topk and code, and rejects every removed parameter and bad value", () => {
   memory.store.appendToolCall({ turnId: 1, name: "bash", status: "success", result: "x".repeat(2000) });
   memory.tools(manual()).find(tool => tool.name === "note")!.execute(fact());
   memory.tools(manual()).find(tool => tool.name === "note")!.execute(fact());
-  const [search] = memory.tools(manual());
-  const first = search!.execute({ query: "project", layer: "facts", cap: 1 });
-  const cursor = /cursor=(\S+)/.exec(first)![1];
-  expect(search!.execute({ query: "project", layer: "facts", cursor })).toContain("[F2]");
-  expect(search!.execute({ query: "project", scope: "facts" })).toContain("rejected:");
-  expect(search!.execute({ query: "project", cap: 0 })).toContain("rejected:");
+  const search = memory.tools(manual()).find(tool => tool.name === "search")!;
+  const run = (input: unknown) => search.execute(input) as string;
+  expect(run({ query: "project", layer: "facts", topk: 1 })).toMatch(/^\[F2\]/);
+  expect(run({ query: "project", layer: "facts", topk: 1 })).not.toContain("[F1]");
+  for (const removed of ["queries", "category", "versions", "fields", "cap", "itemBudget", "maxTokens", "cursor"])
+    expect(run({ query: "project", [removed]: removed === "queries" ? ["a"] : 1 })).toBe("rejected: unexpected parameter");
+  expect(run({ query: "project", scope: "facts" })).toContain("rejected:");
+  expect(run({ query: "project", topk: 0 })).toContain("rejected:");
+  expect(run({ query: "" })).toContain("rejected:");
+  expect(run({ code: " " })).toContain("rejected:");
 });
 
 test("search reaches other projects' evidence; write sources stay bound to the session", () => {
@@ -276,10 +280,10 @@ test("reads return every knowledge item while injection still applies the scope 
       (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "understanding" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [search] = memory.tools(manual());
-  const hits = search!.execute({ query: "knowledge", layer: "knowledge", versions: "all" });
+  const hits = search!.execute({ query: "knowledge", layer: "knowledge" });
   for (const id of [1, 2, 3, 4, 5, 7]) expect(hits).toContain(`[K${id}@`);
   for (const id of [6, 8, 9]) expect(hits).not.toContain(`[K${id}@`);
-  const unbound = memory.search("knowledge", "knowledge", { versions: "all" });
+  const unbound = memory.search("knowledge", "knowledge");
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(unbound).toContain(`[K${id}@`);
   // Injection keeps the scope rule: another session's session knowledge and another project's project knowledge stay out.
   for (const id of [6, 8, 9]) expect(memory.inject(1)).not.toContain(`[K${id}@`);
@@ -310,8 +314,8 @@ test("one reading of the model-facing result: a `rejected:` receipt and a batch 
   expect(toolRejected("search", JSON.stringify({ results: ["rejected: not mine"] }))).toBe(false);
   expect(toolRejected("note", "not json at all")).toBe(false);
   // The real receipts a run produces, classified the same way.
-  const [search, note] = memory.tools(manual());
-  expect(toolRejected("search", search!.execute({ query: "a", queries: ["b"] }))).toBe(true);
-  expect(toolRejected("note", note!.execute(fact("T9#E1")))).toBe(true);
-  expect(toolRejected("note", note!.execute(fact()))).toBe(false);
+  const search = memory.tools(manual()).find(tool => tool.name === "search")!, note = memory.tools(manual()).find(tool => tool.name === "note")!;
+  expect(toolRejected("search", search.execute({ query: "a", queries: ["b"] }) as string)).toBe(true);
+  expect(toolRejected("note", note.execute(fact("T9#E1")))).toBe(true);
+  expect(toolRejected("note", note.execute(fact()))).toBe(false);
 });

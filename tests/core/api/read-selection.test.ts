@@ -3,7 +3,7 @@ import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { fact, receiptCommit } from "../../support/seed.ts";
 import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
-import { toolDefinitions, type ListingOptions } from "../../../src/core/api/index.ts";
+import { toolDefinitions, type SearchOptions } from "../../../src/core/api/index.ts";
 import type { KnowledgeCategory, KnowledgeScope } from "../../../src/core/model/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
@@ -22,7 +22,8 @@ beforeEach(() => {
 });
 afterEach(() => memory.close());
 const body = (text: string) => text.split("\n\nReceipts:")[0]!;
-const identities = (text: string) => [...body(text).matchAll(/^\[(K\d+@\d+|F\d+|S\d+\/T\d+)\]/gm)].map(m => m[1]!);
+/** Each hit's citation label, with a Raw hit reduced to its Turn, in print order. */
+const identities = (text: unknown) => [...String(text).matchAll(/^\[(K\d+@v\d+|F\d+|S\d+\/T\d+)(?:#E\d+@\w+)?\]/gm)].map(m => m[1]!);
 function owner(name: string, projectId = memory.store.createProject({ name, declaredBy: "mark" }).id) {
   const session = memory.store.createSession({ host: "fixture", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: `needle ${name} Raw`, startedAt: time });
@@ -72,19 +73,19 @@ for (const scope of [undefined, "session", "project", "global"] as const) {
     const selectedOwners = scope === "global" ? [own, peer, foreign] : scope === "session" ? [own] : [own, peer];
     const selectedKnowledge = knowledge.filter(k => (!scope || k.scope === scope) && (k.scope === "global"
       || k.scope === "project" && k.owner.projectId === own.projectId || k.scope === "session" && k.owner.sessionId === own.sessionId));
-    const expected = [...(layer === "facts" || layer === "all" ? selectedOwners.map(who => `F${who.factId}`) : []),
-      ...(layer === "knowledge" || layer === "all" ? selectedKnowledge.map(k => `K${k.knowledgeId}@${k.commit}`) : []),
+    const expected = [...(layer === "knowledge" || layer === "all" ? selectedKnowledge.map(k => `K${k.knowledgeId}@v1`) : []),
+      ...(layer === "facts" || layer === "all" ? selectedOwners.map(who => `F${who.factId}`) : []),
       ...(layer === "raw" || layer === "all" ? selectedOwners.map(who => `S${who.sessionId}/T${who.turn.id}`) : [])];
-    const result = memory.search("needle", layer, { ...own, scope, maxTokens: 8000 });
-    expect(identities(result)).toEqual(expected);
-    if (layer === "all") expect(identities(memory.search("needle", undefined, { ...own, scope, maxTokens: 8000 }))).toEqual(expected);
-    if (scope === "global") expect(result).toContain("all sessions; global knowledge");
+    // Which hits a scope selects is the ruling; their order is not (each layer lists newest first).
+    const result = memory.search("needle", layer, { ...own, scope, topk: 100 });
+    expect(identities(result).sort()).toEqual(expected.sort());
+    if (layer === "all") expect(identities(memory.search("needle", undefined, { ...own, scope, topk: 100 })).sort()).toEqual(expected.sort());
   });
 }
 
 test("41 unbound discovery, missing contexts and obsolete input are explicit", async () => {
   const { own, knowledge } = await scopeCorpus();
-  expect(identities(memory.search("needle", "knowledge", { maxTokens: 8000 }))).toHaveLength(knowledge.length);
+  expect(identities(memory.search("needle", "knowledge", { topk: 100 }))).toHaveLength(knowledge.length);
   expect(identities(memory.search("needle", "knowledge", { scope: "global" }))).toHaveLength(3);
   for (const scope of ["session", "project"] as const) for (const layer of ["facts", "raw", "knowledge", "all"] as const)
     expect(() => memory.search("needle", layer, { scope })).toThrow(`scope:${scope} requires`);
@@ -92,14 +93,7 @@ test("41 unbound discovery, missing contexts and obsolete input are explicit", a
     expect(definition.parameters.properties).not.toHaveProperty("where");
   const tools = memory.tools({ kind: "manual", sessionId: own.sessionId, currentTurnId: own.turn.id, branch: "main" });
   const search = tools.find(tool => tool.name === "search")!;
-  const first = search.execute({ query: "needle", scope: "global", cap: 1 });
-  const cursor = /cursor=(\S+)/.exec(first)![1];
-  expect(search.execute({ query: "", cursor, where: "all" })).toContain("rejected: unexpected parameter");
-  expect(() => memory.search("", undefined, { ...own, cursor, where: "all" } as ListingOptions)).toThrow("where is removed");
-  expect(search.execute({ query: "", cursor, scope: "project" })).toContain("cursor scope is frozen");
-  expect(search.execute({ query: "", cursor, scope: "global" })).not.toContain("rejected:");
-  expect(search.execute({ query: "needle", category: "reference", layer: "facts" })).toContain("category filter requires layer knowledge");
-  expect(identities(search.execute({ query: "needle", category: "reference" })).every(id => id.startsWith("K"))).toBe(true);
+  expect(search.execute({ query: "needle", scope: "global", where: "all" })).toContain("rejected: unexpected parameter");
 });
 
 test("exact fact and knowledge history reads remain unrestricted across discovery scopes", async () => {
@@ -109,78 +103,31 @@ test("exact fact and knowledge history reads remain unrestricted across discover
   expect(files.read(`trace://${history(knowledge.at(-1)!)}`).content).toContain("needle");
 });
 
-test("41 representatives use only admitted revisions; lexical score never ranks different K identities", async () => {
-  const who = owner("selection");
-  const old = await who.put("needle");
-  const current = await who.put("needle plus irrelevant material", "project", [], old);
-  const second = await who.put("needle");
-  const near = await who.put("needl");
-  const read = (query: string, options: ListingOptions = {}) => memory.search(query, "knowledge", { ...who, versions: "all", ...options });
-  expect(identities(read("needle"))).toEqual([`K${old.knowledgeId}@${old.commit}`, `K${second.knowledgeId}@${second.commit}`]);
-  expect(read("needle")).not.toContain(`[K${near.knowledgeId}@`);
-  expect(identities(read("needle", { versions: "current" }))).toEqual([`K${current.knowledgeId}@${current.commit}`, `K${second.knowledgeId}@${second.commit}`]);
-  expect(identities(read(""))[0]).toBe(`K${current.knowledgeId}@${current.commit}`);
-  expect(identities(read("n"))[0]).toBe(`K${current.knowledgeId}@${current.commit}`); // zero bigrams => current/newer tie
-  const topic = await who.put("otherwise unrelated", "project", ["needle"], current);
-  expect(identities(read("needle"))[0]).toBe(`K${topic.knowledgeId}@${topic.commit}`); // topic and old text tie; current wins
-  const noMatch = await who.put("otherwise unrelated", "project", [], topic);
-  expect(identities(read("needle"))[0]).toBe(`K${topic.knowledgeId}@${topic.commit}`); // nonmatching current cannot enter
-  expect(identities(read("needle", { versions: "current" }))).toEqual([`K${second.knowledgeId}@${second.commit}`]);
-  expect(read("needle")).not.toContain(`[K${noMatch.knowledgeId}@${noMatch.commit}]`);
-});
-
-test("41 category and revision scope filter before choosing a representative", async () => {
+test("41 revision scope filters every version, and a global filter sees only global revisions", async () => {
   const who = owner("filters");
   const old = await who.put("needle", "global", [], undefined, "open");
   const current = await who.put("needle more words", "project", [], old, "reference");
-  const read = (options: ListingOptions) => identities(memory.search("needle", "knowledge", { ...who, versions: "all", ...options }));
-  expect(read({})).toEqual([`K${old.knowledgeId}@${old.commit}`]);
-  expect(read({ category: "reference" })).toEqual([`K${current.knowledgeId}@${current.commit}`]);
-  expect(read({ scope: "project" })).toEqual([`K${current.knowledgeId}@${current.commit}`]);
-  expect(read({ scope: "global" })).toEqual([`K${old.knowledgeId}@${old.commit}`]);
-  expect(read({ scope: "global", category: "reference" })).toEqual([]);
+  const read = (options: SearchOptions) => identities(memory.search("needle", "knowledge", { ...who, ...options }));
+  // Both versions are candidates; the scope filter judges each revision by its own scope.
+  expect(read({}).sort()).toEqual([`K${old.knowledgeId}@v1`, `K${current.knowledgeId}@v2`].sort());
+  expect(read({ scope: "project" })).toEqual([`K${current.knowledgeId}@v2`]);
+  expect(read({ scope: "global" })).toEqual([`K${old.knowledgeId}@v1`]);
 });
 
-test("41 long histories select before paging and freeze bodies, status and owner membership", async () => {
-  const who = owner("paging");
-  const old = await who.put("needle", "project", ["needle"]);
-  const next = await who.put("needle", "project", []);
-  let tip = old;
-  for (let i = 0; i < 24; i++) tip = await who.put(`needle revision ${i}`, "project", [], tip);
-  const options = { ...who, versions: "all" as const, fields: ["text", "status"] as const };
-  const expected = body(memory.search("needle", "knowledge", options));
-  expect(identities(expected)).toEqual([`K${old.knowledgeId}@${old.commit}`, `K${next.knowledgeId}@${next.commit}`]);
-  const first = memory.search("needle", "knowledge", { ...options, cap: 1 });
-  const cursor = /cursor=(\S+)/.exec(first)![1];
-  const changed = await who.put("needle", "project", [], next);
-  await who.put("needle later identity");
-  expect(() => memory.search("", "knowledge", { ...who, cursor, category: "open" })).toThrow("cursor category is frozen");
-  expect(() => memory.search("", "knowledge", { ...who, cursor, scope: "project" })).toThrow("cursor scope is frozen");
-  const last = memory.search("", "knowledge", { ...who, cursor, branch: "moved", headTurnId: null, fields: options.fields });
-  expect(body(first) + "\n" + body(last)).toBe(expected);
-  expect(last).not.toContain(`[K${changed.knowledgeId}@${changed.commit}]`);
-  expect(last).not.toContain("cursor=");
-  const files = memoryFiles(memory, who);
-  expect(files.read(`trace://K${old.knowledgeId}.history`).content.match(/^  K1@v\d+ /gm)).toHaveLength(25);
-  expect(files.read(`trace://K${old.knowledgeId}.history`).content).toContain("reason: Reason needle");
-  expect(() => files.read(`trace://K${old.knowledgeId}..`)).toThrow();
-});
-
-test("64b global current ignores parent scope while explicit history remains filterable", async () => {
+test("64b global current ignores parent scope while every version remains filterable", async () => {
   const own = owner("parent"), foreign = owner("elsewhere");
   const old = await own.put("needle private parent", "project");
   const widened = await own.put("needle global child", "global", [], old);
-  expect(identities(memory.search("needle", "knowledge", { ...foreign, scope: "global" }))).toEqual([`K${widened.knowledgeId}@${widened.commit}`]);
-  const all = memory.search("needle", "knowledge", { ...foreign, scope: "global", versions: "all" });
-  expect(identities(all)).toEqual([`K${widened.knowledgeId}@${widened.commit}`]);
-  expect(all).not.toContain(`[K${old.knowledgeId}@${old.commit}]`);
+  const all = memory.search("needle", "knowledge", { ...foreign, scope: "global" });
+  expect(identities(all)).toEqual([`K${widened.knowledgeId}@v2`]);
+  expect(all).not.toContain(`[K${old.knowledgeId}@v1]`);
   const files = memoryFiles(memory, foreign);
   expect(files.read(`trace://${history(old)}`).content).toContain("needle private parent");
   expect(files.read(`trace://${history(widened)}`).content).toContain("needle global child");
-  expect(identities(memory.search("needle", "knowledge", { ...foreign, versions: "all", scope: "project" }))).toEqual([]);
+  expect(identities(memory.search("needle", "knowledge", { ...foreign, scope: "project" }))).toEqual([]);
 });
 
-test("41 archives and merged-away identities have no current body but remain historical candidates", async () => {
+test("41 archives and merged-away identities have no current body but remain candidates, marked", async () => {
   const who = owner("lifecycle");
   // Ticket 44: the survivor is created first so its older address remains live.
   const survivor = await who.put("needle survivor"), absorbed = await who.put("needle absorbed");
@@ -195,8 +142,9 @@ test("41 archives and merged-away identities have no current body but remain his
       absorb: [absorbedTag], text: "needle combined", scope: "project", category: "reference",
       topics: [], supports: who.supports.map(id => `F${id}`), reason: "Merge" }], skipped: [] }));
     result = committedVersion(merged.committed[0]);
-    expect(identities(memory.search("needle", "knowledge", who))).toEqual([`K${result.knowledgeId}@${result.commit}`]);
-    expect(memory.search("absorbed", "knowledge", { ...who, versions: "history" })).toContain(`superseded on this path by K${result.knowledgeId}@${result.commit}`);
+    const current = (memory.search("needle", "knowledge", who) as string).split("\n").filter(line => !/^\[K\d+@v\d+\] \((superseded|archived)\)/.test(line));
+    expect(identities(current.join("\n"))).toEqual([`K${result.knowledgeId}@v${memory.store.versionOrdinal(result.knowledgeId, result.commit)}`]);
+    expect(memory.search("absorbed", "knowledge", who)).toMatch(new RegExp(`\\[K${absorbed.knowledgeId}@v1\\] \\((superseded|archived)\\)`));
     const resultTag = readHandle(path => files.read(path).content, history(result));
     dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: resultTag, supports: who.supports.map(id => `F${id}`), reason: "Archive" },
       { op: "archive", kind: "budget", id: readHandle(path => files.read(path).content, history(trigger)), supports: who.supports.map(id => `F${id}`), reason: "Retire the explicit lifecycle trigger." }], skipped: [] });
@@ -204,11 +152,11 @@ test("41 archives and merged-away identities have no current body but remain his
     return { outcome: "success", output: "lifecycle complete", request: { fixture: "lifecycle merge and archive" } };
   });
   expect(dreamed.outcome, JSON.stringify(dreamed)).toBe("success");
-  expect(identities(memory.search("", "knowledge", who))).toEqual([]);
-  const historyText = memory.search("", "knowledge", { ...who, versions: "history" });
-  expect(identities(historyText)).toHaveLength(3);
+  // No version is current any more: every hit is marked, and the archives are labelled as such.
+  const historyText = memory.search("", "knowledge", { ...who, topk: 100 }) as string;
+  expect(historyText.split("\n").every(line => /^\[K\d+@v\d+\] \((superseded|archived)\)/.test(line))).toBe(true);
   expect(historyText).toContain(`[K${trigger.knowledgeId}@`);
-  expect(historyText).toContain("archived on this path");
+  expect(historyText).toContain("(archived)");
   expect(memoryFiles(memory, who).read("trace://knowledge-all").content).toContain(`trace://K${survivor.knowledgeId}@v`);
 });
 

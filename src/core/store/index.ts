@@ -2264,6 +2264,15 @@ export class Store {
       (SELECT value FROM json_each(?)) ORDER BY id`).all(JSON.stringify([...new Set(ids)])).map(toFact)) : [];
   }
 
+  /** Ticket 136: the facts that cite each source entry, in one batch (a Raw search hit's `citedBy`). */
+  factsCitingEntries(entryIds: readonly number[]): Map<number, number[]> {
+    const result = new Map<number, number[]>();
+    if (entryIds.length) for (const row of this.db.prepare(`SELECT entry_id, fact_id FROM fact_sources
+      WHERE entry_id IN (SELECT value FROM json_each(?)) ORDER BY fact_id`).all(JSON.stringify([...new Set(entryIds)])) as { entry_id: number; fact_id: number }[])
+      result.set(row.entry_id, [...(result.get(row.entry_id) ?? []), row.fact_id]);
+    return result;
+  }
+
   notedEntryIds(ids: readonly number[]): Set<number> {
     return new Set(ids.length ? (this.db.prepare(`SELECT entry_id FROM noted_entries WHERE entry_id IN
       (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as { entry_id: number }[]).map(row => row.entry_id) : []);

@@ -39,8 +39,8 @@ test("92/03: model lists and compact carriers use chronological tags; exact read
       expect(body.indexOf(firstTag)).toBeLessThan(body.indexOf(secondTag)); // 132: constraint groups before open, whatever the commit order
       expect(body).not.toMatch(/<(constraint|open)>/);
     }
-    const search = tools.find(t => t.name === "search")!.execute({ query: "Needle", layer: "knowledge", maxTokens: 8000 });
-    expect(search.indexOf(`K${second.knowledgeId}@v1`)).toBeLessThan(search.indexOf(`K${first.knowledgeId}@v2`));
+    const search = tools.find(t => t.name === "search")!.execute({ query: "Needle", layer: "knowledge" }) as string;
+    expect(search).toContain(`K${second.knowledgeId}@v1`); expect(search).toContain(`K${first.knowledgeId}@v2`);
     expect(search).not.toContain(firstTag);
     expect(memoryFiles(memory, target).read(`trace://K${first.knowledgeId}@v2`).content).toContain(`[${firstTag}] [K${first.knowledgeId}@v${store.versionOrdinal(first.knowledgeId, latest.commit)}]`);
     const binding = { db: "92-surface", nativeSession: "native", coreSession: session.id };

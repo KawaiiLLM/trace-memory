@@ -9,7 +9,7 @@ A long-term test protects one of these:
 - **Tool contracts.** What `note`, `memory` and `search` accept, reject and return; what `trace://` paths render before host-native pagination.
 - **Host delivery.** What reaches the model on each host: injection, compaction, carriers and their accounting.
 - **Storage.** Migrations, atomic publication and rollback, idempotence, and preservation of existing rows.
-- **Ruled performance bounds.** Tickets 79, 80, 87, 88 and 104, and Claude Code's 100 ms heartbeat gate.
+- **Ruled performance bounds.** Tickets 79, 80, 87, 88, 104 and 136 (a project-sized Raw search with code), and Claude Code's 100 ms heartbeat gate.
 - **A real regression.** A defect a user or a review found, reproduced at the boundary where it occurred.
 
 It does not protect:
@@ -38,7 +38,7 @@ Tests build sessions, Raw, facts and knowledge through the shared builders in `t
 
 ## Running performance tests
 
-Run each performance test file in its own Vitest process, one at a time: `core/api/ticket-80-append-performance.test.ts`, `hosts/cc-67-performance.test.ts`, `hosts/cc-70-performance.test.ts`, `hosts/cc-performance.test.ts` and `perf-fixture.test.ts`. Run together in one invocation they compete for CPU, which has pushed the 100 ms heartbeat gate to 115–556 ms without a regression.
+Run each performance test file in its own Vitest process, one at a time: `core/api/search-performance.test.ts`, `core/api/ticket-80-append-performance.test.ts`, `hosts/cc-67-performance.test.ts`, `hosts/cc-70-performance.test.ts`, `hosts/cc-performance.test.ts` and `perf-fixture.test.ts`. Run together in one invocation they compete for CPU, which has pushed the 100 ms heartbeat gate to 115–556 ms without a regression.
 
 ## When a change breaks tests
 

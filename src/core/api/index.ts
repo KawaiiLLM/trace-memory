@@ -1,4 +1,6 @@
-export { toolDefinitions, toolRejected, reviewFeedback, validateReadInput, renderToolDefinitions } from "./tools.ts";
+export { toolDefinitions, toolRejected, reviewFeedback, renderToolDefinitions } from "./tools.ts";
+export { validateSearchInput, SEARCH_HIT_TYPES, type SearchLayer, type SearchOptions } from "./search.ts";
+import type { SearchLayer, SearchOptions } from "./search.ts";
 export { canonicalToolNames } from "../prompts/tool-names.ts";
 export type { ToolNames } from "../prompts/tool-names.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
@@ -7,8 +9,8 @@ import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, type SourceNormalizer, type HumanUserDetector } from "../model/source.ts";
-import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
-export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
+import { readFacade, readProfile, type ListingOptions, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
+export type { ListingOptions, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
 export { memoryFiles, memoryPath, resolvedMemoryPath, memoryGlob, MEMORY_ROOT, MEMORY_READ_ONLY } from "./files.ts";
 export type { MemoryReader, MemoryFile, MemoryGrepMode, MemoryGrepOptions, MemoryGrepFile, MemoryListing } from "./files.ts";
 // 29a/53: core owns only the host-neutral visibility contract; each host reads its own envelopes.
@@ -457,7 +459,8 @@ export interface TraceMemory {
    * default empty view is the whole applicable set, which is what a fresh context always got. */
   injection(target: number | { projectId: number } | KnowledgePath, visible?: VisibleView, transportItems?: boolean, toolNames?: ToolNames): Injection;
   trace(address: string, options?: ListingOptions): string;
-  search(query: string | readonly string[], scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
+  /** Ticket 136: four parameters and a script over the hits; only a call with `code` answers asynchronously. */
+  search(query?: string, layer?: SearchLayer, options?: SearchOptions): string | Promise<string>;
   declareProject(sessionId: number, name: string, source?: "marker" | "mark", path?: KnowledgePath): string;
   status(sessionId: number, branch?: string, headTurnId?: number | null): string;
   /** Footer progress for one selected path: Raw and fact backlog, current visible Knowledge, and

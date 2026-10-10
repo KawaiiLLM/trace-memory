@@ -21,7 +21,7 @@ function fixture(script: (task: NotingAgentInput) => Partial<RunAgentResult> | v
   expect(note.execute({ title: "User rule", sources: "[T1#E1] The user set a rule" })).toContain("F1");
   return { memory, path, note, run: () => memory.noting(path) };
 }
-const use = (task: NotingAgentInput, name: "note" | "memory", input: unknown) => task.tools.find(tool => tool.name === name)!.execute(input);
+const use = (task: NotingAgentInput, name: "note" | "memory", input: unknown) => task.tools.find(tool => tool.name === name)!.execute(input) as string;
 for (const relation of [undefined, ["support", "strong"], ["support", "weak"], ["negate", "strong"], ["negate", "weak"]] as const)
   test(`92: identical facts need no lexical review; optional ${relation?.join(" ") ?? "no edge"}`, async () => {
     let ack!: () => void;

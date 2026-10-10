@@ -35,22 +35,6 @@ test("review 80e: a stored compaction summary is readable without fabricating an
   } finally { m.close(); }
 });
 
-test("review 80e: a search continuation renders its deferred Raw hits under the query-time profile", () => {
-  const { m, s } = setup();
-  try {
-    const t1 = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "needle first", startedAt: "t" });
-    const t2 = m.store.appendTurn({ sessionId: s.id, parentTurnId: t1.id, kind: "turn", userPrompt: "needle second", startedAt: "t" });
-    m.store.appendToolCall({ turnId: t2.id, name: "tool", input: "{}", result: "head " + "value ".repeat(1000) + " tail", status: "success" });
-    const expected = m.search("needle", "raw", { cap: 100 }).split("\n\nReceipts:")[0];
-    const first = m.search("needle", "raw", { cap: 1 });
-    const cursor = /cursor=(\S+)/.exec(first)![1]!;
-    // The host refreshes this same configuration object on restore; the page must not follow it.
-    m.config.render.toolResultTokens = 1000;
-    const last = m.search("", "raw", { cursor });
-    expect(first.split("\n\nReceipts:")[0] + "\n" + last.split("\n\nReceipts:")[0]).toBe(expected);
-  } finally { m.close(); }
-});
-
 test("review 80e: a root-array JSON payload is cut on escape-safe units, never inside an escape sequence", () => {
   const input = JSON.stringify(Array.from({ length: 100 }, () => "xxa\nb\"c\\d "));
   const entry = { id: 1, entryOrdinal: 1, sessionId: 1, turnId: 1, nativeId: "x", nativeLineage: "fake", role: "assistant" as const, text: "", raw: "",

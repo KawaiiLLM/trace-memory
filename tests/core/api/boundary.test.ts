@@ -59,7 +59,7 @@ test.each([
   const late: string[] = [];
   runAgent = async input => {
     await (input.sessionId === own ? ownGate : otherGate);
-    if (input.sessionId === own) late.push(...input.tools.map(tool => tool.execute({})));
+    if (input.sessionId === own) late.push(...input.tools.map(tool => tool.execute({}) as string));
     return { outcome: "cancelled", output: "delayed runner settled", request: { fake: true } };
   };
   const target = { sessionId: own, branch: "main", headTurnId: ownTurn.id, mode: "subagent" as const };

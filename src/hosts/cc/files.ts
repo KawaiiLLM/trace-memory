@@ -101,6 +101,12 @@ function materializeCcRead(directory: string, content: string, virtualPath?: str
   return target;
 }
 
+/** Ticket 136: an over-long `search` output, saved beside the native session's rendered `trace://` reads
+ * (same directory, removed when the session closes) so the model can Read the rest of it. */
+export function spillCcOutput(config: ResolvedCcHostConfig, nativeSessionId: string, text: string): string {
+  return materializeCcRead(join(config.stateDir, "rendered", validateNativeSessionId(nativeSessionId)), text);
+}
+
 /** A fresh worker reads with its frozen Core target, never a foreground native binding. */
 export function materializeCcWorkerRead(config: ResolvedCcHostConfig, reader: MemoryReader, path: string, directory: string): string {
   const memory = TraceMemory(config.dbPath, async () => { throw new Error("trace:// reads run no model work"); }, config.coreConfig, ccResultText, undefined, ccHumanUser);

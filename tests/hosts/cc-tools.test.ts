@@ -100,7 +100,7 @@ test("CC foreground rejects removed trace and keeps search separate from write a
   } finally { f.importer.close(); }
 });
 
-test("ticket 41 filters, representatives, cursors and ceilings execute through the CC surface", async () => {
+test("search scope, layer and code execute through the CC surface; removed parameters are refused", async () => {
   const f = await fixture();
   try {
     expect((await f.tools.call("note", { title: "Surface evidence", sources: `[T${f.exact.headTurnId}#E1] surface evidence` }, { "claudecode/toolUseId": "call-note" })).isError).toBeUndefined();
@@ -110,25 +110,17 @@ test("ticket 41 filters, representatives, cursors and ceilings execute through t
       category: "reference", scope: "session", supports: ["F1"], reason: "current", topics: ["alpha"] },
       { "claudecode/toolUseId": "call-memory" });
     expect(maintenance.isError).toBe(true); expect(text(maintenance)).toContain("update belongs to the Dreamer");
-    const defaults = text(await f.tools.call("search", { query: "", layer: "knowledge" }, undefined));
-    expect(defaults).toContain("One representative per K"); expect(defaults).toContain("session alpha"); expect(defaults).toContain("global beta");
-    const session = text(await f.tools.call("search", { query: "", layer: "knowledge", scope: "session" }, undefined));
+    const defaults = text(await f.tools.call("search", { layer: "knowledge" }, undefined));
+    expect(defaults).toContain("session alpha"); expect(defaults).toContain("global beta");
+    const session = text(await f.tools.call("search", { layer: "knowledge", scope: "session" }, undefined));
     expect(session).toContain("session alpha"); expect(session).not.toContain("global beta");
-    const category = text(await f.tools.call("search", { query: "", category: "open", scope: "global", fields: [] }, undefined));
-    expect(category).toContain("K2@v1"); expect(category).not.toContain("global beta");
-    const history = text(await f.tools.call("search", { query: "alpha", layer: "knowledge", versions: "history" }, undefined));
-    expect(history).toContain("[K1@v1]"); expect(history).toContain("session alpha"); expect(history).not.toContain("session alpha current");
-    const all = text(await f.tools.call("search", { query: "alpha", layer: "knowledge", versions: "all" }, undefined));
-    expect(all.match(/\[K1@v/g)).toHaveLength(1);
-    const page = await f.tools.call("search", { query: "", layer: "knowledge", cap: 1 }, undefined);
-    const cursor = /cursor=([^\s]+)/.exec(text(page))?.[1];
-    expect(cursor).toBeTruthy();
-    const changed = await f.tools.call("search", { query: "", cursor, fields: ["status"] }, undefined);
-    expect(changed.isError).toBe(true); expect(text(changed)).toContain("cursor");
-    const continued = await f.tools.call("search", { query: "", cursor }, undefined);
-    expect(continued.isError).toBeUndefined();
-    const ceiling = await f.tools.call("search", { query: "", maxTokens: 8001 }, undefined);
-    expect(ceiling.isError).toBe(true); expect(text(ceiling)).toContain("at most 8000");
+    const global = text(await f.tools.call("search", { layer: "knowledge", scope: "global" }, undefined));
+    expect(global).toContain("K2@v1"); expect(global).not.toContain("session alpha");
+    // The script runs through the CC surface: items arrive as structured values.
+    const scripted = text(await f.tools.call("search", { layer: "knowledge", code: "text(hits.map(h => h.address + ' ' + h.scope).join(', '))" }, undefined));
+    expect(scripted).toContain("Script completed"); expect(scripted).toContain("trace://K1@v1 session"); expect(scripted).toContain("trace://K2@v1 global");
+    for (const removed of [{ cursor: "x" }, { cap: 1 }, { maxTokens: 8000 }, { versions: "all" }, { category: "open" }, { fields: [] }])
+      expect((await f.tools.call("search", { layer: "knowledge", ...removed }, undefined)).isError).toBe(true);
   } finally { f.importer.close(); }
 });
 
@@ -231,8 +223,8 @@ test("write wait timeout and cancellation commit nothing and queue no later writ
       expect(store.listTurnFacts(1)).toEqual([]);
       store.setEnrollment(binding.coreSessionId!, false);
     } finally { store.close(); }
-    const disabled = await tools.call("search", { query: "" }, undefined);
-    expect(disabled.isError).toBeUndefined(); expect(text(disabled)).toContain("Search uses literal substring search");
+    const disabled = await tools.call("search", { query: "anything" }, undefined);
+    expect(disabled.isError).toBeUndefined(); expect(text(disabled)).toContain("No hit does not mean absent");
   } finally { await coordinator.shutdown("test"); }
 });
 

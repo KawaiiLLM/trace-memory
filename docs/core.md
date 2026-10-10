@@ -405,7 +405,7 @@ existing selection semantics. Full rendering removes content compression, not
 pagination; its read scope stays unrestricted, so when a shared call has results
 on several forks, a full trace shows each original occurrence as its own entry.
 
-Trace uses search's shared paginator and token estimator. Every response defaults
+Trace uses the shared paginator and token estimator. Every response defaults
 to at most 2,000 estimated tokens, including pagination receipts; public
 `pageBudget` values are capped at 8,000, and `cap` also limits output lines
 (default 100). A long line continues through the same cursor, split only at Unicode
@@ -920,13 +920,10 @@ the token counters and the internal renderer behind `trace://` use, and no view 
 becomes a source entry, a fact or a processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
 path. Sibling queues are never combined into an automatic Raw view.
 
-`search(query, layer = "all", options)` uses literal substring matching over fact
-text, knowledge commits, and original Raw. The public form is
-`search({query, layer?, versions?, category?, scope?, fields?, itemBudget?,
-maxTokens?, cursor?, cap?})`. A knowledge hit matches the conclusion text or any
-revision topic label. Matching runs over label values with SQLite `json_each`, so
-serialized JSON punctuation and escapes never match, and a commit whose text and
-several labels match is still one result.
+`search({query?, scope?, layer?, topk?, code?})` (ticket 136) uses literal substring matching over fact
+text, every knowledge version, and original Raw. Nothing else is accepted. A knowledge hit matches the
+conclusion text or any revision topic label. Matching runs over label values with SQLite `json_each`, so
+serialized JSON punctuation and escapes never match.
 
 `topicGroups(sessionId, headTurnId?, branch?)` projects the same path-selected
 visible current Knowledge as `{topics: [{topic, commits}], unclassified}`, where a commit
@@ -934,8 +931,7 @@ is the `{knowledgeId, commit}` reference of the revision it was read from. A
 multi-topic commit appears in each of its groups, and nothing is cloned or ranked: this is read
 organization, not a second injection order. This reference projection is distinct from search results.
 
-`scope` is the only material-range parameter; obsolete `where` is rejected, including
-on continuations. Search selects material as follows:
+`scope` is the only material-range parameter. Search selects material as follows:
 
 | Scope | Facts and Raw | Knowledge |
 |---|---|---|
@@ -944,57 +940,38 @@ on continuations. Search selects material as follows:
 | project | current project's sessions | this project's project-scoped |
 | global | every session | global-scoped, regardless of author project |
 
-An unbound omitted scope discovers all owners. Explicit project/session scope requires
-that context; a missing context is an error, never an inferred project or session.
-Only `category` implies `layer: "knowledge"` and rejects another explicit layer.
-Scope works across all search layers and does not imply a layer. Exact `trace://F<n>` and raw-entry reads remain
-independent of search selection; selection grants no source or write authority.
+The ruling names `project` as the default scope; the omitted row is today's project selection, which
+includes the knowledge of every scope that applies here, and is kept so that a default search and the
+Dreamer's all-pool revival search still reach global and session knowledge. An unbound omitted scope
+discovers all owners. Explicit project/session scope requires that context; a missing context is an error,
+never an inferred project or session. Exact `trace://F<n>` and raw-entry reads remain independent of search
+selection; selection grants no source or write authority.
 
-`versions` defaults to `current`: the one statelessly resolved current revision, filtered by reader scope and path visibility inside the selected owner scope. `history` also admits applicable superseded and archived revisions; `all` also admits other branches' revisions inside that same scope, including their history and archives. Inapplicable revisions remain unavailable as write bases; reads do not bypass writer validation. Only a revision's direct supports constrain applicability; parent and merge/split links are provenance. Without a path, current uses the globally resolved revision and history/all include the graph history. Versions are candidates inside a K,
-not separate knowledge identities.
+`layer` is `knowledge`, `facts`, `raw` or `all` (default). `topk` caps the hits across the layers together:
+10 with a query, none without. Without a query, hits are the newest first across the layers; with one,
+knowledge comes first (closest lexical match to its text or a topic, then current, then newer), then facts
+and Raw, each newest first. Every knowledge version applicable on the reader's path is a candidate, current,
+superseded and archived alike; other branches' versions are not. Raw hits are entries: the unit whose text
+contains the query, found newest Turn first a chunk at a time, so a small `topk` reads a few Turns.
 
-Search and project collections filter candidates first, choose one exact representative
-per K, then paginate. For a nonempty literal search, the representative maximizes the
-existing lexical similarity to its text or any one topic. Ties prefer a path-current
-candidate, then the larger commit ID. Empty queries and queryless collections use
-only that tie order. Nonmatching revisions never enter through similarity, and scores
-never reorder different K identities. Selected headers, bodies and lifecycle/path
-statuses belong to the same exact revision; historical text never masquerades as current.
+Each hit is one structured item (`layer`, `address`, `session`, `time`, `text`, plus the fields of its
+layer, declared as TypeScript in the tool description) and prints as one line:
+`[K12@v3] (archived) [category/scope] …snippet…` (no mark for the current version), `[F25081] title — …snippet…`
+(the fact preview, as before) or `[S173/T8727#E1@user] …snippet…`. A snippet is about 200 characters centred on
+the first match, cut with `…`; without a query it is the start of the body (a fact shows its title alone).
+Search never grants a knowledge write handle; read the complete `trace://K<id>` body for a tagged mutation base.
 
-Fact and knowledge search hits are one-line previews. Identity is always present.
-For current searches `fields` defaults to `text`; knowledge-capable history/all
-searches default to `text` plus `status`, so branch and lifecycle state remain
-visible. Explicit `fields`, including `[]` or `["text"]`, is authoritative. Facts and
-Raw keep their current rendering when `versions` is named because that filter does
-not apply to those layers. `itemBudget` defaults to 80 estimated tokens. Long text
-keeps a Unicode-safe head followed inline by `[... N characters truncated]`;
-stored line breaks in text and selected metadata render as ` ⏎ `, including when
-`itemBudget: null` leaves preview text untruncated. Selected `supports`, `topics`,
-`status`, `reason`, and `links` appear only when requested; `reason` is
-suppressed for current-only search. Raw hits retain the configured entry profile.
-Search never grants a knowledge write handle and emits no write handle in its
-receipts; read the complete `trace://K<id>` body for a tagged mutation base.
+`code` is the body of an async function run over the hits in a QuickJS sandbox (no Node API, file system,
+network, modules or timers; built-ins frozen; nothing kept between calls). It sees `hits`, `text()`,
+`console.log()`, a top-level `return`, `exit()` and `render(hit)` (the hit's default line). The result starts
+with `Script completed` or `Script failed` and the wall time; text items are numbered when there are several,
+console lines come in one block, and a failure keeps its partial output before `Script error:`. A script is
+killed after 10 s or at 256 MB; output is capped at 10,000 estimated tokens, keeping its start and end, with the
+full text written to a file where the host has one. A search without `code` is capped the same way. Raw
+`text` and `matchLines` (1-based, numbered as a Read of the hit's address) load on first access.
 
-Raw matching includes tool names, inputs, and results; `%` and `_` are escaped.
-Results order facts by id, then knowledge by K id; Raw orders turns by id. Every
-search page states effective material scope, version candidates, one representative
-per K, the explicit `trace://K<id>.history` route, selected and omitted preview fields, and
-that no hit does not mean absent.
-
-Search pages default to 2,000 estimated tokens, including receipts.
-Search `maxTokens` is a positive safe integer capped at 8,000; `cap`
-separately defaults to 100 output lines. `trace://` reads use host-native limits, not trace page budgets. Whole hits are preferred. An oversized
-transport hit is split at Unicode code-point boundaries and carried by the cursor,
-not semantically truncated. A `Hit continues on next page` receipt means concatenate
-the next page's content without a newline; otherwise join page contents with a
-newline. Receipts are not hit content, and a fragment need not contain a complete
-hit.
-
-Continue search with `search({query: "", cursor: "…"})`; continue a paged `trace://` Read with its original path and host-native offset. The search cursor freezes owner selection, exact representatives, statuses and
-every effective filter, field, content budget and line cap. Omit them or repeat equivalent
-effective values; genuinely changed values reject without consuming the cursor.
-Owner isolation and the 16-continuation cache remain unchanged. No
-transaction or reserved connection is held between pages.
+Raw matching includes tool names, inputs, and results; `%` and `_` are escaped. A miss says that no hit does
+not mean absent. `trace://` reads use host-native limits, not search budgets.
 
 The following trace-only address and option behavior is historical, not a public tool contract:
 session and project addresses, comma lists, fact intervals and trace `pageBudget`/`tool`/`full`/`cursor` options.

@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, renameSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, linkSync, unlinkSync, renameSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { createGrepToolDefinition, createReadToolDefinition, SettingsManager, truncateHead, truncateLine, formatSize, DEFAULT_MAX_BYTES, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
@@ -13,7 +13,7 @@ import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggle
 import { agentDirectory, configuration, configuredMode, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
-import { TraceMemory, cacheMissWarning, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateReadInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
+import { TraceMemory, cacheMissWarning, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -188,7 +188,12 @@ export default function (pi: ExtensionAPI) {
     // commits (`note`, `memory`), so the footer is re-read after each one — the counts then show the
     // committed progress while the trailing reply is still in flight and the running indicator stays.
     // Searches refresh too, cheaply; nothing polls and nothing decrements early.
-    const tools = input.tools.map(tool => ({ ...tool, execute: (raw: unknown) => { try { return tool.execute(raw); } finally { showSpend(callContext); } } }));
+    const tools = input.tools.map(tool => ({ ...tool, execute: (raw: unknown) => {
+      let answer: string | Promise<string>;
+      try { answer = tool.execute(raw); } catch (error) { showSpend(callContext); throw error; }
+      if (typeof answer === "string") { showSpend(callContext); return answer; }
+      return answer.finally(() => showSpend(callContext));
+    } }) as (typeof input.tools)[number]);
     // Everything the run needs, resolved now and frozen: the model, the runs directory, the tool
     // round cap and the fork launch cannot be re-read by a run already in flight, and this host
     // keeps its own state behind the callbacks below.
@@ -1318,6 +1323,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     if (closed) return;
     closed = true;
+    if (spillDirectory) rmSync(spillDirectory, { recursive: true, force: true });
     clearTimeout(settingsTimer);
     for (const watcher of settingsWatchers.values()) watcher.close();
     settingsWatchers.clear();
@@ -1337,6 +1343,15 @@ export default function (pi: ExtensionAPI) {
       try { memory.close(); } catch (error) { report(error); }
     }
   });
+  // Ticket 136: an over-long `search` output goes to a file the model can read. Pi has no render directory
+  // for trace:// reads (they are virtual), so this one is made on first use and removed at shutdown.
+  let spillDirectory: string | undefined;
+  const spill = (text: string): string => {
+    spillDirectory ??= mkdtempSync(join(tmpdir(), "trace-memory-search-"));
+    const path = join(spillDirectory, `output-${randomUUID()}.txt`);
+    writeFileSync(path, text, { mode: 0o600 });
+    return path;
+  };
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
   // 101: `read` and `grep` of the same names serve trace:// from Trace Memory, read-only, for this session's
   // reader, and hand every other path to Pi's own tool unchanged. Edits and writes under trace:// are refused.
@@ -1404,16 +1419,15 @@ export default function (pi: ExtensionAPI) {
   const definitions = renderToolDefinitions(toolDefinitions, canonicalToolNames).map(definition => ({ ...definition, label: definition.name,
     async execute(_id: string, raw: unknown, _signal: unknown, _update: unknown, context: ExtensionContext) {
       ensure(context); reconcile();
-      const bound = state.sessionId && current?.id ? memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id, triggerEntryId: state.sourceHead }) : null;
+      const bound = state.sessionId && current?.id ? memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id, triggerEntryId: state.sourceHead, spill }) : null;
       if (definition.name === "search") {
-        const input = validateReadInput("search", raw);
-        if (bound) return result(bound.find(t => t.name === "search")!.execute(input));
-        const options = { ...input, modelFacing: true, sessionId: state.sessionId, headTurnId: state.head, branch: state.branch };
-        return result(memory.search((input.queries ?? input.query) as string | string[], input.layer as import("../../core/api/index.ts").SearchScope, options));
+        const { query, layer, options } = validateSearchInput(raw);
+        if (bound) return result(await bound.find(t => t.name === "search")!.execute(raw));
+        return result(await memory.search(query, layer, { ...options, sessionId: state.sessionId, headTurnId: state.head, branch: state.branch, spill }));
       }
       if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
       if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");
-      const content = bound!.find(t => t.name === definition.name)!.execute(raw);
+      const content = await bound!.find(t => t.name === definition.name)!.execute(raw);
       if (toolRejected(definition.name, content)) throw new Error(content);
       return result(content);
     } }) as unknown as ToolDefinition);

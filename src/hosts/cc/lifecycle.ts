@@ -1,3 +1,4 @@
+import { spillCcOutput } from "./files.ts";
 import { existsSync, readdirSync, readFileSync, rmSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { Store } from "../../core/store/index.ts";
@@ -186,6 +187,8 @@ export class CcCoordinator {
   private appliedConfig: ResolvedCcHostConfig;
   /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
   nativeSessionId: string;
+  /** Ticket 136: where `search` saves an over-long output (see spillCcOutput). */
+  readonly spill = (text: string): string => spillCcOutput(this.config, this.nativeSessionId, text);
   private readonly diagnostic: CcDiagnostic;
   /** Test-only override of the cooperative-scan slice/pause constants; unset in production. */
   private readonly importTuning?: CcImportInstrumentation;

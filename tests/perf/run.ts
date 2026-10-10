@@ -314,10 +314,10 @@ async function spendScenarios(fixture: Fixture, size: string): Promise<Sample[]>
 }
 
 /** Ticket 22c, hotspot family 5: knowledge search over 100, 500 and 1,000 matching revisions, with a
- * first-page cap of one. The corpus is written on a copy of the long-history fixture, so applicability
+ * every version listed (ticket 136 removed the page cap). The corpus is written on a copy of the long-history fixture, so applicability
  * is decided against its real facts and Turns; it is cached like the fixture itself (`--rebuild`
- * regenerates it) because writing 1,000 valid commits is slower than reading them. Both the first
- * page and the complete continuation are measured, with the whole-graph resolutions each performs. */
+ * regenerates it) because writing 1,000 valid commits is slower than reading them. The search and the
+ * whole-graph resolutions it performs are measured. */
 async function searchScenarios(fixture: Fixture, size: string): Promise<Sample[]> {
   const samples: Sample[] = [];
   for (const revisions of [100, 500, 1_000]) {
@@ -333,24 +333,14 @@ async function searchScenarios(fixture: Fixture, size: string): Promise<Sample[]
     const memory = TraceMemory(copy, async () => { throw new Error("the performance suite must not call a model"); });
     try {
       const query = "SEARCHNEEDLE";
-      const scope = { cap: 1, sessionId: fixture.sessionId, headTurnId: fixture.headTurnId };
+      const scope = { topk: 100_000, sessionId: fixture.sessionId, headTurnId: fixture.headTurnId };
       const hits = memory.store.searchAddresses(query, "knowledge").length;
-      const all = () => { // the complete continuation: every page, one hit at a time
-        let page = memory.search(query, "knowledge", scope), pages = 1;
-        for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
-          page = memory.search("", "knowledge", { ...scope, cursor }); pages++;
-        }
-        return pages;
-      };
       const graphed = (run: () => unknown) => {
         const counter = countGraphResolutions();
         try { counter.reset(); run(); return counter.resolutions(); } finally { counter.restore(); }
       };
-      const firstGraph = graphed(() => memory.search(query, "knowledge", scope));
-      samples.push(measure(`search first page (${revisions} matches, cap 1)`, () => memory.search(query, "knowledge", scope),
-        `${hits} hits, ${firstGraph} graph resolutions${built ? `, corpus built in ${(built / 1000).toFixed(1)} s` : ", cached corpus"}`));
-      const pages = all();
-      samples.push(measure(`search full continuation (${revisions} matches, cap 1)`, all, `${pages} pages, ${graphed(all)} graph resolutions`));
+      samples.push(measure(`search (${revisions} matches, every version listed)`, () => memory.search(query, "knowledge", scope),
+        `${hits} hits, ${graphed(() => memory.search(query, "knowledge", scope))} graph resolutions${built ? `, corpus built in ${(built / 1000).toFixed(1)} s` : ", cached corpus"}`));
     } finally { memory.close(); }
   }
   return samples;

@@ -540,9 +540,9 @@ test("2026-09-28, 99: archive kind is required; budget retains parent while inva
   const files = memoryFiles(memory, path), search = tools.find(tool => tool.name === "search")!;
   expect(files.read(`trace://${history(invalidId, invalid.id)}`).content).toContain("status: archive (invalid)");
   expect(files.read(`trace://${history(budgetId, budget.id)}`).content).toContain("status: archive (budget)");
-  const found = search.execute({ query: "Old unique guidance", layer: "knowledge", versions: "history" });
-  expect(found).toContain(`[K${invalidId}@v1]`);
-  expect(found).toContain("archived on this path (historical version)");
+  // 136: every version is searched. The old body is found through the superseded parent; the archive is marked.
+  expect(search.execute({ query: "Old unique guidance", layer: "knowledge" })).toContain(`[K${invalidId}@v1] (superseded)`);
+  expect(search.execute({ query: "no longer holds", layer: "knowledge" })).toContain(`[K${invalidId}@v2] (archived)`);
 });
 
 test("2026-09-28, 101: 'grep 直接搜完整原文' — grep reaches Raw beyond its compressed and fact-projected views", () => {
@@ -1118,7 +1118,7 @@ test("92/118: search previews are tagless and do not authorize a stale base", as
     readHandle(file => files.read(file).content, "K1@v1");
     const successor = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: tagged(1, 1), topics: [], reason: "A substantive correction.",
       ...content(root.fact, `Unread successor ${"中文😀".repeat(350)}`) }], skipped: [] })).committed[0];
-    const preview = search.execute({ query: "Unread successor", layer: "knowledge", maxTokens: 256 });
+    const preview = search.execute({ query: "Unread successor", layer: "knowledge" });
     expect(preview).not.toContain("rejected:"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
     const edit = (id: string, slot?: string) => JSON.parse(dreamerWrite(write, { operations: [{ ...slot ? { slot } : {}, op: "update", topics: [], reason: "A substantive correction.", id,
       ...content(other.fact) }], skipped: [] }));
@@ -1134,7 +1134,7 @@ test("92/118: search previews are tagless and do not authorize a stale base", as
   expect(result.outcome, JSON.stringify(result)).toBe("success");
 });
 
-test("41a/118: project/current search and exact trace:// versions preserve read scope", async () => {
+test("41a/118: search lists the versions applicable on the reader's path, and exact trace:// versions preserve read scope", async () => {
   const { c, d, edit, publish } = commitPaths();
   const cTrigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1);
   const cCommit = (await edit(c, "FILTER-C", cTrigger)).committed[0].commit as number;
@@ -1142,14 +1142,11 @@ test("41a/118: project/current search and exact trace:// versions preserve read 
   const dCommit = (await edit(d, "FILTER-D", dTrigger)).committed[0].commit as number;
   publish(c);
   const current = memory.search("FILTER", "knowledge", c);
-  expect(current).toContain(`[K1@${cCommit}]`);
-  expect(current).not.toContain(`[K1@${dCommit}]`);
-  expect(current).toContain("searched: project sessions; global/project/session knowledge, current versions");
-  const historicalResults = memory.search("", "knowledge", { ...c, versions: "history" });
-  expect(historicalResults).not.toContain("[K1@1]"); expect(historicalResults).toContain(`[K1@${cCommit}]`); expect(historicalResults).not.toContain(`[K1@${dCommit}]`);
-  const all = memory.search("", "knowledge", { ...c, versions: "all" });
-  expect(all).toContain(`[K1@${cCommit}]`);
-  for (const commit of [1, dCommit]) expect(all).not.toContain(`[K1@${commit}]`);
+  expect(current).toContain(`[${history(1, cCommit)}]`);
+  expect(current).not.toContain(`[${history(1, dCommit)}]`); // another branch's version is not applicable here
+  const listed = memory.search("", "knowledge", { ...c, topk: 100 }) as string;
+  expect(listed).toContain(`[${history(1, 1)}] (superseded)`); // the parent is still a candidate, marked
+  expect(listed).toContain(`[${history(1, cCommit)}]`); expect(listed).not.toContain(`[${history(1, dCommit)}]`);
   const files = memoryFiles(memory, c);
   expect(files.read("trace://K1").content).toContain(`[${tagged(1, cCommit)}] [${history(1, cCommit)}] [constraint/project] FILTER-C`);
   const exactHistory = files.read("trace://K1.history").content;
@@ -1159,7 +1156,7 @@ test("41a/118: project/current search and exact trace:// versions preserve read 
   expect(files.read(`trace://${history(1, dCommit)}`).content).toContain("FILTER-D");
 });
 
-test("41a: category and unified scope filter candidates and cursor options are frozen", () => {
+test("41a: the unified scope filters candidates", () => {
   const { root, c, peer } = commitPaths();
   const sameProject = peer(), foreign = peer(memory.store.createProject({ name: "foreign-41a", declaredBy: "mark" }).id);
   const create = (who: typeof root, text: string, category: "open" | "reference", scope: "project" | "global") =>
@@ -1171,19 +1168,12 @@ test("41a: category and unified scope filter candidates and cursor options are f
   expect(facts).toContain(`[F${sameProject.fact.slice(1)}]`);
   expect(facts).not.toContain(`[F${foreign.fact.slice(1)}]`);
   expect(search.execute({ query: "main", layer: "facts", scope: "global" })).toContain(`[F${foreign.fact.slice(1)}]`);
-  expect(search.execute({ query: "41A", category: "open" })).toContain(`[${shared.version}]`);
-  expect(search.execute({ query: "41A", category: "open" })).not.toContain(`[${global.version}]`);
+  expect(search.execute({ query: "41A", layer: "knowledge" })).toContain(`[${shared.version}]`);
   expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge" })).toContain(`[${global.version}]`);
   expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge", scope: "session" })).not.toContain(`[${global.version}]`);
-  expect(search.execute({ query: "41A", layer: "facts", category: "open" })).toContain("rejected: category filter requires layer knowledge");
-  let page = search.execute({ query: "", layer: "knowledge", versions: "all", cap: 1 });
-  const cursor = /cursor=(\S+)/.exec(page)![1]!;
-  expect(search.execute({ query: "", cursor, versions: "history" })).toContain("rejected: cursor versions is frozen");
-  page = search.execute({ query: "", cursor, versions: "all" });
-  expect(page).not.toContain("rejected:");
 });
 
-test("41b: search previews budget text independently of long fact evidence metadata", () => {
+test("41b: a fact preview is one line of its text, without the long evidence metadata", () => {
   const { c } = commitPaths();
   const entry = memory.store.listSourceEntries(c.sessionId, c.headTurnId)[0]!;
   const receipt = legacyFacts(memory.store, { kind: "noting", sessionId: c.sessionId, branch: c.branch, createdAt: time }, [{
@@ -1192,14 +1182,11 @@ test("41b: search previews budget text independently of long fact evidence metad
   }]);
   const factId = receipt.facts[0]!.id;
   const search = c.tools.find(tool => tool.name === "search")!;
-  const preview = search.execute({ query: "PREVIEW-FACT", layer: "facts" });
+  const preview = search.execute({ query: "PREVIEW-FACT", layer: "facts" }) as string;
   expect(preview).toContain(`[F${factId}] [observation/user]`);
   expect(preview).toContain("characters truncated");
   expect(preview).not.toContain("quote:"); expect(preview).not.toContain("source:");
-  expect(preview).toContain("preview: text only");
   expect(preview.split("\n").filter((line: string) => line.startsWith(`[F${factId}]`))).toHaveLength(1);
-  const tiny = search.execute({ query: "PREVIEW-FACT", layer: "facts", itemBudget: 1 });
-  expect(tiny).toContain(`[F${factId}] [observation/user] [...`);
 });
 
 test("41 review: fact and knowledge previews are one physical line with head-only Unicode-safe cuts", () => {
@@ -1216,21 +1203,17 @@ test("41 review: fact and knowledge previews are one physical line with head-onl
   const created = c.writeCommitted([{ op: "create", text: longKnowledgeText, category: "reference", scope: "project",
     supports: [c.fact], topics: ["metadata\nline"], reason: "reason\nline" }])[0]!;
   const search = c.tools.find(tool => tool.name === "search")!;
-  const hit = (result: string) => result.split("\n\nReceipts:")[0]!;
 
-  const fact = hit(search.execute({ query: "FACT-LONG-41", layer: "facts" }));
+  const fact = search.execute({ query: "FACT-LONG-41", layer: "facts" }) as string;
   expect(fact).not.toContain("\n"); expect(fact).toContain("characters truncated"); expect(fact).not.toContain("FACT-LONG-TAIL");
-  const knowledge = hit(search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge" }));
-  expect(knowledge).not.toContain("\n"); expect(knowledge).toContain("characters truncated"); expect(knowledge).not.toContain("KNOWLEDGE-LONG-TAIL");
-
-  const fullFact = hit(search.execute({ query: "FACT-LONG-41", layer: "facts", itemBudget: null }));
-  expect(fullFact).not.toContain("\n"); expect(fullFact).toContain(" ⏎ FACT-LONG-TAIL"); expect(fullFact).toContain("😀");
-  const fullKnowledge = hit(search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge", versions: "history",
-    itemBudget: null, fields: ["text", "topics", "reason", "status"] }));
-  expect(fullKnowledge).not.toContain("\n"); expect(fullKnowledge).toContain(" ⏎ KNOWLEDGE-LONG-TAIL");
-  expect(fullKnowledge).toContain('topics: ["metadata\\nline"]'); expect(fullKnowledge).toContain("reason: reason ⏎ line");
-  expect(hit(search.execute({ query: "FACT-LONG-41", layer: "facts", itemBudget: 1 }))).toMatch(/^\[F\d+\] \[observation\/user\] \[\.\.\. \d+ characters truncated\]$/);
-  expect(hit(search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge", itemBudget: 1 }))).toMatch(/^\[K\d+@v\d+\] \[reference\/project\] \[\.\.\. \d+ characters truncated\]$/);
+  // 136: a knowledge hit is one line of about 200 characters centred on the match, cut with an ellipsis.
+  const knowledge = search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge" }) as string;
+  expect(knowledge).not.toContain("\n"); expect(knowledge).toMatch(/^\[K\d+@v\d+\] \[reference\/project\] KNOWLEDGE-LONG-41 .*…$/);
+  expect(knowledge).not.toContain("KNOWLEDGE-LONG-TAIL");
+  expect(knowledge.length).toBeLessThan(260);
+  expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(knowledge)).toBe(false); // cut on code points
+  const tail = search.execute({ query: "KNOWLEDGE-LONG-TAIL", layer: "knowledge" }) as string;
+  expect(tail).not.toContain("\n"); expect(tail).toMatch(/^\[K\d+@v\d+\] \[reference\/project\] …/); expect(tail).toContain("KNOWLEDGE-LONG-TAIL");
 
   const files = memoryFiles(memory, c);
   expect(files.read(`trace://F${factId}`).content).toContain(longFactText);
@@ -1249,7 +1232,7 @@ test("41b/92/118: search previews omit tags, while exact tags need no read ledge
       ...content(other.fact, text), topics: [], reason: "41b update" }], skipped: [] }));
     const successor = update(tagged(1, 1), "BASE-SUCCESSOR").committed[0];
     const exact = tagged(1, commitOf(successor));
-    const preview = search.execute({ query: "BASE-SUCCESSOR", layer: "knowledge", itemBudget: null, fields: ["text", "supports"] });
+    const preview = search.execute({ query: "BASE-SUCCESSOR", layer: "knowledge" });
     expect(preview).toContain("BASE-SUCCESSOR"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
     // The search preview is tagless; exact base and scope, not read history, authorize this write.
     const finite = update(exact, "FINITE-COMPLETE").committed[0];
@@ -1261,149 +1244,6 @@ test("41b/92/118: search previews omit tags, while exact tags need no read ledge
     return { outcome: "success", output: "scenario complete", request };
   });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-});
-
-test("41 review: search history defaults show existing statuses while current and explicit fields stay compact", async () => {
-  const { c, d, publish } = commitPaths();
-  publish(c);
-  const cReceipt = await admittedWrite(c, createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1), [{ op: "update", id: tagged(1, 1),
-    text: "SEARCH-STATUS-C", category: "constraint", scope: "project", supports: [c.fact], topics: [], reason: "Search status C." }]);
-  const cRevision = cReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
-  publish(d);
-  const dReceipt = await admittedWrite(d, createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2), [{ op: "update", id: tagged(1, 1),
-    text: "SEARCH-STATUS-D", category: "constraint", scope: "project", supports: [d.fact], topics: [], reason: "Search status D." }]);
-  const dRevision = dReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
-  publish(c);
-  const path = { sessionId: c.sessionId, headTurnId: c.headTurnId, branch: c.branch };
-  const hits = (result: string) => result.split("\n\nReceipts:")[0]!;
-
-  const current = memory.search("", "knowledge", path);
-  expect(current).toContain(`[K1@${cRevision!.commit}]`); expect(current).not.toContain("status:");
-  expect(current).toContain("preview: text only");
-  const history = memory.search("", "knowledge", { ...path, versions: "history" });
-  expect(history).not.toContain("[K1@1]");
-  expect(memory.search("Use blue tiles", "knowledge", { ...path, versions: "history" })).toContain(`status: superseded on this path by K1@${cRevision!.commit}`);
-  expect(history).toContain(`[K1@${cRevision!.commit}]`); expect(history).toContain("status: current on this path");
-  expect(history).toContain("preview: fields text, status");
-  const all = memory.search("", "knowledge", { ...path, versions: "all" });
-  expect(all).not.toContain(`[K1@${dRevision!.commit}]`);
-  expect(memory.search("SEARCH-STATUS-D", "knowledge", { ...path, versions: "all" })).toContain("status: another branch");
-
-  const textOnly = memory.search("", "knowledge", { ...path, versions: "all", fields: ["text"] });
-  expect(textOnly).not.toContain("status:"); expect(textOnly).toContain("preview: text only");
-  const identityOnly = memory.search("SEARCH-STATUS-C", "knowledge", { ...path, versions: "all", fields: [] });
-  expect(hits(identityOnly)).toBe(`[K1@${cRevision!.commit}] [constraint/project]`);
-  expect(identityOnly).toContain("preview: identity only"); expect(identityOnly).toMatch(/omitted fields: .*status/);
-
-  const secondStatus = c.writeCommitted([{ op: "create", text: "SECOND-STATUS", category: "reference", scope: "project", supports: [c.fact], topics: [], reason: "Cursor fixture." }])[0]!;
-  const first = memory.search("", "knowledge", { ...path, versions: "all", cap: 1 });
-  const cursor = /cursor=(\S+)/.exec(first)![1]!;
-  expect(memory.search("", "knowledge", { ...path, cursor, fields: ["text", "status"], cap: 1 })).not.toContain("unknown or expired cursor");
-  const changed = memory.search("", "knowledge", { ...path, versions: "all", cap: 1 });
-  const changedCursor = /cursor=(\S+)/.exec(changed)![1]!;
-  expect(() => memory.search("", "knowledge", { ...path, cursor: changedCursor, fields: ["text"], cap: 1 })).toThrow("cursor fields is frozen");
-  expect(memory.search("", "knowledge", { ...path, cursor: changedCursor, cap: 1 })).not.toContain("unknown or expired cursor");
-
-  const factCurrent = hits(memory.search("C", "facts", path));
-  expect(hits(memory.search("C", "facts", { ...path, versions: "all" }))).toBe(factCurrent);
-  const rawCurrent = hits(memory.search("C", "raw", path));
-  expect(hits(memory.search("C", "raw", { ...path, versions: "all" }))).toBe(rawCurrent);
-
-  const archived = c.writeCommitted([{ op: "create", text: "ARCHIVE-STATUS", category: "constraint", scope: "project",
-    supports: [c.fact], topics: [], reason: "Archive status fixture." }])[0]!;
-  await admittedWrite(c, createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3), [{ op: "archive", kind: "budget",
-    id: tagged(archived.knowledgeId, archived.commit), supports: [c.fact], reason: "Archive status fixture." }],
-    [secondStatus.version]);
-  expect(memory.search("ARCHIVE-STATUS", "knowledge", { ...path, versions: "history" })).toContain("status: archived on this path");
-
-  const searchFields = (toolDefinitions.find(tool => tool.name === "search")!.parameters.properties as Record<string, any>).fields;
-  expect(searchFields).not.toHaveProperty("default");
-});
-
-test("41 review: history defaults include reasons and partition applicable from other branches", async () => {
-  const { root, c, d, edit, content, publish } = commitPaths();
-  const cCommit = (await edit(c, "HISTORY-C", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1))).committed[0].commit as number;
-  const dCommit = (await edit(d, "HISTORY-D", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
-  publish(c);
-  const linear = root.writeCommitted([{ op: "create", ...content(root.fact, "LINEAR-HISTORY"), topics: [], reason: "Linear reason." }])[0]!;
-  const path = { sessionId: c.sessionId, headTurnId: c.headTurnId, branch: c.branch };
-
-  expect(memory.trace("K1", path)).not.toContain("reason:");
-  expect(memory.trace("K1@v1", { ...path, versions: "history" })).not.toContain("reason:");
-  const history = memory.trace("K1", { ...path, versions: "history" });
-  expect(history.match(/^  K1@\d+ .* reason: /gm)).toHaveLength(2);
-  const all = memory.trace("K1", { ...path, versions: "all" });
-  expect(all).toContain(`[K1@${cCommit}] [constraint/project] HISTORY-C`);
-  expect(all).not.toContain("All branch commits:");
-  expect(all).toContain("Other branches' commits:");
-  const applicableSection = all.split("Applicable history on this path:")[1]!.split("Other branches' tips:")[0]!;
-  const otherSection = all.split("Other branches' commits:")[1]!;
-  const commits = (section: string, knowledgeId = 1) => [...section.matchAll(new RegExp(`^  K${knowledgeId}@(\\d+)`, "gm"))].map(match => Number(match[1]));
-  const applicable = commits(applicableSection), other = commits(otherSection);
-  expect(applicable).toEqual([1, cCommit]); expect(other).toEqual([dCommit]);
-  expect(new Set([...applicable, ...other])).toEqual(new Set([1, cCommit, dCommit]));
-  expect(applicable.some(commit => other.includes(commit))).toBe(false);
-
-  const noOtherBranch = memory.trace(`K${linear.knowledgeId}`, { ...path, versions: "all" });
-  expect(commits(noOtherBranch.split("Applicable history on this path:")[1]!.split("Other branches' tips:")[0]!, linear.knowledgeId)).toEqual([linear.commit]);
-  expect(commits(noOtherBranch.split("Other branches' commits:")[1]!, linear.knowledgeId)).toEqual([]);
-  expect(noOtherBranch.match(new RegExp(`^  K${linear.knowledgeId}@${linear.commit}`, "gm"))).toHaveLength(1);
-
-  expect(memory.trace("K1", { ...path, versions: "history", fields: ["text"] })).not.toContain("reason:");
-  expect(memory.trace("K1", { ...path, versions: "history", fields: ["reason"] })).toContain("reason:");
-  expect(memory.trace("K1", { ...path, versions: "all", fields: ["text"] })).not.toContain("reason:");
-  expect(memory.trace("K1", { ...path, versions: "all" }).match(/^  K1@\d+ .* reason: /gm)).toHaveLength(3);
-
-
-});
-
-test("41 repair: knowledge search shows requested reasons only for history and all previews", async () => {
-  const { c, d, edit, publish } = commitPaths();
-  await edit(c, "REASON-TEXT-C", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1));
-  await edit(d, "REASON-TEXT-D", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2));
-  publish(c);
-  const current = memory.search("", "knowledge", { ...c, fields: ["reason"] });
-  expect(current).not.toContain("reason:");
-  expect(current).toContain("preview: identity only");
-  expect(current).toMatch(/omitted fields: .*reason/);
-
-  const history = memory.search("REASON-TEXT-C", "knowledge", { ...c, versions: "history", fields: ["reason"] });
-  expect(history).not.toContain("reason: Initial admission of this conclusion.");
-  expect(memory.search("Use blue tiles", "knowledge", { ...c, versions: "history", fields: ["reason"] })).toContain("reason: Initial admission of this conclusion.");
-  expect(history).toContain("reason: Substantive correction of the recorded conclusion.");
-  expect(history).not.toContain("REASON-TEXT-C");
-  expect(history).toContain("preview: fields reason; omitted fields:");
-  expect(history.match(/reason:/g)).toHaveLength(1);
-
-  const mixed = memory.search("", "knowledge", { ...c, versions: "all", fields: ["text", "reason"] });
-  expect(mixed).toContain("REASON-TEXT-C");
-  expect(mixed).not.toContain("REASON-TEXT-D");
-  expect(mixed.match(/reason: Substantive correction of the recorded conclusion\./g)).toHaveLength(1);
-  expect(memory.search("REASON-TEXT-D", "knowledge", { ...c, versions: "all", fields: ["reason"] })).toContain("reason: Substantive correction of the recorded conclusion.");
-  expect(mixed).toContain("preview: fields text, reason; omitted fields:");
-
-  const longReason = "because ".repeat(200).trim();
-  c.write([{ op: "create", ...{ text: "LONG-REASON-TEXT", category: "constraint", scope: "project", supports: [c.fact] },
-    topics: [], reason: longReason }]);
-  const long = memory.search("LONG-REASON-TEXT", "knowledge", { ...c, versions: "history", fields: ["text", "reason"] });
-  expect(long).toContain("characters truncated");
-  expect(long).toContain(`reason: ${longReason}`);
-});
-
-test("41b/118: search fields and budgets freeze across pages", () => {
-  const { c, content } = commitPaths();
-  c.write(["SECOND-41B", "THIRD-41B"].map(text => ({ op: "create", ...content(c.fact, text), topics: [], reason: "41b fixture" })));
-  const search = c.tools.find(tool => tool.name === "search")!;
-  expect(search.execute({ query: "", layer: "knowledge", maxTokens: 8001 })).toContain("rejected: maxTokens");
-  const searchProperties = search.parameters.properties as Record<string, unknown>;
-  expect(searchProperties.maxTokens).toMatchObject({ maximum: 8000, default: 2000 });
-  let page = search.execute({ query: "", layer: "knowledge", versions: "all", fields: ["text", "supports"], itemBudget: 20, cap: 1 });
-  const cursor = /cursor=(\S+)/.exec(page)![1]!;
-  expect(search.execute({ query: "", cursor, fields: ["text"] })).toContain("rejected: cursor fields is frozen");
-  expect(search.execute({ query: "", cursor, itemBudget: 21 })).toContain("rejected: cursor itemBudget is frozen");
-  page = search.execute({ query: "", cursor });
-  expect(page).not.toContain("rejected:");
-  expect(memoryFiles(memory, c).read("trace://K1@v1").content).toContain("[K1@v1]");
 });
 
 test("64b/34a: global current scope hides the identity without visible fallback", async () => {
@@ -1502,25 +1342,25 @@ test("16b: path trace separates applicable history, parents, children and siblin
 });
 
 
-test("16b: search notes describe the supplied path, including archives and unrestricted siblings", async () => {
+test("16b: search marks versions against the supplied path, including archives and unrestricted siblings", async () => {
   const { root, c, d, edit, publish } = commitPaths();
   const cCommit = (await edit(c, "C version", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1))).committed[0].commit as number;
-  await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2));
+  const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
   publish(c);
-  const hits = memory.search("", "knowledge", { ...c, versions: "all", fields: ["text", "status"] }).split("\n");
-  expect(memory.search("Use blue tiles", "knowledge", { ...c, versions: "all" })).toContain(`superseded on this path by K1@${cCommit}`);
-  expect(hits.find(l => l.startsWith(`[K1@${cCommit}]`))).toContain("current on this path");
-  expect(memory.search("D version", "knowledge", { ...c, versions: "all" })).toContain("another branch");
-  expect(memory.search("C version", "knowledge", { ...root, versions: "all", fields: ["text", "status"] })).toContain("current on this path");
+  const line = (result: unknown, label: string) => (result as string).split("\n").find(l => l.startsWith(`[${label}]`));
+  expect(line(memory.search("Use blue tiles", "knowledge", c), history(1, 1))).toContain("(superseded)");
+  expect(line(memory.search("C version", "knowledge", c), history(1, cCommit))).not.toContain("(");
+  expect(memory.search("D version", "knowledge", c)).not.toContain("D version"); // another branch's version is not applicable here
+  expect(line(memory.search("C version", "knowledge", root), history(1, cCommit))).toBeDefined();
   expect(c.read("K1")).toContain("C version");
   const archiveTrigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3);
   const archived = await admittedWrite(c, archiveTrigger, [{ op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.",
     id: tagged(1, cCommit), supports: [c.fact] }]);
   expect(archived.committed[0].knowledgeId).toBe(1);
-  expect(memory.search("C version", "knowledge", { ...c, versions: "history", fields: ["text", "status"] })).toContain("archived on this path");
-  expect(memory.search("D version", "knowledge", { ...d, fields: ["text", "status"] })).not.toContain("current on this path");
+  expect(memory.search("C version", "knowledge", c)).toContain("(archived)");
+  expect(memory.search("D version", "knowledge", d)).not.toContain("[K1@v1]");
   publish(d);
-  expect(memory.search("D version", "knowledge", { ...c, fields: ["text", "status"] })).toContain("current on this path");
+  expect(line(memory.search("D version", "knowledge", c), history(1, dCommit))).toBeDefined();
 });
 
 test("64b: compaction follows the owner's published foreground across a branch switch", async () => {
@@ -2254,19 +2094,16 @@ test("64b/21b: a shared label changes no applicability and follows the owner's p
   const archiveRevision = memory.store.listKnowledgeRevisions(1).find(revision => revision.op === "archive")!;
   archiveCommit = archiveRevision.id;
   expect(archiveRevision.topics).toEqual(["tiling"]);
-  const hits = memory.search("tiling", "knowledge", { versions: "all", fields: ["text", "status"] }).split("\n").filter(l => l.startsWith("[K"));
-  expect(hits).toHaveLength(1); // One K: equal topic scores choose the newest current candidate (archive).
-  expect(hits[0]).toContain(`[K1@${archiveCommit}]`);
-  expect(hits[0]).toContain("status: archived");
-  expect(memory.search("C version", "knowledge", { versions: "all" })).toContain("status: archived");
+  const hits = (memory.search("tiling", "knowledge", { topk: 100 }) as string).split("\n").filter(l => l.startsWith("[K"));
+  // The archive inherits the label, so it is found by it, and every version is marked against the latest one.
+  expect(hits.find(l => l.startsWith(`[${history(1, archiveCommit)}]`))).toContain("(archived)");
+  expect(memory.search("C version", "knowledge")).toContain("(superseded)");
   publish(d);
   // The archive cites the independent peer's fact, not C's. Switching C/D therefore leaves the
   // later archive applicable; sharing a topic cannot revive D or inherit the archive parent's path.
   expect(tips(third)).toEqual([archiveCommit]);
-  const dHistory = memory.search("D version", "knowledge", { versions: "all" });
-  expect(dHistory).toContain(`[K1@${dCommit}]`);
-  expect(dHistory).toContain("status: archived");
-  expect(dHistory).not.toContain("superseded by none");
+  const dHistory = memory.search("D version", "knowledge");
+  expect(dHistory).toContain(`[${history(1, dCommit)}] (superseded)`);
   expect(groups(third).topics).toEqual([]);
   expect(groups(c).topics).toEqual(groups(third).topics);
   expect(memory.inject(third)).not.toContain(`[${tagged(1, dCommit)}]`);
@@ -2724,32 +2561,24 @@ test("source text may name F- and K-shaped ids", () => {
 
 
 
-test("59: every supplied item is accounted for by an operation or a skip; New items search history once, in a batch", () => {
+test("59: every supplied item is accounted for by an operation or a skip; New items search every version once, with code", () => {
   const prompt = loadPrompt("dreaming.md");
   // The loop's opening: a deliberated item ends the round in an operation or a reasoned skip; a skip never mutates it.
   // 64c: the material also carries the pool's references; only what the round took up is accounted for.
   expect(prompt).toContain("Every `New` and `Changed` item, and every other item the round took through A–D, ends in an operation or in a skip with a reason. Pool references the round did not take up need no skip.");
-  // Step B, before the first New item: one batched history search; a hit is read in full before the revival decision.
-  expect(prompt).toContain("Before the first `New` item, run one `search` with `queries`, `layer: knowledge`, `versions: history`, `cap: 3`. One query per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase.");
+  // Step 1, before the first New item: one search over every knowledge version, filtered by code; a hit is read in full before the revival decision.
+  expect(prompt).toContain("Before the first `New` item, run one `search` with `layer: knowledge` and a `code` that prints, for each `New` item's word, the superseded and archived hits whose `text` contains it");
+  expect(prompt).toContain("One word per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase.");
+  for (const retired of ["queries", "versions: history", "cap: 3"]) expect(prompt).not.toContain(retired);
   // The empty-skip literal is gone; 127 owns the skip call's shape.
   expect(prompt).not.toContain("skipped: []");
 });
 
-test("47/118: search keeps history and all descriptions without bypassing write validation", () => {
+test("47/118: search reads every version without bypassing write validation", () => {
   const search = toolDefinitions.find(tool => tool.name === "search")!;
-  expect(search.description).toContain("history additionally includes applicable superseded and archived revisions");
-  expect(search.description).toContain("all additionally includes other branches' revisions in scope, including their history and archives");
-  expect(search.description).toContain("reading never bypasses write validation");
+  expect(search.description).toContain("every version");
+  expect(search.description).toContain("superseded");
 });
-
-
-
-
-
-
-
-
-
 
 // The maintainer's current principle note supersedes 61/92's sentence pins. Semantic alignment is
 // reviewed against the frozen note with the change; keep composition and stage authority here.
@@ -2841,7 +2670,7 @@ test("61: every backticked category, kind or field word used in a stage file is 
     const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8").replace(/```[\s\S]*?```/g, "");
     for (const match of raw.matchAll(/`([a-z]+)`/g)) {
       const word = match[1]!;
-      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skip", "skipped", "operations", "queries", "layer", "versions", "cap", "history", "full", "ok", "absorb", "source", "slot", "drop"].includes(word)) continue; // stage tools and operation fields, defined in the stage's Contract
+      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skip", "skipped", "operations", "layer", "code", "full", "ok", "absorb", "source", "slot", "drop"].includes(word)) continue; // stage tools and operation fields, defined in the stage's Contract
       expect(defined.has(word), `${file}: \`${word}\` is not a defined term`).toBe(true);
     }
   }

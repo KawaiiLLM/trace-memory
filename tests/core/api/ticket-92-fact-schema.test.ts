@@ -122,10 +122,9 @@ test("92: legacy knowledge is found as understanding in search and exact history
       VALUES (?,NULL,'legacy mechanism needle','mechanism','session',?,'change','create','legacy','[]',?,'now','manual')`)
       .run(knowledgeId, JSON.stringify([factId]), runId).lastInsertRowid);
     assignVersionTag(f.memory.store.db, knowledgeId, commit);
-    const options = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id, category: "understanding" as const };
-    expect(f.memory.search("legacy mechanism needle", "knowledge", options)).toContain(`[K${knowledgeId}@${commit}] [understanding/session]`);
+    const options = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
+    expect(f.memory.search("legacy mechanism needle", "knowledge", options)).toContain(`[K${knowledgeId}@v1] [understanding/session]`);
     expect(memoryFiles(f.memory, options).read(`trace://K${knowledgeId}@v1`).content).toContain("[understanding/session]");
-    expect(f.memory.search("legacy mechanism needle", "knowledge", { ...options, category: "open" })).not.toContain(`[K${knowledgeId}@${commit}]`);
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, commit)!.category).toBe("mechanism");
     const tools = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" });
     expect(memoryFiles(f.memory, options).read(`trace://K${knowledgeId}@v1`).content).toContain("legacy mechanism needle");
@@ -156,7 +155,7 @@ test("92: CC adapter writes against the borrowed target and renders legacy categ
       VALUES (?,NULL,'borrowed legacy reference','term','session',?,'change','create','legacy','[]',?,'now','manual')`)
       .run(knowledgeId, JSON.stringify([id]), runId).lastInsertRowid);
     assignVersionTag(f.memory.store.db, knowledgeId, commit);
-    const searched = await adapter.call("search", { query: "borrowed legacy reference", layer: "knowledge", category: "understanding" }, null);
+    const searched = await adapter.call("search", { query: "borrowed legacy reference", layer: "knowledge" }, null);
     expect(searched.content[0]!.text).toContain(`[K${knowledgeId}@v1] [understanding/session]`);
     const injected = f.memory.injection({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
     const tag = injected.text.match(new RegExp(`K${knowledgeId}#[a-z]{4,}`))![0];

@@ -121,7 +121,7 @@ test("model tools have no trace and an exact entry retains its source content", 
     .read(`trace://raw/S${session.id}/T${first.id}#E2`).content).toContain("assistant: reply");
 });
 
-test("knowledge injection charges IDs only while explicit trace/search display support titles", () => {
+test("knowledge injection charges IDs only while an explicit trace displays support titles", () => {
   const { m, first, second, session, note } = fixture();
   expect(note.execute({ title: "A descriptive episode title", sources: factSources([{ address: `T${first.id}#E1`, text: "User asks a question" }]) })).toContain("ok: F1");
   const memory = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: second.id }).find(tool => tool.name === "memory")!;
@@ -135,8 +135,6 @@ test("knowledge injection charges IDs only while explicit trace/search display s
   expect(injected.knowledgeTokens).toBe(tokens(injected.text.split("\n\n").slice(1).join("\n\n")));
   expect(tokens(injected.text)).toBeGreaterThan(injected.knowledgeTokens!);
   expect(memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id }).read(`trace://K${id}`).content).toContain("F1 A descriptive episode title");
-  expect(m.search("lasting rule", "knowledge", { sessionId: session.id, branch: "main", headTurnId: second.id,
-    fields: ["text", "supports"] })).toContain("F1 A descriptive episode title");
 });
 
 
@@ -188,7 +186,7 @@ test("a fact backlink groups citing history under visible current identity, incl
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id });
   const text = [files.read("trace://F1").content, files.read("trace://F2").content].join("\n");
   expect(text).toContain(`K${id}@v2 — cited by v1; current v2 (archived)`);
-  expect(m.search("finding", "facts", { sessionId: session.id, branch: "main", headTurnId: second.id, pageBudget: null })).toContain("First finding");
+  expect(m.search("finding", "facts", { sessionId: session.id, branch: "main", headTurnId: second.id })).toContain("First finding");
   const bodyHit = m.search("Original evidence", "facts", { sessionId: session.id, branch: "main", headTurnId: second.id });
   expect(bodyHit).toContain("First finding");
   expect(bodyHit).toContain("Original evidence");
@@ -280,19 +278,6 @@ test("a partially lost legacy binding fails every read and is readable after res
   expect(files.read("trace://F1").content).toContain("two contributions");
   expect(files.read(`trace://facts/S${session.id}/T${first.id}`).content).toContain("two contributions");
   expect(files.read(`trace://facts/S${session.id}/T${second.id}`).content).toContain("two contributions");
-});
-
-test("a paged search keeps the selected fact preview after later writes", () => {
-  const { m, first, second, note } = fixture();
-  expect(note.execute({ title: "First frozen", sources: factSources([{ address: `T${first.id}#E1`, text: "shared finding first" }]) })).toContain("ok: F1");
-  expect(note.execute({ title: "Second frozen", sources: factSources([{ address: `T${second.id}#E1`, text: "shared finding second" }]) })).toContain("ok: F2");
-  const firstPage = m.search("shared finding", "facts", { cap: 1, maxTokens: 500 });
-  const cursor = /cursor=([0-9a-f-]+)/.exec(firstPage)?.[1];
-  expect(cursor).toBeDefined();
-  expect(note.execute({ title: "Third added", sources: factSources([{ address: `T${second.id}#E2`, text: "shared finding third" }]) })).toContain("ok: F3");
-  const page = m.search("", "facts", { cursor });
-  expect(page).toContain("Second frozen");
-  expect(page).not.toContain("Third added");
 });
 
 test("118: facts lists pending and processed uncited entries only by path", () => {

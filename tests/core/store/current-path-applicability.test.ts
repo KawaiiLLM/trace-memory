@@ -364,9 +364,9 @@ test("64b scope visibility: global current hides older visible revisions, reject
     expect(peerGraph.resolved.find(item => item.knowledgeId === base.knowledgeId)?.id).toBe(narrowed.commit);
     expect(store.currentCommit(base.knowledgeId, ownerPath).map(item => item.id)).toEqual([narrowed.commit]);
     expect(store.currentCommit(base.knowledgeId, peerPath)).toEqual([]);
-    const peerHistory = memory.search("project body", "knowledge", { ...peerPath, versions: "history", fields: ["text", "status"] });
-    // The direct human history API retains commit addresses; foreground notices must not disclose this successor.
-    expect(peerHistory).toContain(`superseded on this path by K${base.knowledgeId}@${narrowed.commit}`);
+    const peerHistory = memory.search("project body", "knowledge", peerPath) as string;
+    // Search marks the old version superseded without naming or showing its private successor.
+    expect(peerHistory).toContain(`[K${base.knowledgeId}@v1] (superseded)`);
     expect(peerHistory).not.toContain("owner-only body");
     const retained = { raw: new Map<string, "source" | "view">(), factIds: new Set<number>(),
       knowledgeCommitIds: new Set([base.commit]), injection: true, suppliedGeneration: 0 };

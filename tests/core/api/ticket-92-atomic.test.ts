@@ -28,7 +28,7 @@ function fixture(script: (task: NotingAgentInput) => Promise<Partial<RunAgentRes
   const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
   return { memory, file, session, turn, entries, path, run: () => memory.noting(path) };
 }
-const call = (task: NotingAgentInput, name: "note" | "memory", input: unknown) => task.tools.find(tool => tool.name === name)!.execute(input);
+const call = (task: NotingAgentInput, name: "note" | "memory", input: unknown) => task.tools.find(tool => tool.name === name)!.execute(input) as string;
 const fact = (text = "User set the rule", source = "T1#E1") => ({ title: "Rule evidence", sources: `[${source}] ${text}` });
 const knowledge = (supports = ["$1"]) => ({ op: "create", text: "Use the stated rule", category: "constraint", scope: "session", supports, reason: "new rule", topics: [] });
 const emptyMemory = (task: NotingAgentInput) => call(task, "memory", {});

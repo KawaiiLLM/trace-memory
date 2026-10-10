@@ -578,23 +578,19 @@ test("branch facts use run ownership independently of audit JSON", () => {
   expect(JSON.parse(memory.store.getRun(empty.id)!.response!)).toEqual({});
 });
 
-test("literal search finds facts, historical knowledge and raw across projects", () => {
+test("literal search finds facts, every knowledge version and raw across projects", () => {
   const s = session(), t = turn(s.id, "needle raw"), n = noting(s.id, t.id, "needle fact");
   const e = knowledge(s.id, n.facts[0]!.id, "goal", "project", "needle knowledge");
   expect(memory.search("needle", "facts")).toContain("[F1]"); expect(memory.search("needle", "facts")).not.toContain("[K");
-  expect(memory.search("needle", "knowledge")).toContain(`[K${e}@${e}]`); expect(memory.search("needle", "knowledge")).not.toContain("[F1]");
-  const all = memory.search("needle", "all", { versions: "all" }); expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@${e}]`); expect(all).toContain(`[S${s.id}/T${t.id}]`);
+  expect(memory.search("needle", "knowledge")).toContain(`[K${e}@v1]`); expect(memory.search("needle", "knowledge")).not.toContain("[F1]");
+  const all = memory.search("needle", "all") as string; expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@v1]`); expect(all).toContain(`[S${s.id}/T${t.id}#E1@user]`);
   expect(all.split("\n").filter((l) => l.startsWith("["))).toHaveLength(3);
-  memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{
-    op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: e, baseCommit: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], createdAt: time }] });
-  expect(memory.search("needle", "knowledge", { versions: "all" })).toContain(`[K${e}@${e}]`);
-  expect(memory.search("needle", "knowledge", { versions: "all" })).not.toContain(`[K${e}@2]`);
   const other = session(), foreign = turn(other.id, "needle foreign");
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "toolonly", result: "literal%_", status: "success" });
   const raw = memory.search("toolonly", "raw");
-  expect(raw).toContain(`[S${s.id}/T${t.id}]`); expect(raw).toContain("literal substring search");
+  expect(raw).toContain(`[S${s.id}/T${t.id}#E`);
   expect(memory.search("needle foreign", "raw")).toContain(`T${foreign.id}`); // another project's raw is readable (ruling 2026-09-07)
-  expect(memory.search("%_", "raw")).toContain(`[S${s.id}/T${t.id}]`);
+  expect(memory.search("%_", "raw")).toContain(`[S${s.id}/T${t.id}#E`);
   expect(memory.search("nohits", "all")).toContain("No hit does not mean absent.");
 });
 
@@ -617,7 +613,7 @@ test.each([
   ["%", "进度100%完成"],
   ["_", "使用snake_case命名"],
   ["\\", "路径core\\api\\read.ts"],
-])("literal substring search for %s across all layers and projects keeps cursor order", (query, text) => {
+])("literal substring search for %s across all layers and projects finds exactly the literal matches", (query, text) => {
   const s = session(), foreign = session();
   const expected = { facts: [] as string[], knowledge: [] as string[], raw: [] as string[] };
   for (const owner of [s, foreign]) {
@@ -628,42 +624,26 @@ test.each([
       const k = knowledge(owner.id, f.id, "reference", "project", content);
       if (content.includes(query)) { // both projects: reads are unrestricted (ruling 2026-09-07)
         expected.facts.push(`[F${f.id}]`);
-        expected.knowledge.push(`[K${k}@${k}]`);
+        expected.knowledge.push(`[K${k}@v1]`);
         expected.raw.push(`[S${owner.id}/T${t.id}]`);
       }
     }
   }
   const search = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: 1 }).find(t => t.name === "search")!;
+  // Order is not the point here (the contract test pins it): which hits match, literally, in every layer.
+  const labels = (text: string) => [...new Set([...text.matchAll(/^\[[^\]]+\]/gm)].map(m => m[0].replace(/#E\d+@\w+\]$/, "]")))].sort();
   for (const layer of ["facts", "knowledge", "raw", "all"] as const) {
-    const wanted = layer === "all" ? [...expected.facts, ...expected.knowledge, ...expected.raw] : expected[layer];
-    const found: string[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = memory.search(query, layer, { versions: "all", cap: 1, ...(cursor ? { cursor } : {}) });
-      const addresses = [...page.matchAll(/^\[[^\]]+\]/gm)].map(m => m[0]);
-      expect(addresses).toHaveLength(1);
-      expect(page).toContain("literal substring search");
-      found.push(...addresses);
-      cursor = /cursor=(\S+)/.exec(page)?.[1];
-      expect(found.length).toBeLessThanOrEqual(wanted.length);
-    } while (cursor);
-    expect(found).toEqual(wanted);
+    const wanted = (layer === "all" ? [...expected.facts, ...expected.knowledge, ...expected.raw] : expected[layer]).sort();
+    expect(labels(memory.search(query, layer, { topk: 100 }) as string)).toEqual(wanted);
   }
-  expect(search.description).toContain("literal substring search");
+  expect(search.description.toLowerCase()).toContain("literal substring search");
 });
 
-test("opaque cursors continue search snapshots; virtual files reject retired address forms", () => {
+test("virtual files reject retired address forms", () => {
   const { s, t, f } = populated();
-  turn(s.id, "second turn", t.id);
-  noting(s.id, t.id, fixture.base);
-  const first = memory.search(fixture.base, "facts", { cap: 1 });
-  const cursor = /cursor=(\S+)/.exec(first)![1]!;
-  expect(cursor).not.toContain("{"); expect(first).toContain("[F1]");
-  const last = memory.search("ignored", "all", { cursor });
-  expect(last).toContain("[F2]"); expect(last).not.toContain("cursor="); expect(last).toContain("No hit does not mean absent");
   const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id });
   expect(() => files.read(`trace://F${f.id}..`)).toThrow();
-  expect(() => files.read(`trace://cursor=${cursor}`)).toThrow();
+  expect(() => files.read("trace://cursor=0123")).toThrow();
 });
 
 test("status reports attribution, counts, every watermark and last runs, and no delivery queue (29d)", () => {
@@ -694,22 +674,6 @@ test("project mark merges an undeclared own project, relabels facts and knowledg
   expect(memory.store.getSession(peer.id)!.projectId).toBe(project.id);
   expect(memory.store.getProject(project.id)!.mergedInto).toBeNull();
   expect(memory.inject(s.id)).toContain(`[K${own}#${memory.store.versionTag(own, own)}]`);
-});
-
-test("listing line caps still apply with an explicit large search token budget", () => {
-  const s = session(), t = turn(s.id);
-  const user = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(entry => entry.role === "user")!;
-  const result = legacyFacts(memory.store, { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
-    Array.from({ length: 101 }, (_, i) => ({ text: `needle ${i}`, category: "observation" as const,
-      actor: "user" as const, sources: [{ entry: user, address: `T${t.id}#E${user.entryOrdinal}` }], createdAt: time })));
-  expect(result.facts).toHaveLength(101);
-  const first = memory.search("needle", "all", { maxTokens: 8000 });
-  expect(first.split("\n").filter((l) => l.startsWith("[F"))).toHaveLength(100);
-  const cursor = /cursor=(\S+)/.exec(first)![1]!;
-  noting(s.id, t.id, "needle added later");
-  const last = memory.search("", "all", { cursor });
-  expect(last).toContain("[F101]"); expect(last).not.toContain("[F102]");
-  expect(last).not.toContain("cursor=");
 });
 
 test("first-prompt injection by project needs no session: global and project knowledge", () => {
@@ -762,12 +726,18 @@ test("search marks historical, merged and archived knowledge hits so they do not
     return { outcome: "success", output: "maintenance complete", request: { fixture: "archive merged result", trigger: trigger2 } };
   });
   expect(retired.outcome, JSON.stringify(retired)).toBe("success");
-  const hits = memory.search("pnpm", "knowledge", { versions: "all", fields: ["text", "status"] });
-  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`status: superseded by K${a}@${updated.commit}`);
-  expect(hits.split("\n").find(l => l.startsWith(`[K${c}@3]`))).toContain("status: archived");
-  expect(hits).toContain("status: archived");
-  const current = memory.search("for installs", "knowledge", { versions: "all", fields: ["text", "status"] }).split("\n").find((l) => l.startsWith(`[K${a}@${updated.commit}]`))!;
-  expect(current).toContain("status: tip"); // unbound reads label tips without claiming current
+  const hits = (memory.search("pnpm", "knowledge", { topk: 100 }) as string).split("\n");
+  const line = (label: string) => hits.find(l => l.startsWith(`[${label}]`))!;
+  expect(line(`K${a}@v1`)).toContain("(superseded)"); // updated away
+  expect(line(`K${c}@v1`)).toContain("(superseded)"); // merged into b
+  // b's merged result is archived afterwards: that archive version carries the label, its parent does not.
+  const archived = hits.filter(l => l.includes("(archived)"));
+  expect(archived.length).toBeGreaterThan(0);
+  expect(line(`K${b}@v1`)).toContain("(superseded)");
+  // The current version carries no status mark, and sorts ahead of its superseded parent.
+  const installs = (memory.search("for installs", "knowledge") as string).split("\n");
+  expect(installs.map(l => l.slice(0, l.indexOf(" ")))).toEqual([`[K${a}@v2]`, `[K${a}@v1]`]);
+  expect(installs[0]).toMatch(/^\[K\d+@v2\] \[constraint\/project\] Use npm for installs/);
 });
 
 test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", async () => {
@@ -795,7 +765,9 @@ test("reads resolve any existing address: another session's history, current rev
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
   const files = memoryFiles(memory, { sessionId: peer.id, branch: "main", headTurnId: pt.id });
-  expect(memory.search("shared-then-private", "knowledge", { sessionId: peer.id })).not.toContain(`[K${k}@`);
+  // Every version is a candidate: the peer sees the project-scoped v1 as superseded, never the private v2 body.
+  expect(memory.search("shared-then-private", "knowledge", { sessionId: peer.id })).toContain(`[K${k}@v1] (superseded)`);
+  expect(memory.search("private goal now", "knowledge", { sessionId: peer.id })).not.toContain(`[K${k}@v2]`);
   expect(files.read(`trace://K${k}@v1`).content).toContain("shared-then-private goal");
   expect(files.read(`trace://K${k}`).content).not.toContain("shared-then-private goal");
   expect(files.read(`trace://K${k}@v2`).content).toContain("private goal now");
@@ -820,13 +792,13 @@ test("21b 2026-09-08: one topic spans categories, one commit joins two groups, a
   expect(memory.store.listKnowledgeRevisions(a)).toHaveLength(1);
   // The label is absent from every conclusion, and the hit is one line per exact commit.
   for (const id of [a, b]) expect(memory.store.getKnowledgeRevision(id, id)!.text).not.toContain("database");
-  const hits = memory.search("database", "knowledge").split("\n").filter(l => l.startsWith("[K"));
+  const hits = (memory.search("database", "knowledge") as string).split("\n").filter(l => l.startsWith("[K"));
   expect(hits).toHaveLength(2);
   // Several labels, or text and labels together, still return one result per commit.
   const d = knowledge(s.id, f.id, "reference", "project", "The database schema lives in core/store", time, ["database", "database design"]);
-  const again = memory.search("database", "knowledge").split("\n").filter(l => l.startsWith("[K"));
+  const again = (memory.search("database", "knowledge") as string).split("\n").filter(l => l.startsWith("[K"));
   expect(again).toHaveLength(3);
-  expect(again.filter(l => l.startsWith(`[K${d}@${d}]`))).toHaveLength(1);
+  expect(again.filter(l => l.startsWith(`[K${d}@v1]`))).toHaveLength(1);
 });
 
 test("21b 2026-09-08: labels match literally, never as JSON syntax, and empty topics hide nothing", () => {
@@ -835,14 +807,14 @@ test("21b 2026-09-08: labels match literally, never as JSON syntax, and empty to
     ["禁书目录", "read path", "100%_done", 'say "hi"', "core\\store"]);
   const plain = knowledge(s.id, f.id, "open", "project", "unlabelled but searchable", time);
   for (const query of ["禁书目录", "read path", "100%_done", '"hi"', "core\\store"]) {
-    expect(memory.search(query, "knowledge")).toContain(`[K${labelled}@${labelled}]`);
+    expect(memory.search(query, "knowledge")).toContain(`[K${labelled}@v1]`);
   }
   // The serialized JSON around the labels is not searchable content: neither its punctuation nor its escapes.
   for (const query of ['", "', '["', '\\"hi\\"', '","']) expect(memory.search(query, "knowledge")).not.toContain("[K");
   // A percent or underscore is a literal character here, exactly as in text search.
   expect(memory.search("100%", "knowledge")).toContain(`[K${labelled}@`);
   expect(memory.search("100X_done", "knowledge")).not.toContain("[K");
-  expect(memory.search("unlabelled but searchable", "knowledge")).toContain(`[K${plain}@${plain}]`);
+  expect(memory.search("unlabelled but searchable", "knowledge")).toContain(`[K${plain}@v1]`);
 });
 
 // ---- Independent facts and processed-Raw refill (92); 133 replaces shared episodic borrowing. ----

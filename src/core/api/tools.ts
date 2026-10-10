@@ -2,33 +2,25 @@ import { resolveFactSource, sourceAddressScope, type SourceResolution } from "..
 import { bindMemory } from "../knowledge-write/bind.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput, KnowledgePath, SourceEntry } from "../store/index.ts";
-import { DEFAULT_READ_TOKENS, MAX_PUBLIC_READ_TOKENS, READ_FIELDS, READ_VERSIONS, SEARCH_PREVIEW_TOKENS, validateBudgets, type ListingOptions, type SearchScope } from "./read.ts";
+import { searchToolDefinition, validateSearchInput, type SearchLayer, type SearchOptions } from "./search.ts";
 import type { NotingDiagnostic } from "../noting/review.ts";
 import { holdNoting, Slots } from "../noting/held.ts";
 import { tokens, WORKER_ITEM_TOKENS } from "../render/index.ts";
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
-export interface ToolDefinition {
-  name: "search" | "note" | "memory" | "check";
-  description: string;
-  parameters: Record<string, unknown>;
-  execute(input: unknown): string;
-}
-export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number; triggerEntryId?: number; entryIds?: number[]; maxReadChars?: number; toolNames?: ToolNames }
-  | { kind: "noting" | "dreaming"; sessionId: number; branch: string; headTurnId?: number | null; triggerEntryId?: number; entryIds?: number[]; range: { from: string; to: string }; maxReadChars?: number; toolNames?: ToolNames };
-type Reads = { search(query: string | readonly string[], layer?: SearchScope, options?: ListingOptions & { sessionId?: number }): string };
+interface ToolOf<Name extends string, Answer> { name: Name; description: string; parameters: Record<string, unknown>; execute(input: unknown): Answer }
+/** Only a `search` with `code` answers asynchronously (its script runs in a sandbox); every other call is
+ * synchronous. Narrowing by name (`tools.find(t => t.name === "note")`) selects the right answer type. */
+export type ToolDefinition = ToolOf<"note", string> | ToolOf<"memory", string> | ToolOf<"check", string> | ToolOf<"search", string | Promise<string>>;
+export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number; triggerEntryId?: number; entryIds?: number[]; maxReadChars?: number; toolNames?: ToolNames; spill?: (text: string) => string }
+  | { kind: "noting" | "dreaming"; sessionId: number; branch: string; headTurnId?: number | null; triggerEntryId?: number; entryIds?: number[]; range: { from: string; to: string }; maxReadChars?: number; toolNames?: ToolNames; spill?: (text: string) => string };
+type Reads = { search(query: string | undefined, layer?: SearchLayer, options?: SearchOptions): string | Promise<string> };
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 const string = { type: "string" };
 const relation = { type: "array", items: { type: "array", prefixItems: [{ type: "string", pattern: "^(F[1-9][0-9]*|\\$[1-9][0-9]*)$" }, { enum: ["strong", "weak"] }], minItems: 2, maxItems: 2 } };
 const factSchema = object({ title: { type: "string", minLength: 1, pattern: "^[^\\r\\n\\u2028\\u2029]+$" },
   sources: { type: "string", minLength: 1, description: "Source segments as lines beginning [T12#E3@user] followed by a space and authored text. Each segment continues across lines up to the next marker; no text before the first marker." },
   support: relation, negate: relation }, ["title", "sources"]);
-const pagination = { cursor: string, cap: { type: "integer", minimum: 1 } };
-const contentBudget = { anyOf: [{ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { type: "null" }] };
-const fields = { type: "array", uniqueItems: true, items: { enum: READ_FIELDS } };
-const readFilters = { versions: { enum: READ_VERSIONS, default: "current", description: "Candidates within each K: current = active current tips applicable on this path; history = additionally applicable superseded and archived revisions; all = additionally other branches' revisions within the selected scope, including their history and archives. Collections show one representative per K. Inapplicable revisions are never write bases here; reading never bypasses write validation." },
-  category: { enum: KNOWLEDGE_CATEGORIES, description: "Knowledge category. Implies layer=knowledge when layer is omitted." },
-  scope: { enum: KNOWLEDGE_SCOPES, description: "Material selection: session facts/Raw and session knowledge; project facts/Raw and project knowledge; global facts/Raw from all sessions and global knowledge. Omitted: project facts/Raw plus applicable global/project/session knowledge. Does not imply a layer." } };
 
 const factId = { type: "string", pattern: "^F[1-9][0-9]*$" };
 const knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*#[a-z]{4,}$" };
@@ -45,7 +37,7 @@ const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "ar
 ] };
 
 export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
-  { name: "search", description: `Use literal substring search over facts, raw and knowledge commits. scope controls facts, Raw and knowledge: session selects this session's facts/Raw and session-scoped knowledge; project selects project facts/Raw and project-scoped knowledge; global selects all sessions' facts/Raw and global-scoped knowledge regardless of author. Omitted scope selects project facts/Raw and applicable global/project/session knowledge; unbound omission discovers all owners. Explicit project/session requires context. versions defaults to current applicable tips; history additionally includes applicable superseded and archived revisions; all additionally includes other branches' revisions in scope, including their history and archives. Revisions not applicable here are never write bases, and reading never bypasses write validation. Each K contributes one best matching revision: highest lexical text/topic similarity, then current, then newer commit. Admission stays literal. The batched form selects each query's capped knowledge hits by similarity so cap keeps the closest match; model-visible knowledge results then display oldest first, retaining category labels. Inspect a K's history at trace://K<id>.history. Only category implies layer=knowledge and conflicts with every other layer; scope does not imply a layer. Fact and knowledge hits are one-line previews: fields defaults to text for current searches and to text plus status for knowledge history/all; explicit fields is authoritative. itemBudget defaults to ${SEARCH_PREVIEW_TOKENS}. Read fact quotes, sources and relations at trace://F<id>. Raw keeps its entry profile. Every receipt states filters and omitted preview fields; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} and is capped at ${MAX_PUBLIC_READ_TOKENS} estimated tokens for one response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit frozen options or repeat their original values (changes are rejected). Search previews never count as complete knowledge reads.`, parameters: { ...object({ maxTokens: { type: "integer", minimum: 1, maximum: MAX_PUBLIC_READ_TOKENS, default: DEFAULT_READ_TOKENS }, itemBudget: { ...contentBudget, default: SEARCH_PREVIEW_TOKENS }, fields, query: string, queries: { type: "array", items: string, minItems: 1, description: "Batched form, exclusive with query: one response, each query's own hits under the shared options, at most cap per query (default 1), the query echoed on each hit line, queries with no hit listed as `no hit: \"q\"` lines after the hits and paged like them; a cursor may repeat the original cap." }, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...readFilters, ...pagination }) } },
+  searchToolDefinition,
   { name: "note", description: "Write one topic's episodic slice with a nonempty single-line title and one top-level sources string: each segment starts on a line with [T12#E3@user] and a space (role suffix optional), followed by authored text until the next marker. No text may precede the first marker. Give each contributing whole native entry its own segment; Core orders segments by path and joins their texts as the body. End a slice at a topic pivot, batch end or body cap; preserve the reasoning arc and name the actual harness in agent segments. Do not put later interpretations in an earlier source or tool-result segment. Block selectors and fact-level text are not allowed. No model-supplied category, status, quote or actor. Thinking alone is not evidence. Relations are optional; manual calls cite existing F facts, N $ references name accepted earlier stable slots. Manual calls commit one fact immediately and reject slot/drop. N calls hold privately until normal terminal publication: omit slot to append, slot:$n completely replaces including a rejected item, drop:$n removes only an unreferenced slot in its own call. Failed replacement invalidates the prior value; numbers never recycle; accepted siblings survive. An empty call {} confirms use, never clears drafts or rejected slots. Receipts list held/rejected handles, including after a native schema refusal; an empty call inspects them. A valid call clears top-level call errors only. Both {{tool.note}} and {{tool.memory}} are required in N.", parameters: { ...object({ ...(factSchema.properties as Record<string, unknown>), slot: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: replace one held fact." }, drop: { type: "string", pattern: "^\\$[1-9][0-9]*$", description: "N only: drop one unreferenced held fact in a separate call." } }),
     if: { required: ["drop"] }, then: { maxProperties: 1 },
     else: { if: { minProperties: 1 }, then: { required: factSchema.required } } } },
@@ -100,21 +92,6 @@ export function dreamingToolDefinitions(): Omit<ToolDefinition, "execute">[] {
   return tools;
 }
 
-export function validateReadInput(name: "search", raw: unknown): Record<string, unknown> {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
-  const input = raw as Record<string, unknown>;
-  const properties = toolDefinitions.find(t => t.name === name)!.parameters.properties as object;
-  if (Object.keys(input).some(k => !(k in properties))) throw new Error("unexpected parameter");
-  if (input.query !== undefined && input.queries !== undefined) throw new Error("query and queries are exclusive");
-  if (input.queries !== undefined) {
-    if (!Array.isArray(input.queries) || !input.queries.length || input.queries.some(q => typeof q !== "string")) throw new Error("queries must be a non-empty array of strings");
-  } else if (typeof input.query !== "string") throw new Error("query must be a string");
-  validateBudgets(input as ListingOptions);
-  if (input.category !== undefined && input.layer !== undefined && input.layer !== "knowledge")
-    throw new Error("category filter requires layer knowledge");
-  return input;
-}
-
 /** The model-facing result format, read back. A tool result is a refusal when it is a `rejected:`
  * receipt, and a writer's JSON `results` array carries one result per call — both
  * spellings are produced in this file. Every consumer that must classify a result rather than show it (either Pi
@@ -139,7 +116,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   dreaming?: { path: KnowledgePath; check(): string; /** 59: why a commit may not be skipped, or undefined when it is a supplied untouched handle. */ skippable(commit: number): string | undefined },
   exposedNames: ToolNames = canonicalToolNames) {
   const names = validateToolNames(supplied.toolNames ?? exposedNames);
-  const context = structuredClone(supplied);
+  const { spill, ...cloneable } = supplied; // a function cannot be cloned; the rest is frozen against later mutation
+  const context = structuredClone(cloneable) as ToolContext;
   const session = store.getSession(context.sessionId);
   if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
   const allowed = new Set<number>();
@@ -307,17 +285,16 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     if (result!.startsWith("rejected: ")) throw new Error(result!.slice("rejected: ".length));
     return receipt;
   };
-  const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ ...definitions.find(t => t.name === name)!,
+  const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string | Promise<string>): ToolDefinition => ({ ...definitions.find(t => t.name === name)!,
     execute: (raw) => {
       if (closed) return "rejected: run has finished";
       const priorFailure = memory.failure;
-      let result: string;
+      let result: string | Promise<string>;
       try {
         if ((name === "note" || name === "memory") && !store.enabled(session.id)) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
         if (name === "note" && committed) result = "rejected: already committed";
         else {
           if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
-          if (name === "search") validateReadInput(name, raw);
           result = execute(raw as Record<string, unknown>);
         }
         toolProblems.delete(name);
@@ -326,6 +303,10 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
           : `rejected: ${error instanceof Error ? error.message : String(error)}`;
         if (dreaming || (held && (name === "note" || name === "memory"))) toolProblems.set(name, result);
         if (name === "note" && !committed) problems = [result]; }
+      if (typeof result !== "string") {
+        const input = structuredClone(raw), settle = (text: string) => { sequence.push({ name, input, result: text }); return text; };
+        return result.then(settle, error => settle(`rejected: ${error instanceof Error ? error.message : String(error)}`));
+      }
       if (held && (name === "note" || name === "memory")) {
         const status = held.status(toolProblems);
         // Preserve the existing structured receipt and plain rejection forms. Evaluate after
@@ -336,13 +317,12 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         ...(name === "memory" && memory.failure && memory.failure !== priorFailure ? { problems: memory.failure.problems } : {}) });
       if (context.kind === "manual" && (name === "note" || name === "memory") && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });
       return result;
-    } });
+    } }) as ToolDefinition;
   const tools = [
-    definition("search", (input) => {
-      const query = input.queries ?? input.query;
-      if (typeof query !== "string" && !Array.isArray(query)) throw new Error("query must be a string");
-      return read.search(query as string | string[], input.layer as SearchScope | undefined, { ...input as ListingOptions, modelFacing: true, toolNames: names, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch,
-        ...(context.maxReadChars === undefined ? {} : { maxChars: context.maxReadChars }) });
+    definition("search", input => {
+      const { query, layer, options } = validateSearchInput(input);
+      return read.search(query, layer, { ...options, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch,
+        ...(spill ? { spill } : {}) });
     }),
     ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error(`${names.check} expects {} only`); return dreaming.check(); })] : [definition("note", note)]),
     definition("memory", input => held ? held.memory(input) : dreamer ? dreamer.call(input, dream, () => {})

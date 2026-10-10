@@ -40,6 +40,9 @@ try {
   assert.equal(facts.length, 1);
   assert.equal(facts[0]!.text, "用 pnpm，不要 npm");
   assert.ok(h.memory.store.sourcePath(1, "main", 1).every(e => h.memory.store.entryNoted(e.id)));
+  // 136: the registered search tool runs code in the QuickJS sandbox, loaded here from the package (or checkout) that holds the extension.
+  const scripted = await h.tools.get("search").execute("smoke-search", { layer: "facts", code: "text(hits.map(h => h.title).join())" }, undefined, undefined, h.ctx);
+  assert.match(scripted.content[0].text, /^Script completed\nWall time [\d.]+ seconds\nOutput:\n.+/);
   // 24b: the shipped command surface, through the same entry (the package smoke runs the installed one).
   const trace = (args: string) => h.commands.get("trace").handler(args, h.ctx);
   const requestsBeforePanel = h.requests.length;
