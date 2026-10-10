@@ -39,6 +39,19 @@ export const quickjsLoader = {
     });
   },
 };
+// Ticket 136: the sandbox runs in a worker thread, and a bundle has no files beside it to start one from.
+// The worker (code-worker.mjs with the QuickJS library) is bundled here to one script and rides inside the
+// bundle as text, which the replaced `code-thread.ts` starts with `eval: true`.
+export const codeWorkerLoader = {
+  name: "trace-memory-code-worker",
+  setup(plugin) {
+    plugin.onLoad({ filter: /src\/core\/api\/code-thread\.ts$/ }, async () => {
+      const worker = await build({ entryPoints: [resolve(root, "src/core/api/code-worker.mjs")], bundle: true, write: false,
+        platform: "node", format: "cjs", target: "node24", minify: true, legalComments: "none" });
+      return { contents: `import { Worker } from "node:worker_threads";\nconst SOURCE = ${JSON.stringify(worker.outputFiles[0].text)};\nexport function startCodeWorker(workerData, transferList) { return new Worker(SOURCE, { eval: true, workerData, transferList }); }\n`, loader: "ts" };
+    });
+  },
+};
 const runtimeBoundary = `
 const [__ccMajor, __ccMinor] = process.versions.node.split(".").map(Number);
 if (__ccMajor < 24 || (__ccMajor === 24 && __ccMinor < 6)) {
@@ -57,7 +70,7 @@ try {
     target: "node24",
     sourcemap: false,
     legalComments: "none",
-    plugins: [promptLoader, quickjsLoader],
+    plugins: [promptLoader, quickjsLoader, codeWorkerLoader],
     // jsonc-parser's default UMD entry loads its own modules through a runtime `require`, which the
     // bundle cannot follow; its ESM entry bundles whole.
     alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },

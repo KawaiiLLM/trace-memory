@@ -80,6 +80,29 @@ test("an infinite loop is killed at the 10 s deadline and reported as failed", a
   expect(elapsed).toBeLessThan(15_000);
 }, 30_000);
 
+test("the host's event loop keeps running while a script spins until its deadline", async () => {
+  // The sandbox is a worker thread: a script that never yields must not stop a host timer (the host's own UI, heartbeat or other tool calls).
+  const gaps: number[] = [];
+  let last = performance.now();
+  const timer = setInterval(() => { const now = performance.now(); gaps.push(now - last); last = now; }, 10);
+  try {
+    const out = await runCode("for (;;) {}", { items: [], field: () => null, render: () => "" }, { deadlineMs: 1_500 });
+    expect(out.error).toContain("timed out");
+  } finally { clearInterval(timer); }
+  expect(gaps.length).toBeGreaterThan(60); // about 150 ticks in 1.5 s
+  expect(Math.max(...gaps)).toBeLessThan(300); // an in-process loop would show one gap of about 1,500 ms
+});
+
+test("the engine stack is Pi's 512 KiB: recursion goes about twice as deep as with 256 KiB, then throws", async () => {
+  const out = await runCode("let depth = 0; function f() { depth++; f(); } try { f(); } catch (e) { return e.name + ' ' + depth; }", { items: [], field: () => null, render: () => "" });
+  const [name, depth] = out.items[0]!.text.split(" ");
+  expect(name).toBe("RangeError");
+  expect(Number(depth)).toBeGreaterThan(1_500); // about 1,100 at 256 KiB, about 2,200 at 512 KiB
+  // Native recursion in a built-in ends the same way, never in a crash of the host.
+  const deep = await runCode("let a = []; for (let i = 0; i < 100000; i++) a = [a]; try { return JSON.stringify(a).length; } catch (e) { return e.name; }", { items: [], field: () => null, render: () => "" });
+  expect(deep.error ?? deep.items[0]!.text).toMatch(/RangeError|call stack/);
+});
+
 test("the deadline also ends loops a try/catch, a regex or an async chain would hide", async () => {
   const limits = { deadlineMs: 400 };
   for (const code of ["for (;;) { try { for (;;) {} } catch (e) {} }", "/(a+)+$/.test('a'.repeat(80) + 'b')",

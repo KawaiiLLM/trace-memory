@@ -962,11 +962,14 @@ snippet starts after the entry's own `[T..#E..@role]` label and role word, which
 Search never grants a knowledge write handle; read the complete `trace://K<id>` body for a tagged mutation base.
 
 `code` is the body of an async function run over the hits in a QuickJS sandbox (no Node API, file system,
-network, modules or timers; built-ins frozen; nothing kept between calls). It sees `hits`, `text()`,
+network, modules or timers; built-ins frozen; nothing kept between calls). The sandbox is a worker thread (as
+Pi's codemode runs it), so a script that spins never blocks the host's event loop: the hits' metadata is sent
+to it as JSON, and a Raw entry's `text` and `matchLines` stay on the host until the script reads them, when the
+worker asks for them and waits for the answer. The engine stack is Pi's 512 KiB. It sees `hits`, `text()`,
 `console.log()`, a top-level `return`, `exit()` and `render(hit)` (the hit's default line). The result starts
 with `Script completed` or `Script failed` and the wall time; text items are numbered when there are several,
 console lines come in one block, and a failure keeps its partial output before `Script error:`. A script is
-killed after 10 s or at 256 MB; output is capped at 10,000 estimated tokens, keeping its start and end, with the
+ended at 10 s (the engine is interrupted, and the worker terminated if it does not stop) or at 256 MB; output is capped at 10,000 estimated tokens, keeping its start and end, with the
 full text written to a file where the host has one. A search without `code` is capped the same way. Raw
 `text` and `matchLines` (1-based, numbered as a Read of the hit's address) load on first access.
 

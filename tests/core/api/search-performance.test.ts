@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
+import { searchFacade } from "../../../src/core/api/search.ts";
 import { CODE_DEADLINE_MS } from "../../../src/core/api/code.ts";
 import { countHydratedRows, generate, type Fixture } from "../../perf/fixture.ts";
 
@@ -38,7 +39,7 @@ test("code over every Raw entry of a project-sized store finishes well inside th
   expect(Number(hits)).toBeGreaterThan(5_000);
   expect(ms).toBeLessThan(CODE_DEADLINE_MS / 2);
   expect(process.memoryUsage().rss - before).toBeLessThan(900 * 1024 * 1024);
-});
+}, 30_000);
 
 test("a search with no query lists the newest entries cheaply and counts the whole project through code", async () => {
   const hydrated = countHydratedRows();
@@ -51,4 +52,11 @@ test("a search with no query lists the newest entries cheaply and counts the who
   const whole = await timed(() => memory.search(undefined, "raw", { ...scope(), code: "text(hits.length)" }));
   expect(Number((whole.value as string).split("Output:\n")[1])).toBeGreaterThanOrEqual(fixture.entryCount);
   expect(whole.ms).toBeLessThan(CODE_DEADLINE_MS / 2);
-});
+  // Text is fetched on access: counting every hit renders no body, reading one hit renders that one.
+  let rendered = 0;
+  const counting = searchFacade(memory.store, result => { rendered++; return { text: result }; });
+  expect(Number((await counting(undefined, "raw", { ...scope(), code: "text(hits.length)" }) as string).split("Output:\n")[1])).toBeGreaterThanOrEqual(fixture.entryCount);
+  expect(rendered).toBe(0);
+  expect(await counting(undefined, "raw", { ...scope(), code: "return hits[0].text.length > 0" })).toMatch(/Output:\ntrue$/);
+  expect(rendered).toBeLessThanOrEqual(1); // the newest entry's one tool result, if it has one
+}, 30_000);
