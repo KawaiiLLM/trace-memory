@@ -2,6 +2,9 @@
 import { buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type SettingsRowId, type TraceMenuInput, type SettingsInput } from "../../src/hosts/trace-menu.ts";
 import { renderTraceMenu, renderTraceMenuText, renderTraceSettings, type CcContextBreakdown, type CcMemorySplit } from "../../src/hosts/cc/trace-menu-render.ts";
 import { MEMORY_READ_ONLY, memoryPath } from "../../src/core/model/address.ts";
+import { retrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
+import { ccPluginToolNames } from "../../src/hosts/cc/tool-names.ts";
+import { sessionEnabled } from "../../src/hosts/cc/session-enabled.ts";
 
 type Reply = { menu: TraceMenuInput; settings: SettingsInput; models: string[]; context: { presence: "confirmed" | "unavailable"; estimatedMessagesTokens?: number; memory?: CcMemorySplit }; runs: { id: number; phase: string; status: string; cost: number | null; partial: boolean; at: string }[] };
 type Screen = "main" | "settings" | "runs" | "project" | "confirm" | "edit" | "model-other";
@@ -86,6 +89,18 @@ async function memoryFiles($: any, args: string[]): Promise<any> {
   if (run.exitCode !== 0) throw new Error(String(run.stderr || `exit ${run.exitCode}`).replace(/^Trace Memory CC: /, "").trim());
   return JSON.parse(run.stdout);
 }
+// 137: whether this session's memory is on, by the rule injection uses (sessionEnabled) over what is already on
+// disk: the binding, and for a session with a core session the status file its executor publishes (the status
+// line's source, which holds the Store's answer). Up to three small file reads, no process; any failure is off.
+async function memoryOn($: any): Promise<boolean> {
+  try {
+    const { stateDir } = JSON.parse(await $.fs.read(`${$.plugin.root}/cc.config.json`));
+    const session = await $.session.id();
+    const binding = JSON.parse(await $.fs.read(`${stateDir}/bindings/${session}.json`));
+    const status = binding.coreSessionId === null ? null : JSON.parse(await $.fs.read(`${stateDir}/status/${session}.json`));
+    return sessionEnabled(binding, { enabled: () => status?.enabled === true });
+  } catch { return false; }
+}
 const failure = (error: unknown) => ({ deny: error instanceof Error ? error.message : String(error) });
 async function forkEvent($: any, session: string, verb: string, detail: Record<string, unknown>): Promise<boolean> {
   const result = await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-fork", "--config", `${$.plugin.root}/cc.config.json`],
@@ -166,6 +181,18 @@ export const register = (on: any) => {
   on("tool.call", { tool: "Write" }, ($: any, e: any, next: any) => memoryPath(e.file_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
   on("tool.call", { tool: "NotebookEdit" }, ($: any, e: any, next: any) => memoryPath(e.notebook_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
 
+  // 137: the retrieval policy is a section of the real system prompt. Claude Code records the rendered prompt
+  // as a snapshot and re-renders only at a new session, /compact and /clear, so the state read here is the
+  // state at those points. A fork reuses its parent's prompt, a non-fork subagent builds its own and a worker
+  // with its own prompt never composes. Any failure sends the prompt as Claude Code composed it.
+  on("prompt.compose", async ($: any, e: any, next: any) => {
+    const composed = await next(e);
+    try {
+      if (unavailable || !await memoryOn($)) return composed;
+      return { ...composed, sections: [...composed.sections,
+        { id: "trace-memory-retrieval", text: retrievalPolicy(ccPluginToolNames), scope: "session" }] };
+    } catch { return composed; }
+  });
   on("session.compact", async ($: any, e: any, next: any) => {
     // A plugin's or a precomputed compaction, and a subagent's or fork's own, stay Claude Code's.
     if (e.trigger === "precompute" || e.trigger === "plugin" || e.agentId) return next(e);

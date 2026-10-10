@@ -406,6 +406,54 @@ function memoryPath(value) {
   return MEMORY_ROOT + value.slice(MEMORY_ROOT.length).split("/").filter(Boolean).join("/");
 }
 
+// src/core/prompts/tool-names.ts
+var TOOL_ROLES = ["search", "note", "memory", "check"];
+var canonicalToolNames = { search: "search", note: "note", memory: "memory", check: "check", read: "read", grep: "grep" };
+var NAME_ROLES = [...TOOL_ROLES, "read"];
+function validateToolNames(names) {
+  const roles = names?.grep === void 0 ? NAME_ROLES : [...NAME_ROLES, "grep"];
+  if (!names || roles.some((role) => typeof names[role] !== "string" || !/^[a-zA-Z][\w-]*$/.test(names[role])))
+    throw new Error("Missing or invalid exposed tool name for worker launch");
+  if (new Set(roles.map((role) => names[role])).size !== roles.length)
+    throw new Error("Worker exposed tool names must be distinct");
+  return Object.freeze({ ...names });
+}
+function renderToolNames(text, names) {
+  return text.replace(/\{\{tool\.(search|note|memory|check|read|grep)\}\}/g, (_, role) => {
+    const name = names[role];
+    if (name === void 0) throw new Error(`Missing exposed tool name: ${role}`);
+    return name;
+  });
+}
+
+// src/core/render/retrieval-policy.ts
+var RETRIEVAL_POLICY = `When to look up memory: only when the answer would change your next step. Do not open every listed address.
+- Before asking the user something that may already be recorded.
+- When the user refers to earlier work, or something seems familiar, that is not in view.
+- When a knowledge item or fact title bears on a decision but is too compressed to act on: read its supporting facts, then the raw entries they cite.
+- When you need exact wording, values, paths, commands, errors or commits behind a remembered claim, or the user asks why you believe it.
+- Before stating what the user decided: follow the supports down to the user's own words.
+Find topics and exact strings with {{tool.search}}; pass code to filter its hits.
+Memory is a past record: open items may be stale, and current files, tool output and the user's latest message win when they conflict.`;
+function retrievalPolicy(names) {
+  return renderToolNames(RETRIEVAL_POLICY, validateToolNames(names));
+}
+
+// src/hosts/cc/tool-names.ts
+var CC_WORKER_SERVER_NAME = "trace_memory";
+var CC_PLUGIN_NAME = "trace-memory";
+var CC_MCP_SERVER_NAME = "traceMemory";
+var exposed = (prefix) => ({ ...Object.fromEntries(
+  TOOL_ROLES.map((role) => [role, `${prefix}${canonicalToolNames[role]}`])
+), read: "Read" });
+var ccWorkerToolNames = exposed(`mcp__${CC_WORKER_SERVER_NAME}__`);
+var ccPluginToolNames = exposed(`mcp__plugin_${CC_PLUGIN_NAME}_${CC_MCP_SERVER_NAME}__`);
+
+// src/hosts/cc/session-enabled.ts
+function sessionEnabled(binding, store) {
+  return binding.coreSessionId === null ? binding.enrollment.choice ?? binding.enrollment.defaultEnabled : store.enabled(binding.coreSessionId);
+}
+
 // plugin/hooks/index.tsx
 var screen = "main";
 var reply;
@@ -494,6 +542,17 @@ async function memoryFiles($, args) {
   const run = await $.process.run(["node", `${root}/dist/cc.cjs`, "fs", "--config", `${root}/cc.config.json`, "--session", session, ...args]);
   if (run.exitCode !== 0) throw new Error(String(run.stderr || `exit ${run.exitCode}`).replace(/^Trace Memory CC: /, "").trim());
   return JSON.parse(run.stdout);
+}
+async function memoryOn($) {
+  try {
+    const { stateDir } = JSON.parse(await $.fs.read(`${$.plugin.root}/cc.config.json`));
+    const session = await $.session.id();
+    const binding = JSON.parse(await $.fs.read(`${stateDir}/bindings/${session}.json`));
+    const status = binding.coreSessionId === null ? null : JSON.parse(await $.fs.read(`${stateDir}/status/${session}.json`));
+    return sessionEnabled(binding, { enabled: () => status?.enabled === true });
+  } catch {
+    return false;
+  }
 }
 var failure = (error) => ({ deny: error instanceof Error ? error.message : String(error) });
 async function forkEvent($, session, verb, detail) {
@@ -592,6 +651,18 @@ export const register = (on) => {
   on("tool.call", { tool: "Edit" }, ($, e, next) => memoryPath(e.file_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
   on("tool.call", { tool: "Write" }, ($, e, next) => memoryPath(e.file_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
   on("tool.call", { tool: "NotebookEdit" }, ($, e, next) => memoryPath(e.notebook_path) === null ? next(e) : { deny: MEMORY_READ_ONLY });
+  on("prompt.compose", async ($, e, next) => {
+    const composed = await next(e);
+    try {
+      if (unavailable || !await memoryOn($)) return composed;
+      return { ...composed, sections: [
+        ...composed.sections,
+        { id: "trace-memory-retrieval", text: retrievalPolicy(ccPluginToolNames), scope: "session" }
+      ] };
+    } catch {
+      return composed;
+    }
+  });
   on("session.compact", async ($, e, next) => {
     if (e.trigger === "precompute" || e.trigger === "plugin" || e.agentId) return next(e);
     let session;

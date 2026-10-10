@@ -16,13 +16,7 @@ export interface CcHookInput {
   cwd?: string;
 }
 
-/** Whether memory is on for this native session. The binding's enrollment is the record only while
- * no core session exists (a provisional session); once one does, the Store's enrollment decides —
- * automatic off (executions.ts) changes it there and never touches the binding. */
-export function sessionEnabled(binding: Pick<CcSessionBinding, "coreSessionId" | "enrollment">, store: Pick<Store, "enabled">): boolean {
-  return binding.coreSessionId === null ? binding.enrollment.choice ?? binding.enrollment.defaultEnabled
-    : store.enabled(binding.coreSessionId);
-}
+export { sessionEnabled } from "./session-enabled.ts";
 
 export interface CcExecutorBinding {
   executorId: string;

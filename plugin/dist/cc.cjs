@@ -11001,10 +11001,12 @@ ${record3.at}`;
   } };
 }
 
-// src/hosts/cc/binding.ts
+// src/hosts/cc/session-enabled.ts
 function sessionEnabled(binding, store) {
   return binding.coreSessionId === null ? binding.enrollment.choice ?? binding.enrollment.defaultEnabled : store.enabled(binding.coreSessionId);
 }
+
+// src/hosts/cc/binding.ts
 var coreHostOf = (binding) => binding.coreHost ?? `cc:${validateNativeSessionId(binding.nativeSessionId)}`;
 var NATIVE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 var wait = (milliseconds, signal) => new Promise((resolve5, reject) => {
@@ -47595,9 +47597,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
       if (request2.method === "initialize") reply(request2.id, {
         protocolVersion: request2.params?.protocolVersion ?? "2025-11-25",
         capabilities: { tools: {} },
-        serverInfo: { name: "trace-memory", version: "0.1.0-beta.7" },
-        // 137: Claude Code puts a plugin server's instructions in the main session's system prompt, once.
-        instructions: retrievalPolicy(ccPluginToolNames)
+        serverInfo: { name: "trace-memory", version: "0.1.0-beta.7" }
       });
       else if (request2.method === "tools/list") reply(request2.id, { tools: foreground.list() });
       else if (request2.method === "tools/call") {

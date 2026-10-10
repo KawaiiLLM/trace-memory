@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createConnection } from "node:net";
 import { TraceMemory, noVisibility } from "../../src/core/api/index.ts";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
-import { retrievalPolicy, withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
+import { withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, readBinding, recordSessionStart, updateBinding, withCcBindingLock, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
@@ -1304,8 +1304,9 @@ test("stdio MCP stays protocol-clean and only prompt_input_exit confirms close a
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25" } })}\n`);
   for (let i = 0; i < 100 && !stdout.includes('"id":1'); i++) await sleep(5);
   expect(stdout).toContain('"name":"trace-memory"');
-  // 137: the main session's system prompt carries the retrieval policy once, as the plugin server's instructions.
-  expect(JSON.parse(stdout.split("\n")[0]!).result.instructions).toBe(retrievalPolicy(ccPluginToolNames));
+  // 137: the retrieval policy reaches the main session through the prompt.compose hook; Claude Code does not put
+  // an MCP server's instructions in the system prompt (it sends them as a message it may drop at /compact).
+  expect(JSON.parse(stdout.split("\n")[0]!).result).not.toHaveProperty("instructions");
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
   for (let i = 0; i < 100 && !readBinding(f.config, f.nativeSessionId)?.selectedLeafUuid; i++) await sleep(5);
   expect(readBinding(f.config, f.nativeSessionId)).toMatchObject({ executor: { pid: child.pid }, selectedLeafUuid: "a1" });

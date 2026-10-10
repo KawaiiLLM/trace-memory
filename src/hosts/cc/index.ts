@@ -19,8 +19,6 @@ import type { CcContextSnapshot } from "./menu-context.ts";
 import { editedCcConfig, saveCcConfig, type CcSettingId } from "./menu-config.ts";
 import { executorSettings, executorSnapshot, requestCcForkSources, requestCcForkWarnings, signalCcForkEvent, signalCcTurnEnd, waitCcForkCommand } from "./control.ts";
 import { runCcFiles } from "./files.ts";
-import { ccPluginToolNames } from "./tool-names.ts";
-import { retrievalPolicy } from "../../core/api/index.ts";
 import { Store } from "../../core/store/index.ts";
 import { parseRunsCount } from "../trace-menu.ts";
 
@@ -126,8 +124,6 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
       if (request.method === "initialize") reply(request.id, {
         protocolVersion: (request.params as { protocolVersion?: string } | undefined)?.protocolVersion ?? "2025-11-25",
         capabilities: { tools: {} }, serverInfo: { name: "trace-memory", version: "0.1.0-beta.7" },
-        // 137: Claude Code puts a plugin server's instructions in the main session's system prompt, once.
-        instructions: retrievalPolicy(ccPluginToolNames),
       });
       else if (request.method === "tools/list") reply(request.id, { tools: foreground.list() });
       else if (request.method === "tools/call") {
