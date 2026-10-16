@@ -48,6 +48,9 @@ export class CcTaskScheduler {
   /** A selected-path or enrollment transition fences in-flight admission and the manual drain. */
   private lastReady = false;
   private lastBranch?: string;
+  private dreamingArmed = true;
+  private lastArmSignal?: string;
+  private lastEntryOpportunity?: number;
 
   constructor(memory: TraceMemory, worker: ResolvedCcWorkerConfig | undefined,
     diagnostic: (message: string) => void, notify: (reason: string) => void = () => {}) {
@@ -63,7 +66,8 @@ export class CcTaskScheduler {
   }
 
   /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
-  reconcile(reconcile: CcReconcileResult): void {
+  reconcile(reconcile: CcReconcileResult, admitAutomatic = true, opportunityEpoch = this.cancellationEpoch): void {
+    const entryEpoch = this.cancellationEpoch;
     const drain = this.catchup;
     if (drain && (drain.state === "running" || drain.state === "waiting")) {
       const pathChanged = reconcile.coreSessionId !== null &&
@@ -76,9 +80,26 @@ export class CcTaskScheduler {
     const ready = reconcile.state === "ready" && reconcile.coreSessionId !== null && reconcile.headTurnId !== null && reconcile.selectedCount > 0;
     // A selected-path change or transition out of ready invalidates a queued checkpoint.
     if (this.lastReady && (!ready || reconcile.branch !== this.lastBranch)) this.cancellationEpoch++;
-    if (ready) this.lastBranch = reconcile.branch;
+    if (ready) {
+      if (!this.lastReady || reconcile.branch !== this.lastBranch) this.dreamingArmed = true;
+      this.lastBranch = reconcile.branch;
+    }
     this.lastReady = ready;
-    if (ready) this.driveCatchup(false);
+    if (!ready) return;
+    if (admitAutomatic && opportunityEpoch === entryEpoch && !reconcile.bootstrap) {
+      for (const entryId of reconcile.selectedAppendedEntryIds) {
+        const entry = this.memory.store.getSourceEntry(entryId);
+        if (!entry) throw new Error(`CC appended entry ${entryId} disappeared before scheduling`);
+        const target = { sessionId: reconcile.coreSessionId!, branch: reconcile.branch,
+          headTurnId: entry.turnId, triggerEntryId: entryId };
+        this.lastEntryOpportunity = entryId;
+        const fork = this.memory.config.noting.forkModeDefault
+          ? { refused: "CC native fork checkpoint is unavailable at entry end" } : undefined;
+        this.startAutomatic("noting", target, fork, undefined, false);
+        this.startAutomatic("dreaming", target, undefined, undefined, false);
+      }
+    }
+    this.driveCatchup(false);
   }
 
   catchupTicket(): number { return this.cancellationEpoch; }
@@ -151,15 +172,27 @@ export class CcTaskScheduler {
     return { state: "failed", entriesDone: 0, entriesTotal: 0, diagnostic };
   }
 
-  /** One ordinary phase evaluation at the main-turn checkpoint. */
+  /** Entries check own work; closed-session borrowing keeps its turn-end cadence. */
   private startAutomatic(phase: CcWorkerPhase, own: TaskTarget, fork?: CcForkChoice,
-    noLaunch?: () => void): void {
+    noLaunch?: () => void, includeBorrowed = true, evaluateOwn = true): void {
     if (this.slots.has(phase) || this.stopped) { noLaunch?.(); return; }
     let due = false;
-    try { due = this.memory.taskEligibility(phase, own).due; }
-    catch (error) { this.diagnostic(`${phase} eligibility failed: ${error instanceof Error ? error.message : String(error)}`); noLaunch?.(); return; }
+    try {
+      if (phase === "dreaming" && evaluateOwn) {
+        const signal = this.memory.store.progressSignal(own.sessionId);
+        if (signal !== this.lastArmSignal) { this.lastArmSignal = signal; this.dreamingArmed = true; }
+        evaluateOwn = this.dreamingArmed;
+      }
+      if (evaluateOwn) {
+        due = this.memory.taskEligibility(phase, own).due;
+        if (phase === "dreaming") this.dreamingArmed = due;
+      }
+    } catch (error) {
+      this.diagnostic(`${phase} eligibility failed: ${error instanceof Error ? error.message : String(error)}`);
+      noLaunch?.(); return;
+    }
     const candidates = due ? [{ ...own, borrowed: false }] : [];
-    if (phase !== "dreaming") {
+    if (phase !== "dreaming" && includeBorrowed) {
       try { candidates.push(...this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope)
         .map(target => ({ ...target, borrowed: true }))); }
       catch (error) { this.diagnostic(`${phase} closed-session scan failed: ${error instanceof Error ? error.message : String(error)}`); }
@@ -185,7 +218,8 @@ export class CcTaskScheduler {
         noLaunch?.();
         continue;
       }
-      this.startAutomatic(phase, target, phase === "noting" ? fork : undefined, phase === "noting" ? noLaunch : undefined);
+      this.startAutomatic(phase, target, phase === "noting" ? fork : undefined, phase === "noting" ? noLaunch : undefined,
+        true, this.lastEntryOpportunity !== target.triggerEntryId);
     }
   }
 

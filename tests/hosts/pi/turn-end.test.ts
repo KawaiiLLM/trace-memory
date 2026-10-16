@@ -7,6 +7,7 @@ import extension from "../../../src/hosts/pi/index.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { entry, session } from "../../support/seed.ts";
 
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
@@ -15,36 +16,39 @@ function host(...args: Parameters<typeof createHost>) {
 }
 function seedKnowledge(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-  expect(tools.find(t => t.name === "note")!.execute({ title: "Package choice", sources: "[T1#E1] Use pnpm" })).toContain("ok: F1");
+  const receipt = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "Package choice", sources: "[T1#E1] Use pnpm" }));
+  expect(receipt.factIds).toHaveLength(1);
   expect(tools.find(t => t.name === "memory")!.execute({ op: "create", text: "Use pnpm", category: "constraint",
-    scope: "session", supports: ["F1"], topics: [], reason: "Rule" })).not.toContain("rejected:");
+    scope: "session", supports: [`F${receipt.factIds[0]}`], topics: [], reason: "Rule" })).not.toContain("rejected:");
 }
 const skip = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "m1", name: "memory",
   arguments: { skip: "K1@v1", because: "Reviewed unchanged" } }] });
 
-test("a tool-heavy main turn launches neither phase until its final settlement", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, "dreaming.triggerTokens": 1 });
-  h.provider(async c => c.systemPrompt?.startsWith("# Dreamer") ? skip() : notingFact(c));
-  await h.prompt();
-  await h.emit("message_end", { message: { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "true" } }] } });
-  await h.emit("tool_result", { toolCallId: "c1", toolName: "bash", content: [{ type: "text", text: "ok" }] });
-  await h.emit("agent_end"); // intermediate loop: retry/compaction may continue
-  expect(h.requests).toHaveLength(0);
-  await h.emit("message_end", { message: reply("Done.") });
-  await h.emit("agent_end");
-  seedKnowledge(h);
-  expect(h.requests).toHaveLength(0);
-  await h.emit("before_provider_request", { payload: { messages: [] } });
-  expect(h.requests).toHaveLength(0);
-  await h.emit("agent_settled"); await h.drain();
-  const runs = h.memory.store.listRuns(1);
-  expect(runs.filter(r => r.kind === "noting")).toHaveLength(1);
-  expect(runs.filter(r => r.kind === "dreaming")).toHaveLength(1);
+test("a tool-heavy turn admits Noting at its first due entry and Dreaming after a knowledge commit", async () => {
+  const h = host({ "noting.triggerTokens": 300, "noting.forkModeDefault": false, "dreaming.triggerTokens": 1 });
+  h.provider(async c => {
+    if (c.systemPrompt?.startsWith("# Dreamer")) return skip();
+    const response = notingFact(c);
+    for (const block of response.content) if (block.type === "toolCall" && block.name === "memory") {
+      block.arguments = { op: "create", text: "Use pnpm", category: "constraint", scope: "session",
+        supports: ["$1"], topics: [], reason: "Package choice" };
+    }
+    return response;
+  });
+  await h.prompt("short");
+  await h.emit("message_end", { message: reply("short") });
+  await h.emit("tool_execution_start");
   await h.drain();
-  expect(h.memory.store.listRuns(1)).toHaveLength(runs.length);
+  expect(h.requests).toHaveLength(0);
+  h.persist(reply("word ".repeat(400)));
+  await h.emit("tool_execution_start"); await h.drain();
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);
+  h.persist(reply("next entry"));
+  await h.emit("tool_execution_start"); await h.drain();
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success"]);
 });
 
-test("busy phase is skipped; successful publication does not chain until a later turn", async () => {
+test("busy entries queue nothing; the next entry after publication admits the next batch", async () => {
   const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, "dreaming.triggerTokens": 1e9 });
   let release!: (value: Reply) => void;
   let first = true;
@@ -62,11 +66,11 @@ test("busy phase is skipped; successful publication does not chain until a later
   expect(h.memory.store.pendingEntryIds(1, "main", 2).length).toBeGreaterThan(0);
   await h.emit("agent_settled"); await h.drain(); // duplicate terminal signal is not a new turn
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1);
-  await h.prompt("new main turn"); await h.answer(); await h.drain();
+  h.persist(reply("next entry in the same turn")); await h.emit("tool_execution_start"); await h.drain();
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(2);
 });
 
-test("failed Noting waits for a later main turn before retry", async () => {
+test("failed Noting retries at later entry ends and disables memory after three failures", async () => {
   const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
   h.provider(async () => reply("Incomplete Noter."));
   await h.prompt("word ".repeat(400)); await h.answer(); await h.drain();
@@ -74,61 +78,49 @@ test("failed Noting waits for a later main turn before retry", async () => {
   const count = h.requests.length;
   await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(count);
-  await h.prompt("next turn"); await h.answer(); await h.drain();
+  h.persist(reply("next entry")); await h.emit("tool_execution_start"); await h.drain();
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["failure", "failure"]);
+  h.persist(reply("third entry")); await h.emit("tool_execution_start"); await h.drain();
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["failure", "failure", "failure"]);
+  expect(h.memory.store.enabled(1)).toBe(false);
 });
 
-test.each(["aborted", "error"] as const)("%s main turn checks at its final settlement", async outcome => {
+test.each(["aborted", "error"] as const)("%s assistant entries admit without waiting for settlement", async outcome => {
   const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
   await h.prompt("word ".repeat(400));
   await h.emit("message_end", { message: { ...reply("partial"), stopReason: outcome } });
-  await h.emit("agent_end");
-  expect(h.requests).toHaveLength(0);
-  await h.emit("agent_settled"); await h.drain();
+  await h.emit("agent_end"); await h.drain();
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1);
 });
 
-test("stop after an empty own candidate must not admit a stale borrowed candidate", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
-  let closedTasks: ReturnType<typeof vi.spyOn> | undefined;
-  let pendingEntries: ReturnType<typeof vi.spyOn> | undefined;
+test("stop after an empty borrowed candidate fences the next borrowed launch", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "noting.forkModeDefault": false });
+  await h.prompt(); await h.emit("message_end", { message: reply("Done.") });
+  await h.emit("agent_end"); await h.drain();
+  const store = h.memory.store;
+  const targets = ["empty", "pending"].map(name => {
+    const owner = session(store, store.getSession(1)!.projectId, name);
+    const turn = store.appendTurn({ sessionId: owner.id, kind: "turn", startedAt: "2026-09-29", userPrompt: name });
+    const source = entry(store, owner.id, turn.id, name, "user");
+    h.memory.selectEntries(owner.id, "main", [source.id]); store.closeSession(owner.id);
+    return { owner, turn, source };
+  });
+  const original = Store.prototype.closedTasks;
+  const closedTasks = vi.spyOn(Store.prototype, "closedTasks").mockImplementation(function (this: Store, ...args) {
+    const candidates = original.apply(this, args);
+    const first = targets[0]!;
+    expect(store.commitNotingRun({ run: { kind: "noting", sessionId: first.owner.id, branch: "main", createdAt: "2026-09-29" },
+      facts: [], entryIds: [first.source.id] }).ok).toBe(true);
+    queueMicrotask(() => { void h.commands.get("trace")!.handler("stop", h.ctx); });
+    return candidates;
+  });
   try {
-    await h.prompt("word ".repeat(400));
-    await h.emit("message_end", { message: reply("Done.") });
-    const store = h.memory.store;
-    const target = store.createSession({ host: "closed-target", projectId: store.getSession(1)!.projectId,
-      startedAt: "2026-09-29", firstReplyAt: "2026-09-29", enrollmentChoice: true });
-    const turn = store.appendTurn({ sessionId: target.id, kind: "turn", startedAt: "2026-09-29", userPrompt: "borrowed" });
-    const source = h.memory.appendEntry({ sessionId: target.id, turnId: turn.id, nativeId: "borrowed", nativeLineage: "target",
-      role: "user", text: "borrowed", raw: "borrowed", calls: [] });
-    h.memory.selectEntries(target.id, "main", [source.id]);
-    store.closeSession(target.id);
-    const originals = { closed: Store.prototype.closedTasks, pending: Store.prototype.pendingEntries };
-    let emptied = false, stopped = false;
-    closedTasks = vi.spyOn(Store.prototype, "closedTasks").mockImplementation(function (this: Store, ...args) {
-      const candidates = originals.closed.apply(this, args);
-      if (!emptied) {
-        emptied = true;
-        const own = store.listSourceEntries(1).map(e => e.id);
-        expect(store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "2026-09-29" }, facts: [], entryIds: own }).ok).toBe(true);
-      }
-      return candidates;
-    });
-    pendingEntries = vi.spyOn(Store.prototype, "pendingEntries").mockImplementation(function (this: Store, ...args) {
-      const entries = originals.pending.apply(this, args);
-      if (emptied && args[0] === 1 && !entries.length && !stopped) {
-        stopped = true;
-        queueMicrotask(() => { void h.commands.get("trace")!.handler("stop", h.ctx); });
-      }
-      return entries;
-    });
     await h.emit("agent_settled"); await h.drain();
-    expect(emptied).toBe(true);
-    expect(stopped).toBe(true);
-    expect(store.listRuns(target.id).filter(run => run.kind === "noting"), JSON.stringify(store.listRuns(target.id))).toHaveLength(0);
-    expect(h.requests).toHaveLength(0);
-    expect(h.memory.pendingEntries(target.id, "main", turn.id)).toHaveLength(1);
-  } finally { pendingEntries?.mockRestore(); closedTasks?.mockRestore(); await h.dispose(); }
+    const pending = targets[1]!;
+    expect(store.listRuns(pending.owner.id).filter(run => run.kind === "noting")).toEqual([]);
+    expect(h.requests).toEqual([]);
+    expect(h.memory.pendingEntries(pending.owner.id, "main", pending.turn.id).map(e => e.id)).toEqual([pending.source.id]);
+  } finally { closedTasks.mockRestore(); }
 });
 
 test("installed Pi SDK settles a cancelled turn once and checks again on the next prompt", async () => {
@@ -170,12 +162,20 @@ test("installed Pi SDK settles a cancelled turn once and checks again on the nex
   } finally { f.dispose(); observer.close(); rmSync(dir, { recursive: true, force: true }); }
 }, 30_000);
 
-test("restore and ingestion alone do not launch a due Dreamer", async () => {
+test("Raw entry ends reuse a not-due Dreaming result; restore re-arms the next entry", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
-  await h.turn(); seedKnowledge(h); await h.emit("session_tree");
-  h.provider(async () => skip());
-  await h.prompt(); await h.emit("message_end", { message: reply("Done.") }); await h.emit("agent_end");
-  expect(h.requests).toHaveLength(0);
-  await h.emit("agent_settled"); await h.drain();
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming")).toHaveLength(1);
+  const due = vi.spyOn(Store.prototype, "dreamingDue");
+  try {
+    await h.turn();
+    const initial = due.mock.calls.length;
+    for (let i = 0; i < 3; i++) {
+      h.persist(reply(`entry ${i}`)); await h.emit("tool_execution_start"); await h.drain();
+    }
+    expect(due).toHaveBeenCalledTimes(initial);
+    seedKnowledge(h); await h.emit("session_tree");
+    h.provider(async () => skip());
+    expect(h.requests).toHaveLength(0);
+    h.persist(reply("next entry")); await h.emit("tool_execution_start"); await h.drain();
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success"]);
+  } finally { due.mockRestore(); }
 });

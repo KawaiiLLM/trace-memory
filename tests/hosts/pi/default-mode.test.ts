@@ -25,7 +25,7 @@ test.each(cases)("native Noter with saved $key=$value preserves user settings an
     expect(f.h.dialogs.at(-1)!.options).toContain(`${label} mode: ${expected}`);
     f.h.ctx.hasUI = false;
     f.script(body => worker(body) ? submitted(body) ? say("Done.") : noteAndMemory("n", noteBatch) : say("好的。"));
-    // Both execution modes are admitted only after the main turn settles.
+    // This fixture imports the completed parent's entries against its captured fork prefix.
     await f.turn();
     const run = await settled(f, "noting"), audit = JSON.parse(run.response!);
     expect(run.outcome, run.response ?? "").toBe("success");

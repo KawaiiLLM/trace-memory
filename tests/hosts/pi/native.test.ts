@@ -88,9 +88,9 @@ test("19a 2026-09-08: the native child's first request passes prefix verificatio
     await f.turn();
     const run = await settled(f);
     const response = JSON.parse(run.response!);
+    expect(run.mode, run.response ?? "missing run audit").toBe("fork");
     expect(response.verification.differingPath, JSON.stringify(response.verification)).toBe(null);
     expect(response.verification.passed).toBe(true);
-    expect(run.mode).toBe("fork");
     // Both hashes are recorded, and they are the hashes of the two real bodies.
     expect(response.verification.capturedHash).toBe(hash(f.sent[0]));
     expect(response.verification.requestHash).toBe(hash(f.sent[1]));

@@ -229,8 +229,8 @@ test("27b 2026-09-10: an unknown context measure is not a fork base — the task
     // The fresh material was frozen for that model, sent, and its evidence committed exactly once.
     expect(h.requests.length).toBeGreaterThan(0);
     expect(h.conversations[0]!.systemPrompt).toContain("Noting (facts and knowledge)");
-    // At the final turn checkpoint the reply is already persisted, so the batch includes it.
-    expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
+    // The final reply arrived after the entry-end admission froze its batch.
+    expect(h.memory.pendingEntries(1, "main", 1).map(entry => h.memory.store.getSourceEntry(entry.id)!.text)).toEqual(["word ".repeat(200)]);
     // No latch, no persisted mode change: the next task requests fork again.
     // Read the executor's preference, not the separate observer facade's defaults.
     h.ctx.hasUI = true;

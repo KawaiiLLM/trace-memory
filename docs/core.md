@@ -63,13 +63,13 @@ declaration still gets the "runAgent must return the exact provider request" pro
 record's response also carries `requestedMode` beside the run's actual `mode`, so a fallback is
 visible as requested-versus-actual.
 
-## Automatic scheduling (105)
+## Automatic scheduling (141)
 
-Both hosts check Noting and Dreaming once at each main turn end, admitting at most one run per phase under the existing seats and claims. Entry ingestion and ordinary run completion start no automatic check. A busy phase is skipped; turns that pass while it runs accumulate no owed runs.
+Both hosts check Noting and Dreaming after each persisted main-session user, assistant or observation entry, admitting at most one run per phase under the existing seats and claims. Subagent entries are excluded. A busy phase queues nothing; ordinary completion schedules nothing. The first entry after settlement checks afresh, so a tail left after the last entry waits for the next entry.
 
-Three consequences are **derived interpretations** of 105, not additional maintainer quotations: both due phases may start under the existing rules without a new ordering rule; a failed automatic task may retry at a later turn end; explicit manual catchup retains its existing drain and completion checkpoints. Three consecutive business failures still disable memory. Thresholds, batch limits, project-declaration checks and closed-session borrowing are unchanged.
+Noting uses the incremental pending count, stopping at its trigger. Dreaming retains a not-due result until a knowledge commit, restore, enrollment or budget change, or a change of `Store.progressSignal` re-arms it; Raw ingestion alone does not re-arm it. Failed automatic tasks retry at a later entry end; three consecutive business failures still disable memory. Explicit catchup retains its drain and completion checkpoints. Closed-session borrowing remains turn-end-driven. Thresholds, batch limits and project-declaration checks are unchanged.
 
-Fork eligibility is evaluated at that checkpoint, without an earlier reserved seat or a wait for a future hook. Core checks the inherited input plus its increment against the reported capacity. Missing inherited sources or an explicit pre-start refusal use the existing fresh runner and record the reason; a started or ambiguous fork failure is not a fresh fallback. CC accepts originals only in a compaction carrier as a fresh case; no persistent Raw/carrier association is added. Pi's existing coverage rules remain unchanged.
+A requested CC fork without a live turn-end checkpoint starts fresh immediately and records that fallback reason. The `turn.complete` fork path remains available when Noting first becomes due there; no slot waits for a future hook. Core checks inherited input plus its increment against the reported capacity. Missing inherited sources or an explicit pre-start refusal use the existing fresh runner and record the reason; a started or ambiguous fork failure is not a fresh fallback. CC accepts originals only in a compaction carrier as a fresh case; no persistent Raw/carrier association is added. Pi's existing coverage and readiness checks remain unchanged.
 
 ## Dreamer execution
 
@@ -80,7 +80,7 @@ identity without a `(pool, revision)` processing record, including archives; arc
 from pool size. Intermediate revisions do not accumulate weight. A run is due for the session (104) when its pools' total size
 exceeds the Knowledge base plus the shared allowance, or when their nonempty pending weight, summed,
 reaches `dreaming.triggerTokens`. A run covers all three pools (126); which condition made it due
-does not change what it does. Ordinary completion starts no further run; the next main turn end checks afresh.
+does not change what it does. Ordinary completion starts no further run; the next main-session entry end checks afresh.
 Explicit manual catchup retains its own completion checkpoints.
 
 Each run freezes the pending versions of all three pools together, oldest first across them, up to

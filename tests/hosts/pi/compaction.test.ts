@@ -226,6 +226,7 @@ test.each([
   try {
     await h.prompt(`${prefix} EXCLUDED_HISTORICAL_WORDS`); await h.answer(); await h.drain();
     await h.prompt("HUMAN_HISTORICAL_WORDS"); await h.answer(); await h.drain();
+    await h.commands.get("trace")!.handler("catchup", h.ctx); await h.drain();
     expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting").every(run => run.outcome === "success")).toBe(true);
     const head = h.memory.store.listTurns(1).at(-1)!.id;
     expect(h.memory.pendingEntries(1, "main", head)).toEqual([]);
@@ -257,14 +258,15 @@ test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter
     const noted = new Set((JSON.parse(lastRun(h).response!).entryAudit.entries as { id: number }[]).map(e => e.id));
     expect(noted.size).toBeGreaterThan(0);
     expect(h.memory.pendingEntries(1, "main", 1).some(e => noted.has(e.id))).toBe(false);
-    // Due work and a free slot afterwards: compact still starts nothing. Reconciling for the snapshot
-    // is a read, never an extraction trigger (17b), so no lifecycle hook becomes a memory flush.
+    // A newly persisted main entry is an entry-end opportunity, even when first observed by compact.
+    // Import it explicitly here so the compaction itself still observes an unchanged leaf.
     h.persist(reply(long("DUE")));
+    await h.emit("agent_end"); await h.drain();
     const requests = h.requests.length;
     await h.emit("session_before_compact", { preparation: { tokensBefore: 1_000 } });
     await h.drain();
     expect(h.requests).toHaveLength(requests);
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1);
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1); // The new run is still held.
     // The summary is the plugin's own message: it becomes no source entry, no fact and no receipt.
     const sources = h.memory.store.listSourceEntries(1).length;
     await h.emit("session_compact", { compactionEntry: h.compaction(block.compaction.summary), fromExtension: true });
@@ -292,7 +294,7 @@ test("20c 2026-09-08 scenario 13 (rule replaced in 29c): a persisted compaction 
     // mixed — entries the context still holds and entries it does not — and runs as subagent for all.
     const dropped = h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)[0]!;
     h.compaction();
-    await work(h, long("after"));
+    await h.prompt(long("after")); await h.answer("completed"); await h.drain();
     expect(lastRun(h).mode).toBe("subagent");
     expect(response(h).requestedMode).toBe("fork"); // the configured/requested mode is preserved
     // 29c: the reason names the first entry of the batch the context no longer holds.

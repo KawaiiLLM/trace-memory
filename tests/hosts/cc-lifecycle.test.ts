@@ -6,6 +6,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { createConnection } from "node:net";
 import { TraceMemory, noVisibility } from "../../src/core/api/index.ts";
+import type { NotingAgentInput, RunAgent } from "../../src/core/api/index.ts";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { Store } from "../../src/core/store/index.ts";
@@ -88,7 +89,7 @@ test("public turn-end admission releases fork checkpoint on N eligibility failur
     phases.push(phase);
     if (phase === "noting") throw new Error("source store unavailable");
     return { due: false };
-  } } as unknown as TraceMemory;
+  }, store: { progressSignal: () => "sig" } } as unknown as TraceMemory;
   const scheduler = new CcTaskScheduler(memory, undefined, error => errors.push(error));
   let released = 0;
   scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" },
@@ -100,14 +101,14 @@ test("public turn-end admission releases fork checkpoint on N eligibility failur
   scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" },
     scheduler.catchupTicket(), undefined, () => released++, "indexed JSON is invalid");
   expect(released).toBe(2);
-  expect(phases).toEqual(["dreaming"]);
+  expect(phases).toEqual([]); // The previous not-due D result still stands.
   expect(errors).toEqual([expect.stringContaining("indexed JSON is invalid")]);
 });
 
 test("public turn-end admission exception releases a prepared fork checkpoint", async () => {
   const errors: string[] = [];
   const memory = { taskEligibility: (phase: string) => ({ due: phase === "noting" }),
-    store: { closedTasks: () => [], enabled: () => true },
+    store: { closedTasks: () => [], enabled: () => true, progressSignal: () => "sig" },
     config: { closedSessionScope: "off" },
     notingBatch: () => { throw Object.assign(new Error("admission store failed"), { cause: "task admission" }); },
   } as unknown as TraceMemory;
@@ -128,7 +129,7 @@ test("a prelaunch fork refusal releases the main checkpoint before its fresh rep
   const noting = vi.fn().mockResolvedValueOnce({ outcome: "dropped", executionId: "refused-launch",
     refused: { reason: "fork suppressed before launch" } }).mockImplementationOnce(() => fresh);
   const memory = { taskEligibility: (phase: string) => ({ due: phase === "noting" }),
-    store: { closedTasks: () => [], enabled: () => true }, config: { closedSessionScope: "off" },
+    store: { closedTasks: () => [], enabled: () => true, progressSignal: () => "sig" }, config: { closedSessionScope: "off" },
     notingBatch: () => [{ id: 1 }], noting,
   } as unknown as TraceMemory;
   const worker = { phases: { noting: { model: "fresh", thinking: "medium", capacity: { inputTokens: 100, prefixTokens: 0 } },
@@ -308,7 +309,7 @@ test("live function-hook turns check once across both import orders and do not r
       { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "second answer" }] } },
       { type: "last-prompt", leafUuid: "a2" });
     f.write(); await coordinator.requestReconcile("pre-hook import");
-    expect(noting).toHaveBeenCalledTimes(1);
+    expect(noting).toHaveBeenCalledTimes(2);
     await signalCcTurnEnd(f.config, f.nativeSessionId, "turn-two", "answer");
     await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(2));
     f.records.splice(-1, 1,
@@ -393,7 +394,7 @@ test("CC final admission uses the selected compaction boundary, frozen batch and
       { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:05.000Z",
         message: { role: "assistant", content: [{ type: "thinking", thinking: "" }, { type: "text", text: "answer" }] } },
       { type: "last-prompt", leafUuid: "a2" });
-    f.write(); await coordinator.requestReconcile("compact boundary");
+    f.write(); await coordinator.requestReconcile("fork source view");
     const spanning = await requestCcForkSources(f.config, f.nativeSessionId, "after");
     expect(spanning?.selected).toEqual(["u1", "a1", "u2", "a2"]);
     expect(admit(initial!).refused).toContain("checkpoint moved");
@@ -407,100 +408,67 @@ test("CC final admission uses the selected compaction boundary, frozen batch and
   } finally { await coordinator.shutdown("test"); }
 });
 
-test.each(["hook", "transcript"] as const)("accepted CC scan race preserves turn-end dedup and published Raw (%s; imposed order)", async mode => {
-  const f = fixture(`queued-user-${mode}`); enableSyntheticWorker(f);
-  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-scan-race-")); dirs.push(f.config.stateDir);
-  (f.records[1]!.message as Record<string, unknown>).stop_reason = "tool_use";
+test.each(["hook", "transcript"] as const)("entry ingestion admits mid-turn and preserves frozen Raw without overlapping runs (%s)", async mode => {
+  const f = fixture(`entries-${mode}`); enableSyntheticWorker(f);
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-entries-")); dirs.push(f.config.stateDir);
   f.config.coreConfig.noting.triggerTokens = 1;
+  f.config.coreConfig.noting.forkModeDefault = true;
   f.write();
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
-  const diagnostics: string[] = [];
-  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostics.push(message));
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId);
+  // The harness replaces only private model transport; projection and Core publication stay real.
+  const internal = coordinator as unknown as { importer: CcImporter & { memory: TraceMemory }; scheduler: CcTaskScheduler };
+  let release!: () => void;
   try {
     await coordinator.start();
-    const importer = (coordinator as any).importer;
-    const memory = importer.memory;
-    const sessionId = readBinding(f.config, f.nativeSessionId)!.coreSessionId!;
-    // Keep the real Core Noting publication path. Only the model transport is deterministic.
-    const batches: number[][] = [];
-    let releaseFirst!: () => void;
-    let firstEntered!: () => void;
-    const firstHeld = new Promise<void>(resolve => { releaseFirst = resolve; });
-    const firstRunning = new Promise<void>(resolve => { firstEntered = resolve; });
-    importer.runAgent = async (input: any) => {
-      expect(input.kind).toBe("noting");
-      batches.push(input.entryIds);
-      input.reportRequest({ fixture: "CC scan race" });
-      expect(input.tools.find((tool: any) => tool.name === "note").execute({})).toContain("held");
-      expect(input.tools.find((tool: any) => tool.name === "memory").execute({})).toContain("held");
-      if (mode === "hook" && batches.length === 1) { firstEntered(); await firstHeld; }
-      return { outcome: "success", output: "done", request: { fixture: "CC scan race" } };
-    };
-    const dream = vi.fn(async () => ({ outcome: "success", revisions: [] }));
-    memory.dream = dream;
-    const eligibility = vi.fn((phase: string) => ({ due: phase === "dreaming" || memory.store.pendingEntryIds(sessionId, "main", memory.store.knowledgePath(sessionId, "main").headTurnId!).length > 0 }));
-    memory.taskEligibility = eligibility;
     if (mode === "hook") await markCcFunctionHook(f.config, f.nativeSessionId);
-    f.records.splice(-1, 1,
-      { uuid: "a1-end", parentUuid: "a1", type: "assistant", timestamp: "2026-01-01T00:00:01.500Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "answer finished" }] } },
-      { uuid: "u2", parentUuid: "a1-end", type: "user", timestamp: "2026-01-01T00:00:02.000Z", ...sdkPrompt("p2"), message: { role: "user", content: "second" } },
-      { type: "last-prompt", leafUuid: "u2" });
-    f.write();
-    if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "native-event-A", "answer");
-    else await coordinator.requestReconcile("A terminal and B user in one scan");
-    if (mode === "hook") await firstRunning;
-    const selected = memory.store.selectedSourceEntryIds(sessionId, "main")!;
-    const bQuestion = selected.at(-1)!;
-    expect(selected).toHaveLength(4);
-    const appendBAnswer = () => {
-      f.records.splice(-1, 1,
-        { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "second answer" }] } },
-        { type: "last-prompt", leafUuid: "a2" });
-      f.write();
+    const memory = internal.importer.memory;
+    const batches: number[][] = [];
+    const held = new Promise<void>(resolve => { release = resolve; });
+    // Private transport seam, as used by the surrounding native-projection fixtures.
+    const transport = internal.importer as unknown as { runAgent: RunAgent };
+    transport.runAgent = async raw => {
+      const input = raw as NotingAgentInput;
+      batches.push([...input.entryIds]);
+      input.reportRequest({ fixture: "entry end" });
+      input.tools.find(tool => tool.name === "note")!.execute({});
+      input.tools.find(tool => tool.name === "memory")!.execute({});
+      if (batches.length === 1) await held;
+      return { outcome: "success", output: "done", request: { fixture: "entry end" },
+        mode: "subagent", fallbackReason: input.fallbackReason };
     };
-    let answer: number | undefined;
-    if (mode === "hook") {
-      appendBAnswer();
-      await coordinator.requestReconcile("B answer imported while A Noting is held");
-      answer = memory.store.selectedSourceEntryIds(sessionId, "main")!.at(-1)!;
-      expect(batches[0]).not.toContain(answer);
-      expect(memory.store.entryNoted(answer)).toBe(false);
-      releaseFirst();
-    }
-    await (coordinator as any).scheduler.settle();
-    if (mode === "hook") expect(memory.store.entryNoted(answer!)).toBe(false);
-    expect(batches, JSON.stringify({ diagnostics, eligibility: eligibility.mock.calls, pending: memory.store.pendingEntryIds(sessionId, "main", memory.store.knowledgePath(sessionId, "main").headTurnId!) })).toHaveLength(mode === "hook" ? 1 : 0);
-    expect(dream).toHaveBeenCalledTimes(mode === "hook" ? 1 : 0);
-    expect(eligibility).toHaveBeenCalledTimes(mode === "hook" ? 2 : 0);
-    expect(memory.store.entryNoted(bQuestion)).toBe(mode === "hook");
-    if (mode === "hook") expect(batches[0]).toEqual(selected);
-    else expect(selected.every((id: number) => !memory.store.entryNoted(id))).toBe(true);
-    if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "native-event-A", "answer");
-    await coordinator.requestReconcile("duplicate A observation after settlement");
-    await (coordinator as any).scheduler.settle();
-    expect(batches).toHaveLength(mode === "hook" ? 1 : 0);
-    expect(dream).toHaveBeenCalledTimes(mode === "hook" ? 1 : 0);
-    if (mode === "transcript") appendBAnswer();
-    if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "native-event-B", "answer");
-    else await coordinator.requestReconcile("B ended");
-    await (coordinator as any).scheduler.settle();
-    answer = memory.store.selectedSourceEntryIds(sessionId, "main")!.at(-1)!;
-    expect(batches, JSON.stringify({ diagnostics, eligibility: eligibility.mock.calls })).toHaveLength(mode === "hook" ? 2 : 1);
-    expect(dream).toHaveBeenCalledTimes(mode === "hook" ? 2 : 1);
-    expect(memory.store.entryNoted(answer!), diagnostics.join("; ")).toBe(true);
-    expect(batches.at(-1)).toContain(answer);
-    expect(batches.slice(0, -1).every(batch => !batch.includes(answer!))).toBe(true);
-    expect(memory.store.entryNoted(bQuestion)).toBe(true);
-    if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "native-event-B", "answer");
-    await coordinator.requestReconcile("duplicate B observation after settlement");
-    await (coordinator as any).scheduler.settle();
-    expect(batches).toHaveLength(mode === "hook" ? 2 : 1);
-    expect(dream).toHaveBeenCalledTimes(mode === "hook" ? 2 : 1);
-    expect(eligibility).toHaveBeenCalledTimes(mode === "hook" ? 4 : 2);
-  } finally { await coordinator.shutdown("test"); }
+    const append = async (id: number) => {
+      f.records.splice(-1, 1,
+        { uuid: `entry-${id}`, parentUuid: id === 1 ? "a1" : `entry-${id - 1}`, type: "assistant",
+          timestamp: `2026-01-01T00:00:0${id + 1}.000Z`,
+          message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "text", text: `entry ${id}` }] } },
+        { type: "last-prompt", leafUuid: `entry-${id}` });
+      f.write(); await coordinator.requestReconcile("entry append");
+    };
+    await append(1); await vi.waitFor(() => expect(batches).toHaveLength(1));
+    await append(2);
+    expect(batches).toHaveLength(1);
+    const tail = memory.store.selectedSourceEntryIds(1, "main")!.at(-1)!;
+    expect(batches[0]).not.toContain(tail);
+    release(); await internal.scheduler.settle();
+    expect(batches).toHaveLength(1);
+    expect(memory.store.entryNoted(tail)).toBe(false);
+    const run = memory.store.listRuns(1)[0]!;
+    expect(run.mode).toBe("subagent");
+    expect(JSON.parse(run.response!).fallbackReason).toContain("checkpoint");
+    await coordinator.requestReconcile("duplicate observation");
+    expect(batches).toHaveLength(1);
+    await append(3); await internal.scheduler.settle();
+    expect(batches).toHaveLength(2);
+    expect(memory.store.entryNoted(tail)).toBe(true);
+    if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "same-entry", "answer");
+    await coordinator.requestReconcile("duplicate final observation");
+    await internal.scheduler.settle();
+    expect(batches).toHaveLength(2);
+  } finally { release?.(); await coordinator.shutdown("test"); }
 });
 
-test("without function hooks, only proven native ends check once", async () => {
+test("without function hooks, entry checks do not depend on native terminal reasons", async () => {
   const f = fixture("turn-raw"); enableSyntheticWorker(f);
   (f.records[1]!.message as Record<string, unknown>).stop_reason = "end_turn"; f.write();
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
@@ -526,16 +494,16 @@ test("without function hooks, only proven native ends check once", async () => {
     };
     append(2, "tool_use"); await coordinator.requestReconcile("tool result pending");
     append(3, "stop_sequence"); await coordinator.requestReconcile("unknown stop");
-    expect(noting).not.toHaveBeenCalled();
+    expect(noting).toHaveBeenCalledTimes(2);
     append(4, "stop_sequence", true); const errorProjection = await coordinator.requestReconcile("native error");
     expect(errorProjection?.terminal, JSON.stringify({ projection: errorProjection, binding: readBinding(f.config, f.nativeSessionId) })).toMatchObject({ uuid: "a4", isApiErrorMessage: true });
-    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(3));
     await coordinator.requestReconcile("duplicate poll");
-    expect(noting).toHaveBeenCalledTimes(1);
+    expect(noting).toHaveBeenCalledTimes(3);
     await vi.waitFor(() => expect((coordinator as any).scheduler.running()).toEqual([]));
     append(5, "end_turn"); const last = await coordinator.requestReconcile("answer end");
     expect(last?.terminal?.uuid, JSON.stringify(last)).toBe("a5");
-    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(4));
   } finally { await coordinator.shutdown("test"); }
 });
 

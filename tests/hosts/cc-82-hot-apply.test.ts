@@ -93,7 +93,7 @@ test("CLI apply leaves held provider on old settings and next admission takes ne
     records.push({ uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z",
       message: { role: "assistant", content: [{ type: "text", text: "second answer" }] } } as any);
     publish(); await coordinator.requestReconcile("new completed entry");
-    expect(provider.calls).toHaveLength(1); // ingest does not launch a second run
+    expect(provider.calls).toHaveLength(2); // The persisted entry, not the settings edit, admits the next run.
     await coordinator.turnEnd("second-answer", "answer", new AbortController().signal);
     await tick(() => provider.calls.length === 2);
     expect(provider.calls[1]).toMatchObject({ model: "claude-sonnet-5", thinking: "medium" });

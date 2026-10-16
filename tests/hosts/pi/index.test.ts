@@ -613,9 +613,6 @@ test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(false);
   await h.answer(); await h.drain();
   expect(h.requests).toHaveLength(6); // the later turn admits one batch and its fixed review
-  await h.prompt("fourth"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(6); // a below-threshold turn creates no extra worker
-  expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: "S1/T2", rangeTo: "S1/T3" });
 });
 
 test("a subagent Noter reads omitted evidence through virtual Read and records its last request", async () => {

@@ -12,6 +12,7 @@ async function truncatingHost() {
     "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
   const sourceText = `fact source ${"word ".repeat(250)}`;
   await h.prompt(sourceText); await h.answer(); await h.drain();
+  await h.commands.get("trace")!.handler("catchup", h.ctx); await h.drain();
   expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("success");
   expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
   const path = h.memory.store.knowledgePath(1, "main", 1);

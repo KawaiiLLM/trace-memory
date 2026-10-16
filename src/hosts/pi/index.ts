@@ -386,6 +386,10 @@ export default function (pi: ExtensionAPI) {
   // background runs never enter Pi's session totals, which only count entries of the session file.
   const activity = { running: new Map<WorkerPhase, number>() };
   const runningKind = (kind: WorkerPhase) => (activity.running.get(kind) ?? 0) > 0;
+  // Raw cannot change D's answer. A not-due result stands until its inputs change.
+  let dreamingArmed = true;
+  let lastArmSignal: string | undefined;
+  const armDreaming = () => { dreamingArmed = true; };
   /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a), scope and colours revised by
    * ticket 51. One status item, one line:
    *
@@ -659,7 +663,8 @@ export default function (pi: ExtensionAPI) {
     }
     current = undefined;
     reconciledLeaf = undefined; reconciled = undefined; // 22b: a restored session reconciles its ancestry from the start
-    reconcile();
+    armDreaming();
+    reconcile(false);
     showSpend(ctx);
     if (state.sessionId) {
       state.projectId = memory.store.getSession(state.sessionId)!.projectId;
@@ -688,17 +693,20 @@ export default function (pi: ExtensionAPI) {
   let reconciled: { ids: string[]; lineage: string; turnId?: number; head?: number; selected: number[]; seen: Set<string>;
     path: ReturnType<TraceMemory["store"]["sourcePathState"]>;
     toolCalls: Map<string, { ordinal: number; name: string; callId: string }> } | undefined;
-  const reconcile = () => {
+  const reconcile = (check = true) => {
     if (!enabled()) return;
     const leaf = ctx.sessionManager.getLeafId();
     if (state.sessionId && leaf === reconciledLeaf) return;
-    try { walk(); }
+    let opportunities: TaskTarget[];
+    try { opportunities = walk(); }
     catch (error) { reconciled = undefined; reconciledLeaf = undefined; throw error; }
     // A walk before the memory session exists creates no Turn; the first walk after allocation must run.
     reconciledLeaf = state.sessionId ? leaf : undefined;
-    // Reconciliation imports evidence only; the settled main turn checks work once.
+    // Admit only after the selected ancestry transaction commits, with each entry's own anchor.
+    if (check) for (const target of opportunities) checkQueues(target);
   };
   const walk = () => memory.store.transaction(() => {
+    const opportunities: TaskTarget[] = [];
     let resume: typeof reconciled;
     let ancestry: SessionEntry[] = [];
     if (reconciled && state.sessionId) {
@@ -721,7 +729,7 @@ export default function (pi: ExtensionAPI) {
     ancestry = resume ? ancestry.reverse() : ctx.sessionManager.getBranch();
     if (!state.sessionId && ancestry.some(e => e.type === "message" && e.message.role === "assistant" &&
       (text(e.message) || e.message.content.some(c => c.type === "toolCall" || c.type === "thinking")))) allocate(ancestry[0]?.timestamp ?? now());
-    if (!state.sessionId) return;
+    if (!state.sessionId) return opportunities;
     reconciled = undefined; // a walk that throws leaves nothing to resume from
     let lineage = resume ? resume.lineage : state.originPiId ?? state.piId;
     let turnId = resume?.turnId;
@@ -806,6 +814,7 @@ export default function (pi: ExtensionAPI) {
       const stored = memory.appendEntry({ sessionId: state.sessionId, nativeLineage: lineage, nativeId: entry.id, turnId,
         role: message.role, text: natural, raw: JSON.stringify(message), calls: fragments });
       selected.push(stored.id);
+      opportunities.push({ sessionId: state.sessionId, branch: state.branch, headTurnId: head ?? turnId, triggerEntryId: stored.id });
       if (message.role === "assistant") {
         offer(turnId, fragments);
         const value = memory.store.getTurn(turnId)!;
@@ -828,6 +837,7 @@ export default function (pi: ExtensionAPI) {
       if (current) current.id = turnId;
     }
     reconciled = { ids, lineage, turnId, head, selected, seen, toolCalls, path };
+    return opportunities;
   });
 
   const unavailable = (reason: Extract<CurrentContextSnapshotResult, { available: false }>["reason"], message: string): CurrentContextSnapshotResult =>
@@ -889,10 +899,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_provider_request", (event, context) => {
     ensure(context);
     if (!enabled()) { showSpend(context); return; }
-    reconcile();
     // The capture is the fork gate's comparand and nothing else: the request-copy runner that also
     // read the ancestry behind it was deleted in 19c, so only the body is kept (review 2026-09-08).
     if (context.model) session.capture = { payload: snapshot(event.payload) as Body, model: context.model.id, provider: context.model.provider, branch: state.branch };
+    reconcile();
   });
   pi.on("session_start", (_event, context) => {
     restore(context);
@@ -964,14 +974,14 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on("message_update", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
   pi.on("message_end", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
-  // Persisted assistant/tool entries are imported here; no work is scheduled mid-turn.
+  // Pi persists after message_end; the next authoritative boundary imports and checks that entry.
   pi.on("tool_execution_start", (_event, context) => { ensure(context); reconcile(); });
   // 24a: a tool result, the end of an agent run and the settle are the existing boundaries at which
   // this turn's evidence became importable, so they are where the footer's counts are re-read. A
   // streaming update is not one of them: `message_update` fires per delta and refreshes nothing.
   pi.on("tool_result", (_event, context) => { ensure(context); persistState(); showSpend(context); });
   pi.on("agent_end", (_event, context) => { ensure(context); persistState(); showSpend(context); });
-  let checkedTurn: string | undefined;
+  let borrowedTurn: string | undefined;
   pi.on("agent_settled", (_event, context) => {
     ensure(context); persistState();
     try {
@@ -983,9 +993,9 @@ export default function (pi: ExtensionAPI) {
       if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
       else reconcile();
       const key = `${state.sessionId}/${state.branch}/${state.head}`;
-      if (checkedTurn === key) return;
-      checkedTurn = key;
-      checkQueues();
+      if (borrowedTurn === key) return;
+      borrowedTurn = key;
+      checkQueues(undefined, true);
     } finally { showSpend(context); } // one refresh at the settle, whichever path this turn took
   });
   /** Track cleanup, not admission or result policy. Callers reserve the slot before starting work
@@ -1002,18 +1012,26 @@ export default function (pi: ExtensionAPI) {
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
     return settled;
   };
-  const checkQueues = () => {
+  const checkQueues = (opportunity?: TaskTarget, includeBorrowed = false) => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
-    const own = { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
+    const own = opportunity ?? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
+    const signal = memory.store.progressSignal(own.sessionId);
+    if (signal !== lastArmSignal) { lastArmSignal = signal; armDreaming(); }
     const generation = memory.cancellation;
     for (const kind of ["noting", "dreaming"] as const) {
       if (slots.has(kind)) continue;
       let due = false;
-      try { ({ due } = memory.taskEligibility(kind, own)); }
-      catch (error) { context.ui.notify(String(error), "error"); }
+      if (opportunity && (kind === "noting" || dreamingArmed)) {
+        try {
+          ({ due } = memory.taskEligibility(kind, own));
+          if (kind === "dreaming") dreamingArmed = due;
+        } catch (error) { context.ui.notify(String(error), "error"); }
+      }
+      // Persist our own state before freezing a requested fork's native checkpoint.
+      if (due && kind === "noting" && memory.config.noting.forkModeDefault && state.sourceHead !== savedSourceHead) save();
       const candidates: ({ borrowed: boolean } & TaskTarget)[] = due ? [{ ...own, borrowed: false }] : [];
-      if (kind !== "dreaming") {
+      if (kind !== "dreaming" && includeBorrowed) {
         try { candidates.push(...memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope)
           .map(target => ({ ...target, borrowed: true }))); }
         catch (error) { context.ui.notify(`${kind} closed-session scan failed: ${String(error)}`, "error"); }
@@ -1159,7 +1177,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(catchupLine()!, "info"); return;
     }
     if (!state.sessionId || !state.head) { ctx.ui.notify("Trace Memory: no assistant reply yet; nothing to catch up.", "info"); return; }
-    reconcile();
+    reconcile(false);
     showSpend(ctx);
     const { sessionId, branch } = state, headTurnId = state.head;
     const pendingNow = memory.store.pendingEntryIds(sessionId, branch, headTurnId);
@@ -1454,7 +1472,7 @@ export default function (pi: ExtensionAPI) {
     // carriers; enabling creates no generation or one-shot intent.
     save();
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
-    if (value) { reconcile(); save(); }
+    if (value) { armDreaming(); reconcile(false); save(); }
     showSpend(ctx);
     const { lines, recovery, cost, composition, shared } = sessionSummary();
     const notice = statusBody([...recovery, ...lines, cost, ...composition, ...shared], Math.max(1, (process.stdout.columns ?? 100) - 2));
@@ -1653,6 +1671,7 @@ export default function (pi: ExtensionAPI) {
       try {
         const value = parseKnowledgeBudgetInput(input, budget.name);
         const saved = memory.setKnowledgeBudget(budget.field, value);
+        if (saved.changed) armDreaming();
         const base = saved.policy.global + saved.policy.project + saved.policy.session;
         const shared = memory.config.compaction.sharedAllowanceTokens;
         ctx.ui.notify(saved.changed

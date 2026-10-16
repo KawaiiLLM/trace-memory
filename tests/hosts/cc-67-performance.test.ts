@@ -240,10 +240,8 @@ test("Hook-first bootstrap and fresh resume validate known records without per-r
     expect(live.bootstrap).toBe(false);
     expect(live.appendedEntryIds).toHaveLength(2);
     scheduler.reconcile(live);
-    expect(eligibility).not.toHaveBeenCalled(); // Entry ingestion is not a checkpoint.
-    scheduler.turnEnd(live, scheduler.catchupTicket());
     expect(eligibility.mock.calls.map(([phase, target]) => [phase, target.triggerEntryId])).toEqual([
-      ["noting", live.appendedEntryIds[1]], ["dreaming", live.appendedEntryIds[1]],
+      ["noting", live.appendedEntryIds[0]], ["dreaming", live.appendedEntryIds[0]], ["noting", live.appendedEntryIds[1]],
     ]);
   } finally { scheduler.stop(); eligibility.mockRestore(); transaction.mockRestore(); importer.close(); rmSync(dir, { recursive: true, force: true }); }
 });

@@ -185,7 +185,6 @@ test.skipIf(!reader)("24c: the external daily reader charges every new worker re
     await settled(f);
     await f.h.emit("before_agent_start", { prompt: "tick" });
     await f.parent.prompt("tick");
-    await f.h.emit("agent_end"); // parent has not settled, so no automatic N opportunity
     await f.h.commands.get("trace").handler("catchup", f.h.ctx); // drains it as an independent subagent
     await vi.waitFor(() => expect(f.h.memory.store.listRuns(1).filter(run => run.response)).toHaveLength(2), { timeout: 8000 });
     expect(f.h.memory.store.listRuns(1).map(run => run.mode)).toEqual(["fork", "subagent"]);

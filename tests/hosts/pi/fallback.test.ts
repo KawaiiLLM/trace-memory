@@ -84,8 +84,8 @@ test("27b 2026-09-10: a fork prefix the freeze cannot fit is re-admitted once as
     expect(h.notices.filter(n => n.includes("and the inherited context 40000"))).toHaveLength(1);
     // Fresh material, and only the evidence the second freeze selected is committed.
     expect(h.conversations[0]!.systemPrompt).toContain("Noting (facts and knowledge)");
-    expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId)).toEqual(["e1", "e2"]);
-    expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]); // 105 freezes after the final reply
+    expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId)).toEqual(["e1"]);
+    expect(h.memory.pendingEntries(1, "main", 1).map(entry => h.memory.store.getSourceEntry(entry.id)!.text)).toEqual(["word ".repeat(200)]);
     // No latch, no configuration change.
     // Settings belongs to the executor; `h.memory` is only an independent database observer.
     h.ctx.hasUI = true;
@@ -691,11 +691,10 @@ test.each([
     const frozen = (response.entryAudit.entries as { id: number }[]).map(e => e.id);
     expect(frozen).toEqual(expect.arrayContaining(older.map(e => e.id)));
     if (!expected) {
-      // 105 freezes at the final reply, including it. The persisted head is in the
-      // inherited view, even though the captured pre-reply provider request lacks it.
+      // The entry-end admission precedes this turn's final reply; that reply remains pending.
       const headReply = hydrate(h.memory.store.listSourceEntries(1), h.memory.store).at(-1)!;
       expect(headReply.role).toBe("assistant");
-      expect(frozen).toContain(headReply.id);
+      expect(frozen).not.toContain(headReply.id);
       expect(String(response.fallbackReason)).not.toContain("Raw availability");
       // Admitted as a fork: what stops it here is the fake host's missing capture, at the launch.
       expect(String(response.fallbackReason)).toContain("No current-branch provider payload captured");

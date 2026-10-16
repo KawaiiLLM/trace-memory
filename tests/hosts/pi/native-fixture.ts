@@ -128,7 +128,7 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
   let manager: SessionManager | undefined;
   // `fetch: false`: this fixture stubs the wire itself (above), for both the real parent session and
   // the child the adapter builds.
-  // The short scripted main turn must reach N's trigger at its final settlement.
+  // The short scripted main turn reaches N's trigger when its entries are imported.
   // Production's 10k threshold is unchanged.
   const h = host({ "noting.triggerTokens": 1, ...config }, { native: () => manager as never, fetch: false, inflight: () => inflight });
   // 24c: the parent lives where real Pi puts a foreground session — one directory level under the
@@ -204,7 +204,7 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
 export const forkFixture = (config: Record<string, unknown> = {}, provider = "fake", parent: { model?: string; thinkingLevel?: ThinkingLevel } = {}) =>
   fixture({ "noting.forkModeDefault": true, ...config }, provider, parent);
 
-/** Fork scenarios use the same terminal main-turn boundary as every native host test. */
+/** Fork-specific tests import a stable persisted parent and its captured provider request. */
 export const stableForkFixture = forkFixture;
 
 export const settled = async (f: Awaited<ReturnType<typeof fixture>>, kind: "noting" | "consolidation" = "noting") =>

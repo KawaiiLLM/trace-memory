@@ -10,6 +10,7 @@ import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, visibleTarget, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { TraceMemory as createMemory } from "../../../src/core/api/index.ts";
 import * as api from "../../source-fixture.ts";
 import { tokens, hydrate } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
@@ -124,6 +125,37 @@ test("2026-10-01, 117: every normal Noter pass gets one held-state review before
     expect(seen).toHaveLength(1);
     expect(fresh.store.pendingEntries(owner.id, "main", turn.id)).toEqual([]);
   } finally { fresh.close(); }
+});
+
+test("2026-10-17, 141: entry ends retry failed automatic work; completion schedules nothing and three failures disable memory", async () => {
+  const attempts: number[][] = [];
+  const fresh = createMemory(":memory:", async raw => {
+    const task = raw as NotingAgentInput;
+    attempts.push([...task.entryIds]);
+    return { outcome: "failure", output: "persistent provider failure", request: { fixture: true } };
+  }, { noting: { triggerTokens: 1 } });
+  const project = fresh.store.createProject({ name: "entry-retry", declaredBy: "mark" });
+  const owner = seedSession(fresh.store, project.id, "cc:entries");
+  const turn = fresh.store.appendTurn({ sessionId: owner.id, kind: "turn", startedAt: time, userPrompt: "pending" });
+  const worker = resolveCcHostConfig({ dbPath: join(directory, "unused.sqlite"), stateDir: directory,
+    notingModel: "synthetic", notingThinking: "medium", "dreaming.model": "synthetic", "dreaming.thinking": "medium",
+    worker: { cwd: directory, claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 } } }).worker;
+  const scheduler = new CcTaskScheduler(fresh, worker, () => {});
+  const selected: number[] = [];
+  try {
+    for (let i = 0; i < 3; i++) {
+      const source = seedEntry(fresh.store, owner.id, turn.id, `entry-${i}`, "assistant", "word ".repeat(100));
+      selected.push(source.id); fresh.selectEntries(owner.id, "main", selected);
+      scheduler.reconcile({ state: "ready", coreSessionId: owner.id, branch: "main", headTurnId: turn.id,
+        selectedEntryIds: selected, selectedCount: selected.length, selectedTailId: source.id,
+        selectedAppendedEntryIds: [source.id], appendedEntryIds: [source.id], problems: [], snapshot: {} as never });
+      await scheduler.settle();
+      expect(attempts).toHaveLength(i + 1);
+      expect(fresh.store.entryNoted(selected[0]!)).toBe(false);
+    }
+    expect(fresh.store.listRuns(owner.id).map(run => run.outcome)).toEqual(["failure", "failure", "failure"]);
+    expect(fresh.store.enabled(owner.id)).toBe(false);
+  } finally { scheduler.stop(); await scheduler.settle(); fresh.close(); }
 });
 
 test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry the failed phase before checking other phases", async () => {

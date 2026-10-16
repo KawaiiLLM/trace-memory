@@ -9,15 +9,15 @@ import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import { runNative, NotForkable } from "../../../src/hosts/pi/native.ts";
 
 for (const moved of [false, true]) {
-  test(`ticket92material real SDK extension events ${moved ? "refuse moved parent once" : "fork stable parent between tool rounds"}`, async () => {
+  test(`live Pi entry ends ${moved ? "refuse a moved fork parent once" : "fork a stable parent between tool rounds"}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "trace-memory-material-"));
     const dbPath = join(dir, "trace.db");
     const f = await piSession({ extensions: [extension], activeTools: ["evidence", "read", "search", "note", "memory"],
       env: { TRACE_MEMORY_CONFIG: JSON.stringify({ dbPath, "noting.forkModeDefault": true,
-        "noting.triggerTokens": 30, "consolidation.triggerTokens": 1e9 }) },
+        "noting.triggerTokens": 300, "render.toolResultTokens": 1000 }) },
       prepare: ({ agentDir }) => writeFileSync(join(agentDir, "trace-memory-baseline.json"), JSON.stringify("2000-01-01T00:00:00.000Z")),
       tools: [{ name: "evidence", description: "Read evidence", parameters: { type: "object", properties: {} },
-        execute: async () => ({ content: [{ type: "text", text: "tool evidence ".repeat(30) }], details: {} }) }] });
+        execute: async () => ({ content: [{ type: "text", text: "tool evidence ".repeat(300) }], details: {} }) }] });
     const observer = TraceMemory(dbPath, async () => { throw new Error("observer never runs"); });
     const original = DefaultResourceLoader.prototype.reload;
     let changed = false;
@@ -33,9 +33,11 @@ for (const moved of [false, true]) {
           expect(f.session.getAllTools().map(tool => tool.name)).toEqual(expect.arrayContaining(["read", "search", "note", "memory"]));
           return call("parent-evidence", "evidence", {});
         }
+        await vi.waitFor(() => expect(observer.store.listRuns(1).some(run => run.kind === "noting" && run.response)).toBe(true),
+          { timeout: 5000 }); // Keep the native checkpoint stable while the child prepares.
         return say("parent finished");
       });
-      await f.session.prompt("Keep this original evidence. ".repeat(20));
+      await f.session.prompt("Keep this original evidence.");
       await vi.waitFor(() => expect(observer.store.listRuns(1).filter(run => run.kind === "noting").length).toBeGreaterThan(0), { timeout: 5000 });
       const runs = observer.store.listRuns(1).filter(run => run.kind === "noting");
       expect(runs).toHaveLength(1);

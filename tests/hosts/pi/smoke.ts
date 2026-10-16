@@ -112,7 +112,7 @@ try {
   await h.dispose();
 }
 
-// 105: a subsequent completed main turn starts a due pool Dreamer. Compaction remains separate from processing.
+// A subsequent main-session entry starts a due pool Dreamer. Compaction remains separate from processing.
 const dreamer = host({ "noting.triggerTokens": 1_000_000, "dreaming.triggerTokens": 5_000 }, { extension });
 try {
   await dreamer.emit("session_start"); await dreamer.turn();

@@ -3,12 +3,11 @@ import { legacyFacts } from "../../support/seed.ts";
 import { host, reply } from "./test-host.ts";
 import { checkpointReadiness } from "../../../src/hosts/pi/native.ts";
 // The native cases exercise fork checkpoint readiness; the ordinary host case runs fresh.
-import { noteAndMemory, stableForkFixture as fixture, noteBatch, say, submitted, toolResults, worker, type Body } from "./native-fixture.ts";
+import { noteAndMemory, stableForkFixture as fixture, noteBatch, say, toolResults, worker } from "./native-fixture.ts";
 import { hydrate } from "../../source-fixture.ts";
 
-// 19c "Entry readiness and fallback": the scheduling thresholds keep their own authority (17b), and a
-// due task launches only when its chosen native checkpoint is persisted, reopenable and free of an
-// assistant tool-call group whose results are missing. Waiting starts nothing and advances nothing.
+// A requested fork requires a persisted, reopenable checkpoint with no unanswered tool calls.
+// Readiness refusal uses the existing fresh fallback; no task waits for a later hook.
 
 const long = "word ".repeat(400);
 const notingRuns = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).filter(r => r.kind === "noting");
@@ -25,7 +24,7 @@ test("19c 2026-09-08: a message completion before persistence launches nothing; 
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.role)).toEqual(["user"]);
     expect(notingRuns(h)).toEqual([]);
     expect(h.conversations).toEqual([]); // and nothing was sent to any model
-    // Persistence alone is not a scheduling opportunity; the final settle imports it.
+    // The next authoritative boundary observes persistence and grants the entry opportunity.
     const persisted = h.persist(completed);
     expect(notingRuns(h)).toEqual([]);
     await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
@@ -36,37 +35,6 @@ test("19c 2026-09-08: a message completion before persistence launches nothing; 
     // Later boundaries are not new triggers: the same task is not launched a second time.
     await h.emit("agent_settled"); await h.emit("agent_end"); await h.drain();
     expect(notingRuns(h)).toHaveLength(1);
-  } finally { await h.dispose(); }
-});
-
-test("105: persisted tool-call groups launch once at the final main-turn settlement", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 10_000,
-    "render.toolResultTokens": 1_000 });
-  try {
-    await h.prompt("Run a long tool sequence");
-    const calls = Array.from({ length: 12 }, (_value, index) => ({ type: "toolCall" as const,
-      id: `long-${index}`, name: "bash", arguments: { command: `step ${index}` } }));
-    const assistant = { ...reply("Working."), content: [{ type: "text" as const, text: "Working." }, ...calls] };
-    await h.emit("message_end", { message: assistant });
-    expect(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).map(entry => entry.role)).toEqual(["user"]);
-
-    // Pi has persisted the assistant by tool preflight. The first hook ingests it; a duplicate hook
-    // sees the same leaf and grants no duplicate opportunity.
-    await h.emit("tool_execution_start", { toolCallId: calls[0]!.id, toolName: "bash", args: calls[0]!.arguments });
-    await h.emit("tool_execution_start", { toolCallId: calls[0]!.id, toolName: "bash", args: calls[0]!.arguments });
-    expect(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).map(entry => entry.role)).toEqual(["user", "assistant"]);
-
-    // Each result is persisted and imported, but no mid-turn check runs.
-    for (const call of calls) await h.emit("tool_result", { toolCallId: call.id, toolName: "bash", input: call.arguments,
-      content: [{ type: "text", text: `${call.id} ${"word ".repeat(6_000)}` }], details: {}, isError: false });
-    expect(notingRuns(h)).toEqual([]);
-    await h.emit("message_end", { message: reply("Final answer") });
-    await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
-    const run = notingRuns(h)[0]!;
-    expect(run.origin?.entryIds.at(-1)).toBe(hydrate(h.memory.store.listSourceEntries(1), h.memory.store).at(-1)!.id);
-    expect(notingRuns(h)).toHaveLength(1);
-    await h.emit("agent_settled"); await h.drain();
-    expect(notingRuns(h)).toHaveLength(1); // duplicate settle and worker completion do not drain
   } finally { await h.dispose(); }
 });
 
@@ -120,100 +88,6 @@ test("19c 2026-09-08: a fork launches from the persisted checkpoint on the exist
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1);
   } finally { await f.dispose(); }
 });
-
-test("19c 2026-09-08: a checkpoint with an unanswered tool call defers the launch; the completed group launches it once", async () => {
-  const f = await fixture();
-  try {
-    let unanswered = "";
-    // No facts in either batch: a noting delivery would pause the next inherited-context task on
-    // 17b's own rule, which is not what this test is about.
-    // 26a: an empty batch is submitted explicitly, and still creates no delivery.
-    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", {}));
-    await f.turn();
-    await vi.waitFor(() => expect(notingRuns(f.h)).toHaveLength(1), { timeout: 5000 });
-    // New foreground activity that ends inside an assistant tool-call group: due, but not a safe
-    // boundary. The tool result is the foreground's to produce; a worker must never invent it.
-    f.manager().appendMessage({ role: "user", content: long, timestamp: 1 } as never);
-    unanswered = f.manager().appendMessage({ role: "assistant", api: "openai-completions", provider: "fake", model: "test", stopReason: "toolUse",
-      content: [{ type: "toolCall", id: "tc9", name: "read", arguments: { path: "/etc/hosts" } }], timestamp: 1 } as never);
-    expect(unanswered).toBeTruthy();
-    await f.h.emit("message_start", { message: reply("") });
-    await f.h.drain();
-    const head = () => f.h.memory.store.listTurns(1).at(-1)!.id;
-    expect(checkpointReadiness(f.original.file, f.manager().getLeafId()!)).toContain("tc9");
-    expect(notingRuns(f.h)).toHaveLength(1); // deferred: no second task, no claim, no progress
-    const pendingAtWait = f.h.memory.pendingEntries(1, "main", head()).map(e => e.id);
-    expect(pendingAtWait.length).toBeGreaterThan(0);
-    // The foreground completes the group: the same due task now launches, once, as a fork.
-    f.manager().appendMessage({ role: "toolResult", toolCallId: "tc9", toolName: "read", isError: false,
-      content: [{ type: "text", text: "ok" }], details: {}, timestamp: 1 } as never);
-    expect(checkpointReadiness(f.original.file, f.manager().getLeafId()!)).toBeUndefined();
-    f.manager().appendMessage(reply("final answer") as never);
-    await f.h.emit("agent_settled");
-    const second = await vi.waitFor(() => { const runs = notingRuns(f.h); expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
-    expect(second.mode).toBe("fork"); // the deferral did not cost the task its inherited context
-    expect(JSON.parse(second.response!).fallbackReason).toBeUndefined();
-    expect(f.h.memory.pendingEntries(1, "main", head())).toEqual([]);
-  } finally { await f.dispose(); }
-}, 20000);
-
-test("19c controlled boundaries: a tree switch never retargets a waiting task after a failed stable-parent run", async () => {
-  const f = await fixture();
-  try {
-    f.script(body => !worker(body) ? say("好的。")
-      : toolResults(body) ? say("Done.") : say("Nothing to note."));
-    await f.turn();
-    await vi.waitFor(() => expect(notingRuns(f.h)).toHaveLength(1), { timeout: 5000 });
-    const first = f.h.memory.store.listRuns(1)[0]!;
-    expect(first.outcome).toBe("failure");
-    expect(JSON.parse(first.response!).problems.join(" ")).toContain("explicitly call both note");
-    const beforeSwitch = first.branch;
-    const store = f.h.memory.store, head = store.listTurns(1).at(-1)!.id;
-    const pendingBeforeSettle = store.pendingEntries(1, "main", head).map(entry => entry.id);
-    const executions = store.db.prepare("SELECT id,outcome FROM task_executions ORDER BY id").all();
-    const requestsBeforeSettle = f.sent.length;
-    // Persist the independent foreground boundary before testing navigation. It must not retry
-    // the deliberately failed N, start D, or consume the evidence the failed task left pending.
-    await f.h.emit("agent_settled");
-    await f.h.drain();
-    expect(store.listRuns(1).map(run => run.id)).toEqual([first.id]);
-    expect(store.db.prepare("SELECT id,outcome FROM task_executions ORDER BY id").all()).toEqual(executions);
-    expect(store.pendingEntries(1, "main", head).map(entry => entry.id)).toEqual(pendingBeforeSettle);
-    expect(f.sent).toHaveLength(requestsBeforeSettle);
-    const saved = f.manager().getEntries().filter(e => e.type === "custom" && e.customType === "trace-memory").at(-1);
-    if (saved?.type !== "custom") throw new Error("missing settled binding");
-    expect(saved.data).toMatchObject({ sessionId: 1 });
-    expect(store.db.prepare("SELECT id FROM sessions WHERE host = ?").all(`pi:${f.manager().getSessionId()}`)).toEqual([{ id: 1 }]);
-    // Due work whose checkpoint is not a safe boundary yet: it waits.
-    f.manager().appendMessage({ role: "user", content: long, timestamp: 1 } as never);
-    const waiting = f.manager().appendMessage({ role: "assistant", api: "openai-completions", provider: "fake", model: "test", stopReason: "toolUse",
-      content: [{ type: "toolCall", id: "tc9", name: "read", arguments: { path: "/etc/hosts" } }], timestamp: 1 } as never);
-    await f.h.emit("message_start", { message: reply("") });
-    await f.h.drain();
-    expect(notingRuns(f.h)).toHaveLength(1);
-    // The user switches the tree. The waiting launch context is invalidated, not retargeted: the
-    // capture belongs to the old position and the memory branch identity changes with the switch.
-    f.manager().branch(f.manager().getBranch()[1]!.id);
-    await f.h.emit("session_tree", {}); // 17b: the switch itself launches nothing
-    await f.h.drain();
-    expect(notingRuns(f.h)).toHaveLength(1);
-    // Work continues on the new position. Its own entries are its own task.
-    f.manager().appendMessage({ role: "user", content: long + " elsewhere", timestamp: 1 } as never);
-    f.manager().appendMessage({ ...reply("a different answer"), timestamp: 1 } as never);
-    await f.h.emit("agent_settled");
-    const second = await vi.waitFor(() => { const runs = notingRuns(f.h); expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
-    expect(store.db.prepare("SELECT id FROM sessions WHERE host = ?").all(`pi:${f.manager().getSessionId()}`)).toEqual([{ id: 1 }]);
-    expect(store.getRun(first.id)!.outcome).toBe("failure");
-    expect(second.branch).not.toBe(beforeSwitch); // a different memory branch: not the waiting task
-    expect(second.mode).toBe("subagent"); // no capture for this branch, so no inherited context
-    const response = JSON.parse(second.response!);
-    expect(response.requestedMode).toBe("fork");
-    expect(response.fallbackReason).toContain("No current-branch provider payload captured");
-    // The waiting task's own entries are neither covered nor advanced by this run.
-    expect((response.entryAudit.entries as { nativeId: string }[]).map(e => e.nativeId)).not.toContain(waiting);
-    expect(hydrate(f.h.memory.pendingEntries(1, beforeSwitch!, 2), f.h.memory.store).length).toBeGreaterThan(0);
-  } finally { await f.dispose(); }
-}, 20000);
 
 test("19c 2026-09-08: the readiness probe rejects an unpersisted checkpoint and an unreadable parent file without creating anything", async () => {
   const f = await fixture();

@@ -5,10 +5,10 @@ The current [entry-address and budget contract](unified-entry.md) supersedes old
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `src/core/api/index.ts`, including
 its exposed store. Noting uses a fresh subagent by default and may request verified fork mode;
-Dreamer is always a fresh subagent. Live Consolidation is retired. Automatic N/D checks occur once
-at each main turn end (105), not at entry ingestion or ordinary task completion. Shutdown, tree
-navigation and compaction launch no phase. The current scheduling and publication contracts
-supersede per-entry triggers, chained runs and live C settings in the historical numbered sections below. Historical `note({facts: []})`, immediate N commit and NEAR examples below are not current call guidance.
+Dreamer is always a fresh subagent. Live Consolidation is retired. Automatic N/D checks occur after
+each persisted main-session entry (141), not only at main-turn settlement. Ordinary task completion
+launches no phase. The current scheduling and publication contracts supersede turn-end-only checks,
+chained runs and live C settings in the historical numbered sections below. Historical `note({facts: []})`, immediate N commit and NEAR examples below are not current call guidance.
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
 (`native.ts`): fork mode in a child forked from the parent session file at its persisted
@@ -53,11 +53,11 @@ N stages facts in `$n` slots and knowledge operations in `Mn` slots. A call with
 
 After the first normal pass, each non-fork N run receives one fixed end-review user message, even if already publishable or empty. It reports real held blockers (including host-specific empty calls for missing tools) and every held knowledge change (update body/metadata diff, full create body or archive kind/text). The second pass can correct a slot, drop it or leave a compliant change untouched. Only after that pass does normal termination attempt atomic publication; unresolved blockers bounce the run. Failure or cancellation gets no review, and there is no third pass. CC fork remains excluded; D keeps its pre-existing pass-end conditions.
 
-## Automatic checkpoints (105)
+## Automatic checkpoints (141)
 
-Pi uses the final `agent_settled` signal for its main-turn checkpoint. It reconciles persisted sources, deduplicates the selected session/branch/head, and checks N and D once each. A busy phase is skipped without retained work. Ordinary task success or failure starts no new check; another main turn end is required. Stop and path changes fence subsequent borrowed-candidate launches as well as current-session work.
+Pi checks N/D downstream of the committed ancestry transaction, once per newly imported main-session entry with its persisted source anchor. Pi persists after `message_end`; tool preflight, tool-result/next-message boundaries, provider requests and agent-end/settlement import the entries once available. Unchanged native leaves do no work. Before admission, the adapter saves its native state so a fork freezes a stable checkpoint. A busy phase queues nothing; the next entry after settlement checks afresh. Ordinary task success or failure starts no new check. Stop and path changes fence subsequent borrowed-candidate launches as well as current-session work.
 
-The three derived interpretations are shared with the [Core scheduling contract](core.md#automatic-scheduling-105): both due phases use the existing admission rules without a new ordering rule, automatic failure retries wait for a later turn, and manual catchup remains an explicit independent drain. Three consecutive failures still disable memory. A compaction during a long turn can remove unnoted originals from the parent while leaving them pending in the database; the existing coverage and capacity checks decide whether the later Noter can fork or needs fresh context.
+Noting uses the existing incremental pending counter, stopping at its trigger. Dreaming caches a not-due result until restore, enrollment, a budget change or the database progress signal re-arms it; a knowledge commit changes that signal, while Raw ingestion does not. Failures retry at a later entry end; three consecutive failures still disable memory. Closed-session borrowing stays at the deduplicated `agent_settled` checkpoint, and manual catchup remains an independent drain. See the [Core scheduling contract](core.md#automatic-scheduling-141).
 
 ## Configuration
 
@@ -271,8 +271,8 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   are retained. `trace://raw/S<n>/T<t>#E<k>` reads one complete source entry, including original
   tool arguments and results. `trace://raw/S<n>/T<t>` assembles the Turn's selected entries
   under the configured compressed profile; ordinary paging follows Pi's native `read`.
-- The final main-turn checkpoint checks the active branch's N/D queues once (105).
-  Entry reconciliation alone starts no run; the unchanged native leaf-id guard keeps streaming updates O(1).
+- Each newly ingested main-session entry checks the active branch's N/D queues (141).
+  The unchanged native leaf-id guard keeps streaming updates O(1); busy phases queue nothing.
   `noting.triggerTokens` defaults to **10,000 compressed-view tokens** measured
   with `renderEntry` over `pendingEntries`, including separators. Original Raw size,
   entry count and answered Turns do not trigger runs. Excluded sources contribute nothing.
@@ -290,7 +290,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   pending with a capacity notification — unless it was a *fork* that could not fit, which 27b
   re-admits once as a subagent instead. Unknown model capacity still leaves work pending.
   Native fork context is additional to the new-material budget and is never compressed.
-- Dreaming is checked **per session** once at each main turn end, over `global`, this session's
+- Dreaming is checked **per session** at each entry end through arming, over `global`, this session's
   project and this session together. Pending is each pool's current visible, non-archived revision lacking a
   `(pool, revision)` processing record, one revision per identity at its full rendered size. A run is
   due when the pools' total exceeds the Knowledge base plus the shared allowance (30,000 by default), or
@@ -478,7 +478,7 @@ creation timestamp cannot override it.
 
 Enabling reconciles available current-path history, including the paused interval,
 through the same identity-based importer as ordinary entries. It makes no provider
-call and does not synthesize a completion. The next main turn end checks
+call and does not synthesize a completion. The next main-session entry end checks
 normal queue thresholds. Repeating enable does not duplicate imported sources.
 
 Disabled sessions ingest nothing, inject nothing and start no new worker. Manual `note` and

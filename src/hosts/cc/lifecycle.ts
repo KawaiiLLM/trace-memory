@@ -738,10 +738,10 @@ export class CcCoordinator {
         // blocks the very operation that is holding it.
         const result = !final && this.importHolds > 0 ? null : await this.importer?.reconcile(importAbort.signal, this.importTuning) ?? null;
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
-        // The explicit drain still observes path/enrollment changes, but its reconciliation must
-        // not first become an ordinary threshold-trigger opportunity before the boundary freezes.
+        // Catchup freezes its own boundary; function checkpoints retain the turn-end fork path.
         if (!final && result) {
-          this.scheduler?.reconcile(result);
+          this.scheduler?.reconcile(result, this.startupComplete && reason !== "manual catchup" &&
+            reason !== "function turn end" && reason !== "fork source view", epoch);
           // Only a process with no confirmed live function module uses transcript termination.
           // Initial/restored history is not an automatic opportunity.
           const binding = readBinding(this.config, this.nativeSessionId);

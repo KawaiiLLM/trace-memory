@@ -158,6 +158,7 @@ test("89: CC reports a real invalid cursor, discards the whole borrowed scan, an
       selectedEntryIds: [entry.id], selectedCount: 1, selectedTailId: entry.id,
       selectedAppendedEntryIds: [entry.id], appendedEntryIds: [entry.id], problems: [], snapshot: {} as never };
     scheduler.reconcile(projection);
+    await scheduler.settle(); // Entry admission settles before the separate borrowing checkpoint.
     scheduler.turnEnd(projection, scheduler.catchupTicket());
     await scheduler.settle();
     expect(diagnostics.filter(value => value.includes("closed-session scan failed"))).toHaveLength(1);
@@ -167,7 +168,7 @@ test("89: CC reports a real invalid cursor, discards the whole borrowed scan, an
   } finally { memory.close(); vi.restoreAllMocks(); }
 });
 
-test("89: Pi reports a real invalid cursor while its own due N/D both reach their workers", async () => {
+test("Pi busy own phases defer closed-session scans and never borrow invalid targets", async () => {
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1,
     "dreaming.triggerTokens": 1 });
   try {
@@ -188,7 +189,7 @@ test("89: Pi reports a real invalid cursor while its own due N/D both reach thei
     await h.prompt("next main turn");
     await h.answer("one ordinary scheduling opportunity");
     await vi.waitFor(() => expect(h.conversations.length - before).toBe(2));
-    expect(h.notices.some(value => value.includes("noting closed-session scan failed"))).toBe(true);
+    expect(h.notices.some(value => value.includes("noting closed-session scan failed"))).toBe(false);
     expect(h.notices.some(value => value.includes("consolidation closed-session scan failed"))).toBe(false);
     for (const phase of ["noting", "dreaming"] as const) {
       expect(store.getClaim(own.id, phase)?.borrowed).toBe(false);

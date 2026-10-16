@@ -13,7 +13,7 @@ const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", 
 type Result = { outcome: string; problems?: string[]; automaticOff?: string };
 function fixture() {
   const pending = [1, 2], starts: string[] = []; let enabled = true;
-  const memory = { executorId: "ours", config: { closedSessionScope: "project" }, cancelTasks: vi.fn(),
+  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: { forkModeDefault: false } }, cancelTasks: vi.fn(),
     store: { enabled: () => enabled, pendingEntryIds: () => [...pending], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     taskEligibility: vi.fn((phase: string, target: { triggerEntryId?: number; headTurnId?: number }) => ({ due: !!phase && !!target })),
@@ -39,28 +39,29 @@ test("112: only an admitted CC fork passes its ToolSearch guidance to Core befor
   expect(f.memory.noting.mock.calls[1]![0]).not.toHaveProperty("forkGuidance");
 });
 
-test("entry imports and bootstrap do not check automatic work; one turn end checks both phases", () => {
+test("entry ends reuse a not-due Dreaming result until its progress signal changes", () => {
   const f = fixture(); f.memory.taskEligibility.mockImplementation(() => ({ due: false }));
   f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [1, 2], selectedAppendedEntryIds: [1, 2] });
-  f.scheduler.reconcile({ ...projection, bootstrap: false, appendedEntryIds: [1, 2], selectedAppendedEntryIds: [1, 2] });
   expect(f.memory.taskEligibility).not.toHaveBeenCalled();
-  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket());
-  expect(f.memory.taskEligibility.mock.calls.map(([phase]) => phase)).toEqual(["noting", "dreaming"]);
-  for (const [, target] of f.memory.taskEligibility.mock.calls) expect(target).toMatchObject({ triggerEntryId: 2, headTurnId: 1 });
+  f.scheduler.reconcile({ ...projection, selectedAppendedEntryIds: [1, 2] });
+  expect(f.memory.taskEligibility.mock.calls.map(([phase]) => phase)).toEqual(["noting", "dreaming", "noting"]);
+  f.memory.store.progressSignal = () => "committed";
+  f.scheduler.reconcile({ ...projection, selectedAppendedEntryIds: [3] });
+  expect(f.memory.taskEligibility.mock.calls.slice(-2).map(([phase]) => phase)).toEqual(["noting", "dreaming"]);
 });
 
-test("one turn checks both phases; settlement and new entries do not queue another run", async () => {
+test("busy entries queue nothing; the first entry after settlement admits both phases again", async () => {
   const f = fixture(); let releaseN!: () => void, releaseD!: () => void;
   f.memory.noting.mockImplementation(async () => { await new Promise<void>(resolve => { releaseN = resolve; }); return { outcome: "success" }; });
   f.memory.dream.mockImplementation(async () => { await new Promise<void>(resolve => { releaseD = resolve; }); return { outcome: "failure" }; });
-  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
+  f.scheduler.reconcile({ ...projection, selectedAppendedEntryIds: [1] }); await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(1); expect(f.memory.dream).toHaveBeenCalledTimes(1);
   f.scheduler.reconcile({ ...projection, appendedEntryIds: [1, 2], selectedAppendedEntryIds: [1, 2] });
   f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(1); expect(f.memory.dream).toHaveBeenCalledTimes(1);
   releaseN(); releaseD(); await tick(); await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(1); expect(f.memory.dream).toHaveBeenCalledTimes(1);
-  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
+  f.scheduler.reconcile({ ...projection, selectedAppendedEntryIds: [3] }); await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(2); expect(f.memory.dream).toHaveBeenCalledTimes(2);
   f.scheduler.stop(); releaseN(); releaseD(); await f.scheduler.settle();
 });

@@ -14,7 +14,7 @@ async function pending() {
     await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: "hi" }] } });
     h.persist(reply("word ".repeat(200)));
     await h.emit("agent_end");
-    await h.emit("agent_settled");
+    // Entry ingestion above is the admission boundary; no later host event is needed.
   };
   return { h, start };
 }

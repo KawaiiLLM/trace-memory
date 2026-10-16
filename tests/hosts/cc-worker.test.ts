@@ -1611,7 +1611,7 @@ test("stop before the reservation microtask fences all ordinary phases and later
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-ordinary-stop-race-")); dirs.push(directory);
   const calls: string[] = [];
   const result = (phase: string) => async () => { calls.push(phase); return { outcome: "success" }; };
-  const memory = { executorId: "ours", config: { closedSessionScope: "project" },
+  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: { forkModeDefault: false } },
     taskEligibility: () => ({ due: true }), cancelTasks: vi.fn(() => []),
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: result("noting"), dream: result("dreaming") } as any;
@@ -1638,7 +1638,7 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
     starts.push(name); admissions.push({ ...input, kind: name }); await new Promise<void>(resolve => releases.set(name, resolve));
     return { outcome: "failure", runId: 1, problems: ["synthetic"] };
   };
-  const memory = { config: { closedSessionScope: "project" }, taskEligibility: () => ({ due: true }),
+  const memory = { config: { closedSessionScope: "project", noting: { forkModeDefault: false } }, taskEligibility: () => ({ due: true }),
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: phase("noting"), dream: phase("dreaming") } as any;
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
@@ -1657,7 +1657,7 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
 
 test("scheduler diagnoses resolved bounced and successful-but-problemed results", async () => {
   const diagnostics: string[] = [];
-  const memory = { config: { closedSessionScope: "project" }, taskEligibility: () => ({ due: true }),
+  const memory = { config: { closedSessionScope: "project", noting: { forkModeDefault: false } }, taskEligibility: () => ({ due: true }),
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: async () => ({ outcome: "bounced", runId: 7, problems: ["candidate rejected"] }),
     dream: async () => ({ outcome: "success", runId: 8, diagnostics: [], committed: [], problems: ["post-commit warning"] }) } as any;
@@ -1673,35 +1673,11 @@ test("scheduler diagnoses resolved bounced and successful-but-problemed results"
     "dreaming worker success for S1 R8: post-commit warning"]));
 });
 
-test("scheduler checks the selected terminal once, not each imported entry", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "tm-cc-entry-opportunities-")); dirs.push(directory);
-  const eligibility: { phase: string; triggerEntryId?: number; headTurnId: number }[] = [], started: { phase: string; triggerEntryId?: number }[] = [];
-  const run = (phase: string) => async (target: TaskTarget) => { started.push({ phase, triggerEntryId: target.triggerEntryId }); return { outcome: "success" }; };
-  const memory = { config: { closedSessionScope: "project" },
-    taskEligibility: (phase: string, target: TaskTarget) => { eligibility.push({ phase, triggerEntryId: target.triggerEntryId, headTurnId: target.headTurnId });
-      return { due: target.triggerEntryId === 2 }; },
-    store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: id === 1 ? 10 : 11 }), progressSignal: () => "sig" },
-    noting: run("noting"), dream: run("dreaming") } as any;
-  const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
-  const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 11,
-    selectedEntryIds: [1, 2], selectedTailId: 2, appendedEntryIds: [1, 2, 99], problems: [], snapshot: {} as any };
-  scheduler.reconcile(projection);
-  expect(eligibility).toEqual([]);
-  scheduler.turnEnd(projection, scheduler.catchupTicket());
-  await scheduler.settle();
-  expect(eligibility.filter(value => value.phase === "noting").map(value => [value.triggerEntryId, value.headTurnId]))
-    .toEqual([[2, 11]]);
-  expect(new Set(started.map(value => `${value.phase}:${value.triggerEntryId}`))).toEqual(new Set(["noting:2", "dreaming:2"]));
-  // A normal unchanged importer projection grants no second chance.
-  scheduler.reconcile({ ...projection, appendedEntryIds: [] });
-  await tick();
-  expect(started).toHaveLength(2);
-});
 
 test("scheduler borrows closed Noting work but never a closed Dreamer target", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-no-dreamer-borrow-")); dirs.push(directory);
   const queried: string[] = [], started: string[] = [];
-  const memory = { config: { closedSessionScope: "project" }, taskEligibility: () => ({ due: false }),
+  const memory = { config: { closedSessionScope: "project", noting: { forkModeDefault: false } }, taskEligibility: () => ({ due: false }),
     store: { enabled: () => true, getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig",
       closedTasks: (phase: string) => { queried.push(phase); return [{ sessionId: 2, branch: "closed", headTurnId: 2, triggerEntryId: 20 }]; } },
     noting: async () => { started.push("noting"); return { outcome: "success" }; },
