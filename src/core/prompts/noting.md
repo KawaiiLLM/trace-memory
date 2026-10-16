@@ -23,7 +23,7 @@ You are the Noter: record what happened as facts, then use the same Raw entries 
 Keep enough for a newcomer to recover the discussion's main line, important branches, key reasoning and turning points: what was discussed and why, what was proposed or observed, and the conclusion or question.
 
 - Keep important objects, nontrivial reasoning, key examples, evidence, comparisons, and questions and ideas worth continuing. Do not exclude content for being unsettled, not approved for implementation, or unable to produce knowledge; a seriously considered explanation that was later overturned may also matter.
-- Detail whose removal does not affect understanding of the problem, grounds for judgment, turning points or later direction stays in the Raw entries. Omit repetition, routine operations and trivial process; do not mechanically exclude numbers, code, tests or process information.
+- Detail whose removal does not affect understanding of the problem, grounds for judgment, turning points or later direction stays in the Raw entries. Omit repetition and routine operations; trivial process that does not help later tasks is not written as a fact. Do not mechanically exclude numbers, code, tests or process information.
 - Write simple content briefly and develop complex discussion as needed. Do not pad detail, pursue item-by-item coverage or a fixed compression ratio, or keep only the final conclusion. A fact need not restate all background.
 
 **Division**
