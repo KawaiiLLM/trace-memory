@@ -5,20 +5,20 @@ import { join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { createConnection } from "node:net";
-import { TraceMemory, noVisibility } from "../../src/core/api/index.ts";
+import { TraceMemory, noVisibility, type TaskTarget } from "../../src/core/api/index.ts";
 import type { NotingAgentInput, RunAgent } from "../../src/core/api/index.ts";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, readBinding, recordSessionStart, updateBinding, withCcBindingLock, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
-import { controlSession, requestCcForkSources, signalCcTurnEnd, startControlServer } from "../../src/hosts/cc/control.ts";
+import { controlSession, requestCcForkSources, signalCcTurnEnd, startControlServer, type CcForkObservation } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { CcForegroundTools } from "../../src/hosts/cc/tools.ts";
 import { ccPluginToolNames, ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 import { CcForkAuthority } from "../../src/hosts/cc/fork-authority.ts";
-import { CcImporter } from "../../src/hosts/cc/importer.ts";
+import { CcImporter, type CcReconcileResult } from "../../src/hosts/cc/importer.ts";
 import { processStartedAt, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
 import { CcTranscriptCursor, CcTranscriptScan, classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 
@@ -340,7 +340,12 @@ test("live function-hook turns check once across both import orders and do not r
 });
 
 test("fork source observation returns frozen batch identities without scheduling a turn", async () => {
-  const f = fixture("fs"); enableSyntheticWorker(f); f.write();
+  const f = fixture("fs"); enableSyntheticWorker(f);
+  f.records.splice(-1, 1,
+    { uuid: "thinking", parentUuid: "a1", type: "assistant", timestamp: "2026-01-01T00:00:02.000Z",
+      message: { role: "assistant", content: [{ type: "thinking", thinking: "private" }] } },
+    { type: "last-prompt", leafUuid: "thinking" });
+  f.write();
   f.config.coreConfig.noting.triggerTokens = 1;
   f.config.coreConfig.noting.forkModeDefault = true;
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
@@ -352,7 +357,16 @@ test("fork source observation returns frozen batch identities without scheduling
     await markCcFunctionHook(f.config, f.nativeSessionId);
     const sources = await requestCcForkSources(f.config, f.nativeSessionId, "first-turn");
     expect(sources?.turnId).toBe("first-turn");
-    expect(sources?.selected).toContain("u1");
+    expect(sources?.selected).toEqual(["u1", "a1"]);
+    // Inspect final admission without launching a native worker.
+    const state = coordinator as unknown as { importer: CcImporter; lastReconcile: CcReconcileResult;
+      forkOption(target: TaskTarget, result: CcReconcileResult, observation: CcForkObservation): unknown };
+    const memory = state.importer.memory;
+    const target = { sessionId: sources!.sessionId, branch: sources!.branch, headTurnId: sources!.headTurnId };
+    expect(memory.notingBatch(target).map(entry => entry.nativeId)).toEqual(["u1", "a1", "thinking"]);
+    const admitted = state.forkOption(target, state.lastReconcile,
+      { checkpoint: { ...target, tailId: sources!.tailId }, batch: sources!.selected, model: "synthetic", window: 200000, prefix: 100 });
+    expect(admitted).not.toHaveProperty("refused");
     expect((coordinator as any).scheduler.running()).toEqual([]);
   } finally { await coordinator.shutdown("test"); }
 });

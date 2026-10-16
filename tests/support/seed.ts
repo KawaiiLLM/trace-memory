@@ -22,11 +22,11 @@ export function session(store: Store, projectId: number, host: string) {
   return store.createSession({ enrollmentChoice: true, projectId, host, startedAt: at, firstReplyAt: at });
 }
 
-/** A completed text entry; callers own the Turn and select the source path explicitly. */
+/** A completed entry; callers own the Turn and select the source path explicitly. */
 export function entry(store: Store, sessionId: number, turnId: number, nativeId: string,
-  role: "user" | "assistant", text = nativeId): SourceEntry {
+  role: "user" | "assistant", text = nativeId, raw = JSON.stringify({ role, content: text })): SourceEntry {
   return store.appendSourceEntry({ sessionId, turnId, nativeLineage: `lineage-${sessionId}`,
-    nativeId, role, text, raw: JSON.stringify({ role, content: text }), calls: [] });
+    nativeId, role, text, raw, calls: [] });
 }
 
 /** Authored public note shape; parsing and authority remain the production tool's responsibility. */

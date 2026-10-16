@@ -9,7 +9,7 @@ import { knowledgeReadSelection } from "./knowledge-read.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
-import { sourceBlocks, resultHasText, type SourceNormalizer, type HumanUserDetector } from "../model/source.ts";
+import { sourceBlocks, resultHasText, isThinkingOnly, type SourceNormalizer, type HumanUserDetector } from "../model/source.ts";
 import { readFacade, readProfile, type ListingOptions, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
 export type { ListingOptions, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
 export { memoryFiles, memoryPath, resolvedMemoryPath, MEMORY_ROOT, MEMORY_READ_ONLY } from "./files.ts";
@@ -783,9 +783,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // once per process and reused by every later due check or pending-weight read, never re-rendered
   // (never re-reading Raw) for an entry already seen. Pruned to exactly the still-pending set on every
   // read: an entry drops out the moment it is noted, instead of leaking for the life of the process.
-  const notingViewCache = new Map<number, string>();
+  const notingViewCache = new Map<number, string | null>();
   let lastPendingKey: string | undefined;
-  type CountedPrefix = { count: JoinedTokens; offset: number; end: number; views: Map<number, { id: number; text: string }> };
+  type CountedPrefix = { count: JoinedTokens; offset: number; end: number; materialCount: number; views: Map<number, { id: number; text: string | null }> };
   const counted = new Map<string, CountedPrefix>();
   const pendingState = (target: TaskTarget): PathPending => {
     const pending = store.pendingEntryState(target.sessionId, target.branch, target.headTurnId);
@@ -800,7 +800,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const countPending = (pending: PathPending, limit: number): number => {
     let prefix = counted.get(pending.key);
     if (!prefix) {
-      prefix = { count: new JoinedTokens(), offset: pending.offset, end: pending.offset, views: new Map() };
+      prefix = { count: new JoinedTokens(), offset: pending.offset, end: pending.offset, materialCount: 0, views: new Map() };
       counted.set(pending.key, prefix);
     }
     if (pending.offset > prefix.offset) {
@@ -808,12 +808,15 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       let removedChars = 0;
       for (let position = prefix.offset; position < removedEnd; position++) {
         const view = prefix.views.get(position)!;
-        removedChars += view.text.length + (position + 1 < prefix.end ? 2 : 0);
+        if (view.text !== null) {
+          removedChars += view.text.length + (prefix.materialCount > 1 ? 2 : 0);
+          prefix.materialCount--;
+        }
         notingViewCache.delete(view.id);
         prefix.views.delete(position);
       }
-      // Every removed view except the last counted view also removes its following separator.
-      // The suffix keeps the exact segment boundaries of the original joined string.
+      // Each removed material view also removes its following separator unless it was the last.
+      // Thinking-only members have neither text nor separators in the joined stream.
       prefix.count.removePrefix(removedChars);
       prefix.offset = pending.offset;
       prefix.end = Math.max(prefix.end, pending.offset);
@@ -822,19 +825,22 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const id = pending.at(prefix.end - pending.offset)!;
       let view = notingViewCache.get(id);
       if (view === undefined) {
-        view = renderEntry(store.getSourceEntry(id)!, cfg.render, resultText).content;
+        const entry = store.getSourceEntry(id)!;
+        view = isThinkingOnly(entry) ? null : renderEntry(entry, cfg.render, resultText).content;
         notingViewCache.set(id, view);
       }
-      if (prefix.end > pending.offset) prefix.count.add("\n\n");
-      prefix.count.add(view);
+      if (view !== null) {
+        if (prefix.materialCount++) prefix.count.add("\n\n");
+        prefix.count.add(view);
+      }
       prefix.views.set(prefix.end++, { id, text: view });
     }
     return prefix.count.count;
   };
   // Ticket 22b's rule kept exactly ("the estimate is still of one joined string, exactly as before —
   // independently estimated views are never summed"): JoinedTokens maintains the exact joined
-  // segment stream, including empty views and whitespace across separators. The due check stops
-  // at its threshold without reading or counting the rest of the pending backlog.
+  // segment stream, including empty material views, but excluding thinking-only entries entirely.
+  // The due check stops at its threshold without reading or counting the rest of the pending backlog.
   const notingDue = (target: TaskTarget): boolean =>
     countPending(pendingState(target), cfg.noting.triggerTokens) >= cfg.noting.triggerTokens;
   const pendingTokens: TraceMemory["pendingTokens"] = (phase, target, upToTrigger = false) => {
