@@ -111,7 +111,24 @@ async function fullChain(entries: number, due: boolean) {
   const originalSchedule = CcTaskScheduler.prototype.reconcile;
   const scheduleSpy = vi.spyOn(CcTaskScheduler.prototype, "reconcile").mockImplementation(function (this: CcTaskScheduler, ...args) {
     scheduler = this;
-    originalSchedule.apply(this, args);
+    if (!args[0].selectedAppendedEntryIds.length) { originalSchedule.apply(this, args); return; }
+    const memory = importer.memory, store = memory.store, real = memory.taskEligibility;
+    const countEligibility = vi.spyOn(memory, "taskEligibility").mockImplementation((...params) => {
+      eligibility++; origins.push(params[1].triggerEntryId!);
+      checks.push([params[0], params[1].triggerEntryId]);
+      const before = prepares, counted = phaseWork[params[0]] ??= { calls: 0, prepares: 0 }; counted.calls++;
+      try { return real(...params); } finally { counted.prepares += prepares - before; }
+    });
+    const prepare = store.db.prepare.bind(store.db);
+    const sql = vi.spyOn(store.db, "prepare").mockImplementation((query: string) => { prepares++; return prepare(query); });
+    const originalInput = store.commitGraphInput.bind(store);
+    const graph = vi.spyOn(store, "commitGraphInput").mockImplementation((...params) => { inputs++; return originalInput(...params); });
+    try {
+      scheduledAt = performance.now();
+      originalSchedule.apply(this, args);
+      scheduleFinishedAt = performance.now();
+      schedulerMs = scheduleFinishedAt - scheduledAt;
+    } finally { countEligibility.mockRestore(); sql.mockRestore(); graph.mockRestore(); }
   });
   const workerSpy = vi.spyOn(CcAgentWorker.prototype, "run").mockImplementation(async task => {
     phases.push(task.kind); admissionAt ||= performance.now();
@@ -140,24 +157,6 @@ async function fullChain(entries: number, due: boolean) {
     expect(result?.selectedEntryIds).toHaveLength(entries);
     expect(result?.appendedEntryIds).toHaveLength(entries);
     expect(result?.bootstrap).toBe(true);
-    // Bootstrap/import alone is not an automatic opportunity; the persisted final reply is.
-    const memory = importer.memory, store = memory.store, real = memory.taskEligibility;
-    const countEligibility = vi.spyOn(memory, "taskEligibility").mockImplementation((...params) => {
-      eligibility++; origins.push(params[1].triggerEntryId!);
-      checks.push([params[0], params[1].triggerEntryId]);
-      const before = prepares, counted = phaseWork[params[0]] ??= { calls: 0, prepares: 0 }; counted.calls++;
-      try { return real(...params); } finally { counted.prepares += prepares - before; }
-    });
-    const prepare = store.db.prepare.bind(store.db);
-    const sql = vi.spyOn(store.db, "prepare").mockImplementation((query: string) => { prepares++; return prepare(query); });
-    const originalInput = (store as any).commitGraphInput.bind(store);
-    const graph = vi.spyOn(store as any, "commitGraphInput").mockImplementation((...params) => { inputs++; return originalInput(...params); });
-    try {
-      scheduledAt = performance.now();
-      scheduler.turnEnd(result!, scheduler.catchupTicket());
-      scheduleFinishedAt = performance.now();
-      schedulerMs = scheduleFinishedAt - scheduledAt;
-    } finally { countEligibility.mockRestore(); sql.mockRestore(); graph.mockRestore(); }
     // The original graph-read bound covers synchronous scheduling, not deferred task execution.
     expect(inputs).toBe(1);
     await scheduler.settle();
@@ -241,7 +240,7 @@ test("Hook-first bootstrap and fresh resume validate known records without per-r
     expect(live.appendedEntryIds).toHaveLength(2);
     scheduler.reconcile(live);
     expect(eligibility.mock.calls.map(([phase, target]) => [phase, target.triggerEntryId])).toEqual([
-      ["noting", live.appendedEntryIds[0]], ["dreaming", live.appendedEntryIds[0]], ["noting", live.appendedEntryIds[1]],
+      ["noting", live.appendedEntryIds.at(-1)], ["dreaming", live.appendedEntryIds.at(-1)],
     ]);
   } finally { scheduler.stop(); eligibility.mockRestore(); transaction.mockRestore(); importer.close(); rmSync(dir, { recursive: true, force: true }); }
 });

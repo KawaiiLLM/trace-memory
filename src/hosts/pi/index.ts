@@ -13,7 +13,7 @@ import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggle
 import { agentDirectory, configuration, configuredMode, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
-import { TraceMemory, cacheMissWarning, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, retrievalPolicy, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
+import { TraceMemory, cacheMissWarning, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, isThinkingOnly, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, retrievalPolicy, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -138,7 +138,7 @@ export default function (pi: ExtensionAPI) {
     // then runs as a fresh child instead, recorded like any other fallback: requested mode fork,
     // actual mode subagent, reason named. A per-task readiness decision.
     if (input.kind === "noting") {
-      const refused = rawUnavailable(input.entryAudit.entries);
+      const refused = rawUnavailable(input.entryAudit.entries.filter(entry => !isThinkingOnly(memory.store.getSourceEntry(entry.id)!)));
       if (refused) return { refused };
     }
     // A tree switch since admission invalidates this launch context; the new branch's history is
@@ -335,15 +335,15 @@ export default function (pi: ExtensionAPI) {
    * really select and not a larger set it will never freeze. */
   type ForkTask = { kind: WorkerPhase; target: TaskTarget; boundary?: TaskBoundary };
   /** Ticket 29c "Noter fork eligibility by actual Raw availability" (parent 29). A requested Noter
-   * fork runs as a fork exactly when every entry of its target is available in the inherited context
+   * fork requires every non-thinking-only entry of its target to be available in the inherited context
    * in a representation it may extract from — a source entry Pi retained, or the bounded view a
    * carrier of ours supplied for an entry the conversation itself no longer holds (30: one view, and a
    * legacy tier-1 or tier-2 carrier counts as it). That is precisely what 29a's view calls `raw`, so a
    * free summary, an id in prose and an absent tool result are simply not in it; an incomplete
    * tool-call group stays the native gate's
-   * own check (`forkable`). One unavailable entry sends the whole target down the existing fallback
-   * (27c) with its exact membership — the invisible entry is never skipped to manufacture a forkable
-   * batch. This replaces ticket 20's blanket pre-compaction refusal: a pre-compaction entry Pi
+   * own check (`forkable`). One unavailable material entry sends the whole target down the existing fallback
+   * (27c) with its exact processing membership, including thinking-only entries. This replaces ticket 20's
+   * blanket pre-compaction refusal: a pre-compaction entry Pi
    * retained, and one a custom compaction carried as a bounded view, are both available and both fork.
    *
    * A view with no Raw at all is unknown coverage, not proven absence, and is refused for the same
@@ -366,7 +366,7 @@ export default function (pi: ExtensionAPI) {
     }
     return selectNotingMode({ requested, publicationPending: knowledgePending(task.target), visible: visible(binding()),
       pending: () => memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId),
-      batch: () => memory.notingBatch(task.target, task.boundary) }).fallbackReason;
+      batch: () => memory.notingBatch(task.target, task.boundary).filter(entry => !isThinkingOnly(entry)) }).fallbackReason;
   };
   const modelName = (kind: WorkerPhase) => {
     const configured = flat[PHASE_SETTING_KEYS[kind].model];
@@ -664,7 +664,7 @@ export default function (pi: ExtensionAPI) {
     current = undefined;
     reconciledLeaf = undefined; reconciled = undefined; // 22b: a restored session reconciles its ancestry from the start
     armDreaming();
-    reconcile(false);
+    reconcile(!fork);
     showSpend(ctx);
     if (state.sessionId) {
       state.projectId = memory.store.getSession(state.sessionId)!.projectId;
@@ -697,16 +697,16 @@ export default function (pi: ExtensionAPI) {
     if (!enabled()) return;
     const leaf = ctx.sessionManager.getLeafId();
     if (state.sessionId && leaf === reconciledLeaf) return;
-    let opportunities: TaskTarget[];
-    try { opportunities = walk(); }
+    let opportunity: TaskTarget | undefined;
+    try { opportunity = walk(); }
     catch (error) { reconciled = undefined; reconciledLeaf = undefined; throw error; }
     // A walk before the memory session exists creates no Turn; the first walk after allocation must run.
     reconciledLeaf = state.sessionId ? leaf : undefined;
-    // Admit only after the selected ancestry transaction commits, with each entry's own anchor.
-    if (check) for (const target of opportunities) checkQueues(target);
+    // One own check after commit, at the selected head with the newest imported entry as trigger.
+    if (check && opportunity) checkQueues(opportunity);
   };
   const walk = () => memory.store.transaction(() => {
-    const opportunities: TaskTarget[] = [];
+    let newest: number | undefined;
     let resume: typeof reconciled;
     let ancestry: SessionEntry[] = [];
     if (reconciled && state.sessionId) {
@@ -729,7 +729,7 @@ export default function (pi: ExtensionAPI) {
     ancestry = resume ? ancestry.reverse() : ctx.sessionManager.getBranch();
     if (!state.sessionId && ancestry.some(e => e.type === "message" && e.message.role === "assistant" &&
       (text(e.message) || e.message.content.some(c => c.type === "toolCall" || c.type === "thinking")))) allocate(ancestry[0]?.timestamp ?? now());
-    if (!state.sessionId) return opportunities;
+    if (!state.sessionId) return;
     reconciled = undefined; // a walk that throws leaves nothing to resume from
     let lineage = resume ? resume.lineage : state.originPiId ?? state.piId;
     let turnId = resume?.turnId;
@@ -814,7 +814,7 @@ export default function (pi: ExtensionAPI) {
       const stored = memory.appendEntry({ sessionId: state.sessionId, nativeLineage: lineage, nativeId: entry.id, turnId,
         role: message.role, text: natural, raw: JSON.stringify(message), calls: fragments });
       selected.push(stored.id);
-      opportunities.push({ sessionId: state.sessionId, branch: state.branch, headTurnId: head ?? turnId, triggerEntryId: stored.id });
+      newest = stored.id;
       if (message.role === "assistant") {
         offer(turnId, fragments);
         const value = memory.store.getTurn(turnId)!;
@@ -837,7 +837,7 @@ export default function (pi: ExtensionAPI) {
       if (current) current.id = turnId;
     }
     reconciled = { ids, lineage, turnId, head, selected, seen, toolCalls, path };
-    return opportunities;
+    return newest ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head!, triggerEntryId: newest } : undefined;
   });
 
   const unavailable = (reason: Extract<CurrentContextSnapshotResult, { available: false }>["reason"], message: string): CurrentContextSnapshotResult =>
@@ -1472,7 +1472,7 @@ export default function (pi: ExtensionAPI) {
     // carriers; enabling creates no generation or one-shot intent.
     save();
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
-    if (value) { armDreaming(); reconcile(false); save(); }
+    if (value) { armDreaming(); reconcile(); save(); }
     showSpend(ctx);
     const { lines, recovery, cost, composition, shared } = sessionSummary();
     const notice = statusBody([...recovery, ...lines, cost, ...composition, ...shared], Math.max(1, (process.stdout.columns ?? 100) - 2));

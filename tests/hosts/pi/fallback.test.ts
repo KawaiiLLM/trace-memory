@@ -630,6 +630,27 @@ test("27d 2026-09-10 (parent 27 amendment 6): a fallback model that cannot hold 
 const carrier = (h: ReturnType<typeof host>, entries: { id: number; nativeId: string; view?: "bounded"; tier?: 1 | 2 }[]) =>
   ({ traceMemory: { db: h.dbPath, session: 1, pi: "pi-test", supplied: { entries, factIds: [], knowledgeCommitIds: [] } } });
 
+test("fork visibility ignores compacted thinking-only entries and publication still processes them", async () => {
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 100 });
+  try {
+    await h.turn();
+    h.persist({ ...reply(""), content: [{ type: "thinking", thinking: "private" }] }, "thinking");
+    h.persist(reply("retained material"));
+    await h.emit("tool_execution_start"); await h.drain();
+    const entries = h.memory.store.listSourceEntries(1), thinking = entries.find(entry => entry.nativeId === "thinking")!;
+    expect(h.memory.store.listRuns(1)).toEqual([]);
+    h.compaction("material views only", { details: carrier(h, entries.filter(entry => entry.id !== thinking.id)
+      .map(entry => ({ id: entry.id, nativeId: entry.nativeId, view: "bounded" as const }))) });
+    await h.prompt("word ".repeat(200)); await h.answer(); await h.drain();
+    const runs = h.memory.store.listRuns(1).filter(run => run.kind === "noting");
+    expect(runs.map(run => run.outcome)).toEqual(["success"]);
+    const response = JSON.parse(runs[0]!.response!);
+    // Admission passed visibility; this fake host only refuses later for its missing native capture.
+    expect(response.fallbackReason).toContain("No current-branch provider payload captured");
+    expect(h.memory.store.entryNoted(thinking.id)).toBe(true);
+  } finally { await h.dispose(); }
+});
+
 type Older = { id: number; turnId: number; nativeId: string }[];
 /** Each row arranges what the context holds of the three entries laid down before it, and answers
  * with the refusal the admission must state — `undefined` when the target is available and the fork

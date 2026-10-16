@@ -73,10 +73,10 @@ test("27a 2026-09-10: the input allowance is the context window minus the 10,000
   try {
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("word ".repeat(15000)));
-    await h.emit("session_start");
     // 12,000 - 10,000 leaves 2,000 tokens for input, under the instruction and tool cost alone; the
     // diagnostic states the allowance it was given, which is the number this case pins.
     h.ctx.model = { ...h.ctx.model!, contextWindow: 12_000, maxTokens: 8_192 };
+    await h.emit("session_start");
     h.persist(reply("completion")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
     expect(12_000 - CONTEXT_HEADROOM).toBe(2_000);
     expect(h.notices.join("\n")).toContain(`of the ${12_000 - CONTEXT_HEADROOM} tokens allowed for input`);

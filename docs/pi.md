@@ -55,7 +55,7 @@ After the first normal pass, each non-fork N run receives one fixed end-review u
 
 ## Automatic checkpoints (141)
 
-Pi checks N/D downstream of the committed ancestry transaction, once per newly imported main-session entry with its persisted source anchor. Pi persists after `message_end`; tool preflight, tool-result/next-message boundaries, provider requests and agent-end/settlement import the entries once available. Unchanged native leaves do no work. Before admission, the adapter saves its native state so a fork freezes a stable checkpoint. A busy phase queues nothing; the next entry after settlement checks afresh. Ordinary task success or failure starts no new check. Stop and path changes fence subsequent borrowed-candidate launches as well as current-session work.
+Pi checks own N/D downstream of the committed ancestry transaction, once per import that persists new main-session entries, anchored at the selected `state.head` after import with the newest persisted entry's id as trigger. The selected head can be a compaction Turn even when the newest entry belongs to an earlier user Turn. Historical bootstrap at `session_start` or enabling memory publishes the complete selected path before this one check. Fully imported restart/resume and zero-append scans do not check; `session_tree` never checks, even when it imports new history. Manual catchup freezes its own boundary instead. Pi persists after `message_end`; tool preflight, tool-result/next-message boundaries, provider requests and agent-end/settlement import the entries once available. Unchanged native leaves do no work. Before admission, the adapter saves its native state so a fork freezes a stable checkpoint. A busy phase queues nothing; the next entry after settlement checks afresh. Ordinary task success or failure starts no new check. Stop and path changes fence subsequent borrowed-candidate launches as well as current-session work.
 
 Noting uses the existing incremental pending counter, stopping at its trigger. Dreaming caches a not-due result until restore, enrollment, a budget change or the database progress signal re-arms it; a knowledge commit changes that signal, while Raw ingestion does not. Failures retry at a later entry end; three consecutive failures still disable memory. Closed-session borrowing stays at the deduplicated `agent_settled` checkpoint, and manual catchup remains an independent drain. See the [Core scheduling contract](core.md#automatic-scheduling-141).
 
@@ -437,8 +437,8 @@ processing or a pre-commit cancellation, the claim is released conditionally.
 
 A business commit that wins before cancellation survives; no committed batch is replayed to obtain
 a final response. Normal shutdown then marks only the executor's own session closed and closes
-SQLite. Restore clears that closed state and reserves new claim tokens for the executor; it launches
-no phase. A direct synchronous facade close is a hard close rather than this graceful host sequence
+SQLite. Session-start restore clears that closed state and reserves new claim tokens for the executor;
+if it imports new main-session entries, it checks own N/D once at the final selected head, triggered by the newest imported entry. Tree navigation does not check. A direct synchronous facade close is a hard close rather than this graceful host sequence
 and may abandon terminal bookkeeping, so hosts must await normal shutdown.
 
 The child `AgentSession` receives a per-worker `AbortSignal`. Abort stops its provider request or
@@ -477,9 +477,9 @@ and clones carrying an identity share its current switch; a copied file's newer
 creation timestamp cannot override it.
 
 Enabling reconciles available current-path history, including the paused interval,
-through the same identity-based importer as ordinary entries. It makes no provider
-call and does not synthesize a completion. The next main-session entry end checks
-normal queue thresholds. Repeating enable does not duplicate imported sources.
+through the same identity-based importer as ordinary entries. An import that persists new entries
+checks normal own N/D thresholds once at the final selected head, triggered by its newest entry; enabling synthesizes no completion.
+Repeating enable does not duplicate imported sources or check without a new import.
 
 Disabled sessions ingest nothing, inject nothing and start no new worker. Manual `note` and
 `memory` reject with `/trace on`; `trace://` reads, `search` and status remain available even before
@@ -800,14 +800,16 @@ summary is accepted as lossy and carries no promise that pending Raw or facts su
 
 ## Noter fork eligibility by Raw availability (29c)
 
-A requested Noter fork runs as a fork **exactly when every entry of its target is available
+A requested Noter fork requires **every non-thinking-only entry of its target to be available
 in the inherited context in a representation it may extract from**:
 
 ```text
 available Raw = native ids the visible view marks "source"  (Pi retained the entry)
               ∪ native ids it marks "view"                  (a carrier supplied its bounded view)
-fork allowed  ⇔ every entry of the target ∈ available Raw
+fork allowed  ⇔ every non-thinking-only entry of the target ∈ available Raw
 ```
+
+Thinking-only entries do not decide visibility at admission or launch, but remain frozen processing members and are marked processed on publication.
 
 That set is 29a's `VisibleView.raw` as 30 left it — every marked compressed view counts, the one
 bounded representation and both legacy tiers alike — so what does **not** count needs no rule of

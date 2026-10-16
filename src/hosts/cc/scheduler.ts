@@ -86,18 +86,15 @@ export class CcTaskScheduler {
     }
     this.lastReady = ready;
     if (!ready) return;
-    if (admitAutomatic && opportunityEpoch === entryEpoch && !reconcile.bootstrap) {
-      for (const entryId of reconcile.selectedAppendedEntryIds) {
-        const entry = this.memory.store.getSourceEntry(entryId);
-        if (!entry) throw new Error(`CC appended entry ${entryId} disappeared before scheduling`);
-        const target = { sessionId: reconcile.coreSessionId!, branch: reconcile.branch,
-          headTurnId: entry.turnId, triggerEntryId: entryId };
-        this.lastEntryOpportunity = entryId;
-        const fork = this.memory.config.noting.forkModeDefault
-          ? { refused: "CC native fork checkpoint is unavailable at entry end" } : undefined;
-        this.startAutomatic("noting", target, fork, undefined, false);
-        this.startAutomatic("dreaming", target, undefined, undefined, false);
-      }
+    const entryId = reconcile.selectedAppendedEntryIds.at(-1);
+    if (admitAutomatic && opportunityEpoch === entryEpoch && entryId !== undefined) {
+      const target = { sessionId: reconcile.coreSessionId!, branch: reconcile.branch,
+        headTurnId: reconcile.headTurnId!, triggerEntryId: entryId };
+      this.lastEntryOpportunity = entryId;
+      const fork = this.memory.config.noting.forkModeDefault
+        ? { refused: "CC native fork checkpoint is unavailable at entry end" } : undefined;
+      this.startAutomatic("noting", target, fork, undefined, false);
+      this.startAutomatic("dreaming", target, undefined, undefined, false);
     }
     this.driveCatchup(false);
   }

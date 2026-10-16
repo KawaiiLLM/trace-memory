@@ -10,6 +10,7 @@ import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, isThinkingOnly, type SourceNormalizer, type HumanUserDetector } from "../model/source.ts";
+export { isThinkingOnly } from "../model/source.ts";
 import { readFacade, readProfile, type ListingOptions, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
 export type { ListingOptions, CompactResult, Injection, TopicGroups, TruncationReceipt } from "./read.ts";
 export { memoryFiles, memoryPath, resolvedMemoryPath, MEMORY_ROOT, MEMORY_READ_ONLY } from "./files.ts";

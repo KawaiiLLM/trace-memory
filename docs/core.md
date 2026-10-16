@@ -67,6 +67,8 @@ visible as requested-versus-actual.
 
 Both hosts check Noting and Dreaming after each persisted main-session user, assistant or observation entry, admitting at most one run per phase under the existing seats and claims. Subagent entries are excluded. A busy phase queues nothing; ordinary completion schedules nothing. The first entry after settlement checks afresh, so a tail left after the last entry waits for the next entry.
 
+An import that persists new selected entries checks own N/D once after publishing the complete path, using the selected head after import as `headTurnId` and the newest persisted entry as `triggerEntryId`. This includes live imports and historical bootstrap: CC executor startup, Pi `session_start` restore and enabling memory, only when they actually persist new selected history. Fully imported restart/resume, zero-append scans and sibling-only imports create no opportunity. Pi tree switches never check, even when they import new history. Manual catchup freezes its own boundary; CC's function turn-end and fork-source reconciles retain the turn-end check instead.
+
 Noting uses the incremental pending count, stopping at its trigger. Dreaming retains a not-due result until a knowledge commit, restore, enrollment or budget change, or a change of `Store.progressSignal` re-arms it; Raw ingestion alone does not re-arm it. Failed automatic tasks retry at a later entry end; three consecutive business failures still disable memory. Explicit catchup retains its drain and completion checkpoints. Closed-session borrowing remains turn-end-driven. Thresholds, batch limits and project-declaration checks are unchanged.
 
 A requested CC fork without a live turn-end checkpoint starts fresh immediately and records that fallback reason. The `turn.complete` fork path remains available when Noting first becomes due there; no slot waits for a future hook. Core checks inherited input plus its increment against the reported capacity. Missing inherited sources or an explicit pre-start refusal use the existing fresh runner and record the reason; a started or ambiguous fork failure is not a fresh fallback. CC accepts originals only in a compaction carrier as a fresh case; no persistent Raw/carrier association is added. Pi's existing coverage and readiness checks remain unchanged.
@@ -501,7 +503,8 @@ the same `compact()` allocator as main-agent compaction.
 Thinking-only entries (every normalized block is thinking) remain members of the frozen
 processing batch but supply no Noting body, label, marker, source-index line or head reply.
 The pending token count joins only the other entries' views; batch and model-capacity pricing
-likewise charge only material Noting reads. A successful publication marks every frozen member
+likewise charge only material Noting reads. Both hosts exclude thinking-only entries from fork
+visibility checks, including Pi's launch-time recheck. A successful publication marks every frozen member
 processed, including thinking-only entries. An all-thinking pending path weighs zero; an explicit
 catchup can still process it. Compaction, `trace://raw`, search and citation validation are unchanged:
 thinking-only entries remain readable but cannot support new facts.

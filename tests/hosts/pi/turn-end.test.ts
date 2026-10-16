@@ -24,6 +24,73 @@ function seedKnowledge(h: ReturnType<typeof host>) {
 const skip = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "m1", name: "memory",
   arguments: { skip: "K1@v1", because: "Reviewed unchanged" } }] });
 
+test.each(["session_start", "enable"] as const)(
+  "%s imports check Noting without waiting for another native entry", async boundary => {
+    const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+    if (boundary !== "session_start") await h.emit("session_start");
+    if (boundary === "enable") await h.commands.get("trace")!.handler("off", h.ctx);
+    h.persist({ role: "user", content: "word ".repeat(400), timestamp: 1 }, "import-user");
+    h.persist(reply("imported answer"), "import-answer");
+    if (boundary === "enable") await h.commands.get("trace")!.handler("on", h.ctx);
+    else await h.emit(boundary);
+    await h.drain();
+    const entries = h.memory.store.listSourceEntries(1), newest = entries.at(-1)!;
+    expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"]]);
+    expect(h.memory.store.listRuns(1)[0]!.origin).toEqual({ sessionId: 1, entryIds: [newest.id] });
+    expect(entries.every(entry => h.memory.store.entryNoted(entry.id))).toBe(true);
+    await h.emit("tool_execution_start"); await h.drain();
+    expect(h.memory.store.listRuns(1)).toHaveLength(1);
+  });
+
+test("one import spanning multiple turns admits work at its newest entry", async () => {
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  await h.emit("session_start");
+  for (const name of ["first", "second"]) {
+    h.persist({ role: "user", content: `${name} ${"word ".repeat(400)}`, timestamp: 1 });
+    h.persist(reply(`${name} answer`));
+  }
+  await h.emit("tool_execution_start"); await h.drain();
+  const entries = h.memory.store.listSourceEntries(1), newest = entries.at(-1)!;
+  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"]]);
+  expect(h.memory.store.listRuns(1)[0]).toMatchObject({
+    rangeTo: `S1/T${newest.turnId}`, origin: { sessionId: 1, entryIds: [newest.id] } });
+  expect(entries.every(entry => h.memory.store.entryNoted(entry.id))).toBe(true);
+  await h.emit("tool_execution_start"); await h.drain();
+  expect(h.memory.store.listRuns(1)).toHaveLength(1);
+});
+
+test("an import after mid-turn compaction checks the selected head, not the entry's owning Turn", async () => {
+  const h = host({ "noting.triggerTokens": 100, "noting.forkModeDefault": false });
+  await h.turn();
+  const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 9000 } });
+  const compaction = h.compaction(block.compaction.summary);
+  await h.emit("session_compact", { compactionEntry: compaction });
+  const head = h.memory.store.listTurns(1).at(-1)!.id;
+  h.persist(reply("word ".repeat(400)), "after-compaction");
+  await h.emit("tool_execution_start"); await h.drain();
+  const newest = h.memory.store.listSourceEntries(1).at(-1)!;
+  expect(newest.turnId).not.toBe(head);
+  expect(h.memory.store.listRuns(1)).toEqual([expect.objectContaining({
+    kind: "noting", outcome: "success", rangeTo: `S1/T${newest.turnId}`,
+    origin: { sessionId: 1, entryIds: [newest.id] } })]);
+});
+
+test.each(["session_start", "session_tree"] as const)("%s with fully imported history launches nothing even when Noting is due", async boundary => {
+  const h = host({ "noting.triggerTokens": 1, "noting.forkModeDefault": false });
+  await h.emit("session_start");
+  h.persist({ role: "user", content: "pending selected evidence", timestamp: 1 });
+  h.persist(reply("pending reply"));
+  await h.emit("session_tree"); await h.drain(); // Navigation imports without checking.
+  expect(h.memory.store.listRuns(1)).toEqual([]);
+  const entries = h.memory.store.listSourceEntries(1);
+  h.memory.config.noting.triggerTokens = 1;
+  expect(h.memory.taskEligibility("noting", { sessionId: 1, branch: "main", headTurnId: 1 }).due).toBe(true);
+  await h.emit(boundary); await h.drain();
+  expect(h.memory.store.listSourceEntries(1)).toEqual(entries);
+  expect(h.memory.store.listRuns(1)).toEqual([]);
+  expect(h.requests).toEqual([]);
+});
+
 test("a tool-heavy turn admits Noting at its first due entry and Dreaming after a knowledge commit", async () => {
   const h = host({ "noting.triggerTokens": 300, "noting.forkModeDefault": false, "dreaming.triggerTokens": 1 });
   h.provider(async c => {

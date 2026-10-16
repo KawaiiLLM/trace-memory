@@ -61,7 +61,7 @@ test("133 R1: pending Raw overflow delegates without a delivery or an extra Note
     h.memory.setKnowledgeBudget("session", 0);
     failing(h);
     for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i} ` + "word ".repeat(250)); await h.answer(); await h.drain(); }
-    await h.commands.get("trace").handler("on", h.ctx);
+    await h.commands.get("trace").handler("on", h.ctx); await h.drain();
     const runsBefore = h.memory.store.listRuns(1).length;
     const pendingBefore = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
     expect(pendingBefore.length).toBeGreaterThan(0);

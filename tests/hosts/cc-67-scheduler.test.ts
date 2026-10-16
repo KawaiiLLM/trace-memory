@@ -42,11 +42,10 @@ test("112: only an admitted CC fork passes its ToolSearch guidance to Core befor
 test("entry ends reuse a not-due Dreaming result until its progress signal changes", () => {
   const f = fixture(); f.memory.taskEligibility.mockImplementation(() => ({ due: false }));
   f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [1, 2], selectedAppendedEntryIds: [1, 2] });
-  expect(f.memory.taskEligibility).not.toHaveBeenCalled();
-  f.scheduler.reconcile({ ...projection, selectedAppendedEntryIds: [1, 2] });
+  f.scheduler.reconcile({ ...projection, selectedAppendedEntryIds: [3, 4] });
   expect(f.memory.taskEligibility.mock.calls.map(([phase]) => phase)).toEqual(["noting", "dreaming", "noting"]);
   f.memory.store.progressSignal = () => "committed";
-  f.scheduler.reconcile({ ...projection, selectedAppendedEntryIds: [3] });
+  f.scheduler.reconcile({ ...projection, selectedAppendedEntryIds: [5] });
   expect(f.memory.taskEligibility.mock.calls.slice(-2).map(([phase]) => phase)).toEqual(["noting", "dreaming"]);
 });
 

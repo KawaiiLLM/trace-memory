@@ -299,14 +299,15 @@ test("long-history toggles retain reconciliation but never add a full status sca
   await h.emit("session_start");
   const ancestry = nativeAncestry({ entries: 2000 });
   h.entries.push(...ancestry); h.allEntries.push(...ancestry);
+  const command = (args: string) => h.commands.get("trace").handler(args, h.ctx);
   const census = vi.spyOn(composition, "contextComposition");
+  await command("on"); await h.drain(); // Initial import has its own final-path eligibility check.
   const views = vi.spyOn(rendering, "renderEntry");
   const reads = vi.spyOn(Store.prototype, "getSourceEntry");
   const identities = vi.spyOn(Store.prototype, "findKnownSourceEntry");
   const grants = vi.spyOn(h.ctx.modelRegistry, "getApiKeyAndHeaders");
   const claims = vi.spyOn(Store.prototype, "acquireClaim");
-  const command = (args: string) => h.commands.get("trace").handler(args, h.ctx);
-  await command("on");
+  // Measure fully imported toggles, not bootstrap's scheduling work.
   for (const value of ["on", "off", "off", "on"]) {
     reads.mockClear(); identities.mockClear();
     await command(value);

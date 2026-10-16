@@ -100,12 +100,12 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
   try {
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("word ".repeat(15000)));
-    await h.emit("session_start");
     // Price the current shared prompt/schema, not the pre-92 fixed overhead. The remaining
     // 3k holds one 2k entry and framing, but not two entries. Production limits are unchanged.
     const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
     const fittingWindow = fixed + 3_000 + CONTEXT_HEADROOM;
     h.ctx.model = { ...h.ctx.model!, contextWindow: fittingWindow };
+    await h.emit("session_start");
     h.persist(reply("completion")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
     expect(h.requests).toHaveLength(4); // note, memory, terminal reply, fixed review
     expect(JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit.entries).toHaveLength(1);

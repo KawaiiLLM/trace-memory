@@ -62,7 +62,7 @@ test("18a 2026-09-08: provisional toggle, cancel, menu parity and headless statu
   await command(h, "on"); expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
 });
 
-test("18a 2026-09-08: historical import and pause resume use native identities without a model call", async () => {
+test("historical enable imports once, preserves native identities, and checks only newly imported history", async () => {
   const h = setup({ "noting.triggerTokens": 1, "noting.forkModeDefault": false });
   h.setHeaderTimestamp("2000-01-01T00:00:00Z");
   for (let i = 0; i < 3; i++) { h.persist({ role: "user", content: "same", timestamp: i }); h.persist(reply("same answer")); }
@@ -70,11 +70,17 @@ test("18a 2026-09-08: historical import and pause resume use native identities w
   await command(h, "on");
   const imported = h.memory.pendingEntries(1, "main", state(h).head);
   expect(imported).toHaveLength(6); expect(h.memory.store.listTurns(1)).toHaveLength(3);
-  expect(h.requests).toEqual([]);
-  await command(h, "on"); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual(imported);
+  await h.drain();
+  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"]]);
+  expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
+  const requests = h.requests.length;
+  const identities = h.memory.store.listSourceEntries(1);
+  await command(h, "on"); await h.drain();
+  expect(h.memory.store.listSourceEntries(1)).toEqual(identities);
+  expect(h.requests).toHaveLength(requests);
   await command(h, "off");
   expect(await h.prompt("paused source")).toBeUndefined(); await h.answer("paused answer"); await h.emit("agent_settled");
-  expect(h.memory.store.listTurns(1)).toHaveLength(3); expect(h.requests).toEqual([]);
+  expect(h.memory.store.listTurns(1)).toHaveLength(3); expect(h.requests).toHaveLength(requests);
   expect(await h.emit("session_before_tree")).toBeUndefined();
   expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 42 } })).toBeUndefined();
   expect(compacted(h.memory.compact(1))).toBe(""); expect(h.memory.branchSummary(1, "main", 3)).toBe("");
@@ -82,10 +88,15 @@ test("18a 2026-09-08: historical import and pause resume use native identities w
   expect((await h.tools.get("read").execute("id", { path: "trace://raw/S1/T1" }, undefined, undefined, h.ctx)).content[0].text).toContain("same");
   expect((await h.tools.get("search").execute("id", { query: "same", layer: "raw" }, undefined, undefined, h.ctx)).content[0].text).toContain("T1");
   await command(h, "on"); expect(h.memory.store.listTurns(1)).toHaveLength(4);
-  expect(h.memory.pendingEntries(1, "main", state(h).head)).toHaveLength(8); expect(h.requests).toEqual([]);
-  await h.answer("eligible completion"); await h.drain();
-  // Joint N examines both layers, then performs its fixed end review.
-  expect(h.requests).toHaveLength(4); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
+  expect(h.memory.pendingEntries(1, "main", state(h).head)).toHaveLength(2);
+  await h.drain();
+  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([
+    ["noting", "success"], ["noting", "success"] ]);
+  expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
+  expect(h.memory.store.listSourceEntries(1).slice(0, identities.length)).toEqual(identities);
+  const resumedRequests = h.requests.length;
+  await h.emit("session_start"); await h.drain();
+  expect(h.requests).toHaveLength(resumedRequests);
 });
 
 test("18a 2026-09-08: historical tree and newer clone never overwrite the current shared switch", async () => {

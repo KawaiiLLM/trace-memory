@@ -662,7 +662,7 @@ export class CcCoordinator {
     const decision = selectNotingMode({ requested: "fork",
       publicationPending: !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length),
       visible, pending: () => memory.pendingEntries(target.sessionId, target.branch, target.headTurnId),
-      batch: () => batch });
+      batch: () => materialBatch });
     return decision.fallbackReason ? refuse(decision.fallbackReason) : { visible, model: observation.model,
       capacity: { inputTokens: observation.window! - CC_CONTEXT_HEADROOM, prefixTokens: observation.prefix! } };
   }
@@ -742,10 +742,10 @@ export class CcCoordinator {
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
         // Catchup freezes its own boundary; function checkpoints retain the turn-end fork path.
         if (!final && result) {
-          this.scheduler?.reconcile(result, this.startupComplete && reason !== "manual catchup" &&
+          this.scheduler?.reconcile(result, reason !== "manual catchup" &&
             reason !== "function turn end" && reason !== "fork source view", epoch);
           // Only a process with no confirmed live function module uses transcript termination.
-          // Initial/restored history is not an automatic opportunity.
+          // Initial/restored history checks own work above, but does not drive turn-end borrowing.
           const binding = readBinding(this.config, this.nativeSessionId);
           if (reason !== "function turn end" && reason !== "manual catchup" && this.startupComplete &&
               !(binding && activeFunctionHook(binding)) && result.terminal && (result.terminal.stopReason === "end_turn" || result.terminal.isApiErrorMessage === true ||

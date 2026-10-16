@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { createConnection } from "node:net";
+import { createConnection, type Socket } from "node:net";
 import { TraceMemory, noVisibility, type TaskTarget } from "../../src/core/api/index.ts";
 import type { NotingAgentInput, RunAgent } from "../../src/core/api/index.ts";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { Store } from "../../src/core/store/index.ts";
-import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
+import { resolveCcHostConfig, type ResolvedCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, readBinding, recordSessionStart, updateBinding, withCcBindingLock, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
 import { controlSession, requestCcForkSources, signalCcTurnEnd, startControlServer, type CcForkObservation } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
@@ -21,6 +21,7 @@ import { CcForkAuthority } from "../../src/hosts/cc/fork-authority.ts";
 import { CcImporter, type CcReconcileResult } from "../../src/hosts/cc/importer.ts";
 import { processStartedAt, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
 import { CcTranscriptCursor, CcTranscriptScan, classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { legacyFacts } from "../support/seed.ts";
 
 const dirs: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -46,6 +47,11 @@ function enableSyntheticWorker(f: ReturnType<typeof fixture>): void {
     worker: { claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 }, cwd: f.dir,
       responseOriginTimeoutMs: 20 } });
   Object.assign(f.config, configured);
+}
+async function importHistory(f: { config: ResolvedCcHostConfig; nativeSessionId: string }): Promise<void> {
+  // Turn-end tests need known history, not a new startup entry opportunity.
+  const importer = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
+  try { await importer.reconcile(); } finally { importer.close(); }
 }
 const sleep = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 const directControl = (executor: CcExecutorBinding, verb: unknown, fields: Record<string, unknown> = {}) =>
@@ -286,10 +292,93 @@ test("reloaded executor clears only an unconfirmed close for the same live nativ
   finally { child.send({ type: "close" }); await childExit(child); }
 }, 5_000);
 
+test("startup imports admit Noting at the newest persisted entry without another transcript write", async () => {
+  const f = fixture("startup-entry"); enableSyntheticWorker(f);
+  f.config.coreConfig.noting.triggerTokens = 1;
+  f.records.splice(-1, 1,
+    { uuid: "u2", parentUuid: "a1", type: "user", timestamp: "2026-01-01T00:00:02.000Z", ...sdkPrompt("p2"),
+      message: { role: "user", content: "second question" } },
+    { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z",
+      message: { role: "assistant", content: [{ type: "text", text: "second answer" }] } },
+    { type: "last-prompt", leafUuid: "a2" });
+  f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const original = CcImporter.prototype.reconcile;
+  const inputs: NotingAgentInput[] = [];
+  const spy = vi.spyOn(CcImporter.prototype, "reconcile").mockImplementation(async function (this: CcImporter, ...args) {
+    // Replace only model transport; startup ingestion and publication remain real.
+    const transport = this as unknown as { runAgent: RunAgent };
+    transport.runAgent = async raw => {
+      const input = raw as NotingAgentInput; inputs.push(input);
+      input.reportRequest({ fixture: "startup" });
+      input.tools.find(tool => tool.name === "note")!.execute({});
+      input.tools.find(tool => tool.name === "memory")!.execute({});
+      return { outcome: "success", output: "done", request: { fixture: "startup" } };
+    };
+    return original.apply(this, args);
+  });
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId);
+  try {
+    await coordinator.start();
+    const { importer, scheduler } = coordinator as unknown as { importer: CcImporter; scheduler: CcTaskScheduler };
+    await scheduler.settle();
+    expect(importer.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"]]);
+    const entries = importer.memory.store.listSourceEntries(1), newest = entries.at(-1)!;
+    expect(importer.memory.store.listRuns(1)[0]).toMatchObject({
+      rangeTo: `S1/T${newest.turnId}`, origin: { sessionId: 1, entryIds: [newest.id] } });
+    expect(inputs[0]!.entryIds).toEqual(entries.map(entry => entry.id));
+    expect(entries.every(entry => importer.memory.store.entryNoted(entry.id))).toBe(true);
+    await coordinator.requestReconcile("same imported leaf"); await scheduler.settle();
+    expect(inputs).toHaveLength(1);
+  } finally { await coordinator.shutdown("test"); spy.mockRestore(); }
+});
+
+test("fork visibility ignores compacted thinking-only entries while retaining processing membership", async () => {
+  const f = fixture("thinking-fork"); enableSyntheticWorker(f);
+  f.config.coreConfig.noting.triggerTokens = 1e9;
+  f.records.splice(-1, 1,
+    { uuid: "thinking", parentUuid: "a1", type: "assistant", timestamp: "2026-01-01T00:00:02.000Z",
+      message: { role: "assistant", content: [{ type: "thinking", thinking: "private" }] } },
+    { type: "last-prompt", leafUuid: "thinking" });
+  f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId);
+  try {
+    await coordinator.start();
+    // The existing fork-source seam inspects admission without launching a native worker.
+    const state = coordinator as unknown as { importer: CcImporter; lastReconcile: CcReconcileResult;
+      forkOption(target: TaskTarget, result: CcReconcileResult, observation: CcForkObservation): unknown };
+    const memory = state.importer.memory;
+    legacyFacts(memory.store, { kind: "noting", sessionId: 1, branch: "main", createdAt: now }, [],
+      memory.store.listSourceEntries(1).filter(entry => entry.nativeId !== "thinking").map(entry => entry.id));
+    f.records.splice(-1, 1,
+      { uuid: "boundary", parentUuid: null, logicalParentUuid: "thinking", type: "system", subtype: "compact_boundary",
+        timestamp: "2026-01-01T00:00:03.000Z" },
+      { uuid: "summary", parentUuid: "boundary", type: "user", isCompactSummary: true,
+        timestamp: "2026-01-01T00:00:04.000Z", message: { role: "user", content: "summary" } },
+      { uuid: "u2", parentUuid: "summary", type: "user", ...sdkPrompt("p2"),
+        timestamp: "2026-01-01T00:00:05.000Z", message: { role: "user", content: "next question" } },
+      { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:06.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: "next answer" }] } },
+      { type: "last-prompt", leafUuid: "a2" });
+    f.write(); await coordinator.requestReconcile("fork source view");
+    memory.config.noting.triggerTokens = 1;
+    memory.config.noting.forkModeDefault = true;
+    await markCcFunctionHook(f.config, f.nativeSessionId);
+    const sources = (await requestCcForkSources(f.config, f.nativeSessionId, "after-thinking"))!;
+    const target = { sessionId: sources.sessionId, branch: sources.branch, headTurnId: sources.headTurnId };
+    expect(memory.notingBatch(target).map(entry => entry.nativeId)).toEqual(["thinking", "u2", "a2"]);
+    expect(sources.selected).toEqual(["u2", "a2"]);
+    expect(state.forkOption(target, state.lastReconcile, { checkpoint: { ...target, tailId: sources.tailId },
+      batch: sources.selected, model: "synthetic", window: 200000, prefix: 100 })).not.toHaveProperty("refused");
+  } finally { await coordinator.shutdown("test"); }
+});
+
 test("live function-hook turns check once across both import orders and do not replay bootstrap", async () => {
   const f = fixture("turn-hook"); enableSyntheticWorker(f);
   (f.records[1]!.message as Record<string, unknown>).stop_reason = "end_turn"; f.write();
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  await importHistory(f);
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
   try {
     await coordinator.start();
@@ -530,6 +619,7 @@ test("no-hook native interruption after previously imported tool Raw checks once
     message: { role: "user", content: [{ type: "tool_result", tool_use_id: "read-call", content: "sample" }] } });
   f.write();
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  await importHistory(f);
   const diagnostics: string[] = [];
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostics.push(message));
   try {
@@ -730,27 +820,49 @@ test("a disconnected turn-end control cannot admit after a slow import; a connec
   const f = fixture("turn-rpc"); enableSyntheticWorker(f);
   (f.records[1]!.message as Record<string, unknown>).stop_reason = "end_turn"; f.write();
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  await importHistory(f);
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  let release: (() => void) | undefined;
+  let socket: Socket | undefined;
   try {
     await coordinator.start();
-    (coordinator as any).transcriptWatcher?.close();
-    const importer = (coordinator as any).importer as CcImporter;
-    const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
-    (importer.memory as any).noting = noting;
-    (importer.memory as any).taskEligibility = (phase: string) => ({ due: phase === "noting" });
+    // Same private importer seam as the surrounding native-projection fixtures.
+    const internal = coordinator as unknown as { importer: CcImporter; scheduler: CcTaskScheduler };
+    const importer = internal.importer;
+    const noting = vi.spyOn(importer.memory, "noting").mockResolvedValue({
+      outcome: "success", runId: 1, facts: [], diagnostics: [],
+    });
+    vi.spyOn(importer.memory, "taskEligibility").mockImplementation(phase => ({ due: phase === "noting" }));
     await markCcFunctionHook(f.config, f.nativeSessionId);
     const original = importer.reconcile.bind(importer);
-    let release!: () => void, arrived!: () => void;
+    let arrived!: () => void;
     let held = new Promise<void>(resolve => { release = resolve; });
     let entered = new Promise<void>(resolve => { arrived = resolve; });
-    (importer as any).reconcile = async () => { arrived(); await held; return original(); };
+    importer.reconcile = async (...args) => { arrived(); await held; return original(...args); };
+    const turnEnd = coordinator.turnEnd.bind(coordinator);
+    let received!: (signal: AbortSignal) => void;
+    const serverEntered = new Promise<AbortSignal>(resolve => { received = resolve; });
+    let disconnected: Promise<unknown> | undefined;
+    vi.spyOn(coordinator, "turnEnd").mockImplementationOnce((...args) => {
+      const pending = turnEnd(...args);
+      disconnected = pending;
+      received(args[2]);
+      return pending;
+    });
     const executor = readBinding(f.config, f.nativeSessionId)!.executor!;
-    const socket = createConnection(executor.socketPath);
-    await new Promise<void>(resolve => socket.once("connect", resolve));
+    socket = createConnection(executor.socketPath);
+    await new Promise<void>(resolve => socket!.once("connect", resolve));
     socket.write(`${JSON.stringify({ verb: "turn-end", token: executor.token, turnId: "aborted", reason: "answer" })}\n`);
-    await entered;
-    socket.destroy(); await new Promise<void>(resolve => socket.once("close", resolve));
-    release(); await coordinator.requestReconcile("drain disconnected checkpoint");
+    // A poll can enter the importer first; wait for the actual control handler as well.
+    const [, signal] = await Promise.all([entered, serverEntered]);
+    const aborted = new Promise<void>(resolve => {
+      if (signal.aborted) resolve();
+      else signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    socket.destroy();
+    // Client close is not proof the server has observed disconnection.
+    await aborted;
+    release!(); await disconnected; await internal.scheduler.settle();
     expect(noting).not.toHaveBeenCalled();
 
     held = new Promise<void>(resolve => { release = resolve; });
@@ -758,11 +870,15 @@ test("a disconnected turn-end control cannot admit after a slow import; a connec
     f.config.finalSyncTimeoutMs = 1; // A live control request must not expire at an unrelated final-sync deadline.
     const connected = signalCcTurnEnd(f.config, f.nativeSessionId, "still-connected", "answer");
     await entered;
+    // Exercise the native socket beyond its unrelated final-sync deadline on the platform clock.
     await sleep(20);
     expect(noting).not.toHaveBeenCalled();
-    release(); await connected;
+    release!(); await connected;
     await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(1));
-  } finally { await coordinator.shutdown("test"); }
+  } finally {
+    release?.(); socket?.destroy();
+    await coordinator.shutdown("test");
+  }
 });
 
 test("owner-token stop uses the facade's owned task path and leaves another executor running", async () => {

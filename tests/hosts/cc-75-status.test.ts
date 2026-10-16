@@ -61,7 +61,7 @@ const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", 
 test("scheduler notifies admission and settlement, and a failing notify never blocks a task", async () => {
   const tick = () => new Promise<void>(resolve => setImmediate(resolve));
   let release!: (value: unknown) => void;
-  const memory = { executorId: "ours", config: { closedSessionScope: "project" },
+  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: { forkModeDefault: false } },
     store: { enabled: () => true, pendingEntryIds: () => [1, 2], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "s0" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "noting" })),
@@ -70,7 +70,7 @@ test("scheduler notifies admission and settlement, and a failing notify never bl
   const calls: string[] = [];
   const scheduler = new CcTaskScheduler(memory as any, worker, () => {}, reason => { calls.push(reason); });
   scheduler.reconcile(projection);
-  expect(calls).toEqual([]); // import alone is not a turn-end opportunity
+  expect(calls).toEqual(["noting admitted"]); // Newly imported bootstrap history checks once.
   scheduler.turnEnd(projection, scheduler.catchupTicket());
   await tick();
   expect(calls).toEqual(["noting admitted"]); // admission fires synchronously, before the run settles
@@ -81,7 +81,7 @@ test("scheduler notifies admission and settlement, and a failing notify never bl
 
 test("a throwing notify never prevents admission or settlement (fault isolation)", async () => {
   const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-  const memory = { executorId: "ours", config: { closedSessionScope: "project" },
+  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: { forkModeDefault: false } },
     store: { enabled: () => true, pendingEntryIds: () => [1, 2], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "s0" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "noting" })),
@@ -132,9 +132,9 @@ test("attach and the first reconcile publish; admission and settlement publish t
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
   const calls = trackPublish(coordinator);
   try {
-    await coordinator.start(); // attach and first reconcile publish, but do not admit work
+    await coordinator.start(); // Attach and bootstrap import publish and admit due work.
     expect(calls).toContain("startup");
-    expect(calls).not.toContain("noting admitted");
+    expect(calls).toContain("noting admitted");
     await coordinator.turnEnd("fixture-main-turn", "answer", new AbortController().signal);
     expect(calls).toContain("noting admitted");
     const executor = readBinding(f.config, f.nativeSessionId)!.executor!;

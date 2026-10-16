@@ -7,9 +7,10 @@ import { host, reply } from "./test-host.ts";
 test("67: a long before-tree carry and after-tree restore have bounded projection work and start no phase", async () => {
   const h = host({ "noting.triggerTokens": 1, "consolidation.triggerTokens": 1 });
   try {
+    await h.emit("session_start");
     h.persist({ role: "user", content: "evidence", timestamp: 1 });
     for (let i = 0; i < 1_200; i++) h.persist(reply(`history ${i} ` + "word ".repeat(30)));
-    await h.emit("session_start");
+    await h.emit("session_tree");
     const store = h.memory.store, head = store.listTurns(1).at(-1)!.id;
     for (const lineage of ["sibling-open", "closed-retained"]) store.setCurrentPath(1, "main", head, lineage);
     const user = store.sourcePath(1, "main", head).find(value => value.turnId === head && store.getSourceEntry(value.id)?.role === "user")!;
@@ -49,9 +50,10 @@ test("67: a long before-tree carry and after-tree restore have bounded projectio
 test("67: real ancestor rewind and sibling switch preserve evidence carry with diverse support owners", async () => {
   const h = host({ "noting.triggerTokens": 1, "consolidation.triggerTokens": 1 });
   try {
+    await h.emit("session_start");
     h.persist({ role: "user", content: "ROOT EVIDENCE", timestamp: 1 });
     for (let i = 0; i < 600; i++) h.persist(reply(`root history ${i}`));
-    await h.emit("session_start");
+    await h.emit("session_tree");
     const ancestor = [...h.entries], store = h.memory.store;
     const root = store.listTurns(1).at(-1)!.id;
     const fact = (sessionId: number, turnId: number, entryId: number, text: string) => {
