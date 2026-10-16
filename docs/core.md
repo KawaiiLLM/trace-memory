@@ -498,6 +498,14 @@ Noter's frozen Raw batch and full historical facts retain independent 10,000-tok
 selected path; unused Raw space never enlarges their base. Fresh material is assembled by
 the same `compact()` allocator as main-agent compaction.
 
+Thinking-only entries (every normalized block is thinking) remain members of the frozen
+processing batch but supply no Noting body, label, marker, source-index line or head reply.
+The pending token count joins only the other entries' views; batch and model-capacity pricing
+likewise charge only material Noting reads. A successful publication marks every frozen member
+processed, including thinking-only entries. An all-thinking pending path weighs zero; an explicit
+catchup can still process it. Compaction, `trace://raw`, search and citation validation are unchanged:
+thinking-only entries remain readable but cannot support new facts.
+
 Ticket 133 adds a separate `compaction.temporaryTokens` allowance, 10,000 by default.
 The anchor is the batch's newest turn. Its frozen batch already fits its Raw base, so no
 Noter Raw borrows: the allowance holds human user words and uncovered fact titles, filled
@@ -557,9 +565,9 @@ The allowance is a ceiling, never a target — fewer needed facts make a smaller
 - **Noting.** A target entry is withheld when the view holds its native id as a retained `source` or a
   carrier's bounded `view` (30: one representation, and a legacy tier-1 or tier-2 carrier counts as it).
   Withheld
-  bodies leave the mandatory framing standing: the range, the source index for the whole frozen range,
-  and the head reply — restated only when the head entry's own body was withheld, because the captured
-  request a fork inherits stops before the reply it produced. Optional: the applicable historical facts
+  bodies leave the mandatory framing standing: the range, the source index for the non-thinking-only
+  entries in the frozen range, and the head reply — restated only when the head entry's own body was
+  withheld, because the captured request a fork inherits stops before the reply it produced. Optional: the applicable historical facts
   the view does not hold, within the same `render.episodicBlockTokens - noting.batchTokens` ceiling; no
   knowledge block, and no borrowing from the Raw allowance.
 - **Consolidation.** Target fact bodies the view does not hold by id, with `factAddresses` still naming

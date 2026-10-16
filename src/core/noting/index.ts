@@ -4,7 +4,7 @@ import { withRetrievalPolicy } from "../render/retrieval-policy.ts";
 import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput, SourceEntry, SourceEntryMeta } from "../store/index.ts";
-import type { HumanUserDetector } from "../model/source.ts";
+import { isThinkingOnly, type HumanUserDetector } from "../model/source.ts";
 import type { bindTools } from "../api/tools.ts";
 import { pricedToolDefinitions, toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
@@ -166,6 +166,7 @@ export const notingBatch = (store: Store, pending: readonly SourceEntryMeta[], c
   const rendered = new Map<number, ReturnType<typeof renderEntry>>();
   for (const meta of pending) {
     const entry = store.getSourceEntry(meta.id)!;
+    if (isThinkingOnly(entry)) { entries.push(entry); continue; }
     const view = renderEntry(entry, config.render, resultText);
     if (rawWindowTokens([...views, view.content], [...rendered.values(), view].flatMap(value => value.receipts)) > config.noting.batchTokens) break;
     entries.push(entry); views.push(view.content); rendered.set(entry.id, view);
@@ -227,7 +228,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // This replaces sourceHeadEntryId's metadata read, not a new per-node cache.
   const source = store.sourcePath(session.id, input.branch, input.headTurnId, snapshot);
   const headEntryId = source.at(-1)?.id;
-  const preparedSources = { path, entries: source, pending: allPending };
+  const omitted = new Set(entries.filter(isThinkingOnly).map(entry => entry.id));
+  const preparedSources = { path, entries: source, pending: allPending.filter(entry => !omitted.has(entry.id)) };
   const ancestry = [...new Set(entries.map(entry => entry.turnId))].map(id => store.getTurn(id)!);
   const calls = new Map<number, ReturnType<Store["listToolCalls"]>>();
   const toolCalls = (turnId: number) => {
@@ -265,9 +267,10 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
         { endpointEntryId: endpoint.id, processedRawRefill: false, showKnowledgeSize: true, readingGuide: false,
           renderedEntries: rendered, historicalUserEntries, preparedSources, toolNames: names });
     if ("native" in assembled || !assembled.material) throw new Error("Noting material assembly produced no material");
-    if (assembled.supplied.entries.length !== entries.length
-      || assembled.supplied.entries.some((entry, index) => entry.id !== entries[index]!.id))
-      throw new Error("Noting material Raw membership differs from its frozen processing batch; left pending");
+    const materialEntries = entries.filter(entry => !omitted.has(entry.id));
+    if (assembled.supplied.entries.length !== materialEntries.length
+      || assembled.supplied.entries.some((entry, index) => entry.id !== materialEntries[index]!.id))
+      throw new Error("Noting material Raw membership differs from its frozen material batch; left pending");
     const prepared = notingMaterial(frozen, entry => rendered.get(entry.id)!, assembled.material, assembled.supplied, initial, inheriting, names);
     const capacity = input.capacity;
     // Gate 4 (ruling 2026-09-08), with ticket 20's "Capacity negotiation": the adapter reports its
@@ -324,7 +327,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
  *
  * Entry views are rendered once per freeze and reused through capacity negotiation (22d). */
 function notingMaterial(frozen: { sessionId: number; harness: string; headEntryId?: number; entries: SourceEntry[]; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[] }, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, assembled: SharedMaterial, selected: SuppliedMaterial, initial: InitialContext, inheriting: boolean, names: ToolNames) {
-  const { sessionId, entries, turns } = frozen;
+  const { sessionId, turns } = frozen;
+  const entries = frozen.entries.filter(entry => !isThinkingOnly(entry));
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
   // Every entry the map holds is either the retained original or a marked bounded view of ours (29a,
@@ -349,7 +353,7 @@ function notingMaterial(frozen: { sessionId: number; harness: string; headEntryI
     head,
     // Mandatory framing (parent 29 "Keep mandatory framing"): with a body withheld, the source index
     // is what identifies the target entries exactly and maps them to addresses the child must find in
-    // its own context. It covers the whole frozen range, not only what was supplied.
+    // its own context. Thinking-only processing members carry no material or index line.
     sources,
     facts: inheriting ? [] : assembled.facts ?? [],
     factTitles: inheriting ? [] : assembled.factTitles ?? [],
@@ -367,7 +371,7 @@ function notingMaterial(frozen: { sessionId: number; harness: string; headEntryI
     factIds: inheriting ? [] : selected.factIds, knowledgeCommitIds: inheriting ? [] : selected.knowledgeCommitIds,
     ...(inheriting ? {} : { knowledgeTokens: selected.knowledgeTokens }) };
   return { range, views: new Map(carried.map(e => [e.id, view(e)])),
-    material, text, selectedEntryIds: selected.entries.map(entry => entry.id), supplied: suppliedMaterial };
+    material, text, selectedEntryIds: frozen.entries.map(entry => entry.id), supplied: suppliedMaterial };
 }
 
 /** The run audit records every omission marker of every entry it sent (17a). 23c ruling 3 replaced the

@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, rmSync, watch, type FSWatcher } 
 import { basename, dirname, join } from "node:path";
 import { Store } from "../../core/store/index.ts";
 import { deliveredView, selectNotingMode, type NotingAgentInput, type RunAgentResult, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
+import { isThinkingOnly } from "../../core/model/source.ts";
 import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } from "./config.ts";
 import { activeFunctionHook, bindingPath, coreHostOf, readBinding, sessionEnabled, updateBinding, updateBindingInStoreTransaction, validateNativeSessionId, type CcHookInput,
   type CcSessionBinding, withCcBindingLock } from "./binding.ts";
@@ -547,7 +548,7 @@ export class CcCoordinator {
     if (!this.importer.memory.config.noting.forkModeDefault || !this.importer.memory.taskEligibility("noting", target).due ||
         this.scheduler?.running().includes("noting")) return null;
     const batch = this.importer.memory.notingBatch(target);
-    return { turnId, ...target, tailId: result.selectedTailId, selected: batch.map(entry => entry.nativeId) };
+    return { turnId, ...target, tailId: result.selectedTailId, selected: batch.filter(entry => !isThinkingOnly(entry)).map(entry => entry.nativeId) };
   }
 
   private runFork(task: NotingAgentInput): Promise<RunAgentResult> {
@@ -635,7 +636,8 @@ export class CcCoordinator {
         observation.window! <= CC_CONTEXT_HEADROOM || observation.prefix! < 0)
       return refuse("CC fork source coverage or native model capacity is unavailable");
     const batch = this.importer.memory.notingBatch(target);
-    if (observation.batch.length !== batch.length || batch.some((entry, i) => observation.batch![i] !== entry.nativeId))
+    const materialBatch = batch.filter(entry => !isThinkingOnly(entry));
+    if (observation.batch.length !== materialBatch.length || materialBatch.some((entry, i) => observation.batch![i] !== entry.nativeId))
       return refuse("CC fork batch changed since source observation");
     const memory = this.importer.memory, binding = this.importer.currentBinding();
     const remaining = new Set(batch.map(entry => entry.turnId));

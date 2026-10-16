@@ -21,16 +21,14 @@ import { rawWindowTokens } from "../../../src/core/render/material.ts";
 const view = (text: string, nativeId: string, role: "user" | "assistant") => renderEntry({ id: 1, entryOrdinal: role === "user" ? 1 : 2, sessionId: 1, nativeLineage: "pi-test", nativeId, turnId: 1, role, text, raw: "", calls: [], blocks: [{ kind: "text", text }] } as SourceEntry, DEFAULT_CONFIG.render).content;
 const batchText = (input: string) => input.split("Raw:\n\n")[1]!.split("\n</episodic>")[0]!;
 
-test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed tokens (%s)", async size => {
+test.each([9999, 10000])("Noting threshold counts only material views (%s)", async size => {
   const h = host({ "noting.forkModeDefault": false });
   try {
     // 30: one entry view is worth at most 2,000 tokens, so the threshold is reached by several
     // entries; the last one is tuned word by word until the joined estimate is exactly `size`.
     const bodies = Array.from({ length: 5 }, () => "word ".repeat(1_800));
     const joined = (last: string) => tokens([...bodies.map((text, i) => view(text, `u${i}`, "user")),
-      view(last, "u", "user"), renderEntry({ id: 7, entryOrdinal: 2, sessionId: 1, turnId: 6, nativeLineage: "pi-test", nativeId: "thinking",
-        role: "assistant", text: "", raw: "", calls: [], blocks: [{ kind: "thinking", text: "private" }] }, DEFAULT_CONFIG.render).content,
-      view("a", "a", "assistant")].join("\n\n"));
+      view(last, "u", "user"), view("a", "a", "assistant")].join("\n\n"));
     // Start one estimate away from the target so the loops below take a handful of renderings, not one
     // per word: every "word " is about one token, and the two loops close the remaining gap exactly.
     let content = "word ".repeat(Math.max(1, size - joined("word ")));
@@ -44,7 +42,7 @@ test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed
     await h.emit("agent_settled"); await h.drain();
     const entries = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
     const head = h.memory.store.listTurns(1).at(-1)!.id;
-    expect(tokens(entries.map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBe(size);
+    expect(tokens(entries.filter(entry => entry.nativeId !== "thinking").map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBe(size);
     // The default script calls note and memory, ends its first pass, then reviews once.
     expect(h.requests).toHaveLength(size === 10000 ? 4 : 0);
     const pending = hydrate(h.memory.pendingEntries(1, "main", head), h.memory.store);

@@ -20,6 +20,10 @@ export function sourceBlocks(entry: SourceEntry): SourceBlock[] {
     ? [{ kind: "marker" as const, text: "[non-text content omitted]" }] : []),
     ...entry.calls.map(call => ({ kind: entry.role === "toolResult" ? "result" as const : "call" as const, call }))];
 }
+/** Only normalized thinking blocks qualify; empty and legacy entries keep their existing views. */
+export const isThinkingOnly = (entry: SourceEntry): boolean =>
+  !!entry.blocks?.length && entry.blocks.every(block => block.kind === "thinking");
+
 export const fragmentAddress = (entry: SourceEntry, block: SourceBlock): string => !entry.blocks || block.kind === "marker" ? entryAddress(entry)
   : `${entryAddress(entry)}@${block.kind === "call" || block.kind === "result" ? callSelector(block.call.callId) : block.kind}`;
 export const blockText = (block: Extract<SourceBlock, { call: unknown }>): string => (block.texts ?? [block.call.result ?? ""]).join("\n");

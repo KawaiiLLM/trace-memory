@@ -39,6 +39,8 @@ import { memoryFiles } from "../../../src/core/api/files.ts";
 import { CC_AUTO_CONTINUE_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccStripAutoContinue } from "../../../src/hosts/cc/transcript.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { DirectoryOptions } from "../../../src/core/project/directory.ts";
+import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
+import { rawWindowTokens } from "../../../src/core/render/material.ts";
 
 // 62 excludes temporary directories, where every fixture lives. As in directory-projects.test.ts, the
 // hosts' `directoryAllocation` receives the exclusions a test sets; unset, it keeps the defaults.
@@ -101,6 +103,80 @@ function session() {
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command: "pnpm install" }), result: JSON.stringify({ stdout: "done", stderr: "" }), status: "success" });
   return { s, t };
 }
+
+test.each(["subagent", "fork"] as const)("thinking-only entries are processed without Noting material (%s)", async mode => {
+  const m = sourceSeededMemory(join(directory, "thinking.sqlite"), admittedScenarios.agent, {}, undefined, piSourceBlocks);
+  try {
+    const project = m.store.createProject({ name: "thinking", declaredBy: "mark" });
+    const s = seedSession(m.store, project.id, "pi:fixture");
+    const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: time });
+    const privateEntries = ["first-private", "last-private"].map(id => seedEntry(m.store, s.id, t.id, id, "assistant", "",
+      JSON.stringify({ role: "assistant", content: [{ type: "thinking", thinking: id }] })));
+    const first = privateEntries[0]!, last = privateEntries[1]!;
+    const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+    m.selectEntries(s.id, "main", [first.id]);
+    expect(m.pendingTokens("noting", target).tokens).toBe(0);
+    const publicEntry = seedEntry(m.store, s.id, t.id, "answer", "assistant", "Public answer",
+      JSON.stringify({ role: "assistant", content: [{ type: "thinking", thinking: "mixed-private" }, { type: "text", text: "Public answer" }] }));
+    m.selectEntries(s.id, "main", [publicEntry.id]);
+    const baseline = freezeNoting(m.store, { ...target, mode: "subagent" }, m.config);
+    const publicView = renderEntry(publicEntry, m.config.render);
+    m.config.noting.batchTokens = rawWindowTokens([publicView.content], publicView.receipts);
+    m.selectEntries(s.id, "main", [first.id, publicEntry.id, last.id]);
+    expect(m.pendingTokens("noting", target).tokens).toBe(tokens(renderEntry(publicEntry, m.config.render).content));
+    const visible = visibleTarget(m, s.id, "main", t.id);
+    const frozen = freezeNoting(m.store, { ...target, mode, visible }, m.config);
+    expect(frozen.entries.map(entry => entry.id)).toEqual([first.id, publicEntry.id, last.id]);
+    expect(frozen.prepared!.material.entries.map(entry => entry.id)).toEqual(mode === "fork" ? [] : [publicEntry.id]);
+    expect(frozen.prepared!.material.sources).toEqual(mode === "fork" ? [expect.stringContaining(`#E${publicEntry.entryOrdinal}`)] : []);
+    expect(frozen.prepared!.material.head).toBeNull();
+    for (const entry of [first, last]) expect(frozen.prepared!.text).not.toContain(`T${t.id}#E${entry.entryOrdinal}`);
+    expect(frozen.prepared!.text).not.toContain("[thinking omitted]");
+    expect(frozen.prepared!.text).not.toContain("mixed-private");
+    expect(frozen.prepared!.supplied.entries.map(entry => entry.id)).toEqual(mode === "fork" ? [] : [publicEntry.id]);
+    if (mode === "subagent") {
+      const price = tokens(baseline.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)))
+        + tokens(baseline.prepared!.text);
+      expect(freezeNoting(m.store, { ...target, mode, boundary: { exactEntryIds: [first.id, publicEntry.id, last.id] },
+        capacity: { inputTokens: price, prefixTokens: 0 } }, m.config).entries.map(entry => entry.id))
+        .toEqual([first.id, publicEntry.id, last.id]);
+    }
+    expect(await m.noting({ ...target, mode, visible })).toMatchObject({ outcome: "success" });
+    expect(calls[0]!.entryIds).toEqual([first.id, publicEntry.id, last.id]);
+    expect(m.pendingEntries(s.id, "main", t.id)).toEqual([]);
+    for (const entry of [first, last]) expect(m.store.entryNoted(entry.id)).toBe(true);
+    expect(m.pendingTokens("noting", target).tokens).toBe(0);
+  } finally { m.close(); }
+});
+
+test("pending counts stay exact as mixed batches publish and only thinking remains", async () => {
+  const m = sourceSeededMemory(join(directory, "pending-thinking.sqlite"), admittedScenarios.agent, {}, undefined, piSourceBlocks);
+  try {
+    const project = m.store.createProject({ name: "thinking", declaredBy: "mark" });
+    const s = seedSession(m.store, project.id, "pi:fixture");
+    const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: time });
+    const entries = ["first answer", "", "second answer", ""].map((text, index) => seedEntry(m.store, s.id, t.id,
+      `entry-${index}`, "assistant", text, JSON.stringify({ role: "assistant", content: text
+        ? [{ type: "text", text }] : [{ type: "thinking", thinking: `private-${index}` }] })));
+    const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+    m.selectEntries(s.id, "main", entries.map(entry => entry.id));
+    const publicEntries = [entries[0]!, entries[2]!];
+    expect(m.pendingTokens("noting", target).tokens).toBe(tokens(publicEntries.map(entry => renderEntry(entry, m.config.render).content).join("\n\n")));
+    for (const entry of publicEntries) {
+      expect(await m.noting({ ...target, mode: "subagent", boundary: { maxEntryId: entry.id } })).toMatchObject({ outcome: "success" });
+      const remaining = publicEntries.filter(candidate => candidate.id > entry.id);
+      expect(m.pendingTokens("noting", target).tokens).toBe(tokens(remaining.map(candidate => renderEntry(candidate, m.config.render).content).join("\n\n")));
+    }
+    expect(m.pendingEntries(s.id, "main", t.id).map(entry => entry.id)).toEqual([entries[3]!.id]);
+    m.config.noting.batchTokens = 0;
+    expect(await m.noting({ ...target, mode: "subagent" })).toMatchObject({ outcome: "success" });
+    expect(calls.at(-1)!.material.entries).toEqual([]);
+    expect(calls.at(-1)!.material.sources).toEqual([]);
+    expect(calls.at(-1)!.material.head).toBeNull();
+    expect(calls.at(-1)!.text).not.toContain("[thinking omitted]");
+    expect(m.pendingEntries(s.id, "main", t.id)).toEqual([]);
+  } finally { m.close(); }
+});
 
 test("2026-10-01, 117: every normal Noter pass gets one held-state review before atomic publication", async () => {
   const seen: string[] = [];
