@@ -1635,6 +1635,7 @@ var Store = class {
   pendingGeneration = 0;
   migration64d;
   closed = false;
+  dreamingScopes = /* @__PURE__ */ new Map();
   dreamingAuthorities = /* @__PURE__ */ new WeakMap();
   originAuthorities = /* @__PURE__ */ new WeakMap();
   /** 70: memoizes `enabled()` for the lifetime of the current top-level transaction only. Every write
@@ -1674,6 +1675,8 @@ var Store = class {
     const range = run.dreamingRangeId === void 0 ? null : this.dreamingRange(run.dreamingRangeId);
     if (run.kind !== "dreaming" || !run.claim || !run.executionId || !range || range.sessionId !== run.sessionId || range.branch !== run.branch || range.pool !== null && range.claimToken !== run.claim.token)
       throw new Error("Dreamer binding requires its admitted claim, execution and frozen range");
+    const scope = this.dreamingScopes.get(range.id);
+    if (!scope) throw new Error("Dreamer binding requires its live frozen scope");
     const authority = {};
     const runId = this.transaction(() => this.insertRun({
       ...run,
@@ -1685,8 +1688,10 @@ var Store = class {
       sessionId: range.sessionId,
       token: run.claim.token,
       executionId: run.executionId,
-      runId
+      runId,
+      scope
     });
+    this.dreamingScopes.delete(range.id);
     return { ...run, dreamingAuthority: authority };
   }
   dreamingAuthority(run) {
@@ -1698,6 +1703,46 @@ var Store = class {
   }
   dreamingRunId(run) {
     return this.isDreamingRun(run) ? this.dreamingAuthority(run)?.runId : void 0;
+  }
+  /** Replay only this run's consuming edges over the exact freeze-time pool projection. */
+  dreamingPoolSizes(run, own) {
+    const authority = this.dreamingAuthority(run);
+    if (!authority || !this.isDreamingRun(run)) throw new Error("Trusted Dreamer scope required");
+    const values = new Map(authority.scope.pools.flatMap(({ pool, versions }) => versions.map((value) => [value.knowledge.id, { pool, value }])));
+    for (const revision of own) {
+      for (const parent of this.commitParents(revision)) values.delete(parent.knowledgeId);
+      values.delete(revision.knowledgeId);
+      if (revision.op !== "archive") values.set(revision.knowledgeId, {
+        pool: revision.scope === "global" ? "global" : revision.scope === "project" ? `project:${run.projectId ?? this.getSession(authority.sessionId).projectId}` : `session:${authority.sessionId}`,
+        value: { knowledge: this.getKnowledge(revision.knowledgeId), revision }
+      });
+    }
+    return authority.scope.pools.map(({ pool }) => ({
+      pool,
+      budget: this.poolBudget(pool),
+      tokens: tokens(processedBlock(
+        [...values.values()].filter((value) => value.pool === pool).map((value) => value.value),
+        (value) => renderKnowledge(value, `K${value.knowledge.id}#${this.versionTag(value.knowledge.id, value.revision.id)}`)
+      ))
+    }));
+  }
+  laterDreamingVersion(revision, runId, scope) {
+    return revision.id > scope.revisionWatermark && revision.runId !== runId;
+  }
+  dreamingSupersededRevisions(run, path, frozenIds) {
+    const authority = this.dreamingAuthority(run);
+    if (!authority || !this.isDreamingRun(run)) throw new Error("Trusted Dreamer scope required");
+    const superseded = /* @__PURE__ */ new Set();
+    const graph = this.commitGraph(path, void 0, void 0, this.commitGraphInput(void 0, path.sessionId));
+    const frozen = frozenIds.map((id) => this.knowledgeRevision(id));
+    for (const revision of graph.current) {
+      if (!this.laterDreamingVersion(revision, authority.runId, authority.scope)) continue;
+      const ancestors = graph.ancestors(revision.id);
+      for (const base of frozen) {
+        if (base.knowledgeId === revision.knowledgeId || ancestors.has(base.id)) superseded.add(base.id);
+      }
+    }
+    return superseded;
   }
   validateDreamingRun(run, path) {
     if (!this.isDreamingRun(run)) throw new Error("trusted Dreamer run binding required");
@@ -4255,7 +4300,18 @@ var Store = class {
           const authority = trustedDreaming ? this.dreamingAuthority(input.run) : void 0;
           const dreamingPools = authority ? ["global", `project:${projectId}`, `session:${sessionId}`] : null;
           const role = trustedDreaming ? "dreaming" : "manual";
-          const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId, path, trustedDreaming, role, dreamingPools);
+          const outcome = this.applyKnowledgeOperation(
+            op,
+            runId,
+            projectId,
+            sessionId,
+            path,
+            trustedDreaming,
+            role,
+            dreamingPools,
+            void 0,
+            authority?.scope
+          );
           if (outcome.ok) committed.push(...outcome.value);
           else throw outcome.reason instanceof Error ? outcome.reason : new Error(outcome.reason);
         }
@@ -4322,10 +4378,18 @@ ${annotation}`;
     const size = tokens(text);
     if (size > WORKER_ITEM_TOKENS) throw new Error(`${label} exceeds ${WORKER_ITEM_TOKENS}-token limit: ${size} tokens${label === "Knowledge item" ? ". Recheck it against Admission and Division: progress keeps only the necessary goal, the latest evidenced state, key open points and where to check; detail that retained clues lead back to stays in facts, Raw or documents; record separately what must be maintained separately." : ""}`);
   }
-  applyKnowledgeOperation(op, runId, projectId, sessionId, path, dreaming = false, role = "manual", dreamingPools = null, inheritedCreateCategory) {
+  applyKnowledgeOperation(op, runId, projectId, sessionId, path, dreaming = false, role = "manual", dreamingPools = null, inheritedCreateCategory, dreamingScope) {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
     if (op.op === "merge" && (op.absorb.length !== 1 || op.absorb[0].baseCommit === op.intoBaseCommit))
       return { ok: false, reason: "merge requires id as the survivor and absorb as exactly one distinct other parent" };
+    if (dreamingScope) {
+      const bases = op.op === "create" ? [] : op.op === "merge" ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb] : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];
+      for (const target of bases) {
+        const base = this.getKnowledgeRevision(target.knowledgeId, target.baseCommit);
+        if (base && this.laterDreamingVersion(base, runId, dreamingScope))
+          return { ok: false, reason: new KnowledgeVersionProblem((address2) => `${address2(base.knowledgeId, base.id)} was written after this run's freeze and is outside this run; left for the next Dreaming run. This item needs no skip.`) };
+      }
+    }
     let reversed;
     if (op.op === "merge" && op.intoKnowledgeId > op.absorb[0].knowledgeId) {
       const merge3 = op, older = merge3.absorb[0];
@@ -4359,9 +4423,12 @@ ${annotation}`;
         revivalSurvivor && target.knowledgeId === revivalTarget.knowledgeId && target.baseCommit === revivalTarget.baseCommit,
         writerInput.metadata
       );
-      if (bad2) return { ok: false, reason: bad2 };
-      const validityProblem = this.resolvedBaseProblem(writerGraph, target);
-      if (validityProblem) return { ok: false, reason: validityProblem };
+      const validityProblem = bad2 ?? this.resolvedBaseProblem(writerGraph, target);
+      if (validityProblem) {
+        const later = dreamingScope && base && writerGraph.current.find((revision) => this.laterDreamingVersion(revision, runId, dreamingScope) && (revision.knowledgeId === base.knowledgeId || writerGraph.ancestors(revision.id).has(base.id)));
+        if (later) return { ok: false, reason: new KnowledgeVersionProblem((address2) => `${address2(target.knowledgeId, target.baseCommit)} is no longer current; ${address2(later.knowledgeId, later.id)} was written after this run's freeze and is outside this run; left for the next Dreaming run. This item needs no skip.`) };
+        return { ok: false, reason: validityProblem };
+      }
       if (seen.has(target.baseCommit)) return { ok: false, reason: "duplicate merge parent; a commit cannot absorb itself" };
       seen.add(target.baseCommit);
     }
@@ -4713,6 +4780,11 @@ ${body}${evidenceLine}${diffLine}`;
         JSON.stringify(pending.map((value) => value.revisionId))
       ).lastInsertRowid);
       for (const revisionId of ids) this.db.prepare("INSERT INTO dreaming_range_events VALUES (?,?)").run(id, revisionId);
+      this.dreamingScopes.clear();
+      this.dreamingScopes.set(id, {
+        revisionWatermark: Number(this.db.prepare("SELECT IFNULL(MAX(id), 0) AS id FROM knowledge_revisions").get().id),
+        pools: pools.map(({ pool, versions }) => ({ pool, versions }))
+      });
       return this.dreamingRange(id);
     });
   }
@@ -9873,20 +9945,21 @@ async function runDreaming(store, frozen, runAgent, bind) {
   })].filter((id) => frozen.frozenIds.includes(id)));
   const check3 = () => {
     const runId2 = store.dreamingRunId(run);
-    const ownRevisionIds = runId2 === void 0 ? [] : store.listCommitsByRun(runId2).map((revision) => revision.id);
+    const own = runId2 === void 0 ? [] : store.listCommitsByRun(runId2), ownRevisionIds = own.map((revision) => revision.id);
     const excluded = /* @__PURE__ */ new Set([...frozen.frozenIds, ...ownRevisionIds]);
     const operationFailures = binding.problems;
-    const pools = store.knowledgePools(path);
-    const done = deliberated(ownRevisionIds), open2 = frozen.frozenIds.filter((id) => !done.has(id));
+    const pools = store.knowledgePools(path), totals = store.dreamingPoolSizes(run, own);
+    const superseded = store.dreamingSupersededRevisions(run, path, frozen.frozenIds);
+    const done = deliberated(ownRevisionIds), open2 = frozen.frozenIds.filter((id) => !done.has(id) && !superseded.has(id));
     const acceptance = [
-      ...pools.filter((pool) => pool.tokens > pool.budget).map((pool) => `pool ${pool.pool} over budget: ${pool.tokens}/${pool.budget} tokens`),
+      ...totals.filter((pool) => pool.tokens > pool.budget).map((pool) => `pool ${pool.pool} over budget: ${pool.tokens}/${pool.budget} tokens`),
       ...open2.length ? [`frozen versions not deliberated: ${open2.map(address2).join(", ")}`] : []
     ];
     return {
       frozenRevisionIds: frozen.frozenIds,
       ownRevisionIds,
       pendingRevisionIds: pools.flatMap((pool) => pool.pending.map((value) => value.revisionId)).filter((id) => !excluded.has(id)).sort((a, b) => a - b),
-      totals: pools.map(({ pool, budget, tokens: tokens3 }) => ({ pool, budget, tokens: tokens3 })),
+      totals,
       operationFailures,
       problems: [...operationFailures, ...acceptance]
     };
