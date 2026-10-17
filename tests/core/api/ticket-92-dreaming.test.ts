@@ -41,6 +41,14 @@ test("135/134/92: D skips complete diffs by history address; mutation diagnostic
     ] });
     if (!changed.ok) throw new Error(changed.problems.join("; "));
     let outsideCommit = "";
+    const otherProject = store.createProject({ name: "dream-tags-other", declaredBy: "mark" });
+    const otherSession = store.createSession({ projectId: otherProject.id, host: "pi:other", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+    const otherTurn = store.appendTurn({ sessionId: otherSession.id, kind: "turn", userPrompt: "Other evidence", startedAt: "now" });
+    const otherTarget = { sessionId: otherSession.id, branch: "main", headTurnId: otherTurn.id };
+    const otherUser = hydrate(store.listSourceEntries(otherSession.id, otherTurn.id), store).find(entry => entry.role === "user")!;
+    const otherFact = seedFact(memory, otherTarget, "Other evidence", [{ entry: otherUser, text: "User gave other evidence" }]).id;
+    const out = seedKnowledge(store, otherTarget, content.scope, content.category, [otherFact], "Other pool",
+      { run: { kind: "manual", createdAt: "now" } });
     scenario = task => {
       expect(task.material.changed).toContain(`Changed K${a!.knowledgeId}@v2`);
       expect(task.material.changed).toContain(`Archived K${c!.knowledgeId}@v2`);
@@ -56,14 +64,6 @@ test("135/134/92: D skips complete diffs by history address; mutation diagnostic
       expect(stale).not.toMatch(/K\d+@\d+/);
       expect(stale).not.toContain(address(a!.knowledgeId, changed.committed[0]!.commit));
       // 126: the session's three pools are writable; another project's item is not.
-      const otherProject = store.createProject({ name: "dream-tags-other", declaredBy: "mark" });
-      const otherSession = store.createSession({ projectId: otherProject.id, host: "pi:other", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
-      const otherTurn = store.appendTurn({ sessionId: otherSession.id, kind: "turn", userPrompt: "Other evidence", startedAt: "now" });
-      const otherTarget = { sessionId: otherSession.id, branch: "main", headTurnId: otherTurn.id };
-      const otherUser = hydrate(store.listSourceEntries(otherSession.id, otherTurn.id), store).find(entry => entry.role === "user")!;
-      const otherFact = seedFact(memory, otherTarget, "Other evidence", [{ entry: otherUser, text: "User gave other evidence" }]).id;
-      const out = seedKnowledge(store, otherTarget, content.scope, content.category, [otherFact], "Other pool",
-        { run: { kind: "manual", createdAt: "now" } });
       const poolError = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: address(out.knowledgeId, out.commit), supports: [], reason: "wrong pool" }], skipped: [] });
       expect(poolError).toContain("outside the Dreamer pools");
       expect(poolError).not.toMatch(/K\d+@\d+/);

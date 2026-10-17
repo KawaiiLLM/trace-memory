@@ -10,6 +10,7 @@ import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
 import { dreamingToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
+import type { KnowledgePoolSize } from "../../../src/core/store/processing.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -50,6 +51,159 @@ async function admitted(f: ReturnType<typeof fixture>, scenario: (input: Dreamin
   const trigger = createDreamerTrigger(f.memory, f.target, f.fact, f.store.listKnowledgeRevisions().length + 1, scope);
   return { trigger, result: await f.scenarios.run(f.memory, f.target, input => scenario(input, trigger)) };
 }
+
+test("Dreaming keeps its last checked budget when Noting advances its output before completion", async () => {
+  const f = fixture(), base = f.create("original rule ".repeat(100)), untouched = f.create("unchanged frozen rule");
+  f.memory.config.dreaming.triggerTokens = 1;
+  const pool = `project:${f.project.id}`;
+  f.store.setKnowledgeBudget("project", f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens - 100);
+  let receipt = "", own = 0, late = 0, foreign = 0, checkedSize = 0, review = "";
+  const result = await f.scenarios.run(f.memory, f.target, task => {
+    const memory = task.tools.find(tool => tool.name === "memory")!;
+    const updated = JSON.parse(memory.execute({ op: "update", id: address(f, base), text: "concise rule",
+      category: "constraint", scope: "project", supports: [], topics: [], reason: "remove repetition" }));
+    expect(updated.results).toEqual(["ok"]);
+    own = commit(f, updated.committed[0]);
+    expect(JSON.parse(memory.execute({ skip: history(f, untouched), because: "still holds" })).results).toEqual(["ok"]);
+    checkedSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
+    receipt = String(task.tools.find(tool => tool.name === "check")!.execute({}));
+    const noted = commitNoterKnowledge(f.store, { path: f.target,
+      run: { sessionId: f.session.id, branch: "main", createdAt: "now" }, operations: [
+        { op: "update", knowledgeId: base.knowledgeId, baseCommit: own, text: "later Noting rule ".repeat(100),
+          category: "constraint", scope: "project", supports: [f.fact], topics: [], reason: "new evidence", createdAt: "now" },
+        { op: "update", knowledgeId: untouched.knowledgeId, baseCommit: untouched.commit, text: "later untouched rule ".repeat(100),
+          category: "constraint", scope: "project", supports: [f.fact], topics: [], reason: "new evidence", createdAt: "now" },
+      ] });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    foreign = noted.committed[0]!.commit;
+    late = f.create("manual knowledge after freeze ".repeat(100)).commit;
+    review = task.passEnd(1)!;
+    return success;
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  if (!("runId" in result)) throw new Error("missing run id");
+  const checked = JSON.parse(f.store.getRun(result.runId)!.response!).check;
+  expect(checked.totals.find((value: { pool: string }) => value.pool === pool)).toEqual({
+    pool, budget: f.store.knowledgeBudgets().project, tokens: checkedSize,
+  });
+  expect(receipt).toContain(`${pool}: ${checkedSize}/${f.store.knowledgeBudgets().project} tokens`);
+  expect(receipt).toContain("Blockers: none");
+  expect(review.split("\n\nBlockers:\n")[1]!.split("\n\n")[0]).toBe("None.");
+  expect(f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens).toBeGreaterThan(f.store.knowledgeBudgets().project);
+  expect(checked.pendingRevisionIds).toEqual(expect.arrayContaining([foreign, late]));
+  expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual(checked.pendingRevisionIds);
+  expect(processed(f).map(row => Number(row.revision_id))).toContain(own);
+  expect(processed(f).map(row => Number(row.revision_id))).not.toContain(foreign);
+});
+
+test.each(["update", "archive"] as const)("Dreaming releases a frozen item advanced by Noting's %s without a skip", async op => {
+  const f = fixture(), base = f.create("frozen rule");
+  f.memory.config.dreaming.triggerTokens = 1;
+  const pool = `project:${f.project.id}`, size = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
+  let later = 0, receipt = "", finished = false;
+  const result = await f.scenarios.run(f.memory, f.target, task => {
+    expect(task.material.changed).toContain(history(f, base));
+    const noted = commitNoterKnowledge(f.store, { path: f.target,
+      run: { sessionId: f.session.id, branch: "main", createdAt: "now" },
+      operations: [op === "archive"
+        ? { op, kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [f.fact], reason: "later archive", createdAt: "now" }
+        : { op, knowledgeId: base.knowledgeId, baseCommit: base.commit, text: "later rule",
+          category: "constraint", scope: "project", supports: [f.fact], topics: [], reason: "later update", createdAt: "now" }] });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    later = noted.committed[0]!.commit;
+    const memory = task.tools.find(tool => tool.name === "memory")!, check = task.tools.find(tool => tool.name === "check")!;
+    receipt = memory.execute({ op: "update", id: address(f, base), text: "frozen proposal", category: "constraint",
+      scope: "project", supports: [], topics: [], reason: "proposal predates Noting" });
+    expect(receipt).toContain("rejected: M1:");
+    expect(receipt).toContain(history(f, { knowledgeId: base.knowledgeId, commit: later }));
+    expect(receipt).toContain("after this run's freeze");
+    expect(receipt).toContain("next Dreaming run");
+    expect(receipt).toContain("needs no skip");
+    expect(check.execute({})).toContain("Blockers: M1:");
+    expect(check.execute({})).not.toContain("frozen versions not deliberated");
+    expect(memory.execute({ drop: "M1" })).toContain("dropped: M1");
+    expect(check.execute({})).toContain(`${pool}: ${size}/${f.store.knowledgeBudgets().project} tokens`);
+    expect(check.execute({})).toContain("Blockers: none");
+    finished = true;
+    return success;
+  });
+  expect(finished).toBe(true);
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  expect(f.store.currentCommit(base.knowledgeId, f.target)[0]!.id).toBe(later);
+  expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([later]);
+  expect(processed(f)).toEqual([]);
+});
+
+// 143 supersedes the permission to maintain a foreign exact version that arrived after freeze.
+test.each(["update", "archive", "merge survivor", "merge absorbed", "split"] as const)(
+  "Dreaming refuses a later foreign version as an %s base even after a complete read", async kind => {
+    const f = fixture(), survivor = f.create("older survivor"), absorbed = f.create("newer absorbed");
+    f.memory.config.dreaming.triggerTokens = 1;
+    let later = 0, finished = false;
+    const result = await f.scenarios.run(f.memory, f.target, task => {
+      const target = kind === "merge absorbed" ? absorbed : survivor;
+      const noted = commitNoterKnowledge(f.store, { path: f.target,
+        run: { sessionId: f.session.id, branch: "main", createdAt: "now" }, operations: [{
+          op: "update", knowledgeId: target.knowledgeId, baseCommit: target.commit, text: "foreign body after freeze",
+          category: "constraint", scope: "project", supports: [f.fact], topics: [], reason: "new evidence", createdAt: "now",
+        }] });
+      if (!noted.ok) throw new Error(noted.problems.join("; "));
+      later = noted.committed[0]!.commit;
+      const lateAddress = address(f, { knowledgeId: target.knowledgeId, commit: later });
+      expect(f.memory.trace(lateAddress, { itemBudget: null })).toContain("foreign body after freeze");
+      const memory = task.tools.find(tool => tool.name === "memory")!, check = task.tools.find(tool => tool.name === "check")!;
+      const content = { supports: [], reason: "maintenance", category: "constraint", scope: "project", topics: [] };
+      const operation = kind === "merge survivor" || kind === "merge absorbed"
+        ? { op: "merge", id: kind === "merge survivor" ? lateAddress : address(f, survivor),
+          absorb: [kind === "merge absorbed" ? lateAddress : address(f, absorbed)], text: "merged", ...content }
+        : kind === "split" ? { op: kind, id: lateAddress, supports: [], reason: "two topics",
+          children: [{ text: "first child", category: "constraint", topics: [] }, { text: "second child", category: "reference", topics: [] }] }
+        : kind === "archive" ? { op: kind, id: lateAddress, kind: "budget", supports: [], reason: "budget" }
+        : { op: kind, id: lateAddress, text: "updated", ...content };
+      const before = f.store.listKnowledgeRevisions();
+      const receipt = memory.execute(operation);
+      expect(receipt).toContain("rejected: M1:");
+      expect(receipt).toContain(history(f, { knowledgeId: target.knowledgeId, commit: later }));
+      expect(receipt).toContain("after this run's freeze");
+      expect(receipt).toContain("next Dreaming run");
+      expect(f.store.listKnowledgeRevisions()).toEqual(before);
+      expect(check.execute({})).toContain("Blockers: M1:");
+      expect(memory.execute({ drop: "M1" })).toContain("dropped: M1");
+      const remaining = target === survivor ? absorbed : survivor;
+      expect(JSON.parse(memory.execute({ skip: history(f, remaining), because: "still holds" })).results).toEqual(["ok"]);
+      expect(check.execute({})).toContain("Blockers: none");
+      finished = true;
+      return success;
+    });
+    expect(finished).toBe(true);
+    expect(result.outcome, JSON.stringify(result)).toBe("success");
+    expect(processed(f).map(row => Number(row.revision_id))).not.toContain(later);
+  });
+
+test("Dreaming accepts its own successive versions and accounts for merge, split, scope change and archive", async () => {
+  const f = fixture(), older = f.create("older rule"), newer = f.create("newer rule");
+  f.memory.config.dreaming.triggerTokens = 1;
+  let totals: KnowledgePoolSize[] = [];
+  const result = await f.scenarios.run(f.memory, f.target, task => {
+    const memory = task.tools.find(tool => tool.name === "memory")!;
+    const content = { supports: [], reason: "maintenance", category: "constraint", scope: "project", topics: [] };
+    const merged = JSON.parse(memory.execute({ op: "merge", id: address(f, older), absorb: [address(f, newer)], text: "combined", ...content }));
+    expect(merged.results).toEqual(["ok"]);
+    const split = JSON.parse(memory.execute({ op: "split", id: merged.committed[0].version, supports: [], reason: "separate topics",
+      children: [{ text: "first rule", category: "constraint", topics: [] }, { text: "second rule", category: "reference", topics: [] }] }));
+    expect(split.results).toEqual(["ok"]);
+    const moved = JSON.parse(memory.execute({ op: "update", id: split.committed[0].version, text: "global rule", ...content, scope: "global" }));
+    expect(moved.results).toEqual(["ok"]);
+    expect(JSON.parse(memory.execute({ op: "archive", id: split.committed[1].version, kind: "budget", supports: [], reason: "retrievable" })).results).toEqual(["ok"]);
+    totals = f.store.poolSizes(f.target);
+    const receipt = String(task.tools.find(tool => tool.name === "check")!.execute({}));
+    for (const value of totals) expect(receipt).toContain(`${value.pool}: ${value.tokens}/${value.budget} tokens`);
+    return success;
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  if (!("runId" in result)) throw new Error("missing run id");
+  expect(JSON.parse(f.store.getRun(result.runId)!.response!).check.totals).toEqual(totals);
+});
 
 test("native Read token estimate counts in Dreamer capacity before dispatch", async () => {
   const f = fixture();
@@ -349,26 +503,6 @@ test("127: a host-refused Dreamer call is recorded as the Noter's: an item numbe
     return success;
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");
-});
-
-test("64c an exact version tag permits same-pool maintenance without a read grant or enlarged frozen range", async () => {
-  const f = fixture(), base = f.create("frozen base");
-  let late!: { knowledgeId: number; commit: number }, own = 0;
-  const { trigger, result } = await admitted(f, (task, trigger) => {
-    late = f.create("arrived after freeze");
-    // A tag identifies the revision; no per-run read registration grants authority.
-    expect(f.memory.trace(address(f, late), { itemBudget: null })).toContain("arrived after freeze");
-    const receipt = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [{
-      op: "update", id: address(f, late), text: "maintained exact late item", category: "constraint", scope: "project", supports: [], topics: [], reason: "complete exact read",
-    }], skipped: [{ knowledge: history(f, base), because: "unchanged" }, { knowledge: history(f, trigger), because: "fixture trigger" }] }));
-    own = commit(f, receipt.committed[0]);
-    return success;
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-  const ids = processed(f).map(row => Number(row.revision_id));
-  expect(ids).toEqual(expect.arrayContaining([base.commit, trigger.commit, own]));
-  expect(ids).not.toContain(late.commit);
-  expect(f.store.currentCommit(late.knowledgeId, f.target)[0]!.id).toBe(own);
 });
 
 test.each([

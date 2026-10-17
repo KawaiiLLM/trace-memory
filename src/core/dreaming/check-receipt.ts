@@ -7,8 +7,7 @@ export interface DreamingCheckResult {
   problems: string[];
 }
 
-/** The run's acceptance (126): blockers are rejected memory operations, any of the session's pools
- * over its budget and frozen versions not yet deliberated. The run succeeds only with none left. */
+/** Blockers use scoped pools and frozen versions still requiring deliberation (126, 143). */
 export function renderDreamingCheckReceipt(result: DreamingCheckResult, address: (commit: number) => string = String): string {
   const total = (value: DreamingCheckResult["totals"][number]) =>
     `- ${value.pool}: ${value.tokens}/${value.budget} tokens`;

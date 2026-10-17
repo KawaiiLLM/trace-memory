@@ -156,20 +156,20 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     const revision = store.knowledgeRevision(id);
     return revision ? store.commitParents(revision).map(parent => parent.id) : [];
   })].filter(id => frozen.frozenIds.includes(id)));
-  /** 126: success is every pool of the session within its own budget and every frozen version
-   * deliberated; what still prevents it is a blocker, beside rejected operations. */
+  /** Success uses freeze-time pools plus own commits; later foreign successors need no deliberation. */
   const check = (): DreamingCheckResult => {
     const runId = store.dreamingRunId(run);
-    const ownRevisionIds = runId === undefined ? [] : store.listCommitsByRun(runId).map(revision => revision.id);
+    const own = runId === undefined ? [] : store.listCommitsByRun(runId), ownRevisionIds = own.map(revision => revision.id);
     const excluded = new Set([...frozen.frozenIds, ...ownRevisionIds]);
     const operationFailures = binding.problems;
-    const pools = store.knowledgePools(path);
-    const done = deliberated(ownRevisionIds), open = frozen.frozenIds.filter(id => !done.has(id));
-    const acceptance = [...pools.filter(pool => pool.tokens > pool.budget).map(pool => `pool ${pool.pool} over budget: ${pool.tokens}/${pool.budget} tokens`),
+    const pools = store.knowledgePools(path), totals = store.dreamingPoolSizes(run, own);
+    const superseded = store.dreamingSupersededRevisions(run, path, frozen.frozenIds);
+    const done = deliberated(ownRevisionIds), open = frozen.frozenIds.filter(id => !done.has(id) && !superseded.has(id));
+    const acceptance = [...totals.filter(pool => pool.tokens > pool.budget).map(pool => `pool ${pool.pool} over budget: ${pool.tokens}/${pool.budget} tokens`),
       ...open.length ? [`frozen versions not deliberated: ${open.map(address).join(", ")}`] : []];
     return { frozenRevisionIds: frozen.frozenIds, ownRevisionIds,
       pendingRevisionIds: pools.flatMap(pool => pool.pending.map(value => value.revisionId)).filter(id => !excluded.has(id)).sort((a, b) => a - b),
-      totals: pools.map(({ pool, budget, tokens }) => ({ pool, budget, tokens })), operationFailures,
+      totals, operationFailures,
       problems: [...operationFailures, ...acceptance] };
   };
   binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,

@@ -46,8 +46,9 @@ test("67: admission, freeze, final check and consumption have bounded independen
     expect((await f.memory.dream(f.target)).outcome).toBe("success");
     // Discovery, claim admission and freeze share one unchanged atomic snapshot.
     expect(admissionGraphs).toBe(1);
-    // Final read-only check and terminal writes are separate operations, each seeing fresh state.
-    expect(graph).toHaveBeenCalledTimes(2); // terminal settlement no longer recomputes pool suppression state
+    // Final read-only check (pools, then later foreign successors of frozen versions) and terminal
+    // writes are separate operations, each seeing fresh state.
+    expect(graph).toHaveBeenCalledTimes(3); // terminal settlement no longer recomputes pool suppression state
   } finally { graph.mockRestore(); }
 });
 

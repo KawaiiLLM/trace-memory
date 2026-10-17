@@ -350,6 +350,8 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     expect(ownerA).toBe(6); // A's two cited facts plus grounding by the two affected components
     expect(ownerB).toBe(0);
     check();
+    writer.completeKnowledgePoolRange(run, "cancelled");
+    writer.releaseClaim(claim);
     // Seeded mixed *operation* schedule (not just random cursor values). Each cycle shuffles
     // legal operations, then selects live bases from the independent authoritative graph.
     const operations = ["create", "update", "archive", "merge", "split", "rewind", "revisit",
@@ -368,10 +370,20 @@ test("88: every external commit, foreground move and rollback agrees with a fres
         const active = () => writer.commitGraph(paths[0]!, undefined, undefined, writer.commitGraphInput())
           .current.filter(r => r.scope === "global" && r.op !== "archive");
         const runOp = (operation: Parameters<typeof writer.commitConsolidationRun>[0]["operations"][number]) => {
-          // An authorized Dreamer range can operate on existing global identities.
-          const result = writer.commitConsolidationRun({ path: target, run, operations: [operation] });
-          if (!result.ok) throw Error(`${op} step ${sequence}: ${result.problems.join('; ')}`);
-          return result.committed;
+          // Each independent maintenance probe freezes after the preceding external writes.
+          const held = writer.acquireClaim(target, "dreaming", "88-random")!;
+          const frozen = writer.retainKnowledgePoolRange(target, held);
+          const admitted = writer.bindDreamingRun({ kind: "dreaming", sessionId: a.session.id, branch: "main", claim: held,
+            dreamingRangeId: frozen.id, executionId: writer.beginExecution({ sessionId: a.session.id, phase: "dreaming",
+              origin: frozen.origin }), createdAt: at });
+          try {
+            const result = writer.commitConsolidationRun({ path: target, run: admitted, operations: [operation] });
+            if (!result.ok) throw Error(`${op} step ${sequence}: ${result.problems.join("; ")}`);
+            return result.committed;
+          } finally {
+            writer.completeKnowledgePoolRange(admitted, "cancelled");
+            writer.releaseClaim(held);
+          }
         };
         switch (op) {
           case "create": create(a, a.facts[0]!.id, "global"); break;

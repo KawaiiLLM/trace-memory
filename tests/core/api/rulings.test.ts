@@ -735,6 +735,38 @@ test("2026-09-28, 104: '可以让总量超过20 + 10 就可以触发' — a sess
   expect(due()).toBe(true);
 });
 
+test("Dreaming's frozen budget excludes later manual knowledge, which cannot be used as a maintenance base", async () => {
+  const { path, write, create } = memoryWriter();
+  memory.config.dreaming.triggerTokens = 1;
+  write([{ ...create, text: "freeze-time rule" }]);
+  const before = memory.store.poolSizes(path);
+  memory.setKnowledgeBudget("project", before.find(value => value.pool.startsWith("project:"))!.tokens);
+  let later = 0, finished = false;
+  const result = await admittedScenarios.run(memory, path, input => {
+    const created = write([{ ...create, text: "later manual knowledge ".repeat(500) }]).committed[0]!;
+    later = commitOf(created);
+    const memoryTool = input.tools.find(tool => tool.name === "memory")!;
+    const refused = memoryTool.execute({ op: "update", id: tagged(created.knowledgeId, later), text: "not this run's work",
+      category: "constraint", scope: "project", topics: [], supports: [], reason: "probe scope" });
+    expect(refused).toContain("rejected: M1:");
+    expect(refused).toContain(history(created.knowledgeId, later));
+    expect(refused).toContain("after this run's freeze");
+    expect(refused).toContain("next Dreaming run");
+    expect(memoryTool.execute({ drop: "M1" })).toContain("dropped: M1");
+    skipRest(input);
+    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+    finished = true;
+    return ok([]);
+  });
+  expect(finished, JSON.stringify(result)).toBe(true);
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  if (!("runId" in result)) throw new Error("missing run id");
+  const checked = JSON.parse(memory.store.getRun(result.runId)!.response!).check;
+  expect(checked.pendingRevisionIds).toEqual([later]);
+  for (const value of before) expect(checked.totals.find((item: { pool: string }) => item.pool === value.pool).tokens).toBe(value.tokens);
+  expect(memory.store.poolSizes(path).find(value => value.pool.startsWith("project:"))!.tokens).toBeGreaterThan(memory.knowledgeBudgets().project);
+});
+
 test.each(["pending", "overflow"] as const)("2026-10-05, 126: '两个阈值中任意一个触发，成功执行后应该都是待处理减少10k、知识在20k之内' — a run due by %s ends with every pool within its budget and its frozen pending processed; pending beyond 10k stays pending", async trigger => {
   const { path, write, create } = memoryWriter();
   const item = (scope: "global" | "project" | "session", label: string, words: number) =>

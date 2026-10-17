@@ -197,14 +197,13 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       // fallback conversion, no automatic retry against the new base.
       const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(k5)), text: "D's edit",
         category: "reference", scope: "project", topics: [], supports: [`F${fact}`], reason: "D edit." }], skipped: [] }));
-      expect(receipt.results[0]).toContain("base is not the latest effective applicable revision");
+      expect(receipt.results[0]).toContain("after this run's freeze");
       expect(receipt.results[0]).toContain(history(cMoved));
       // D finishes the run through its own separate, valid submission (the per-item discipline: one
       // rejection's blast radius stays one item). 127: it first withdraws the refused item, which blocks until then.
-      // 104: success deliberates the whole frozen range, the refused stale base included.
+      // 143: the superseded frozen base leaves this run and needs no skip.
       expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
       const closed = JSON.parse(dreamerWrite(write, { operations: [], skipped: [
-        { knowledge: history(k5), because: "Superseded by N while frozen; no operation on the stale base." },
         { knowledge: history(trigger), because: "No maintenance needed for the explicit fixture trigger." }] }));
       expect(closed.committed).toEqual([]);
       return { outcome: "success", output: "D saw the refusal", request: {} };

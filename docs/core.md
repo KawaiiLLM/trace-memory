@@ -196,10 +196,23 @@ boundaries. Then coarsen suitable related topics, and only then archive lower-va
 needed, checking until every pool fits (122). Categories have no fixed priority.
 Budget excess is never a write gate.
 
-`check` reports current pool sizes, budgets and blockers: operation failures, any of the session's
-pools over its budget and frozen versions neither operated on nor skipped. A run succeeds only with no
-blocker (126); a timeout never succeeds. The writable set is the three pools; a merge's parents and
-result still share one scope.
+`check`, the pass-end review's blockers and the final outcome use the same scoped pool totals (143):
+the exact non-archived pool versions at freeze, with only this run's commits applied. Later foreign
+creates, updates, merges and archives do not change those totals. An untouched item counts at its
+freeze-time version; a maintained item counts at this run's latest version even if another writer
+subsequently advances it. The newly pending revisions line remains live information, not budget input.
+Foreground injection and due checks still measure current pools.
+
+A revision committed after freeze by any other run or manual writer is outside this run's writable
+scope, even after a complete read. Update/archive bases, merge survivors and absorbed parents, and
+split sources all enforce this boundary; this run's own commits remain valid bases. A refusal names
+the later version and leaves it for the next Dreaming run. A frozen version superseded by such a
+current version needs neither an operation nor a skip; its refused proposal still holds a numbered
+`Mn` blocker until corrected or dropped (127). The frozen material is not rewritten.
+
+Other blockers remain operation failures, a scoped pool over its budget and frozen versions neither
+operated on nor skipped. A run succeeds only with no blocker (126, 143); a timeout never succeeds.
+The writable pools remain global, this project's and this session's; merge parents and result share one scope.
 A run records `(pool, revision)` only for frozen versions explicitly skipped, each in its own pool,
 and revisions it wrote. A frozen version that a sibling session's project declaration moved out of the
 session's pools mid-run is not recorded; it stays pending in its new pool.

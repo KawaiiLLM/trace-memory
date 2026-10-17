@@ -5,12 +5,12 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
 import { TraceMemory } from "../../../src/core/api/index.ts";
-import { Store, type RunInput } from "../../../src/core/store/index.ts";
+import { Store, type RunInput, type KnowledgePath } from "../../../src/core/store/index.ts";
 import { session as seedSession, entry as seedEntry, legacyFact, knowledge as seedKnowledge } from "../../support/seed.ts";
 
 const stores: Store[] = [], directories: string[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
-function fixture(path = ":memory:") {
+function fixture(path = ":memory:", prepare?: (store: Store, target: KnowledgePath, supports: number[]) => void) {
   const store = new Store(path); stores.push(store);
   const project = store.createProject({ name: "archive", declaredBy: "mark" });
   const session = seedSession(store, project.id, "test");
@@ -22,6 +22,7 @@ function fixture(path = ":memory:") {
   const content = { supports: [evidence.id], reason: "evidence", text: "rule", category: "constraint" as const, scope: "project" as const, topics: [], createdAt: "now" };
   const item = seedKnowledge(store, selected, "project", content.category, content.supports, content.text);
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
+  prepare?.(store, target, content.supports);
   const claim = store.acquireClaim(target, "dreaming", "test")!;
   const range = store.retainKnowledgePoolRange(target, claim);
   const run: RunInput = { kind: "dreaming", sessionId: session.id, branch: "main", claim, dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", origin: range.origin }), createdAt: "now" };
@@ -117,43 +118,46 @@ test.each(["update", "archive"] as const)("64b: empty-support %s materializes th
 });
 
 test.each(["update", "archive"] as const)("inherited cross-project supports do not block a Dreamer empty-support %s", op => {
-  const f = fixture();
-  const sibling = seedSession(f.store, f.store.getSession(f.target.sessionId)!.projectId, "sibling");
-  const turn = f.store.appendTurn({ sessionId: sibling.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
-  const source = seedEntry(f.store, sibling.id, turn.id, "evidence", "user", "evidence");
-  f.store.selectSourcePath(sibling.id, "main", [source.id]);
-  const cited = legacyFact(f.store, { sessionId: sibling.id, branch: "main", headTurnId: turn.id },
-    [{ entry: source, address: `T${turn.id}#user` }], "sibling rule", "decision");
-  const item = seedKnowledge(f.store, f.target, "project", "constraint", [cited.id], "project rule");
-  f.store.db.prepare("UPDATE sessions SET project_id = ? WHERE id = ?")
-    .run(f.store.createProject({ name: "moved", declaredBy: "mark" }).id, sibling.id); // the cited fact now belongs to another project
+  let item!: { knowledgeId: number; commit: number }, citedId = 0;
+  const f = fixture(":memory:", (store, target) => {
+    const sibling = seedSession(store, store.getSession(target.sessionId)!.projectId, "sibling");
+    const turn = store.appendTurn({ sessionId: sibling.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
+    const source = seedEntry(store, sibling.id, turn.id, "evidence", "user", "evidence");
+    store.selectSourcePath(sibling.id, "main", [source.id]);
+    const cited = legacyFact(store, { sessionId: sibling.id, branch: "main", headTurnId: turn.id },
+      [{ entry: source, address: `T${turn.id}#user` }], "sibling rule", "decision");
+    citedId = cited.id;
+    item = seedKnowledge(store, target, "project", "constraint", [cited.id], "project rule");
+    store.db.prepare("UPDATE sessions SET project_id = ? WHERE id = ?")
+      .run(store.createProject({ name: "moved", declaredBy: "mark" }).id, sibling.id);
+  });
   const run = f.store.bindDreamingRun(f.run);
   const operation = op === "archive" ? { ...f.archive, knowledgeId: item.knowledgeId, baseCommit: item.commit }
     : { op, knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "maintained rule", category: "constraint" as const,
       scope: "project" as const, supports: [], topics: [], reason: "Maintenance rewrite.", createdAt: "now" };
   const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [operation] });
   expect(result.ok, JSON.stringify(result)).toBe(true);
-  if (result.ok) expect(f.store.knowledgeRevision(result.committed[0]!.commit)).toMatchObject({ op, supports: [cited.id] });
+  if (result.ok) expect(f.store.knowledgeRevision(result.committed[0]!.commit)).toMatchObject({ op, supports: [citedId] });
 });
 
 test("64b: empty-support merge unions both exact parents and split copies its exact parent", () => {
-  const merged = fixture();
-  const mergedEntry = merged.store.getSourceEntry(merged.target.triggerEntryId!)!;
-  const secondFact = legacyFact(merged.store, merged.target,
-    [{ entry: mergedEntry, address: `T${merged.target.headTurnId}#user` }], "second rule", "decision");
-  const second = merged.store.commitConsolidationRun({ run: { kind: "manual", sessionId: merged.target.sessionId, createdAt: "now" }, operations: [{
-    op: "create", handle: "$2", author: "test", ...merged.content, text: "second rule", supports: [secondFact.id],
-  }] });
-  if (!second.ok) throw Error(second.problems.join());
+  let second!: { knowledgeId: number; commit: number }, secondFactId = 0;
+  const merged = fixture(":memory:", (store, target) => {
+    const entry = store.listSourceEntries(target.sessionId)[0]!;
+    const secondFact = legacyFact(store, target,
+      [{ entry, address: `T${target.headTurnId}#user` }], "second rule", "decision");
+    secondFactId = secondFact.id;
+    second = seedKnowledge(store, target, "project", "constraint", [secondFact.id], "second rule");
+  });
   const run = merged.store.bindDreamingRun(merged.run);
   const merge = merged.store.commitConsolidationRun({ run, path: merged.target, operations: [{ op: "merge",
     intoKnowledgeId: merged.item.knowledgeId, intoBaseCommit: merged.item.commit,
-    absorb: [{ knowledgeId: second.committed[0]!.knowledgeId, baseCommit: second.committed[0]!.commit }],
+    absorb: [{ knowledgeId: second.knowledgeId, baseCommit: second.commit }],
     text: "merged rules", category: "constraint", scope: "project", supports: [], topics: [], reason: "Merge redundancy.", createdAt: "now",
   }] });
   expect(merge.ok).toBe(true);
   if (merge.ok) expect(merged.store.knowledgeRevision(merge.committed[0]!.commit)?.supports)
-    .toEqual([merged.content.supports[0], secondFact.id]);
+    .toEqual([merged.content.supports[0], secondFactId]);
 
   const split = fixture();
   const splitRun = split.store.bindDreamingRun(split.run);
@@ -275,16 +279,8 @@ test("64b: inherited archive provenance and direct-support applicability survive
   expect(memory.search("rule", "knowledge")).toContain("(archived)");
 });
 
-test("64b: the seat claim, not a frozen family, fences the atomic Store write", () => {
-  const f = fixture(), run = f.store.bindDreamingRun(f.run);
-  const outside = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "create", handle: "$2", author: "test", ...f.content }] });
-  if (!outside.ok) throw Error(outside.problems.join());
-  const item = outside.committed[0]!;
-  const accepted = f.store.commitConsolidationRun({ run, path: f.target, operations: [f.archive,
-    { ...f.archive, knowledgeId: item.knowledgeId, baseCommit: item.commit }] });
-  expect(accepted.ok).toBe(true);
-  if (accepted.ok) expect(accepted.committed).toHaveLength(2);
-
+// 143 supersedes writing foreign knowledge created after freeze; expired claims still fence writes.
+test("an expired Dreamer claim cannot write frozen knowledge", () => {
   const expired = fixture(), expiredRun = expired.store.bindDreamingRun(expired.run);
   const before = expired.store.listKnowledgeRevisions();
   expired.store.releaseClaim(expired.run.claim!);
@@ -294,10 +290,10 @@ test("64b: the seat claim, not a frozen family, fences the atomic Store write", 
 
 
 test("32d: create plus merge is not a split; rejection has zero batch side effects", () => {
-  const f = fixture();
-  const other = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "create", handle: "$2", author: "test", ...f.content }] });
-  if (!other.ok) throw Error(other.problems.join());
-  const item = other.committed[0]!;
+  let item!: { knowledgeId: number; commit: number };
+  const f = fixture(":memory:", (store, target, supports) => {
+    item = seedKnowledge(store, target, "project", "constraint", supports, "second rule");
+  });
   // Both parents are current; this is an operation-type violation, not a stale-base rejection.
   const run = f.store.bindDreamingRun(f.run);
   const before = { revisions: f.store.listKnowledgeRevisions(), range: f.store.dreamingRange(f.run.dreamingRangeId!), links: f.store.listKnowledgeLinks(f.item.knowledgeId) };
