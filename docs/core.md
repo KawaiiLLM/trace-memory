@@ -25,13 +25,11 @@ Ordinary reads use host-native limits; offset/limit continuations use the origin
 
 This contract supersedes the older immediate-Noting and NEAR descriptions below. Live Consolidation is retired; historical C records remain readable. The numbered sections retain implementation history, not permission to use superseded schemas or stages. In particular, ticket 02's `note({facts})`, `note({facts: []})`, immediate N commit and NEAR descriptions below are historical, not current tool guidance.
 
-- Foreground and N advertise identical `note`/`memory` definitions. Each call carries one fact or one knowledge operation in top-level fields, rather than `facts` or `operations` arrays. Core enforces role permissions. Manual writes remain immediate and reject N-only slots, drops and local knowledge supports; manual fact relations cite existing F IDs. Manual `memory` allows fact-backed create/update/archive (135); D's own `memory` takes one operation or one `{skip, because}` per call and commits each legal call at once; a refused one holds an `Mn` slot that blocks success until `slot` resubmits or `drop` withdraws it (127).
-- N holds facts in stable `$n` slots and knowledge operations in `Mn` slots. Omitted slot appends; explicit slot fully replaces. `drop: "$n"` or `drop: "Mn"` is a separate call. A rejected replacement invalidates the prior value. Drop leaves a gap and cannot remove a referenced fact. N has no `skipped` field. Empty `note({})` and `memory({})` calls confirm use but do not clear drafts or slot errors.
-- A valid call clears top-level errors only. Host schema refusals are correlated by native call ID and original arguments, including failures before core execution. Duplicate refusal events cannot allocate another slot. A missing CC dispatch/refusal fails the run explicitly.
-- Every N run with a normally completed first pass receives one fixed end-review message, even if publishable or empty. It lists real held blockers (rejected slots, call errors and missing tools with their host-specific empty calls) and every held knowledge change: update parent-to-new-body diff and changed metadata, full create body, or archive kind and text. The model may replace or drop a slot in the second pass. Provider failure and cancellation receive no supplement. There is no third pass; D keeps its existing pass-end conditions.
-- Only normal termination after the review where applicable, both tools used and no unresolved refusal permits publication. Unresolved publication blockers bounce the run without progress; provider failure and cancellation retain their respective outcomes. One short Store transaction revalidates sources, roles, path, enrollment, project, claim, supports and tagged bases; allocates F IDs; maps structured references; writes knowledge, Raw progress and successful execution. Rollback exposes neither layer nor successful progress. Audit keeps final usage and requested/applied operations.
+- The foreground `note` and `memory` tools are manual writers: each call carries one fact or one knowledge operation in top-level fields and commits at once; manual fact relations cite existing F IDs. Manual `memory` allows fact-backed create/update/archive (135); D's own `memory` takes one operation or one `{skip, because}` per call and commits each legal call at once; a refused one holds an `Mn` slot that blocks success until `slot` resubmits or `drop` withdraws it (127).
+- N has no `note` or `memory` (144). A run is two tasks, `write` then `verify`, each a `runAgent` call with identical inputs except `task`. The workspace `<root>/noting-S<session>-<execution>/` holds `facts.md` and `knowledge.md`; core creates, seeds, reads and removes it, and a host only confines its native write and edit to those two paths. `check` (identical in both tasks) runs the Stage 2 check on the files at any time: its first result names the task and the files, then lists problems with file and line and every title and body length.
+- The stop hook is the same check. A pass ends the task; a failure sends one follow-up message listing the problems, and a second check that fails fails the run. Every check is recorded in the run's `stopChecks`.
+- Task 1 passes as a `success` run with `task: "write"` that owns no fact and no processed entry, and writes the `task_handoffs` row (next task, run, branch, entry ids) in the same transaction. A failure records a failure run and no row. Task 2's pass publishes through `applyWorkspace` and `commitNotingRun`, which deletes the row covering its entries. Task 2 failing keeps the row; the next admission on the same branch with the whole batch still pending runs only task 2 on the first run's recorded files, re-freezing the material. Cancellation keeps the row and counts nothing; every other run that does not finish normally is one failure (maintainer, 2026-10-22).
 - An applicable, authorized predecessor consumed by a visible effective descendant permits N's update-to-annotated-create or archive-to-no-op conversion. Missing tags, invalid evidence or authority do not convert. The converted identity enters ordinary D pending accounting.
-- The SDK's structured pre-execution failures invalidate held slots; no schema is loosened to bypass validation.
 - Live NEAR capture, feedback and its configuration are removed. Historical audit types and reading remain. Explicit `noting.nearThreshold` configuration now reports a removed-setting error.
 
 The [entry-address contract](unified-entry.md) supersedes older ticket descriptions below of Raw labels, source previews, trace content limits and full-read branch scope. It is the current reference for stable E identities, ordered normalized blocks, per-child budgets and semantic read completion.
@@ -136,10 +134,10 @@ An update accepts exactly one body form (135):
 
 The complete result passes the same admission, supports and scope checks as a full-text update, and
 the title and body length checks of every writer (144), applied to the resulting body, so updating a long legacy item must also fit. An update without `title` inherits its base's; a base without one requires it.
-N holds the complete result and `slot:Mn` replaces it against the exact base, not the previous draft.
+The Noter's file carries the complete result against the exact base it names.
 The audited concurrent update-to-create conversion retains inherited legacy classification too;
 ordinary creates still cannot author a legacy category.
-Storage, Knowledge history, injection and both end reviews use complete revisions, never edit lists;
+Storage, Knowledge history, injection and the Dreamer's end review use complete revisions, never edit lists;
 the original request remains in the human audit. Immediate update receipts carry the new tag and
 pool item cost before/after without echoing the result body.
 
@@ -172,7 +170,7 @@ its parent once, then the primary part and the children; archive reports the rem
 Committed update, merge and split results each carry the newly authored version's `K#tag`, usable
 directly for the next mutation. Uncommitted Noter `Mn` handles and archive history addresses are unchanged.
 
-Pending changes, Dreamer end reviews, Noter held reviews and Knowledge range reads use the same
+Pending changes, Dreamer end reviews and Knowledge range reads use the same
 lossless sentence-first unified diff. Sentences end after `。；！？`, retaining the
 delimiter; each newline is its own row, shown as an empty line. Unchanged text appears once with `  `; removed and added sentences use `- ` and `+ `.
 Within a changed hunk, removed sentences pair in order with the first unused later added sentence

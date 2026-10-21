@@ -42,13 +42,11 @@ Content paths are `trace://<layer>/S<n>[/T<t>]`; raw alone accepts entry and rol
 
 The single Core guide is shared by injection, compaction and N/D materials, once per material. Its native tool names are `read`/`grep`; no extra adapter reading lesson is appended to tool descriptions. Fresh admission prices native Read metadata, and forks preserve captured definitions plus the final SDK capacity gate. These are implementation contracts; actual host/provider acceptance must be reported separately.
 
-## Noter calls and end review (116/117)
+## Noter tasks and workspace files (144)
 
-Pi exposes the same flat `note` and `memory` definitions to N and manual callers. One `note` call carries one fact in top-level `title` and `sources` fields; `sources` is a string of segments, each beginning on a line with `[T12#E3@user] ` (role optional), with no text before the first marker. Core trims trailing whitespace from each source segment while preserving internal line breaks. One `memory` call carries one top-level operation (`op`, `supports`, `reason` and applicable fields); N allows create/update/archive and has no `skipped`. Manual writes commit each call immediately, with memory limited to fact-backed create/update/archive (135). An update uses exactly one of complete `text` with required metadata or ordered exact `edits:[{old,new}]`; edits inherit omitted category/scope/topics. Every writer's title and body are capped by `writing.titleTokens` and `writing.bodyTokens` (144), an update's resulting body included; `create` requires a `title`, and an update without one inherits its base's. The Dreamer's `memory` also takes one item per call: one operation, or one `{skip, because}`; each legal call commits at once, and a refused one holds an `Mn` slot until `slot` resubmits or `drop` withdraws it (127). See [update and merge contracts](core.md#operations-and-supports) for atomic match refusals, complete-result storage and live merge swapping.
+Pi exposes the flat `note` and `memory` definitions to manual callers; the Noter does not use them (144). One `note` call carries one fact in top-level `title` and `sources` fields; `sources` is a string of segments, each beginning on a line with `[T12#E3@user] ` (role optional), with no text before the first marker. Core trims trailing whitespace from each source segment while preserving internal line breaks. One `memory` call carries one top-level operation (`op`, `supports`, `reason` and applicable fields); Manual writes commit each call immediately, with memory limited to fact-backed create/update/archive (135). An update uses exactly one of complete `text` with required metadata or ordered exact `edits:[{old,new}]`; edits inherit omitted category/scope/topics. Every writer's title and body are capped by `writing.titleTokens` and `writing.bodyTokens` (144), an update's resulting body included; `create` requires a `title`, and an update without one inherits its base's. The Dreamer's `memory` also takes one item per call: one operation, or one `{skip, because}`; each legal call commits at once, and a refused one holds an `Mn` slot until `slot` resubmits or `drop` withdraws it (127). See [update and merge contracts](core.md#operations-and-supports) for atomic match refusals, complete-result storage and live merge swapping.
 
-N stages facts in `$n` slots and knowledge operations in `Mn` slots. A call without `slot` appends, an explicit `slot` replaces the entire item, and `drop: "$n"` or `drop: "Mn"` removes one slot in a separate call. `note({})` and `memory({})` explicitly confirm no item; N must call both tools even when empty. An empty call does not clear a rejected slot.
-
-After the first normal pass, each N run receives one fixed end-review user message, even if already publishable or empty. It reports real held blockers (including host-specific empty calls for missing tools) and every held knowledge change (update body/metadata diff, full create body or archive kind/text). The second pass can correct a slot, drop it or leave a compliant change untouched. Only after that pass does normal termination attempt atomic publication; unresolved blockers bounce the run. Failure or cancellation gets no review, and there is no third pass. D keeps its pre-existing pass-end conditions.
+A Noter batch is two runs, `write` and `verify`, each a fresh native child with the same system prompt, tools (`search`, `check`, `read`, `write`, `edit`) and task text. The child's `write` and `edit` are Pi's own tools with operations that touch exactly the run's two workspace files (`facts.md`, `knowledge.md`); any other path, a symbolic link or a file outside the run's directory is refused before the filesystem is reached. The child's `read` also opens those two files. `check` names the task and the files, lists problems and measured lengths, and the stop hook runs the same check: a failure sends one follow-up message, and a second failure fails the run. Nothing is published before the second task passes; a task 2 failure keeps task 1's files for the next trigger.
 
 ## Automatic checkpoints (141)
 
@@ -346,8 +344,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   string of `[address] text` segments (multiline segments allowed, no preamble) and writes one fact;
   `memory({op, supports, reason, ...})`
   writes one Knowledge operation immediately within the caller's authority; `note({})` and
-  `memory({})` are explicit empty calls. Noter uses the same flat item fields, with its private
-  `slot`/`drop` handles; the Dreamer sends one operation or one `{skip, because}` per call (127). Every operation
+  `memory({})` are explicit empty calls. The Noter writes workspace files instead (144); the Dreamer sends one operation or one `{skip, because}` per call (127). Every operation
   carries `supports` and a `reason`; create/update/merge also
   carry the revision's complete `topics` set. Noter permits create/update/archive; manual calls permit
   fact-backed create/archive; Dreamer alone may merge, split or submit support-inheriting
@@ -864,8 +861,7 @@ older vendored implementation:
 The registry resolves a configured `provider/model-id`; the adapter itself does not implement a
 provider. Noting and Consolidation run in a child `AgentSession`, which executes model tool calls
 through run-bound façade tools and continues until the model stops. Consolidator's first valid
-`memory` submission commits. Noter receives its fixed end review after a normal first pass (117).
-Rejected calls may be corrected in the second pass.
+`memory` submission commits. The Noter's stop check sends one follow-up message when its files fail the check (144).
 
 `agent.onPayload` snapshots the provider-native body of every round; the last request sent
 embeds all earlier rounds and is stored with tool results, output and usage. The child's own
@@ -953,7 +949,7 @@ task alone, and the titles, block order and separators inside it are core's, pin
 memoizes by leaf id, entry count and binding, so a streaming token re-reads the cached view while a
 rewind, a new entry, a compaction and the memory-session allocation each invalidate it. It serves the
 foreground injection and compaction; admission passes a worker nothing from it (the Noter runs fresh
-only, 2026-10-22). Noter's fixed end review follows a normal first pass. Historical Consolidation's first valid
+only, 2026-10-22). The Noter's stop check follows its task's end (144). Historical Consolidation's first valid
 submission committed immediately. If a later corrective request after a rejected tool call exceeds
 capacity, the normal overflow/refusal path applies.
 
@@ -975,7 +971,7 @@ manager is never passed in and never mutated. Its `getSessionFile()` is the run'
   Execution is sequential (`agent.toolExecution` plus a per-tool `executionMode`); Pi's tested default is parallel.
 - **Discovery.** Extensions, skills, prompt templates, themes and project context files are
   all disabled in the worker.
-- **Task delivery.** The text core prepared is the child's user prompt. Noter's fixed end review is delivered as a native user message after a normal first pass; ordinary tool rejections remain tool results.
+- **Task delivery.** The text core prepared is the child's user prompt. The Noter's stop-check follow-up is delivered as a native user message when its files fail the check; ordinary tool rejections remain tool results.
 - **Thinking level (26b, extended by 26d).** The child is created with Pi's own `thinkingLevel`
   option. Admission freezes **two** levels with the task, beside its model and its material: the
   foreground level the host reads once there (`pi.getThinkingLevel()`), and the phase's
@@ -1261,10 +1257,8 @@ Generation limits, `noting.batchTokens`, `consolidation.batchTokens`, `render.ep
 the database-derived Knowledge capacity and foreground compaction are unchanged by this rule.
 
 Noting freezes entry identities on the selected path, not whole Turns. A
-successful zero-fact run — after explicit `note({})` and `memory({})` calls, a normal first
-pass and its fixed end review — processes only its selected entries; later entries in that
-same Turn remain pending. A run that ends without calling both tools or with unresolved
-refusals publishes nothing and processes no entries. Address aliases are interpreted against the frozen
+successful zero-fact run — both files holding `## none` and both tasks passed — processes only its selected entries; later entries in that
+same Turn remain pending. A run whose files fail the check twice, or whose second task fails, publishes nothing and processes no entries. Address aliases are interpreted against the frozen
 entry set. A later matching source occurrence makes that address ineligible for
 the earlier writer, even if an explicit `trace://raw` read can display it. Run records
 include `entryAudit`: native identities, owning Turns, frozen branch, view-budget
