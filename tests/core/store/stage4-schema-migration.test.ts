@@ -12,7 +12,7 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 const NEW_COLUMNS = { knowledge: ["score", "scored_commit", "scored_run"], task_handoffs: ["detail"],
-  knowledge_deliveries: ["titles", "temporary_tokens"], knowledge_budget_policy: ["base_tokens"] } as const;
+  knowledge_deliveries: ["titles", "temporary_tokens"] } as const;
 const rows = (store: Store, table: string, skip: readonly string[] = []) => (store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all() as Record<string, unknown>[])
   .map(row => Object.fromEntries(Object.entries(row).filter(([name]) => !skip.includes(name))));
 
@@ -42,6 +42,7 @@ test("a database without the columns keeps every row, defaults the new columns, 
   const tables = Object.keys(NEW_COLUMNS) as (keyof typeof NEW_COLUMNS)[];
   const before = Object.fromEntries(tables.map(table => [table, rows(f.store, table, NEW_COLUMNS[table])]));
   for (const table of tables) for (const column of NEW_COLUMNS[table]) f.store.db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+  f.store.db.exec("DROP TABLE knowledge_base_policy");
   const revisions = rows(f.store, "knowledge_revisions");
   f.store.close();
   for (let opens = 0; opens < 2; opens++) {
@@ -55,9 +56,9 @@ test("a database without the columns keeps every row, defaults the new columns, 
       expect(rows(upgraded, "knowledge")[0]).toMatchObject({ score: null, scored_commit: null, scored_run: null });
       expect(rows(upgraded, "task_handoffs")[0]).toMatchObject({ detail: null });
       expect(rows(upgraded, "knowledge_deliveries")[0]).toMatchObject({ titles: "[]", temporary_tokens: 0 });
-      expect(rows(upgraded, "knowledge_budget_policy")[0]).toMatchObject({ base_tokens: opens === 0 ? 12_300 : 999 });
+      expect(rows(upgraded, "knowledge_base_policy")).toEqual([{ id: 1, base_tokens: opens === 0 ? 12_300 : 999 }]);
       expect(upgraded.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-      upgraded.db.exec("UPDATE knowledge_budget_policy SET base_tokens = 999"); // a later open must not derive it again
+      upgraded.db.exec("UPDATE knowledge_base_policy SET base_tokens = 999"); // a later open must not derive it again
     } finally { upgraded.close(); }
   }
 });
@@ -65,7 +66,10 @@ test("a database without the columns keeps every row, defaults the new columns, 
 test("a fresh database has a base of 20,000, scores within 1 to 100, and a hand-off that round-trips its detail", () => {
   const f = database(false);
   try {
-    expect(rows(f.store, "knowledge_budget_policy")[0]).toMatchObject({ base_tokens: 20_000 });
+    expect(rows(f.store, "knowledge_base_policy")).toEqual([{ id: 1, base_tokens: 20_000 }]);
+    // A process on older code inserts into the budget table positionally; the table keeps the shape it had.
+    f.store.db.exec("DELETE FROM knowledge_budget_policy");
+    f.store.db.prepare("INSERT OR IGNORE INTO knowledge_budget_policy VALUES (1,?,?,?)").run(1, 2, 3);
     expect(f.store.handoff(f.session.id, "dreaming")!.detail).toBeUndefined();
     const detail = { curateRuns: [f.run.id], doneCategories: ["constraint"], waitFrom: 12 };
     writeHandoff(f.store, { sessionId: f.session.id, phase: "dreaming", nextTask: "verify", runId: f.run.id, branch: null, entryIds: [], detail });

@@ -78,7 +78,9 @@ export function migrateInadmissibleKind144(db: DatabaseSync): void {
 
 /** Ticket 144, Stage 4: the columns Dreaming's curate, verify and classify tasks need. Every column is nullable or
  * defaulted, so existing rows are kept as they are; each is added once (`table_info` is the idempotency signal).
- * `base_tokens` starts as the sum of the three pool budgets, which stay in place unread. */
+ * The Knowledge base lives in its own single-row table, `knowledge_base_policy`, not in `knowledge_budget_policy`:
+ * a process still running older code inserts into that table positionally and would fail at open if it grew a column.
+ * The base starts as the sum of the three pool budgets, which stay in place unread. */
 export function migrateStage4Schema144(db: DatabaseSync): void {
   if (!db.isTransaction) throw new Error("144 stage 4 migration requires Store's schema transaction");
   const add = (table: string, column: string, definition: string): boolean => {
@@ -92,8 +94,10 @@ export function migrateStage4Schema144(db: DatabaseSync): void {
   add("task_handoffs", "detail", "TEXT");
   add("knowledge_deliveries", "titles", "TEXT NOT NULL DEFAULT '[]'");
   add("knowledge_deliveries", "temporary_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK (temporary_tokens >= 0)");
-  if (add("knowledge_budget_policy", "base_tokens", "INTEGER NOT NULL DEFAULT 20000 CHECK (base_tokens BETWEEN 0 AND 9007199254740991)"))
-    db.exec("UPDATE knowledge_budget_policy SET base_tokens = global_tokens + project_tokens + session_tokens");
+  if (!tableExists(db, "knowledge_base_policy")) {
+    db.exec("CREATE TABLE knowledge_base_policy (id INTEGER PRIMARY KEY CHECK(id = 1), base_tokens INTEGER NOT NULL CHECK(base_tokens BETWEEN 0 AND 9007199254740991))");
+    db.exec("INSERT INTO knowledge_base_policy SELECT 1, global_tokens + project_tokens + session_tokens FROM knowledge_budget_policy WHERE id = 1");
+  }
 }
 
 export function migrateFactSegments93(db: DatabaseSync): void {
