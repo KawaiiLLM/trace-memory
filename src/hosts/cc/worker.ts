@@ -418,7 +418,7 @@ export class CcAgentWorker {
       return tail ? { ...settled, input: settled.input + tail.input, output: settled.output + tail.output,
         cacheRead: settled.cacheRead + tail.cacheRead, cacheWrite: settled.cacheWrite + tail.cacheWrite } : settled;
     };
-    const progress = () => { const usage = observedUsage(); task.reportProgress?.({ retries: [...retries], ...(usage ? { usage } : {}), ...(task.fallbackReason ? { fallbackReason: task.fallbackReason } : {}) }); };
+    const progress = () => { const usage = observedUsage(); task.reportProgress?.({ retries: [...retries], ...(usage ? { usage } : {}) }); };
     let passState: "first" | "repair-authorized" | "complete" = "first";
     const toolsAllowed = () => passState !== "complete";
     return runWithCcNativeAbortOwner(controller.signal, error =>
@@ -518,8 +518,7 @@ export class CcAgentWorker {
       if (!results.length) throw new Error("CC worker ended without an SDK result message");
       origins.requireDispatchedWrites();
       const usage = observedUsage();
-      return { outcome, output, ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent",
-        ...(task.fallbackReason ? { fallbackReason: task.fallbackReason } : {}),
+      return { outcome, output, ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}),
         ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
         audit: { available: false, reason: AUDIT_UNAVAILABLE },
         thinking: { requested: settings.thinking, effective: settings.thinking } };
@@ -530,8 +529,7 @@ export class CcAgentWorker {
       const usage = observedUsage();
       const specific = nativeFailureOutput ?? (cause instanceof Error ? cause.message : String(cause));
       return { outcome: cancelled ? "cancelled" : "failure", output: specific,
-        ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent",
-        ...(task.fallbackReason ? { fallbackReason: task.fallbackReason } : {}),
+        ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}),
         ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),
         audit: { available: false, reason: AUDIT_UNAVAILABLE },
         thinking: { requested: settings.thinking, effective: settings.thinking } };

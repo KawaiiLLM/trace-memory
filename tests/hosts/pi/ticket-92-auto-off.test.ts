@@ -5,7 +5,7 @@ const memoryCall = (batch: Parameters<typeof dreamerReply>[1]): Reply => dreamer
 
 // Real Pi extension/AgentSession with the existing local provider wire; no remote API.
 test("92/07: Pi catchup third N failure cancels D, retaining its exact claim only through settlement", async () => {
-  const f = host({ "noting.triggerTokens": 10_000, "noting.forkModeDefault": false, "dreaming.triggerTokens": 1 });
+  const f = host({ "noting.triggerTokens": 10_000, "dreaming.triggerTokens": 1 });
   let ready!: () => void;
   try {
     await f.emit("session_start");

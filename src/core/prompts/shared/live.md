@@ -1,1 +1,0 @@
-- **Live conversation**: when the message carries the range and an index or list instead of the material itself, the material is already in this conversation and is not repeated. Only what is not yet visible is supplied. Work on exactly the listed frozen entries; their citations, not paths, identify fact sources.

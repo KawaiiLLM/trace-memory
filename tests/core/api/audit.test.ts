@@ -24,7 +24,7 @@ for (const phase of ["noting", "dreaming"] as const)
         { op: "create", title: "Fixture title", handle: "$1", author: "fixture", text: "rule", category: "constraint", scope: "project", supports: [1], topics: [], reason: "evidence", createdAt: time },
       ] }).ok).toBe(true);
     }
-    const input = { sessionId, branch: "main", headTurnId: turn.id, mode: "subagent" as const };
+    const input = { sessionId, branch: "main", headTurnId: turn.id };
     const result = phase === "noting" ? await memory.noting(input) : await memory.dream(input);
     if (result.outcome !== "failure") throw new Error(`expected a failure, got ${result.outcome}`);
     expect(JSON.parse(memory.store.getRun(result.runId)!.request!)).toEqual({ captured: true });

@@ -2,9 +2,7 @@
 // task and a binding of values, and nothing else. These cases call it with no ExtensionContext and
 // no host at all — the fixture only supplies an agent directory, a model and the stubbed wire — so
 // they fail if the adapter ever reaches back into the host's session state. The mid-flight mutation
-// below states the other half of the contract — the binding is read once, at launch. 27c: the
-// adapter never calls the runner twice any more; a fork it cannot run comes back to the host as a
-// refusal, and the host admits the task once more (tests/hosts/pi/fallback.test.ts).
+// below states the other half of the contract — the binding is read once, at launch.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
@@ -18,8 +16,8 @@ const read = (f: Awaited<ReturnType<typeof fixture>>) => memoryReadTool(f.h.dir,
   path => memoryFiles(f.h.memory, {}).read(path), { memoryOnly: true });
 const note = (): ToolDefinition => ({ name: "note", description: "Record facts.", parameters: { type: "object", properties: {} }, execute: () => "committed" });
 /** One frozen core task, as the façade prepares it. */
-const task = (mode: "fork" | "subagent"): NotingAgentInput => ({
-  kind: "noting", mode, model: "fake/test", sessionId: 1, branch: "main", entryIds: [7, 8],
+const task = (): NotingAgentInput => ({
+  kind: "noting", model: "fake/test", sessionId: 1, branch: "main", entryIds: [7, 8],
   prompt: "You are the Noter.", text: "note what happened",
   reportRequest: () => {}, reportProgress: () => {},
 } as unknown as NotingAgentInput);
@@ -34,8 +32,8 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
     const checked: (number | undefined)[] = [], reported: unknown[] = [];
     const binding: WorkerBinding = { model: f.model as never, checkCapacity: contextTokens => { checked.push(contextTokens); },
       tools: [note()], read: read(f), runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
-      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} };
-    const frozen = { ...task("subagent"), reportRequest: (body: unknown) => { reported.push(body); } };
+      onRetry: () => {}, onRetryEnd: () => {} };
+    const frozen = { ...task(), reportRequest: (body: unknown) => { reported.push(body); } };
     const run = runWorker(frozen, binding);
     await vi.waitFor(() => expect(sent.length).toBe(1));
     // The host moves on while the child is still in flight: a new runs directory, no tools, no model.
@@ -44,7 +42,6 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
     const result = await run;
     expect(result.outcome).toBe("success");
     expect(result.output).toBe("Done.");
-    expect(result.mode).toBe("subagent");
     expect(sent[0].tools.map((t: any) => t.function.name).sort()).toEqual(["note", "read"]); // frozen note and restricted Read, not the later binding
     expect(String(result.nativeLog).startsWith(f.runsDir)).toBe(true);        // the directory handed in at launch
     expect(existsSync(join(f.h.dir, "elsewhere"))).toBe(false);
@@ -54,40 +51,5 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
     expect(checked).toHaveLength(1);
     expect(checked[0]).toBeTypeOf("number");
     expect(checked[0] as number).toBeGreaterThan(0);
-  } finally { await f.dispose(); }
-});
-
-test("27c: the host's fork refusal arrives as a value, and the run comes back to the host as a refusal", async () => {
-  const f = await fixture();
-  try {
-    f.script(async () => say("Done."));
-    const before = f.sent.length;
-    const result = await runWorker(task("fork"), { model: f.model as never, checkCapacity: () => {},
-      tools: [note()], read: read(f), runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
-      fork: { refused: "No current-branch provider payload captured" },
-      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
-    // 27c: the adapter runs the task in the mode it was admitted for, and no other. The refusal names
-    // the reason for the audit and the frozen batch the host must re-admit on; nothing was sent, so it
-    // carries no gate result, and no fresh child ran here on the frozen model.
-    // 27d: the batch is the exact entry ids, never an upper bound; the refusal carries no usage and
-    // no retries at all, because an attempt that spent something is its own run record.
-    expect(result.refused).toEqual({ reason: "native runner: No current-branch provider payload captured", boundary: { exactEntryIds: [7, 8] } });
-    expect(result.request).toBeNull(); // which is how core tells an attempt from a refusal that never left
-    expect(f.sent.length).toBe(before);
-  } finally { await f.dispose(); }
-});
-
-test("27c: a task admitted with a reason runs fresh and records it — the launch is not offered a fork", async () => {
-  const f = await fixture();
-  try {
-    f.script(async () => say("Done."));
-    const result = await runWorker({ ...task("fork"), fallbackReason: "Raw availability: entry 2 (T1, native e5) of this batch is not in the inherited context" } as NotingAgentInput,
-      { model: f.model as never, checkCapacity: () => {},
-        tools: [note()], read: read(f), runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
-        onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
-    expect(result.outcome).toBe("success");
-    expect(result.mode).toBe("subagent");
-    expect(result.refused).toBeUndefined();
-    expect(result.fallbackReason).toBe("Raw availability: entry 2 (T1, native e5) of this batch is not in the inherited context");
   } finally { await f.dispose(); }
 });

@@ -262,10 +262,9 @@ test("production worker serves original schemas and raw arguments, publishes the
     return stream;
   }) as any;
   const acknowledgeRequest = vi.fn();
-  const task = { kind: "noting", text: "material", prompt: loadPrompt("noting.md"), tools: [definition], acknowledgeRequest,
-    fallbackReason: "original source is no longer in parent context" } as unknown as CcAgentTask;
+  const task = { kind: "noting", text: "material", prompt: loadPrompt("noting.md"), tools: [definition], acknowledgeRequest } as unknown as CcAgentTask;
   const result = await new CcAgentWorker(workerConfig(directory, executable), { query: withNoterReview(fakeQuery, task) }).run(task, 2);
-  expect(result).toMatchObject({ outcome: "success", mode: "subagent", fallbackReason: task.fallbackReason });
+  expect(result).toMatchObject({ outcome: "success" });
   expect(result.usage).toEqual({ input: 11, output: 7, cacheRead: 5, cacheWrite: 3, cost: { total: 0.125 } });
   expect(seen).toEqual([{ cursor: "opaque-K" }]);
   expect(acknowledgeRequest).toHaveBeenCalledTimes(1);
@@ -845,7 +844,7 @@ test("production worker reads a trace:// snapshot, runs search code and accounts
   const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
   const target = append(memory, session.id, "source", text);
   const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: target.turn.id,
-    triggerEntryId: target.entry.id, mode: "subagent", model: "claude-sonnet-4-5", maxReadChars: CC_MAX_RESULT_CHARS,
+    triggerEntryId: target.entry.id, model: "claude-sonnet-4-5", maxReadChars: CC_MAX_RESULT_CHARS,
     toolNames: ccWorkerToolNames });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
   const listed = (schemas[0] as any).tools;
@@ -932,7 +931,7 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
       source: [`T${target.turn.id}#E1`], createdAt: "now" }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: target.turn.id,
-    triggerEntryId: target.entry.id, mode: "subagent", model: "claude-sonnet-4-5", toolNames: ccWorkerToolNames });
+    triggerEntryId: target.entry.id, model: "claude-sonnet-4-5", toolNames: ccWorkerToolNames });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
   expect(memory.store.currentKnowledge()).toHaveLength(1);
   if (invalidFirst) expect(receipts[0]).toContain("rejected:");
@@ -998,7 +997,7 @@ test("production protocol aborts remain failures while external cancellation sta
     startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
   const tail = append(memory, session.id, "protocol", "Pending source material for the protocol failure test.");
   const target = { sessionId: session.id, branch: "main", headTurnId: tail.turn.id,
-    triggerEntryId: tail.entry.id, mode: "subagent" as const, model: "claude-sonnet-4-5", toolNames: ccWorkerToolNames };
+    triggerEntryId: tail.entry.id, model: "claude-sonnet-4-5", toolNames: ccWorkerToolNames };
 
   const controller = new AbortController();
   const cancellation = memory.noting({ ...target, signal: controller.signal });
@@ -1611,7 +1610,7 @@ test("stop before the reservation microtask fences all ordinary phases and later
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-ordinary-stop-race-")); dirs.push(directory);
   const calls: string[] = [];
   const result = (phase: string) => async () => { calls.push(phase); return { outcome: "success" }; };
-  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: { forkModeDefault: false } },
+  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: {} },
     taskEligibility: () => ({ due: true }), cancelTasks: vi.fn(() => []),
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: result("noting"), dream: result("dreaming") } as any;
@@ -1638,7 +1637,7 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
     starts.push(name); admissions.push({ ...input, kind: name }); await new Promise<void>(resolve => releases.set(name, resolve));
     return { outcome: "failure", runId: 1, problems: ["synthetic"] };
   };
-  const memory = { config: { closedSessionScope: "project", noting: { forkModeDefault: false } }, taskEligibility: () => ({ due: true }),
+  const memory = { config: { closedSessionScope: "project", noting: {} }, taskEligibility: () => ({ due: true }),
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: phase("noting"), dream: phase("dreaming") } as any;
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
@@ -1657,7 +1656,7 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
 
 test("scheduler diagnoses resolved bounced and successful-but-problemed results", async () => {
   const diagnostics: string[] = [];
-  const memory = { config: { closedSessionScope: "project", noting: { forkModeDefault: false } }, taskEligibility: () => ({ due: true }),
+  const memory = { config: { closedSessionScope: "project", noting: {} }, taskEligibility: () => ({ due: true }),
     store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: async () => ({ outcome: "bounced", runId: 7, problems: ["candidate rejected"] }),
     dream: async () => ({ outcome: "success", runId: 8, diagnostics: [], committed: [], problems: ["post-commit warning"] }) } as any;
@@ -1677,7 +1676,7 @@ test("scheduler diagnoses resolved bounced and successful-but-problemed results"
 test("scheduler borrows closed Noting work but never a closed Dreamer target", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-no-dreamer-borrow-")); dirs.push(directory);
   const queried: string[] = [], started: string[] = [];
-  const memory = { config: { closedSessionScope: "project", noting: { forkModeDefault: false } }, taskEligibility: () => ({ due: false }),
+  const memory = { config: { closedSessionScope: "project", noting: {} }, taskEligibility: () => ({ due: false }),
     store: { enabled: () => true, getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig",
       closedTasks: (phase: string) => { queried.push(phase); return [{ sessionId: 2, branch: "closed", headTurnId: 2, triggerEntryId: 20 }]; } },
     noting: async () => { started.push("noting"); return { outcome: "success" }; },

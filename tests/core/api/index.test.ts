@@ -27,22 +27,7 @@ afterEach(() => {
 test("opens a store at the given path and applies default config", () => {
   expect(memory.store).toBeDefined();
   expect(memory.config).toEqual(DEFAULT_CONFIG);
-  expect(DEFAULT_CONFIG.noting.forkModeDefault).toBe(false);
   expect(DEFAULT_CONFIG).not.toHaveProperty("consolidation");
-});
-
-test.each([
-  [{}, false],
-  [{ noting: { forkModeDefault: true } }, true],
-  [{ noting: { branchModeDefault: true } }, true],
-  [{ noting: { forkModeDefault: false } }, false],
-] satisfies [ConfigOverride, boolean][])("N mode defaults apply only to omitted configuration (%j)", (override, noting) => {
-  const before = structuredClone(override);
-  const config = validateConfig(override);
-  expect(config.noting.forkModeDefault).toBe(noting);
-  expect(config).not.toHaveProperty("consolidation");
-  expect(config.noting).not.toHaveProperty("branchModeDefault");
-  expect(override).toEqual(before);
 });
 
 test("a partial config overrides only the sections given, keeping the rest default", () => {

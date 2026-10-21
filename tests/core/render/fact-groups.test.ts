@@ -86,7 +86,7 @@ test("carry, compact and fresh Noter history share the one fact-group renderer",
     const compact = m.compact(s.id, "main", b.id);
     if ("native" in compact) throw new Error(compact.reason);
     expect(compact.text).toContain(`Recent facts (by Turn):\n\n${expected}\n\nRaw:`);
-    await m.noting({ sessionId: s.id, branch: "main", headTurnId: b.id, mode: "subagent" });
+    await m.noting({ sessionId: s.id, branch: "main", headTurnId: b.id });
     expect((calls.at(-1)! as NotingAgentInput).material.facts.join("\n")).toBe(expected);
     expect(m.store.listSessionFacts(s.id).map(f => f.id)).toEqual([1, 3, 2]); // owning Turn time, then F-id
     expect(m.trace("F2")).not.toContain("(selected facts)"); // explicit single-fact reads stay unchanged

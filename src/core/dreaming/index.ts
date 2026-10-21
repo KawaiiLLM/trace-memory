@@ -15,7 +15,7 @@ import { renderDreamingCheckReceipt, type DreamingCheckResult } from "./check-re
 import { renderDreamingReview } from "./review.ts";
 
 
-export type DreamingInput = Omit<NotingInput, "mode" | "effectiveMode" | "visible" | "boundary">;
+export type DreamingInput = Omit<NotingInput, "boundary">;
 export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
@@ -200,7 +200,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     ...(requestMissing(result) ? ["runAgent must return the exact provider request"] : [])];
   const skippedRevisionIds = binding.memory.skippedCommits;
   const deliberatedRevisionIds = [...deliberated(checked.ownRevisionIds)].sort((a, b) => a - b);
-  recordAttempt(run, result, "subagent", { toolCalls: binding.sequence, fetched: binding.fetched, material: frozen.material,
+  recordAttempt(run, result, { toolCalls: binding.sequence, fetched: binding.fetched, material: frozen.material,
     profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
     committed: binding.memory.allCommitted, skipped: binding.memory.skipped, check: checked, rounds,
     deliberatedRevisionIds, deliberated: deliberatedRevisionIds.length, frozen: frozen.frozenIds.length, problems });

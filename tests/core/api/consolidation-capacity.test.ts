@@ -32,14 +32,14 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
   const pending = Array.isArray(pendingText) ? pendingText : [pendingText];
   const turn = memory.store.appendTurn({ sessionId: session.id, parentTurnId: evidence.id, kind: "turn", userPrompt: pending[0]!, startedAt: "2026-09-16T00:01:00Z" });
   for (const text of pending.slice(1)) seedSourceEntry(memory, turn.id, "user", text);
-  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, mode: "subagent" as const };
+  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
   const freeze = (capacity?: number) => freezeNoting(memory.store,
     { ...target, ...(capacity === undefined ? {} : { capacity: { inputTokens: capacity, prefixTokens: 0 } }) }, memory.config);
   return { memory, target, freeze, values: memory.store.currentKnowledge(memory.store.knowledgePath(session.id, "main", turn.id)),
     commits: created.committed.map(value => value.commit), pending: memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id) };
 }
 
-test("fresh Noter prices native Read scalar, while fork counts its inherited prefix only", () => {
+test("fresh Noter prices the native Read definition", () => {
   const f = fixture([]);
   // This boundary prices mandatory input only; optional history may legitimately shrink first.
   f.memory.config.compaction.factsTokens = 0;
@@ -52,21 +52,6 @@ test("fresh Noter prices native Read scalar, while fork counts its inherited pre
   expect(freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice, prefixTokens: 0 } }, f.memory.config)
     .prepared!.selectedEntryIds).toEqual(f.pending);
   expect(() => freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice - 1, prefixTokens: 0 } }, f.memory.config))
-    .toThrow(NOTING_CAPACITY);
-  // A requested fork re-admitted fresh must pay for Read too.
-  const fallback = { ...input, mode: "fork" as const, effectiveMode: "subagent" as const };
-  expect(freezeNoting(f.memory.store, { ...fallback, capacity: { inputTokens: freshPrice, prefixTokens: 0 } }, f.memory.config)
-    .prepared!.selectedEntryIds).toEqual(f.pending);
-  expect(() => freezeNoting(f.memory.store, { ...fallback, capacity: { inputTokens: freshPrice - 1, prefixTokens: 0 } }, f.memory.config))
-    .toThrow(NOTING_CAPACITY);
-
-  const fork = { ...input, mode: "fork" as const, effectiveMode: "fork" as const };
-  const inherited = freezeNoting(f.memory.store, fork, f.memory.config);
-  const prefixTokens = 20_000;
-  const forkPrice = prefixTokens + tokens(inherited.forkPrompt!) + tokens(inherited.prepared!.text);
-  expect(freezeNoting(f.memory.store, { ...fork, capacity: { inputTokens: forkPrice, prefixTokens } }, f.memory.config)
-    .prepared!.selectedEntryIds).toEqual(f.pending);
-  expect(() => freezeNoting(f.memory.store, { ...fork, capacity: { inputTokens: forkPrice - 1, prefixTokens } }, f.memory.config))
     .toThrow(NOTING_CAPACITY);
   expect(f.memory.pendingEntries(f.target.sessionId, "main", f.target.headTurnId).map(entry => entry.id)).toEqual(f.pending);
 });

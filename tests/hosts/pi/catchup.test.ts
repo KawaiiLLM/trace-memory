@@ -33,7 +33,7 @@ function hold(h: ReturnType<typeof host>) {
 }
 
 test("own pending N precedes closed tails; busy N does not fan out or chain on completion", async () => {
-  const h = host({ "noting.triggerTokens": 1_000, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
     const tails = Array.from({ length: 4 }, () => target(h.memory));
@@ -139,7 +139,7 @@ test("borrowed N publishes both layers to its target without a special executor 
     await tick(h);
     const runs = h.memory.store.listRuns(t.sessionId).filter(r => r.kind === "noting");
     expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({ branch: t.branch, mode: "subagent", outcome: "success" });
+    expect(runs[0]).toMatchObject({ branch: t.branch, outcome: "success" });
     const fact = h.memory.store.listSessionFacts(t.sessionId)[0]!;
     expect(fact).toBeDefined();
     const visible = h.memory.store.listVisibleKnowledge(t.sessionId, t.projectId);

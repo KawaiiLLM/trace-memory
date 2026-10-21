@@ -1,6 +1,5 @@
 import { expect, test } from "vitest";
 import { sourceSeededMemory, memoryFiles, type NotingAgentInput } from "../../source-fixture.ts";
-import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { tokens } from "../../../src/core/render/index.ts";
@@ -22,7 +21,7 @@ function fixture(agent: (input: NotingAgentInput) => void = () => {}) {
   // Derive an exact 5,000-token Knowledge window from the real pool policy.
   // The oversized body then exercises omission without a retired fixed allowance.
   setKnowledgeCapacity(memory, 5_000);
-  const target = { sessionId: s.id, branch: "main", headTurnId: turn.id, mode: "subagent" as const };
+  const target = { sessionId: s.id, branch: "main", headTurnId: turn.id };
   const freeze = (extra = {}) => freezeNoting(memory.store, { ...target, ...extra }, memory.config);
   return { memory, tools, content, target, freeze };
 }
@@ -46,7 +45,7 @@ test("92: omitted knowledge has no printed tag; an exact tag works without read 
   } finally { f.memory.close(); }
 });
 
-test("32/92: actual inherited carriers suppress duplicate bodies without granting reads", () => {
+test("32/92: material without status cues supplies no duplicate body and grants no reads", () => {
   const f = fixture();
   try {
     f.tools.find(tool => tool.name === "note")!.execute({ title: "Withdrawal", sources: "[T1#E1] withdraw", negate: [["F1", "strong"]] });
@@ -54,19 +53,6 @@ test("32/92: actual inherited carriers suppress duplicate bodies without grantin
     expect(withoutCues.prepared?.supplied.knowledgeCommitIds).toEqual([]);
     expect(withoutCues.prepared?.text).not.toContain(f.content.text);
     expect(withoutCues.prepared).not.toHaveProperty("readKnowledgeCommits");
-    // The carrier takes its identities from the actual untruncated injection, not a candidate scan.
-    setKnowledgeCapacity(f.memory, 20_000);
-    const injection = f.memory.injection(f.target);
-    expect(injection.text).toContain(f.content.text);
-    const binding = { db: "fixture-db", session: 1, pi: "fixture-pi" };
-    // A retained carrier includes the body that Pi actually persisted, not just its IDs.
-    const entry = { id: "injection", type: "custom_message", customType: "trace-memory", content: injection.text, details: { traceMemory: {
-      ...binding, supplied: { entries: [], factIds: [], knowledgeCommitIds: injection.knowledgeCommitIds },
-    } } };
-    const inherited = f.freeze({ mode: "fork", visible: visibleView([entry], binding) });
-    expect(inherited.prepared?.supplied.knowledgeCommitIds).toEqual([]);
-    expect(inherited.prepared).not.toHaveProperty("readKnowledgeCommits");
-    expect(inherited.prepared?.text).not.toContain(f.content.text);
   } finally { f.memory.close(); }
 });
 

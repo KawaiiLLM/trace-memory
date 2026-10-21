@@ -1,5 +1,5 @@
-// Ticket 24b "Global settings", as tickets 26d and 29e left it: each phase's mode, model and thinking
-// level plus the borrowing scope, on the existing canonical N/D keys, written into the
+// Ticket 24b "Global settings", as tickets 26d and 29e and the 2026-10-22 fresh-only ruling left it: each
+// phase's model and thinking level plus the borrowing scope, on the existing canonical N/D keys, written into the
 // resolved agent settings file by a re-read-and-merge write, and applied to tasks admitted afterwards
 // through the façade's `configure` (amendment 2) and the host's own model selection. No new key, no
 // second configuration source, no reload, no credential and no model call to validate a selection.
@@ -16,9 +16,6 @@ afterEach(async () => { for (const h of hosts.splice(0)) await h.dispose(); });
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const globalPath = (h: ReturnType<typeof host>) => join(h.dir, "agent", "settings.json");
 const globalFile = (h: ReturnType<typeof host>) => JSON.parse(readFileSync(globalPath(h), "utf8"));
-/** The mode each run was admitted with, which is what a saved preference decides (the run's actual
- * mode may still be a documented fallback: a fork without a persisted parent file runs fresh). */
-const requestedModes = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).map(r => JSON.parse(r.response!).requestedMode);
 /** Seed the resolved global settings file with unrelated content the edit must preserve. */
 const seed = (h: ReturnType<typeof host>, traceMemory: Record<string, unknown> = {}) => {
   const file = globalFile(h); // the fake host already wrote Pi's own `retry` policy here
@@ -31,7 +28,7 @@ const edit = async (h: ReturnType<typeof host>, line: string, value: string | un
   // pre-redesign presentation, not a second Settings protocol.
   const key = line.split(":", 1)[0]!;
   const labels = ["Global Knowledge budget", "Project Knowledge budget", "Session Knowledge budget",
-    "Noter mode", "Noter model", "Noter thinking", "Dreamer model", "Dreamer thinking", "Closed-session scope"];
+    "Noter model", "Noter thinking", "Dreamer model", "Dreamer thinking", "Closed-session scope"];
   if (!labels.includes(key)) throw new Error(`Unknown editable settings row: ${line}`);
   h.answers.push("Settings…", undefined);
   await command(h, "");
@@ -59,7 +56,7 @@ test("35d/45 retire file-owned knowledge caps and parse exact database-budget in
   expect(() => writeGlobal(globalPath(h), "consolidation.knowledgeTokens", 1 as never)).toThrow(/Removed setting consolidation\.knowledgeTokens/);
   expect(() => h.memory.configure({ consolidation: { knowledgeTokens: 1 } } as never)).toThrow(/Removed setting consolidation\.knowledgeTokens/);
   expect(globalFile(h)["trace-memory"]).toBeUndefined();
-  expect(preferences.map(p => p.key)).toEqual(["noting.forkModeDefault", "notingModel", "notingThinking",
+  expect(preferences.map(p => p.key)).toEqual(["notingModel", "notingThinking",
     "dreaming.model", "dreaming.thinking", "closedSessionScope"]);
 });
 
@@ -115,6 +112,20 @@ test("35d cancelled, invalid, stale and failed database-budget edits preserve po
   expect(h.requests).toEqual([]);
 });
 
+test("2026-10-22: the Noter has model and thinking rows only, and a saved fork key is refused by name", async () => {
+  const h = setup();
+  await h.emit("session_start");
+  h.ctx.hasUI = true;
+  h.answers.push("Settings…", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Noter"))).toEqual(["Noter model: follow foreground", "Noter thinking: inherit"]);
+  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault"]) {
+    expect(() => parseLayer({ [key]: true })).toThrow(`Removed setting ${key}: the Noter runs fresh only; remove this key`);
+    expect(() => writeGlobal(globalPath(h), key, true as never)).toThrow(`Removed setting ${key}`);
+    expect(() => configuration(h.dir, JSON.stringify({ [key]: false }), join(h.dir, "agent"))).toThrow(`Removed setting ${key}`);
+  }
+  expect(globalFile(h)["trace-memory"]).toBeUndefined();
+});
+
 test("32d: Dreamer preferences reuse Settings with no mode or advanced page", async () => {
   const h = setup();
   seed(h, { "render.entryTokens": 222 });
@@ -133,52 +144,28 @@ test("32d: Dreamer preferences reuse Settings with no mode or advanced page", as
   expect(h.requests).toEqual([]);
 });
 
-test("Noter defaults to subagent and saving fork changes only future N admissions, not D", async () => {
-  const h = setup({ "noting.triggerTokens": 30 });
-  h.provider(async c => notingFact(c));
-  await h.emit("session_start");
-  h.ctx.hasUI = true;
-  h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Consolidator"))).toEqual([]);
-  expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Noter"))).toEqual([
-    "Noter mode: subagent", "Noter model: follow foreground", "Noter thinking: inherit"]);
-  h.ctx.hasUI = false;
-  await h.turn();
-  const modes = () => h.memory.store.listRuns(1).filter(r => r.kind === "noting")
-    .map(r => [JSON.parse(r.response!).requestedMode, r.mode]);
-  expect(modes()).toEqual([["subagent", "subagent"]]);
-  await edit(h, "Noter mode: subagent (Default)", "fork");
-  expect(globalFile(h)["trace-memory"]["noting.forkModeDefault"]).toBe(true);
-  h.ctx.hasUI = false;
-  await h.turn();
-  expect(modes()).toEqual([["subagent", "subagent"], ["fork", "subagent"]]);
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming")).toEqual([]);
-});
-
 test("24b: each control writes only its canonical key, and every other setting in the file survives", async () => {
   const h = setup();
   seed(h, { "render.entryTokens": 222 });
   await h.emit("session_start");
-  await edit(h, "Noter mode: subagent (Default)", "subagent");
-  expect(h.notices.at(-1)).toContain(`saved noting.forkModeDefault = false (subagent) in ${globalPath(h)}`);
-  expect(h.notices.at(-1)).toContain("applies to memory tasks admitted from now on; running tasks keep the mode and model they started with");
   await edit(h, "Noter model: follow foreground (Default)", "fake/test-mini");
+  expect(h.notices.at(-1)).toContain(`saved notingModel = "fake/test-mini" (fake/test-mini) in ${globalPath(h)}`);
+  expect(h.notices.at(-1)).toContain("applies to memory tasks admitted from now on; running tasks keep the model they started with");
   await edit(h, "Dreamer model: follow foreground (Default)", "fake/test");
   const file = globalFile(h);
   expect(file["other-extension"]).toEqual({ keep: "me" });          // another extension's section
   expect(file.retry).toMatchObject({ enabled: true });               // Pi's own settings
   expect(file["trace-memory"]).toEqual({                             // only the canonical keys, plus what was there
     "render.entryTokens": 222,
-    "noting.forkModeDefault": false,
     notingModel: "fake/test-mini",
     "dreaming.model": "fake/test",
   });
-  // The values read back exactly as the menu shows them, from the Global layer. 29e: each phase's
-  // mode, model and thinking level plus the borrowing scope.
+  // The values read back exactly as the menu shows them, from the Global layer: each phase's model
+  // and thinking level plus the borrowing scope.
   h.answers.push("Settings…", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
     "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
-    "Noter mode: subagent", "Noter model: fake/test-mini", "Noter thinking: inherit",
+    "Noter model: fake/test-mini", "Noter thinking: inherit",
     "Dreamer model: fake/test", "Dreamer thinking: inherit", "Closed sessions: project",
   ]);
   expect(h.requests).toEqual([]); // editing settings calls no model
@@ -203,7 +190,7 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
   h.answers.push("Settings…", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
     "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
-    "Noter mode: subagent", "Noter model: follow foreground", "Noter thinking: high",
+    "Noter model: follow foreground", "Noter thinking: high",
     "Dreamer model: follow foreground", "Dreamer thinking: minimal", "Closed sessions: project",
   ]);
   // A level nothing accepts never reaches the file, and the refusal names the key and the list.
@@ -251,71 +238,41 @@ test("closed-session scope respects a project override and invalid values never 
   expect(h.notices.at(-1)).toContain("Invalid closedSessionScope");
 });
 
-test("24b: a saved mode reaches the next admitted task without a reload, and a task already running keeps its own", async () => {
+test("24b: a saved model is used by the next subagent run, and choosing the foreground model saves \"session\"", async () => {
   const h = setup({ "noting.triggerTokens": 30 });
   h.provider(async conversation => notingFact(conversation));
   await h.emit("session_start");
-  await h.turn();
-  expect(requestedModes(h)).toEqual(["subagent"]); // the default the load froze
-  // The edit, mid-session and with no reload of the extension.
-  await edit(h, "Noter mode: subagent (Default)", "fork");
-  h.ctx.hasUI = false;
-  await h.turn();
-  expect(requestedModes(h)).toEqual(["subagent", "fork"]); // admitted after the edit
-  // A run already in flight keeps the mode frozen with it: hold the reply, switch back, release.
-  let release: ((value: unknown) => void) | undefined;
-  h.provider(async () => new Promise(resolve => { release = resolve; }) as never, { ignoreAbort: false });
-  await h.prompt(); await h.answer("holding"); await h.emit("agent_settled"); await h.drain();
-  expect(h.statuses.get("trace-memory")).toContain("<accent>"); // the third task is running, held at the wire
-  await edit(h, "Noter mode: fork (Global)", "subagent");
-  h.ctx.hasUI = false;
-  h.provider(async c => emptyNote(c) ?? reply("Done."));
-  release?.(emptyNoteReply()); // held note is followed by explicit memory and normal termination
-  await h.drain();
-  expect(requestedModes(h)).toEqual(["subagent", "fork", "fork"]); // the running one kept its own
-  expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("success");
-});
-
-test("24b: a saved model is used by the next subagent run, and selecting a model never switches the mode", async () => {
-  const h = setup({ "noting.triggerTokens": 30 });
-  h.provider(async conversation => notingFact(conversation));
-  await h.emit("session_start");
-  await edit(h, "Noter mode: subagent (Default)", "subagent");
-  // Chosen while the phase is in subagent mode: the model is the one a subagent run uses.
   await edit(h, "Noter model: follow foreground (Default)", "fake/test-mini");
-  expect(globalFile(h)["trace-memory"]).toEqual({ "noting.forkModeDefault": false, notingModel: "fake/test-mini" });
+  expect(globalFile(h)["trace-memory"]).toEqual({ notingModel: "fake/test-mini" });
   h.ctx.hasUI = false;
   await h.turn();
   expect((h.requests.at(-1) as { model: string }).model).toBe("test-mini"); // the child really used it
-  // Switching the mode back to fork preserves the saved subagent model and only discloses that fork
-  // inherits the foreground model; choosing a model again does not switch the mode back.
-  await edit(h, "Noter mode: subagent (Global)", "fork");
+  h.ctx.hasUI = true;
   h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![4]).toBe("Noter model: fake/test-mini");
-  expect(h.dialogs.at(-1)!.title).toMatch(/Noter\s+fork\s+fake\/test-mini\s+inherit/);
+  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter model: fake/test-mini");
   await edit(h, "Noter model: fake/test-mini", "Follow foreground");
-  expect(globalFile(h)["trace-memory"]).toEqual({ "noting.forkModeDefault": true, notingModel: "session" });
-  expect(h.dialogs.at(-1)!.title).toContain("inherits the foreground model fake/test; this choice is used by subagent runs");
+  expect(globalFile(h)["trace-memory"]).toEqual({ notingModel: "session" });
+  expect(h.dialogs.at(-1)!.title).toContain("used by this phase's subagent runs");
 });
 
 test("24b: a project override stays effective and is explained; a global edit never erases it", async () => {
   const h = setup();
   const projectPath = join(h.dir, ".pi", "settings.json");
   mkdirSync(join(h.dir, ".pi"), { recursive: true });
-  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true } }));
+  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { notingModel: "fake/test-mini" } }));
   const project = readFileSync(projectPath);
   seed(h, {});
   await h.emit("session_start");
-  await edit(h, "Noter mode: fork (Project)", "subagent");
-  expect(h.notices.at(-1)).toContain("A Project setting takes precedence, so the effective Noter mode stays fork (Project); it was not removed.");
+  await edit(h, "Noter model: fake/test-mini (Project)", "fake/test");
+  expect(h.notices.at(-1)).toContain("A Project setting takes precedence, so the effective Noter model stays fake/test-mini (Project); it was not removed.");
   expect(readFileSync(projectPath)).toEqual(project);                       // the override file is untouched
-  expect(globalFile(h)["trace-memory"]).toEqual({ "noting.forkModeDefault": false }); // the global edit was saved
+  expect(globalFile(h)["trace-memory"]).toEqual({ notingModel: "fake/test" }); // the global edit was saved
   h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter mode: fork (Project setting — this edit will not take effect)");
+  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter model: fake/test-mini (Project setting — this edit will not take effect)");
   // And the override survives a reopen, which re-reads every layer through the same load path.
   await h.emit("session_start");
   h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter mode: fork (Project setting — this edit will not take effect)");
+  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter model: fake/test-mini (Project setting — this edit will not take effect)");
 });
 
 test("24b: cancelled, invalid, unavailable and failed edits leave the file and the effective settings alone", async () => {
@@ -324,7 +281,7 @@ test("24b: cancelled, invalid, unavailable and failed edits leave the file and t
   await h.emit("session_start");
   const before = readFileSync(globalPath(h), "utf8");
   // Cancelling the value selection.
-  await edit(h, "Noter mode: subagent (Default)", undefined);
+  await edit(h, "Noter thinking: inherit (Default)", undefined);
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   // A model the registry does not know: refused without calling anything.
   await edit(h, "Noter model: follow foreground (Default)", "ghost/model");
@@ -332,46 +289,30 @@ test("24b: cancelled, invalid, unavailable and failed edits leave the file and t
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   // A malformed settings file is reported, never overwritten.
   writeFileSync(globalPath(h), "{ not json");
-  await edit(h, "Noter mode: subagent (Default)", "fork");
-  expect(h.notices.at(-1)).toContain("Noter mode unchanged — Error: Invalid settings.json");
+  await edit(h, "Noter thinking: inherit (Default)", "high");
+  expect(h.notices.at(-1)).toContain("Noter thinking unchanged — Error: Invalid settings.json");
   expect(readFileSync(globalPath(h), "utf8")).toBe("{ not json");
   // A `trace-memory` section that is not an object is the same kind of refusal.
   writeFileSync(globalPath(h), JSON.stringify({ "trace-memory": [1, 2] }));
-  await edit(h, "Noter mode: subagent (Default)", "fork");
+  await edit(h, "Noter thinking: inherit (Default)", "high");
   expect(h.notices.at(-1)).toContain("Invalid trace-memory Global: expected an object");
   expect(globalFile(h)).toEqual({ "trace-memory": [1, 2] });
   // A write that cannot happen at all reports the failure instead of a false success.
   writeFileSync(globalPath(h), before);
   chmodSync(join(h.dir, "agent"), 0o500);
   try {
-    await edit(h, "Noter mode: subagent (Default)", "fork");
-    expect(h.notices.at(-1)).toContain("Noter mode unchanged —");
+    await edit(h, "Noter thinking: inherit (Default)", "high");
+    expect(h.notices.at(-1)).toContain("Noter thinking unchanged —");
     expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   } finally { chmodSync(join(h.dir, "agent"), 0o700); }
   expect(h.requests).toEqual([]);
-});
-
-test("24b: the legacy spelling of the edited preference is replaced, and unrelated legacy content is left alone", async () => {
-  const h = setup();
-  seed(h, { "noting.branchModeDefault": true, "render.entryTokens": 222 });
-  await h.emit("session_start");
-  h.ctx.hasUI = true;
-  h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter mode: fork"); // the alias, shown canonically
-  await edit(h, "Noter mode: fork (Global)", "subagent");
-  expect(h.notices.at(-1)).toContain("The legacy spelling noting.branchModeDefault of the same preference was replaced by noting.forkModeDefault");
-  expect(globalFile(h)["trace-memory"]).toEqual({ "render.entryTokens": 222, "noting.forkModeDefault": false });
-  // The file the edit produced loads without an alias conflict, which is what the replacement is for.
-  await h.emit("session_start");
-  h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter mode: subagent");
 });
 
 test("24b: editing a setting starts no worker", async () => {
   const h = setup();
   await h.turn();
   const runs = h.memory.store.listRuns(1).length;
-  await edit(h, "Noter mode: subagent (Default)", "fork");
+  await edit(h, "Noter thinking: inherit (Default)", "high");
   await edit(h, "Dreamer model: follow foreground (Default)", "fake/test-mini");
   expect(h.memory.store.listRuns(1)).toHaveLength(runs);
   expect(h.requests).toEqual([]);

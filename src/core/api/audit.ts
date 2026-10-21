@@ -14,23 +14,22 @@ export const agentException = (error: unknown): RunAgentResult =>
  * expose requests (`audit.available === false`) owes none; core records that limitation instead. */
 export const requestMissing = (result: RunAgentResult) => result.request == null && result.audit?.available !== false;
 
-/** Writes one attempt onto the frozen run record: the mode that ran, the request, the usage and the
+/** Writes one attempt onto the frozen run record: the request, the usage and the
  * host's optional metadata; `body` carries the phase's own response fields, in its own order.
  * The request rule: a result replaces the reported request only when it carries one, so a host that
  * reported one through `reportRequest` and then failed with `request: null` keeps what it reported
  * (the Noter used to overwrite it with `null`). Whether that is a problem is each phase's judgement. */
-export function recordAttempt(run: RunInput, result: RunAgentResult, requestedMode: "fork" | "subagent", body: Record<string, unknown>) {
-  run.mode = result.mode ?? requestedMode;
+export function recordAttempt(run: RunInput, result: RunAgentResult, body: Record<string, unknown>) {
+  run.mode = "subagent";
   if (result.request != null) run.request = JSON.stringify(result.request);
   run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null,
     // A cancelled run's usage is partial, and absent usage is unknown, never zero (review 2026-09-08).
     ...(result.outcome === "cancelled" ? { usageStatus: result.usage == null ? "unknown" : "partial" } : {}),
-    ...body, requestedMode,
+    ...body, requestedMode: "subagent",
     ...(result.audit !== undefined ? { audit: result.audit } : {}),
     ...(result.verification !== undefined ? { verification: result.verification } : {}),
     ...(result.nativeLog !== undefined ? { nativeLog: result.nativeLog } : {}),
     ...(result.thinking !== undefined ? { thinking: result.thinking } : {}),
-    ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),
     ...(result.retries?.length ? { retries: result.retries } : {}) });
 }
 

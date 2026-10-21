@@ -11,7 +11,7 @@ import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FACTS_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
+import { FACTS_TITLE } from "../../../src/core/render/material.ts";
 import { sourceSeededMemory, renderEntry, toolDefinitions, tokens, ENTRY_VIEW_VERSION,
   compacted, NOTING_INCOMPLETE, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
 
@@ -62,7 +62,7 @@ test.each([
     if (input.sessionId === own) late.push(...input.tools.map(tool => tool.execute({}) as string));
     return { outcome: "cancelled", output: "delayed runner settled", request: { fake: true } };
   };
-  const target = { sessionId: own, branch: "main", headTurnId: ownTurn.id, mode: "subagent" as const };
+  const target = { sessionId: own, branch: "main", headTurnId: ownTurn.id };
   const controller = new AbortController();
   const run = memory.noting;
   const cancelled = run({ ...target, signal: controller.signal });
@@ -118,7 +118,7 @@ test.each([
   else release.mockImplementationOnce(() => { throw new Error("release unavailable"); });
   const controller = new AbortController();
   if (alreadyAborted) controller.abort();
-  const target = { sessionId: id, branch: "main", headTurnId: t.id, mode: "subagent" as const, signal: controller.signal };
+  const target = { sessionId: id, branch: "main", headTurnId: t.id, signal: controller.signal };
   const attempt = memory.noting(target);
   try {
     if (!alreadyAborted) {
@@ -155,7 +155,7 @@ test.each(["noting"] as const)("external abort respects the %s publication bound
     return { outcome: "cancelled", output: "aborted after commit", request: { fake: true } };
   };
   const controller = new AbortController();
-  const target = { sessionId: id, branch: "main", headTurnId: t.id, mode: "subagent" as const, signal: controller.signal };
+  const target = { sessionId: id, branch: "main", headTurnId: t.id, signal: controller.signal };
   const attempt = memory.noting(target);
   try {
     expect(memory.store.listRuns(id).filter(run => run.kind === phase)).toHaveLength(0);
@@ -204,7 +204,7 @@ test("19b 2026-09-08: a host stub that receives structured material and declares
     input.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "done", audit: { available: false, reason: "this host cannot expose provider requests" } };
   };
-  const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id });
   expect(result.outcome).toBe("success");
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.problems).toBeUndefined();
@@ -229,7 +229,7 @@ test("19b 2026-09-08: the same stub still fails core validation, and a host expe
     raw.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "done", audit: { available: false, reason: "no request available" } };
   };
-  const bounced = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const bounced = await memory.noting({ sessionId, branch: "main", headTurnId: t.id });
   expect(bounced.outcome).toBe("bounced");
   if (bounced.outcome !== "bounced") throw new Error("expected a bounce");
   expect(bounced.problems.join("\n")).toContain("category");
@@ -240,7 +240,7 @@ test("19b 2026-09-08: the same stub still fails core validation, and a host expe
     input.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "done" };
   };
-  const failed = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const failed = await memory.noting({ sessionId, branch: "main", headTurnId: t.id });
   expect(failed.outcome).toBe("failure");
   if (failed.outcome !== "failure") throw new Error("expected a failure");
   expect(failed.problems).toEqual(["runAgent must return the exact provider request"]);
@@ -262,7 +262,7 @@ test("19b/92: N with unavailable audit stages knowledge on earlier facts and com
     expect(memory.store.currentKnowledge()).toEqual([]);
     return { outcome: "success", output: "integrated", audit: { available: false, reason: "no provider request on this host" } };
   };
-  const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id });
   expect(result.outcome).toBe("success");
   if (result.outcome !== "success") throw new Error("expected success");
   expect(memory.store.currentKnowledge(memory.store.knowledgePath(sessionId, "main")).map(k => k.revision.text)).toEqual(["The project uses pnpm"]);
@@ -275,18 +275,14 @@ test("19b/92: N with unavailable audit stages knowledge on earlier facts and com
 
 /** Cost of everything core adds to the material of a Noting run in an empty database. */
 const overhead = () => tokens(notingPrompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
-/** 29b: what a fork pays before its material — its inherited measure and the instructions. The tool
- * definitions are not in it: a fork inherits them with the context its measure already covers. */
-const forkOverhead = (prefix: number) => tokens(notingPrompt) + prefix;
 
 /** Calibrate the artificial host window against the same frozen, rendered material Core prices.
  * This only measures a boundary; the actual noting call below still admits the full pending path. */
-function calibratedNoting(sessionId: number, headTurnId: number, mode: "fork" | "subagent", prefixTokens: number, maxEntryId?: number) {
-  const frozen = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId, mode,
+function calibratedNoting(sessionId: number, headTurnId: number, maxEntryId?: number) {
+  const frozen = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId,
     ...(maxEntryId === undefined ? {} : { boundary: { maxEntryId } }) }, memory.config);
   if (!frozen.prepared) throw new Error("Expected pending Noting material for capacity calibration");
-  const fixed = mode === "fork" ? prefixTokens + tokens(frozen.forkPrompt)
-    : tokens(frozen.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, frozen.names)));
+  const fixed = tokens(frozen.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, frozen.names)));
   return { frozen, cost: fixed + tokens(frozen.prepared.text) };
 }
 
@@ -300,8 +296,8 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
   // The batch ceiling admits both Turns; the host's artificial window admits exactly the first
   // Turn's production-rendered material, including guide, range, titles and receipts.
   expect(tokens(views.join("\n\n"))).toBeLessThan(10_000);
-  const firstCost = calibratedNoting(sessionId, second.id, "fork", 50, owned.at(-1)!.id);
-  const fullCost = calibratedNoting(sessionId, second.id, "fork", 50);
+  const firstCost = calibratedNoting(sessionId, second.id, owned.at(-1)!.id);
+  const fullCost = calibratedNoting(sessionId, second.id);
   expect(firstCost.frozen.entries.map(e => e.id)).toEqual(owned.map(e => e.id));
   expect(fullCost.frozen.entries).toHaveLength(4);
   const inputTokens = firstCost.cost;
@@ -310,15 +306,15 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
     const input = raw as NotingAgentInput;
     expect(input.material.entries.map(e => e.id)).toEqual(owned.map(e => e.id)); // oldest first, one Turn
     expect(input.range).toEqual({ from: `S${sessionId}/T${first.id}`, to: `S${sessionId}/T${first.id}` });
-    expect(50 + tokens(input.forkPrompt) + tokens(input.text)).toBeLessThanOrEqual(inputTokens);
+    expect(tokens(input.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(input.text)).toBeLessThanOrEqual(inputTokens);
     // Inherited context is not evidence permission: the excluded tail cannot be cited.
     expect(input.tools.find(tool => tool.name === "note")!.execute(fact(`T${second.id}#E1`))).toContain("rejected:");
     expect(input.tools.find(tool => tool.name === "note")!.execute({ ...fact(`T${first.id}#E1`), slot: "$1" })).toContain("held");
     input.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "done", request: { fake: true } };
   };
-  const result = await memory.noting({ sessionId, branch: "main", headTurnId: second.id, mode: "fork",
-    capacity: { inputTokens, prefixTokens: 50 } });
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: second.id,
+    capacity: { inputTokens, prefixTokens: 0 } });
   expect(result.outcome).toBe("success");
   if (result.outcome !== "success") throw new Error("expected success");
   expect(calls).toHaveLength(1); // one selection, one freeze, one model call
@@ -335,8 +331,8 @@ test("19b 2026-09-08 gate 4: an oldest entry that does not fit the supplied budg
   const t = turn(sessionId, null, "first " + "word ".repeat(600), "reply one");
   const before = hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store);
   runAgent = async () => { throw new Error("no model call may happen"); };
-  await expect(memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "fork",
-    capacity: { inputTokens: forkOverhead(50), prefixTokens: 50 } })).rejects.toThrow(/Noting capacity: selected evidence cannot fit the model context/);
+  await expect(memory.noting({ sessionId, branch: "main", headTurnId: t.id,
+    capacity: { inputTokens: overhead(), prefixTokens: 0 } })).rejects.toThrow(/Noting capacity: selected evidence cannot fit the model context/);
   expect(calls).toEqual([]);
   expect(memory.store.listRuns(sessionId)).toEqual([]);
   expect(hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store)).toEqual(before);
@@ -353,7 +349,7 @@ test("19b 2026-09-08: the frozen material carries the whole batch, and core's fr
     input.tools.find(t => t.name === "memory")!.execute({});
     return { outcome: "success", output: "", request: { fake: true } };
   };
-  expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
+  expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id })).outcome).toBe("success");
 });
 
 // --------------------------------------------------------------- 20a scenario 1: one shared assembly
@@ -375,7 +371,7 @@ test("20a/92: a host-neutral N extracts both layers and shares knowledge renderi
     expect(memory.store.currentKnowledge()).toEqual([]);
     return { outcome: "success", output: "done", audit: { available: false, reason: "text-only host" } };
   };
-  expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
+  expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id })).outcome).toBe("success");
 
   expect(memory.store.currentCommit(1)[0]!.supports).toEqual([1]);
   expect(calls).toHaveLength(1);
@@ -392,7 +388,7 @@ test("20a/92: a host-neutral N extracts both layers and shares knowledge renderi
 });
 
 test("20a 2026-09-08: no host file lays out the knowledge, fact, Raw or review blocks", () => {
-  const titles = [FACTS_TITLE, SOURCES_TITLE,
+  const titles = [FACTS_TITLE,
     "<knowledge>", "Range: ${"];
   const directory = new URL("../../../src/hosts/", import.meta.url);
   const files: URL[] = [];
@@ -403,7 +399,7 @@ test("20a 2026-09-08: no host file lays out the knowledge, fact, Raw or review b
   }
   // Test helpers live outside src now; require the actual production files, not a fixture-inflated count.
   expect(files.map(file => file.href)).toEqual(expect.arrayContaining(
-    ["pi/index.ts", "pi/native.ts", "pi/fork.ts", "cc/index.ts"].map(path => new URL(path, directory).href)));
+    ["pi/index.ts", "pi/native.ts", "cc/index.ts"].map(path => new URL(path, directory).href)));
   for (const file of files) {
     const source = readFileSync(file, "utf8");
     // Text headings begin at a word boundary; identifiers such as the SDK's `settingSources:` do not.
@@ -427,8 +423,8 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
   const pending = hydrate(memory.pendingEntries(sessionId, "main", second.id), memory.store);
   const views = pending.map(e => renderEntry(e, memory.config.render).content);
   const owned = pending.filter(e => e.turnId === first.id).map(e => e.id);
-  const firstCost = calibratedNoting(sessionId, second.id, "subagent", 0, pending.filter(e => e.turnId === first.id).at(-1)!.id);
-  const fullCost = calibratedNoting(sessionId, second.id, "subagent", 0);
+  const firstCost = calibratedNoting(sessionId, second.id, pending.filter(e => e.turnId === first.id).at(-1)!.id);
+  const fullCost = calibratedNoting(sessionId, second.id);
   expect(firstCost.frozen.entries.map(e => e.id)).toEqual(owned);
   expect(fullCost.frozen.entries).toHaveLength(4);
   const inputTokens = firstCost.cost;
@@ -441,7 +437,7 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
     sent.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "done", request: { fake: true } };
   };
-  const result = await memory.noting({ sessionId, branch: "main", headTurnId: second.id, mode: "subagent",
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: second.id,
     capacity: { inputTokens, prefixTokens: 0 } });
   expect(result.outcome).toBe("success");
   if (result.outcome !== "success") throw new Error("expected success");
@@ -473,7 +469,7 @@ test("26a scenario 1: a run that never calls note is incomplete, records its usa
   const t = turn(sessionId, null, "用 pnpm", "好的。");
   const before = hydrate(memory.pendingEntries(sessionId, "main", t.id), memory.store).map(e => e.id);
   runAgent = async () => ({ outcome: "success", output: "I answered a question instead.", request: { fake: true }, usage: { tokens: 12 } });
-  const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id });
   if (result.outcome !== "failure") throw new Error(`expected failure, got ${result.outcome}`);
   expect(result.problems).toEqual([NOTING_INCOMPLETE]);
   expect(result.incompleteHeadEntryId).toBe(before[0]); // the batch identity a host counts by
@@ -494,7 +490,7 @@ test("26a scenario 1: a run that never calls note is incomplete, records its usa
     input.tools.find(tool => tool.name === "memory")!.execute({});
     return { outcome: "success", output: "", request: { fake: true } };
   };
-  expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
+  expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id })).outcome).toBe("success");
   expect(frozen).toEqual(before);
 });
 
@@ -516,7 +512,7 @@ test.each(["success", "failure"] as const)("92: empty output remains editable un
     expect(memory.pendingEntries(sessionId, "main", t.id).map(e => e.id)).toEqual(before);
     return { outcome, output: outcome === "failure" ? "provider exploded before publication" : "done", request: { fake: true } };
   };
-  const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id });
   expect(result.outcome, JSON.stringify(result)).toBe(outcome);
   expect(JSON.parse(receipt)).toMatchObject({ results: [], held: [], rejected: {} });
   expect(JSON.parse(receipt)).not.toHaveProperty("committed");
@@ -527,33 +523,3 @@ test.each(["success", "failure"] as const)("92: empty output remains editable un
   expect(memory.pendingEntries(sessionId, "main", t.id).map(e => e.id)).toEqual(outcome === "success" ? [] : before);
 });
 
-
-test.each((["noting"] as const).flatMap(phase =>
-  (["expired", "replaced", "released"] as const).map(loss => ({ phase, loss }))))(
-  "29 $phase fallback cannot revive its original $loss claim", async ({ phase, loss }) => {
-  const id = session(), t = turn(id, null, "ownership evidence", "reply");
-  const peer = sourceSeededMemory(join(directory, "test.sqlite"), async () => ({ outcome: "success", output: "" }));
-  const now = Date.now();
-  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-  try {
-    runAgent = async input => {
-      const original = memory.store.getClaim(id, phase)!;
-      clock.mockReturnValue(original.expiresAt + 1);
-      if (loss !== "expired") {
-        const replacement = peer.store.acquireClaim({ sessionId: id, branch: "main", headTurnId: t.id }, phase, peer.executorId)!;
-        expect(replacement.token).not.toBe(original.token);
-        if (loss === "released") expect(peer.store.releaseClaim(replacement)).toBe(true);
-      }
-      return { outcome: "failure", output: "context overflow", request: { sent: true },
-        refused: { reason: "context overflow", cancellation: input.cancellation,
-          boundary: { exactEntryIds: input.entryIds } } };
-    };
-    const result = await memory.noting({ sessionId: id, branch: "main", headTurnId: t.id, mode: "fork" });
-    expect(result).toMatchObject({ outcome: "dropped", reason: "task claim lost before fallback" });
-    expect(result).not.toHaveProperty("refused");
-    expect(memory.store.listRuns(id).filter(run => run.mode === "fork")).toHaveLength(1);
-    if (loss === "replaced") expect(memory.store.getClaim(id, phase)?.executorId).toBe(peer.executorId);
-    else expect(memory.store.getClaim(id, phase)).toBeNull();
-    expect(hydrate(memory.pendingEntries(id, "main", t.id), memory.store).length).toBeGreaterThan(0);
-  } finally { clock.mockRestore(); peer.close(); }
-});

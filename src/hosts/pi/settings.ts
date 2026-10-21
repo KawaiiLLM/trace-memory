@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { CONFIG_ALIASES, CONFIG_SECTIONS, DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ConfigOverride, type ClosedSessionScope } from "../../core/api/index.ts";
+import { CONFIG_SECTIONS, DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ConfigOverride, type ClosedSessionScope } from "../../core/api/index.ts";
 import { PHASE_SETTING_KEYS, THINKING_LEVELS } from "../phase-settings.ts";
 import { retireConsolidationSettings, upgradeSettingsFile } from "../retired-settings.ts";
 
@@ -38,8 +38,7 @@ function settings(cwd: string, agentDir = agentDirectory()) {
 // the native runner is the only runner, so the key no longer selects anything and 18a's unknown-key
 // rule rejects it like any other misspelling instead of silently accepting a setting that does nothing.
 // Each live phase has its own configured worker thinking level,
-// `inherit` (the default) or one of Pi's own levels. Subagent execution only — a fork keeps
-// inheriting the foreground level 26b freezes, so its request prefix still matches the parent's.
+// `inherit` (the default) or one of Pi's own levels.
 const phaseSettingKeys = Object.values(PHASE_SETTING_KEYS).flatMap(keys => [keys.model, keys.thinking]);
 const hostStrings = ["dbPath", "runsDir", ...phaseSettingKeys];
 export const thinkingChoices = ["inherit", ...THINKING_LEVELS];
@@ -48,8 +47,8 @@ const thinkingKeys = Object.values(PHASE_SETTING_KEYS).map(keys => keys.thinking
  * typed against its default, unknown keys and misspellings rejected by name, host strings required to
  * be strings, and core's own `validateConfig` over the result. 24b's settings writer validates the
  * merged Global layer through this same function before it writes, so a menu edit can never leave a
- * file the next load would refuse. `named` reports a value under the spelling the user wrote (18a). */
-export function parseLayer(flat: FlatConfig, named: (key: string) => string = key => key) {
+ * file the next load would refuse. */
+export function parseLayer(flat: FlatConfig) {
   flat = canonicalFlatConfig(flat);
   const core: ConfigOverride = { closedSessionScope: (flat.closedSessionScope === undefined ? DEFAULT_CONFIG.closedSessionScope : flat.closedSessionScope) as ClosedSessionScope };
   for (const section of CONFIG_SECTIONS) {
@@ -57,17 +56,17 @@ export function parseLayer(flat: FlatConfig, named: (key: string) => string = ke
     for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
       const override = flat[`${section}.${key}`];
       if (override !== undefined && (typeof override !== typeof value ||
-        (typeof override === "number" && (!Number.isFinite(override) || override < 0)))) throw new Error(`Invalid ${named(`${section}.${key}`)}`);
+        (typeof override === "number" && (!Number.isFinite(override) || override < 0)))) throw new Error(`Invalid ${`${section}.${key}`}`);
       values[key] = (override ?? value) as number | boolean;
     }
     Object.assign(core, { [section]: values });
   }
   for (const key of Object.keys(flat)) if (key !== "closedSessionScope" && !hostStrings.includes(key) &&
-    !CONFIG_SECTIONS.some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${named(key)}`);
+    !CONFIG_SECTIONS.some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${key}`);
   for (const key of hostStrings) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
   // 26d: an unrecognized level is rejected by name with the accepted list, never normalized silently.
   for (const key of thinkingKeys) if (flat[key] !== undefined && !thinkingChoices.includes(flat[key] as string))
-    throw new Error(`Invalid ${named(key)}: expected one of ${thinkingChoices.join(", ")}`);
+    throw new Error(`Invalid ${key}: expected one of ${thinkingChoices.join(", ")}`);
   validateConfig(core);
   return core;
 }
@@ -80,37 +79,28 @@ export function configuration(cwd: string, environment = process.env.TRACE_MEMOR
   if (upgradedEnvironment.removed.length) console.warn(`Trace Memory removed retired Environment settings: ${upgradedEnvironment.removed.join(", ")}`);
   const supplied = { Global: files.global[tag] ?? {}, Project: files.project[tag] ?? {}, Environment: upgradedEnvironment.values };
   for (const [name, layer] of Object.entries(supplied)) if (!layer || typeof layer !== "object" || Array.isArray(layer)) throw new Error(`Invalid trace-memory ${name}: expected an object`);
-  // Ticket 19 "Legacy input": every layer's legacy execution-mode key (`noting.branchModeDefault`)
-  // is mapped onto the canonical one by core's own alias table, keeping that layer as its source, so
-  // an existing settings.json keeps working and the read-only menu shows the canonical key. A layer
-  // supplying both spellings with different values fails the load naming both keys. Layers still
-  // mask one another exactly as before, so a project layer may override a global legacy spelling.
+  // A removed key in any layer fails the load by name (core's removed-settings table). Layers still
+  // mask one another as before.
   const layers = Object.fromEntries(Object.entries(supplied).map(([name, values]) => [name, canonicalFlatConfig(values as FlatConfig)])) as Record<keyof typeof supplied, FlatConfig>;
-  const spelling: Record<string, string> = {};
-  for (const values of Object.values(supplied)) for (const key of Object.keys(values)) spelling[CONFIG_ALIASES[key] ?? key] = key;
   // A retired database-owned injection cap is refused above by `canonicalFlatConfig`, including an
   // environment value. It is never ignored, inferred as three owner limits, or written back.
-  // A value rejected under an accepted legacy spelling names the key the user actually wrote (18a).
-  const named = (key: string) => spelling[key] && spelling[key] !== key ? `${key} (supplied as ${spelling[key]})` : key;
   const flat: FlatConfig = Object.assign({}, ...Object.values(layers));
   const sources: Record<string, string> = {};
   for (const [layer, values] of Object.entries(layers)) for (const key of Object.keys(values)) sources[key] = layer;
 
-  const parse = (values: FlatConfig) => parseLayer(values, named);
-  for (const values of Object.values(layers)) parse(values);
-  const core = parse(flat);
+  for (const values of Object.values(layers)) parseLayer(values);
+  const core = parseLayer(flat);
   return { flat, core, sources, layers };
 }
 /** What one load produced, as the settings view and the writer read it back. */
 export type Loaded = ReturnType<typeof configuration>;
 
-/** The core values a running session cannot replace: every section value except the Noter mode, plus
- * the database path. Host strings (models, thinking levels, runs directory) and the closed-session
+/** The core values a running session cannot replace: every section value, plus the database path. Host strings (models, thinking levels, runs directory) and the closed-session
  * scope are read live and are not listed. */
 export function fixedSettings(flat: FlatConfig, core: ConfigOverride): Record<string, unknown> {
   const fixed: Record<string, unknown> = { dbPath: flat.dbPath };
   for (const section of CONFIG_SECTIONS) for (const [key, value] of Object.entries(core[section] ?? {}))
-    if (!(section === "noting" && key === "forkModeDefault")) fixed[`${section}.${key}`] = value;
+    fixed[`${section}.${key}`] = value;
   return fixed;
 }
 
@@ -119,10 +109,8 @@ export function fixedSettings(flat: FlatConfig, core: ConfigOverride): Record<st
  * path (`parseLayer` over `canonicalFlatConfig`), then replace the file atomically. Everything else
  * in the file — Trace Memory's advanced values and every other extension's settings — is carried
  * over as parsed. A malformed file, a non-object section or a value the next load would reject
- * throws before anything is written, so a failed edit reports the failure and changes nothing.
- * Returns the legacy spelling of this same preference if the write replaced one (19 "Legacy
- * input": the two spellings must not be left beside each other for the next load to refuse). */
-export function writeGlobal(settingsFile: string, key: string, value: string | boolean): string | undefined {
+ * throws before anything is written, so a failed edit reports the failure and changes nothing. */
+export function writeGlobal(settingsFile: string, key: string, value: string): void {
   let file: Record<string, unknown> = {};
   try { file = JSON.parse(readFileSync(settingsFile, "utf8")); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`Invalid settings.json ${settingsFile}: ${String(error)}`); }
@@ -130,55 +118,33 @@ export function writeGlobal(settingsFile: string, key: string, value: string | b
   const existing = file[tag] ?? {};
   if (!existing || typeof existing !== "object" || Array.isArray(existing)) throw new Error(`Invalid trace-memory Global: expected an object`);
   const layer: FlatConfig = { ...existing as FlatConfig, [key]: value };
-  const legacy = Object.entries(CONFIG_ALIASES).find(([, canonical]) => canonical === key)?.[0];
-  const replaced = legacy && Object.hasOwn(layer, legacy) ? legacy : undefined;
-  if (replaced) delete layer[replaced];
   parseLayer(canonicalFlatConfig(layer));
   const temporary = `${settingsFile}.${randomUUID()}`;
   mkdirSync(dirname(settingsFile), { recursive: true });
   writeFileSync(temporary, `${JSON.stringify({ ...file, [tag]: layer }, null, 2)}\n`, { flag: "wx" });
   try { renameSync(temporary, settingsFile); }
   finally { if (existsSync(temporary)) unlinkSync(temporary); }
-  return replaced;
 }
 
 // ---- 24b: the preferences the Settings view offers, and how each one reads ----------------------
-// Global preferences: the existing mode/model keys plus the closed-session borrowing scope.
-// N exposes mode/model/thinking; D is always fresh and exposes model/thinking.
+// Global preferences: the model/thinking keys of both phases plus the closed-session borrowing scope.
 // No advanced editor or second scheduling mechanism.
-export type Preference = { name: string; key: string } & ({ phase: "noting"; kind: "mode" | "model" | "thinking" } | { phase: "dreaming"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
+export type Preference = { name: string; key: string } & ({ phase: "noting" | "dreaming"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
 export const preferences: Preference[] = [
-  { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
   { name: "Noter model", key: PHASE_SETTING_KEYS.noting.model, phase: "noting", kind: "model" },
   { name: "Noter thinking", key: PHASE_SETTING_KEYS.noting.thinking, phase: "noting", kind: "thinking" },
   { name: "Dreamer model", key: PHASE_SETTING_KEYS.dreaming.model, phase: "dreaming", kind: "model" },
   { name: "Dreamer thinking", key: PHASE_SETTING_KEYS.dreaming.thinking, phase: "dreaming", kind: "thinking" },
   { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
 ];
-// Noting stores one fork-mode preference; Dreaming has no inherited execution mode.
-export const modeName = (value: boolean) => value ? "fork" : "subagent";
 const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope
-  : p.kind === "model" ? "session" : p.kind === "thinking" ? "inherit" : p.kind === "mode" ? DEFAULT_CONFIG[p.phase].forkModeDefault : false;
+  : p.kind === "model" ? "session" : "inherit";
 export const preferenceValue = (flat: FlatConfig, p: Preference) => flat[p.key] ?? preferenceDefault(p);
-export const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? modeName(raw as boolean)
-  : raw === "session" ? "follow foreground" : String(raw);
-/** The mode this phase is configured to request (29e: both phases have one again). Cache
- * suppression, capacity/readiness fallback and — for Noting — Raw availability still decide what
- * actually runs (`effectiveMode`); a fallback does not grant a different model-selection policy, so
- * the display follows the configured mode. */
-export const configuredMode = (flat: FlatConfig, phase: "noting" | "dreaming") =>
-  phase === "dreaming" ? "subagent" : modeName(preferenceValue(flat, preferences.find(p => p.kind === "mode" && p.phase === phase)!) as boolean);
-/** One Settings line: the effective value, its layer, the layers it masks, and — for a model whose
- * phase is configured to fork — the foreground model that fork would inherit instead. */
-export const preferenceLine = (p: Preference, loaded: Pick<Loaded, "flat" | "sources" | "layers">, foregroundModel: string) => {
+export const shownValue = (raw: unknown) => raw === "session" ? "follow foreground" : String(raw);
+/** One Settings line: the effective value, its layer and the layers it masks. */
+export const preferenceLine = (p: Preference, loaded: Pick<Loaded, "flat" | "sources" | "layers">) => {
   const { flat, sources, layers } = loaded;
   const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[p.key] && Object.hasOwn(values, p.key))
-    .map(([layer, values]) => `${layer}=${shownValue(p, values[p.key])} masked`);
-  // Fork mode has no model and (26d) no thinking level of its own: the child inherits the
-  // foreground's, so the saved subagent preference is shown but never presented as what this phase
-  // would use now.
-  const forks = (p.kind === "model" || p.kind === "thinking") && configuredMode(flat, p.phase) === "fork";
-  const inherited = !forks ? "" : p.kind === "model" ? `; fork mode inherits the foreground model ${foregroundModel}`
-    : "; fork mode inherits the foreground thinking level";
-  return `${p.name}: ${shownValue(p, preferenceValue(flat, p))} (${sources[p.key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}${inherited}`;
+    .map(([layer, values]) => `${layer}=${shownValue(values[p.key])} masked`);
+  return `${p.name}: ${shownValue(preferenceValue(flat, p))} (${sources[p.key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}`;
 };

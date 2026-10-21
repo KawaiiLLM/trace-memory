@@ -9,9 +9,8 @@
 // function per consumer over the shared parts.
 //
 // 92: fresh Noter material names its target/range, then reuses the batch-end compact layout:
-// Knowledge -> facts -> exact pending Raw -> receipts, with processed-Raw refill disabled. A fork
-// keeps its inherited parent and receives only its instruction, range, head reply and source index;
-// it gets no additional Knowledge or historical facts. Foreground injection is Knowledge -> receipts.
+// Knowledge -> facts -> exact pending Raw -> receipts, with processed-Raw refill disabled.
+// Foreground injection is Knowledge -> receipts.
 //
 // Stable Knowledge bytes contain no task range, entry id, timestamp, run id or omission count. This
 // is a layout guarantee, not a shared provider cache: current versions and budget selection can
@@ -94,11 +93,11 @@ export function measureRetainedMemoryText(rendered: string, original: string, of
  * historical facts, compressed Raw entries with their concrete source identity, and budget receipts.
  * A consumer whose ruled order has no knowledge, no facts or no Raw block simply omits those parts;
  * sharing this type never adds a block to a consumer's order. Ordinary injection stays Knowledge-only;
- * fresh Noter material includes Knowledge (92), while a fork inherits it from the foreground. */
+ * Noter material includes Knowledge (92). */
 export interface SharedMaterial {
   /** Ticket 118: one reading guide for the complete material, never one per knowledge block. */
   readingGuide?: string;
-  /** Active Knowledge within its budget, in category order; inherited rather than repeated by forks. */
+  /** Active Knowledge within its budget, in category order. */
   knowledge?: KnowledgeGroup[];
   /** Historical facts selected by freshness, displayed in chronological Turn groups, within budget. */
   facts?: string[];
@@ -117,25 +116,13 @@ export interface SharedMaterial {
   knowledgeNotice?: string;
 }
 
-/** The frozen task material of one Noting run. Task-specific parts: the head reply and the source
- * index an inherited-context run needs. No field is a composed message. */
+/** The frozen task material of one Noting run. No field is a composed message. */
 export interface NotingMaterial extends SharedMaterial {
   /** Originating target session, never the worker's host. */
   harness?: string;
-  /** The material entries this run must newly supply: thinking-only processing members and entries
-   * the child can already see are absent. Empty when no target material needs supplying. */
+  /** The material entries this run must supply: thinking-only processing members are absent. */
   entries: { id: number; view: string }[];
   facts: string[];
-  /** The selected path's last native entry, when it is an assistant reply in this batch; otherwise null. 29b:
-   * it is restated only when the head entry's own body was withheld as visible, because the captured
-   * request a fork inherits stops before that reply. When the Raw block carries the head entry, the
-   * reply is in it already and a second copy is the duplicate parent 29 forbids. */
-  head: string | null;
-  /** One identity-only source-index line per non-thinking-only entry of the frozen range, in source order. 29b: emitted only when some
-   * target entry's body was withheld — the mandatory source mapping that identifies a body the child
-   * must find in its own context. With the whole target supplied, the Raw block carries those
-   * addresses itself and the index would be a second copy of them. */
-  sources: string[];
 }
 
 export type TransportItem =
@@ -161,7 +148,6 @@ export const FACTS_TITLE = "Recent facts (by Turn):";
 export const FACT_TITLES_TITLE = "Earlier facts (titles only; read trace://F<id> for the body):";
 export const RAW_TITLE = "Raw:";
 export const EARLIER_USERS_TITLE = "Earlier user messages:";
-export const SOURCES_TITLE = "Sources:";
 /** Title for retained versions that are no longer current authority. */
 export const KNOWLEDGE_STATUS_TITLE = "Inherited knowledge status (these commits are not current authority):";
 /** Between blocks, and between a block's title and its body. Entry views use the same separator. */
@@ -336,10 +322,7 @@ export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TIT
     ...(episodic.length ? [xmlBlock("episodic", block(episodic))] : [])]), receipts: material.receipts });
 };
 
-/** Noting uses shared compact rendering plus its task identity and inherited source index.
- * Fresh material keeps all selected parts; fork adaptation removes inherited bodies. */
+/** Noting uses shared compact rendering plus its task identity. */
 export const notingText = (material: NotingMaterial, range: TaskRange): string =>
   block([...(material.harness ? [`Target session agent: ${material.harness}`] : []), rangeLine(range),
-    compactText(material), ...(material.head ? [material.head] : []),
-    ...(material.sources.length ? [`${SOURCES_TITLE}\n${material.sources.join("\n")}`] : []),
-  ].filter(Boolean));
+    compactText(material)].filter(Boolean));

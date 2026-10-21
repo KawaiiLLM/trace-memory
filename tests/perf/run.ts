@@ -171,7 +171,7 @@ async function hostReconciliation(size: string, entries: number): Promise<Sample
   rmSync(dbPath, { force: true });
   const samples: Sample[] = [];
   const counter = countSourceReads();
-  const h = host({ dbPath, "noting.forkModeDefault": false }, { fetch: false });
+  const h = host({ dbPath }, { fetch: false });
   const single = (name: string, ms: number, reads: number, note: string) => samples.push({ name, cold: ms, warm: ms, p95: ms, reads, note });
   try {
     h.setHeaderTimestamp("2000-01-01T00:00:00Z"); // disabled by default, so enabling is the explicit import
@@ -263,7 +263,7 @@ async function capacityScenarios(fixture: Fixture, size: string, main: ReturnTyp
     throw new Error(`${name}: an impossible allowance must be rejected`);
   }, note));
   try {
-    const target = { sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: fixture.headTurnId, mode: "subagent" as const };
+    const target = { sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: fixture.headTurnId };
     const noting = instructions("noting.md");
     const natural = freezeNoting(store, target, memory.config, memory.resultText);
     const naturalTokens = noting + toolCost + tokens(natural.prepared!.text);

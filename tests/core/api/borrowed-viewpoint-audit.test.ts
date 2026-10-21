@@ -33,14 +33,14 @@ function fixture(agent: RunAgent) {
   const executorKnowledge=memory.tools({kind:'manual',sessionId:executor.id,branch:'main',currentTurnId:ex.id}).find(tool=>tool.name==='memory')!.execute({op:'create',title:'Fixture title',category:'constraint',scope:'session',text:'EXECUTOR_PRIVATE_KNOWLEDGE',supports:[`F${exFact.id}`],topics:[],reason:'seed executor-only knowledge'});
   if(executorKnowledge.includes('rejected:'))throw Error(executorKnowledge);
   recorded(memory,target.id,'old',root.id);
-  // Both execution modes must be admitted on the active target. Dead-path admission is forbidden.
+  // The task must be admitted on the active target. Dead-path admission is forbidden.
   const livePath=s.knowledgePath(target.id,'live',live.id);
   return {memory,s,target,executor,root,old,live,ex,rootFact,liveFact,oldIds,liveIds,livePath};
 }
 function material(input:Worker) {
   return {kind:input.kind,sessionId:input.sessionId,branch:input.branch,range:input.range,
     prompt:input.prompt,text:input.text,material:input.material,supplied:input.supplied,
-    model:input.model,mode:input.mode,
+    model:input.model,
     tools:input.tools.map(({name,description,parameters})=>({name,description,parameters}))};
 }
 async function execute(borrowed:boolean,dead:boolean) {

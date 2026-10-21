@@ -236,14 +236,14 @@ export function buildSettingsBudgets(input: SettingsBudgetsInput): SettingsBudge
   };
 }
 
-export interface WorkerRowInput { phase: "Noter" | "Dreamer"; mode?: string; model: string; thinking: string; source?: string; sources?: { mode?: string; model?: string; thinking?: string } }
-export interface WorkerRow { phase: string; mode?: string; model: string; thinking: string; source?: string; sources?: WorkerRowInput["sources"] }
-export interface SettingsWorkers { showModeColumn: boolean; rows: WorkerRow[] }
+export interface WorkerRowInput { phase: "Noter" | "Dreamer"; model: string; thinking: string; source?: string; sources?: { model?: string; thinking?: string } }
+export interface WorkerRow { phase: string; model: string; thinking: string; source?: string; sources?: WorkerRowInput["sources"] }
+export interface SettingsWorkers { rows: WorkerRow[] }
 export function buildSettingsWorkers(input: WorkerRowInput[]): SettingsWorkers {
-  return { showModeColumn: input.some(w => w.mode !== undefined), rows: input.map(w => ({ ...w })) };
+  return { rows: input.map(w => ({ ...w })) };
 }
 
-export type SettingsRowId = "budget.global" | "budget.project" | "budget.session" | "noting.mode" | "noting.model" | "noting.thinking" | "dreaming.model" | "dreaming.thinking" | "closedSessionScope";
+export type SettingsRowId = "budget.global" | "budget.project" | "budget.session" | "noting.model" | "noting.thinking" | "dreaming.model" | "dreaming.thinking" | "closedSessionScope";
 export interface SettingsChoice { id: SettingsRowId; label: string }
 /** Stable row identifiers and labels: adapters implement edits, not menu copy or ordering. */
 export function buildSettingsChoices(input: SettingsInput): SettingsChoice[] {
@@ -253,8 +253,7 @@ export function buildSettingsChoices(input: SettingsInput): SettingsChoice[] {
   }));
   const workers: SettingsChoice[] = input.workers.flatMap(w => {
     const phase = w.phase === "Noter" ? "noting" : "dreaming";
-    return ([...(w.mode !== undefined ? [{ id: `${phase}.mode` as SettingsRowId, label: `${w.phase} mode: ${w.mode}`, source: w.sources?.mode }] : []),
-      { id: `${phase}.model` as SettingsRowId, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
+    return ([{ id: `${phase}.model` as SettingsRowId, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
       { id: `${phase}.thinking` as SettingsRowId, label: `${w.phase} thinking: ${w.thinking}`, source: w.sources?.thinking }]).map(row => ({ id: row.id, label: `${row.label}${row.source ? ` (${row.source})` : ""}` }));
   });
   return [...budgets, ...workers, { id: "closedSessionScope", label: `Closed sessions: ${input.closedSessionScope}${input.closedSessionSource ? ` (${input.closedSessionSource})` : ""}` }];
@@ -336,18 +335,17 @@ export const TRACE_SETTINGS_FIXTURE: SettingsInput = {
   database: "~/.trace-memory/trace.db",
   budgets: { global: 4_000, project: 15_000, session: 1_000, sharedAllowanceTokens: 10_000 },
   workers: [
-    { phase: "Noter", mode: "subagent", model: "follow foreground", thinking: "inherit" },
+    { phase: "Noter", model: "follow foreground", thinking: "inherit" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" },
   ],
   closedSessionScope: "project",
 };
 
-/** Claude Code now shares Pi's Noter mode key (98) while retaining its explicit fresh-worker model
- * and thinking requirements. */
+/** Claude Code retains its explicit fresh-worker model and thinking requirements. */
 export const TRACE_SETTINGS_FIXTURE_CC: SettingsInput = {
   ...TRACE_SETTINGS_FIXTURE,
   workers: [
-    { phase: "Noter", mode: "subagent", model: "claude-sonnet-5", thinking: "medium" },
+    { phase: "Noter", model: "claude-sonnet-5", thinking: "medium" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" },
   ],
 };

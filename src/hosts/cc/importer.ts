@@ -586,7 +586,6 @@ export class CcImporter {
   readonly memory: TraceMemoryFacade;
   private readonly projection: CcProjection;
   private runAgent: ReturnType<typeof createCcRunAgent> | undefined;
-  private forkRunner?: (task: import("../../core/api/index.ts").NotingAgentInput) => Promise<import("../../core/api/index.ts").RunAgentResult>;
   private readonly workerDependencies: CcWorkerDependencies;
   private reopened = false;
 
@@ -595,11 +594,7 @@ export class CcImporter {
     this.workerDependencies = workerDependencies;
     this.runAgent = config.worker ? createCcRunAgent(config, workerDependencies,
       kind => memory.config[kind].maxToolRounds) : undefined;
-    memory = TraceMemory(config.dbPath, input => {
-      const task = input as import("../../core/api/index.ts").NotingAgentInput;
-      return task.kind === "noting" && task.mode === "fork" && !task.fallbackReason && this.forkRunner
-        ? this.forkRunner(task) : this.runAgent ? this.runAgent(input) : unavailableRunner();
-    },
+    memory = TraceMemory(config.dbPath, input => this.runAgent ? this.runAgent(input) : unavailableRunner(),
       config.coreConfig, ccResultText,
       entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined, ccHumanUser);
     this.memory = memory;
@@ -607,9 +602,6 @@ export class CcImporter {
   }
 
   currentBinding(): CcSessionBinding { return this.projection.currentBinding(); }
-  setForkRunner(run: (task: import("../../core/api/index.ts").NotingAgentInput) => Promise<import("../../core/api/index.ts").RunAgentResult>): void {
-    this.forkRunner = run;
-  }
   /** Core invokes the runner synchronously before yielding to the provider. An in-flight task
    * holds its invoked worker Promise; only a later task reads this replacement. */
   applyWorker(config: ResolvedCcHostConfig): void {

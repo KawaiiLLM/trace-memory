@@ -90,7 +90,7 @@ test("18b 2026-09-08: an empty target completes without a model call; a disabled
 test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on release; repeating catchup reports the same operation", async () => {
   // 30: one entry view is capped at 2,000 tokens, so the ordinary run that occupies the slot needs a
   // trigger a single long reply can still reach.
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1_000 });
+  const h = host({ "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
     const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!;
@@ -180,7 +180,7 @@ test("18b 2026-09-08: stop during a Noting batch cancels it, leaves it pending, 
 test("18b 2026-09-08: stop while waiting for an occupied slot prevents the frozen batch from ever starting", async () => {
   // 30: one entry view is capped at 2,000 tokens, so the ordinary run that occupies the slot needs a
   // trigger a single long reply can still reach.
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1_000 });
+  const h = host({ "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
     const release = hold(h);
@@ -271,7 +271,7 @@ test("18b 2026-09-08: a failure after one successful Noting batch preserves it a
 }, 30000);
 
 test("18b 2026-09-08: an ordinary worker's completion does not chain a follow-up batch outside an active manual catchup", async () => {
-  const h = host({ "noting.forkModeDefault": false });
+  const h = host({});
   try {
     backlog(h); // several batches' worth of backlog: a chained second attempt has real work to find
     await h.emit("session_start");

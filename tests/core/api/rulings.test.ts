@@ -10,7 +10,7 @@ import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { DEFAULT_WRITING_LIMITS, renderLimits } from "../../../src/core/prompts/limits.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, visibleTarget, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { TraceMemory as createMemory } from "../../../src/core/api/index.ts";
 import * as api from "../../source-fixture.ts";
 import { tokens, hydrate } from "../../source-fixture.ts";
@@ -109,7 +109,7 @@ function session() {
   return { s, t };
 }
 
-test.each(["subagent", "fork"] as const)("thinking-only entries are processed without Noting material (%s)", async mode => {
+test("thinking-only entries are processed without Noting material", async () => {
   const m = sourceSeededMemory(join(directory, "thinking.sqlite"), admittedScenarios.agent, {}, undefined, piSourceBlocks);
   try {
     const project = m.store.createProject({ name: "thinking", declaredBy: "mark" });
@@ -124,29 +124,24 @@ test.each(["subagent", "fork"] as const)("thinking-only entries are processed wi
     const publicEntry = seedEntry(m.store, s.id, t.id, "answer", "assistant", "Public answer",
       JSON.stringify({ role: "assistant", content: [{ type: "thinking", thinking: "mixed-private" }, { type: "text", text: "Public answer" }] }));
     m.selectEntries(s.id, "main", [publicEntry.id]);
-    const baseline = freezeNoting(m.store, { ...target, mode: "subagent" }, m.config);
+    const baseline = freezeNoting(m.store, { ...target }, m.config);
     const publicView = renderEntry(publicEntry, m.config.render);
     m.config.noting.batchTokens = rawWindowTokens([publicView.content], publicView.receipts);
     m.selectEntries(s.id, "main", [first.id, publicEntry.id, last.id]);
     expect(m.pendingTokens("noting", target).tokens).toBe(tokens(renderEntry(publicEntry, m.config.render).content));
-    const visible = visibleTarget(m, s.id, "main", t.id);
-    const frozen = freezeNoting(m.store, { ...target, mode, visible }, m.config);
+    const frozen = freezeNoting(m.store, { ...target }, m.config);
     expect(frozen.entries.map(entry => entry.id)).toEqual([first.id, publicEntry.id, last.id]);
-    expect(frozen.prepared!.material.entries.map(entry => entry.id)).toEqual(mode === "fork" ? [] : [publicEntry.id]);
-    expect(frozen.prepared!.material.sources).toEqual(mode === "fork" ? [expect.stringContaining(`#E${publicEntry.entryOrdinal}`)] : []);
-    expect(frozen.prepared!.material.head).toBeNull();
+    expect(frozen.prepared!.material.entries.map(entry => entry.id)).toEqual([publicEntry.id]);
     for (const entry of [first, last]) expect(frozen.prepared!.text).not.toContain(`T${t.id}#E${entry.entryOrdinal}`);
     expect(frozen.prepared!.text).not.toContain("[thinking omitted]");
     expect(frozen.prepared!.text).not.toContain("mixed-private");
-    expect(frozen.prepared!.supplied.entries.map(entry => entry.id)).toEqual(mode === "fork" ? [] : [publicEntry.id]);
-    if (mode === "subagent") {
-      const price = tokens(baseline.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)))
-        + tokens(baseline.prepared!.text);
-      expect(freezeNoting(m.store, { ...target, mode, boundary: { exactEntryIds: [first.id, publicEntry.id, last.id] },
-        capacity: { inputTokens: price, prefixTokens: 0 } }, m.config).entries.map(entry => entry.id))
-        .toEqual([first.id, publicEntry.id, last.id]);
-    }
-    expect(await m.noting({ ...target, mode, visible })).toMatchObject({ outcome: "success" });
+    expect(frozen.prepared!.supplied.entries.map(entry => entry.id)).toEqual([publicEntry.id]);
+    const price = tokens(baseline.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)))
+      + tokens(baseline.prepared!.text);
+    expect(freezeNoting(m.store, { ...target, boundary: { exactEntryIds: [first.id, publicEntry.id, last.id] },
+      capacity: { inputTokens: price, prefixTokens: 0 } }, m.config).entries.map(entry => entry.id))
+      .toEqual([first.id, publicEntry.id, last.id]);
+    expect(await m.noting({ ...target })).toMatchObject({ outcome: "success" });
     expect(calls[0]!.entryIds).toEqual([first.id, publicEntry.id, last.id]);
     expect(m.pendingEntries(s.id, "main", t.id)).toEqual([]);
     for (const entry of [first, last]) expect(m.store.entryNoted(entry.id)).toBe(true);
@@ -168,16 +163,14 @@ test("pending counts stay exact as mixed batches publish and only thinking remai
     const publicEntries = [entries[0]!, entries[2]!];
     expect(m.pendingTokens("noting", target).tokens).toBe(tokens(publicEntries.map(entry => renderEntry(entry, m.config.render).content).join("\n\n")));
     for (const entry of publicEntries) {
-      expect(await m.noting({ ...target, mode: "subagent", boundary: { maxEntryId: entry.id } })).toMatchObject({ outcome: "success" });
+      expect(await m.noting({ ...target, boundary: { maxEntryId: entry.id } })).toMatchObject({ outcome: "success" });
       const remaining = publicEntries.filter(candidate => candidate.id > entry.id);
       expect(m.pendingTokens("noting", target).tokens).toBe(tokens(remaining.map(candidate => renderEntry(candidate, m.config.render).content).join("\n\n")));
     }
     expect(m.pendingEntries(s.id, "main", t.id).map(entry => entry.id)).toEqual([entries[3]!.id]);
     m.config.noting.batchTokens = 0;
-    expect(await m.noting({ ...target, mode: "subagent" })).toMatchObject({ outcome: "success" });
+    expect(await m.noting({ ...target })).toMatchObject({ outcome: "success" });
     expect(calls.at(-1)!.material.entries).toEqual([]);
-    expect(calls.at(-1)!.material.sources).toEqual([]);
-    expect(calls.at(-1)!.material.head).toBeNull();
     expect(calls.at(-1)!.text).not.toContain("[thinking omitted]");
     expect(m.pendingEntries(s.id, "main", t.id)).toEqual([]);
   } finally { m.close(); }
@@ -419,40 +412,6 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
   expect(rendered).toMatch(/command="一+"\[\.\.\. \d+ characters truncated\]"一+"/);
 });
 
-test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an inherited run needs are the head reply and the source index", async () => {
-  const { s, t } = session();
-  // 17c 2026-09-08 supersedes concurrent sibling admission. A failed input probe leaves the
-  // same evidence pending for the subagent comparison; exact branch bytes remain the ruling.
-  const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
-  });
-  const seen = visibleTarget(probe, s.id, "main", t.id);
-  try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", visible: seen }); }
-  finally { probe.close(); }
-  await memory.noting({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
-  const [branch, subagent] = calls;
-  expect(branch!.mode).toBe("fork");
-  // This older fixture ends with a result: its earlier assistant text is not a missing head reply.
-  expect(branch!.material.head).toBeNull();
-  expect(branch!.material.sources).toEqual([
-    `[T${t.id}#E1@user] user`,
-    `[T${t.id}#E2@assistant] assistant`,
-    `[T${t.id}#E3@assistant] assistant`,
-    `[T${t.id}#E4@observation] toolResult`]);
-  // 29b: one builder, not one material. The frozen target is the same in both modes; the parts differ
-  // by exactly what the child could already see, so the fresh child gets the Raw and no repair parts.
-  expect(subagent!.material.head).toBe(null);
-  expect(subagent!.material.sources).toEqual([]);
-  expect(subagent!.material.entries.map(e => e.id)).toEqual(branch!.entryIds);
-  expect(branch!.material.entries).toEqual([]);
-  expect(branch!.entryIds).toEqual(subagent!.entryIds);
-  // No field of the material is a provider message, and the block layout is core's own since 20a
-  // (pinned in core/render/material.test.ts).
-  expect(Object.values(branch!.material).some(part => typeof part === "string" && part.includes("Range: "))).toBe(false);
-  expect(branch!.prompt).toContain("already in this conversation");
-  expect(subagent!.text).toContain("用 pnpm，不要 npm");
-});
-
 /** Knowledge to lead the block with: one manually written fact, consolidated by hand into K1. */
 /** Fresh N alone shows each body's token count after the category tag; everything else in the block is the shared layout. */
 const withSize = (block: string) => block.replace("[constraint/project] Fixture title", `[constraint/project] (${tokens("The project uses pnpm")}/${memory.config.writing.bodyTokens} tokens) Fixture title`);
@@ -470,7 +429,7 @@ function seededKnowledge(sessionId: number, turnId: number) {
 test("20a 2026-09-08: core owns the host-neutral domain text and still builds no provider message or body", async () => {
   const { s, t } = session();
   seededKnowledge(s.id, t.id);
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const input = calls[0]!;
   // Domain text, from core, in core's own order — instructions stay their own field, not a system message.
   expect(input.text).toContain(input.material.entries[0]!.view);
@@ -486,31 +445,6 @@ test("20a 2026-09-08: core owns the host-neutral domain text and still builds no
   expect(JSON.parse(memory.store.listRuns(s.id).at(-1)!.request!)).toEqual({ fake: true });
 });
 
-// Ticket 20 "Inherited context": core exposes the full task material and the domain increment
-// required when context is inherited, both from the same frozen task; the host picks one.
-test("20a 2026-09-08: the full text and the inherited increment come from one frozen task, and the writable range is identical in both modes", async () => {
-  const { s, t } = session();
-  // A failed probe run leaves the same evidence pending, so the second mode freezes the same task.
-  const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
-  });
-  const seen = visibleTarget(probe, s.id, "main", t.id);
-  try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", visible: seen }); }
-  finally { probe.close(); }
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
-  const [fork, fresh] = calls;
-  expect(fork!.mode).toBe("fork"); expect(fresh!.mode).toBe("subagent");
-  expect(fork!.entryIds).toEqual(fresh!.entryIds); // one writable range, whatever the execution mode
-  expect(fork!.range).toEqual(fresh!.range);
-  expect(fork).not.toHaveProperty("readKnowledgeCommits");
-  expect(fresh).not.toHaveProperty("readKnowledgeCommits");
-  // 29b: one builder over one frozen task, two initial states. What the fork does not send is exactly
-  // what its own context already holds, and it is never a second copy of the full text.
-  expect(fork!.text).not.toEqual(fresh!.text);
-  expect(fork!.text).not.toContain(fresh!.material.entries[0]!.view);
-  expect(fresh!.text).not.toContain(fork!.text);
-});
-
 // 92 §6 supersedes 25a's N exclusion: one seeded Knowledge body uses the same leading renderer
 // for foreground injection, compact and fresh N; target-specific framing stays outside that block.
 test("20a/92: fresh N shares the leading Knowledge block without copying task framing into it", async () => {
@@ -518,7 +452,7 @@ test("20a/92: fresh N shares the leading Knowledge block without copying task fr
   seededKnowledge(s.id, t.id);
   const block = memory.inject(s.id);
   expect(block).toContain("The project uses pnpm");
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const input = calls[0]!;
   expect(input.text).toContain(withSize(block));
   expect(input.text).toContain(`Range: ${input.range.from}..${input.range.to}`);
@@ -1091,7 +1025,7 @@ test.each(["success", "failure"] as const)("92: invalid knowledge slot is correc
     expect(memory.store.sourcePath(s.id, "main", t.id).every(entry => !memory.store.entryNoted(entry.id))).toBe(true);
     return { outcome, output: outcome === "failure" ? "provider failed after correction" : "completed", request: { messages: ["last"] } };
   });
-  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   expect(result.outcome).toBe(outcome);
   if (!("runId" in result) || result.runId === undefined) throw new Error("missing run audit");
   const run = memory.store.getRun(result.runId)!;
@@ -1107,43 +1041,6 @@ test.each(["success", "failure"] as const)("92: invalid knowledge slot is correc
     expect(memory.store.entryNoted(entry.id)).toBe(outcome === "success");
 });
 
-
-test("2026-09-07: branch input premise repair appends the missing final reply and source index", async () => {
-  const { s } = session();
-  const first = memory.store.appendTurn({ sessionId: s.id, parentTurnId: null, kind: "turn",
-    userPrompt: "0123456789".repeat(6) + " PRIVATE USER TAIL", assistantText: "Earlier reply", startedAt: time });
-  const head = memory.store.appendTurn({ sessionId: s.id, parentTurnId: first.id, kind: "turn",
-    userPrompt: "Check it", assistantText: "Final-only finding: " + "result ".repeat(10) + "verified.", startedAt: time });
-  memory.store.appendToolCall({ turnId: head.id, name: "Bash", input: '{"command":"check"}', result: "PRIVATE TOOL RESULT", status: "success" });
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: head.id, mode: "fork",
-    visible: visibleTarget(memory, s.id, "main", head.id) });
-  const input = calls[0]!;
-  expect(input.mode).toBe("fork");
-  expect(input.material.head).toBeNull(); // The last native entry is a result, not E2's earlier reply.
-  expect(input.material.sources).toEqual([
-    `[T2#E1@user] user`,
-    `[T2#E2@assistant] assistant`,
-    `[T3#E1@user] user`,
-    `[T3#E2@assistant] assistant`,
-    `[T3#E3@assistant] assistant`,
-    `[T3#E4@observation] toolResult`]);
-  expect(input.text).not.toContain("PRIVATE USER TAIL");
-  expect(input.material.sources.join("\n")).not.toContain("PRIVATE TOOL RESULT");
-});
-
-test("33: a branch source index uses shared identities, not a separate body preview",  async () => {
-  const { s } = session();
-  const t = memory.store.appendTurn({ sessionId: s.id, parentTurnId: null, kind: "turn",
-    userPrompt: "😀".repeat(59) + "\nTAIL", assistantText: null, startedAt: time });
-  memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "x".repeat(60) + "\nTAIL", result: null, status: "attempted" });
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
-    visible: visibleTarget(memory, s.id, "main", t.id) });
-  expect(calls[0]!.material.head).toContain("[T2#E2@assistant] Bash(");
-  expect(calls[0]!.material.sources).toEqual([
-    "[T2#E1@user] user",
-    "[T2#E2@assistant] assistant"]);
-  expect(calls[0]!.material.sources.join("\n")).not.toContain("TAIL");
-});
 
 // 93 replaces the retired #user/#assistant/#call selector with a whole entry and checked role.
 test.each([{ ordinal: 1, role: "user", text: "用 pnpm，不要 npm" },
@@ -1687,7 +1584,7 @@ test("64b/16b: every raw source of a multi-source fact constrains carry, current
 test("2026-09-07: R<n> renders a run as a summary, full adds tool rounds and raw previews, a missing run is rejected", async () => {
   const { s, t } = session();
   calls.length = 0;
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const run = memory.store.listRuns(s.id).at(-1)!;
   const summary = memory.trace(`R${run.id}`);
   expect(summary.split("\n")[0]).toBe(`R${run.id} noting ${run.outcome} ${run.createdAt}`);
@@ -1742,7 +1639,7 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
   if (!("native" in tight)) expect(tight.truncated?.raw).toBeTruthy();
   defaultWindows();
   // Noting is unchanged: its batch still stops at 10,000 and leaves the rest pending.
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const views = calls[0]!.material.entries.map(e => e.view);
   expect(tokens(views.join("\n\n"))).toBeLessThanOrEqual(DEFAULT_CONFIG.noting.batchTokens);
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0); // the rest waits; 50,000 would have taken it
@@ -1852,7 +1749,7 @@ test("73: 'compaction never calls a model' — over budget it truncates locally,
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id)).toEqual(expect.arrayContaining(pending));
   // Normal Noter input keeps using the same bounded views; the compact-only view exists nowhere else.
   defaultWindows();
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   expect(calls).toHaveLength(1);
   expect(calls[0]!.material.entries.every(e => !e.view.includes("compact-only"))).toBe(true);
   expect(calls[0]!.text).not.toContain("compact-only");
@@ -1919,7 +1816,7 @@ test("30: the shipped profile is 2,000/100/100 and the retired B and secondary k
   try { expect(explicit.config.render.entryTokens).toBe(2_000); } finally { explicit.close(); }
   // 30 (GPT ruling 2026-09-10): the smaller views change no phase limit. The trigger, the batch
   // ceilings and target limits keep their values. 92 removes only lexical review here.
-  expect(DEFAULT_CONFIG.noting).toEqual({ forkModeDefault: false, batchTokens: 10_000, triggerTokens: 10_000, maxToolRounds: 0 });
+  expect(DEFAULT_CONFIG.noting).toEqual({ batchTokens: 10_000, triggerTokens: 10_000, maxToolRounds: 0 });
   for (const retired of [0, 1, -0.001, 1.001, Infinity, Number.NaN])
     expect(() => api.validateConfig({ noting: { nearThreshold: retired } } as never)).toThrow("Removed setting noting.nearThreshold");
 });
@@ -2046,7 +1943,7 @@ test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added 
   const t2 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t.id, kind: "turn", userPrompt: "second", startedAt: time });
   const entry2 = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "u2", turnId: t2.id, role: "user", text: "second", raw: "second", calls: [] });
   memory.selectEntries(s.id, "main", [entry1.id, entry2.id]);
-  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t2.id, mode: "subagent", boundary });
+  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t2.id, boundary });
   expect(result.outcome).toBe("success");
   expect(calls[0]!.entryIds).toEqual([entry1.id]); // the later on-path entry stays outside the frozen target
   expect(hydrate(memory.pendingEntries(s.id, "main", t2.id), memory.store).map(e => e.id)).toEqual([entry2.id]); // it remains pending
@@ -2055,50 +1952,58 @@ test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added 
   // independently frozen D revision range is exercised by the late-version case above.
 });
 
-// ---- 19c: the execution mode is fork; branch remains the evidence path (ticket 19 "Naming and compatibility") ----
+// ---- 19c: branch remains the evidence path; the Noter's execution mode is always fresh (ticket 19 "Naming and compatibility") ----
 
-test("19c 2026-09-08: the legacy branchModeDefault spelling is accepted, mapped onto forkModeDefault, and not kept", () => {
-  const legacy = sourceSeededMemory(join(directory, "alias.sqlite"), async () => ok([]), { noting: { branchModeDefault: false } });
-  try {
-    expect(legacy.config.noting.forkModeDefault).toBe(false);              // the old key still selects the mode
-    expect(Object.hasOwn(legacy.config.noting, "branchModeDefault")).toBe(false); // only the canonical key survives
-  } finally { legacy.close(); }
-  // Both spellings supplied and agreeing: the canonical one wins, silently.
-  const agreeing = sourceSeededMemory(join(directory, "agreeing.sqlite"), async () => ok([]), { noting: { branchModeDefault: false, forkModeDefault: false } });
-  try { expect(agreeing.config.noting.forkModeDefault).toBe(false); } finally { agreeing.close(); }
-});
-
-test("19c 2026-09-08: both execution-mode spellings with different values fail the load naming both keys", () => {
-  const load = () => sourceSeededMemory(join(directory, "conflict.sqlite"), async () => ok([]), { noting: { branchModeDefault: true, forkModeDefault: false } });
-  expect(load).toThrow(/noting\.branchModeDefault/);
-  expect(load).toThrow(/noting\.forkModeDefault/);
-  expect(load).toThrow(/Conflicting settings/);
-});
-
-test("24 amendment 2 2026-09-09, as 29e left it: configure replaces each phase's execution-mode default, validated like the load path, and nothing else", async () => {
-  // 92 §7: only the N mode preference survives; D is subagent-only.
-  expect(memory.config.noting.forkModeDefault).toBe(false);
-  memory.configure({ noting: { forkModeDefault: true } });
-  expect(memory.config.noting.forkModeDefault).toBe(true);
-  memory.configure({ noting: { forkModeDefault: false } });
-  expect(memory.config.noting.forkModeDefault).toBe(false);
-  expect(memory.config.noting.batchTokens).toBe(DEFAULT_CONFIG.noting.batchTokens); // nothing else moved
-  // A task admitted after the call runs in the new mode; the run record keeps what it was launched with.
+// Ruling 2026-10-22 (supersedes 19c/29e's fork mode for the Noter): a fork's prefix is the main
+// conversation, not the compaction memory the Noter starts from, so the Noter runs fresh only.
+test("2026-10-22: the Noter runs fresh only", async () => {
+  // Configuration refuses the fork setting under both spellings, at the load and at runtime.
+  for (const key of ["forkModeDefault", "branchModeDefault"] as const) {
+    const message = `Removed setting noting.${key}: the Noter runs fresh only; remove this key`;
+    for (const saved of [true, false]) {
+      expect(() => sourceSeededMemory(join(directory, `fork-${key}-${saved}.sqlite`), async () => ok([]), { noting: { [key]: saved } } as never)).toThrow(message);
+      expect(() => canonicalFlatConfig({ [`noting.${key}`]: saved })).toThrow(message);
+      expect(() => memory.configure({ noting: { [key]: saved } } as never)).toThrow(message);
+    }
+  }
+  expect(Object.hasOwn(DEFAULT_CONFIG.noting, "forkModeDefault")).toBe(false);
+  // Admission never selects fork: every task, ordinary, borrowed or bounded, is a fresh child and its run says so.
   const { s, t } = session();
+  const next = (parent: number, text: string) => memory.store.appendTurn({ sessionId: s.id, parentTurnId: parent,
+    kind: "turn", userPrompt: text, assistantText: "acknowledged", startedAt: time });
   expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
-  expect(calls.at(-1)!.mode).toBe("subagent");
-  expect(memory.store.listRuns(s.id).at(-1)!.mode).toBe("subagent");
-  // The load path's own rules: the legacy spelling is accepted and mapped, a bad type, a removed key
-  // and any other section or key are refused by name — and a refusal changes nothing.
-  memory.configure({ noting: { branchModeDefault: true } });
-  expect(memory.config.noting.forkModeDefault).toBe(true);
-  expect(() => memory.configure({ noting: { forkModeDefault: 1 as unknown as boolean } })).toThrow("Invalid noting.forkModeDefault");
-  expect(() => memory.configure({ noting: { branchModeDefault: false, forkModeDefault: true } })).toThrow("Conflicting settings");
-  expect(() => memory.configure({ noting: { batchTokens: 5 } })).toThrow("noting.batchTokens is not reconfigurable at runtime");
+  const second = next(t.id, "Keep vitest");
+  const tail = memory.store.createSession({ enrollmentChoice: true, host: "pi:borrowed", startedAt: time,
+    firstReplyAt: time, projectId: memory.store.getSession(s.id)!.projectId });
+  const tailTurn = memory.store.appendTurn({ sessionId: tail.id, kind: "turn", userPrompt: "closed tail", assistantText: "ok", startedAt: time });
+  memory.store.closeSession(tail.id);
+  expect((await memory.noting({ sessionId: tail.id, branch: "main", headTurnId: tailTurn.id,
+    borrowed: true, executorSessionId: s.id })).outcome).toBe("success");
+  const frozen = memory.store.pendingEntryIds(s.id, "main", second.id);
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: second.id,
+    boundary: { exactEntryIds: frozen } })).outcome).toBe("success");
+  expect(calls.at(-1)!.entryIds).toEqual(frozen);
+  const runs = memory.store.listRuns(s.id).filter(r => r.kind === "noting");
+  expect(runs).toHaveLength(2);
+  for (const run of [...runs, ...memory.store.listRuns(tail.id).filter(r => r.kind === "noting")]) {
+    expect(run.mode).toBe("subagent");
+    expect(JSON.parse(run.response!).requestedMode).toBe("subagent");
+  }
+});
+
+test("24 amendment 2 2026-09-09, as 2026-10-22 left it: configure replaces the borrowing scope, validated like the load path, and nothing else", async () => {
+  expect(memory.config.closedSessionScope).toBe("project");
+  memory.configure({ closedSessionScope: "global" });
+  expect(memory.config.closedSessionScope).toBe("global");
+  expect(memory.config.noting.batchTokens).toBe(DEFAULT_CONFIG.noting.batchTokens); // nothing else moved
+  // The load path's own rules: a bad value, a removed key and any other section or key are refused by
+  // name — and a refusal changes nothing.
+  expect(() => memory.configure({ closedSessionScope: "everywhere" as never })).toThrow("Invalid closedSessionScope");
+  expect(() => memory.configure({ noting: { batchTokens: 5 } })).toThrow("Unknown setting noting");
   expect(() => memory.configure({ render: { entryTokens: 5 } })).toThrow("Unknown setting render");
   expect(() => memory.configure({ consolidation: { triggerUnconsolidatedFacts: 5 } } as never)).toThrow("Removed setting");
   expect(() => memory.configure({ noting: { nearThreshold: 0.5 } } as never)).toThrow("Removed setting noting.nearThreshold");
-  expect(memory.config.noting.forkModeDefault).toBe(true);
+  expect(memory.config.closedSessionScope).toBe("global");
   expect(memory.config.render.entryTokens).toBe(DEFAULT_CONFIG.render.entryTokens);
 });
 
@@ -2114,56 +2019,9 @@ test("25b/92: retired C mode is not a live setting or a Noter alias", () => {
     expect(() => memory.configure({ consolidation: { subagentModeDefault: saved } } as never)).toThrow(message);
   }
   expect(Object.hasOwn(DEFAULT_CONFIG, "consolidation")).toBe(false);
-  expect(DEFAULT_CONFIG.noting.forkModeDefault).toBe(false); // no C mode is mapped into N
+  expect(Object.hasOwn(DEFAULT_CONFIG.noting, "forkModeDefault")).toBe(false); // no C mode is mapped into N
 });
 
-
-// 92 §8 retires C's fork, fact-queue borrowing and catchup mode. N's corresponding live
-// mode contract uses actual Raw entries and retains the configured/requested audit.
-test("92: N explicit/default modes, frozen configuration, borrowed and catchup subagent", async () => {
-  const { s, t } = session();
-  const next = (parent: number, text: string) => memory.store.appendTurn({ sessionId: s.id, parentTurnId: parent,
-    kind: "turn", userPrompt: text, assistantText: "acknowledged", startedAt: time });
-  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" })).outcome).toBe("success");
-  expect(calls.at(-1)!.mode).toBe("fork");
-  expect(memory.store.listRuns(s.id).at(-1)).toMatchObject({ kind: "noting", mode: "fork" });
-  const second = next(t.id, "Keep vitest");
-  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: second.id })).outcome).toBe("success");
-  expect(calls.at(-1)!.mode).toBe("subagent");
-  expect(JSON.parse(memory.store.listRuns(s.id).at(-1)!.response!).requestedMode).toBe("subagent");
-
-  memory.configure({ noting: { forkModeDefault: true } });
-  const third = next(second.id, "Keep sqlite");
-  const before = calls.length;
-  memory.close();
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    const task = raw as NotingAgentInput;
-    calls.push(task);
-    if (calls.length === before + 1) memory.configure({ noting: { forkModeDefault: false } });
-    task.tools.find(tool => tool.name === "note")!.execute({});
-    task.tools.find(tool => tool.name === "memory")!.execute({});
-    return ok([]);
-  }, { noting: { forkModeDefault: true } });
-  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: third.id })).outcome).toBe("success");
-  expect(calls.at(-1)!.mode).toBe("fork");
-  expect(memory.store.listRuns(s.id).at(-1)!.mode).toBe("fork");
-  expect(memory.config.noting.forkModeDefault).toBe(false); // only future admission observes the edit
-  memory.configure({ noting: { forkModeDefault: true } });
-
-  const tail = memory.store.createSession({ enrollmentChoice: true, host: "pi:borrowed", startedAt: time,
-    firstReplyAt: time, projectId: memory.store.getSession(s.id)!.projectId });
-  const tailTurn = memory.store.appendTurn({ sessionId: tail.id, kind: "turn", userPrompt: "closed tail", assistantText: "ok", startedAt: time });
-  memory.store.closeSession(tail.id);
-  expect((await memory.noting({ sessionId: tail.id, branch: "main", headTurnId: tailTurn.id,
-    borrowed: true, executorSessionId: s.id })).outcome).toBe("success");
-  expect(calls.at(-1)!.mode).toBe("subagent");
-  const fourth = next(third.id, "Keep node:sqlite");
-  const frozen = memory.store.pendingEntryIds(s.id, "main", fourth.id);
-  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: fourth.id,
-    mode: "subagent", boundary: { exactEntryIds: frozen } })).outcome).toBe("success");
-  expect(calls.at(-1)!.mode).toBe("subagent");
-  expect(calls.at(-1)!.entryIds).toEqual(frozen);
-});
 
 test("25 amendment 2 2026-09-09: a stored fork-mode Consolidation run keeps its recorded mode and is never rewritten", async () => {
   const { s, t } = session();
@@ -2179,14 +2037,6 @@ test("25 amendment 2 2026-09-09: a stored fork-mode Consolidation run keeps its 
   expect(memory.store.getRun(historical)!.mode).toBe("fork");
   expect(memory.store.listRuns(s.id).filter(r => r.kind === "consolidation").map(r => r.mode)).toEqual(["fork"]);
   expect(memory.store.listRuns(s.id).at(-1)!.kind).toBe("noting");
-});
-
-test("19c 2026-09-08: new work records the canonical fork spelling, in the task input and in the run record", async () => {
-  const { s, t } = session();
-  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" })).outcome).toBe("success"); // explicit task override
-  expect(calls.at(-1)!.mode).toBe("fork");
-  expect(memory.store.listRuns(s.id).at(-1)!.mode).toBe("fork");
-  expect(memory.store.listRuns(s.id).some(r => r.mode === "branch")).toBe(false);
 });
 
 test("19c 2026-09-08: a stored branch-mode run reads as legacy request-copy execution and is never rewritten", async () => {
@@ -2478,7 +2328,7 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
 
   // 92 uses distinct full-path selection and exact-entry material scopes. This legacy fixture
   // counts wrappers; ticket92material pins native cold/warm builds, metadata and Raw work.
-  const target = { sessionId: s.id, branch: "C", headTurnId: selected.id, mode: "subagent" as const };
+  const target = { sessionId: s.id, branch: "C", headTurnId: selected.id };
   snapshots.reset();
   const scopes = vi.spyOn(store, "pathSnapshot");
   const frozen = freezeNoting(store, target, memory.config);
@@ -2502,52 +2352,6 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
 
 // ---- 27 review 2026-09-10: one run record per attempt, exact membership, the cancellation fence ----
 
-test("27 review: each attempt is its own run record", async () => {
-  // User ruling 2026-09-10, superseding 27c's "one run record for both attempts" (ticket text, never
-  // a ruling): a refused attempt that sent a request is finalized by core before the refusal goes
-  // back to the host, and the run the re-admission makes charges only itself.
-  const { s, t } = session(); memory.close();
-  const sent: (string | undefined)[] = [];
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    const input = raw as NotingAgentInput;
-    sent.push(input.fallbackReason);
-    if (sent.length === 1) return { outcome: "failure", output: "context overflow: prompt is too long", mode: "fork",
-      request: { fork: true }, usage: { input: 1234, output: 7 }, retries: [{ attempt: 1, error: "overloaded" }],
-      nativeLog: "/tmp/fork-attempt.jsonl", refused: { reason: "context overflow: prompt is too long" } };
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    input.tools.find(tool => tool.name === "memory")!.execute({});
-    return { outcome: "success", output: "done", mode: "subagent", request: { fresh: true }, usage: { input: 5, output: 1 }, fallbackReason: input.fallbackReason };
-  });
-  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
-  const first = await memory.noting({ ...target, mode: "fork" }) as { outcome: string; refused?: { reason: string }; runId?: number };
-  expect(first.outcome).toBe("dropped");
-  expect(first.runId).toBe(1); // the attempt that sent a request has a record, and the host is told which
-  const attempt = memory.store.getRun(1)!;
-  expect(attempt.mode).toBe("fork");
-  expect(attempt.outcome).toBe("failure");
-  expect(attempt.request).toBe(JSON.stringify({ fork: true }));
-  const attemptBody = JSON.parse(attempt.response!);
-  expect(attemptBody.requestedMode).toBe("fork");
-  expect(attemptBody.usage).toEqual({ input: 1234, output: 7 });
-  expect(attemptBody.retries).toEqual([{ attempt: 1, error: "overloaded" }]);
-  expect(attemptBody.nativeLog).toBe("/tmp/fork-attempt.jsonl");
-  expect(attemptBody.problems).toEqual(["context overflow: prompt is too long"]);
-  expect(attemptBody.fallbackReason).toBeUndefined(); // the reason belongs to the run that fell back
-  expect(hydrate(memory.store.listSourceEntries(s.id), memory.store).some(e => memory.store.entryNoted(e.id))).toBe(false);
-
-  // The re-admission, as the host makes it: the reason names the first record, and the run records
-  // only its own spend — never the attempt's 1234 tokens a second time.
-  const reason = `${first.refused!.reason} (fork attempt recorded as R${first.runId})`;
-  const second = await memory.noting({ ...target, mode: "fork", effectiveMode: "subagent", fallbackReason: reason, forkAttempt: first.refused });
-  expect(second.outcome).toBe("success");
-  const run = memory.store.getRun(2)!;
-  expect(run.mode).toBe("subagent");
-  const body = JSON.parse(run.response!);
-  expect(body.usage).toEqual({ input: 5, output: 1 });
-  expect(body.fallbackReason).toBe(reason);
-  expect(memory.store.listRuns(s.id).filter(r => r.kind === "noting").map(r => r.mode)).toEqual(["fork", "subagent"]);
-});
-
 test("27 amendment 6: frozen membership survives fallback or the task stays pending", async () => {
   // The frozen batch is taken whole or not at all. A capacity that holds only its oldest entry used
   // to pop the newer one and report success on the subset; now the batch waits.
@@ -2556,7 +2360,7 @@ test("27 amendment 6: frozen membership survives fallback or the task stays pend
   const t2 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t.id, kind: "turn", userPrompt: "second", startedAt: time });
   const e2 = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "u2", turnId: t2.id, role: "user", text: "second evidence", raw: "second evidence", calls: [] });
   memory.selectEntries(s.id, "main", [e1.id, e2.id]);
-  const target = { sessionId: s.id, branch: "main", headTurnId: t2.id, mode: "subagent" as const };
+  const target = { sessionId: s.id, branch: "main", headTurnId: t2.id };
   // What the batch really costs, priced the way the freeze prices it: instructions, tool definitions
   // and the prepared fresh text. The oldest entry's own price is the allowance that fits one, not two.
   const instructions = loadPrompt("noting.md");
@@ -2596,83 +2400,6 @@ test("27 amendment 6: frozen membership survives fallback or the task stays pend
  * that must be newly supplied — the target minus what the view proves visible at the same identity and
  * the same representation, and only then the injection budget. Never a budget-limited prefix with
  * visibility subtracted afterwards. */
-test("29: one material builder — filter visible, then budget", async () => {
-  const { s, t } = session();
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ text: "Recorded earlier", source: [`T${t.id}#E1`] });
-  const entries = hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store);
-  // A failing probe leaves the same evidence pending, so every view below freezes the same task.
-  const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
-  });
-  const view = (raw: Map<string, "source" | "view">, factIds: number[] = []) =>
-    ({ raw, factIds: new Set(factIds), knowledgeCommitIds: new Set<number>(), injection: false, suppliedGeneration: 0 });
-  const freeze = async (visible: ReturnType<typeof view>) => {
-    calls.length = 0;
-    await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", visible });
-    return calls[0]!;
-  };
-  try {
-    const none = await freeze(view(new Map()));
-    const carried = await freeze(view(new Map(entries.map(e => [e.nativeId, "view" as const]))));
-    const factSeen = await freeze(view(new Map(entries.map(e => [e.nativeId, "source" as const])), [1]));
-    // The processing target is frozen regardless of visibility: three views, one target.
-    expect(carried.entryIds).toEqual(none.entryIds);
-    expect(factSeen.entryIds).toEqual(none.entryIds);
-    // Same identity, permitted representation: a tier-1 carrier view withholds the body exactly as a
-    // retained source entry does, and an empty data delta keeps the mandatory framing.
-    expect(none.material.entries.map(e => e.id)).toEqual(none.entryIds);
-    expect(carried.material.entries).toEqual([]);
-    expect(carried.text).toContain(`Range: ${carried.range.from}..${carried.range.to}`);
-    expect(carried.material.sources.length).toBeGreaterThan(0);
-    // 92 §6: fork inherits its parent and never adds a historical-fact supplement,
-    // irrespective of a fact marker in the visible view. The shared compact path's
-    // actual filtering-before-budgeting remains pinned by 26 amendment 2 above.
-    expect(none.material.facts).toEqual([]);
-    expect(carried.material.facts).toEqual([]);
-    expect(factSeen.material.facts).toEqual([]);
-    // What the text really carries is what a carrier may state — never what the task considered.
-    expect(none.supplied.entries.map(e => e.id)).toEqual(none.entryIds);
-    expect(none.supplied.factIds).toEqual([]);
-    expect(carried.supplied.entries).toEqual([]);
-    expect(factSeen.supplied.factIds).toEqual([]);
-  } finally { probe.close(); }
-});
-
-test("27: cancellation between refusal and re-admission launches no fallback", async () => {
-  // Parent 27 line 83: "User cancellation, stop, shutdown, claim loss or disabled enrollment must
-  // not launch fallback work." The refused attempt carries the generation it was admitted under;
-  // `cancelTasks()` advances it, with or without stopping, and the re-admission drops.
-  const { s, t } = session(); memory.close();
-  const generations: unknown[] = [];
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    const input = raw as NotingAgentInput & { cancellation?: number };
-    generations.push(input.cancellation);
-    if (generations.length === 1) return { outcome: "failure", output: "context overflow", request: null, refused: { reason: "context overflow" } };
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    input.tools.find(tool => tool.name === "memory")!.execute({});
-    return ok([]);
-  });
-  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
-  const first = await memory.noting({ ...target, mode: "fork" }) as { outcome: string; refused?: unknown };
-  expect(first.outcome).toBe("dropped");
-  expect(memory.store.listRuns(s.id)).toEqual([]); // this refusal sent nothing, so it recorded nothing
-  const frozen = generations[0] as number;
-
-  memory.cancelTasks(); // /trace stop, between the refusal and the re-admission — no stopping flag
-  const dropped = await memory.noting({ ...target, mode: "fork", effectiveMode: "subagent",
-    fallbackReason: "context overflow", forkAttempt: first.refused, cancellation: frozen });
-  expect(dropped).toEqual({ outcome: "dropped", reason: api.CANCELLED_BEFORE_FALLBACK });
-  expect(generations).toHaveLength(1); // no fresh request
-  expect(memory.store.listRuns(s.id)).toEqual([]);
-  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0);
-
-  // The cancellation stopped this executor's pending fallback, not the executor: a task admitted
-  // after it carries the current generation and runs.
-  expect((await memory.noting({ ...target, mode: "subagent" })).outcome).toBe("success");
-  expect(generations).toHaveLength(2);
-});
-
 test("28 amendment 3: cancellation is a signal — the signalled task's tools close and its claim goes, and no other task is touched", async () => {
   // "Admission accepts this compaction's `AbortSignal`; core wires it into its existing task
   // cancellation so that only this task's tools close and only its claim is invalidated." The
@@ -2704,7 +2431,7 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
     .find(tool => tool.name === "note")!.execute({ title: "Independent evidence", sources: `[T${t.id}#E1] D's independent evidence` })).factIds[0] as number;
   const trigger = createDreamerTrigger(memory, target, fact, 1);
   const controller = new AbortController();
-  const cancelled = memory.noting({ ...target, mode: "subagent", signal: controller.signal });
+  const cancelled = memory.noting({ ...target, signal: controller.signal });
   const untouched = memory.dream(target);
   await dreamingStarted;
   expect(memory.store.getClaim(s.id, "noting")).not.toBeNull();
@@ -2737,7 +2464,7 @@ test("28 amendment 3: a signal already aborted at admission cancels that task be
     requests.push(raw); (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!.execute({}); return ok([]);
   });
   const controller = new AbortController(); controller.abort();
-  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", signal: controller.signal });
+  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, signal: controller.signal });
   expect(result.outcome).not.toBe("success");
   expect(requests).toEqual([]);
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0); // nothing advanced
@@ -2913,7 +2640,7 @@ test("61: sentences are short, paragraphs are not walls, and no internal referen
 
 
 test("61: every backticked category, kind or field word used in a stage file is defined in the shared blocks", () => {
-  const shared = renderToolNames(["model", "facts", "knowledge", "admission", "division", "writing", "citations", "formats", "live"]
+  const shared = renderToolNames(["model", "facts", "knowledge", "admission", "division", "writing", "citations", "formats"]
     .map(name => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8")).join("\n"), canonicalToolNames);
   const defined = new Set(["goal", "constraint", "understanding", "reference", "open", "observation", "user", "assistant", "role",
     "session", "project", "global", "search", "supports", "reason", "topics", "text", "title", "sources", "address",

@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
-import { ccPluginToolNames, ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
+import { ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-67.db", stateDir: "/tmp/unused-67",
@@ -13,7 +13,7 @@ const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", 
 type Result = { outcome: string; problems?: string[]; automaticOff?: string };
 function fixture() {
   const pending = [1, 2], starts: string[] = []; let enabled = true;
-  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: { forkModeDefault: false } }, cancelTasks: vi.fn(),
+  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: {} }, cancelTasks: vi.fn(),
     store: { enabled: () => enabled, pendingEntryIds: () => [...pending], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     taskEligibility: vi.fn((phase: string, target: { triggerEntryId?: number; headTurnId?: number }) => ({ due: !!phase && !!target })),
@@ -25,18 +25,10 @@ function fixture() {
 }
 const settle = async (f: ReturnType<typeof fixture>) => { for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick(); };
 
-test("112: only an admitted CC fork passes its ToolSearch guidance to Core before freezing", async () => {
+test("112: a CC turn end admits the Noter with the worker's tool names", async () => {
   const f = fixture();
-  const fork = { model: "synthetic", capacity: { inputTokens: 150_000, prefixTokens: 1_000 },
-    visible: { raw: new Map(), facts: new Set(), knowledge: new Set() } } as never;
-  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket(), fork); await tick();
-  expect(f.memory.noting).toHaveBeenCalledWith(expect.objectContaining({ effectiveMode: "fork",
-    toolNames: ccPluginToolNames, forkGuidance: expect.stringContaining("ToolSearch") }));
-  const input = f.memory.noting.mock.calls[0]![0] as { forkGuidance: string };
-  expect(input.forkGuidance).toContain("{{tool.note}} and {{tool.memory}}");
   f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick();
-  expect(f.memory.noting.mock.calls[1]![0]).toMatchObject({ toolNames: ccWorkerToolNames });
-  expect(f.memory.noting.mock.calls[1]![0]).not.toHaveProperty("forkGuidance");
+  expect(f.memory.noting.mock.calls[0]![0]).toMatchObject({ toolNames: ccWorkerToolNames });
 });
 
 test("entry ends reuse a not-due Dreaming result until its progress signal changes", () => {

@@ -10,16 +10,6 @@ import { activeFunctionHook, assertOperatorBinding, readBinding, validateNativeS
 import { assignedNativeSession, functionHookNativeProcess, processAncestors } from "./native-session.ts";
 
 export type ControlVerb = "stop" | "off" | "catchup";
-export interface CcForkObservation {
-  checkpoint?: { sessionId: number; branch: string; headTurnId: number; tailId: number };
-  batch?: string[];
-  model?: string;
-  window?: number;
-  prefix?: number;
-  refused?: string;
-  /** Corrupt indexed source material is a failed N check, never a fresh-mode refusal. */
-  failed?: string;
-}
 export interface CancellationControlReply {
   ok: true;
   verb: "stop" | "off";
@@ -46,23 +36,11 @@ export interface CcControlHandlers {
   effectiveConfig?(): ResolvedCcHostConfig;
   catchupSnapshot?(): CcCatchupStatus | null;
   applyConfig?(next: ResolvedCcHostConfig): void;
-  turnEnd?(turnId: string, reason: string, signal: AbortSignal, observation?: CcForkObservation): Promise<{ prompt: string; turnId: string } | null>;
-  forkSources?(turnId: string, signal: AbortSignal): Promise<{ turnId: string; sessionId: number; branch: string;
-    headTurnId: number; tailId: number; selected: string[] } | null>;
-  forkRegister?(turnId: string, agentId: string): void;
-  forkCall?(agentId: string, callId: string, name: "note" | "memory"): Promise<boolean>;
-  forkCheck?(callId: string, name: "note" | "memory"): boolean;
-  forkTerminal?(agentId: string, reason: string, answer: string, usage?: unknown): Promise<boolean>;
-  /** 108: the cache-miss warnings of the fork's accounting, once it has finished (at most ten seconds after it settled). */
-  forkAccounted?(agentId: string): Promise<string[]>;
-  forkNoStart?(turnId: string, reason: string, confirmed: boolean): void;
-  forkDisconnected?(agentId: string): void;
+  turnEnd?(turnId: string, reason: string, signal: AbortSignal): Promise<void>;
 }
 
 export interface CcControlServer {
   executor: CcExecutorBinding;
-  stopForks(): void;
-  stopFork(agentId: string): void;
   close(preserveExecutor?: boolean): Promise<void>;
 }
 
@@ -121,19 +99,6 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
   const token = randomUUID(), path = socketPath(config, token);
   const executor: CcExecutorBinding = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: new Date().toISOString() };
   mkdirSync(dirname(path), { recursive: true });
-  // The control socket owns the single registered native fork's stop channel. A command can
-  // precede the Hook waiter's connection (including an immediately completed fork).
-  const watches = new Map<string, { connection?: import("node:net").Socket; command?: "stop" | "done" }>();
-  const commandWatch = (agentId: string, command: "stop" | "done") => {
-    const watch = watches.get(agentId);
-    if (!watch || watch.command) return;
-    watch.command = command;
-    if (watch.connection) {
-      watches.delete(agentId);
-      watch.connection.end(`${JSON.stringify({ kind: command, agent: agentId, session: binding.nativeSessionId })}\n`);
-    }
-  };
-  const stopWatches = () => { for (const agentId of watches.keys()) commandWatch(agentId, "stop"); };
   const server = createServer(connection => {
     let input = "", handled = false;
     const disconnected = new AbortController();
@@ -149,13 +114,10 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
       handled = true;
       void (async () => {
         try {
-          const request = JSON.parse(input.slice(0, newline)) as { verb?: unknown; token?: unknown; path?: unknown; expected?: unknown; turnId?: unknown; reason?: unknown; observation?: CcForkObservation; agentId?: unknown; callId?: unknown; name?: unknown;
-            answer?: unknown; confirmed?: unknown; usage?: unknown };
+          const request = JSON.parse(input.slice(0, newline)) as { verb?: unknown; token?: unknown; path?: unknown; expected?: unknown; turnId?: unknown; reason?: unknown };
           if (request.token !== token || typeof request.verb !== "string" ||
               (request.verb !== "stop" && request.verb !== "off" && request.verb !== "catchup" &&
-                request.verb !== "settings" && request.verb !== "apply" && request.verb !== "turn-end" && request.verb !== "fork-sources" &&
-                request.verb !== "fork-register" && request.verb !== "fork-call" && request.verb !== "fork-check" && request.verb !== "fork-terminal" && request.verb !== "fork-account" &&
-                request.verb !== "fork-no-start" && request.verb !== "fork-watch" && request.verb !== "fork-disconnect"))
+                request.verb !== "settings" && request.verb !== "apply" && request.verb !== "turn-end"))
             throw new Error("invalid CC control request");
           const current = readBinding(config, binding.nativeSessionId);
           if (!current) throw new Error("CC binding disappeared before control");
@@ -166,67 +128,7 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
           if ((binding.coreSessionId !== null && current.coreSessionId !== binding.coreSessionId) ||
               current.executor?.token !== token)
             throw new Error("CC core or executor identity changed before control");
-          const verb = request.verb as ControlVerb | "settings" | "apply" | "turn-end" | "fork-sources" |
-            "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-account" | "fork-no-start" | "fork-watch" | "fork-disconnect";
-          if (verb.startsWith("fork-") && verb !== "fork-sources") {
-            if (!activeFunctionHook(current)) throw new Error("CC function hook registration is not current");
-            if (typeof request.agentId !== "string" && verb !== "fork-check" && verb !== "fork-no-start" ||
-                typeof request.callId !== "string" && (verb === "fork-call" || verb === "fork-check") ||
-                typeof request.name !== "string" && (verb === "fork-call" || verb === "fork-check") ||
-                (verb === "fork-call" || verb === "fork-check") && request.name !== "note" && request.name !== "memory")
-              throw new Error("invalid CC native fork identity");
-            let allowed: boolean;
-            if (verb === "fork-no-start") {
-              if (typeof request.turnId !== "string" || typeof request.reason !== "string" || typeof request.confirmed !== "boolean" ||
-                  !handlers?.forkNoStart) throw new Error("invalid CC fork no-start report");
-              handlers.forkNoStart(request.turnId, request.reason, request.confirmed); allowed = true;
-            } else if (verb === "fork-register") {
-              if (typeof request.turnId !== "string" || !handlers?.forkRegister) throw new Error("invalid CC fork registration");
-              if (watches.has(request.agentId as string)) throw new Error("CC fork stop channel already owns this native agent");
-              handlers.forkRegister(request.turnId, request.agentId as string);
-              watches.set(request.agentId as string, {}); allowed = true;
-            } else if (verb === "fork-watch") {
-              const agentId = request.agentId as string, watch = watches.get(agentId);
-              if (!watch || watch.connection) throw new Error("CC fork stop listener is not registered");
-              watch.connection = connection;
-              connection.on("close", () => {
-                if (watches.get(agentId) !== watch || watch.connection !== connection) return;
-                watches.delete(agentId);
-                handlers?.forkDisconnected?.(agentId);
-              });
-              if (watch.command) {
-                watches.delete(agentId);
-                connection.end(`${JSON.stringify({ kind: watch.command, agent: agentId, session: binding.nativeSessionId })}\n`);
-              }
-              return;
-            } else if (verb === "fork-disconnect") {
-              const agentId = request.agentId as string;
-              allowed = watches.has(agentId);
-              if (allowed) { watches.delete(agentId); handlers?.forkDisconnected?.(agentId); }
-            } else if (verb === "fork-call") {
-              if (!handlers?.forkCall) throw new Error("CC fork call routing is unavailable");
-              allowed = await handlers.forkCall(request.agentId as string, request.callId as string, request.name as "note" | "memory");
-            } else if (verb === "fork-check") {
-              if (!handlers?.forkCheck) throw new Error("CC fork permission routing is unavailable");
-              allowed = handlers.forkCheck(request.callId as string, request.name as "note" | "memory");
-            } else if (verb === "fork-account") {
-              if (!handlers?.forkAccounted) throw new Error("CC fork accounting is unavailable");
-              const warnings = await handlers.forkAccounted(request.agentId as string);
-              connection.end(`${JSON.stringify({ ok: true, verb, allowed: true, warnings })}\n`); return;
-            } else {
-              if (typeof request.reason !== "string" || typeof request.answer !== "string" || !handlers?.forkTerminal)
-                throw new Error("invalid CC fork terminal");
-              allowed = await handlers.forkTerminal(request.agentId as string, request.reason, request.answer, request.usage);
-              if (allowed) commandWatch(request.agentId as string, "done");
-            }
-            connection.end(`${JSON.stringify({ ok: true, verb, allowed })}\n`); return;
-          }
-          if (verb === "fork-sources") {
-            if (!handlers?.forkSources || typeof request.turnId !== "string" || !request.turnId)
-              throw new Error("invalid CC fork source request");
-            if (!activeFunctionHook(current)) throw new Error("CC function hook registration is not current");
-            connection.end(`${JSON.stringify({ ok: true, verb, sources: await handlers.forkSources(request.turnId, disconnected.signal) })}\n`); return;
-          }
+          const verb = request.verb as ControlVerb | "settings" | "apply" | "turn-end";
           if (verb === "turn-end") {
             if (!handlers?.turnEnd || typeof request.turnId !== "string" || !request.turnId || typeof request.reason !== "string")
               throw new Error("invalid CC turn-end request");
@@ -234,8 +136,8 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
             // cannot authenticate the remote Hook process. The Hook child checks that identity
             // before sending, and the registered process is rechecked here against the binding.
             if (!activeFunctionHook(current)) throw new Error("CC function hook registration is not current");
-            const directive = await handlers.turnEnd(request.turnId, request.reason, disconnected.signal, request.observation);
-            connection.end(`${JSON.stringify({ ok: true, verb, directive })}\n`); return;
+            await handlers.turnEnd(request.turnId, request.reason, disconnected.signal);
+            connection.end(`${JSON.stringify({ ok: true, verb })}\n`); return;
           }
           if (verb === "settings") {
             if (!handlers?.effectiveConfig) throw new Error("effective settings are unavailable on this executor");
@@ -260,7 +162,6 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
           }
           if (verb !== "stop" && verb !== "off") throw new Error("invalid CC cancellation verb");
           handlers?.beforeCancel();
-          stopWatches();
           const aborted = memory.cancelTasks(false);
           if (verb === "off") {
             // Intent reaches the scan before the lock does: hold imports now, so a running import
@@ -274,7 +175,6 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
               // Binding-lock contention can leave a window between the first fence and durable disable.
               // Fence once more before acknowledgement so work admitted in that window cannot survive off.
               handlers?.beforeCancel();
-              stopWatches();
               for (const task of memory.cancelTasks(false))
                 if (!aborted.some(previous => previous.executionId === task.executionId)) aborted.push(task);
             } finally { releaseImportHold?.(); }
@@ -322,8 +222,7 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
   }
   const release = () => updateBinding(config, binding.nativeSessionId,
     current => !current || current.executor?.token !== token ? current! : { ...current, executor: null });
-  return { executor, stopForks: stopWatches, stopFork: agentId => commandWatch(agentId, "stop"), close: async (preserveExecutor = false) => {
-    stopWatches();
+  return { executor, close: async (preserveExecutor = false) => {
     try { await closeServer(server); }
     finally {
       try { rmSync(path, { force: true }); }
@@ -332,13 +231,9 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
   } };
 }
 
-function request(executor: CcExecutorBinding, verb: ControlVerb | "settings" | "apply" | "turn-end" | "fork-sources" |
-  "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-account" | "fork-no-start" | "fork-disconnect", timeoutMs?: number,
+function request(executor: CcExecutorBinding, verb: ControlVerb | "settings" | "apply" | "turn-end", timeoutMs?: number,
   detail: Record<string, unknown> = {}): Promise<ControlReply | { ok: true; verb: "settings"; config: ResolvedCcHostConfig;
-    catchup: CcCatchupStatus | null } | { ok: true; verb: "apply" } | { ok: true; verb: "turn-end";
-      directive: { prompt: string; turnId: string } | null } | { ok: true; verb: "fork-sources";
-      sources: Awaited<ReturnType<NonNullable<CcControlHandlers["forkSources"]>>> } |
-    { ok: true; verb: "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-account" | "fork-no-start" | "fork-disconnect"; allowed: boolean; warnings?: string[] }> {
+    catchup: CcCatchupStatus | null } | { ok: true; verb: "apply" } | { ok: true; verb: "turn-end" }> {
   return new Promise((resolve, reject) => {
     const connection = createConnection(executor.socketPath); let output = "", settled = false;
     const finish = (error?: Error) => { if (settled) return; settled = true; clearTimeout(timer); connection.destroy(); error ? reject(error) : undefined; };
@@ -358,75 +253,15 @@ function request(executor: CcExecutorBinding, verb: ControlVerb | "settings" | "
 }
 
 /** Only the function-hook child in the current native process may publish its main-turn checkpoint. */
-export async function signalCcTurnEnd(config: ResolvedCcHostConfig, nativeSessionId: string, turnId: string, reason: string,
-  observation?: CcForkObservation): Promise<{ prompt: string; turnId: string } | null> {
+export async function signalCcTurnEnd(config: ResolvedCcHostConfig, nativeSessionId: string, turnId: string, reason: string): Promise<void> {
   const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
   if (!binding?.executor || !activeFunctionHook(binding))
     throw new Error("CC turn-end has no matching live function hook and executor binding");
   functionHookNativeProcess(config, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
   // This checkpoint stays attached to the Hook's connection. Native Hook cancellation closes it;
   // a transport timeout would discard the caller while allowing its queued import to launch later.
-  const reply = await request(binding.executor, "turn-end", undefined, { turnId, reason,
-    ...(observation ? { observation } : {}) });
+  const reply = await request(binding.executor, "turn-end", undefined, { turnId, reason });
   if (reply.verb !== "turn-end") throw new Error("invalid CC turn-end response");
-  return reply.directive;
-}
-
-export async function signalCcForkEvent(config: ResolvedCcHostConfig, nativeSessionId: string,
-  verb: "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-no-start" | "fork-disconnect", detail: Record<string, unknown>): Promise<boolean> {
-  const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
-  if (!binding?.executor || !activeFunctionHook(binding)) throw new Error("CC fork event has no live function hook and executor");
-  functionHookNativeProcess(config, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
-  const reply = await request(binding.executor, verb, undefined, detail);
-  if (reply.verb !== verb) throw new Error("CC fork event response disagrees with request");
-  return reply.allowed;
-}
-
-/** 108: the cache-miss warnings of a settled fork's accounting, which the executor answers once it is done
- * (at most ten seconds after the settlement). The Hook shows them in the foreground. */
-export async function requestCcForkWarnings(config: ResolvedCcHostConfig, nativeSessionId: string, agentId: string): Promise<string[]> {
-  const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
-  if (!binding?.executor || !activeFunctionHook(binding)) throw new Error("CC fork accounting has no live function hook and executor");
-  functionHookNativeProcess(config, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
-  const reply = await request(binding.executor, "fork-account", undefined, { agentId });
-  if (reply.verb !== "fork-account") throw new Error("CC fork accounting response disagrees with request");
-  return reply.warnings ?? [];
-}
-
-// The Hook helper waits on one authenticated control connection, without a process.run timeout.
-export async function waitCcForkCommand(config: ResolvedCcHostConfig, nativeSessionId: string, agentId: string): Promise<{
-  kind: "stop" | "done"; agent: string; session: string }> {
-  const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
-  if (!binding?.executor || !activeFunctionHook(binding)) throw new Error("CC fork stop listener has no live executor");
-  functionHookNativeProcess(config, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
-  return new Promise((resolve, reject) => {
-    const socket = createConnection(binding.executor!.socketPath);
-    let output = "", ended = false;
-    socket.setEncoding("utf8");
-    socket.on("connect", () => socket.write(`${JSON.stringify({ verb: "fork-watch", token: binding.executor!.token, agentId })}\n`));
-    socket.on("data", chunk => { output += chunk; if (output.length > 16_384) socket.destroy(new Error("CC fork stop instruction exceeds control bound")); });
-    socket.on("end", () => {
-      ended = true;
-      try {
-        const instruction = JSON.parse(output);
-        if (instruction.kind !== "done" && instruction.kind !== "stop" || instruction.agent !== agentId || instruction.session !== nativeSessionId)
-          throw new Error(instruction.error ?? "CC fork stop instruction has wrong identity");
-        resolve(instruction);
-      } catch (error) { reject(error); }
-    });
-    socket.on("error", reject);
-    socket.on("close", () => { if (!ended) reject(new Error("CC fork stop listener disconnected without terminal instruction")); });
-  });
-}
-
-export async function requestCcForkSources(config: ResolvedCcHostConfig, nativeSessionId: string, turnId: string) {
-  const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
-  if (!binding?.executor || !activeFunctionHook(binding))
-    throw new Error("CC fork source read has no matching live function hook and executor binding");
-  functionHookNativeProcess(config, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
-  const reply = await request(binding.executor, "fork-sources", undefined, { turnId });
-  if (reply.verb !== "fork-sources") throw new Error("invalid CC fork source response");
-  return reply.sources;
 }
 
 export async function executorSnapshot(config: ResolvedCcHostConfig, nativeSessionId: string): Promise<{

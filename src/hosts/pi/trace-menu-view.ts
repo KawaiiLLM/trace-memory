@@ -145,16 +145,15 @@ export function renderTraceMenu(input: TraceMenuInput, width: number, paint: Pai
   return lines.flatMap(line => wrapTextWithAnsi(line, Math.max(1, width))).map(line => truncateToWidth(line, Math.max(1, width), ""));
 }
 
-/** Pi renderer for the Settings screen: budgets, workers (with the Pi-only mode column), closed sessions. */
+/** Pi renderer for the Settings screen: budgets, workers, closed sessions. */
 export function renderTraceSettings(input: SettingsInput, width: number, paint: Paint = (_c, t) => t): string[] {
   const model = buildTraceSettings(input);
   const lines: string[] = [model.header, "", "Knowledge budgets"];
   for (const row of model.budgets.rows) lines.push(`  ${row.label.padEnd(11)} ${row.value.padStart(6)}${row.qualifier ? `  ${row.qualifier}` : ""}`);
-  lines.push(`  ${model.budgets.derivedLine}`, "", model.workers.showModeColumn ? "Workers        mode       model                thinking" : "Workers        model                thinking");
+  lines.push(`  ${model.budgets.derivedLine}`, "", "Workers        model                thinking");
   for (const w of model.workers.rows) {
-    const mode = model.workers.showModeColumn ? `${(w.mode ?? "—").padEnd(10)} ` : "";
-    lines.push(`  ${w.phase.padEnd(12)} ${mode}${w.model.padEnd(20)} ${w.thinking}`);
-    for (const field of ["mode", "model", "thinking"] as const) {
+    lines.push(`  ${w.phase.padEnd(12)} ${w.model.padEnd(20)} ${w.thinking}`);
+    for (const field of ["model", "thinking"] as const) {
       const source = w.sources?.[field] ?? (field === "model" ? w.source : undefined);
       if (source) lines.push(`    ${w.phase} ${field}: ${source}`);
     }

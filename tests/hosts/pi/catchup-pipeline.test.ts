@@ -87,7 +87,7 @@ for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fenc
 }, 30000);
 
 test("92: catchup waits for ordinary N; its successful joint publication checkpoints D", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1000, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1000, "dreaming.triggerTokens": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   try {

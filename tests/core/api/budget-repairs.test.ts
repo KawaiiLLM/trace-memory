@@ -38,7 +38,7 @@ test("92: fresh N has separate fact and knowledge windows without reviving C pro
     expect(f.note("Original evidence")).toContain("ok: F1");
     for (let i = 0; i < 20; i++) expect(f.knowledge(`Rule ${i}: ` + "word ".repeat(900))).toContain("committed");
     expect(f.note("Withdraw the original evidence " + "word ".repeat(900), { negate: [["F1", "strong"]] })).toContain("ok: F2");
-    const r = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
+    const r = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id });
     expect(r.outcome).toBe("success");
     const input = f.calls[0] as NotingAgentInput;
     expect(input.material.facts.join("\n")).toContain("Withdraw the original evidence");
@@ -60,7 +60,7 @@ test("review 2026-09-08: the oldest Noting entry dispatches despite exceeding it
   try {
     const pending = hydrate(f.m.pendingEntries(f.s.id, "main", f.t.id), f.m.store);
     expect(pending.length).toBeGreaterThan(0);
-    expect((await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" })).outcome).toBe("success");
+    expect((await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id })).outcome).toBe("success");
     expect(f.calls).toHaveLength(1);
     expect((f.calls[0] as NotingAgentInput).entryIds).toContain(pending[0]!.id);
     expect(f.m.store.listRuns(f.s.id)).toHaveLength(1);
@@ -80,34 +80,20 @@ test("34c: a knowledge cap that cannot hold a complete foreground item emits not
 // ---- Review of 91688b8..12fa278 (2026-09-08): capacity by effective mode, optional history first,
 // tier 1 capacity errors escalate, and the `Receipts:` heading is charged.
 
-test("review 2026-09-08: capacity is priced by the effective mode; a requested fork resolved to subagent is not charged the inherited head reply", async () => {
-  const f = seeded();
-  try {
-    await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
-    // A 40,000-token assistant reply: its primary view is bounded (10K), but the fork increment would
-    // carry the whole head reply; a subagent run carries only the bounded view.
-    f.m.appendEntry({ sessionId: f.s.id, turnId: f.t.id, nativeLineage: "fixture", nativeId: "long-assistant", role: "assistant", text: "word ".repeat(40000), raw: "", calls: [] });
-    const input = { sessionId: f.s.id, branch: "main", headTurnId: f.t.id, capacity: { inputTokens: 30000, prefixTokens: 0 }, effectiveMode: "subagent" as const };
-    expect((await f.m.noting({ ...input, mode: "fork" })).outcome).toBe("success");
-    const run = f.calls.at(-1) as NotingAgentInput;
-    expect(run.mode).toBe("fork"); // the requested mode is still what the task carries for the audit
-  } finally { f.m.close(); }
-});
-
 // 25a removed the Consolidator's optional historical facts, so this review pin now names the phase
 // that still has optional material: a Noting batch whose selected entries are mandatory and whose
 // historical facts are not. The rule — optional history yields before selected evidence — is unchanged.
 test("review 2026-09-08, on Noting since 25a: a smaller model window trims the optional historical facts before it drops a selected entry", async () => {
   const f = seeded();
   try {
-    await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
+    await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id });
     const bare = f.calls[0] as NotingAgentInput;
     const size = (input: NotingAgentInput) => tokens(input.prompt) + tokens(JSON.stringify(input.tools)) + tokens(input.text);
     for (let i = 0; i < 4; i++) expect(f.note("Optional historical evidence " + "word ".repeat(1500))).toContain(`ok: F${i + 1}`);
     const next = f.m.store.appendTurn({ sessionId: f.s.id, parentTurnId: f.t.id, kind: "turn", userPrompt: "Second request", assistantText: "Second reply", startedAt: "2026-09-08" });
     const entries = hydrate(f.m.pendingEntries(f.s.id, "main", next.id), f.m.store).length;
     const capacity = size(bare) + 500;
-    const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, mode: "subagent", capacity: { inputTokens: capacity, prefixTokens: 0 } });
+    const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, capacity: { inputTokens: capacity, prefixTokens: 0 } });
     expect(result.outcome).toBe("success");
     const run = f.calls.at(-1) as NotingAgentInput;
     expect(run.entryIds).toHaveLength(entries); // every selected entry ran
@@ -152,7 +138,7 @@ test("review 2026-09-08: the Receipts heading is charged to the budgets it is em
   for (let padding = 9000; padding < 9800; padding++) {
     const current = "[Source entry id: T1#user]\nHello" + " word".repeat(padding);
     const b = budgetMaterial({ knowledge: [], facts, factLine: line, factTurns: new Map([[1, "2026-09-08"]]), current, framing: [FACTS_TITLE, RAW_TITLE], range, caps: { knowledge: 10000, episodic: 20000, current: 10000 } });
-    const text = notingText({ knowledge: b.knowledge, facts: b.facts, entries: [{ id: 1, view: current }], receipts: b.receipts, head: null, sources: [] }, range);
+    const text = notingText({ knowledge: b.knowledge, facts: b.facts, entries: [{ id: 1, view: current }], receipts: b.receipts }, range);
     if (!b.over.episodic) expect(tokens(text)).toBeLessThanOrEqual(20000);
   }
 }, 30000);
@@ -163,12 +149,12 @@ test("review 2026-09-08: the Receipts heading is charged to the budgets it is em
 test("review 2026-09-08: Noting runs the prepared material the capacity negotiation priced, not a fresh render that restores the trimmed history", async () => {
   const f = seeded();
   try {
-    await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
+    await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id });
     const size = (input: NotingAgentInput) => tokens(input.prompt) + tokens(JSON.stringify(input.tools)) + tokens(input.text);
     const capacity = size(f.calls[0] as NotingAgentInput) + 500;
     for (let i = 0; i < 4; i++) expect(f.note("Optional historical evidence " + "word ".repeat(1500))).toContain(`ok: F${i + 1}`);
     const next = f.m.store.appendTurn({ sessionId: f.s.id, parentTurnId: f.t.id, kind: "turn", userPrompt: "Next request", assistantText: "Okay", startedAt: "2026-09-08" });
-    const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, mode: "subagent", capacity: { inputTokens: capacity, prefixTokens: 0 } });
+    const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, capacity: { inputTokens: capacity, prefixTokens: 0 } });
     expect(result.outcome).toBe("success");
     const run = f.calls.at(-1) as NotingAgentInput;
     expect(run.material.facts.length).toBeLessThan(4); // the history the negotiation trimmed stays trimmed

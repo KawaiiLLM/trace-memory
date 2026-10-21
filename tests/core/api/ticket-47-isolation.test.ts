@@ -94,7 +94,7 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
       result[`${name}:eligibility`] = memory.taskEligibility("noting", target);
       key = `${stage}:${name}`;
       source = `T${rootTurn.id}#E${rootPending.entryOrdinal}`;
-      expect((await memory.noting({ ...target, mode: "subagent" })).outcome).toBe("cancelled");
+      expect((await memory.noting({ ...target })).outcome).toBe("cancelled");
       result[`${name}:N`] = captures.get(`${key}:N`);
     }
     return result;

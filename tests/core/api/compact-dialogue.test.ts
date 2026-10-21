@@ -83,14 +83,14 @@ test("133: titles default to one hundred anchor-inclusive path turns, are config
       .toEqual(seeded.slice(-7).filter(fact => fact.title && !full.has(fact.id)).map(fact => fact.id));
     memory.config.compaction.titleTurns = 100;
     const latest = memory.store.appendTurn({ sessionId: session.id, parentTurnId: parent, kind: "turn", startedAt: at, userPrompt: "new batch" });
-    const n = freezeNoting(memory.store, { sessionId: session.id, branch: "main", headTurnId: latest.id, mode: "subagent" }, memory.config);
+    const n = freezeNoting(memory.store, { sessionId: session.id, branch: "main", headTurnId: latest.id }, memory.config);
     expect(n.prepared!.material.entries.map(e => e.id)).toEqual(n.entries.map(e => e.id));
     expect(n.prepared!.material.earlierUsers!.map(e => e.id)).toEqual(memory.store.sourcePath(session.id, "main", latest.id).filter(e => e.turnId >= latest.id - 99 && e.turnId < latest.id).map(e => e.id));
     expect(n.prepared!.material.factTitles!.map(line => Number(/\[F(\d+)\]/.exec(line)![1]))).toEqual(seeded.slice(3).filter(fact => fact.title && !full.has(fact.id)).map(fact => fact.id));
     const fixed = tokens(n.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, n.names)));
     const capacity = fixed + tokens(n.prepared!.text) - 200;
     const smaller = freezeNoting(memory.store, { sessionId: session.id, branch: "main", headTurnId: latest.id,
-      mode: "subagent", capacity: { inputTokens: capacity, prefixTokens: 0 } }, memory.config);
+      capacity: { inputTokens: capacity, prefixTokens: 0 } }, memory.config);
     expect(smaller.entries.map(e => e.id)).toEqual(n.entries.map(e => e.id));
     expect(smaller.prepared!.material.facts).toEqual(n.prepared!.material.facts);
     // 140: negotiation trims both kinds from the oldest end, so the user entries shrink too.

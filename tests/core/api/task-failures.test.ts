@@ -23,7 +23,7 @@ function seed(m: TraceMemory) {
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "pending evidence", startedAt: "now" });
   return { sessionId: s.id, branch: "main", headTurnId: t.id };
 }
-const note = (m: TraceMemory, target: ReturnType<typeof seed>, extra = {}) => m.noting({ ...target, mode: "subagent", model: "fake", ...extra });
+const note = (m: TraceMemory, target: ReturnType<typeof seed>, extra = {}) => m.noting({ ...target, model: "fake", ...extra });
 const streaks = (m: TraceMemory) => m.store.db.prepare("SELECT * FROM task_failures ORDER BY session_id,phase,head,pool").all();
 const execution = (m: TraceMemory, runId: number) => String(m.store.db.prepare("SELECT execution_id FROM execution_runs WHERE run_id = ?").get(runId)!.execution_id);
 const boundUser = (m: TraceMemory, target: ReturnType<typeof seed>) =>
@@ -33,45 +33,6 @@ const decision = (m: TraceMemory, target: ReturnType<typeof seed>, text: string)
     sources: [{ entry: boundUser(m, target), address: `T${target.headTurnId}#user` }],
     text, category: "decision", actor: "user", createdAt: "now",
   }]);
-
-for (const final of ["success", "failure"] as const) test(`32c: fork refusal + ${final} settles one execution; restart replay cannot count intermediate attempts`, async () => {
-  const db = file();
-  let m = open(db, async () => ({ outcome: "failure", output: "fork overflow", request, refused: { reason: "overflow" } }));
-  const target = seed(m);
-  const refused = await note(m, target, { mode: "fork" });
-  expect(refused.outcome).toBe("dropped");
-  expect(refused.executionId).toBeTruthy();
-  expect(streaks(m)).toEqual([]);
-  expect(m.store.db.prepare("SELECT outcome FROM task_executions").get()?.outcome).toBeNull();
-  const ids = m.pendingEntries(target.sessionId, target.branch, target.headTurnId).map(e => e.id);
-  m.close(); // crash/restart observation must not promote the refused run's failure audit
-  m = open(db, async raw => {
-    if (final === "success") {
-      const input = raw as NotingAgentInput;
-      input.tools.find(t => t.name === "note")!.execute({});
-      input.tools.find(t => t.name === "memory")!.execute({});
-    }
-    return { outcome: final, output: final, request };
-  });
-  expect(streaks(m)).toEqual([]);
-  const result = await note(m, target, { executionId: refused.executionId, boundary: { exactEntryIds: ids } });
-  expect(result.outcome).toBe(final);
-  if (!("runId" in result) || result.runId === undefined) throw Error("missing terminal run");
-  const terminal = result.runId;
-  expect(execution(m, terminal)).toBe(refused.executionId);
-  expect(m.store.db.prepare("SELECT * FROM task_executions").all()).toHaveLength(1);
-  expect(streaks(m)[0]!.count).toBe(final === "success" ? 0 : 1);
-  m.close(); m = open(db);
-  for (let observer = 0; observer < 3; observer++) expect(m.store.settleExecution(refused.executionId!, final, terminal)).toEqual({});
-  expect(streaks(m)[0]!.count).toBe(final === "success" ? 0 : 1);
-  if (final === "failure") {
-    await note(m, target);
-    const third = await note(m, target);
-    expect(third.automaticOff).toContain("off after three failures");
-    expect(streaks(m)[0]!.count).toBe(3);
-    expect(m.store.enabled(target.sessionId)).toBe(false);
-  }
-});
 
 test("32c: borrowed failures continue across executors, disable only the target and fence its other phase", async () => {
   const db = file(), first = open(db), target = seed(first), executor = seed(first), other = seed(first);

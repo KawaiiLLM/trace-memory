@@ -61,7 +61,7 @@ const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", 
 test("scheduler notifies admission and settlement, and a failing notify never blocks a task", async () => {
   const tick = () => new Promise<void>(resolve => setImmediate(resolve));
   let release!: (value: unknown) => void;
-  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: { forkModeDefault: false } },
+  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: {} },
     store: { enabled: () => true, pendingEntryIds: () => [1, 2], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "s0" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "noting" })),
@@ -81,7 +81,7 @@ test("scheduler notifies admission and settlement, and a failing notify never bl
 
 test("a throwing notify never prevents admission or settlement (fault isolation)", async () => {
   const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: { forkModeDefault: false } },
+  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: {} },
     store: { enabled: () => true, pendingEntryIds: () => [1, 2], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "s0" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "noting" })),

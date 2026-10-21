@@ -62,7 +62,7 @@ beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "trace-memory-22d-"));
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
 const noting = (capacity?: { inputTokens: number; prefixTokens: number }, extra: Record<string, unknown> = {}) =>
-  memory.noting({ sessionId, branch: "main", headTurnId: turnId, mode: "subagent", ...(capacity ? { capacity } : {}), ...extra });
+  memory.noting({ sessionId, branch: "main", headTurnId: turnId, ...(capacity ? { capacity } : {}), ...extra });
 
 test("22d: an allowance under the mandatory instruction and tool cost is rejected with nothing rendered, dispatched or recorded", async () => {
   const before = memory.pendingEntries(sessionId, "main", turnId);
@@ -111,12 +111,10 @@ test("22d: the preflight is a floor and not the guard — an allowance over the 
 
 // 27a: the host's half of the rule (`contextWindow - 10,000`) is pinned in tests/hosts/pi/capacity.test.ts.
 // This is core's half: whatever allowance it is handed, it admits material that exactly fits and
-// refuses the same material one token above it — for a fresh child and for an inherited one, whose
-// prefix is the host's context measure and is counted once.
+// refuses the same material one token above it.
 test("27a 2026-09-10: the freeze admits material the allowance exactly fits and refuses the same material one token above it", async () => {
-  const price = (input: NotingAgentInput, prefix = 0) =>
-    prefix ? prefix + tokens(input.forkPrompt) + tokens(input.text)
-      : tokens(input.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(input.text);
+  const price = (input: NotingAgentInput) =>
+    tokens(input.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(input.text);
   // What this batch costs, priced by the same terms the freeze prices it by.
   expect((await noting({ inputTokens: 60_000, prefixTokens: 0 })).outcome).toBe("success");
   const whole = calls[0]!;
@@ -132,40 +130,6 @@ test("27a 2026-09-10: the freeze admits material the allowance exactly fits and 
   memory.close(); open();
   expect((await noting({ inputTokens: fresh - 1, prefixTokens: 0 })).outcome).toBe("success");
   expect(calls[0]!.entryIds.length).toBeLessThan(whole.entryIds.length); // one token more: refused, and reduced
-
-  // The same boundary for a fork, whose price adds the host's frozen context measure once.
-  const prefix = 20_000;
-  memory.close(); open();
-  const forked = { mode: "fork" as const, effectiveMode: "fork" as const };
-  expect((await noting({ inputTokens: price(whole, prefix), prefixTokens: prefix }, forked)).outcome).toBe("success");
-  expect(calls[0]!.entryIds).toHaveLength(whole.entryIds.length);
-  memory.close(); open();
-  expect((await noting({ inputTokens: price(whole, prefix) - 1, prefixTokens: prefix }, forked)).outcome).toBe("success");
-  expect(calls[0]!.entryIds.length).toBeLessThan(whole.entryIds.length); // one token more: refused, and reduced
-});
-
-test("112: CC fork guidance is part of the frozen prompt and the pre-admission capacity gate", async () => {
-  const fork = { mode: "fork" as const, effectiveMode: "fork" as const };
-  expect((await noting(undefined, fork)).outcome).toBe("success");
-  const original = calls[0]!;
-  const guidance = "Use ToolSearch to load note and memory before writing.";
-  const prefix = 20_000;
-  // 137: a fork's leading message is the instructions alone; the retrieval policy is in the system prompt it inherits.
-  const withoutGuidance = prefix + tokens(original.forkPrompt) + tokens(original.text);
-  const withGuidance = prefix + tokens(`${original.forkPrompt}\n\n${guidance}`) + tokens(original.text);
-  expect(withGuidance).toBeGreaterThan(withoutGuidance);
-
-  memory.close(); open();
-  await expect(noting({ inputTokens: withoutGuidance, prefixTokens: prefix }, { ...fork, forkGuidance: guidance,
-    boundary: { exactEntryIds: memory.pendingEntries(sessionId, "main", turnId).map(e => e.id) } })).rejects.toThrow(/Noting capacity/);
-  expect(calls).toEqual([]);
-  expect(memory.store.listRuns(sessionId)).toEqual([]);
-
-  memory.close(); open();
-  expect((await noting({ inputTokens: withGuidance, prefixTokens: prefix }, { ...fork, forkGuidance: guidance })).outcome).toBe("success");
-  expect(calls[0]!.forkPrompt).toBe(`${original.forkPrompt}\n\n${guidance}`);
-  expect(calls[0]!.forkPrompt).not.toContain("When to look up memory");
-  expect(calls[0]!.entryIds).toHaveLength(original.entryIds.length);
 });
 
 test("22d: spend totals come from the recorded usage without loading a run's request or response body", async () => {
@@ -329,20 +293,4 @@ test("108: an unknown cost is stored as null, marked in the totals and the daily
   expect(renderRun(store.getRun(tokensOnly)!, [], [])).not.toContain("$0.0000");
   expect(renderRun(store.getRun(cancelled)!, [], [])).toContain("cost unknown");
   expect(memory.status(sessionId)).toContain("$0.5000 + 2 runs of unknown cost");
-});
-
-test("108: amending a recorded run's usage prices it in place: columns follow, problems accumulate, partial is marked", () => {
-  const store = memory.store;
-  const id = store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "cancelled", createdAt: time,
-    response: JSON.stringify({ output: "stopped", usage: null, usageStatus: "unknown", problems: ["stopped"] }) }).id;
-  expect(memory.spend(sessionId).unknown).toBe(1);
-  store.amendRunUsage(id, { usage: { input: 5, output: 1, cacheRead: 2, cacheWrite: 3, cost: { total: 0.25 } }, usageStatus: "partial", problem: "CC fork cost unknown: example",
-    cacheMiss: { miss: true } });
-  const run = store.getRun(id)!, response = JSON.parse(run.response!);
-  expect(response).toMatchObject({ usage: { input: 5, cost: { total: 0.25 } }, usageStatus: "partial", problems: ["stopped", "CC fork cost unknown: example"], verification: { cacheMiss: { miss: true } } });
-  // A partial cost is a lower bound: the known part counts, the run is still marked unknown.
-  expect(memory.spend(sessionId)).toMatchObject({ input: 5, cost: 0.25, unknown: 1 });
-  expect(memory.spendSince(time)).toEqual({ cost: 0.25, unknown: 1 });
-  expect(memory.status(sessionId)).toContain("$0.2500 + 1 run of unknown cost");
-  expect(renderRun(run, [], [])).toContain("known usage only; remaining cost unknown");
 });

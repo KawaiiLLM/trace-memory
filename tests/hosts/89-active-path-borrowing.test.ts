@@ -169,7 +169,7 @@ test("89: CC reports a real invalid cursor, discards the whole borrowed scan, an
 });
 
 test("Pi busy own phases defer closed-session scans and never borrow invalid targets", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1,
+  const h = host({ "noting.triggerTokens": 1,
     "dreaming.triggerTokens": 1 });
   try {
     await h.turn();

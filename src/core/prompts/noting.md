@@ -63,9 +63,7 @@ Keep enough for a newcomer to recover the discussion's main line, important bran
 - **Temporary historical context**: a separate allowance holds missing human user words and fact titles within their recent path turns, filled turn by turn from the newest so both reach the same depth. Both reaches include the batch's newest turn and never fill older material. User entries retain head and tail; title-only facts can be read at their addresses.
 - **This batch**: the oldest pending whole Raw entries within their own 10,000-token allowance. A batch may span Turns and a Turn may span batches. Only the listed frozen entries belong to it. You see the current batch and the past, nothing later.
 - **Entry views**: a tool-call part shows at most 100 tokens, a tool-result part at most 100, an entry at most 2,000, labels and markers included; results are cut first, then arguments, then natural language.
-- **Visible knowledge**: a fresh run receives current visible versions within the main context's Knowledge base plus shared allowance. A fork inherits the parent's already-published knowledge, without an extra block. In a fresh run each visible item header shows its body's estimated tokens against the body limit, as `(B/L tokens)` after the `[category/scope]` tag.
-<!-- include: live -->
-- **Live supplement**: the head turn's final reply is appended because the captured request cannot contain it. The source index lists every frozen entry and the addresses its bounded Raw view exposes, never body previews or every thinking block. Only the selected path's last assistant entry gets this supplement, and only when it belongs to the batch and is not already in Raw.
+- **Visible knowledge**: you receive current visible versions within the main context's Knowledge base plus shared allowance. Each visible item header shows its body's estimated tokens against the body limit, as `(B/L tokens)` after the `[category/scope]` tag.
 
 ## Procedure
 

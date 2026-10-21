@@ -245,7 +245,7 @@ test("CC import is idempotent, preserves all source evidence, and projects only 
   } finally { f.importer.close(); }
 });
 
-test("a fork Noter's own transcript beside the session is never imported", async () => {
+test("a native subagent's own transcript beside the session is never imported", async () => {
   // Claude Code 2.1.284 writes a fork's records to <session>/subagents/agent-<id>.jsonl, as sidechain rows.
   const f = await importerFixture();
   try {

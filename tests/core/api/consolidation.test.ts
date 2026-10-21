@@ -54,7 +54,7 @@ function stage(input: NotingAgentInput, output: unknown) {
   return write.execute(output);
 }
 function queue(output: unknown) { script.push(async input => { stage(input, output); return success(); }); }
-const run = (owner = sessionId, branch = "main", headTurnId = memory.store.knowledgePath(owner, branch).headTurnId!) => memory.noting({ sessionId: owner, branch, headTurnId, mode: "subagent" });
+const run = (owner = sessionId, branch = "main", headTurnId = memory.store.knowledgePath(owner, branch).headTurnId!) => memory.noting({ sessionId: owner, branch, headTurnId });
 function deferred() {
   let resolve!: (output: unknown) => void;
   const promise = new Promise<unknown>(r => { resolve = r; });
@@ -66,7 +66,7 @@ test("freezes branch, Raw membership and references until a single terminal publ
   const old = fact(), existing = knowledge(old.id);
   const frozen = memory.store.sourcePath(sessionId, "main", old.turnId).map(entry => entry.id);
   const resolve = deferred();
-  const selection = { sessionId, branch: "main", headTurnId: old.turnId, model: "fake-model", mode: "subagent" as const };
+  const selection = { sessionId, branch: "main", headTurnId: old.turnId, model: "fake-model" };
   const pending = memory.noting(selection); selection.branch = "switched";
   await new Promise(r => setTimeout(r, 0));
   const late = fact(memories.observation);

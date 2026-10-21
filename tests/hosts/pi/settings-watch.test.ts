@@ -24,37 +24,37 @@ const edit = (file: string, values: Record<string, unknown>) => {
   const current = JSON.parse(readFileSync(file, "utf8"));
   writeFileSync(file, JSON.stringify({ ...current, "trace-memory": { ...current["trace-memory"], ...values } }));
 };
-const requestedModes = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).map(r => JSON.parse(r.response!).requestedMode);
+const requestedLevels = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).map(r => JSON.parse(r.response!).thinking?.requested);
 const notices = (h: ReturnType<typeof host>) => h.notices.filter(n => n.startsWith("Trace Memory: ") && /restart|could not be read/.test(n));
-/** The mode the session's next admitted Noting task requests: the observable effect of the Noter mode setting. */
-const nextMode = async (h: ReturnType<typeof host>) => { await h.turn(); return requestedModes(h).at(-1); };
+/** The thinking level the session's next admitted Noting task requests: the observable effect of the Noter thinking setting. */
+const nextLevel = async (h: ReturnType<typeof host>) => { await h.turn(); return requestedLevels(h).at(-1); };
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-/** The Noter mode this session shows in its own Settings menu, which reads the live settings: a read-only way to
+/** The Noter thinking level this session shows in its own Settings menu, which reads the live settings: a read-only way to
  * see that a watched change has been applied, without admitting a task. */
-const shownNoterMode = async (h: ReturnType<typeof host>) => {
+const shownNoterLevel = async (h: ReturnType<typeof host>) => {
   h.ctx.hasUI = true;
   h.answers.push("Settings…", undefined); await h.commands.get("trace").handler("", h.ctx);
   h.ctx.hasUI = false;
-  return h.dialogs.at(-1)!.options!.find(o => o.startsWith("Noter mode:"))!.slice("Noter mode:".length).trim();
+  return h.dialogs.at(-1)!.options!.find(o => o.startsWith("Noter thinking:"))!.slice("Noter thinking:".length).trim();
 };
-const applied = (h: ReturnType<typeof host>, mode: string) => vi.waitFor(async () => expect(await shownNoterMode(h)).toBe(mode), { timeout: 5_000 });
+const applied = (h: ReturnType<typeof host>, level: string) => vi.waitFor(async () => expect(await shownNoterLevel(h)).toBe(level), { timeout: 5_000 });
 
 test("a change saved by one session reaches a second live session's next admitted task, without a notice", async () => {
   const { first, second, file } = pair();
   await start(first, second);
   await second.turn();
-  expect(requestedModes(second)).toEqual(["subagent"]);
+  const inherited = requestedLevels(second);
+  expect(inherited).toHaveLength(1);
   const before = second.notices.length;
   // The first session saves through its own Settings menu; nothing is sent to the second.
   first.ctx.hasUI = true;
   first.answers.push("Settings…", undefined); await first.commands.get("trace").handler("", first.ctx);
-  const row = first.dialogs.at(-1)!.options!.find(o => o.startsWith("Noter mode:"))!;
-  first.answers.push("Settings…", row, "fork"); await first.commands.get("trace").handler("", first.ctx);
-  expect(JSON.parse(readFileSync(file, "utf8"))["trace-memory"]["noting.forkModeDefault"]).toBe(true);
-  await applied(second, "fork");
-  expect(await nextMode(second)).toBe("fork");
-  expect(requestedModes(second)).toEqual(["subagent", "fork"]);
-  // The fork-to-subagent fallback is the fixture having no persisted parent; nothing speaks of the settings.
+  const row = first.dialogs.at(-1)!.options!.find(o => o.startsWith("Noter thinking:"))!;
+  first.answers.push("Settings…", row, "high"); await first.commands.get("trace").handler("", first.ctx);
+  expect(JSON.parse(readFileSync(file, "utf8"))["trace-memory"].notingThinking).toBe("high");
+  await applied(second, "high");
+  expect(await nextLevel(second)).toBe("high");
+  expect(requestedLevels(second)).toEqual([...inherited, "high"]);
   expect(second.notices.slice(before).filter(n => /setting|saved|restart|mode =/i.test(n))).toEqual([]);
 });
 
@@ -62,20 +62,20 @@ test("a write that renames a temporary file over the settings file is detected",
   const { first, second, file } = pair();
   await start(first, second);
   const current = JSON.parse(readFileSync(file, "utf8"));
-  writeFileSync(`${file}.tmp`, JSON.stringify({ ...current, "trace-memory": { "noting.forkModeDefault": true } }));
+  writeFileSync(`${file}.tmp`, JSON.stringify({ ...current, "trace-memory": { notingThinking: "high" } }));
   renameSync(`${file}.tmp`, file);
-  await applied(first, "fork"); await applied(second, "fork");
-  expect(await nextMode(second)).toBe("fork");
-  expect(await nextMode(first)).toBe("fork");
+  await applied(first, "high"); await applied(second, "high");
+  expect(await nextLevel(second)).toBe("high");
+  expect(await nextLevel(first)).toBe("high");
 });
 
 test("a change to a setting that cannot change live is refused once, with a restart notice, and nothing in the file applies", async () => {
   const { first, second, file } = pair();
   await start(first, second);
-  edit(file, { "noting.forkModeDefault": true, "render.entryTokens": 222 });
+  edit(file, { notingThinking: "high", "render.entryTokens": 222 });
   await vi.waitFor(() => expect(notices(second)).toHaveLength(1), { timeout: 5_000 });
   expect(notices(second)[0]).toMatch(/render\.entryTokens.*restart/s);
-  expect(await nextMode(second)).toBe("subagent"); // the live half of the same edit was not applied either
+  expect(await nextLevel(second)).not.toBe("high"); // the live half of the same edit was not applied either
   edit(file, { "render.entryTokens": 222 }); // the same refusal again is not repeated
   // The reload leaves no trace the test can read when it is refused again, so wait out a settle time well beyond the debounce.
   await sleep(1_500);
@@ -89,18 +89,18 @@ test("an invalid or half-written settings file keeps the running settings and is
   // Half-written, then completed before the settle time ends: no report, and the change applies.
   writeFileSync(file, `{ "trace-memory": `);
   await sleep(150);
-  writeFileSync(file, JSON.stringify({ ...valid, "trace-memory": { "noting.forkModeDefault": true } }));
-  await applied(second, "fork");
-  expect(await nextMode(second)).toBe("fork");
+  writeFileSync(file, JSON.stringify({ ...valid, "trace-memory": { notingThinking: "high" } }));
+  await applied(second, "high");
+  expect(await nextLevel(second)).toBe("high");
   await sleep(1_300);
   expect(notices(second)).toEqual([]);
   // Left truncated: the settings stay, and it is reported once.
   writeFileSync(file, `{ "trace-memory": `);
   await vi.waitFor(() => expect(notices(second)).toHaveLength(1), { timeout: 5_000 });
-  expect(await nextMode(second)).toBe("fork"); // unchanged while the file is unreadable
+  expect(await nextLevel(second)).toBe("high"); // unchanged while the file is unreadable
   expect(notices(second)).toHaveLength(1);
   // The next valid write is read again.
-  writeFileSync(file, JSON.stringify({ ...valid, "trace-memory": { "noting.forkModeDefault": false } }));
-  await applied(second, "subagent");
-  expect(await nextMode(second)).toBe("subagent");
+  writeFileSync(file, JSON.stringify({ ...valid, "trace-memory": {} }));
+  await applied(second, "inherit");
+  expect(await nextLevel(second)).not.toBe("high");
 });

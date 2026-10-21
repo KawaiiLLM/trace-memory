@@ -1,7 +1,7 @@
-// The native-runner test seam, shared by native.test.ts (19a/19b), readiness.test.ts and
-// cache-miss.test.ts (19c). It exercises the real installed SDK: a real Pi SessionManager and
-// AgentSession for the parent, a real native child fork, the real pi-ai adapters and a real temporary
-// SQLite database. Only HTTP is stubbed, so every request below is one the adapter really serialized.
+// The native-runner test seam, shared by native.test.ts (19a/19b) and readiness.test.ts. It exercises
+// the real installed SDK: a real Pi SessionManager and AgentSession for the parent, a real fresh
+// native child, the real pi-ai adapters and a real temporary SQLite database. Only HTTP is stubbed,
+// so every request below is one the adapter really serialized.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { host } from "./test-host.ts";
 import { toolDefinitions, memoryFiles } from "../../../src/core/api/index.ts";
 import { renderToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
-import type { NativeForkTask, ThinkingLevel } from "../../../src/hosts/pi/native.ts";
+import type { NativeTask, ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
 
 export type Body = Record<string, any>;
@@ -148,24 +148,18 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
   // the temporary baseline on a replayed clock. Opt this native session in explicitly.
   await h.emit("session_start");
   await h.commands.get("trace")!.handler("on", h.ctx);
-  // The parent registers its own foreground tool plus the four memory tools, as the real
-  // foreground does: the child must reproduce all five definitions but may execute only the memory ones.
+  // The parent registers its own foreground tool plus the four memory tools, as the real foreground does.
   const tools = [{ name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
     ...renderToolDefinitions(toolDefinitions, canonicalToolNames)].map(definition => ({ ...definition, label: definition.name,
     async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; } }));
   const { session } = await createAgentSession({ cwd: h.dir, agentDir, model, modelRuntime, settingsManager, resourceLoader,
     sessionManager: manager, thinkingLevel: parent.thinkingLevel, noTools: "all", tools: tools.map(t => t.name), customTools: tools as never });
-  // 27a: the fork base the host freezes at admission is Pi's own measure, so the fixture reports the
-  // REAL parent session's getter — the usage of its latest valid reply (whatever the scripted wire
-  // reported for it) plus Pi's estimate of the messages after it.
-  (h.ctx as unknown as { getContextUsage: () => unknown }).getContextUsage = () => session.getContextUsage();
   const original = { id: manager.getSessionId(), file: manager.getSessionFile()! };
   return { h, parent: session, model, agentDir, sessionsRoot, sessionsDir, runsDir, sent, original,
     manager: () => manager!,
     script: (fn: (body: Body, index: number) => Response | Promise<Response>) => { respond = fn; },
-    /** One real parent turn, then the extension hooks the foreground would have fired. `capture`
-     * off omits `before_provider_request`, the hook that supplies the fork's parent body. */
-    async turn(prompt = "用 pnpm，不要 npm", options: { capture?: boolean; settled?: boolean } = {}) {
+    /** One real parent turn, then the extension hooks the foreground would have fired. */
+    async turn(prompt = "用 pnpm，不要 npm", options: { settled?: boolean } = {}) {
       const started = await this.h.emit("before_agent_start", { prompt });
       // 26c0: the parent runs with `noExtensions`, so the write Pi would make for a handler's
       // returned message is made here, through Pi's own API. `agent-session.ts:1286-1293` turns the
@@ -179,19 +173,18 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
       const at = sent.length;
       await session.prompt(prompt);
       const captured = sent[at]!;
-      if (options.capture !== false) await this.h.emit("before_provider_request", { payload: captured });
+      await this.h.emit("before_provider_request", { payload: captured });
       if (options.settled !== false) await this.h.emit("agent_settled");
       await this.h.drain();
       return captured;
     },
     /** The same child the host builds, for the checks that need it without the host's scheduling. */
-    task(captured: Body, overrides: Partial<NativeForkTask> = {}): NativeForkTask {
+    task(overrides: Partial<NativeTask> = {}): NativeTask {
       const path = h.memory.store.currentPath(1), session = h.memory.store.getSession(1)!;
       const reader = memoryFiles(h.memory, { sessionId: session.id, projectId: session.projectId,
         branch: path?.branch, headTurnId: path?.headTurnId });
-      return { kind: "noting", mode: "fork", parentFile: manager!.getSessionFile()!, parentSessionId: manager!.getSessionId(),
-        checkpoint: manager!.getLeafId()!, runsDir, cwd: h.dir, agentDir,
-        model: model as never, captured, task: "Range: S1/T1..S1/T1\n\nnote what happened", tools: [],
+      return { kind: "noting", runsDir, cwd: h.dir, agentDir, systemPrompt: "# Noting (facts and knowledge)",
+        model: model as never, task: "Range: S1/T1..S1/T1\n\nnote what happened", tools: [],
         read: memoryReadTool(h.dir, address => reader.read(address), { memoryOnly: true }),
         maxToolRounds: 0,
         onRequest: () => {}, onProgress: () => {}, ...overrides };
@@ -199,13 +192,5 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
     async dispose() { session.dispose(); await h.dispose(); vi.unstubAllGlobals(); },
   };
 }
-/** Opt-in fixture for fork-specific gates, cache observations and fallback regressions.
- * The general `fixture` above follows the product default; overrides here still take precedence. */
-export const forkFixture = (config: Record<string, unknown> = {}, provider = "fake", parent: { model?: string; thinkingLevel?: ThinkingLevel } = {}) =>
-  fixture({ "noting.forkModeDefault": true, ...config }, provider, parent);
-
-/** Fork-specific tests import a stable persisted parent and its captured provider request. */
-export const stableForkFixture = forkFixture;
-
 export const settled = async (f: Awaited<ReturnType<typeof fixture>>, kind: "noting" | "consolidation" = "noting") =>
   await vi.waitFor(() => { const run = f.h.memory.store.listRuns(1).find(r => r.kind === kind); expect(run?.response).toBeTruthy(); return run!; }, { timeout: 5000 });

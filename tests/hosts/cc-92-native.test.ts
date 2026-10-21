@@ -100,7 +100,7 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
     entries = memory.store.sourcePath(session.id, "main", second.id).filter(e => e.turnId === second.id);
     beforeKnowledge = memory.store.currentKnowledge(path);
     try {
-      const outcome = await memory.noting({ ...path, model: "sonnet", mode: "subagent", toolNames: ccWorkerToolNames });
+      const outcome = await memory.noting({ ...path, model: "sonnet", toolNames: ccWorkerToolNames });
       const evidenceDir = join(cwd, "evidence");
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, `${variant}.requests.json`), JSON.stringify(requests, null, 2) + "\n");

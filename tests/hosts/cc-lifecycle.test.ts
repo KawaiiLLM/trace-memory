@@ -12,12 +12,11 @@ import { withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig, type ResolvedCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { activeFunctionHook, bindingMutexPath, bindingPath, markCcFunctionHook, readBinding, recordSessionStart, updateBinding, withCcBindingLock, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
-import { controlSession, requestCcForkSources, signalCcTurnEnd, startControlServer, type CcForkObservation } from "../../src/hosts/cc/control.ts";
+import { controlSession, signalCcTurnEnd, startControlServer } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { CcForegroundTools } from "../../src/hosts/cc/tools.ts";
 import { ccPluginToolNames, ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
-import { CcForkAuthority } from "../../src/hosts/cc/fork-authority.ts";
 import { CcImporter, type CcReconcileResult } from "../../src/hosts/cc/importer.ts";
 import { processStartedAt, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
 import { CcTranscriptCursor, CcTranscriptScan, classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
@@ -89,7 +88,7 @@ const childExit = (child: ChildProcess, timeoutMs = 3_000): Promise<void> => {
   });
 };
 
-test("public turn-end admission releases fork checkpoint on N eligibility failure and still checks D", async () => {
+test("public turn-end admission reports an N eligibility failure and still checks D", async () => {
   const phases: string[] = [], errors: string[] = [];
   const memory = { taskEligibility: (phase: string) => {
     phases.push(phase);
@@ -97,62 +96,9 @@ test("public turn-end admission releases fork checkpoint on N eligibility failur
     return { due: false };
   }, store: { progressSignal: () => "sig" } } as unknown as TraceMemory;
   const scheduler = new CcTaskScheduler(memory, undefined, error => errors.push(error));
-  let released = 0;
-  scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" },
-    scheduler.catchupTicket(), { model: "parent", capacity: { inputTokens: 100, prefixTokens: 0 }, visible: {} as any }, () => released++);
-  expect(released).toBe(1);
+  scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" }, scheduler.catchupTicket());
   expect(phases).toEqual(["noting", "dreaming"]);
   expect(errors).toEqual([expect.stringContaining("source store unavailable")]);
-  phases.length = 0; errors.length = 0;
-  scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" },
-    scheduler.catchupTicket(), undefined, () => released++, "indexed JSON is invalid");
-  expect(released).toBe(2);
-  expect(phases).toEqual([]); // The previous not-due D result still stands.
-  expect(errors).toEqual([expect.stringContaining("indexed JSON is invalid")]);
-});
-
-test("public turn-end admission exception releases a prepared fork checkpoint", async () => {
-  const errors: string[] = [];
-  const memory = { taskEligibility: (phase: string) => ({ due: phase === "noting" }),
-    store: { closedTasks: () => [], enabled: () => true, progressSignal: () => "sig" },
-    config: { closedSessionScope: "off" },
-    notingBatch: () => { throw Object.assign(new Error("admission store failed"), { cause: "task admission" }); },
-  } as unknown as TraceMemory;
-  const worker = { phases: { noting: { model: "fresh", thinking: "medium", capacity: { inputTokens: 100, prefixTokens: 0 } },
-    dreaming: { model: "fresh", thinking: "medium", capacity: { inputTokens: 100, prefixTokens: 0 } } } } as any;
-  const scheduler = new CcTaskScheduler(memory, worker, message => errors.push(message));
-  let released = 0;
-  scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" },
-    scheduler.catchupTicket(), { model: "parent", capacity: { inputTokens: 100, prefixTokens: 0 }, visible: {} as any }, () => released++);
-  await vi.waitFor(() => expect(released).toBeGreaterThan(0));
-  expect(errors).toEqual([expect.stringContaining("admission store failed")]);
-  await scheduler.settle();
-});
-
-test("a prelaunch fork refusal releases the main checkpoint before its fresh replacement finishes", async () => {
-  let finish!: (result: any) => void;
-  const fresh = new Promise<any>(resolve => { finish = resolve; });
-  const noting = vi.fn().mockResolvedValueOnce({ outcome: "dropped", executionId: "refused-launch",
-    refused: { reason: "fork suppressed before launch" } }).mockImplementationOnce(() => fresh);
-  const memory = { taskEligibility: (phase: string) => ({ due: phase === "noting" }),
-    store: { closedTasks: () => [], enabled: () => true, progressSignal: () => "sig" }, config: { closedSessionScope: "off" },
-    notingBatch: () => [{ id: 1 }], noting,
-  } as unknown as TraceMemory;
-  const worker = { phases: { noting: { model: "fresh", thinking: "medium", capacity: { inputTokens: 100, prefixTokens: 0 } },
-    dreaming: { model: "fresh", thinking: "medium", capacity: { inputTokens: 100, prefixTokens: 0 } } } } as any;
-  const scheduler = new CcTaskScheduler(memory, worker, () => {});
-  let released = 0;
-  try {
-    scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" },
-      scheduler.catchupTicket(), { model: "parent", capacity: { inputTokens: 100, prefixTokens: 0 }, visible: {} as any }, () => released++);
-    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(2));
-    expect(noting.mock.calls[1]![0]).toMatchObject({ effectiveMode: "subagent", executionId: "refused-launch",
-      boundary: { exactEntryIds: [1] } });
-    expect(released).toBeGreaterThan(0);
-  } finally {
-    finish({ outcome: "success", facts: [] });
-    await scheduler.settle();
-  }
 });
 
 test("function-hook child requires the exact live SessionStart assignment and owner", async () => {
@@ -221,8 +167,7 @@ test("reloaded executor clears only an unconfirmed close for the same live nativ
       expect(activeFunctionHook(current)).toBe(expected);
       const answer = await directControl(executor, "turn-end", { turnId: "next", reason: "answer" });
       expect(answer.ok).toBe(expected);
-      if (expected) expect(answer.directive).toEqual({ turnId: "next", prompt: "checked" });
-      else expect(answer.error).toContain("registration is not current");
+      if (!expected) expect(answer.error).toContain("registration is not current");
     } finally { child.send({ type: "close" }); await childExit(child); }
   };
   await restore(); await run(true);
@@ -333,47 +278,6 @@ test("startup imports admit Noting at the newest persisted entry without another
   } finally { await coordinator.shutdown("test"); spy.mockRestore(); }
 });
 
-test("fork visibility ignores compacted thinking-only entries while retaining processing membership", async () => {
-  const f = fixture("thinking-fork"); enableSyntheticWorker(f);
-  f.config.coreConfig.noting.triggerTokens = 1e9;
-  f.records.splice(-1, 1,
-    { uuid: "thinking", parentUuid: "a1", type: "assistant", timestamp: "2026-01-01T00:00:02.000Z",
-      message: { role: "assistant", content: [{ type: "thinking", thinking: "private" }] } },
-    { type: "last-prompt", leafUuid: "thinking" });
-  f.write();
-  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
-  const coordinator = new CcCoordinator(f.config, f.nativeSessionId);
-  try {
-    await coordinator.start();
-    // The existing fork-source seam inspects admission without launching a native worker.
-    const state = coordinator as unknown as { importer: CcImporter; lastReconcile: CcReconcileResult;
-      forkOption(target: TaskTarget, result: CcReconcileResult, observation: CcForkObservation): unknown };
-    const memory = state.importer.memory;
-    legacyFacts(memory.store, { kind: "noting", sessionId: 1, branch: "main", createdAt: now }, [],
-      memory.store.listSourceEntries(1).filter(entry => entry.nativeId !== "thinking").map(entry => entry.id));
-    f.records.splice(-1, 1,
-      { uuid: "boundary", parentUuid: null, logicalParentUuid: "thinking", type: "system", subtype: "compact_boundary",
-        timestamp: "2026-01-01T00:00:03.000Z" },
-      { uuid: "summary", parentUuid: "boundary", type: "user", isCompactSummary: true,
-        timestamp: "2026-01-01T00:00:04.000Z", message: { role: "user", content: "summary" } },
-      { uuid: "u2", parentUuid: "summary", type: "user", ...sdkPrompt("p2"),
-        timestamp: "2026-01-01T00:00:05.000Z", message: { role: "user", content: "next question" } },
-      { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:06.000Z",
-        message: { role: "assistant", content: [{ type: "text", text: "next answer" }] } },
-      { type: "last-prompt", leafUuid: "a2" });
-    f.write(); await coordinator.requestReconcile("fork source view");
-    memory.config.noting.triggerTokens = 1;
-    memory.config.noting.forkModeDefault = true;
-    await markCcFunctionHook(f.config, f.nativeSessionId);
-    const sources = (await requestCcForkSources(f.config, f.nativeSessionId, "after-thinking"))!;
-    const target = { sessionId: sources.sessionId, branch: sources.branch, headTurnId: sources.headTurnId };
-    expect(memory.notingBatch(target).map(entry => entry.nativeId)).toEqual(["thinking", "u2", "a2"]);
-    expect(sources.selected).toEqual(["u2", "a2"]);
-    expect(state.forkOption(target, state.lastReconcile, { checkpoint: { ...target, tailId: sources.tailId },
-      batch: sources.selected, model: "synthetic", window: 200000, prefix: 100 })).not.toHaveProperty("refused");
-  } finally { await coordinator.shutdown("test"); }
-});
-
 test("live function-hook turns check once across both import orders and do not replay bootstrap", async () => {
   const f = fixture("turn-hook"); enableSyntheticWorker(f);
   (f.records[1]!.message as Record<string, unknown>).stop_reason = "end_turn"; f.write();
@@ -428,94 +332,10 @@ test("live function-hook turns check once across both import orders and do not r
   } finally { await coordinator.shutdown("test"); }
 });
 
-test("fork source observation returns frozen batch identities without scheduling a turn", async () => {
-  const f = fixture("fs"); enableSyntheticWorker(f);
-  f.records.splice(-1, 1,
-    { uuid: "thinking", parentUuid: "a1", type: "assistant", timestamp: "2026-01-01T00:00:02.000Z",
-      message: { role: "assistant", content: [{ type: "thinking", thinking: "private" }] } },
-    { type: "last-prompt", leafUuid: "thinking" });
-  f.write();
-  f.config.coreConfig.noting.triggerTokens = 1;
-  f.config.coreConfig.noting.forkModeDefault = true;
-  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
-  const diagnostics: string[] = [];
-  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostics.push(message));
-  try {
-    await coordinator.start();
-    expect((coordinator as any).importer, diagnostics.join("; ")).not.toBeNull();
-    await markCcFunctionHook(f.config, f.nativeSessionId);
-    const sources = await requestCcForkSources(f.config, f.nativeSessionId, "first-turn");
-    expect(sources?.turnId).toBe("first-turn");
-    expect(sources?.selected).toEqual(["u1", "a1"]);
-    // Inspect final admission without launching a native worker.
-    const state = coordinator as unknown as { importer: CcImporter; lastReconcile: CcReconcileResult;
-      forkOption(target: TaskTarget, result: CcReconcileResult, observation: CcForkObservation): unknown };
-    const memory = state.importer.memory;
-    const target = { sessionId: sources!.sessionId, branch: sources!.branch, headTurnId: sources!.headTurnId };
-    expect(memory.notingBatch(target).map(entry => entry.nativeId)).toEqual(["u1", "a1", "thinking"]);
-    const admitted = state.forkOption(target, state.lastReconcile,
-      { checkpoint: { ...target, tailId: sources!.tailId }, batch: sources!.selected, model: "synthetic", window: 200000, prefix: 100 });
-    expect(admitted).not.toHaveProperty("refused");
-    expect((coordinator as any).scheduler.running()).toEqual([]);
-  } finally { await coordinator.shutdown("test"); }
-});
-
-test("CC final admission uses the selected compaction boundary, frozen batch and checkpoint (110)", async () => {
-  const f = fixture("boundary-admission"); enableSyntheticWorker(f); f.write();
-  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-110-")); dirs.push(f.config.stateDir);
-  f.records.unshift({ uuid: "initial-boundary", parentUuid: null, type: "system", subtype: "compact_boundary",
-    timestamp: "2025-12-31T23:59:59.000Z" });
-  f.records[1]!.parentUuid = "initial-boundary"; f.write();
-  f.config.coreConfig.noting.triggerTokens = 1;
-  f.config.coreConfig.noting.forkModeDefault = true;
-  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
-  const coordinator = new CcCoordinator(f.config, f.nativeSessionId);
-  try {
-    await coordinator.start();
-    await markCcFunctionHook(f.config, f.nativeSessionId);
-    const initial = await requestCcForkSources(f.config, f.nativeSessionId, "before");
-    expect(initial?.selected).toEqual(["u1", "a1"]);
-    const observed = (source: NonNullable<typeof initial>) => ({ checkpoint: { sessionId: source.sessionId,
-      branch: source.branch, headTurnId: source.headTurnId, tailId: source.tailId }, batch: source.selected,
-      model: "synthetic", window: 200000, prefix: 100 });
-    const admit = (source: NonNullable<typeof initial>, observation = observed(source)) => {
-      const result = (coordinator as any).lastReconcile;
-      return (coordinator as any).forkOption({ sessionId: source.sessionId, branch: source.branch,
-        headTurnId: source.headTurnId }, result, observation);
-    };
-    expect(admit(initial!).visible.raw.size).toBe(2);
-    expect(admit(initial!, { ...observed(initial!), batch: ["a1", "u1"] }).refused).toContain("batch changed");
-    expect(admit(initial!, { ...observed(initial!), checkpoint: { ...observed(initial!).checkpoint, tailId: -1 } }).refused)
-      .toContain("checkpoint moved");
-    f.records.splice(-1, 1,
-      { uuid: "boundary", parentUuid: null, logicalParentUuid: "a1", type: "system", subtype: "compact_boundary",
-        timestamp: "2026-01-01T00:00:02.000Z" },
-      { uuid: "summary", parentUuid: "boundary", type: "user", isCompactSummary: true,
-        timestamp: "2026-01-01T00:00:03.000Z", message: { role: "user", content: "summary" } },
-      { uuid: "u2", parentUuid: "summary", type: "user", ...sdkPrompt("p2"),
-        timestamp: "2026-01-01T00:00:04.000Z", message: { role: "user", content: "next question" } },
-      { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:05.000Z",
-        message: { role: "assistant", content: [{ type: "thinking", thinking: "" }, { type: "text", text: "answer" }] } },
-      { type: "last-prompt", leafUuid: "a2" });
-    f.write(); await coordinator.requestReconcile("fork source view");
-    const spanning = await requestCcForkSources(f.config, f.nativeSessionId, "after");
-    expect(spanning?.selected).toEqual(["u1", "a1", "u2", "a2"]);
-    expect(admit(initial!).refused).toContain("checkpoint moved");
-    expect(admit(spanning!).refused).toContain("Raw availability: entry");
-    expect(admit(spanning!).refused).toContain("native u1");
-    const noting = vi.spyOn((coordinator as any).importer.memory, "noting").mockResolvedValue({ outcome: "success", facts: [] });
-    expect(await signalCcTurnEnd(f.config, f.nativeSessionId, "after", "answer", observed(spanning!))).toBeNull();
-    await vi.waitFor(() => expect(noting).toHaveBeenCalledOnce());
-    expect(noting.mock.calls[0]![0]).toMatchObject({ effectiveMode: "subagent",
-      fallbackReason: expect.stringContaining("Raw availability: entry") });
-  } finally { await coordinator.shutdown("test"); }
-});
-
 test.each(["hook", "transcript"] as const)("entry ingestion admits mid-turn and preserves frozen Raw without overlapping runs (%s)", async mode => {
   const f = fixture(`entries-${mode}`); enableSyntheticWorker(f);
   f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-entries-")); dirs.push(f.config.stateDir);
   f.config.coreConfig.noting.triggerTokens = 1;
-  f.config.coreConfig.noting.forkModeDefault = true;
   f.write();
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId);
@@ -537,8 +357,7 @@ test.each(["hook", "transcript"] as const)("entry ingestion admits mid-turn and 
       input.tools.find(tool => tool.name === "note")!.execute({});
       input.tools.find(tool => tool.name === "memory")!.execute({});
       if (batches.length === 1) await held;
-      return { outcome: "success", output: "done", request: { fixture: "entry end" },
-        mode: "subagent", fallbackReason: input.fallbackReason };
+      return { outcome: "success", output: "done", request: { fixture: "entry end" } };
     };
     const append = async (id: number) => {
       f.records.splice(-1, 1,
@@ -558,7 +377,6 @@ test.each(["hook", "transcript"] as const)("entry ingestion admits mid-turn and 
     expect(memory.store.entryNoted(tail)).toBe(false);
     const run = memory.store.listRuns(1)[0]!;
     expect(run.mode).toBe("subagent");
-    expect(JSON.parse(run.response!).fallbackReason).toContain("checkpoint");
     await coordinator.requestReconcile("duplicate observation");
     expect(batches).toHaveLength(1);
     await append(3); await internal.scheduler.settle();
@@ -905,8 +723,8 @@ test("owner-token stop uses the facade's owned task path and leaves another exec
   await updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, coreSessionId: a.session.id, projectId: project.id }));
   const server = await startControlServer(f.config, readBinding(f.config, f.nativeSessionId)!, owner);
   try {
-    const ownerRun = owner.noting({ sessionId: a.session.id, branch: "main", headTurnId: a.turn.id, mode: "subagent", toolNames: ccWorkerToolNames });
-    const otherRun = other.noting({ sessionId: b.session.id, branch: "main", headTurnId: b.turn.id, mode: "subagent", toolNames: ccWorkerToolNames });
+    const ownerRun = owner.noting({ sessionId: a.session.id, branch: "main", headTurnId: a.turn.id, toolNames: ccWorkerToolNames });
+    const otherRun = other.noting({ sessionId: b.session.id, branch: "main", headTurnId: b.turn.id, toolNames: ccWorkerToolNames });
     for (let i = 0; i < 100 && owner.store.getClaim(a.session.id, "noting")?.executorId !== owner.executorId; i++) await sleep(2);
     const controlled = await controlSession(f.config, f.nativeSessionId, "stop", 2_000);
     expect(controlled.state).toBe("acknowledged");
@@ -914,7 +732,7 @@ test("owner-token stop uses the facade's owned task path and leaves another exec
     expect(controlled.reply.abortRequested).toEqual([expect.objectContaining({ sessionId: a.session.id, phase: "noting", executionId: expect.any(String) })]);
     await ownerRun; expect(ownerAborted).toBe(true); expect(owner.store.getClaim(a.session.id, "noting")).toBeNull();
     ownerAborted = false;
-    const ownerRetry = owner.noting({ sessionId: a.session.id, branch: "main", headTurnId: a.turn.id, mode: "subagent", toolNames: ccWorkerToolNames });
+    const ownerRetry = owner.noting({ sessionId: a.session.id, branch: "main", headTurnId: a.turn.id, toolNames: ccWorkerToolNames });
     for (let i = 0; i < 100 && owner.store.getClaim(a.session.id, "noting")?.executorId !== owner.executorId; i++) await sleep(2);
     const off = await controlSession(f.config, f.nativeSessionId, "off", 2_000);
     expect(off.state).toBe("acknowledged"); await ownerRetry;
@@ -922,118 +740,6 @@ test("owner-token stop uses the facade's owned task path and leaves another exec
     expect(otherAborted).toBe(false); expect(other.store.getClaim(b.session.id, "noting")?.executorId).toBe(other.executorId);
     releaseOther(); await otherRun;
   } finally { await server.close(); owner.close(); other.close(); }
-});
-
-test("registered fork watcher receives done on terminal and stop on external stop/off", async () => {
-  const f = fixture("fork-stop-channel"); f.write();
-  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-fork-stop-")); dirs.push(f.config.stateDir);
-  const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
-    transcript_path: f.transcriptPath }, now);
-  const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "must not run" }));
-  const events: string[] = [];
-  const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
-    catchup: async () => ({ state: "completed", entriesDone: 0, entriesTotal: 0 }),
-    beforeCancel: () => events.push("fenced"), holdImport: () => () => {},
-    forkRegister: (_turn, id) => events.push(`registered:${id}`),
-    forkTerminal: async (id, _reason, _answer, usage) => { events.push(`terminal:${id}`, `usage:${JSON.stringify(usage)}`); return true; },
-    forkAccounted: async id => [`warning for ${id}`],
-    forkDisconnected: id => events.push(`disconnected:${id}`),
-  });
-  const call = (verb: string, agentId: string) => new Promise<any>((resolveReply, reject) => {
-    const socket = createConnection(server.executor.socketPath); let output = "";
-    socket.setEncoding("utf8");
-    socket.on("connect", () => socket.write(`${JSON.stringify({ token: server.executor.token, verb, agentId,
-      ...(verb === "fork-register" ? { turnId: "turn" } : {}),
-      ...(verb === "fork-terminal" ? { reason: "answer", answer: "done", usage: { input_tokens: 1 } } : {}) })}\n`));
-    socket.on("data", chunk => output += chunk);
-    socket.on("end", () => { try { resolveReply(JSON.parse(output)); } catch (error) { reject(error); } });
-    socket.on("error", reject);
-  });
-  try {
-    await markCcFunctionHook(f.config, f.nativeSessionId);
-    expect(await call("fork-register", "agent-done")).toMatchObject({ ok: true, allowed: true });
-    const done = call("fork-watch", "agent-done");
-    expect(await call("fork-terminal", "agent-done")).toMatchObject({ ok: true, allowed: true });
-    expect(await done).toEqual({ kind: "done", session: f.nativeSessionId, agent: "agent-done" });
-    expect(events).toContain('usage:{"input_tokens":1}'); // 108: the event's usage reaches the settlement
-    expect(await call("fork-account", "agent-done")).toEqual({ ok: true, verb: "fork-account", allowed: true, warnings: ["warning for agent-done"] });
-    expect(await call("fork-register", "agent-early")).toMatchObject({ ok: true });
-    expect(await call("fork-terminal", "agent-early")).toMatchObject({ ok: true });
-    expect(await call("fork-watch", "agent-early")).toEqual({ kind: "done", session: f.nativeSessionId, agent: "agent-early" });
-    expect(await call("fork-register", "agent-stop")).toMatchObject({ ok: true, allowed: true });
-    const stop = call("fork-watch", "agent-stop");
-    expect((await controlSession(f.config, f.nativeSessionId, "stop")).state).toBe("acknowledged");
-    expect(await stop).toEqual({ kind: "stop", session: f.nativeSessionId, agent: "agent-stop" });
-    expect(events).toContain("fenced");
-    expect(events).not.toContain("disconnected:agent-stop");
-    expect(await call("fork-register", "agent-late")).toMatchObject({ ok: true });
-    expect((await controlSession(f.config, f.nativeSessionId, "stop")).state).toBe("acknowledged");
-    expect(await call("fork-watch", "agent-late")).toEqual({ kind: "stop", session: f.nativeSessionId, agent: "agent-late" });
-    expect(await call("fork-watch", "unknown")).toMatchObject({ ok: false });
-    expect(await call("fork-register", "agent-no-listener")).toMatchObject({ ok: true });
-    expect(await call("fork-disconnect", "agent-no-listener")).toMatchObject({ ok: true, allowed: true });
-    expect(events).toContain("disconnected:agent-no-listener");
-    expect(await call("fork-watch", "agent-no-listener")).toMatchObject({ ok: false });
-    expect(await call("fork-register", "agent-disconnect")).toMatchObject({ ok: true });
-    const broken = createConnection(server.executor.socketPath);
-    await new Promise<void>((resolveReady, reject) => {
-      broken.on("error", reject);
-      broken.on("connect", () => broken.write(`${JSON.stringify({ token: server.executor.token,
-        verb: "fork-watch", agentId: "agent-disconnect" })}\n`, () => resolveReady()));
-    });
-    broken.destroy();
-    await vi.waitFor(() => expect(events).toContain("disconnected:agent-disconnect"));
-    expect(await call("fork-register", "agent-off")).toMatchObject({ ok: true, allowed: true });
-    const off = call("fork-watch", "agent-off");
-    expect((await controlSession(f.config, f.nativeSessionId, "off")).state).toBe("acknowledged");
-    expect(await off).toEqual({ kind: "stop", session: f.nativeSessionId, agent: "agent-off" });
-  } finally { await server.close(); memory.close(); }
-});
-
-test("native terminal arriving through control before spawn registration waits for exact identity", async () => {
-  const f = fixture("early"); f.write();
-  const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
-    transcript_path: f.transcriptPath }, now);
-  const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "unused" }));
-  const authority = new CcForkAuthority();
-  const terminal = authority.begin({} as any);
-  let sawEarly!: () => void;
-  const earlyReceived = new Promise<void>(resolve => { sawEarly = resolve; });
-  const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
-    catchup: async () => ({ state: "completed", entriesDone: 0, entriesTotal: 0 }),
-    beforeCancel: () => authority.cancel(), holdImport: () => () => {},
-    forkRegister: (_turn, agent) => authority.register(agent),
-    forkDisconnected: agent => { authority.cancelAgent(agent); },
-    forkCall: (agent, callId, name) => authority.call(agent, callId, name),
-    forkTerminal: (agent, reason, answer) => { sawEarly(); return authority.complete(agent,
-      { outcome: reason === "answer" ? "success" : "failure", output: answer }); },
-  });
-  const send = (verb: string, agentId: string) => new Promise<any>((resolveReply, reject) => {
-    const socket = createConnection(server.executor.socketPath); let body = "";
-    socket.setEncoding("utf8");
-    socket.on("connect", () => socket.write(`${JSON.stringify({ verb, token: server.executor.token,
-      agentId, ...(verb === "fork-register" ? { turnId: "main" } : verb === "fork-call"
-        ? { callId: "late-write", name: "note" } : { reason: "answer", answer: "done" }) })}\n`));
-    socket.on("data", chunk => body += chunk);
-    socket.on("end", () => { try { resolveReply(JSON.parse(body)); } catch (error) { reject(error); } });
-    socket.on("error", reject);
-  });
-  try {
-    await markCcFunctionHook(f.config, f.nativeSessionId);
-    const early = send("fork-terminal", "real");
-    // The terminal has reached the real control handler before registration is sent.
-    await earlyReceived;
-    const registration = await send("fork-register", "real");
-    expect(registration).toMatchObject({ ok: true, allowed: true });
-    expect(await early).toMatchObject({ ok: true, allowed: true });
-    expect(await terminal).toMatchObject({ outcome: "success", output: "done" });
-    expect(await send("fork-terminal", "unknown")).toMatchObject({ ok: true, allowed: false });
-    const cancelled = authority.begin({} as any);
-    expect(await send("fork-register", "second")).toMatchObject({ ok: true, allowed: true });
-    expect(await send("fork-disconnect", "second")).toMatchObject({ ok: true, allowed: true });
-    expect((await cancelled).outcome).toBe("cancelled");
-    expect(await send("fork-call", "second")).toMatchObject({ ok: true, allowed: false });
-  } finally { await server.close(); memory.close(); }
 });
 
 test("control socket routes catchup to the live executor and never creates an operator worker", async () => {
@@ -1756,115 +1462,3 @@ test("86: a late SessionEnd from an earlier native process cannot close a reopen
     try { expect(store.getSession(imported.coreSessionId!)!.closedAt).toBeNull(); } finally { store.close(); }
   } finally { newer.kill("SIGTERM"); await childExit(newer); }
 });
-
-test("112: coordinator delivers the frozen complete Noter directive to the Hook unchanged", async () => {
-  const f = fixture("noter-instructions"); enableSyntheticWorker(f); f.write();
-  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
-  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
-  await coordinator.start();
-  const prompt = loadPrompt("noting.md"), guidance = "Use ToolSearch to load note and memory before writing.";
-  let resolve!: (result: unknown) => void;
-  vi.spyOn((coordinator as any).forkAuthority, "begin").mockReturnValue(new Promise(done => { resolve = done; }));
-  let directive!: { prompt: string; turnId: string };
-  (coordinator as any).forkLaunch = { turnId: "t", resolve: (value: typeof directive) => { directive = value; }, signal: new AbortController().signal };
-  try {
-    const result = (coordinator as any).runFork({ sessionId: 1, prompt, forkPrompt: `${prompt}\n\n${guidance}`, text: "Range: S1/T1\nSources: S1/T1#E1" });
-    expect(directive.prompt).toBe(`${prompt}\n\n${guidance}\n\nRange: S1/T1\nSources: S1/T1#E1`);
-    expect(directive.prompt.split(prompt)).toHaveLength(2);
-    resolve({ outcome: "cancelled" });
-    await result;
-  } finally { await coordinator.shutdown("test"); }
-});
-
-test("112: scheduler freezes actual Core Noter instructions and lifecycle emits that directive with registered plugin names", async () => {
-  const f = fixture("noter-admission-instructions"); enableSyntheticWorker(f);
-  Object.assign(f.config, resolveCcHostConfig({ ...f.config, "noting.triggerTokens": 1,
-    worker: { claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 }, cwd: f.dir } }));
-  f.write();
-  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
-  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
-  await coordinator.start();
-  const importer = (coordinator as any).importer as CcImporter;
-  const memory = importer.memory;
-  const projection = await importer.reconcile();
-  expect(projection.state).toBe("ready");
-  const scheduler = new CcTaskScheduler(memory, f.config.worker, () => {});
-  let release!: (result: unknown) => void, frozen!: { prompt: string; forkPrompt: string; text: string; promptHash: string; tools: { name: string }[] };
-  vi.spyOn((coordinator as any).forkAuthority, "begin").mockImplementation((task: unknown) => {
-    frozen = task as typeof frozen; return new Promise(resolve => { release = resolve; });
-  });
-  let directive!: { prompt: string; turnId: string };
-  (coordinator as any).forkLaunch = { turnId: "native-turn", resolve: (value: typeof directive) => { directive = value; }, signal: new AbortController().signal };
-  try {
-    const visible = { ...noVisibility(), raw: new Map(projection.selectedEntryIds.map(id => [memory.store.getSourceEntry(id)!.nativeId, "source" as const])) };
-    scheduler.reconcile(projection);
-    scheduler.turnEnd(projection, scheduler.catchupTicket(), { model: "synthetic", capacity: { inputTokens: 150_000, prefixTokens: 0 }, visible });
-    await vi.waitFor(() => expect(frozen).toBeDefined());
-    // 137: the policy is a fresh child's system text; this fork inherits it from the main session's system
-    // prompt (the plugin executor's MCP instructions), so its leading message carries the instructions alone.
-    const domain = loadPrompt("noting.md", ccPluginToolNames);
-    expect(frozen.prompt).toBe(withRetrievalPolicy(domain, ccPluginToolNames));
-    expect(frozen.forkPrompt.startsWith(domain)).toBe(true);
-    expect(frozen.forkPrompt).not.toContain("When to look up memory");
-    expect(frozen.forkPrompt).toContain(ccPluginToolNames.note);
-    expect(frozen.forkPrompt).toContain(ccPluginToolNames.memory);
-    expect(frozen.forkPrompt).toContain("ToolSearch");
-    expect(frozen.tools.map(tool => tool.name)).toEqual(["search", "note", "memory"]); // 118 removes public trace.
-    const pluginName = JSON.parse(readFileSync(new URL("../../plugin/.claude-plugin/plugin.json", import.meta.url), "utf8")).name;
-    const serverName = Object.keys(JSON.parse(readFileSync(new URL("../../plugin/.mcp.json", import.meta.url), "utf8")))[0]!;
-    const registered = new CcForegroundTools(coordinator).list();
-    expect(frozen.tools.map(tool => ccPluginToolNames[tool.name as keyof typeof ccPluginToolNames]))
-      .toEqual(registered.map(tool => `mcp__plugin_${pluginName}_${serverName}__${tool.name}`));
-    expect(directive.prompt).toBe(`${frozen.forkPrompt}\n\n${frozen.text}`);
-    expect(directive.prompt.split(domain)).toHaveLength(2);
-    expect(directive.prompt).not.toContain("When to look up memory");
-    expect(directive.prompt).toContain("Sources:");
-    release({ outcome: "cancelled" }); await scheduler.settle();
-  } finally { if (release) release({ outcome: "cancelled" }); await coordinator.shutdown("test"); }
-});
-
-// Ticket 108: a CC fork's cost is amended into its run after the fork settled. Shutdown waits for that, and the
-// run is found by its transcript path however many runs core recorded since.
-async function forkAccountingFixture(label: string, laterRuns: number) {
-  const f = fixture(label); enableSyntheticWorker(f); f.write();
-  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
-  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
-  await coordinator.start();
-  const memory = (coordinator as any).importer.memory, store: Store = memory.store;
-  const sessionId = (store.db.prepare("SELECT id FROM sessions LIMIT 1").get() as { id: number }).id;
-  const nativeLog = join(f.dir, "agent-x.jsonl");
-  const tokens = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 };
-  (coordinator as any).catalog = () => ({ tiers: { t: { input: 1e6, output: 1e6, cache_write_5m: 0, cache_write_1h: 0, cache_read: 0, web_search: 0 } }, models: { m: "t" } });
-  let settle!: (result: unknown) => void;
-  vi.spyOn((coordinator as any).forkAuthority, "begin").mockReturnValue(new Promise(resolve => { settle = resolve; }));
-  (coordinator as any).forkLaunch = { turnId: "t", resolve: () => {}, signal: new AbortController().signal };
- 
-  const settled = (coordinator as any).runFork({ sessionId, text: "note" });
-  const record = (response: object) => store.recordRun({ kind: "noting", sessionId, branch: "main", outcome: "success", createdAt: now, response: JSON.stringify(response) }).id;
-  const runId = record({ nativeLog, usage: { ...tokens } });
-  for (let i = 0; i < laterRuns; i++) record({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } });
-  settle({ outcome: "success", nativeLog, usage: tokens });
-  await settled;
-  const transcript = JSON.stringify({ type: "assistant", message: { id: "a", model: "m", usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
-  return { coordinator, store, runId, nativeLog, transcript, cost: () => (store.db.prepare("SELECT usage_cost FROM runs WHERE id = ?").get(runId) as { usage_cost: number | null }).usage_cost };
-}
-
-test("shutdown waits for fork accounting: a transcript flushed after shutdown began is still read and priced", async () => {
-  const a = await forkAccountingFixture("acct-late", 0);
-  setTimeout(() => writeFileSync(a.nativeLog, a.transcript), 400);
-  expect(a.cost()).toBeNull();
-  await a.coordinator.shutdown("test");
-  expect(a.store.closed).toBe(true);
-  // Read through a fresh connection: the amendment reached the run before the Store closed.
-  const db = new Store((a.coordinator as any).config.dbPath);
-  try { expect((db.db.prepare("SELECT usage_cost FROM runs WHERE id = ?").get(a.runId) as { usage_cost: number }).usage_cost).toBeCloseTo(15, 6); } finally { db.close(); }
-});
-
-test("the settled fork's run is found by its transcript path after more than five later noting runs", async () => {
-  const a = await forkAccountingFixture("acct-later", 7);
-  writeFileSync(a.nativeLog, a.transcript);
-  await (coordinatorAccounting(a.coordinator));
-  expect(a.cost()).not.toBeNull();
-  await a.coordinator.shutdown("test");
-});
-const coordinatorAccounting = (coordinator: any) => Promise.allSettled([...coordinator.forkAccounting]);

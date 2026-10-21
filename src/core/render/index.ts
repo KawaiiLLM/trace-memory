@@ -438,14 +438,9 @@ function object(text: string | null): Record<string, unknown> | null {
 }
 const string = (value: unknown): string => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
 
-/** Identity mapping only, never another Raw preview. Fragment labels share persisted source
- * authority with rendering and citations; repeated text blocks need only one index address. */
-export function renderEntryIndex(entry: SourceEntry): string {
-  return `[${entryAddress(entry)}@${entry.role === "toolResult" ? "observation" : entry.role}] ${entry.role}`;
-}
-
-/** How a stored run mode reads (ticket 19 "Historical truth"). New work records `fork` (inherited
- * native context) or `subagent` (fresh context). `branch` is the pre-rename spelling and, because
+/** How a stored run mode reads (ticket 19 "Historical truth"). New work records `subagent` (fresh
+ * context); `fork` (inherited native context) survives in runs written before the Noter became
+ * fresh-only (ruling 2026-10-22). `branch` is the pre-rename spelling and, because
  * the rename came with the cutover, every run that carries it was executed by the deleted
  * request-copy runner, not by an `AgentSession`: the read side says so instead of relabelling it.
  * Stored values are never rewritten — no migration, no bulk update, no rewrite on open or on read. */

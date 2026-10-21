@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, visibleTarget, type ConfigOverride, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
+import { NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, type ConfigOverride, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
@@ -102,7 +102,7 @@ async function maintain(path: { sessionId: number; branch: string; headTurnId: n
 test("92: fresh N names its target and range, then shares compact Knowledge, facts and Raw layout", async () => {
   const { s, t } = seeded();
   const raw = views(s.id, t.id);
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const input = calls[0]! as NotingAgentInput;
   expect(input.material.harness).toBe("fake");
   expect(input.text).toContain(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`);
@@ -114,29 +114,6 @@ test("92: fresh N names its target and range, then shares compact Knowledge, fac
   expect(input.supplied.knowledgeCommitIds).toEqual([1]);
   expect(memory.inject(s.id)).toBe(`${readingGuide(s.id, canonicalToolNames)}\n\n${knowledgeBlock}`);
   expect(input).not.toHaveProperty("readKnowledgeCommits");
-});
-
-/** 92: a fork inherits its published parent, with no extra facts or Knowledge supplement. */
-test("29b 2026-09-10: a fork whose whole target is visible injects no Raw and keeps the range, head reply and source index", async () => {
-  const { s, t } = seeded();
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
-    visible: visibleTarget(memory, s.id, "main", t.id) });
-  const input = calls[0]! as NotingAgentInput;
-  expect(input.material.harness).toBe("fake");
-  expect(input.text).toContain(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`);
-  expect(input.material.sources).toEqual([
-    `[T${t.id}#E1@user] user`, `[T${t.id}#E2@assistant] assistant`,
-    `[T${t.id}#E3@assistant] assistant`, `[T${t.id}#E4@observation] toolResult`,
-  ]);
-  expect(input.material.head).toBeNull(); // This synthetic sequence ends with a result, not E2.
-  // The raw turns and the injected knowledge are already in that conversation.
-  expect(input.text).not.toContain("Raw:");
-  expect(input.text).not.toContain("<knowledge>");
-  expect(input.material.entries).toEqual([]); // nothing newly supplied, and the whole target still frozen
-  expect(input.entryIds.length).toBeGreaterThan(0);
-  expect(input.supplied.entries).toEqual([]);
-  expect(input.supplied.factIds).toEqual([]);
-  expect(input.supplied.knowledgeCommitIds).toEqual([]);
 });
 
 // 92 “C删掉” retires the C-only fresh Range-facts layout and C factAddresses tests.
@@ -154,7 +131,7 @@ test("20a 2026-09-08: the main agent's initial injection is knowledge and receip
 
 test("20a/92: N tasks with different Raw and facts retain byte-identical Knowledge blocks", () => {
   const { s, t, user } = seeded();
-  const target = { sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" as const };
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const earlier = freezeNoting(memory.store, target, memory.config);
   seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Package manager follow-up", [{ entry: user, text: "Still pnpm" }]);
   memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeLineage: "next", nativeId: "next", role: "user", text: "Next task", raw: "", calls: [] });
@@ -179,7 +156,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   // Facts have an independent window; its omission receipt follows the complete Raw block.
   const factReceipt = "omitted 1 older facts; expand: trace://F1";
   memory.config.compaction.factsTokens = charge([factReceipt]) + charge(["Receipts:"]);
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const noting = calls[0]! as NotingAgentInput;
   expect(knowledgeBlockOf(noting.material)).toBe(withSize(knowledgeBlock));
   expect(noting.material.facts).toEqual([]);
@@ -194,7 +171,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
     category: "constraint", scope: "project", supports: ["F1"] });
   setKnowledgeCapacity(memory, 5_000);
   seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Package manager retained", [{ entry: user, text: "Keep pnpm" }]);
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const next = calls.at(-1)!;
   expect(next.material.receipts).toEqual([receipt]);
   expect(next.text.endsWith(`Receipts:\n${receipt}`)).toBe(true);
@@ -276,7 +253,7 @@ function overloaded() {
 test("25a/92: default N material has independent 10k facts and Raw windows plus Knowledge within K", async () => {
   const { s, t } = overloaded();
   memory.config.compaction.temporaryTokens = 1;
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const material = calls.at(-1)!.material as NotingAgentInput["material"];
   const factReceipts = material.receipts.filter(r => r.includes(" older facts; expand: "));
   expect(factReceipts).toHaveLength(1); // the history cap really binds
@@ -300,7 +277,7 @@ test("45/92: N sends Knowledge within the database-derived cap without borrowing
   expect(cap).toBeLessThan(10_000);
   setKnowledgeCapacity(memory, cap);
   const pending = memory.store.pendingEntryIds(s.id, "main", t.id);
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const input = calls.at(-1)!;
   const material = input.material;
   const knowledgeReceipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
@@ -326,7 +303,7 @@ test("21b/92: foreground, compact and N render topics through one renderer, with
   const injection = `${readingGuide(s.id, canonicalToolNames)}\n\n${labelled}`;
   expect(memory.inject(s.id)).toBe(injection);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(injection)).toBe(true);
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const noting = calls.at(-1)!;
   expect(knowledgeBlockOf(noting.material)).toBe(withSize(labelled));
   // Two subjects, one body in every consumer, not a duplicated line per topic.
@@ -371,9 +348,9 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   const note = (text: string) => seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id },
     "Package manager evidence", [{ entry: user, text }]);
   note("Keep pnpm");
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   note("Still pnpm");
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const [first, later] = calls;
   expect(later!.supplied.factIds).not.toEqual(first!.supplied.factIds);
   expect(knowledgeBlockOf(later!.material)).toBe(knowledgeBlockOf(first!.material));
@@ -415,7 +392,7 @@ test("25a 2026-09-09: a Noter freeze keeps its history inside the reserved allow
   // Independent facts cap: a small Raw batch cannot enlarge it.
   const room = 400;
   memory.config.compaction.factsTokens = room;
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const material = calls.at(-1)!.material as NotingAgentInput["material"];
   const raw = tokens(material.entries.map(e => e.view).join(BLOCK));
   expect(raw).toBeLessThan(memory.config.noting.batchTokens / 10); // the batch nowhere near its ceiling
@@ -426,7 +403,7 @@ test("25a 2026-09-09: a Noter freeze keeps its history inside the reserved allow
 
 /** Ticket 25 "One full-fact renderer": for one selected fact set and annotation snapshot, the
  * foreground `<noted>` receipt and the Noter subagent's history block are the same bytes. Only the
- * enclosing title differs, which is what lets a fork inherit its history through the receipts.
+ * enclosing title differs.
  * 29d: the `<noted>` delivery payload this test used to compare against is retired, so the surviving
  * second producer of that same set is the branch carry — the ruled property (one renderer, two
  * titles) is unchanged, only its witness. */
@@ -451,36 +428,10 @@ test("25a 2026-09-09: the branch carry's fact payload and the Noter's history bl
   const carry = memory.branchSummary(s.id, "main", second.id);
   // A later Noting task whose history is exactly that same selected set and annotation snapshot.
   memory.appendEntry({ sessionId: s.id, nativeLineage: "shared", nativeId: "e1", turnId: second.id, role: "assistant", text: "still here", raw: "", calls: [] });
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: second.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: second.id });
   const history = (calls.at(-1)! as NotingAgentInput).material.facts;
   expect(history.length).toBe(memory.store.listSessionFacts(s.id).length); // the same selected set
   expect(carry).toContain(`Facts:\n${history.join("\n")}\nCommits`);
-});
-
-/** 29b (capacity) supersedes ticket 25's "a fork is priced on the subagent material too": a fork pays
- * its inherited measure, the instructions and the text it actually sends, and never the cost of a
- * fresh representation it does not build. The fallback is not left unguarded — a re-admitted subagent
- * re-freezes with the empty initial state and refuses the batch on its own terms, which is the second
- * half of this case. */
-test("29b 2026-09-10: a fork is priced as its inherited measure plus the instructions plus the text it supplies", async () => {
-  const { s, t } = seeded();
-  const prefix = 5_000;
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", effectiveMode: "fork",
-    visible: visibleTarget(memory, s.id, "main", t.id), capacity: { inputTokens: 60_000, prefixTokens: prefix } });
-  const fork = calls[0]! as NotingAgentInput;
-  const forkPrice = prefix + tokens(fork.prompt) + tokens(fork.text);
-  expect(fork.material.entries).toEqual([]); // the Raw the child can already see is not in that price
-  // The run above ended without calling note, so the whole batch is still pending (26a) and can be
-  // frozen again: at exactly its own price it fits whole.
-  calls.length = 0;
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", effectiveMode: "fork",
-    visible: visibleTarget(memory, s.id, "main", t.id), capacity: { inputTokens: forkPrice, prefixTokens: prefix } });
-  expect((calls[0]! as NotingAgentInput).entryIds).toEqual(fork.entryIds);
-  // The same batch as a fresh child is priced by its own terms — instructions, tool definitions and
-  // the full material — and the fork's allowance minus its inherited measure does not cover them.
-  await expect(memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent",
-    capacity: { inputTokens: forkPrice - prefix, prefixTokens: 0 } })).rejects.toThrow(/Noting capacity/);
-  expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).length).toBeGreaterThan(0);
 });
 
 // ---- 29b 2026-09-10: one material builder, two initial states (parent 29, cases 10, 12, 13, 15) ----
@@ -495,7 +446,7 @@ function history(sessionId: number, turnId: number, count: number) {
 /** Case 10. The allowance is set to hold exactly three fact lines. With the newest facts visible, the
  * three the child cannot see fill it — a budget applied first and visibility subtracted afterwards
  * would leave one. Filtering first is also never filling: fewer needed facts make a smaller block. */
-test("29b/92: compact filters retained facts before budgeting; fork N adds no historical supplement", async () => {
+test("29b/92: compact filters retained facts before budgeting", async () => {
   const { s, t } = seeded();
   history(s.id, t.id, 5); // F2..F6 beside the seeded F1
   const facts = memory.store.listSessionFacts(s.id);
@@ -530,48 +481,6 @@ test("29b/92: compact filters retained facts before budgeting; fork N adds no hi
   expect(one).toHaveLength(1);
   expect(one.join("\n")).toContain("[F6]");
   expect(charge(one)).toBeLessThan(charge(older));
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
-    visible: visibleTarget(memory, s.id, "main", t.id) });
-  expect(calls.at(-1)!.material.facts).toEqual([]);
-  expect(calls.at(-1)!.supplied.factIds).toEqual([]);
-});
-
-/** Case 12. The frozen target is the processing target, not the injection: a fork that repeats no Raw
- * still writes for every entry of it, and ending without a submission is still incomplete. */
-test("29b 2026-09-10 (case 12): a fork with no newly supplied Raw still commits its whole frozen target, and no call is still incomplete", async () => {
-  const { s, t } = seeded();
-  const seen = visibleTarget(memory, s.id, "main", t.id);
-  const pending = hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store).map(e => e.id);
-  let committed: string | undefined;
-  memory.close(); open();
-  calls.length = 0;
-  const noter = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    const input = raw as NotingAgentInput;
-    calls.push(input);
-    committed = input.tools.find(tool => tool.name === "note")!.execute({ title: "Inherited context", sources: `[T${t.id}#E1] Noted from the inherited context` }) as string;
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({})).toContain("held");
-    return { outcome: "success", output: "", request: { fake: true } };
-  });
-  try {
-    const result = await noter.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", visible: seen });
-    expect(result.outcome).toBe("success");
-    const input = calls[0]! as NotingAgentInput;
-    expect(input.material.entries).toEqual([]); // nothing repeated
-    expect(input.entryIds).toEqual(pending); // the whole frozen target all the same
-    expect(committed).toContain("held: $1");
-    expect(noter.store.listSessionFacts(s.id)).toHaveLength(2);
-    expect(hydrate(noter.pendingEntries(s.id, "main", t.id), noter.store)).toEqual([]); // every frozen entry advanced
-  } finally { noter.close(); }
-  // The other half: the same fork that ends without calling note is incomplete, not an empty success.
-  const silent = sourceSeededMemory(join(directory, "test.sqlite"), async () => ({ outcome: "success", output: "nothing to record", request: { fake: true } }));
-  try {
-    memory.appendEntry({ sessionId: s.id, nativeLineage: "fixture", nativeId: "later", turnId: t.id, role: "assistant", text: "later entry", raw: "", calls: [] });
-    const result = await silent.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
-      visible: visibleTarget(silent, s.id, "main", t.id) });
-    expect(result.outcome).toBe("failure");
-    expect((result as { problems: string[] }).problems).toEqual([NOTING_INCOMPLETE]);
-    expect(hydrate(silent.pendingEntries(s.id, "main", t.id), silent.store).length).toBeGreaterThan(0);
-  } finally { silent.close(); }
 });
 
 /** Case 13. The empty initial state is not a special path: it produces the whole selected target and
@@ -592,11 +501,9 @@ test("29b/92 (case 13): fresh N receives one full material dispatch across its t
     return { outcome: "success", output: "", request: { fake: true } };
   });
   try {
-    await worker.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+    await worker.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
     const noting = calls[0]! as NotingAgentInput;
     expect(noting.material.entries.map(e => e.id)).toEqual(noting.entryIds); // the whole selected target
-    expect(noting.material.head).toBe(null); // no repair parts: nothing was withheld
-    expect(noting.material.sources).toEqual([]);
     expect(noting.text).toContain("Raw:");
     expect(noting.supplied.entries.map(e => e.id)).toEqual(noting.entryIds);
     expect(rounds).toBe(2);
@@ -693,7 +600,7 @@ test("64c/92: foreground and fresh N keep the same newer items and receipt omitt
   setKnowledgeCapacity(memory, 5_000);
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const injected = memory.injection(target);
-  const frozen = freezeNoting(memory.store, { ...target, mode: "subagent" }, memory.config);
+  const frozen = freezeNoting(memory.store, { ...target }, memory.config);
   expect(injected.knowledgeCommitIds).toEqual(commits.slice(1));
   expect(frozen.prepared!.supplied.knowledgeCommitIds).toEqual(injected.knowledgeCommitIds);
   for (const text of [injected.text, frozen.prepared!.text]) {

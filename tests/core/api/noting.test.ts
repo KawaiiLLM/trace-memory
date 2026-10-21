@@ -60,7 +60,7 @@ function turn(parentTurnId: number | null = null, index = 0) {
   for (const c of f.calls) memory.store.appendToolCall({ turnId: t.id, name: c.name, input: c.input, result: c.result, status: c.status });
   return t;
 }
-const noting = (headTurnId: number, branch = "main") => memory.noting({ sessionId, branch, headTurnId, model: "fake-model", mode: "subagent" });
+const noting = (headTurnId: number, branch = "main") => memory.noting({ sessionId, branch, headTurnId, model: "fake-model" });
 function deferred() {
   let resolve!: (result: ScriptResult) => void;
   const promise = new Promise<ScriptResult>((r) => { resolve = r; });
@@ -75,10 +75,10 @@ function unchanged(_branch = "main") {
 test("a hosted CC launch cannot silently use canonical names or accept an incomplete name map", () => {
   const projectId = memory.store.getSession(sessionId)!.projectId;
   const cc = memory.store.createSession({ host: "cc:fixture", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true });
-  expect(() => freezeNoting(memory.store, { sessionId: cc.id, branch: "main", headTurnId: 1, mode: "subagent" }, memory.config))
+  expect(() => freezeNoting(memory.store, { sessionId: cc.id, branch: "main", headTurnId: 1 }, memory.config))
     .toThrow("CC Noter launch requires exposed tool names");
   const first = turn();
-  expect(() => freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent",
+  expect(() => freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id,
     toolNames: { ...canonicalToolNames, note: "" } }, memory.config)).toThrow("Missing or invalid exposed tool name");
 });
 
@@ -86,8 +86,8 @@ test("worker tool names are rendered before capacity, audit and held-result stat
   const first = turn();
   const names = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", grep: "Grep" };
   const expected = withRetrievalPolicy(loadPrompt("noting.md", names), names);
-  const canonical = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent" }, memory.config);
-  const priced = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent", toolNames: names }, memory.config);
+  const canonical = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id }, memory.config);
+  const priced = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: names }, memory.config);
   expect(priced.prompt).toBe(expected);
   expect(priced.prompt).toContain("mcp__trace_memory__note({})");
   expect(priced.prompt).not.toContain("mcp__trace_memory__check"); // Noter cannot check.
@@ -96,9 +96,9 @@ test("worker tool names are rendered before capacity, audit and held-result stat
   expect(canonical.prompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
   const price = tokens(expected) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, names))) + tokens(priced.prepared!.text);
   expect(price).toBeGreaterThan(tokens(canonical.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(canonical.prepared!.text));
-  expect(() => freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent", toolNames: names,
+  expect(() => freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: names,
     boundary: { exactEntryIds: priced.entries.map(e => e.id) }, capacity: { inputTokens: price - 1, prefixTokens: 0 } }, memory.config)).toThrow("Noting capacity");
-  expect(freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, mode: "subagent", toolNames: names,
+  expect(freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: names,
     boundary: { exactEntryIds: priced.entries.map(e => e.id) }, capacity: { inputTokens: price, prefixTokens: 0 } }, memory.config).prepared!.text).toBe(priced.prepared!.text);
   let blocked = "", clear = "", pendingError = "", missing = "";
   script.push(async input => {
@@ -112,7 +112,7 @@ test("worker tool names are rendered before capacity, audit and held-result stat
     clear = JSON.parse(note.execute({})).status;
     return { outcome: "success", output: "done", request };
   });
-  expect((await memory.noting({ sessionId, branch: "main", headTurnId: first.id, mode: "subagent", toolNames: names })).outcome).toBe("success");
+  expect((await memory.noting({ sessionId, branch: "main", headTurnId: first.id, toolNames: names })).outcome).toBe("success");
   expect(missing).toContain("mcp__trace_memory__memory({})");
   expect(pendingError).toContain("mcp__trace_memory__note expects one item");
   expect(blocked).toContain("mcp__trace_memory__note call error:");
@@ -141,51 +141,34 @@ test("136 review SPEC4: a Noter's over-long search output is saved where its hos
   expect(unplaced).toContain("[Could not save the full output: this run has no place to save output]");
 });
 
-test("the configured title and body limits are rendered into a fresh and a fork prompt, and into the hash", () => {
+test("the configured title and body limits are rendered into the prompt and into the hash", () => {
   const first = turn();
   const target = { sessionId, branch: "main", headTurnId: first.id };
-  const defaults = freezeNoting(memory.store, { ...target, mode: "subagent" }, memory.config);
+  const defaults = freezeNoting(memory.store, { ...target }, memory.config);
   expect(defaults.prompt).toContain("a title of a fact or knowledge is at most 20 tokens and a body at most 200 tokens");
   Object.assign(memory.config.writing, { titleTokens: 13, bodyTokens: 321 });
-  const fresh = freezeNoting(memory.store, { ...target, mode: "subagent" }, memory.config);
-  const fork = freezeNoting(memory.store, { ...target, mode: "fork", effectiveMode: "fork" }, memory.config);
-  for (const prompt of [fresh.prompt, fork.forkPrompt]) {
-    expect(prompt).toContain("a title of a fact or knowledge is at most 13 tokens and a body at most 321 tokens");
-    expect(prompt).not.toContain("{{limit.");
-  }
+  const fresh = freezeNoting(memory.store, { ...target }, memory.config);
+  expect(fresh.prompt).toContain("a title of a fact or knowledge is at most 13 tokens and a body at most 321 tokens");
+  expect(fresh.prompt).not.toContain("{{limit.");
   expect(fresh.promptHash).not.toBe(defaults.promptHash);
 });
 
-test("fork and refused-fork fresh admissions freeze distinct namespaces, guidance, exact costs and hashes", () => {
+test("a fresh admission freezes its tool namespace, exact cost and hash", () => {
   const first = turn();
-  const target = { sessionId, branch: "main", headTurnId: first.id, mode: "fork" as const };
-  const forkNames = { ...canonicalToolNames, search: "mcp__plugin_trace-memory_traceMemory__search", note: "mcp__plugin_trace-memory_traceMemory__note", memory: "mcp__plugin_trace-memory_traceMemory__memory", check: "mcp__plugin_trace-memory_traceMemory__check", read: "Read", grep: "Grep" };
+  const target = { sessionId, branch: "main", headTurnId: first.id };
   const freshNames = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", grep: "Grep" };
-  const forkGuidance = "Use ToolSearch for {{tool.note}} and {{tool.memory}}.";
-  const fork = freezeNoting(memory.store, { ...target, effectiveMode: "fork", toolNames: forkNames, forkGuidance }, memory.config);
-  const forkPrompt = `${loadPrompt("noting.md", forkNames)}\n\nUse ToolSearch for ${forkNames.note} and ${forkNames.memory}.`;
-  expect(fork.forkPrompt).toBe(forkPrompt);
-  expect(fork.promptHash).toBe(createHash("sha256").update(forkPrompt).digest("hex"));
-  const boundary = { exactEntryIds: fork.entries.map(e => e.id) };
-  const price = 71 + tokens(forkPrompt) + tokens(fork.prepared!.text);
-  expect(() => freezeNoting(memory.store, { ...target, toolNames: forkNames, forkGuidance, effectiveMode: "fork", boundary,
-    capacity: { inputTokens: price - 1, prefixTokens: 71 } }, memory.config)).toThrow("Noting capacity");
-  expect(freezeNoting(memory.store, { ...target, toolNames: forkNames, forkGuidance, effectiveMode: "fork", boundary,
-    capacity: { inputTokens: price, prefixTokens: 71 } }, memory.config).forkPrompt).toBe(forkPrompt);
-  const fresh = freezeNoting(memory.store, { ...target, toolNames: freshNames, effectiveMode: "subagent", boundary }, memory.config);
-  // 137: a fresh child carries the retrieval policy once, in its system prompt; a fork inherits it from its
-  // parent's system prompt, so its task prompt carries none. Both are priced as sent.
+  const boundary = { exactEntryIds: freezeNoting(memory.store, { ...target }, memory.config).entries.map(e => e.id) };
+  const fresh = freezeNoting(memory.store, { ...target, toolNames: freshNames, boundary }, memory.config);
+  // 137: a fresh child carries the retrieval policy once, in its system prompt. Both are priced as sent.
   expect(fresh.prompt).toBe(withRetrievalPolicy(loadPrompt("noting.md", freshNames), freshNames));
   expect(fresh.prompt!.split("When to look up memory").length).toBe(2);
   expect(fresh.prompt).toContain(`with ${freshNames.search};`);
-  expect(fork.forkPrompt).not.toContain("When to look up memory");
   expect(fresh.prompt).not.toContain("mcp__plugin_trace-memory_traceMemory__");
   expect(fresh.promptHash).toBe(createHash("sha256").update(fresh.prompt!).digest("hex"));
-  expect(fresh.promptHash).not.toBe(fork.promptHash);
   const freshPrice = tokens(fresh.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, freshNames))) + tokens(fresh.prepared!.text);
-  expect(() => freezeNoting(memory.store, { ...target, toolNames: freshNames, effectiveMode: "subagent", boundary,
+  expect(() => freezeNoting(memory.store, { ...target, toolNames: freshNames, boundary,
     capacity: { inputTokens: freshPrice - 1, prefixTokens: 0 } }, memory.config)).toThrow("Noting capacity");
-  expect(freezeNoting(memory.store, { ...target, toolNames: freshNames, effectiveMode: "subagent", boundary,
+  expect(freezeNoting(memory.store, { ...target, toolNames: freshNames, boundary,
     capacity: { inputTokens: freshPrice, prefixTokens: 0 } }, memory.config).prompt).toBe(fresh.prompt);
 });
 
@@ -350,7 +333,7 @@ test("fixture turn golden and noting input use identical rendering with receipts
     expect(exact.unbounded).toBe(true);
     return success([]);
   });
-  const result = await memory.noting({ sessionId, branch: "main", headTurnId: first.id, mode: "subagent" });
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: first.id });
   if (result.outcome !== "success") throw new Error("expected success");
   // Membership comes from completed native entries, not a fabricated completion word.
   expect(calls[0]!.material.entries.map(entry => entry.id)).toEqual(

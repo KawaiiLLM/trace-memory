@@ -35,7 +35,6 @@ test("closedSessionScope defaults to project and validates atomically at load an
   try {
     for (const value of ["off", "project", "global"] as const) {
       memory.configure({ closedSessionScope: value });
-      memory.configure({ noting: { forkModeDefault: false } });
       expect(memory.config.closedSessionScope).toBe(value);
     }
     for (const value of ["session", "GLOBAL", true, null, 0, {}]) {

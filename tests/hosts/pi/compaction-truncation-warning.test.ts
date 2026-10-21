@@ -7,7 +7,7 @@ import { fact } from "../../support/seed.ts";
 const OMITTED = "compaction omitted";
 
 async function truncatingHost() {
-  const h = host({ "noting.triggerTokens": 1, "noting.forkModeDefault": false,
+  const h = host({ "noting.triggerTokens": 1,
     "compaction.factsTokens": 1, "compaction.rawTokens": 1,
     "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
   const sourceText = `fact source ${"word ".repeat(250)}`;

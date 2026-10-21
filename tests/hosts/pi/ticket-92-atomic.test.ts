@@ -19,7 +19,7 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker h
     return runWorker(task, { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
       read: frozenRead(memory, task, f.h.dir),
       runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
-      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
+      onRetry: () => {}, onRetryEnd: () => {} });
   });
   try {
     const project = memory.store.createProject({ name: "atomic-pi", declaredBy: "mark" });
@@ -36,7 +36,7 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker h
         scope: "session", topics: [], supports: ["$1"], reason: "User requirement" });
       return ending === "success" ? say("Done") : broken();
     });
-    const result = await memory.noting({ ...path, mode: "subagent" });
+    const result = await memory.noting({ ...path });
     expect(result.outcome).toBe(ending === "success" ? "success" : "failure");
     expect(round).toBeGreaterThanOrEqual(3);
     expect(memory.store.listSessionFacts(session.id)).toHaveLength(ending === "success" ? 1 : 0);
@@ -50,11 +50,8 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker h
   } finally { memory.close(); await f.dispose(); }
 });
 
-for (const obsolete of [false, true]) test(`04: real Pi fork shared schemas preserve prefix; obsolete=${obsolete}`, async () => {
+test("04: real Pi worker binds the shared schemas and publishes held corrections at the terminal reply", async () => {
   const f = await fixture({ "noting.triggerTokens": 1e9 });
-  f.script(() => say("Parent reply"));
-  const captured = await f.turn();
-  if (obsolete) delete (captured.tools as any[]).find(tool => tool.function.name === "note").function.parameters.properties.drop;
   const memory = sourceSeededMemory(join(f.h.dir, "fork-atomic.sqlite"), raw => {
     const task = raw as NotingAgentInput;
     for (const name of ["note", "memory"]) {
@@ -65,8 +62,7 @@ for (const obsolete of [false, true]) test(`04: real Pi fork shared schemas pres
     return runWorker(task, { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
       read: frozenRead(memory, task, f.h.dir),
       runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
-      fork: { parentFile: f.manager().getSessionFile()!, parentSessionId: f.manager().getSessionId(), checkpoint: f.manager().getLeafId()!, captured },
-      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
+      onRetry: () => {}, onRetryEnd: () => {} });
   });
   try {
     const project = memory.store.createProject({ name: "fork-atomic", declaredBy: "mark" });
@@ -90,21 +86,15 @@ for (const obsolete of [false, true]) test(`04: real Pi fork shared schemas pres
       const next = calls[round - 1];
       return next ? call(`item-${round}`, next[0], next[1]) : say("Done");
     });
-    const result = await memory.noting({ ...path, mode: "fork" });
-    if (obsolete) {
-      expect(result).toMatchObject({ outcome: "dropped", refused: { reason: expect.stringContaining("incompatible with the current Noter protocol") } });
-      expect(round).toBe(0); expect(memory.store.listSessionFacts(session.id)).toEqual([]);
-    } else {
-      expect(result.outcome, JSON.stringify(result)).toBe("success");
-      expect(round).toBe(11);
-      expect(memory.store.listSessionFacts(session.id)).toHaveLength(3);
-      expect(memory.store.currentKnowledge(path)[0]!.revision).toMatchObject({ text: "Final rule", supports: [2] });
-      expect(memory.store.listFactRelations(3)[0]).toMatchObject({ toFact: 2 });
-      if (!("runId" in result)) throw new Error("missing run");
-      const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
-      expect(audit.verification).toMatchObject({ passed: true, differingPath: null });
-      expect(audit.held.factMapping).toEqual({ "$1": "F1", "$3": "F2", "$4": "F3" });
-    }
+    const result = await memory.noting({ ...path });
+    expect(result.outcome, JSON.stringify(result)).toBe("success");
+    expect(round).toBe(12); // ten scripted items, the terminal reply and the end review (117)
+    expect(memory.store.listSessionFacts(session.id)).toHaveLength(3);
+    expect(memory.store.currentKnowledge(path)[0]!.revision).toMatchObject({ text: "Final rule", supports: [2] });
+    expect(memory.store.listFactRelations(3)[0]).toMatchObject({ toFact: 2 });
+    if (!("runId" in result)) throw new Error("missing run");
+    const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
+    expect(audit.held.factMapping).toEqual({ "$1": "F1", "$3": "F2", "$4": "F3" });
   } finally { memory.close(); await f.dispose(); }
 });
 
@@ -119,7 +109,7 @@ for (const kind of ["note", "memory"] as const)
           refusals++; task.reportToolRejection(...args); task.reportToolRejection(...args);
         } }, { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
           read: frozenRead(memory, task, f.h.dir), runsDir: f.runsDir, cwd: f.h.dir,
-          agentDir: f.agentDir, maxToolRounds: 0, onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
+          agentDir: f.agentDir, maxToolRounds: 0, onRetry: () => {}, onRetryEnd: () => {} });
       });
       try {
         const project = memory.store.createProject({ name: "envelope-pi", declaredBy: "mark" });
@@ -149,7 +139,7 @@ for (const kind of ["note", "memory"] as const)
           if (corrected && round === invalidRound + 3) return call("appended", kind, value("appended"));
           return say("Done");
         });
-        const result = await memory.noting({ ...path, mode: "subagent" });
+        const result = await memory.noting({ ...path });
         expect(refusals).toBe(1); // exercised SDK refusal, not merely bound core execution
         expect(result.outcome, JSON.stringify(result)).toBe(corrected ? "success" : "bounced");
         const texts = kind === "note" ? memory.store.listSessionFacts(session.id).map(row => row.text)
@@ -170,7 +160,7 @@ for (const [kind, corrected] of [["note", false], ["note", true], ["read", false
     return runWorker({ ...task, reportToolRejection: (...args) => { report(...args); report(...args); } },
       { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
         read: frozenRead(memory, task, f.h.dir), runsDir: f.runsDir, cwd: f.h.dir,
-        agentDir: f.agentDir, maxToolRounds: 0, onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
+        agentDir: f.agentDir, maxToolRounds: 0, onRetry: () => {}, onRetryEnd: () => {} });
   });
   try {
     const project = memory.store.createProject({ name: "schema-pi", declaredBy: "mark" });
@@ -186,7 +176,7 @@ for (const [kind, corrected] of [["note", false], ["note", true], ["read", false
       if (round === 5 && corrected) return call("corrected", "note", { slot: "$1", title: "corrected", sources: "[T1#E1] corrected" });
       return say("Done");
     });
-    const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: turn.id, mode: "subagent" });
+    const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: turn.id });
     expect(result.outcome).toBe(corrected || kind === "read" ? "success" : "bounced");
     const facts = memory.store.listSessionFacts(session.id);
     expect(facts.map(fact => fact.text).sort()).toEqual(corrected ? ["corrected", "sibling"] : kind === "read" ? ["original", "sibling"] : []);

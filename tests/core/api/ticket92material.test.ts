@@ -51,13 +51,12 @@ test("ticket92material borrowed active target keeps original harness through rew
   f.store.closeSession(f.session.id);
   f.memory.selectEntries(f.session.id, "rewound", [all[0]!]);
   f.store.setCurrentPath(f.session.id, "rewound", f.turn.id, "target-lineage");
-  const input = { ...f.target, borrowed: true, executorSessionId: executor.id, mode: "fork" as const };
+  const input = { ...f.target, borrowed: true, executorSessionId: executor.id };
   expect((await f.memory.noting(input)).outcome).toBe("dropped");
   expect(f.inputs).toHaveLength(0);
   f.store.setCurrentPath(f.session.id, "main", f.turn.id, "target-lineage");
   expect((await f.memory.noting(input)).outcome).toBe("success");
   expect(f.inputs).toHaveLength(1);
-  expect(f.inputs[0]!.mode).toBe("subagent");
   expect(f.inputs[0]!.material.entries.map(entry => entry.id)).toEqual([all[1]!]);
   expect(f.inputs[0]!.text).toContain("Target session agent: Pi agent");
 });
@@ -73,7 +72,7 @@ test("133: Noter hydrates selected Raw and reachable user context, never process
   const raw = vi.spyOn(f.store, "getSourceEntry"), turns = vi.spyOn(f.store, "getTurn");
   const snapshots = vi.spyOn(f.store, "pathSnapshot"), statements = vi.spyOn(f.store.db, "prepare");
   const start = performance.now();
-  const frozen = freezeNoting(f.store, { ...f.target, mode: "subagent" }, f.memory.config);
+  const frozen = freezeNoting(f.store, { ...f.target }, f.memory.config);
   const elapsed = performance.now() - start;
   expect(frozen.entries).toHaveLength(1);
   const processedAssistants = new Set(older.slice(1));
@@ -89,7 +88,7 @@ test("133: Noter hydrates selected Raw and reachable user context, never process
   expect(metadataReads()).toHaveLength(2); // pending discovery and ordered metadata, reused by compact
   const secondRaw = raw.mock.calls.length;
   snapshots.mockClear(); statements.mockClear(); raw.mockClear();
-  freezeNoting(f.store, { ...f.target, mode: "subagent" }, f.memory.config);
+  freezeNoting(f.store, { ...f.target }, f.memory.config);
   expect(statements.mock.calls.filter(([sql]) => sql.includes("SELECT j.position, j.entry_id, e.id AS owned_id"))).toHaveLength(0);
   expect(raw.mock.calls).toHaveLength(secondRaw);
   expect(metadataReads()).toHaveLength(2);
@@ -107,7 +106,7 @@ test("ticket92material capacity shrinking reuses metadata and Raw views but rebi
   for (let index = 0; index < 6; index++) seedSourceEntry(f.memory, f.turn.id, "assistant", `entry-${index} ${"words ".repeat(80)}`);
   f.select();
   const config = { ...f.memory.config, compaction: { ...f.memory.config.compaction, factsTokens: 1 } };
-  const complete = freezeNoting(f.store, { ...f.target, mode: "subagent" }, config);
+  const complete = freezeNoting(f.store, { ...f.target }, config);
   const batchIds = new Set(complete.entries.map(entry => entry.id));
   const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
   const historicalUsers = f.store.sourcePath(f.session.id, "main", f.turn.id)
@@ -115,7 +114,7 @@ test("ticket92material capacity shrinking reuses metadata and Raw views but rebi
     .map(entry => entry.id);
   const raw = vi.spyOn(f.store, "getSourceEntry"), snapshots = vi.spyOn(f.store, "pathSnapshot");
   const statements = vi.spyOn(f.store.db, "prepare");
-  const reduced = freezeNoting(f.store, { ...f.target, mode: "subagent", capacity: {
+  const reduced = freezeNoting(f.store, { ...f.target, capacity: {
     inputTokens: fixed + tokens(complete.prepared!.text) - 80, prefixTokens: 0 } }, config);
   expect(reduced.entries.length).toBeLessThan(complete.entries.length);
   expect(reduced.entries.length).toBeGreaterThan(0);
@@ -140,7 +139,7 @@ test("133: fresh receipt-only temporary context trims before rejecting an exact 
   seedSourceEntry(f.memory, f.turn.id, "assistant", "pending reply");
   f.select();
   const config = { ...f.memory.config, compaction: { ...f.memory.config.compaction, factsTokens: 1, temporaryTokens: 100 } };
-  const input = { ...f.target, mode: "subagent" as const };
+  const input = { ...f.target };
   const complete = freezeNoting(f.store, input, config);
   expect(complete.prepared!.material.earlierUsers).toEqual([]);
   expect(complete.prepared!.material.factTitles).toEqual([]);
@@ -163,7 +162,7 @@ test("ticket92material hard input capacity rejects before invoking the worker an
   const f = fixture();
   seedSourceEntry(f.memory, f.turn.id, "assistant", "new evidence"); f.select();
   const pending = f.store.pendingEntries(f.session.id, "main", f.turn.id).map(entry => entry.id);
-  await expect(f.memory.noting({ ...f.target, mode: "subagent", capacity: { inputTokens: 1, prefixTokens: 0 } })).rejects.toThrow(/Noting capacity/);
+  await expect(f.memory.noting({ ...f.target, capacity: { inputTokens: 1, prefixTokens: 0 } })).rejects.toThrow(/Noting capacity/);
   expect(f.inputs).toEqual([]);
   expect(f.store.pendingEntries(f.session.id, "main", f.turn.id).map(entry => entry.id)).toEqual(pending);
 });
@@ -261,7 +260,7 @@ test("ticket92material facade publishes successive exact oldest batches through 
   const original = f.store.pendingEntries(f.session.id, "main", f.turn.id).map(e => e.id);
   const selected: number[] = [];
   while (f.store.pendingEntries(f.session.id, "main", f.turn.id).length) {
-    expect((await f.memory.noting({ ...f.target, mode: "subagent" })).outcome).toBe("success");
+    expect((await f.memory.noting({ ...f.target })).outcome).toBe("success");
     const input = f.inputs.at(-1)!;
     expect(input.material.entries.map(e => e.id)).toEqual(input.entryIds);
     expect(input.supplied.entries.map(e => e.id)).toEqual(input.entryIds);
@@ -270,55 +269,6 @@ test("ticket92material facade publishes successive exact oldest batches through 
   }
   expect(f.inputs.length).toBeGreaterThan(1);
   expect(selected).toEqual(original);
-});
-
-test("ticket92material fork adds no Knowledge or historical-fact supplement", () => {
-  const f = fixture();
-  seedSourceEntry(f.memory, f.turn.id, "assistant", "pending reply");
-  f.select();
-  const pending = f.store.pendingEntries(f.session.id, "main", f.turn.id);
-  const visible = { ...noVisibility(), raw: new Map(pending.map(e => [e.nativeId, "source" as const])) };
-  const frozen = freezeNoting(f.store, { ...f.target, mode: "fork", visible }, f.memory.config);
-  expect(frozen.prepared!.material.knowledge).toBeUndefined();
-  expect(frozen.prepared!.material.facts).toEqual([]);
-  expect(frozen.prepared!.material.sources).toHaveLength(pending.length);
-});
-
-test("133: an over-capacity fork does bounded assembly work instead of shedding temporary history it never sends", () => {
-  const f = fixture();
-  let head = f.turn.id;
-  for (let index = 0; index < 40; index++) {
-    const turn = f.store.appendTurn({ sessionId: f.session.id, parentTurnId: head, kind: "turn", startedAt: "now",
-      userPrompt: `historical user ${index}` });
-    head = turn.id;
-    const source = f.store.getSourceEntry(f.store.listSourceEntries(f.session.id, head)[0]!.id)!;
-    f.select();
-    facts(f.memory, { sessionId: f.session.id, branch: "main", headTurnId: head },
-      [{ title: `Episode ${index}: ${"historical context ".repeat(20)}`, sources: [{ entry: source, text: `historical evidence ${index}` }] }]);
-    seedSourceEntry(f.memory, head, "assistant", `processed assistant ${index}`);
-  }
-  f.select();
-  recorded(f.memory, f.session.id, "main", head);
-  f.memory.config.compaction.factsTokens = 1; // force titles rather than fitting every short full fact
-  seedSourceEntry(f.memory, head, "assistant", "pending final reply");
-  const entry = f.store.listSourceEntries(f.session.id, head).at(-1)!;
-  f.select();
-  const target = { sessionId: f.session.id, branch: "main", headTurnId: head };
-  const fresh = freezeNoting(f.store, { ...target, mode: "subagent" }, f.memory.config);
-  expect(fresh.prepared!.material.earlierUsers!.length).toBeGreaterThan(0);
-  expect(fresh.prepared!.material.factTitles!.length).toBeGreaterThan(0);
-  const visible = { ...noVisibility(), raw: new Map([[entry.nativeId, "source" as const]]) };
-  const fork = freezeNoting(f.store, { ...target, mode: "fork", visible }, f.memory.config);
-  expect(fork.prepared!.material.earlierUsers).toEqual([]);
-  expect(fork.prepared!.material.factTitles).toEqual([]);
-  const price = tokens(fork.forkPrompt) + tokens(fork.prepared!.text);
-  const snapshots = vi.spyOn(f.store, "pathSnapshot");
-  expect(() => freezeNoting(f.store, { ...target, mode: "fork", visible,
-    boundary: { exactEntryIds: [entry.id] }, capacity: { inputTokens: price - 1, prefixTokens: 0 } }, f.memory.config))
-    .toThrow("Noting capacity");
-  expect(snapshots.mock.calls.filter(([, endpoint]) => endpoint !== undefined)).toHaveLength(1);
-  expect(snapshots.mock.calls.length).toBeLessThanOrEqual(2);
-  expect(f.store.pendingEntryIds(f.session.id, "main", head)).toEqual([entry.id]);
 });
 
 test("ticket92material due checks never call compact or read already-counted Raw", () => {

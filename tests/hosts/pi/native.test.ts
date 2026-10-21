@@ -1,16 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "../../../src/hosts/pi/fork.ts";
+import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { addUsage, placeholderUsage, runNative } from "../../../src/hosts/pi/native.ts";
 import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
-import { memoryFiles } from "../../../src/core/api/index.ts";
-import { NOTING_INCOMPLETE } from "../../source-fixture.ts";
-import { broken, call, noteAndMemory, fixture, stableForkFixture as forkFixture, noteBatch, say, settled, sse, submitted, toolResults, usage, worker, type Body } from "./native-fixture.ts";
+import { memoryFiles, toolDefinitions } from "../../../src/core/api/index.ts";
+import { broken, call, noteAndMemory, fixture, noteBatch, say, settled, sse, submitted, toolResults, usage, worker, type Body } from "./native-fixture.ts";
 
-for (const [label, make] of [["subagent", fixture], ["fork", forkFixture]] as const) test(`92: native ${label} Noter submits optional relations without NEAR feedback`, async () => {
-  const f = await make({ "noting.triggerTokens": 1 });
+test("92: native Noter submits optional relations without NEAR feedback", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1 });
   try {
     f.script(body => {
       if (!worker(body)) return say("好的。");
@@ -32,10 +30,10 @@ test("92: a native held receipt is neither rejected nor marked as committed", as
   const f = await fixture({ "noting.triggerTokens": 1e9 });
   try {
     f.script(() => say("好的。"));
-    const captured = await f.turn();
+    await f.turn();
     const receipt = JSON.stringify({ results: ["held: $1"], held: ["$1"] });
     f.script(body => toolResults(body) ? say("Done.") : call("near", "note", {}));
-    const result = await runNative(f.task(captured, { tools: [{ name: "note", description: "write", parameters: { type: "object", properties: {} },
+    const result = await runNative(f.task({ tools: [{ name: "note", description: "write", parameters: { type: "object", properties: {} },
       execute: () => receipt }] }));
     expect(result.committed).toBe(false);
     expect(f.sent.at(-1)!.messages.some((message: Body) => message.role === "user" && JSON.stringify(message.content).includes("NEAR:"))).toBe(false);
@@ -49,157 +47,13 @@ test.each(["noting", "dreaming"] as const)("117/125: native %s gets no end revie
       : JSON.stringify(body.messages).includes("Host followup") ? say("Reviewed.")
       : sse([{ id: "c", object: "chat.completion.chunk", created: 1, model: "test",
         choices: [{ index: 0, delta: { role: "assistant", content: "Truncated." }, finish_reason: "length" }], usage: usage() }]));
-    const captured = await f.turn();
+    await f.turn();
     const passEnd = vi.fn(() => "Host followup");
-    const result = await runNative(f.task(captured, { kind, task: `${kind === "noting" ? "Noting (facts and knowledge)" : "Dreaming (knowledge extraction)"} material`, passEnd }));
+    const result = await runNative(f.task({ kind, task: `${kind === "noting" ? "Noting (facts and knowledge)" : "Dreaming (knowledge extraction)"} material`, passEnd }));
     expect(passEnd).toHaveBeenCalledTimes(kind === "dreaming" ? 1 : 0); // the Dreamer still reports its rounds
     expect(f.sent.filter(body => worker(body, kind === "noting" ? "Noting" : "Dreaming") &&
       JSON.stringify(body.messages).includes("Host followup"))).toHaveLength(0);
     expect(result.outcome).toBe("failure");
-  } finally { await f.dispose(); }
-});
-
-test("118: native fork keeps captured read definition while restricting its execution to frozen trace:// files", async () => {
-  const f = await forkFixture({ "noting.triggerTokens": 1e9 });
-  try {
-    f.script(body => !worker(body) ? say("Parent ready.") : toolResults(body) ? say("Done.")
-      : call("read-tm", "read", { path: "trace://" }));
-    const captured = await f.turn();
-    const reader = memoryFiles(f.h.memory, { ...f.h.memory.store.currentPath(1), projectId: f.h.memory.store.getSession(1)!.projectId });
-    const native = await runNative(f.task(captured, {
-      task: "Noting (facts and knowledge): read trace:// before concluding",
-      read: memoryReadTool(f.h.dir, path => reader.read(path), { memoryOnly: true }),
-    }));
-    expect(native.verification?.passed).toBe(true);
-    expect(native.calls).toContainEqual({ name: "read", executed: true });
-    expect(native.request).toBeDefined();
-    expect(native.nativeLog && readFileSync(native.nativeLog, "utf8")).toContain("trace://knowledge");
-    const denied = memoryReadTool(f.h.dir, path => reader.read(path), { memoryOnly: true });
-    await expect(denied.execute("denied", { path: "/etc/passwd" }, undefined, undefined, { cwd: f.h.dir } as never))
-      .rejects.toThrow("restricted to trace://");
-  } finally { await f.dispose(); }
-});
-
-// ---------------------------------------------------------------- checkbox 1: the gate
-test("19a 2026-09-08: the native child's first request passes prefix verification against the captured parent request", async () => {
-  const f = await forkFixture();
-  try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
-    await f.turn();
-    const run = await settled(f);
-    const response = JSON.parse(run.response!);
-    expect(run.mode, run.response ?? "missing run audit").toBe("fork");
-    expect(response.verification.differingPath, JSON.stringify(response.verification)).toBe(null);
-    expect(response.verification.passed).toBe(true);
-    // Both hashes are recorded, and they are the hashes of the two real bodies.
-    expect(response.verification.capturedHash).toBe(hash(f.sent[0]));
-    expect(response.verification.requestHash).toBe(hash(f.sent[1]));
-    // The gate compares the child's FIRST body; the run record stores the LAST request sent, which
-    // embeds every earlier round (spec: Run record contract). Here the run has one round, so both
-    // name the same body.
-    expect(JSON.parse(run.request!)).toEqual(f.sent.at(-1));
-    // The production Noter prompt and the production tool definitions really went out.
-    expect(String(JSON.stringify(f.sent[1]!.messages.at(-1)))).toContain("Noting (facts and knowledge)");
-    expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["read", "search", "note", "memory"]);
-    expect(f.sent[1]!.tools).toEqual(f.sent[0]!.tools);
-    // The gate, recomputed here over the same two bodies with nothing excluded from the comparison.
-    const key = messageKey("openai-completions");
-    const gate = verifyNativeRequest(f.sent[0]!, f.sent[1]!, "openai-completions", f.sent[1]![key].slice(f.sent[0]![key].length));
-    expect(gate.passed).toBe(true);
-    expect(gate.appendedMessages).toHaveLength(2); // the head assistant reply, then the task
-    expect(JSON.stringify(gate.appendedMessages.at(-1))).toContain("Noting (facts and knowledge)");
-  } finally { await f.dispose(); }
-});
-
-test("19a ruling 2026-09-08: the anthropic-messages child passes the gate with cache_control stripped from both sides and nothing else", async () => {
-  const f = await forkFixture({}, "fakeanthropic");
-  const anthropic = (events: Body[]) => new Response(events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
-  const reply = (text: string) => anthropic([
-    { type: "message_start", message: { id: "m", type: "message", role: "assistant", model: "test", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } },
-    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
-    { type: "content_block_stop", index: 0 },
-    { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } },
-    { type: "message_stop" }]);
-  try {
-    f.script(() => reply("好的。"));
-    await f.turn();
-    const run = await settled(f);
-    const response = JSON.parse(run.response!);
-    // The child really sent its request: the run is native fork mode, verified, with no fallback.
-    expect(run.mode, run.response ?? "missing native audit").toBe("fork");
-    expect(response.fallbackReason).toBeUndefined();
-    expect(response.verification.passed).toBe(true);
-    expect(response.verification.differingPath).toBe(null);
-    expect(response.verification.normalized).toEqual(["cache_control"]);
-    expect(response.verification.capturedHash).toBe(hash(f.sent[0]));
-    expect(response.verification.requestHash).toBe(hash(f.sent[1]));
-    // The gate compares the child's FIRST body; the run record stores the LAST request sent, which
-    // embeds every earlier round (spec: Run record contract). Here the run has one round, so both
-    // name the same body.
-    expect(JSON.parse(run.request!)).toEqual(f.sent.at(-1));
-    // The raw bodies do differ, and only at the adapter-placed cache breakpoint: the parent's
-    // marker sits on the message the child inherited, the child's on its appended task message.
-    const key = messageKey("anthropic-messages");
-    const raw = verifyNativeRequest(f.sent[0]!, f.sent[1]!, "anthropic-messages", f.sent[1]![key].slice(f.sent[0]![key].length));
-    expect(raw.passed).toBe(false);
-    expect(raw.differingPath).toMatch(/^\$\.messages\.\d+\.content\.\d+\.cache_control$/);
-    expect(JSON.stringify(f.sent[1]![key].at(-1))).toContain("cache_control");
-    expect(verifyForkRequest(f.sent[0]!, f.sent[1]!, "anthropic-messages").passed).toBe(true);
-    // 26a: this child answers in prose and submits nothing, so the run is incomplete. What this case
-    // pins is the gate above; the verified attempt is recorded either way, with its own diagnostic.
-    expect(run.outcome).toBe("failure");
-    expect(response.problems).toEqual([NOTING_INCOMPLETE]);
-  } finally { await f.dispose(); }
-});
-
-// ------------------------------------------- checkbox 2: parent preserved, private child log
-test("19a 2026-09-08: a child run leaves the parent file, id and tree position byte-identical and logs under the runs directory", async () => {
-  const f = await fixture();
-  try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
-    const captured = await f.turn();
-    const run = await settled(f);
-    // The foreground manager still points at its own file and id after a whole native run.
-    expect(f.manager().getSessionId()).toBe(f.original.id);
-    expect(f.manager().getSessionFile()).toBe(f.original.file);
-    const parentFile = f.manager().getSessionFile()!;
-    const before = readFileSync(parentFile), id = f.manager().getSessionId(), leaf = f.manager().getLeafId();
-    const first = JSON.parse(run.response!).nativeLog as string;
-    expect(first).toBe(join(f.runsDir, `${first.split("/").at(-1)}`)); // 24c: a direct child of sessions/trace-memory
-    expect(statSync(first).isFile()).toBe(true);
-    // A second child on the same parent: still no mutation, and its own id and file.
-    const second = await runNative(f.task(captured));
-    expect(readFileSync(parentFile)).toEqual(before);
-    expect(f.manager().getSessionId()).toBe(id);
-    expect(f.manager().getLeafId()).toBe(leaf);
-    expect(second.nativeLog).not.toBe(first);
-    const logs = readdirSync(f.runsDir);
-    expect(logs).toHaveLength(2);
-    expect(new Set(logs.map(name => name.split("_").at(-1)))).not.toContain(`${id}.jsonl`);
-    // The children live beside the foreground session, not inside its own directory: the foreground
-    // session list still holds only the parent (24c: they are a sibling directory of Pi's session root).
-    expect(readdirSync(f.sessionsDir)).toEqual([parentFile.split("/").at(-1)]);
-    expect((await SessionManager.list(f.h.dir, f.sessionsDir)).map(s => s.id)).toEqual([id]);
-  } finally { await f.dispose(); }
-});
-
-test("19a 2026-09-08: the child copies the selected ancestry only, not a sibling branch", async () => {
-  const f = await fixture();
-  try {
-    f.script(() => say("好的。"));
-    const captured = await f.turn();
-    const selected = f.manager().getLeafId()!;
-    // A sibling branch on the same parent file: an abandoned edit of the same user message.
-    f.manager().branch(f.manager().getBranch(selected)[0]!.id);
-    f.manager().appendMessage({ role: "user", content: "sibling branch prompt", timestamp: Date.now() } as never);
-    const sibling = f.manager().getLeafId()!;
-    f.manager().branch(selected);
-    const result = await runNative(f.task(captured, { checkpoint: selected }));
-    const child = readFileSync(result.nativeLog!, "utf8");
-    expect(child).not.toContain("sibling branch prompt");
-    expect(child).not.toContain(sibling);
-    expect(child).toContain("用 pnpm，不要 npm");
   } finally { await f.dispose(); }
 });
 
@@ -220,7 +74,7 @@ test("19a 2026-09-08: a Noting write commits through native tool execution", asy
 });
 
 test("19a 2026-09-08: a source entry outside the frozen range is rejected although the child copied it", async () => {
-  const f = await forkFixture();
+  const f = await fixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.")
       : noteAndMemory("t1", { ...noteBatch, sources: noteBatch.sources.replace("[T1#E1]", "[T9#E1]") }));
@@ -256,34 +110,17 @@ test("19a/92: a provider error after both held tools publishes nothing and recor
   } finally { release(); await f.dispose(); }
 });
 
-// ------------------------- checkbox 4: copied custom state, tool whitelist, sequential execution
-test("19a 2026-09-08: copied plugin custom state activates no extension and starts no worker", async () => {
-  const f = await forkFixture();
-  try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
-    await f.turn();
-    const run = await settled(f);
-    const child = readFileSync(JSON.parse(run.response!).nativeLog, "utf8");
-    expect(child).toContain('"customType":"trace-memory"'); // the foreground's own state came along
-    // ... and nothing acted on it: one run, no second worker, and the child's tools are the
-    // parent's definitions, not a set an extension registered inside the child.
-    expect(f.h.memory.store.listRuns(1)).toHaveLength(1);
-    expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["read", "search", "note", "memory"]);
-    expect(readdirSync(f.runsDir)).toHaveLength(1);
-  } finally { await f.dispose(); }
-});
-
 test("19a/118: restricted Read denies non-trace:// paths while only authorized tools execute in call order", async () => {
   const f = await fixture({ "noting.triggerTokens": 1000000000 });
   try {
     f.script(() => say("好的。"));
-    const captured = await f.turn();
+    await f.turn();
     const calls = [{ index: 0, id: "a", type: "function", function: { name: "read", arguments: JSON.stringify({ path: "/etc/passwd" }) } },
       { index: 1, id: "b", type: "function", function: { name: "search", arguments: JSON.stringify({ query: "synthetic" }) } }];
     f.script((body, index) => index === 0 ? say("好的。") : index === 1 ? sse([{ id: "c", object: "chat.completion.chunk", created: 1, model: "test",
       choices: [{ index: 0, delta: { role: "assistant", tool_calls: calls }, finish_reason: "tool_calls" }], usage: usage() }]) : say("Done."));
     const executed: string[] = [];
-    const result = await runNative(f.task(captured, { tools: [{ name: "search", description: "", parameters: {}, execute: () => { executed.push("search"); return "found"; } }] }));
+    const result = await runNative(f.task({ tools: [{ name: "search", description: "", parameters: {}, execute: () => { executed.push("search"); return "found"; } }] }));
     expect(result.calls).toEqual([{ name: "read", executed: true }, { name: "search", executed: true }]);
     expect(executed).toEqual(["search"]); // the foreground tool never ran
     const results = f.sent.at(-1)!.messages.filter((m: Body) => m.role === "tool");
@@ -295,7 +132,7 @@ test("19a/118: restricted Read denies non-trace:// paths while only authorized t
 
 // ------------------------------------------------------- checkbox 5: usage, checkbox 6: cache
 test("19a 2026-09-08: usage counts the child's new responses only, including a failed attempt", async () => {
-  const f = await forkFixture();
+  const f = await fixture();
   try {
     let attempt = 0;
     f.script(body => !worker(body) ? say("好的。", usage(777, 555))
@@ -305,10 +142,11 @@ test("19a 2026-09-08: usage counts the child's new responses only, including a f
     const run = await settled(f);
     const response = JSON.parse(run.response!);
     expect(response.retries).toEqual([{ attempt: 1, error: expect.any(String) }]);
-    // 20 + 30 from this child's two responses; the copied parent's 777 is not in the total.
-    expect(response.usage.input).toBe(50);
-    expect(response.usage.output).toBe(7);
-    expect(f.h.memory.spend(1).input).toBe(50);
+    // 20 from the note round, 30 from the terminal reply and 30 from the end review (117): this child's
+    // three responses; the parent's 777 is not in the total.
+    expect(response.usage.input).toBe(80);
+    expect(response.usage.output).toBe(11);
+    expect(f.h.memory.spend(1).input).toBe(80);
   } finally { await f.dispose(); }
 });
 
@@ -316,33 +154,18 @@ test("19a 2026-09-08: a cancelled child without reported usage records unknown, 
   const f = await fixture();
   try {
     f.script(() => say("好的。"));
-    const captured = await f.turn();
+    await f.turn();
     const controller = new AbortController();
     controller.abort();
-    const result = await runNative(f.task(captured, { signal: controller.signal }));
+    const result = await runNative(f.task({ signal: controller.signal }));
     expect(result.outcome).toBe("cancelled");
     expect(result.usage).toBeUndefined();
   } finally { await f.dispose(); }
 });
 
-test("19a 2026-09-08: each child response's reported cache read is recorded as an observation", async () => {
-  const f = await forkFixture();
-  try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.", usage(30, 4, 0))
-      : noteAndMemory("t1", noteBatch, usage(20, 3, 12)));
-    await f.turn();
-    const run = await settled(f);
-    const response = JSON.parse(run.response!);
-    // Recorded, never required: the run's outcome does not depend on this number.
-    expect(response.verification.cache_read).toBe(12);
-    expect(response.usage.cacheRead).toBe(12);
-    expect(run.outcome).toBe("success");
-  } finally { await f.dispose(); }
-});
-
 // ------------------------------------------ 19b: subagent parity on the same native runner
 test("19b 2026-09-08: an explicit subagent task runs in a fresh native child with only the memory tools and no legacy loop", async () => {
-  const f = await fixture({ "noting.forkModeDefault": false });
+  const f = await fixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn();
@@ -358,7 +181,7 @@ test("19b 2026-09-08: an explicit subagent task runs in a fresh native child wit
     expect(String(child.messages[0].content)).toContain("Noting (facts and knowledge)");
     expect(child.tools.map((t: Body) => t.function.name)).toEqual(["search", "note", "memory", "read"]);
     expect(String(JSON.stringify(child.messages[1]))).toContain("Raw:"); // the full fresh-context material
-    // Its own private session in the runs directory, not a fork of the parent file.
+    // Its own private session in the runs directory.
     const log = response.nativeLog as string;
     expect(log.startsWith(`${f.runsDir}/`)).toBe(true);
     expect(readFileSync(log, "utf8")).not.toContain('"customType":"trace-memory"');
@@ -370,25 +193,8 @@ test("19b 2026-09-08: an explicit subagent task runs in a fresh native child wit
   } finally { await f.dispose(); }
 });
 
-test("19b 2026-09-08: an unforkable branch task falls back to the native subagent and records requested and actual mode", async () => {
-  const f = await forkFixture();
-  try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
-    await f.turn("用 pnpm，不要 npm", { capture: false }); // no captured parent body: the fork cannot be prepared
-    const run = await settled(f);
-    expect(run.mode).toBe("subagent");
-    const response = JSON.parse(run.response!);
-    expect(response.requestedMode).toBe("fork");
-    expect(response.fallbackReason).toContain("native runner: No current-branch provider payload captured");
-    expect(response.nativeLog).toBeTruthy();
-    expect(f.h.conversations).toEqual([]); // the request-copy runner did not serve the fallback
-    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
-    expect(f.h.notices.join("\n")).toContain("fell back to subagent mode");
-  } finally { await f.dispose(); }
-});
-
 test("19b 2026-09-08: the fresh child activates no inherited extension", async () => {
-  const f = await fixture({ "noting.forkModeDefault": false });
+  const f = await fixture();
   const marker = join(f.h.dir, "extension-loaded");
   try {
     // A global Pi extension the child would discover if resource discovery were on.
@@ -410,14 +216,14 @@ test("19c 2026-09-08: cancelling one native child disposes only that child; a si
   const f = await fixture({ "noting.triggerTokens": 1000000000 }); // this test drives both children itself
   try {
     f.script(() => say("好的。"));
-    const captured = await f.turn();
+    await f.turn();
     const parentBytes = readFileSync(f.original.file), parentLeaf = f.manager().getLeafId();
     const controller = new AbortController();
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     f.script(async (body: Body) => { if (JSON.stringify(body).includes("child A")) { await held; return say("A finished"); } return say("B done."); });
-    const a = runNative(f.task(captured, { task: "child A: note what happened", signal: controller.signal }));
-    const b = await runNative(f.task(captured, { task: "child B: note what happened" }));
+    const a = runNative(f.task({ task: "child A: note what happened", signal: controller.signal }));
+    const b = await runNative(f.task({ task: "child B: note what happened" }));
     controller.abort(); // only A's task signal
     release();
     const cancelled = await a;
@@ -437,7 +243,7 @@ test("19c 2026-09-08: cancelling one native child disposes only that child; a si
 }, 20000);
 
 test("19c/92: /trace stop cancels the child after staging without publication or fresh extraction", async () => {
-  const f = await forkFixture();
+  const f = await fixture();
   let release: () => void = () => {};
   try {
     const held = new Promise<void>(resolve => { release = resolve; });
@@ -452,7 +258,7 @@ test("19c/92: /trace stop cancels the child after staging without publication or
     release();
     const run = await settled(f);
     expect(run.outcome).toBe("cancelled");
-    expect(run.mode).toBe("fork");
+    expect(run.mode).toBe("subagent");
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1); // stopping never re-extracts
     expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
     expect(f.h.memory.store.sourcePath(1, "main", 1).every(e => !f.h.memory.store.entryNoted(e.id))).toBe(true);
@@ -465,59 +271,34 @@ test("19c/92: /trace stop cancels the child after staging without publication or
   } finally { release(); await f.dispose(); }
 }, 20000);
 
-// ------------------------------------------------- 19c cutover: one runner, Pi's own settings
-test("19c 2026-09-08: no legacy loop remains: a fork that cannot be prepared runs in a fresh native child, not a hand-built request", async () => {
-  const f = await forkFixture();
+test("27b 2026-09-10 (amendment 1): the memory child runs with Pi's automatic compaction off, and the user's own settings are untouched", async () => {
+  // The user's settings ask for automatic compaction, with a recent-token budget small enough that
+  // Pi really has something to compact. Without the child's in-memory override, Pi answers the
+  // overflow below by deleting the failed reply, paying for a native summary and retrying — two
+  // provider requests, a `compaction` entry in the worker log, and no overflow to classify. (Measured
+  // on this fixture: with the override removed the child sends 2 requests and writes that entry; with it, 1 and none.)
+  const OVERFLOW = "prompt is too long: 213462 tokens > 200000 maximum";
+  const f = await fixture({ compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 1 } });
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
-    await f.turn("用 pnpm，不要 npm", { capture: false }); // no capture: the fork cannot be prepared
-    const run = await settled(f);
-    const response = JSON.parse(run.response!);
-    expect(run.mode).toBe("subagent");
-    expect(response.requestedMode).toBe("fork");
-    // The fallback is a real child session of its own: a private native log under the runs directory,
-    // its own system prompt, memory tools and restricted native Read. A hand-built request has none of this —
-    // it would replay the captured parent prefix and leave no child session behind.
-    const log = response.nativeLog as string;
-    expect(log.startsWith(`${f.runsDir}/`)).toBe(true);
-    expect(existsSync(log)).toBe(true);
-    const worker0 = f.sent.find(body => worker(body))!;
-    expect(worker0.messages[0].role).toBe("system");
-    expect(String(worker0.messages[0].content)).toContain("Noting (facts and knowledge)");
-    expect(worker0.tools.map((t: Body) => t.function.name)).toEqual(["search", "note", "memory", "read"]);
-    expect(JSON.parse(readFileSync(log, "utf8").split("\n")[0]!)).toBeTruthy(); // the child really wrote its session
-    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
-  } finally { await f.dispose(); }
-});
-
-test("19c 2026-09-08: every fork round is verified against the previous request and the run stores the last request sent", async () => {
-  const f = await forkFixture();
-  try {
-    f.script(body => !worker(body) ? say("好的。")
-      : toolResults(body) === 0 ? call("t1", "read", { path: "trace://raw/S1/T1" })
-      : toolResults(body) === 1 ? noteAndMemory("t2", noteBatch) : say("Done."));
+    f.script(body => worker(body) ? new Response(JSON.stringify({ error: { message: OVERFLOW } }), { status: 400, headers: { "content-type": "application/json" } }) : say("好的。"));
     await f.turn();
-    const run = await settled(f);
-    const response = JSON.parse(run.response!);
-    expect(run.mode).toBe("fork");
-    expect(response.verification.passed).toBe(true);
-    const bodies = f.sent.filter(body => worker(body));
-    expect(bodies).toHaveLength(3);
-    // Round one is the gate against the captured parent; every later round is verified against the
-    // previous request, so the prefix cannot change mid-run.
-    expect(response.verification.rounds).toHaveLength(2);
-    for (let i = 1; i < bodies.length; i++) {
-      expect(response.verification.rounds[i - 1]).toMatchObject({ passed: true, capturedHash: hash(bodies[i - 1]), requestHash: hash(bodies[i]) });
-      expect(bodies[i]!.messages.slice(0, bodies[i - 1]!.messages.length)).toEqual(bodies[i - 1]!.messages);
-    }
-    expect(JSON.parse(run.request!)).toEqual(bodies.at(-1)); // the last request embeds every earlier round
-    expect(response.toolCalls.map((c: { name: string }) => c.name)).toEqual(["note", "memory"]);
-    const readResult = bodies[1]!.messages.find((m: Body) => m.role === "tool" && m.tool_call_id === "t1");
-    expect(readResult).toBeDefined();
-    expect(String(readResult.content)).toContain("[S1/T1]");
-    expect(String(readResult.content)).toContain("[T1#E1@user] user: 用 pnpm，不要 npm");
+    const before = f.sent.length;
+    const result = await runNative(f.task({
+      tools: toolDefinitions.map(t => ({ ...t, execute: () => "committed" })),
+      task: "# Noting (facts and knowledge)\n\nnote what happened",
+    }));
+    expect(result.outcome).toBe("failure");
+    expect(result.committed).toBe(false);
+    expect(result.output).toContain(OVERFLOW);
+    expect(f.sent.length - before).toBe(1); // no summarization call was paid for
+    expect(readFileSync(result.nativeLog!, "utf8")).not.toContain('"type":"compaction"');
+    // In memory only: the user's settings file still says what it said, and a manager built over the
+    // same directories still reads it.
+    const settings = JSON.parse(readFileSync(`${f.agentDir}/settings.json`, "utf8"));
+    expect(settings.compaction).toEqual({ enabled: true, keepRecentTokens: 1, reserveTokens: 1 });
+    expect(SettingsManager.create(f.h.dir, f.agentDir).getCompactionSettings()).toEqual({ enabled: true, keepRecentTokens: 1, reserveTokens: 1 });
   } finally { await f.dispose(); }
-}, 20000);
+}, 30000);
 
 test("19c 2026-09-08: the child's retry policy is Pi's own, read from settings.json by SettingsManager", async () => {
   // Gate 6: the adapter keeps no retry settings of its own. `retry.maxRetries` in the agent
@@ -538,45 +319,8 @@ test("19c 2026-09-08: the child's retry policy is Pi's own, read from settings.j
   } finally { await f.dispose(); }
 }, 20000);
 
-test("19c 2026-09-08: a session model change after the capture refuses the fork instead of reusing a stale body", async () => {
-  const f = await forkFixture();
-  try {
-    f.script(body => !worker(body) ? say("好的。") : say("Nothing to note."));
-    await f.turn(); // the first task forks against its own capture
-    await vi.waitFor(() => expect(f.h.memory.store.listRuns(1).filter(r => r.response)).toHaveLength(1), { timeout: 5000 });
-    expect(f.h.memory.store.listRuns(1)[0]!.mode).toBe("fork");
-    // The user switches the session model; the held capture belongs to the previous one, and no new
-    // provider request is captured for it.
-    (f.h.ctx as { model: unknown }).model = { ...f.model, id: "other" };
-    await f.turn("tick " + "word ".repeat(400), { capture: false });
-    const run = await vi.waitFor(() => { const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.response); expect(runs).toHaveLength(2); return runs[1]!; }, { timeout: 5000 });
-    expect(run.mode).toBe("subagent");
-    expect(run.model).toBe("fake/other");
-    expect(JSON.parse(run.response!).fallbackReason).toContain("Session model changed since capture");
-  } finally { await f.dispose(); }
-}, 20000);
-
-// ---------------------------------------------------------------- review 2026-09-08 repairs (4c7d94f..1674525)
-test("review 2026-09-08: a fresh child runs on any API the SDK can call; only the fork gate needs a known message shape", async () => {
-  const f = await fixture({ "noting.triggerTokens": 1e9 });
-  try {
-    const tools = [{ name: "search" as const, description: "Synthetic tool", parameters: { type: "object", properties: {} }, execute: () => "ok" }];
-    let error: unknown;
-    try {
-      await runNative({ kind: "noting", mode: "subagent", model: { ...f.model, api: "google-generative-ai" } as never, cwd: f.h.dir, agentDir: f.agentDir,
-        runsDir: f.runsDir, systemPrompt: "Test", task: "Reply OK", tools,
-        read: memoryReadTool(f.h.dir, path => memoryFiles(f.h.memory, {}).read(path), { memoryOnly: true }),
-        maxToolRounds: 0, onRequest: () => {}, onProgress: () => {} });
-    } catch (caught) { error = caught; }
-    // Whatever the unlisted adapter makes of the stubbed wire, the adapter's own fork check is not what
-    // stops the child: the gate's message-shape table is consulted for forks only.
-    expect(String(error ?? "")).not.toMatch(/Unsupported fork payload API/);
-    expect(() => messageKey("google-generative-ai")).toThrow(/Unsupported fork payload API/); // the gate's table itself is unchanged
-  } finally { await f.dispose(); }
-}, 20000);
-
 test("review 2026-09-08: provider retries never spend the tool-round cap; the cap counts model turns that call tools", async () => {
-  const f = await fixture({ "noting.forkModeDefault": false, "noting.maxToolRounds": 1, retry: { maxRetries: 3, baseDelayMs: 1 } });
+  const f = await fixture({ "noting.maxToolRounds": 1, retry: { maxRetries: 3, baseDelayMs: 1 } });
   try {
     let attempt = 0;
     f.script(body => !worker(body) ? say("好的。") : attempt++ < 2 ? broken() : toolResults(body) ? say("Done.") : noteAndMemory("n", noteBatch));
@@ -592,7 +336,7 @@ test("review 2026-09-08: provider retries never spend the tool-round cap; the ca
 }, 20000);
 
 test("review 2026-09-08: the tool-round cap still fails the round over it before its tools run", async () => {
-  const f = await fixture({ "noting.forkModeDefault": false, "noting.maxToolRounds": 1 });
+  const f = await fixture({ "noting.maxToolRounds": 1 });
   try {
     let traces = 0;
     f.script(body => !worker(body) ? say("好的。") : call(`t${++traces}`, "read", { path: "trace://raw/S1/T1" }));
@@ -610,12 +354,12 @@ test("review 2026-09-08: a child cancelled before any usage arrived reports unkn
   let release = () => {};
   try {
     f.script(() => say("好的。"));
-    const captured = await f.turn();
+    await f.turn();
     const controller = new AbortController();
     let sent = false;
     const held = new Promise<void>(resolve => { release = resolve; });
     f.script(async () => { sent = true; await held; throw new DOMException("Cancelled before usage arrived", "AbortError"); });
-    const task = runNative(f.task(captured, { signal: controller.signal }));
+    const task = runNative(f.task({ signal: controller.signal }));
     await vi.waitFor(() => expect(sent).toBe(true));
     controller.abort(); release();
     const result = await task;
@@ -627,7 +371,7 @@ test("review 2026-09-08: a child cancelled before any usage arrived reports unkn
 }, 20000);
 
 test("review 2026-09-08: a failed response's partial tool call never spends a tool round; the retried complete call is the first round", async () => {
-  const f = await fixture({ "noting.forkModeDefault": false, "noting.maxToolRounds": 1, retry: { maxRetries: 2, baseDelayMs: 1 } });
+  const f = await fixture({ "noting.maxToolRounds": 1, retry: { maxRetries: 2, baseDelayMs: 1 } });
   try {
     let attempt = 0;
     f.script(body => {
@@ -650,16 +394,13 @@ test("review 2026-09-08: a failed response's partial tool call never spends a to
   } finally { await f.dispose(); }
 }, 20000);
 
-// 21a 2026-09-08: the tool schema is part of the parent body the fork gate compares, so the schema
-// change is re-verified here against a real child request rather than assumed (ticket 21a acceptance).
-test("21a 2026-09-08: the memory schema the child re-registers requires reason, offers no because, and still passes the gate", async () => {
-  const f = await forkFixture();
+// 21a 2026-09-08: the schema change is verified against a real child request rather than assumed (ticket 21a acceptance).
+test("21a 2026-09-08: the memory schema the child registers requires reason and offers no because", async () => {
+  const f = await fixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
     await f.turn();
     const run = await settled(f);
-    expect(JSON.parse(run.response!).verification.passed).toBe(true);
-    expect(f.sent[1]!.tools).toEqual(f.sent[0]!.tools); // byte-identical definitions on both sides of the gate
     const memory = f.sent[1]!.tools.find((t: Body) => t.function.name === "memory")!.function;
     const operation = memory.parameters;
     expect(operation).not.toHaveProperty("anyOf");
@@ -691,7 +432,7 @@ test("review 2026-09-10 P2: the child's thinking pair is reported through progre
     const tools = [{ name: "search" as const, description: "Synthetic tool", parameters: { type: "object", properties: {} }, execute: () => "ok" }];
     const events: string[] = [];
     let first: { thinking?: { requested?: string; effective: string } } | undefined;
-    await runNative({ kind: "noting", mode: "subagent", model: f.model as never, cwd: f.h.dir, agentDir: f.agentDir, runsDir: f.runsDir,
+    await runNative({ kind: "noting", model: f.model as never, cwd: f.h.dir, agentDir: f.agentDir, runsDir: f.runsDir,
       systemPrompt: "Test", task: "Reply OK", tools,
       read: memoryReadTool(f.h.dir, path => memoryFiles(f.h.memory, {}).read(path), { memoryOnly: true }),
       maxToolRounds: 0, thinkingLevel: "low",

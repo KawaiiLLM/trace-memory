@@ -102,7 +102,7 @@ test("22b: stopping at the threshold does not change what the batch selects", as
         entries = (raw as NotingAgentInput).material.entries;
         return { outcome: "failure", output: "leave the batch pending", request: {} };
       });
-      await runner.noting({ ...own.target, mode: "subagent" });
+      await runner.noting({ ...own.target });
       return entries.map(e => e.id);
     };
     const atThreshold = await frozen(10_000);

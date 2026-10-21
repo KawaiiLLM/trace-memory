@@ -1,19 +1,17 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, linkSync, unlinkSync, renameSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createGrepToolDefinition, createReadToolDefinition, SettingsManager, truncateHead, truncateLine, formatSize, DEFAULT_MAX_BYTES, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { hash, snapshot, type Body } from "./fork.ts";
-import { checkpointReadiness } from "./native.ts";
 import { contextComposition } from "./context-composition.ts";
 import { statusBody } from "./session-status.ts";
 import { showSessionPanel } from "./session-panel.ts";
 import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
 import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
-import { agentDirectory, configuration, configuredMode, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
-import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
+import { agentDirectory, configuration, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
+import { runWorker, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
-import { TraceMemory, cacheMissWarning, KNOWLEDGE_PUBLICATION_PENDING, selectNotingMode, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, isThinkingOnly, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, retrievalPolicy, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
+import { TraceMemory, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, isThinkingOnly, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, retrievalPolicy, toolRejected, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -112,65 +110,14 @@ export default function (pi: ExtensionAPI) {
   const runsOutsideScan = () => { const configured = configuredRunsDir(); return configured !== undefined && configured !== sessionsRoot; };
   let ctx: ExtensionContext;
   let closed = false;
-  type Capture = { payload: Body; model: string; provider: string; branch: string };
-  // One extension instance serves one Pi session: Pi tears the runtime down and re-runs the
-  // factory on new/resume/fork, so the capture state is a single object.
-  const session: { capture?: Capture; notified?: boolean } = {};
-  const rawUnavailable = (entries: readonly { id: number; turnId: number; nativeId: string }[]): string | undefined =>
-    selectNotingMode({ requested: "fork", publicationPending: false, visible: visible(binding()), pending: () => entries,
-      batch: () => entries }).fallbackReason;
-  /** Knowledge this target is still owed: the parent context does not yet hold it. */
-  const knowledgePending = (target: TaskTarget): boolean => {
-    const delta = memory.injection(target, delivered(target));
-    return !!(delta.knowledgeCommitIds.length || delta.knowledgeStates?.length);
-  };
-  const unpublishedKnowledge = (target: TaskTarget): string | undefined =>
-    knowledgePending(target) ? KNOWLEDGE_PUBLICATION_PENDING : undefined;
-  /** Whether this task may still run with inherited context, decided against this host's live state
-   * at the moment it launches, and handed to the worker as a value: either the parent state to fork
-   * at or the reason it was refused. Every condition is rechecked here for every task, so a task
-   * queued before a transition cannot bypass one. */
-  const forkLaunch = (context: ExtensionContext, input: NotingAgentInput,
-      model: { id: string; provider: string }, piId: string): ForkLaunch | { refused: string } => {
-    // Ticket 29c, rechecked here at the actual launch against the exact frozen entry set — a task
-    // admitted before a compaction but held for a slot, a claim or native readiness reaches this line
-    // with its batch already frozen, and the context it would inherit has moved since. The whole batch
-    // then runs as a fresh child instead, recorded like any other fallback: requested mode fork,
-    // actual mode subagent, reason named. A per-task readiness decision.
-    if (input.kind === "noting") {
-      const refused = rawUnavailable(input.entryAudit.entries.filter(entry => !isThinkingOnly(memory.store.getSourceEntry(entry.id)!)));
-      if (refused) return { refused };
-    }
-    // A tree switch since admission invalidates this launch context; the new branch's history is
-    // never substituted for the task frozen on the old one.
-    if (state.branch !== input.branch) return { refused: "The selected branch changed after admission" };
-    const captured = session.capture;
-    if (!captured || captured.branch !== input.branch) return { refused: "No current-branch provider payload captured" };
-    if (captured.model !== model.id || captured.provider !== model.provider) return { refused: "Session model changed since capture" };
-    const parentFile = context.sessionManager.getSessionFile?.();
-    if (!parentFile) return { refused: "The parent session is not persisted" };
-    const checkpoint = context.sessionManager.getLeafId();
-    if (!checkpoint) return { refused: "The parent session has no persisted leaf entry" };
-    // 06 changes Noter inheritance; the still-live C lifecycle belongs to 07.
-    if (input.kind !== "noting") return { parentFile, parentSessionId: piId, checkpoint, captured: captured.payload };
-    const parentBinding = JSON.stringify(binding());
-    const recheck = () => {
-      if (context.sessionManager.getSessionId() !== piId || context.sessionManager.getLeafId() !== checkpoint
-        || JSON.stringify(binding()) !== parentBinding || state.branch !== input.branch)
-        return "Fork parent changed after admission; the exact native checkpoint is no longer selected";
-      return unpublishedKnowledge({ sessionId: input.sessionId, branch: input.branch, headTurnId: state.head! });
-    };
-    const reason = recheck();
-    return reason ? { refused: reason } : { parentFile, parentSessionId: piId, checkpoint, captured: captured.payload, recheck };
-  };
   const memory = TraceMemory(dbPath, async raw => {
     const input = raw as NotingAgentInput | DreamingAgentInput;
     const callContext = ctx;
     const callPiId = callContext.sessionManager.getSessionId();
     const registry = callContext.modelRegistry;
     const slash = input.model.indexOf("/");
-    // The model is frozen with the run (a fork run freezes the session model at launch), so a
-    // model switch during a worker run cannot redirect its later rounds.
+    // The model is frozen with the run, so a model switch during a worker run cannot redirect its
+    // later rounds.
     const current = callContext.model;
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
       : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
@@ -178,8 +125,7 @@ export default function (pi: ExtensionAPI) {
     // whole-body estimate): the frozen batch fit the reported capacity, and Pi's own measure of the
     // child's context — the child session's `getContextUsage()`, taken in hosts/pi/native.ts where
     // that session is — must still fit the same rule the allowance was cut by. Nothing here parses a
-    // provider body, so a child on an API the fork gate does not know keeps running, and images and
-    // encrypted fields need no rule of ours. An unknown measure refuses nothing.
+    // provider body, so images and encrypted fields need no rule of ours. An unknown measure refuses nothing.
     const checkCapacity = !model ? undefined : (contextTokens: number | undefined) => {
       if (contextTokens !== undefined && contextTokens > model.contextWindow - CONTEXT_HEADROOM)
         throw new Error(`${PHASE_LABEL[input.kind]} capacity: the child's context of ${contextTokens} tokens leaves less than the ${CONTEXT_HEADROOM}-token headroom in the ${model.contextWindow}-token window of ${model.provider}/${model.id}`);
@@ -194,9 +140,9 @@ export default function (pi: ExtensionAPI) {
       if (typeof answer === "string") { showSpend(callContext); return answer; }
       return answer.finally(() => showSpend(callContext));
     } }) as (typeof input.tools)[number]);
-    // Everything the run needs, resolved now and frozen: the model, the runs directory, the tool
-    // round cap and the fork launch cannot be re-read by a run already in flight, and this host
-    // keeps its own state behind the callbacks below.
+    // Everything the run needs, resolved now and frozen: the model, the runs directory and the tool
+    // round cap cannot be re-read by a run already in flight, and this host keeps its own state
+    // behind the callbacks below.
     // Ticket 136: a worker's Read opens trace:// only, so an over-long search output is saved in a directory
     // made for this run on first use, which that Read may also open; it is removed when the run ends.
     let outputDirectory: string | undefined;
@@ -214,19 +160,6 @@ export default function (pi: ExtensionAPI) {
         return memoryFiles(memory, input.reader).read(path);
       }, { memoryOnly: true, readableDirectory: () => outputDirectory }),
       maxToolRounds: memory.config[input.kind].maxToolRounds,
-      // 27b/27c: a task carrying a reason was admitted as a subagent — the configured model, that
-      // model's capacity, fresh material — because something already refused its fork. It is offered
-      // no launch at all: it runs fresh and records the reason it carries (hosts/pi/worker.ts). That
-      // is also the structural one-transition guard, since a task with no fork to launch can never be
-      // refused one. Every other condition is re-derived here, for this task, at this moment.
-      fork: input.mode === "fork" && model && !input.fallbackReason && !input.signal?.aborted
-        ? forkLaunch(callContext, input, model, callPiId) : undefined,
-      // Ticket 108: every eligible miss is warned once with the input tokens read from cache, and
-      // nothing follows from it (no downgrade). The first miss of a run is audited under
-      // `verification.cacheMiss` in its run record.
-      onCache: observation => {
-        if (observation.miss) callContext.ui.notify(cacheMissWarning(observation), "warning");
-      },
       // Pi's own retry policy runs inside the child; the one warning per scheduled backoff stays the
       // adapter's. 51: the footer indicator no longer tracks a retry — the notify reports it.
       onRetry: event => {
@@ -235,16 +168,6 @@ export default function (pi: ExtensionAPI) {
       onRetryEnd: () => showSpend(callContext), // the same refresh point as before; only the colour is gone
     }).finally(() => { if (outputDirectory) rmSync(outputDirectory, { recursive: true, force: true }); });
   }, core, piResultText, piSourceBlocks);
-  /** One fork-to-subagent notice per Pi session, whatever refused the fork: the live state at
-   * admission (29c's Raw availability), the launch, the native runner's own
-   * gate, and (27b) a capacity refusal before sending or a provider overflow after a real attempt.
-   * A warning, never an error — the work continues on the fresh child, and a later task may request
-   * fork again. */
-  const notifyFallback = (kind: string, reason: string) => {
-    if (session.notified) return;
-    ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
-    session.notified = true;
-  };
   /** Host state written before Ticket 34c may still contain supplement counters. They are preserved
    * when an old entry is copied but never read as delivery eligibility; each ordinary prompt now
    * recomputes the exact visible/applicable difference. */
@@ -278,7 +201,7 @@ export default function (pi: ExtensionAPI) {
 
   // Pi does not flush a new native file before its first assistant message. Keep the
   // provisional enrollment entry durable without manufacturing a reply or a Turn.
-  const provisionalPath = () => join(agentDir, "trace-memory-enrollment", `${hash([dbPath, state.piId])}.json`);
+  const provisionalPath = () => join(agentDir, "trace-memory-enrollment", `${createHash("sha256").update(JSON.stringify([dbPath, state.piId])).digest("hex")}.json`);
   const provisional = (): Enrollment | undefined => {
     try {
       const value = JSON.parse(readFileSync(provisionalPath(), "utf8"));
@@ -330,56 +253,9 @@ export default function (pi: ExtensionAPI) {
   const deliveryPart = (block: { knowledgeCommitIds: number[]; knowledgeStates?: { fromCommit: number; toCommits: number[] }[]; knowledgeTokens?: number; text: string }) =>
     ({ knowledgeCommitIds: block.knowledgeCommitIds, knowledgeStates: (block.knowledgeStates ?? []).map(knowledgeStateKey),
       knowledgeTokens: block.knowledgeTokens ?? tokens(block.text) });
-  /** The task a fork refusal is decided for: its phase, its evidence path and — 27d/18b — the
-   * boundary that fixes which pending entries it may take, so 29c checks the batch this task would
-   * really select and not a larger set it will never freeze. */
-  type ForkTask = { kind: WorkerPhase; target: TaskTarget; boundary?: TaskBoundary };
-  /** Ticket 29c "Noter fork eligibility by actual Raw availability" (parent 29). A requested Noter
-   * fork requires every non-thinking-only entry of its target to be available in the inherited context
-   * in a representation it may extract from — a source entry Pi retained, or the bounded view a
-   * carrier of ours supplied for an entry the conversation itself no longer holds (30: one view, and a
-   * legacy tier-1 or tier-2 carrier counts as it). That is precisely what 29a's view calls `raw`, so a
-   * free summary, an id in prose and an absent tool result are simply not in it; an incomplete
-   * tool-call group stays the native gate's
-   * own check (`forkable`). One unavailable material entry sends the whole target down the existing fallback
-   * (27c) with its exact processing membership, including thinking-only entries. This replaces ticket 20's
-   * blanket pre-compaction refusal: a pre-compaction entry Pi
-   * retained, and one a custom compaction carried as a bounded view, are both available and both fork.
-   *
-   * A view with no Raw at all is unknown coverage, not proven absence, and is refused for the same
-   * reason 27a refuses an unknown context measure: nothing about the inherited context is
-   * established, so there is no fork base to check a target against. */
-  /** Why a requested fork will not run with inherited context for this task, decided against this
-   * host's live state at admission — before anything is frozen, so the refused task is admitted once
-   * more as a subagent with fresh material (27c): 29c's Raw availability rule refuses the batch.
-   * Undefined means it may fork. The refusal is re-decided for every task, and 27c records the
-   * reason rather than only its verdict, because the reason is what the run audit and the one
-   * warning say. */
-  const forkRefused = (requested: "fork" | "subagent", task?: ForkTask): string | undefined => {
-    if (requested !== "fork") return;
-    if (task?.kind !== "noting") return;
-    const parentFile = ctx.sessionManager.getSessionFile?.();
-    const checkpoint = ctx.sessionManager.getLeafId();
-    if (parentFile && checkpoint) {
-      const refusal = checkpointReadiness(parentFile, checkpoint);
-      if (refusal) return refusal;
-    }
-    return selectNotingMode({ requested, publicationPending: knowledgePending(task.target), visible: visible(binding()),
-      pending: () => memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId),
-      batch: () => memory.notingBatch(task.target, task.boundary).filter(entry => !isThinkingOnly(entry)) }).fallbackReason;
-  };
   const modelName = (kind: WorkerPhase) => {
     const configured = flat[PHASE_SETTING_KEYS[kind].model];
     return String(configured && configured !== "session" ? configured : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
-  };
-  // Each phase configures its own mode, defaulting to subagent when no override is supplied.
-  // This is the ordinary automatic path only. Borrowed closed-session
-  // work and manual catchup ask for a subagent explicitly at their own call sites, and ticket 28's
-  // recovery workers will do the same. Fork mode always runs on the session model, subagent mode on
-  // the configured one.
-  const launch = (kind: WorkerPhase) => {
-    const fork = kind !== "dreaming" && memory.config[kind].forkModeDefault;
-    return { mode: fork ? "fork" as const : "subagent" as const, model: fork ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
   };
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
   // The plugin's own model spend as a footer status item (Pi's setStatus, the shape ponytail uses);
@@ -442,57 +318,27 @@ export default function (pi: ExtensionAPI) {
     showSpend(context);
     if (r?.outcome === "success" && r.problems?.length) context.ui.notify(`Trace Memory: committed with problems. ${r.problems.join("; ")}`, "warning");
   };
-  // One admission path for ordinary (own/borrowed) and manual-catchup work (18b): only the target,
-  // mode/model and admission flags differ. `boundary` is absent for ordinary automatic work.
-  // The return type is written out because 27b/27c's re-admission re-enters this function.
+  // One admission path for ordinary (own/borrowed) and manual-catchup work (18b): only the target
+  // and admission flags differ. `boundary` is absent for ordinary automatic work.
   const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
-      selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
-      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal },
+      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary },
       ): Promise<NotingResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
-    if (closed || !enabled()
-        || (options.forkAttempt?.cancellation !== undefined && options.forkAttempt.cancellation < memory.cancellation))
-      return Promise.resolve({ outcome: "dropped", reason: CANCELLED_BEFORE_FALLBACK } as const);
+    if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
     // material. The foreground level is read once here, as a value — every later round of this run
-    // and its fork-to-subagent fallback use exactly this level, whatever the foreground switches to
-    // meanwhile — and Pi's own session constructor clamps it to what the worker model supports, so
-    // no per-model preference and no global default decides a worker's level. Borrowed closed-session
-    // work and manual catchup reach this line too, and inherit this executor's level, never a
-    // historical target session's.
-    // 26d: two levels are frozen, not one. `thinkingLevel` is the inherited foreground level a fork
-    // run uses (26b, unchanged: its request prefix must still match the captured parent's).
-    // `subagentThinkingLevel` is what every fresh child of this task thinks at — explicit subagent
-    // mode, a fork fallback, borrowed work, manual catchup — which is this phase's configured
+    // uses exactly this level, whatever the foreground switches to meanwhile — and Pi's own session
+    // constructor clamps it to what the worker model supports, so no per-model preference and no
+    // global default decides a worker's level. Borrowed closed-session work and manual catchup reach
+    // this line too, and inherit this executor's level, never a historical target session's.
+    // 26d: `subagentThinkingLevel` is what the child of this task thinks at: this phase's configured
     // preference, or the same inherited level when it is `inherit` or unset. Read here, at admission,
-    // so a preference saved afterwards reaches neither this run's later rounds nor its fallback.
-    // 27d repair 3 (parent 27 line 96): a re-admitted task reuses the pair its refusal carried and
-    // reads neither the foreground level nor the preference again — this is the same task's admission
-    // continuing, and repricing fresh material is not permission to reread a frozen policy choice.
-    // The fresh model preference is frozen here too, before any asynchronous refusal.
-    const carried = options.forkAttempt;
-    const generation = carried?.cancellation ?? memory.cancellation;
-    const configuredModel = carried?.subagentModel ?? modelName(kind);
-    const fallbackModel = configuredModel === "session" && context.model
-      ? `${context.model.provider}/${context.model.id}` : configuredModel;
+    // so a preference saved afterwards does not reach this run's later rounds.
+    const selectedModel = modelName(kind);
     const configuredThinking = flat[PHASE_SETTING_KEYS[kind].thinking];
-    const inheritedThinking = carried ? carried.thinkingLevel : pi.getThinkingLevel();
-    const subagentThinking = carried ? carried.subagentThinkingLevel
-      : configuredThinking && configuredThinking !== "inherit" ? String(configuredThinking) : inheritedThinking;
-    // 27c (parent 27 "Per-task fork fallback", amendments 5 and 6): the one rule for every fork this
-    // host does not run — whatever the reason, the task runs as a subagent on the configured Noter
-    // model (`notingModel`, the `session` preference included), priced by that model's own capacity,
-    // with fresh material, and one warning names the reason. The requested mode stays `fork`, so the
-    // run audit keeps what was configured; `fallbackReason` is what makes it run fresh, and it is the
-    // run's recorded reason. A task carrying one is never refused a fork again (the launch below is
-    // not even offered one), which is the structural one-transition guard.
-    const asSubagent = (reason: string) => { notifyFallback(kind, reason); return { ...selected, model: fallbackModel, fallbackReason: reason }; };
-    // The refusal this host knows before anything is frozen — 29c's Raw availability — is applied here, where the model and the capacity are still open:
-    // one admission, no second freeze. A re-admitted task carries its own reason and re-resolves none.
-    const refusal = selected.fallbackReason ? undefined : forkRefused(selected.mode, { kind, target, boundary: options.boundary });
-    const selection = refusal ? asSubagent(refusal) : selected;
-    const effective = selection.fallbackReason ? "subagent" as const : selection.mode; // admission pauses by what will run, not by what was asked
-    const [provider, ...id] = selection.model.split("/");
-    const model = selection.model === "session" || selection.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
+    const inheritedThinking = pi.getThinkingLevel();
+    const subagentThinking = configuredThinking && configuredThinking !== "inherit" ? String(configuredThinking) : inheritedThinking;
+    const [provider, ...id] = selectedModel.split("/");
+    const model = selectedModel === "session" || selectedModel === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
     const phase = kind === "noting" ? "Noting" : "Dreaming";
     // 27a: the allowance is the window minus the fixed headroom, so an invalid window and one that
     // cannot even hold the headroom fail here, before anything is sent. `model.maxTokens` is read
@@ -503,86 +349,16 @@ export default function (pi: ExtensionAPI) {
       // A configuration error, not a transient wait: a manual catchup must fail on it, never retry (review 2026-09-08).
       return Promise.resolve({ outcome: "dropped", permanent } as const);
     }
-    // Capacity is checked before selection.
-    // 27a: a fork's inherited prefix is Pi's own measure of this session's context, read once here
-    // and frozen with the task beside the model and the thinking level — the real usage of the latest
-    // valid reply on the path plus Pi's estimate of the messages after it. It already holds the
-    // images and the encrypted fields of that history, so no accounting of ours walks a request body,
-    // and a later foreground turn cannot move the number this task was admitted on. A capture from
-    // another branch or another model is not a fork base and prices no prefix; the launch below
-    // refuses those to a fresh child, which is priced by the same freeze's subagent material.
-    const base = effective === "fork" && session.capture?.branch === target.branch
-      && session.capture.model === model.id && session.capture.provider === model.provider;
-    const measure = base ? context.getContextUsage() : undefined;
-    // 27b (parent 27 amendment 5) and 27c (amendment 6): a refusal this admission could not know —
-    // the freeze's own capacity verdict, a fork base this host cannot price, and every refusal the
-    // launch, the gate or the provider raises after the task was frozen — is one re-admission, not a
-    // retry: the same task, admitted once more as a subagent by `asSubagent` above, so the batch is
-    // re-frozen with fresh material under the ordinary exact selection at the configured model's own
-    // capacity. A task that already ran keeps its frozen evidence membership through the task
-    // boundary — 27d: its exact entry ids, never an upper bound — and its frozen levels and
-    // cancellation generation travel with it. The evidence path and a manual catchup's own boundary
-    // travel in `target` and `options`. Nothing is drained immediately: the same task, admitted once
-    // more.
-    // 27d repair 1: an attempt that sent a request already has its own run record, whose id core
-    // returned with the refusal; the run this admission makes names it in its own reason, so the two
-    // records read as the one task they are. The warning stays the reason alone.
-    // 27d repair 4: the warning is said only if this admission launched something. A task cancelled
-    // between the refusal and here drops before it freezes anything, and a cancelled user is owed no
-    // notice; every other ending, its own failure included, warns exactly as before.
-    const reroute = (refusal: ForkRefusal) => {
-      const refused: ForkRefusal = { thinkingLevel: inheritedThinking, subagentThinkingLevel: subagentThinking,
-        cancellation: generation, ...refusal, subagentModel: fallbackModel };
-      const reason = refused.runId === undefined ? refused.reason : `${refused.reason} (fork attempt recorded as R${refused.runId})`;
-      const warn = () => notifyFallback(kind, refused.reason);
-      return attemptPhase(context, kind, target, { ...selected, model: fallbackModel, fallbackReason: reason },
-        { ...options, ...(refused.boundary ? { boundary: refused.boundary } : {}), forkAttempt: refused })
-        .then(result => { if ((result as { reason?: string }).reason !== CANCELLED_BEFORE_FALLBACK) warn(); return result; },
-          error => { warn(); throw error; });
-    };
-    // An unknown measure — right after a compaction, before a valid reply — is not a fork base either,
-    // and unlike the two above nothing downstream would refuse it, so it is rerouted here rather than
-    // waiting: no whole-body estimate ever stands in for the measure.
-    if (base && typeof measure?.tokens !== "number")
-      return reroute({ reason: `${phase} capacity: Pi reports an unknown context measure for this session, so this task has no fork base` });
-    const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM, prefixTokens: measure?.tokens ?? 0 };
+    const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM, prefixTokens: 0 };
     // Fresh Pi children expose the native Read definition via memoryReadTool. Price that same
-    // description and schema beside Core's memory tools; a fork already carries its captured Read.
+    // description and schema beside Core's memory tools.
     const { name, description, parameters } = createReadToolDefinition(context.cwd);
-    const nativeReadToolTokens = effective === "subagent" ? tokens(JSON.stringify({ name, description, parameters })) : undefined;
-    // 29b: the second half of a fork's initial state, beside the measure above — what this session's
-    // selected context actually holds, read through the 29a memo and frozen with the task. Only a task
-    // that will run with an inherited context gets one: an explicit subagent and a fork re-admitted as
-    // a subagent (`fallbackReason` makes `effective` subagent above) pass none, so core builds the
-    // complete fresh material for them, exactly as before.
-    const inherited = effective === "fork" ? structuredClone(visible(binding())) : undefined;
-    const common = { ...target, ...selection, effectiveMode: effective, thinkingLevel: inheritedThinking,
-      ...(inherited ? { visible: inherited } : {}),
-      subagentThinkingLevel: subagentThinking,
+    const nativeReadToolTokens = tokens(JSON.stringify({ name, description, parameters }));
+    const common = { ...target, model: selectedModel, thinkingLevel: inheritedThinking, subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
-      ...(nativeReadToolTokens !== undefined ? { nativeReadToolTokens } : {}),
-      ...(options.boundary ? { boundary: options.boundary } : {}),
-      // 27c: the refused attempt's gate result, for a refusal that recorded no run of its own.
-      // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
-      // admission when a cancellation happened in between.
-      ...(carried ? { forkAttempt: carried, executionId: carried.executionId, ...(carried.cancellation !== undefined ? { cancellation: carried.cancellation } : {}) } : {}) };
-    const admitted = (kind === "dreaming" ? memory.dream(common) : memory.noting(common))
+      nativeReadToolTokens, ...(options.boundary ? { boundary: options.boundary } : {}) };
+    return (kind === "dreaming" ? memory.dream(common) : memory.noting(common))
       .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); return result; });
-    if (effective !== "fork") return admitted;
-    // 27b: the freeze priced this batch as a fork — the inherited context plus the instructions — and
-    // refused it. The same evidence under a fresh child's own price often fits, so that one refusal
-    // is re-admitted instead of leaving feasible work pending. Only this refusal: any other admission
-    // failure (a `noting.batchTokens` overflow, a store error) is reported as itself, and if the
-    // subagent admission refuses the batch too, that refusal is what the caller reports.
-    return admitted.catch(error => error instanceof Error && error.cause === "task admission"
-      && error.message.startsWith(NOTING_CAPACITY)
-      ? reroute({ reason: error.message.replace(/; left pending$/, "") }) : Promise.reject(error))
-      // 27c: the launch, the gate or the provider refused this fork after the task was frozen. Core
-      // handed the refusal back unread, so the one re-admission happens here — on the frozen batch's
-      // own entries. The re-admitted task runs fresh, so nothing it returns can be a refusal again.
-      // 27d: `runId` is core's record of that attempt, present exactly when it sent a request.
-      .then(result => { const dropped = result as { refused?: ForkRefusal; runId?: number; executionId?: string };
-        return dropped.refused ? reroute({ ...dropped.refused, executionId: dropped.executionId, ...(dropped.runId !== undefined ? { runId: dropped.runId } : {}) }) : result; });
   };
   // Keep the existing storage provenance value; session.project_declaration controls sharing.
   const ownProject = (piId: string) => (memory.store.findProjectByName(`pi:${piId}`)
@@ -612,8 +388,6 @@ export default function (pi: ExtensionAPI) {
     const saved = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === tag)
       .map(e => (e as { data: State & { dbPath: string } }).data).filter(d => d.dbPath === dbPath).at(-1);
     const piId = ctx.sessionManager.getSessionId();
-    // A tree switch invalidates the old branch body, even when returning to a saved head.
-    session.capture = undefined;
     if (saved) {
       const tip = ctx.sessionManager.getEntries().filter(e => e.type === "custom" && e.customType === tag)
         .map(e => (e as { data: State & { dbPath: string } }).data)
@@ -896,12 +670,9 @@ export default function (pi: ExtensionAPI) {
       // changes no membership and must not revalidate the entire ancestry.
     });
   };
-  pi.on("before_provider_request", (event, context) => {
+  pi.on("before_provider_request", (_event, context) => {
     ensure(context);
     if (!enabled()) { showSpend(context); return; }
-    // The capture is the fork gate's comparand and nothing else: the request-copy runner that also
-    // read the ancestry behind it was deleted in 19c, so only the body is kept (review 2026-09-08).
-    if (context.model) session.capture = { payload: snapshot(event.payload) as Body, model: context.model.id, provider: context.model.provider, branch: state.branch };
     reconcile();
   });
   pi.on("session_start", (_event, context) => {
@@ -924,7 +695,7 @@ export default function (pi: ExtensionAPI) {
     if (!enabled()) { showSpend(context); return; }
     reconcile();
     // 137: the retrieval policy is a prompt section, so Pi appends a transcript delta once per session
-    // (and again only if it changes) rather than replacing the prompt. A fork child inherits it.
+    // (and again only if it changes) rather than replacing the prompt.
     if (event.systemPromptOptions?.sections) event.systemPromptOptions.sections["trace-memory-retrieval"] = retrievalPolicy(canonicalToolNames);
     // Ticket 34c: this is the single delivery predicate. Every enabled ordinary prompt compares one
     // selected-context view with one current applicable graph; commands and worker completions add no
@@ -1028,8 +799,6 @@ export default function (pi: ExtensionAPI) {
           if (kind === "dreaming") dreamingArmed = due;
         } catch (error) { context.ui.notify(String(error), "error"); }
       }
-      // Persist our own state before freezing a requested fork's native checkpoint.
-      if (due && kind === "noting" && memory.config.noting.forkModeDefault && state.sourceHead !== savedSourceHead) save();
       const candidates: ({ borrowed: boolean } & TaskTarget)[] = due ? [{ ...own, borrowed: false }] : [];
       if (kind !== "dreaming" && includeBorrowed) {
         try { candidates.push(...memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope)
@@ -1044,8 +813,7 @@ export default function (pi: ExtensionAPI) {
           if (closed || !enabled() || memory.cancellation !== generation || state.sessionId !== own.sessionId
               || state.branch !== own.branch || state.head !== own.headTurnId) return;
           try {
-            const selected = borrowed ? { mode: "subagent" as const, model: modelName(kind) } : launch(kind);
-            const result = await attemptPhase(context, kind, target, selected, { borrowed, automatic: true });
+            const result = await attemptPhase(context, kind, target, { borrowed, automatic: true });
             if (result.outcome !== "dropped" && result.outcome !== "empty") return result;
           } catch (error) {
             context.ui.notify(String(error), "error");
@@ -1128,7 +896,7 @@ export default function (pi: ExtensionAPI) {
       const boundary = phase === "noting" ? { maxEntryId: c.maxEntryId } : undefined;
       const slot: Slot = { target: own, ...(boundary ? { boundary } : {}) };
       slots.set(phase, slot); c.active.add(phase); activity.running.set(phase, 1); showSpend(context);
-      const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) },
+      const promise = attemptPhase(context, phase, own,
         { borrowed: false, automatic: phase !== "noting", ...(boundary ? { boundary } : {}) });
       slot.result = promise.catch(() => undefined);
       let checkpoint = false, retry = false;
@@ -1506,9 +1274,7 @@ export default function (pi: ExtensionAPI) {
     save();
     ctx.ui.notify(marked, "info");
   };
-  // 24b's preference descriptions live in hosts/pi/settings.ts; only the foreground model is this
-  // session's own, so a fork-mode line can name the model that child would inherit.
-  const foregroundModel = () => ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "the session model";
+  // 24b's preference descriptions live in hosts/pi/settings.ts.
   /** Pi's own registry decides which models exist and which have resolved auth; nothing here asks for
    * a credential or calls a model to validate a choice. The foreground model is always offered: it is
    * demonstrably usable in this session even when a registry snapshot is empty. */
@@ -1537,7 +1303,7 @@ export default function (pi: ExtensionAPI) {
     // The merged, validated layers decide: a project or environment override still wins, and core is
     // told the value that is actually effective — never the global one an override masks.
     const effective = validateConfig(core);
-    memory.configure({ closedSessionScope: effective.closedSessionScope, noting: { forkModeDefault: effective.noting.forkModeDefault } });
+    memory.configure({ closedSessionScope: effective.closedSessionScope });
   };
   // Ticket 114: each session watches the settings files it reads and applies a change through
   // `applySettings`, the path the menu's save uses. A second apply of an unchanged file is a no-op.
@@ -1579,21 +1345,20 @@ export default function (pi: ExtensionAPI) {
       } catch { /* this directory cannot be watched; the next session start reads the files anyway */ }
     }
   };
-  const saveGlobal = (p: Preference, value: string | boolean) => {
-    let replaced: string | undefined;
-    try { replaced = writeGlobal(settingsFile, p.key, value); }
+  const saveGlobal = (p: Preference, value: string) => {
+    try { writeGlobal(settingsFile, p.key, value); }
     catch (error) { ctx.ui.notify(`Trace Memory: ${p.name} unchanged — ${String(error)}`, "error"); return; }
     try { applySettings(); }
     catch (error) { ctx.ui.notify(`Trace Memory: ${p.key} was saved in ${settingsFile}, but the settings could not be reloaded: ${String(error)}`, "error"); return; }
     const source = sources[p.key] ?? "Global";
     // Never claim a masked edit changed the effective behaviour: the override stays, and it is named.
     const override = source === "Global" ? "" :
-      ` A ${source} setting takes precedence, so the effective ${p.name} stays ${shownValue(p, preferenceValue(flat, p))} (${source}); it was not removed.`;
-    ctx.ui.notify(`Trace Memory: saved ${p.key} = ${JSON.stringify(value)} (${shownValue(p, value)}) in ${settingsFile}.` +
-      (replaced ? ` The legacy spelling ${replaced} of the same preference was replaced by ${p.key}.` : "") + override +
+      ` A ${source} setting takes precedence, so the effective ${p.name} stays ${shownValue(preferenceValue(flat, p))} (${source}); it was not removed.`;
+    ctx.ui.notify(`Trace Memory: saved ${p.key} = ${JSON.stringify(value)} (${shownValue(value)}) in ${settingsFile}.` +
+      override +
       (p.kind === "scope" ? " It applies to memory tasks admitted from now on; running tasks keep their admission scope. Use Stop to end running work."
         : p.kind === "thinking" ? " It applies to memory tasks admitted from now on; running tasks keep the thinking level they were frozen with."
-        : " It applies to memory tasks admitted from now on; running tasks keep the mode and model they started with."), "info");
+        : " It applies to memory tasks admitted from now on; running tasks keep the model they started with."), "info");
   };
   const editPreference = async (p: Preference) => {
     if (p.kind === "scope") {
@@ -1602,19 +1367,10 @@ export default function (pi: ExtensionAPI) {
       saveGlobal(p, choice);
       return;
     }
-    if (p.kind === "mode") {
-      const choice = await ctx.ui.select(`${p.name} — applies to tasks admitted from now on; running tasks keep their mode`,
-        ["fork", "subagent"]);
-      if (choice === undefined) return; // cancelled: nothing written, nothing requested
-      saveGlobal(p, choice === "fork");
-      return;
-    }
     // 26d: the level this phase's subagent runs think at. `inherit` is 26b's rule — the foreground
-    // level frozen at admission. A fork keeps inheriting either way, so a configured level reaches a
-    // fork task only through its fallback child. Pi clamps a level the worker model cannot do.
+    // level frozen at admission. Pi clamps a level the worker model cannot do.
     if (p.kind === "thinking") {
       const choice = await ctx.ui.select(`${p.name} — inherit: the foreground level frozen at admission; otherwise this phase's subagent runs think at the chosen level` +
-        (configuredMode(flat, p.phase) === "fork" ? `, and Noting is configured for fork mode, whose child keeps inheriting the foreground level` : "") +
         ". Applies to tasks admitted from now on; running tasks keep their level.", thinkingChoices);
       if (choice === undefined) return;
       saveGlobal(p, choice);
@@ -1623,10 +1379,7 @@ export default function (pi: ExtensionAPI) {
     const follow = "Follow foreground";
     const models = availableModels();
     if (!models.length) { ctx.ui.notify(`Trace Memory: ${p.name} unchanged — Pi's model registry lists no available model.`, "warning"); return; }
-    const title = configuredMode(flat, p.phase) === "fork"
-      ? `${p.name} — Noting is configured for fork mode, which inherits the foreground model ${foregroundModel()}; this choice is used by subagent runs`
-      : `${p.name} — used by this phase's subagent runs`;
-    const choice = await ctx.ui.select(title, [follow, ...models]);
+    const choice = await ctx.ui.select(`${p.name} — used by this phase's subagent runs`, [follow, ...models]);
     if (choice === undefined) return;
     if (choice !== follow) {
       const slash = choice.indexOf("/");
@@ -1636,17 +1389,16 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(`Trace Memory: ${p.name} unchanged — ${choice} is not an available provider/model in Pi's registry.`, "warning"); return;
       }
     }
-    // Selecting a model never switches the mode: only `${p.key}` is written.
     saveGlobal(p, choice === follow ? "session" : choice);
   };
   const settingsInput = (): SettingsInput => {
     const worker = (phase: "Noter" | "Dreamer", key: "noting" | "dreaming") => {
       const pref = (kind: Preference["kind"]) => preferences.find(p => p.phase === key && p.kind === kind);
-      const model = pref("model")!, thinking = pref("thinking")!, mode = pref("mode");
-      const effective = (p: Preference) => shownValue(p, preferenceValue(flat, p));
+      const model = pref("model")!, thinking = pref("thinking")!;
+      const effective = (p: Preference) => shownValue(preferenceValue(flat, p));
       const source = (p: Preference) => sources[p.key] && sources[p.key] !== "Global" ? `${sources[p.key]} setting — this edit will not take effect` : undefined;
-      return { phase, ...(mode ? { mode: effective(mode) } : {}), model: effective(model), thinking: effective(thinking),
-        sources: { mode: mode && source(mode) || undefined, model: source(model), thinking: source(thinking) } };
+      return { phase, model: effective(model), thinking: effective(thinking),
+        sources: { model: source(model), thinking: source(thinking) } };
     };
     return { database: dbPath, budgets: { ...memory.knowledgeBudgets(), sharedAllowanceTokens: memory.config.compaction.sharedAllowanceTokens },
       workers: [worker("Noter", "noting"), worker("Dreamer", "dreaming")],

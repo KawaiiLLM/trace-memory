@@ -52,7 +52,6 @@ for (const cancel of [false, true]) {
         expect(tasks.length).toBeGreaterThan(1);
         expect(tasks.flatMap(task => task.entryIds)).toEqual(entries);
         for (const task of tasks) {
-          expect(task.mode).toBe("subagent");
           expect(task.material.entries.map(entry => entry.id)).toEqual(task.entryIds);
           expect(task.text).toContain("Target session agent: Claude Code");
         }

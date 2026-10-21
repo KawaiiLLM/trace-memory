@@ -4,7 +4,7 @@ import { readHandle } from "../../read-handle-fixture.ts";
 import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { DEFAULT_CONFIG, TraceMemory, memoryFiles, renderEntry, tokens, type NotingAgentInput } from "../../../src/core/api/index.ts";
-import { compacted, visibleTarget, hydrate } from "../../source-fixture.ts";
+import { compacted, hydrate } from "../../source-fixture.ts";
 import { host, reply } from "./test-host.ts";
 import { piResultText } from "../../../src/hosts/pi/index.ts";
 
@@ -84,7 +84,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
     await h.emit("message_end", { message: { ...reply("first"), content: [{ type: "text", text: "first" }, { type: "toolCall", id: "call", name: "bash", arguments: { command: "check" } }] } });
     await h.emit("message_start", { message: reply("") });
     const before = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
-    const pending = noter.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" });
+    const pending = noter.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
     const oldView = renderEntry(before[1]!, h.memory.config.render).content;
     await h.emit("tool_result", { toolCallId: "call", toolName: "bash", input: { command: "check" }, content: [{ type: "text", text: "late result" }], isError: false });
     await h.answer("late assistant");
@@ -110,25 +110,10 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
     await h.emit("session_start");
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toEqual(after);
     expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`trace://raw/S1/T1#E${lateResult.entryOrdinal}`).content).toContain("late result");
-    const next = TraceMemory(join(h.dir, "trace.db"), async raw => {
-      const forkInput = raw as NotingAgentInput;
-      // 29b: with the whole target visible the fork supplies no Raw body, so the only entry text it
-      // carries is the head reply the captured request cannot contain.
-      expect(forkInput.text).not.toContain("T1#user");
-      expect(forkInput.text).toContain("late assistant");
-      forkInput.tools.find(tool => tool.name === "note")!.execute({});
-      forkInput.tools.find(tool => tool.name === "memory")!.execute({});
-      return { outcome: "success", output: "", request: {} };
-    });
-    try {
-      const visible = visibleTarget(next, 1, "main", 1);
-      expect((await next.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "fork", visible })).outcome).toBe("success");
-    }
-    finally { next.close(); }
   } finally { release?.(); noter.close(); await h.dispose(); }
 });
 
-test("17a 2026-09-08: Noting, fallback, compaction and carry supply identical bounded entry bytes", async () => {
+test("17a 2026-09-08: Noting, compaction and carry supply identical bounded entry bytes", async () => {
   // 20c/30: compact delegates to native compaction once the bounded views exceed the shared Raw
   // ceiling, so this byte-comparison case gives every consumer — the host included — room for the
   // whole pending set, exactly as the subagent Noter below is given it.
@@ -149,14 +134,11 @@ test("17a 2026-09-08: Noting, fallback, compaction and carry supply identical bo
       subagent = (raw as NotingAgentInput).text;
       return { outcome: "failure", output: "leave entries pending", request: {} };
     }, { noting: { batchTokens: 100_000 } });
-    await noter.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); noter.close();
+    await noter.noting({ sessionId: 1, branch: "main", headTurnId: 1 }); noter.close();
     expect(rawOf(subagent)).toBe(expected.join("\n\n"));
     // A separate host with the normal trigger reattaches the same native fixture; attach itself is quiet.
-    // 29b: this host runs the fresh path by configuration. It used to get there by a capacity refusal,
-    // but a fork whose whole target is visible now supplies no Raw at all and fits comfortably — which
-    // is the point of case 12 and would leave this byte comparison with no fresh request to read.
     // 30: one entry view is capped at 2,000 tokens, so the trigger this fresh run needs is smaller.
-    const runner = host({ "noting.triggerTokens": 1000, "noting.batchTokens": 100000, "noting.forkModeDefault": false });
+    const runner = host({ "noting.triggerTokens": 1000, "noting.batchTokens": 100000 });
     runner.entries.push(...h.entries.filter(e => e.type === "message"));
     runner.allEntries.push(...runner.entries);
     await runner.emit("session_start");
@@ -191,7 +173,7 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
       sent = (raw as NotingAgentInput).text;
       return { outcome: "failure", output: "leave pending", request: {} };
     });
-    try { await noting.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); }
+    try { await noting.noting({ sessionId: 1, branch: "main", headTurnId: 1 }); }
     finally { noting.close(); }
     expect(sent.split("Recent facts (by Turn):\n\n")[1]!.split("\n\nRaw:")[0]).toBe(grouped); // N now uses compact's layout
   } finally { await h.dispose(); }
@@ -423,7 +405,7 @@ test("review 2026-09-08 P3: the Noter's active knowledge follows the branch path
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("SIBLING_POLICY_ALPHA");
     let sent = "";
     runner = TraceMemory(join(h.dir, "trace.db"), async input => { sent = (input as NotingAgentInput).text; return { outcome: "failure", output: "inspection only", request: {} }; });
-    await runner.noting({ sessionId: 1, branch, headTurnId: 1, mode: "subagent" });
+    await runner.noting({ sessionId: 1, branch, headTurnId: 1 });
     expect(sent.split("</knowledge>")[0]).not.toContain("SIBLING_POLICY_ALPHA");
   } finally { runner?.close(); await h.dispose(); }
 });
@@ -503,7 +485,7 @@ test("23 2026-09-09: the Pi extractor unwraps a real tool-result message shape �
 });
 
 test("33/93: the Noter carries whole-entry role labels, not native message identity",  async () => {
-  const h = host({ ...quiet, "noting.forkModeDefault": false });
+  const h = host({ ...quiet });
   try {
     h.provider(async () => reply("Done."));
     await h.prompt("用 pnpm，不要 npm");
@@ -545,7 +527,7 @@ test("23c/30: the Noter prompt names the labels, the independent part budgets an
 });
 
 test("23c 2026-09-09: the run audit records the new marker family for a cut entry and nothing for an uncut one", async () => {
-  const h = host({ ...quiet, "noting.forkModeDefault": false });
+  const h = host({ ...quiet });
   try {
     h.provider(async () => reply("Done."));
     await h.prompt("short prompt"); // nothing to omit

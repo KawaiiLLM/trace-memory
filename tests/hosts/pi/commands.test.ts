@@ -144,7 +144,7 @@ test("24b: cancelling any menu step changes nothing and makes no request", async
     ["Project…", undefined],                        // the name input
     ["Catch up"],                                  // nothing pending: reports, starts nothing
     ["Settings…", undefined],                      // the preference list
-    ["Settings…", "Noter mode: subagent", undefined], // the value selection
+    ["Settings…", "Noter thinking: inherit", undefined], // the value selection
   ];
   for (const answers of cancels) { h.answers.push(...answers); await command(h, ""); }
   expect(readFileSync(globalSettings, "utf8")).toBe(before.settings);

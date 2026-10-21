@@ -1,20 +1,11 @@
 import { expect, test, vi } from "vitest";
 import { host, reply, notingFact, type Reply } from "./test-host.ts";
-import { noteAndMemory, stableForkFixture as forkFixture, noteBatch, say, toolResults, worker } from "./native-fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { fact, knowledge } from "../../support/seed.ts";
 
-// Ticket 20c — compaction and post-compaction worker mode, at the host boundary. Core decides between
-// the custom replacement and the native delegation over its own frozen snapshot (core/api/read.test.ts);
-// this file pins what the Pi adapter does with it, and what a persisted compaction does to the next
-// Noter's fork.
-//
-// 29c replaced the admission rule these cases were written for: the question is no longer "does a
-// selected entry precede the compaction" but "is every selected entry still in the inherited
-// context". A compaction persisted here keeps only its `firstKeptEntryId` and carries no views of
-// ours, so its pre-boundary entries are in no representation at all and the outcome of every case
-// below is unchanged; only the reason is. The representations that DO survive a compaction — a
-// retained source, a bounded view a carrier supplied — are the rows in `fallback.test.ts`.
+// Ticket 20c — compaction at the host boundary. Core decides between the custom replacement and the
+// native delegation over its own frozen snapshot (core/api/read.test.ts); this file pins what the Pi
+// adapter does with it.
 
 const long = (word: string) => `${word} ` + "word ".repeat(200);
 const quiet = { "noting.triggerTokens": 1_000_000_000 };
@@ -53,7 +44,7 @@ test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary unde
 });
 
 test("133 R1: pending Raw overflow delegates without a delivery or an extra Noter; the next Noter observes the native boundary", async () => {
-  const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "dreaming.triggerTokens": 1,
+  const h = host({ ...eager, "noting.batchTokens": 300, "dreaming.triggerTokens": 1,
     "compaction.factsTokens": 50, "compaction.rawTokens": 600, "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
   try {
     h.memory.setKnowledgeBudget("global", 0);
@@ -75,9 +66,7 @@ test("133 R1: pending Raw overflow delegates without a delivery or an extra Note
     expect(h.memory.store.listRuns(1)).toHaveLength(runsBefore);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pendingBefore);
     await work(h, long("more"));
-    expect(response(h).requestedMode).toBe("fork");
     expect(lastRun(h).mode).toBe("subagent");
-    expect(String(response(h).fallbackReason)).toContain("Raw availability: entry ");
   } finally { vi.restoreAllMocks(); await h.dispose(); }
 });
 
@@ -222,7 +211,7 @@ test.each([
   "<task-notification", "<system-reminder", "<command-", "Caveat", "[Request interrupted",
   "Another Claude session", "<local-command", "<skill", "This session is being continued",
 ])("133: Pi compaction excludes synthetic earlier user words beginning with %s", async prefix => {
-  const h = host({ "noting.triggerTokens": 1, "noting.forkModeDefault": false, "compaction.rawTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1, "compaction.rawTokens": 1 });
   try {
     await h.prompt(`${prefix} EXCLUDED_HISTORICAL_WORDS`); await h.answer(); await h.drain();
     await h.prompt("HUMAN_HISTORICAL_WORDS"); await h.answer(); await h.drain();
@@ -238,7 +227,7 @@ test.each([
 });
 
 test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter, a concurrent commit survives it, and no summary re-enters the source queue", async () => {
-  const h = host({ ...eager, "noting.forkModeDefault": false });
+  const h = host({ ...eager });
   try {
     const releases: ((value: Reply) => void)[] = [];
     h.provider(async () => new Promise<Reply>(resolve => releases.push(resolve)));
@@ -277,90 +266,3 @@ test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter
     expect(h.memory.pendingEntries(1, "main", compactionTurn.id).some(e => e.turnId === compactionTurn.id)).toBe(false);
   } finally { await h.dispose(); }
 });
-
-test("20c 2026-09-08 scenario 13 (rule replaced in 29c): a persisted compaction that keeps none of the selected entries sends the Noter to subagent with a recorded reason; a sibling path's does not", async () => {
-  const h = host({ ...eager, "noting.forkModeDefault": true }); // explicitly request fork throughout
-  try {
-    failing(h);
-    await h.prompt(long("HEAD")); await h.answer(); await h.emit("agent_settled"); await h.drain();
-    expect(response(h).requestedMode).toBe("fork");
-    expect(String(response(h).fallbackReason)).not.toContain("Raw availability"); // no compaction yet
-    // A compaction on a sibling path is in the session file but not on this ancestry, so it is in no
-    // context this host builds: it drops nothing here.
-    h.compaction("sibling summary", { sibling: true });
-    await work(h, long("sibling era"));
-    expect(String(response(h).fallbackReason)).not.toContain("Raw availability");
-    // The selected ancestry's own persisted compaction does drop entries. The batch that follows is
-    // mixed — entries the context still holds and entries it does not — and runs as subagent for all.
-    const dropped = h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)[0]!;
-    h.compaction();
-    await h.prompt(long("after")); await h.answer("completed"); await h.drain();
-    expect(lastRun(h).mode).toBe("subagent");
-    expect(response(h).requestedMode).toBe("fork"); // the configured/requested mode is preserved
-    // 29c: the reason names the first entry of the batch the context no longer holds.
-    expect(String(response(h).fallbackReason)).toContain(`Raw availability: entry ${dropped.id} (T${dropped.turnId}, native ${dropped.nativeId})`);
-    const sent = String(h.conversations.at(-1)!.messages[0]!.content);
-    expect(sent).toContain("[T1#E1@user] user: "); // full primary material for the whole batch
-    expect(sent).toContain("HEAD"); expect(sent).toContain("after");
-    // Reopening re-reads the context: the view is not cached across it, and the answer does not change.
-    await h.emit("session_start");
-    await work(h, long("reopened"));
-    expect(lastRun(h).mode).toBe("subagent");
-    expect(String(response(h).fallbackReason)).toContain("Raw availability: entry ");
-  } finally { await h.dispose(); }
-});
-
-test("20c 2026-09-08 scenario 14: a task whose entries the compacted context still holds keeps the configured mode, and the requested/actual audit is unchanged", async () => {
-  const h = host({ ...eager, "noting.forkModeDefault": true });
-  try {
-    h.compaction(); // the boundary is already in the ancestry; every entry below is post-compaction
-    failing(h);
-    await h.prompt(long("HEAD")); await h.answer(); await h.emit("agent_settled"); await h.drain();
-    await work(h, long("post"));
-    // Every selected entry is still retained, so the rule does not fire: this task keeps the requested
-    // fork mode and falls back only for the reason it would have without any compaction at all.
-    expect(response(h).requestedMode).toBe("fork");
-    expect(String(response(h).fallbackReason)).not.toContain("Raw availability");
-    expect(String(response(h).fallbackReason)).toContain("No current-branch provider payload captured");
-  } finally { await h.dispose(); }
-});
-
-test("20c 2026-09-08 scenario 13/14 (native): a real persisted compaction downgrades the next Noter, while the fork already running keeps its own frozen context", async () => {
-  const f = await forkFixture();
-  try {
-    let release!: (value: Response) => void;
-    const held = new Promise<Response>(resolve => { release = resolve; });
-    let first = true;
-    f.script(body => {
-      if (!worker(body)) return say("好的。");
-      if (toolResults(body)) return say("Done.");
-      if (first) { first = false; return held; }
-      return noteAndMemory("t2", noteBatch);
-    });
-    await f.turn("用 pnpm，不要 npm " + "word ".repeat(400)); // a real fork Noting starts, holding its first request open
-    await vi.waitFor(() => expect(f.sent.filter(b => worker(b))).toHaveLength(1), { timeout: 5000 });
-    // The foreground compacts while that fork is in flight, and Pi persists the compaction entry.
-    await f.h.emit("session_before_compact", { preparation: { tokensBefore: 100 } });
-    const boundary = f.manager().appendCompaction("native summary", f.manager().getLeafId()!, 100);
-    await f.h.emit("session_compact", { compactionEntry: { summary: "native summary" } });
-    expect(boundary).toBeTruthy();
-    release(noteAndMemory("t1", noteBatch));
-    const run = await vi.waitFor(() => { const r = f.h.memory.store.listRuns(1)[0]; expect(r?.response).toBeTruthy(); return r!; }, { timeout: 5000 });
-    // Not restarted, not replayed, not cancelled: the running fork finished against its frozen context.
-    expect(run.mode).toBe("fork");
-    expect(JSON.parse(run.response!).fallbackReason).toBeUndefined();
-    expect(f.h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1);
-    expect(f.h.memory.store.listSessionFacts(1).length).toBeGreaterThan(0); // its commit stands
-    // New foreground work the second compaction drops from the context: the next Noter runs fresh.
-    f.manager().appendMessage({ role: "user", content: "word ".repeat(400), timestamp: 1 } as never);
-    f.manager().appendMessage({ ...reply("an answer " + "word ".repeat(400)), timestamp: 1 } as never);
-    f.manager().appendCompaction("second native summary", f.manager().getLeafId()!, 100);
-    await f.h.emit("agent_settled");
-    const second = await vi.waitFor(() => { const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === "noting");
-      expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
-    expect(second.mode).toBe("subagent");
-    const audit = JSON.parse(second.response!);
-    expect(audit.requestedMode).toBe("fork");
-    expect(String(audit.fallbackReason)).toContain("Raw availability: entry ");
-  } finally { await f.dispose(); }
-}, 30000);

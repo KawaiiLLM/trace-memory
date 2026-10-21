@@ -1,6 +1,6 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { validateConfig, type ClosedSessionScope, type ConfigOverride, type TraceMemoryConfig } from "../../core/api/index.ts";
+import { canonicalFlatConfig, validateConfig, type ClosedSessionScope, type ConfigOverride, type TraceMemoryConfig } from "../../core/api/index.ts";
 import { MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-settings.ts";
 import { retireConsolidationSettings } from "../retired-settings.ts";
 
@@ -45,7 +45,6 @@ export interface CcHostConfig {
   stateDir: string;
   notingModel?: string;
   notingThinking?: string;
-  "noting.forkModeDefault"?: boolean;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
   "noting.triggerTokens"?: number;
@@ -130,6 +129,9 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("CC configuration is required");
   const retired = retireConsolidationSettings(input);
   input = retired.values;
+  // Ruling 2026-10-22: the Noter runs fresh only. A leftover fork key fails the load with core's removed-setting message.
+  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault"])
+    if (Object.hasOwn(input, key)) canonicalFlatConfig({ [key]: true });
   const dbPath = input.dbPath === undefined ? join(homedir(), ".trace-memory", "trace.db") : input.dbPath;
   if (typeof dbPath !== "string" || !dbPath.trim()) throw new Error("CC dbPath must be a non-empty absolute path when specified");
   if (typeof input.stateDir !== "string" || !input.stateDir.trim()) throw new Error("CC stateDir is required");
@@ -170,10 +172,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
     [keys.model, keys.thinking].flatMap(key => input[key as keyof CcHostConfig] === undefined ? [] : [[key, input[key as keyof CcHostConfig]]]))) as Partial<ResolvedCcHostConfig>;
   const coreConfig = validateConfig({
     closedSessionScope,
-    ...(input["noting.triggerTokens"] === undefined && input["noting.forkModeDefault"] === undefined ? {} : { noting: {
-      ...(input["noting.triggerTokens"] === undefined ? {} : { triggerTokens: input["noting.triggerTokens"] }),
-      ...(input["noting.forkModeDefault"] === undefined ? {} : { forkModeDefault: input["noting.forkModeDefault"] }),
-    } }),
+    ...(input["noting.triggerTokens"] === undefined ? {} : { noting: { triggerTokens: input["noting.triggerTokens"] } }),
     ...(input["dreaming.triggerTokens"] === undefined && input["dreaming.timeoutMs"] === undefined ? {} : { dreaming: {
       ...(input["dreaming.triggerTokens"] === undefined ? {} : { triggerTokens: input["dreaming.triggerTokens"] }),
       ...(input["dreaming.timeoutMs"] === undefined ? {} : { timeoutMs: input["dreaming.timeoutMs"] }),

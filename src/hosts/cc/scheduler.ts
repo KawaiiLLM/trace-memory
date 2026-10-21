@@ -1,16 +1,11 @@
-import { NOTING_CAPACITY, type DreamingResult, type NotingResult, type TraceMemory, type TaskBoundary, type TaskTarget, type VisibleView } from "../../core/api/index.ts";
+import type { DreamingResult, NotingResult, TraceMemory, TaskBoundary, TaskTarget } from "../../core/api/index.ts";
 import type { CcReconcileResult } from "./importer.ts";
 import type { ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
-import { ccPluginToolNames, ccWorkerToolNames } from "./tool-names.ts";
+import { ccWorkerToolNames } from "./tool-names.ts";
 import { CC_NATIVE_READ_TOOL_TOKENS } from "./read-tool.ts";
 
-// CC alone defers MCP tools in a native fork. Core receives and prices this exact text at freeze;
-// the host must not append anything to the admitted task at launch.
-const CC_NOTER_FORK_GUIDANCE = "In this Claude Code fork, {{tool.note}} and {{tool.memory}} may be deferred. Use ToolSearch to load both tools before writing.";
-
 export type CcWorkerPhase = "noting" | "dreaming";
-export type CcForkChoice = { model: string; capacity: { inputTokens: number; prefixTokens: number }; visible: VisibleView } | { refused: string };
 type CcTaskResult = NotingResult | DreamingResult;
 export type CcCatchupState = "starting" | "running" | "waiting" | "completed" | "stopped" | "failed";
 export interface CcCatchupStatus {
@@ -91,10 +86,8 @@ export class CcTaskScheduler {
       const target = { sessionId: reconcile.coreSessionId!, branch: reconcile.branch,
         headTurnId: reconcile.headTurnId!, triggerEntryId: entryId };
       this.lastEntryOpportunity = entryId;
-      const fork = this.memory.config.noting.forkModeDefault
-        ? { refused: "CC native fork checkpoint is unavailable at entry end" } : undefined;
-      this.startAutomatic("noting", target, fork, undefined, false);
-      this.startAutomatic("dreaming", target, undefined, undefined, false);
+      this.startAutomatic("noting", target, false);
+      this.startAutomatic("dreaming", target, false);
     }
     this.driveCatchup(false);
   }
@@ -170,9 +163,8 @@ export class CcTaskScheduler {
   }
 
   /** Entries check own work; closed-session borrowing keeps its turn-end cadence. */
-  private startAutomatic(phase: CcWorkerPhase, own: TaskTarget, fork?: CcForkChoice,
-    noLaunch?: () => void, includeBorrowed = true, evaluateOwn = true): void {
-    if (this.slots.has(phase) || this.stopped) { noLaunch?.(); return; }
+  private startAutomatic(phase: CcWorkerPhase, own: TaskTarget, includeBorrowed = true, evaluateOwn = true): void {
+    if (this.slots.has(phase) || this.stopped) return;
     let due = false;
     try {
       if (phase === "dreaming" && evaluateOwn) {
@@ -186,7 +178,7 @@ export class CcTaskScheduler {
       }
     } catch (error) {
       this.diagnostic(`${phase} eligibility failed: ${error instanceof Error ? error.message : String(error)}`);
-      noLaunch?.(); return;
+      return;
     }
     const candidates = due ? [{ ...own, borrowed: false }] : [];
     if (phase !== "dreaming" && includeBorrowed) {
@@ -194,30 +186,22 @@ export class CcTaskScheduler {
         .map(target => ({ ...target, borrowed: true }))); }
       catch (error) { this.diagnostic(`${phase} closed-session scan failed: ${error instanceof Error ? error.message : String(error)}`); }
     }
-    if (!candidates.length) { noLaunch?.(); return; }
+    if (!candidates.length) return;
     if (!this.worker) {
       this.diagnostic(`${phase} admission failed: CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured`);
-      noLaunch?.(); return;
+      return;
     }
     const cancellationEpoch = this.cancellationEpoch;
-    this.reserve(phase, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch, fork, noLaunch));
+    this.reserve(phase, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch));
   }
 
-  turnEnd(reconcile: Pick<CcReconcileResult, "state" | "coreSessionId" | "headTurnId" | "selectedTailId" | "branch">, epoch: number,
-    fork?: CcForkChoice, noLaunch?: () => void, notingFailure?: string): void {
+  turnEnd(reconcile: Pick<CcReconcileResult, "state" | "coreSessionId" | "headTurnId" | "selectedTailId" | "branch">, epoch: number): void {
     if (epoch !== this.cancellationEpoch || this.stopped || reconcile.state !== "ready" ||
-      reconcile.coreSessionId === null || reconcile.headTurnId === null || reconcile.selectedTailId === null) { noLaunch?.(); return; }
+      reconcile.coreSessionId === null || reconcile.headTurnId === null || reconcile.selectedTailId === null) return;
     const target: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
       headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedTailId };
-    for (const phase of ["noting", "dreaming"] as const) {
-      if (phase === "noting" && notingFailure) {
-        this.diagnostic(`noting source observation failed: ${notingFailure}`);
-        noLaunch?.();
-        continue;
-      }
-      this.startAutomatic(phase, target, phase === "noting" ? fork : undefined, phase === "noting" ? noLaunch : undefined,
-        true, this.lastEntryOpportunity !== target.triggerEntryId);
-    }
+    for (const phase of ["noting", "dreaming"] as const)
+      this.startAutomatic(phase, target, true, this.lastEntryOpportunity !== target.triggerEntryId);
   }
 
   /** Ordinary completion never triggers automatic work; a running manual drain still owns its checks. */
@@ -244,60 +228,30 @@ export class CcTaskScheduler {
 
   private common(phase: CcWorkerPhase, target: TaskTarget, borrowed: boolean, automatic: boolean, boundary?: TaskBoundary) {
     const execution = this.worker!.phases[phase];
-    return { ...target, borrowed, automatic, executorSessionId: target.sessionId, mode: "subagent" as const,
-      effectiveMode: "subagent" as const, model: execution.model, capacity: execution.capacity, maxReadChars: CC_MAX_RESULT_CHARS,
+    return { ...target, borrowed, automatic, executorSessionId: target.sessionId, model: execution.model, capacity: execution.capacity, maxReadChars: CC_MAX_RESULT_CHARS,
       toolNames: ccWorkerToolNames, nativeReadToolTokens: CC_NATIVE_READ_TOOL_TOKENS,
       thinkingLevel: execution.thinking, subagentThinkingLevel: execution.thinking, ...(boundary ? { boundary } : {}) };
   }
 
   private async runCandidates(phase: CcWorkerPhase, executorSessionId: number,
-    candidates: (TaskTarget & { borrowed: boolean })[], cancellationEpoch: number,
-    fork?: CcForkChoice, noLaunch?: () => void): Promise<CcTaskResult | undefined> {
-    try { for (const { borrowed, ...target } of candidates) {
+    candidates: (TaskTarget & { borrowed: boolean })[], cancellationEpoch: number): Promise<CcTaskResult | undefined> {
+    for (const { borrowed, ...target } of candidates) {
       try {
-        const result = await this.runCandidate(phase, executorSessionId, target, borrowed, cancellationEpoch,
-          !borrowed && phase === "noting" ? fork : undefined, noLaunch);
+        const result = await this.runCandidate(phase, executorSessionId, target, borrowed, cancellationEpoch);
         if (!result || result.outcome !== "dropped" && result.outcome !== "empty") return result;
       } catch (error) {
         this.diagnostic(`${phase} admission failed for S${target.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
         if (!(error instanceof Error && error.cause === "task admission")) return;
       }
     }
-    } finally { noLaunch?.(); }
   }
 
   /** One ordinary admission path; callers own continuation and error handling, not claim policy. */
   private async runCandidate(phase: CcWorkerPhase, executorSessionId: number, target: TaskTarget,
-    borrowed: boolean, epoch: number, fork?: CcForkChoice, noLaunch?: () => void): Promise<CcTaskResult | undefined> {
-    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) { noLaunch?.(); return; }
+    borrowed: boolean, epoch: number): Promise<CcTaskResult | undefined> {
+    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) return;
     const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
-    let result: CcTaskResult;
-    if (phase === "noting" && fork) {
-      const fresh = (reason: string) => this.memory.noting({ ...options, mode: "fork", effectiveMode: "subagent",
-        fallbackReason: reason });
-      if ("refused" in fork) { noLaunch?.(); result = await fresh(fork.refused); }
-      else {
-        try {
-          const frozenIds = this.memory.notingBatch(target).map(entry => entry.id);
-          result = await this.memory.noting({ ...options, mode: "fork", effectiveMode: "fork",
-            model: fork.model, capacity: fork.capacity, visible: fork.visible, forkGuidance: CC_NOTER_FORK_GUIDANCE,
-            toolNames: ccPluginToolNames });
-          if (result.outcome === "dropped" && "refused" in result && result.refused && !this.stopped && this.cancellationEpoch === epoch) {
-            const refusal = result.refused as { reason?: string };
-            noLaunch?.();
-            result = await this.memory.noting({ ...options, mode: "fork", effectiveMode: "subagent",
-              fallbackReason: refusal.reason ?? "CC native fork did not start", executionId: "executionId" in result ? result.executionId : undefined,
-              boundary: { exactEntryIds: frozenIds } });
-          }
-        } catch (error) {
-          if (!(error instanceof Error && error.cause === "task admission" && error.message.startsWith(NOTING_CAPACITY))) throw error;
-          noLaunch?.(); result = await fresh(error.message);
-        }
-      }
-    } else {
-      noLaunch?.();
-      result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream(options);
-    }
+    const result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream(options);
     this.report(phase, target, result);
     return result;
   }

@@ -475,9 +475,9 @@ export interface RunInput {
   rangeTo?: string | null;
   promptHash?: string | null;
   model?: string | null;
-  /** New work writes the execution mode of ticket 19: `fork` (inherited native context) or
-   * `subagent` (fresh context). The column stays a free string because rows written before the
-   * rename carry `branch`, and reading one back — `updateRun(id, run)` — must preserve it. */
+  /** New work writes `subagent` (fresh context). The column stays a free string because rows written
+   * before the Noter became fresh-only carry `fork`, and before the ticket 19 rename `branch`, and
+   * reading one back — `updateRun(id, run)` — must preserve it. */
   mode?: string | null;
   request?: string | null;
   response?: string | null;
@@ -2200,26 +2200,6 @@ export class Store {
       this.db.prepare(`UPDATE runs SET outcome = ?, mode = ?,
           usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
         .run(input.outcome, input.mode ?? null, ...this.usageColumns(nextResponse), id);
-    });
-  }
-
-  /** 108: a host that learns what a run cost after core recorded it (a CC fork's price, or the partial
-   * usage of a fork stopped mid-run) amends the recorded run through the same writer as `updateRun`,
-   * so the usage columns stay derived from the stored response. */
-  amendRunUsage(id: number, patch: { usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total: number } };
-    usageStatus?: "partial" | null; problem?: string; cacheMiss?: unknown }): void {
-    this.transaction(() => {
-      const row = this.db.prepare("SELECT response FROM run_bodies WHERE run_id = ?").get(id) as { response: string | null } | undefined;
-      if (!row) throw new Error(`run ${id} does not exist`);
-      const response = JSON.parse(row.response ?? "{}");
-      if (patch.usage) response.usage = patch.usage;
-      if (patch.usageStatus === null) delete response.usageStatus; else if (patch.usageStatus) response.usageStatus = patch.usageStatus;
-      if (patch.problem) response.problems = [...response.problems ?? [], patch.problem];
-      if (patch.cacheMiss !== undefined) response.verification = { ...response.verification, cacheMiss: patch.cacheMiss };
-      const next = JSON.stringify(response);
-      this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(next, id);
-      this.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
-        .run(...this.usageColumns(next), id);
     });
   }
 

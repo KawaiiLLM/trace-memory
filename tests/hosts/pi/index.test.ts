@@ -592,14 +592,13 @@ test("a former marker cannot make a new session merge an existing shared project
   expect(h.memory.store.getProject(shared)!.mergedInto).toBeNull();
 });
 
-// 29d supersedes both rulings this test pinned -- the 08:53 premise that "a fork note waits until a
-// note result committed mid-turn has been delivered", and its 2026-09-08 amendment that an enabled
-// session always receives that delivery. The wait went with the delivery: a fork-mode Noting task is
-// no longer held until its predecessor's facts reached the foreground, so both modes now advance
-// identically and neither prompt carries a receipt. Phase slots, enrollment, the readiness wait and
-// claim checks still gate the launch and are exercised by their own tests.
-test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes advance identically and neither prompt carries one", async forkMode => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": forkMode, notingModel: "fake/noter" });
+// 29d supersedes the 08:53 premise that "a note waits until a note result committed mid-turn has been
+// delivered", and its 2026-09-08 amendment that an enabled session always receives that delivery. The
+// wait went with the delivery: a Noting task is no longer held until its predecessor's facts reached the
+// foreground, so no prompt carries a receipt. Phase slots, enrollment, the readiness wait and claim
+// checks still gate the launch and are exercised by their own tests.
+test("29d: a note waits for no receipt and no prompt carries one", async () => {
+  const h = host({ "noting.triggerTokens": 30, notingModel: "fake/noter" });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn(); // Noting A in flight over T1.
@@ -616,7 +615,7 @@ test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes
 });
 
 test("a subagent Noter reads omitted evidence through virtual Read and records its last request", async () => {
-  const h = host({ "noting.triggerTokens": 1000, "noting.forkModeDefault": false, notingModel: "fake/noter" });
+  const h = host({ "noting.triggerTokens": 1000, notingModel: "fake/noter" });
   await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
   const source = h.memory.store.listSourceEntries(1).at(-1)!;
@@ -639,7 +638,7 @@ test("a subagent Noter reads omitted evidence through virtual Read and records i
 });
 
 test("a noting tool call for a bad address returns an error result and N still completes", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 30 });
   const call = { type: "toolCall" as const, id: "call-2", name: "read", arguments: { path: "trace://K999" } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.turn();
@@ -690,7 +689,7 @@ test("main facade tools bind each call to the current turn, commit immediately a
 
 
 test("subagent runs receive the same four definitions registered for the main agent: name, description, schema", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
+  const h = host({ "noting.triggerTokens": 30 });
   const original = h.ctx.modelRegistry.complete.bind(h.ctx.modelRegistry);
   vi.spyOn(h.ctx.modelRegistry, "complete").mockImplementation(async (model, conversation, options) => {
     expect(conversation.tools).toHaveLength(4);
@@ -737,14 +736,14 @@ test("main virtual Read can fetch historical rejected tool evidence without beco
 
 
 test("maxToolRounds is a budget: unlimited by default, and a run over an explicit budget fails without committing", async () => {
-  const unlimited = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  const unlimited = host({ "noting.triggerTokens": 30 });
   let calls = 0;
   const looping = (c: Parameters<typeof notingFact>[0]) => c.messages.filter(m => m.role === "toolResult").length < 20
     ? { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: `t${++calls}`, name: "read", arguments: { path: "trace://facts/S1/T1" } }] } : notingFact(c);
   unlimited.provider(async c => looping(c)); await unlimited.turn();
   expect(unlimited.memory.store.listRuns(1)[0]!.outcome).toBe("success");
   expect(unlimited.conversations.length).toBeGreaterThan(20);
-  const capped = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, "noting.maxToolRounds": 2 });
+  const capped = host({ "noting.triggerTokens": 30, "noting.maxToolRounds": 2 });
   capped.provider(async c => looping(c)); await capped.turn();
   const run = capped.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("failure"); expect(JSON.parse(run.response!).problems[0]).toContain("tool rounds exceeded (2)");
@@ -983,7 +982,7 @@ test("a transient provider error is retried with Pi's policy before the run is f
 });
 
 test("a retry re-sends the same request: a stream error after a tool round does not duplicate the tool result, failed attempts count in usage and retries are recorded", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, retry: { baseDelayMs: 1 } });
+  const h = host({ "noting.triggerTokens": 30, retry: { baseDelayMs: 1 } });
   let calls = 0;
   h.provider(async c => {
     calls++;
@@ -1016,7 +1015,7 @@ test("51: the footer keeps the running phase's colour while a retry waits; the n
 });
 
 test("N jointly publishes a fact and knowledge; the next prompt delivers only the missing knowledge body", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => {
     if (c.messages.some(m => m.role === "toolResult")) return reply("Done.");
     const note = notingFact(c).content[0]!;

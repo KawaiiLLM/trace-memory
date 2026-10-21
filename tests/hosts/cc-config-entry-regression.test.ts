@@ -38,7 +38,7 @@ function fixture(): { raw: CcHostConfig; path: string; dir: string } {
   vi.stubEnv("HOME", dir);
   vi.stubEnv("CLAUDE_PID", undefined);
   const raw: CcHostConfig = { dbPath: join(dir, "trace.sqlite"), stateDir: join(dir, "state"),
-    "noting.triggerTokens": 13, "noting.forkModeDefault": true,
+    "noting.triggerTokens": 13,
     "dreaming.triggerTokens": 29, "dreaming.timeoutMs": 47_000,
     "compaction.sharedAllowanceTokens": 1_789 };
   const path = join(dir, "cc.config.json"); writeFileSync(path, JSON.stringify(raw));
@@ -47,7 +47,7 @@ function fixture(): { raw: CcHostConfig; path: string; dir: string } {
 
 function expectControls(config: ResolvedCcHostConfig) {
   expect(config.coreConfig).toMatchObject({
-    noting: { triggerTokens: 13, forkModeDefault: true },
+    noting: { triggerTokens: 13 },
     dreaming: { triggerTokens: 29, timeoutMs: 47_000 },
     compaction: { sharedAllowanceTokens: 1_789 },
   });

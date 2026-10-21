@@ -113,7 +113,7 @@ for (const ending of ["success", "bare note", "error", "cancel", "native rejecti
       const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
       // The query closes over the same target through these bindings.
       target = { session, path };
-      const result = await memory.noting({ ...path, model: "test", mode: "subagent", toolNames: ccWorkerToolNames });
+      const result = await memory.noting({ ...path, model: "test", toolNames: ccWorkerToolNames });
       expect(replies, JSON.stringify(result)).toHaveLength(2);
       expect(replies[0]).toContain("held: $1"); expect(replies[1]).toContain("held: M1");
       if (ending === "bare note") {

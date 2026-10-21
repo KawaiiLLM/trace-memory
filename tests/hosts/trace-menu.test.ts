@@ -3,7 +3,7 @@
 // header, context categories, Pending/trigger, spend, notices, actions and the settings rows.
 import { expect, test } from "vitest";
 import {
-  buildTraceMenu, buildTraceSettings, formatCompactTokens, formatPercent,
+  buildSettingsChoices, buildTraceMenu, buildTraceSettings, formatCompactTokens, formatPercent,
   TRACE_MENU_FIXTURE, TRACE_MENU_FIXTURE_WITH_NOTICE, TRACE_SETTINGS_FIXTURE, TRACE_SETTINGS_FIXTURE_CC,
 } from "../../src/hosts/trace-menu.ts";
 
@@ -108,11 +108,9 @@ test("settings: budgets derive the knowledge window and max input from the code 
   expect(budgets.derivedLine).toBe("→ knowledge window 20,000 + shared allowance 10,000 = 30,000 max input");
 });
 
-test("settings: the Noter mode column appears on both hosts; Dreamer remains subagent-only", () => {
-  expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE).workers.showModeColumn).toBe(true);
-  expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE_CC).workers.showModeColumn).toBe(true);
-  expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE_CC).workers.rows[0]).toMatchObject({ mode: "subagent" });
-  expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE_CC).workers.rows[1]!.mode).toBeUndefined();
+test("settings: neither worker has an execution-mode row on either host (the Noter runs fresh only)", () => {
+  for (const fixture of [TRACE_SETTINGS_FIXTURE, TRACE_SETTINGS_FIXTURE_CC])
+    expect(buildSettingsChoices(fixture).map(choice => choice.id).filter(id => id.endsWith(".mode"))).toEqual([]);
 });
 
 test("settings: closed-session scope line lists all three choices", () => {

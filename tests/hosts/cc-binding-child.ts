@@ -44,7 +44,7 @@ if (mode === "update") {
         const binding = readBinding(input.config, input.nativeSessionId);
         if (!binding) throw new Error("binding disappeared before child control attach");
         const server = await startControlServer(input.config, binding, memory, undefined, undefined,
-          input.worker === "reload" ? { turnEnd: async turnId => ({ turnId, prompt: "checked" }),
+          input.worker === "reload" ? { turnEnd: async () => {},
             catchup: async () => ({ state: "failed", entriesDone: 0, entriesTotal: 0, diagnostic: "test control" }),
             beforeCancel: () => {}, holdImport: () => () => {} } : undefined);
         send({ type: "fulfilled", executor: server.executor });

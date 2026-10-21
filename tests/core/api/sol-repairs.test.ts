@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { TraceMemory, DEFAULT_CONFIG, tokens } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
-import { renderEntry, renderEntryIndex, renderFact, renderNegationWalk } from "../../../src/core/render/index.ts";
+import { renderEntry, renderFact, renderNegationWalk } from "../../../src/core/render/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 import { tracePage, wholeTrace } from "../../trace-pages.ts";
@@ -117,43 +117,6 @@ test("92: an unnormalized whole entry remains assistant evidence; legacy read al
   } finally { f.m.close(); }
 });
 
-test("Sol 3: mixed supplied/visible material has one body, a full identity index and only the actual last reply", () => {
-  const f = setup();
-  try {
-    const user = f.text("USER-BODY", "user"), early = f.text("EARLY-BODY"), fresh = f.text("FRESH-BODY"), head = f.dispatch("HEAD-BODY");
-    const entries = [user, early, fresh, head]; f.select(entries.map(e => e.id));
-    const visible = noVisibility();
-    for (const entry of [user, early, head]) visible.raw.set(entry.nativeId, "source");
-    const input = { sessionId: f.sessionId, branch: "main", headTurnId: f.turn.id, mode: "fork" as const, visible };
-    const frozen = freezeNoting(f.m.store, input, f.m.config), prepared = frozen.prepared!;
-    expect(prepared.material.entries.map(e => e.id)).toEqual([fresh.id]);
-    expect(prepared.material.head).toBe(renderEntry(head, f.m.config.render).content);
-    expect(prepared.material.sources).toEqual(entries.map(renderEntryIndex));
-    for (const body of ["FRESH-BODY", "HEAD-BODY"]) expect(prepared.text.split(body)).toHaveLength(2);
-    for (const body of ["USER-BODY", "EARLY-BODY"]) expect(prepared.text).not.toContain(body);
-    expect(prepared.material.sources.join("\n")).not.toContain("BODY");
-    expect(prepared.supplied.entries.map(e => e.id)).toEqual([fresh.id, head.id]);
-    const actual = tokens(prepared.text);
-    // Exact membership makes the capacity boundary about this text, never a smaller batch.
-    const boundary = { exactEntryIds: entries.map(e => e.id) };
-    const probe = (inputTokens: number) => freezeNoting(f.m.store, { ...input, boundary, capacity: { inputTokens, prefixTokens: 73 } }, f.m.config);
-    let low = actual, high = actual + 20000;
-    while (low < high) { const mid = Math.floor((low + high) / 2); try { probe(mid); high = mid; } catch { low = mid + 1; } }
-    expect(probe(low).prepared!.text).toBe(prepared.text);
-    expect(() => probe(low - 1)).toThrow("Noting capacity");
-    // The retired Noter-only episodic limit no longer gates the shared compact material;
-    // the exact frozen membership still faces the model's hard input limit above.
-    // A shorter frozen prefix must not relabel its final assistant as the captured missing reply.
-    const prefix = freezeNoting(f.m.store, { ...input, boundary: { maxEntryId: early.id } }, f.m.config).prepared!;
-    expect(prefix.material.head).toBeNull();
-    // Once the head is actually supplied in Raw it is never repeated in the head supplement.
-    visible.raw.delete(head.nativeId);
-    const supplied = freezeNoting(f.m.store, input, f.m.config).prepared!;
-    expect(supplied.material.head).toBeNull();
-    expect(supplied.text.split("HEAD-BODY")).toHaveLength(2);
-  } finally { f.m.close(); }
-});
-
 test("Sol 5: semantic groups and walks budget complete framing; automatic facts and pagination remain whole", () => {
   const f = setup();
   try {
@@ -182,7 +145,7 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
     expect(() => f.m.trace("F1..", { itemBudget: 130, pageBudget: null })).toThrow("invalid public trace address");
     expect(renderFact(facts[0]!, [])).toContain(body);
     expect(f.m.trace("F1", { itemBudget: null, pageBudget: null })).toContain(body);
-    const frozen = freezeNoting(f.m.store, { sessionId: f.sessionId, branch: "main", headTurnId: f.turn.id, mode: "subagent" }, f.m.config).prepared!;
+    const frozen = freezeNoting(f.m.store, { sessionId: f.sessionId, branch: "main", headTurnId: f.turn.id }, f.m.config).prepared!;
     expect(frozen.material.facts.join("\n")).toContain(body);
     expect(frozen.material.facts.join("\n")).not.toContain("truncated");
     const later = f.m.store.appendTurn({ sessionId: f.sessionId, parentTurnId: f.turn.id, kind: "turn", startedAt: "2026-09-02T00:00:00Z" });

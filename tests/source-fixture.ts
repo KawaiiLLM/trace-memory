@@ -1,4 +1,4 @@
-import { TraceMemory as createMemory, type CompactResult, type SourceEntry, type VisibleView } from "../src/core/api/index.ts";
+import { TraceMemory as createMemory, type CompactResult, type SourceEntry } from "../src/core/api/index.ts";
 import type { Store } from "../src/core/store/index.ts";
 export type TraceMemory = ReturnType<typeof createMemory>;
 export * from "../src/core/api/index.ts";
@@ -6,14 +6,6 @@ export * from "../src/core/api/index.ts";
 /** 79: `pendingEntries`/`sourcePath`/`listSourceEntries` return metadata alone; a test that inspects
  * entry content (role/text/raw/calls) hydrates the exact ids it got back, once, through the store. */
 export const hydrate = <T extends { id: number }>(list: readonly T[], store: Store): SourceEntry[] => store.hydrateSourceEntries(list.map(e => e.id));
-
-/** 29b: the initial visible view of a child that already holds every pending entry of this target as
- * a retained conversation entry — the fork case the one material builder subtracts against. Nothing
- * else is claimed: no fact and no knowledge commit, so the optional material is still supplied. */
-export function visibleTarget(memory: TraceMemory, sessionId: number, branch: string, headTurnId: number): VisibleView {
-  return { raw: new Map(memory.pendingEntries(sessionId, branch, headTurnId).map(e => [e.nativeId, "source" as const])),
-    factIds: new Set<number>(), knowledgeCommitIds: new Set<number>(), injection: false, suppliedGeneration: 0 };
-}
 
 /** Seed one completed source entry — the record a host writes when a native message is finished, and
  * the only thing pending-entry discovery, Noting batches and compaction ever see. Text and calls are

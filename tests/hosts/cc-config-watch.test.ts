@@ -174,11 +174,11 @@ test("a save from one session reaches a second executor process with no notifica
   };
   const [a, b] = [await spawnExecutor(ids[0]!), await spawnExecutor(ids[1]!)];
   expect(a.pid).not.toBe(b.pid);
-  const mode = async (native: string) => (await executorSettings(config, native) as typeof config).coreConfig.noting.forkModeDefault;
-  expect([await mode(ids[0]!), await mode(ids[1]!)]).toEqual([false, false]);
+  const thinking = async (native: string) => (await executorSettings(config, native) as typeof config).worker!.phases.noting.thinking;
+  expect([await thinking(ids[0]!), await thinking(ids[1]!)]).toEqual(["high", "high"]);
   // Session A saves; nothing is sent to either executor.
   const original = readFileSync(path, "utf8");
-  saveCcConfig(path, original, editedCcConfig(original, "noting.mode", "fork"));
-  await until(async () => (await mode(ids[0]!)) && (await mode(ids[1]!)), "both executors to follow the file");
+  saveCcConfig(path, original, editedCcConfig(original, "noting.thinking", "medium"));
+  await until(async () => (await thinking(ids[0]!)) === "medium" && (await thinking(ids[1]!)) === "medium", "both executors to follow the file");
   for (const child of [a, b]) { child.send("stop"); }
 });

@@ -1,29 +1,20 @@
-// 19a/19b/19c: the Pi adapter's only execution path. A Noting or Consolidation task runs inside a
-// real child `AgentSession` — forked from the parent session file for inherited context, private
-// and fresh otherwise. Pi owns the model call, the tool loop, the retry policy, cancellation and
-// persistence; this module only prepares the child, whitelists tool execution, verifies the
-// outgoing prefix and reports the run.
+// 19a/19b: the Pi adapter's only execution path. A Noting or Dreaming task runs inside a real
+// private child `AgentSession` with no inherited history. Pi owns the model call, the tool loop,
+// the retry policy, cancellation and persistence; this module only prepares the child, whitelists
+// tool execution and reports the run.
 //
 // Everything here uses the public SDK entry (`createAgentSession`, `SessionManager`,
 // `DefaultResourceLoader`, `SettingsManager`) plus the public `Agent` fields Pi itself sets.
 import { mkdirSync } from "node:fs";
-import { getCurrentTools } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
-  type ExtensionAPI, type SessionEntry, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
-import { capturedSystemPrompt, capturedTools, hash, messageKey, serialize, stripCacheControl, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./fork.ts";
-import { cacheObservation, toolRejected, type CacheObservation, type ToolDefinition } from "../../core/api/index.ts";
+  type ExtensionAPI, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
+import { toolRejected, type ToolDefinition } from "../../core/api/index.ts";
 import { THINKING_LEVELS, type ThinkingLevel } from "../phase-settings.ts";
 
 export { THINKING_LEVELS, type ThinkingLevel } from "../phase-settings.ts";
 
-export type Verification = ReturnType<typeof verifyForkRequest> & { key: string; cache_read?: number; cacheMiss?: CacheObservation; rounds: ReturnType<typeof verifyNativeRequest>[] };
-
-/** A child cannot be prepared from this parent state; the caller falls back and records the reason. */
-export class NotForkable extends Error {
-  /** Present when the gate rejected the child's first body: both hashes and the differing path. */
-  verification?: Verification;
-  constructor(message: string, verification?: Verification) { super(message); this.verification = verification; }
-}
+type Body = Record<string, unknown>;
+const snapshot = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 interface NativeCommon {
   kind: "noting" | "dreaming";
@@ -45,8 +36,7 @@ interface NativeCommon {
   /** 0 = unlimited, as `maxToolRounds` has always meant. */
   maxToolRounds: number;
   signal?: AbortSignal;
-  /** Called for every outgoing body, in order; in fork mode the first one is the verified one.
-   * `contextTokens` is Pi's own measure of the child's context at that moment (27a), which the host's
+  /** Called for every outgoing body, in order. `contextTokens` is Pi's own measure of the child's context at that moment (27a), which the host's
    * last capacity check decides by, or undefined when Pi reports it unknown; the body is passed for
    * the run record, never for accounting. */
   onRequest(request: unknown, contextTokens: number | undefined): void;
@@ -56,35 +46,16 @@ interface NativeCommon {
   /** Dreamer's host check at a completed pass, with one same-child repair. */
   passEnd?(rounds: number): string | undefined;
   reportRounds?(rounds: number): void;
-  /** 19c: one completed fork response was eligible for the cache-miss policy (gate 3), hit or miss.
-   * The run itself continues; the host counts consecutive misses and decides the downgrade. */
-  onCache?(observation: CacheObservation): void;
   /** Pi's own retry policy (settings.json `retry`, read by the child's SettingsManager) scheduled a
    * backoff, and ended one. The host surfaces them; this module neither retries nor sleeps itself. */
   onRetry?(event: { attempt: number; maxAttempts: number; delayMs: number; error: string }): void;
   onRetryEnd?(): void;
 }
-/** Inherited context: a child forked from the parent's persisted checkpoint (19a). */
-export interface NativeForkTask extends NativeCommon {
-  mode: "fork";
-  /** The parent's own JSONL. Opened read-only through a second manager; never mutated. */
-  parentFile: string;
-  /** The parent's Pi session id, supplied to the provider as the request/transport identity. */
-  parentSessionId: string;
-  /** Frozen entry the child forks at: the last persisted entry of the selected path. */
-  checkpoint: string;
-  /** The parent provider request this child's first body is checked against. */
-  captured: Body;
-  /** Synchronous first-request admission, before request audit or provider dispatch. */
-  recheck?: () => string | undefined;
-}
 /** Fresh context: a private child session with no parent file and no inherited history (19b). Its
  * system prompt is core's domain prompt and its tools are only the memory tools core bound. */
-export interface NativeSubagentTask extends NativeCommon {
-  mode: "subagent";
+export interface NativeTask extends NativeCommon {
   systemPrompt: string;
 }
-export type NativeTask = NativeForkTask | NativeSubagentTask;
 
 export interface NativeResult {
   outcome: "success" | "failure" | "cancelled";
@@ -92,7 +63,6 @@ export interface NativeResult {
   /** Only the child's newly generated assistant messages; copied parent usage is never counted. */
   usage?: unknown;
   request?: unknown;
-  verification?: Verification;
   retries: { attempt: number; error: string }[];
   /** Absolute path of the child's own JSONL under the runs directory. */
   nativeLog?: string;
@@ -100,10 +70,6 @@ export interface NativeResult {
   thinking: { requested?: ThinkingLevel; effective: ThinkingLevel };
   /** A whitelisted memory tool returned a non-rejection receipt in this run. */
   committed: boolean;
-  /** 27b (parent 27 amendment 4): the child's terminal assistant message, handed back as Pi built
-   * it so the caller can classify a provider rejection with pi-ai's own `isContextOverflow`. Never
-   * an error string reconstructed here; absent when the child produced no assistant message. */
-  terminal?: unknown;
   /** Observed tool-call order, including rejected non-whitelisted calls. */
   calls: { name: string; executed: boolean }[];
 }
@@ -131,106 +97,26 @@ export function addUsage(total: unknown, usage: unknown): unknown {
   return Object.fromEntries([...new Set([...Object.keys(left), ...Object.keys(right)])].map(key => [key, addUsage(left[key], right[key])]));
 }
 
-/** Reject a checkpoint whose ancestry ends in an assistant tool-call group with missing results. */
-export function forkable(entries: SessionEntry[]): void {
-  const results = new Set<string>();
-  for (const entry of entries) {
-    if (entry.type !== "message") continue;
-    const message = entry.message as { role: string; toolCallId?: string };
-    if (message.role === "toolResult" && message.toolCallId) results.add(message.toolCallId);
-  }
-  for (const entry of entries) {
-    if (entry.type !== "message") continue;
-    const message = entry.message as { role: string; content?: unknown };
-    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-    for (const part of message.content as { type?: string; id?: string }[])
-      if (part.type === "toolCall" && part.id && !results.has(part.id)) throw new NotForkable(`checkpoint tool call ${part.id} has no result`);
-  }
-}
-
-/** 19c "Entry readiness and fallback": may a fork launch at this checkpoint now? Returns the reason to
- * wait for the next safe boundary, or undefined when the checkpoint is ready. The probe is read-only:
- * the parent's own file is reopened through an independent `SessionManager` (with its own directory, so
- * nothing is created) exactly as the launch does, the chosen entry must exist in that reopened file —
- * Pi's message-completion callback runs before persistence, so a completed message is not yet one — and
- * its ancestry must contain no assistant tool-call group whose results are still missing. Waiting starts
- * nothing, advances no progress and creates no duplicate task; the next boundary decides again. */
-export function checkpointReadiness(parentFile: string, checkpoint: string): string | undefined {
-  let entries: SessionEntry[];
-  try {
-    const manager = SessionManager.open(parentFile);
-    if (!manager.getEntry(checkpoint)) return `checkpoint ${checkpoint} is not persisted yet`;
-    entries = manager.getBranch(checkpoint);
-  } catch (error) { return `the parent session file cannot be reopened: ${String(error)}`; }
-  try { forkable(entries); } catch (error) { return String((error as Error).message); }
-  return undefined;
-}
-
 export async function runNative(task: NativeTask): Promise<NativeResult> {
-  const api = task.model.api;
-  // --- Prepare the child. Failures before the first provider request are fallbacks, not run failures.
+  // --- Prepare the child. Failures before the first provider request are run failures with a reason.
   mkdirSync(task.runsDir, { recursive: true });
-  let system: string, tools: { name: string; description: string; parameters: Body;
-    constrainedSampling?: PiToolDefinition["constrainedSampling"] }[];
-  let manager: SessionManager, nativeLog: string | undefined;
-  if (task.mode === "fork") {
-    try {
-      system = capturedSystemPrompt(api, task.captured);
-      tools = capturedTools(api, task.captured);
-    } catch (error) { throw new NotForkable(String(error)); }
-    if (!tools.length) throw new NotForkable("captured payload carries no tool definitions");
-    if (!tools.some(tool => tool.name === "read")) throw new NotForkable("captured payload omits the read tool");
-    for (const definition of task.tools) {
-      const captured = tools.find(t => t.name === definition.name);
-      if (!captured) throw new NotForkable(`captured payload omits the ${definition.name} tool`);
-      // Pi's non-strict Anthropic serializer emits only these three root schema fields.
-      // Compare against that exact wire form as well as the full schema; never discard
-      // nested constraints or change the captured definitions used by the prefix gate.
-      const parameters = serialize(stripCacheControl(captured.parameters));
-      const expected = definition.parameters;
-      const compatible = parameters === serialize(expected) || (api === "anthropic-messages" &&
-        parameters === serialize({ type: "object", properties: expected.properties ?? {}, required: expected.required ?? [] }));
-      if (task.reportToolRejection && (definition.name === "note" || definition.name === "memory") &&
-          (captured.description !== definition.description || !compatible))
-        throw new NotForkable(`captured ${definition.name} definition is incompatible with the current Noter protocol; refresh foreground tools or use subagent mode`);
-    }
-
-    // An independent manager on the parent's file, writing into the runs directory. The foreground
-    // manager is never touched, and `createBranchedSession` copies only the selected ancestry.
-    manager = SessionManager.open(task.parentFile, task.runsDir);
-    if (!manager.getEntry(task.checkpoint)) throw new NotForkable(`checkpoint ${task.checkpoint} is not persisted`);
-    forkable(manager.getBranch(task.checkpoint));
-    const parentId = manager.getSessionId();
-    nativeLog = manager.createBranchedSession(task.checkpoint);
-    if (manager.getSessionId() === parentId) throw new NotForkable("child session kept the parent id");
-    // Wire schemas have already been transformed for strict sampling. Re-register the original
-    // persisted declarations so Pi does not append a spurious tool delta or transform them twice.
-    // Captured order stays authoritative; the unchanged outgoing-prefix gate checks the result.
-    const declarations = new Map(getCurrentTools(manager.buildSessionContext().messages).map(tool => [tool.name, tool]));
-    tools = tools.map(tool => {
-      const declaration = declarations.get(tool.name);
-      return declaration ? { ...declaration, parameters: { ...declaration.parameters } } : tool;
-    });
-  } else {
-    // Fresh context (19b "Subagent parity"): Pi's own new-session constructor, in the runs directory,
-    // with no parent file to inherit from. No gate applies because there is no parent body to match,
-    // so only the bound memory tools and restricted native Read are registered.
-    system = task.systemPrompt;
-    tools = [...task.tools.map(definition => ({ name: definition.name, description: definition.description, parameters: definition.parameters as Body })),
-      { name: task.read.name, description: task.read.description, parameters: { ...task.read.parameters },
-        constrainedSampling: task.read.constrainedSampling }];
-    if (!tools.length) throw new NotForkable("no tools were bound for this run");
-    manager = SessionManager.create(task.cwd, task.runsDir);
-    nativeLog = manager.getSessionFile();
-  }
+  // Fresh context (19b "Subagent parity"): Pi's own new-session constructor, in the runs directory,
+  // with no parent file to inherit from. Only the bound memory tools and restricted native Read are registered.
+  const system = task.systemPrompt;
+  const tools: { name: string; description: string; parameters: Body;
+    constrainedSampling?: PiToolDefinition["constrainedSampling"] }[] = [
+    ...task.tools.map(definition => ({ name: definition.name, description: definition.description, parameters: definition.parameters as Body })),
+    { name: task.read.name, description: task.read.description, parameters: { ...task.read.parameters },
+      constrainedSampling: task.read.constrainedSampling }];
+  const manager = SessionManager.create(task.cwd, task.runsDir);
+  const nativeLog: string | undefined = manager.getSessionFile();
 
   const calls: { name: string; executed: boolean }[] = [];
   let committed = false;
   const attempts = new Map<string, { name: "note" | "memory"; input: unknown; executed: boolean }>();
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
-  // In fork mode the tool DEFINITIONS are the parent's, byte for byte, because the gate compares
-  // them; a fresh child registers bound memory tools plus restricted native Read. Tool EXECUTION
-  // allows these tools only, so any other copied parent tool returns an error without running.
+  // A fresh child registers bound memory tools plus restricted native Read. Tool EXECUTION allows
+  // these tools only.
   const definitions = tools.map(tool => ({
     name: tool.name, label: tool.name, description: tool.description, parameters: tool.parameters as never,
     constrainedSampling: tool.constrainedSampling,
@@ -257,8 +143,8 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
 
   const settingsManager = SettingsManager.create(task.cwd, task.agentDir);
   // Discovery off: no extensions, skills, prompt templates, themes or project context. The one
-  // supplied resource is this adapter's own inline extension, which hands the child the parent's
-  // exact system prompt bytes through Pi's own `before_agent_start` result.
+  // supplied resource is this adapter's own inline extension, which hands the child its system
+  // prompt through Pi's own `before_agent_start` result.
   const resourceLoader = new DefaultResourceLoader({ cwd: task.cwd, agentDir: task.agentDir, settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     extensionFactories: [{ name: "trace-memory-worker", hidden: true, factory: (pi: ExtensionAPI) => { pi.on("before_agent_start", () => ({ systemPrompt: system })); } }] });
@@ -275,8 +161,8 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   // `settingsManager.reload()`, which rebuilds the merged settings from the files and drops every
   // override applied before it.
   settingsManager.applyOverrides({ compaction: { enabled: false } });
-  // 26b: the frozen level is Pi's own `thinkingLevel` option, which takes precedence over the entry a
-  // forked ancestry carries, the per-model preference and the global default, and is clamped by Pi to
+  // 26b: the frozen level is Pi's own `thinkingLevel` option, which takes precedence over the
+  // per-model preference and the global default, and is clamped by Pi to
   // the levels this model supports. The effective level is read back from the session Pi built.
   const { session } = await createAgentSession({ cwd: task.cwd, agentDir: task.agentDir, model: task.model as never,
     settingsManager, resourceLoader, sessionManager: manager, thinkingLevel: task.thinkingLevel,
@@ -284,61 +170,26 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   const thinking = { ...(task.thinkingLevel ? { requested: task.thinkingLevel } : {}), effective: session.thinkingLevel };
 
   // --- Run the child.
-  const verification: Verification | undefined = task.mode !== "fork" ? undefined
-    : { passed: false, capturedHash: hash(task.captured), requestHash: "", appendedMessages: [], normalized: ["cache_control"],
-        differingPath: `$.${messageKey(api)}`, key: JSON.stringify([task.model.id, task.model.provider, hash(task.captured.tools ?? null)]), rounds: [] };
   const retries: { attempt: number; error: string }[] = [];
   let usage: unknown, request: unknown, rounds = 0, failure: string | undefined, terminal: { stopReason?: string; errorMessage?: string; content?: unknown } | undefined;
   task.onProgress({ usage, retries, thinking }); // known now, not only with the final result (review 2026-09-10 P2)
   const seen = new Set<unknown>();
-  // Only the fork gate reads the provider's message array; a fresh child's audit assumes nothing
-  // about the body's shape, so any API the SDK can call may run it (review 2026-09-08).
-  const key = task.mode === "fork" ? messageKey(api) : undefined;
-  let previous: Body | undefined;
+  // A fresh child's audit assumes nothing about the body's shape, so any API the SDK can call may
+  // run it (review 2026-09-08).
   let exceeded = false;
-  // Whether the body this child actually sent asked the provider to cache. Anthropic caches only the
-  // prefix its `cache_control` markers select, so a body without one has a disabled cache and its
-  // zero read is not evidence of anything; OpenAI-family caching is automatic and not request-controlled.
-  let cacheEnabled = api !== "anthropic-messages";
   const inherited = session.agent.onPayload;
-  // Adapter decision: a fork shares the parent's cache/affinity identity; a fresh child keeps its own.
-  if (task.mode === "fork") session.agent.sessionId = task.parentSessionId;
   session.agent.toolExecution = "sequential"; // Pi's tested default is parallel
   session.agent.onPayload = async (payload: unknown, model: unknown) => {
     task.signal?.throwIfAborted();
     const body = snapshot(payload) as Body;
-    // The gate applies to a fork only: a fresh child has no parent body to reproduce.
-    if (verification && task.mode === "fork" && key) {
-      if (!Array.isArray(body[key])) throw new Error(`Native child body has no ${key} array`);
-      if (!previous) {
-        // The whole captured parent body against this body with the child's own appended messages
-        // removed. Only `cache_control` markers are ignored (verifyForkRequest).
-        Object.assign(verification, verifyForkRequest(task.captured, body, api));
-        if (!verification.passed) throw new NotForkable(`native prefix mismatch at ${verification.differingPath}`, { ...verification });
-        const reason = task.recheck?.();
-        if (reason) {
-          // This is admission, not a provider error: stop native retries without auditing a request.
-          exceeded = true; failure = reason;
-          void session.abort();
-          throw new NotForkable(reason);
-        }
-      } else {
-        const checked = verifyForkRequest(previous, body, api); // later rounds: same gate against the previous round
-        verification.rounds.push(checked);
-        if (!checked.passed) { verification.passed = false; throw new Error(`Prefix mismatch at ${checked.differingPath}`); }
-      }
-    }
-    if (api === "anthropic-messages") cacheEnabled = JSON.stringify(body).includes('"cache_control"');
-    previous = body;
     // The run record stores the last request sent, which embeds every earlier round (spec: Run record
-    // contract). The first body's hashes are kept separately by the gate, in `verification`.
+    // contract).
     request = snapshot(body);
     // 27a: what the host's last capacity check decides by is Pi's measure of THIS CHILD's context, not
     // this body — `AgentSession.getContextUsage()`, the same number Pi shows for the foreground, which
     // runs pi-ai's `estimateContextTokens` over the child's own messages: the child's latest real
-    // assistant usage once it has one, plus an estimate of what follows it. For a fork's first round
-    // that is the parent's own reported prompt cost plus the increment. The guard therefore reads no
-    // provider shape at all, and a subagent on an API the fork gate does not support keeps running.
+    // assistant usage once it has one, plus an estimate of what follows it. The guard therefore reads
+    // no provider shape at all.
     //
     // Pi's getter is used rather than importing `estimateContextTokens` directly because a subpath
     // import of `@earendil-works/pi-ai` does not resolve inside an installed Pi extension (the loader
@@ -401,14 +252,6 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       }
     }
     task.reportRounds?.(rounds);
-    // Gate 3: only a response whose request passed the deterministic prefix check can count, and it is
-    // judged on its own usage. A response that failed or was cancelled carries SDK placeholder zeros,
-    // which are unknown, not a miss. The run continues either way: never replayed, never cancelled for
-    // this, and a committed batch stays committed.
-    if (verification?.passed && message.stopReason !== "error" && message.stopReason !== "aborted" && message.errorMessage === undefined) {
-      const observed = cacheObservation(task.model as { api: string; id: string; provider: string }, message.usage, cacheEnabled);
-      if (observed) { if (observed.miss && !verification.cacheMiss) verification.cacheMiss = observed; task.onCache?.(observed); }
-    }
     task.onProgress({ usage, retries });
   });
   const abort = () => void session.abort();
@@ -440,13 +283,8 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     unsubscribe();
     session.dispose(); // only this child's runtime and subscriptions
   }
-  // Nothing left this process: the gate rejected the body inside `onPayload`, or the child could
-  // not start. No provider request was made, so the caller may still fall back for this task.
-  if (request === undefined && !task.signal?.aborted)
-    throw new NotForkable(!verification || verification.passed ? failure ?? "native child produced no provider request" : `native prefix mismatch at ${verification.differingPath}`,
-      !verification || verification.passed ? undefined : { ...verification });
-  if (verification?.passed && typeof (usage as { cacheRead?: unknown } | undefined)?.cacheRead === "number")
-    verification.cache_read = (usage as { cacheRead: number }).cacheRead; // recorded as an observation
+  // Nothing left this process: the child could not start. No provider request was made.
+  if (request === undefined && !task.signal?.aborted) throw new Error(failure ?? "native child produced no provider request");
 
   // `prompt()` resolving is not success: the outcome comes from the child's terminal response,
   // and core keeps a committed batch when that response failed.
@@ -455,6 +293,5 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   const outcome = aborted ? "cancelled" as const : failed ? "failure" as const : "success" as const;
   const output = outcome === "success" ? text(terminal!)
     : failure ?? `${terminal?.stopReason ?? "no terminal assistant response"}${terminal?.errorMessage ? `: ${terminal.errorMessage}` : ""}${terminal && text(terminal) ? ` (partial output: ${text(terminal).slice(0, 200)})` : ""}`;
-  return { outcome, output, usage, request, verification, retries, committed, calls, thinking,
-    ...(terminal ? { terminal } : {}), ...(nativeLog ? { nativeLog } : {}) };
+  return { outcome, output, usage, request, retries, committed, calls, thinking, ...(nativeLog ? { nativeLog } : {}) };
 }

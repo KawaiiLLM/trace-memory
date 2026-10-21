@@ -22,7 +22,7 @@ const view = (text: string, nativeId: string, role: "user" | "assistant") => ren
 const batchText = (input: string) => input.split("Raw:\n\n")[1]!.split("\n</episodic>")[0]!;
 
 test.each([9999, 10000])("Noting threshold counts only material views (%s)", async size => {
-  const h = host({ "noting.forkModeDefault": false });
+  const h = host({});
   try {
     // 30: one entry view is worth at most 2,000 tokens, so the threshold is reached by several
     // entries; the last one is tuned word by word until the joined estimate is exactly `size`.
@@ -58,7 +58,7 @@ test.each([9999, 10000])("Noting threshold counts only material views (%s)", asy
 });
 
 test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): oldest whole-entry batches cross Turns or split one Turn (%s), with no completion chaining", async severalTurns => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
+  const h = host({ "noting.triggerTokens": 30 });
   const cap = DEFAULT_CONFIG.noting.batchTokens; // 20b: 10,000, not 17b's 50,000
   try {
     h.persist({ role: "user", content: "start", timestamp: 1 });
@@ -96,7 +96,7 @@ test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): olde
 
 test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest entry stays pending with a report", async () => {
   // 30: two 2,000-token views no longer reach the default trigger on their own, so it is lowered.
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
+  const h = host({ "noting.triggerTokens": 30 });
   try {
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("word ".repeat(15000)));
@@ -150,7 +150,7 @@ test("D admits a real pending Knowledge pool on an entry without consuming pendi
 });
 
 test("17b 2026-09-08: lifecycle hooks launch neither phase and preserve both pending queues", async () => {
-  const h = host({ "noting.forkModeDefault": false });
+  const h = host({});
   try {
     h.persist({ role: "user", content: "word ".repeat(20000), timestamp: 1 }); h.persist(reply("pending"));
     await h.emit("session_start");
@@ -189,43 +189,6 @@ test("retired C trigger is never interpreted as an N/D token setting", () => {
   finally { memory.close(); }
 });
 
-test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls back with the newly completed %s evidence", async role => {
-  // 20b: the batch ceiling is 10,000, so the material is scaled to one batch that still holds the
-  // whole frozen set; the trigger is scaled with it. What is pinned here is the fallback, not a size.
-  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 1000 });
-  try {
-    await h.turn();
-    await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: "old prefix" }] } });
-    if (role === "user") await h.prompt("NEW USER EVIDENCE " + "word ".repeat(2000));
-    else {
-      // Large natural-language pending material is below threshold until a tool result completes.
-      await h.prompt("new tool-heavy turn");
-      h.persist(reply("word ".repeat(900))); await h.emit("agent_end");
-      h.persist({ ...reply(""), content: [{ type: "toolCall", id: "new-call", name: "read", arguments: { path: "file" } }] });
-      h.persist({ role: "toolResult", toolCallId: "new-call", toolName: "read", content: [{ type: "text", text: "NEW TOOL EVIDENCE " + "word ".repeat(2000) }], timestamp: 1 });
-    }
-    if (role === "user") {
-      await h.emit("message_start", { message: reply("") });
-    } else {
-      // Another bounded assistant entry crosses the trigger; the missing tool result stays in the frozen set.
-      h.persist(reply("word ".repeat(100))); await h.emit("agent_end");
-    }
-    await h.emit("agent_settled"); await h.drain();
-    expect(h.requests).toHaveLength(4); // note, memory, terminal reply, fixed review
-    const sent = h.conversations[0]!.messages[0]!.content as string;
-    expect(sent).toContain(role === "user" ? "NEW USER EVIDENCE" : "NEW TOOL EVIDENCE");
-    const run = h.memory.store.listRuns(1)[0]!;
-    expect(run.mode).toBe("subagent");
-    // 19c: the request-copy runner's "captured prefix does not contain the selected source entries"
-    // check went with it. It existed because that runner replayed a captured body that could predate
-    // the evidence it claimed to cover; a fork instead branches the parent's persisted ancestry, so
-    // the newly completed entries are in the child's context by construction. This fake host has no
-    // persisted parent file at all, so the task falls back to fresh context with the whole evidence.
-    expect(JSON.parse(run.response!).fallbackReason).toContain("native runner:");
-    expect(hydrate(h.memory.pendingEntries(1, "main", 2), h.memory.store)).toEqual([]);
-  } finally { await h.dispose(); }
-});
-
 // 27b moved the second half of this case — a fork whose inherited prefix does not fit — to
 // `fallback.test.ts`: that batch is no longer left pending but re-admitted once as a subagent.
 // 92 replaces 86's oversized-first exception with a complete-render batch ceiling.
@@ -247,28 +210,6 @@ test("92: an oldest entry over the configured batch ceiling remains pending with
   } finally { await h.dispose(); }
 });
 
-test("17b 2026-09-08: capture after compaction does not claim the persisted original prefix", async () => {
-  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 2500 }); // 20b: one 10,000-token batch still holds all of it
-  try {
-    await h.prompt("old pending evidence " + "word ".repeat(2000)); await h.answer("old reply");
-    const compact = (await h.emit("session_before_compact", { preparation: { tokensBefore: 9000 } })).compaction.summary;
-    const entry = { id: "compact", parentId: h.entries.at(-1)!.id, timestamp: "now", type: "compaction", summary: compact, firstKeptEntryId: "", tokensBefore: 9000 };
-    h.entries.push(entry); h.allEntries.push(entry);
-    await h.emit("session_compact", { compactionEntry: entry });
-    await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: compact }] } });
-    h.persist(reply("word ".repeat(800))); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
-    expect(h.requests).toHaveLength(4); // note, memory, terminal reply, fixed review
-    expect(h.conversations[0]!.messages[0]!.content).toContain("old pending evidence");
-    const run = h.memory.store.listRuns(1)[0]!;
-    expect(run.mode).toBe("subagent");
-    // 27c/29c: the compaction kept no earlier entry, so the pending evidence is in no representation
-    // the inherited context holds; this admission is the one that refuses the fork — and the reason it
-    // names is the run's, on the model that ran it.
-    expect(JSON.parse(run.response!).fallbackReason).toContain("Raw availability: entry 1 ");
-    expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toEqual([]);
-  } finally { await h.dispose(); }
-});
-
 test("17b 2026-09-08: facade infers the source path before a Turn is fully recorded", async () => {
   const h = host({ "noting.triggerTokens": 1000000000 });
   const runner = TraceMemory(join(h.dir, "trace.db"), async raw => {
@@ -279,7 +220,7 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
       input.tools.find(tool => tool.name === "memory")!.execute({});
     }
     return { outcome: "success", output: "", request: { exact: true } };
-  }, { noting: { batchTokens: 100, forkModeDefault: false } });
+  }, { noting: { batchTokens: 100 } });
   try {
     await h.prompt("user source"); await h.answer("word ".repeat(1000));
     expect((await runner.noting({ sessionId: 1, branch: "main", headTurnId: 1 })).outcome).toBe("success");
@@ -290,7 +231,7 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
 });
 
 test("17b 2026-09-08, on 27a's rule: a round the child's own context cannot hold is refused before sending or advancing entries", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 30 });
   try {
     // 27a recalibration. The overhead the old formula caught in the first body — the whole request JSON
     // priced as prose against `floor(window x 0.85) - maxTokens` — is not what the guard reads any
@@ -321,7 +262,7 @@ test("20b 2026-09-08 scenario 5: a small oldest entry is not joined with a near-
   // the small oldest entry; a stored-body-only ceiling would reject even the large view.
   const large = "BIG " + "word ".repeat(15000);
   const cap = rawWindowTokens([view(large, "big", "assistant")], []);
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30, "noting.batchTokens": cap });
+  const h = host({ "noting.triggerTokens": 30, "noting.batchTokens": cap });
   try {
     h.persist({ role: "user", content: "small oldest", timestamp: 1 });
     h.persist(reply(large)); // the renderer bounds this at the entry cap
@@ -344,7 +285,7 @@ test("20b 2026-09-08 scenario 5: a small oldest entry is not joined with a near-
 // 136 review SPEC4: a Noter's search output past the cap is saved, and the path in the result opens with the
 // worker's own `read`, which otherwise opens trace:// only. The directory is removed when the run ends.
 test("136 review SPEC4: a Pi Noter's over-long search output is saved and its path is readable by the worker's Read", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 30 });
   try {
     const toolText = (message: { content?: unknown } | undefined) => ((message?.content as { text?: string }[] | undefined) ?? []).map(part => part.text ?? "").join("");
     let path = "", readBack = "", stranger = "";

@@ -76,7 +76,7 @@ if (!process.argv.includes("--fixed-only")) for (const length of lengths) {
       let selectedEntries = 0, materialChars = 0;
       for (let i = 0; i < repeats; i++) {
         counter.reset(); const started = performance.now();
-        const frozen = freezeNoting(store, { ...target, mode: "subagent" }, memory.config, memory.resultText);
+        const frozen = freezeNoting(store, { ...target }, memory.config, memory.resultText);
         times.push(performance.now() - started); work.push(counter.value());
         selectedEntries = frozen.entries.length; materialChars = frozen.prepared?.text.length ?? 0;
       }
@@ -121,7 +121,7 @@ if (!process.argv.includes("--fixed-only")) for (const length of lengths) {
     const count = counters();
     try {
       count.reset(); const started = performance.now();
-      const result = await local.noting({ ...target, mode: "subagent" });
+      const result = await local.noting({ ...target });
       const totalMs = performance.now() - started;
       const measuredWork = count.value();
       if (result.outcome !== "success") throw Error(`real N failed: ${JSON.stringify(result)}`);
@@ -239,7 +239,7 @@ for (const length of lengths) {
         phase = { pathMs: 0, pendingMs: 0, snapshotMs: 0, rawMs: 0,
           pathCalls: 0, pendingCalls: 0, snapshotCalls: 0, rawCalls: 0 };
         counter.reset(); const start = performance.now();
-        const frozen = freezeNoting(measured, { ...path, mode: "subagent" }, memory.config, memory.resultText);
+        const frozen = freezeNoting(measured, { ...path }, memory.config, memory.resultText);
         times.push(performance.now() - start); phases.push(phase);
         work.push({ ...counter.value(), directRawReads: phase.rawCalls, pathSnapshots: phase.snapshotCalls });
         if (frozen.entries.length !== 3 || !frozen.prepared) throw Error("fixed N membership mismatch");
@@ -286,7 +286,7 @@ for (const length of lengths) {
       commitMs = performance.now() - start; return result; }) as typeof local.store.commitNotingRun;
     const count = counters();
     try {
-      count.reset(); const start = performance.now(); const result = await local.noting({ ...path, mode: "subagent" });
+      count.reset(); const start = performance.now(); const result = await local.noting({ ...path });
       const totalMs = performance.now() - start;
       const measuredWork = count.value();
       if (result.outcome !== "success" || local.pendingEntries(path.sessionId, path.branch, path.headTurnId).length)

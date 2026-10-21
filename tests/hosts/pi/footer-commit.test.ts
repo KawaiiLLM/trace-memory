@@ -33,7 +33,7 @@ test("24a review: a footer refresh with session-scoped knowledge reads no run au
 });
 
 test("24a review: Noter held output stays pending in the footer until its normal terminal reply", async () => {
-  const f = await fixture({ "noting.forkModeDefault": false });
+  const f = await fixture({});
   let release!: (r: Response) => void;
   let closing = false;
   const pending = new Promise<Response>(resolve => { release = resolve; });

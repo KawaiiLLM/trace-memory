@@ -1,13 +1,13 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { runNative, type NativeSubagentTask } from "../../../src/hosts/pi/native.ts";
+import { runNative, type NativeTask } from "../../../src/hosts/pi/native.ts";
 import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
 import { broken, call, fixture, say, toolResults } from "./native-fixture.ts";
 
-const nativeTask = (f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<NativeSubagentTask> = {}): NativeSubagentTask => ({
-  kind: "dreaming", mode: "subagent", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, model: f.model as never,
+const nativeTask = (f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<NativeTask> = {}): NativeTask => ({
+  kind: "dreaming", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, model: f.model as never,
   systemPrompt: "Offline native worker test.", task: "Complete the scripted task.", maxToolRounds: 0,
   read: memoryReadTool(f.h.dir, path => memoryFiles(f.h.memory, { projectId: f.h.memory.store.getSession(1)?.projectId }).read(path), { memoryOnly: true }),
   tools: [{ name: "search", description: "Read synthetic material", parameters: { type: "object", properties: {} }, execute: () => "synthetic material" }],

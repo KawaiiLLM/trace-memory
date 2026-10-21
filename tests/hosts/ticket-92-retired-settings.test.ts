@@ -18,7 +18,7 @@ const dirs: string[] = [];
 afterEach(() => { faults.rename = false; vi.restoreAllMocks(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 function fixture() { const dir = fs.mkdtempSync(join(tmpdir(), "tm-92-retired-settings-")); dirs.push(dir); return dir; }
 const retired = Object.fromEntries(RETIRED_CONSOLIDATION_KEYS.map(key => [key, "old-value"]));
-const live = { notingModel: "noter", notingThinking: "high", "dreaming.model": "dreamer", "dreaming.thinking": "medium", "noting.forkModeDefault": true };
+const live = { notingModel: "noter", notingThinking: "high", "dreaming.model": "dreamer", "dreaming.thinking": "medium", "noting.triggerTokens": 7 };
 
 test("92/07: exact C keys only; unknown and similar user keys survive the pure upgrade", () => {
   const original = { ...retired, ...live, consolidationModelBackup: "keep", "consolidation.custom": "keep", custom: 42 };

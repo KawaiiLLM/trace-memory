@@ -52,14 +52,14 @@ function betaDatabase(directory: string) {
 test("29d case 23: a published Beta database's delivery rows pause nothing, deliver nothing and are never rewritten", async () => {
   const directory = mkdtempSync(join(tmpdir(), "trace-memory-beta-"));
   const beta = betaDatabase(directory);
-  // Fork mode with a low trigger: the exact configuration the retired pause used to hold back.
-  const h = host({ dbPath: beta.dbPath, "noting.triggerTokens": 30, "noting.forkModeDefault": true });
+  // A low trigger: the exact configuration the retired pause used to hold back.
+  const h = host({ dbPath: beta.dbPath, "noting.triggerTokens": 30 });
   try {
     const target = { sessionId: beta.sessionId, branch: "main", headTurnId: beta.headTurnId };
     // The undelivered row belongs to this very session and branch. Eligibility is the trigger alone.
     expect(h.memory.taskEligibility("noting", target).due).toBe(false); // nothing pending yet, not "paused"
     h.provider(async c => notingFact(c));
-    await h.turn(); // this executor's own session: a fork-mode Noting task runs to completion
+    await h.turn(); // this executor's own session: a Noting task runs to completion
     expect(h.memory.store.listRuns(2).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success"]);
     // No burst, no drain: the prompt after that commit carries no receipt of any kind.
     expect(String((await h.prompt("second"))?.message?.content ?? "")).not.toContain("<noted>");

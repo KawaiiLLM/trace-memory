@@ -17,7 +17,7 @@ import { installCcNativeRejectionGuard } from "./native-rejection.ts";
 import { readCcMenu, readCcRuns } from "./menu.ts";
 import type { CcContextSnapshot } from "./menu-context.ts";
 import { editedCcConfig, saveCcConfig, type CcSettingId } from "./menu-config.ts";
-import { executorSettings, executorSnapshot, requestCcForkSources, requestCcForkWarnings, signalCcForkEvent, signalCcTurnEnd, waitCcForkCommand } from "./control.ts";
+import { executorSettings, executorSnapshot, signalCcTurnEnd } from "./control.ts";
 import { runCcFiles } from "./files.ts";
 import { Store } from "../../core/store/index.ts";
 import { parseRunsCount } from "../trace-menu.ts";
@@ -172,45 +172,20 @@ async function readStdin(): Promise<string> {
 export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
   if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" &&
-      command !== "hook-compact" && command !== "hook-capable" && command !== "hook-turn" && command !== "hook-sources" && command !== "hook-fork" && command !== "hook-fork-watch" && command !== "cli" && command !== "fs") || configFlag !== "--config" || !configPath)
+      command !== "hook-compact" && command !== "hook-capable" && command !== "hook-turn" && command !== "cli" && command !== "fs") || configFlag !== "--config" || !configPath)
     throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|materialize ...");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config, undefined, configPath); return; }
-  if (command === "hook-capable" || command === "hook-turn" || command === "hook-sources") {
-    const input = JSON.parse(await readStdin()) as { session_id?: unknown; turnId?: unknown; reason?: unknown;
-      observation?: import("./control.ts").CcForkObservation };
+  if (command === "hook-capable" || command === "hook-turn") {
+    const input = JSON.parse(await readStdin()) as { session_id?: unknown; turnId?: unknown; reason?: unknown };
     const session = validateNativeSessionId(input.session_id);
     if (command === "hook-capable") await markCcFunctionHook(config, session);
-    else if (command === "hook-sources") {
-      if (typeof input.turnId !== "string" || !input.turnId) throw new Error("CC fork source read requires native turnId");
-      process.stdout.write(`${JSON.stringify(await requestCcForkSources(config, session, input.turnId))}\n`);
-    } else {
+    else {
       if (typeof input.turnId !== "string" || !input.turnId || typeof input.reason !== "string")
         throw new Error("CC turn-end hook requires native turnId and reason");
-      process.stdout.write(`${JSON.stringify(await signalCcTurnEnd(config, session, input.turnId, input.reason, input.observation))}\n`);
+      await signalCcTurnEnd(config, session, input.turnId, input.reason);
+      process.stdout.write(`${JSON.stringify({ ok: true })}\n`);
     }
-    return;
-  }
-  if (command === "hook-fork-watch") {
-    if (sessionFlag !== "--session" || typeof nativeSessionId !== "string" || !nativeSessionId || typeof verb !== "string" || !verb)
-      throw new Error("CC fork stop listener requires native session and agent ID");
-    validateNativeSessionId(nativeSessionId);
-    process.stdout.write(`${JSON.stringify(await waitCcForkCommand(config, nativeSessionId, verb))}\n`);
-    return;
-  }
-  if (command === "hook-fork") {
-    const input = JSON.parse(await readStdin()) as { session_id: string; verb: "fork-register" | "fork-call" | "fork-check" | "fork-terminal" | "fork-account" | "fork-no-start" | "fork-disconnect";
-      turnId?: string; agentId?: string; callId?: string; name?: string; reason?: string; answer?: string; confirmed?: boolean; usage?: unknown };
-    validateNativeSessionId(input.session_id);
-    if (!["fork-register", "fork-call", "fork-check", "fork-terminal", "fork-account", "fork-no-start", "fork-disconnect"].includes(input.verb))
-      throw new Error("invalid CC native fork event");
-    if (input.verb === "fork-account") {
-      if (typeof input.agentId !== "string" || !input.agentId) throw new Error("CC fork accounting requires the native agent ID");
-      process.stdout.write(`${JSON.stringify({ allowed: true, warnings: await requestCcForkWarnings(config, input.session_id, input.agentId) })}\n`);
-      return;
-    }
-    const { session_id: _session, verb: _verb, ...detail } = input;
-    process.stdout.write(`${JSON.stringify({ allowed: await signalCcForkEvent(config, input.session_id, input.verb, detail) })}\n`);
     return;
   }
   if (command === "hook-compact") {

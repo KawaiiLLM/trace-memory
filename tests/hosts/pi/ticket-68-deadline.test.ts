@@ -23,7 +23,7 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
     if (!task.reader) throw new Error("Pi worker fixture requires the Core-frozen reader");
     const files = memoryFiles(memory, task.reader);
     task.acknowledgeRequest();
-    const work = runNative({ kind: "dreaming", mode: "subagent", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir,
+    const work = runNative({ kind: "dreaming", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir,
       model: f.model as never, systemPrompt: task.prompt, task: task.text,
       tools: task.tools, read: memoryReadTool(f.h.dir, path => files.read(path), { memoryOnly: true }),
       maxToolRounds: 0, signal: task.signal,

@@ -3,7 +3,6 @@ import { TraceMemory } from "../../../src/core/api/index.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { resolveFactSource, sourceAddresses } from "../../../src/core/model/source.ts";
-import { renderEntryIndex } from "../../../src/core/render/index.ts";
 import { factSources, legacyFacts } from "../../support/seed.ts";
 
 function fixture() {
@@ -42,8 +41,6 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
     const carry = f.m.branchSummary(f.sessionId, "main", f.turnId);
     expect(carry).toContain("Public explanation");
     expect(carry).not.toContain("Private inference");
-    expect(renderEntryIndex(f.pure)).toContain("[T1#E1@assistant]");
-    expect(renderEntryIndex(f.mixed)).not.toContain("thinking");
     expect(resolveFactSource(f.entries, "T1#E2")[0]!.blocks.map(b => b.kind)).toEqual(["text", "call"]);
     const accepted = [fact("T1#E2"), fact("T1#E3"), { title: "Mixed evidence", sources: factSources([
       { address: "T1#E2", text: "Public explanation" }, { address: "T1#E3", text: "Passed" }]) }].map(item => note.execute(item));

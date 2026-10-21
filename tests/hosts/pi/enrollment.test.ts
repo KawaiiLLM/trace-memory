@@ -63,7 +63,7 @@ test("18a 2026-09-08: provisional toggle, cancel, menu parity and headless statu
 });
 
 test("historical enable imports once, preserves native identities, and checks only newly imported history", async () => {
-  const h = setup({ "noting.triggerTokens": 1, "noting.forkModeDefault": false });
+  const h = setup({ "noting.triggerTokens": 1 });
   h.setHeaderTimestamp("2000-01-01T00:00:00Z");
   for (let i = 0; i < 3; i++) { h.persist({ role: "user", content: "same", timestamp: i }); h.persist(reply("same answer")); }
   await h.emit("session_start"); expect(h.memory.store.getSession(1)).toBeNull();
@@ -139,7 +139,7 @@ test("18a 2026-09-08: core gates admissions and late commits through another fac
 });
 
 test.each([true, false])("18a 2026-09-08: disable during Noting provider call rejects late %s submission and retains pending batch", async submit => {
-  const h = setup({ "noting.triggerTokens": 1, "noting.forkModeDefault": false, "noting.maxToolRounds": 1 });
+  const h = setup({ "noting.triggerTokens": 1, "noting.maxToolRounds": 1 });
   let release!: (value: ReturnType<typeof reply>) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn();
@@ -151,10 +151,10 @@ test.each([true, false])("18a 2026-09-08: disable during Noting provider call re
   expect(h.memory.store.listRuns(1).every(r => r.outcome !== "success")).toBe(true);
 });
 
-// Across both Noter modes, disabling stops automatic material without losing committed work.
+// Disabling stops automatic material without losing committed work.
 // Re-enabling uses the same evidence-aware predicate as every ordinary prompt.
-test.each([true, false])("34c: automatic material ignores the Noter mode (%s); disable preserves work and on rechecks evidence coverage", async (noting) => {
-  const h = setup({ "noting.forkModeDefault": noting });
+test("34c: disable preserves work and on rechecks evidence coverage", async () => {
+  const h = setup();
   await h.turn();
   // This enrollment/delivery case uses the real immediate manual bindings for committed setup.
   // Live N publication is exercised separately by the host atomic and scheduler tests.
@@ -177,20 +177,19 @@ test.each([true, false])("34c: automatic material ignores the Noter mode (%s); d
 });
 
 test("92: Settings shows N/D preferences with effective sources and masked layers; displaying them writes nothing", async () => {
-  // N exposes mode/model/thinking; D exposes model/thinking only. Advanced settings remain file-owned.
+  // Both phases expose model/thinking only. Advanced settings remain file-owned.
   const h = setup({ "noting.triggerTokens": 33 });
   const globalPath = join(h.dir, "agent", "settings.json"), projectPath = join(h.dir, ".pi", "settings.json");
   mkdirSync(join(h.dir, ".pi"));
-  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": false, "dreaming.model": "fake/test", "render.entryTokens": 222 } }));
-  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true, "render.entryTokens": 333 } }));
+  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "dreaming.model": "fake/test", "render.entryTokens": 222 } }));
+  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { notingThinking: "high", "render.entryTokens": 333 } }));
   const before = [readFileSync(globalPath), readFileSync(projectPath)];
   await h.emit("session_start"); h.ctx.hasUI = true;
   h.answers.push("Settings…", undefined); await command(h, ""); // opened, then cancelled: inert
   const shown = h.dialogs.at(-1)!.options!;
   expect(shown).toEqual([
     "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
-    "Noter mode: fork (Project setting — this edit will not take effect)",
-    "Noter model: follow foreground", "Noter thinking: inherit",
+    "Noter model: follow foreground", "Noter thinking: high (Project setting — this edit will not take effect)",
     "Dreamer model: fake/test", "Dreamer thinking: inherit", "Closed sessions: project",
   ]);
   expect(h.dialogs.at(-1)!.title).toContain(join(h.dir, "trace.db"));
@@ -339,43 +338,4 @@ test("18a 2026-09-08: pre-reply choice survives loss of Pi unflushed custom entr
   expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
   expect(h.memory.store.listTurns(1)).toHaveLength(1);
   expect(h.memory.store.getSession(2)).toBeNull();
-});
-
-test("19c 2026-09-08: the legacy execution-mode key still selects the mode, and the menu shows the canonical key with its source", async () => {
-  // Environment layer, old spelling: it must still turn inherited-context Noting off.
-  const h = setup({ "noting.triggerTokens": 1, "noting.branchModeDefault": false });
-  await h.emit("session_start");
-  await h.turn();
-  expect(h.memory.store.listRuns(1).map(r => r.mode)).toEqual(["subagent"]); // the alias selected fresh context
-  h.ctx.hasUI = true;
-  h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: subagent (Environment setting — this edit will not take effect)"); // canonical key, honest source
-  expect(h.dialogs.at(-1)!.options!.join("\n")).not.toContain("branchModeDefault"); // and only the canonical key
-});
-
-test("19c 2026-09-08: a legacy key in one layer is masked by the canonical key in a later layer, as any other setting is", async () => {
-  const h = setup({ "noting.triggerTokens": 33 });
-  const globalPath = join(h.dir, "agent", "settings.json"), projectPath = join(h.dir, ".pi", "settings.json");
-  mkdirSync(join(h.dir, ".pi"), { recursive: true });
-  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false } }));
-  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true } }));
-  await h.emit("session_start"); h.ctx.hasUI = true;
-  h.answers.push("Settings…", undefined); await command(h, "");
-  // 18a precedence decides; supplying the two spellings in two layers is migration, not a conflict.
-  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Project setting — this edit will not take effect)");
-  writeFileSync(globalPath, "{}"); writeFileSync(projectPath, "{}");
-});
-
-test("19c 2026-09-08: one layer supplying both execution-mode spellings with different values fails the load naming both", async () => {
-  const h = setup();
-  const globalPath = join(h.dir, "agent", "settings.json");
-  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false, "noting.forkModeDefault": true } }));
-  await expect(h.emit("session_start")).rejects.toThrow("noting.branchModeDefault");
-  await expect(h.emit("session_start")).rejects.toThrow("noting.forkModeDefault");
-  // Agreeing values are not a conflict: the canonical key wins and the load succeeds.
-  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false, "noting.forkModeDefault": false } }));
-  await h.emit("session_start"); h.ctx.hasUI = true;
-  h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: subagent");
-  writeFileSync(globalPath, "{}");
 });

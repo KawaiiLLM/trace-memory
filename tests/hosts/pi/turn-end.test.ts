@@ -26,7 +26,7 @@ const skip = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ ty
 
 test.each(["session_start", "enable"] as const)(
   "%s imports check Noting without waiting for another native entry", async boundary => {
-    const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+    const h = host({ "noting.triggerTokens": 30 });
     if (boundary !== "session_start") await h.emit("session_start");
     if (boundary === "enable") await h.commands.get("trace")!.handler("off", h.ctx);
     h.persist({ role: "user", content: "word ".repeat(400), timestamp: 1 }, "import-user");
@@ -43,7 +43,7 @@ test.each(["session_start", "enable"] as const)(
   });
 
 test("one import spanning multiple turns admits work at its newest entry", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 30 });
   await h.emit("session_start");
   for (const name of ["first", "second"]) {
     h.persist({ role: "user", content: `${name} ${"word ".repeat(400)}`, timestamp: 1 });
@@ -60,7 +60,7 @@ test("one import spanning multiple turns admits work at its newest entry", async
 });
 
 test("an import after mid-turn compaction checks the selected head, not the entry's owning Turn", async () => {
-  const h = host({ "noting.triggerTokens": 100, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 100 });
   await h.turn();
   const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 9000 } });
   const compaction = h.compaction(block.compaction.summary);
@@ -76,7 +76,7 @@ test("an import after mid-turn compaction checks the selected head, not the entr
 });
 
 test.each(["session_start", "session_tree"] as const)("%s with fully imported history launches nothing even when Noting is due", async boundary => {
-  const h = host({ "noting.triggerTokens": 1, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 1 });
   await h.emit("session_start");
   h.persist({ role: "user", content: "pending selected evidence", timestamp: 1 });
   h.persist(reply("pending reply"));
@@ -92,7 +92,7 @@ test.each(["session_start", "session_tree"] as const)("%s with fully imported hi
 });
 
 test("a tool-heavy turn admits Noting at its first due entry and Dreaming after a knowledge commit", async () => {
-  const h = host({ "noting.triggerTokens": 300, "noting.forkModeDefault": false, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 300, "dreaming.triggerTokens": 1 });
   h.provider(async c => {
     if (c.systemPrompt?.startsWith("# Dreamer")) return skip();
     const response = notingFact(c);
@@ -116,7 +116,7 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
 });
 
 test("busy entries queue nothing; the next entry after publication admits the next batch", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, "dreaming.triggerTokens": 1e9 });
+  const h = host({ "noting.triggerTokens": 30, "dreaming.triggerTokens": 1e9 });
   let release!: (value: Reply) => void;
   let first = true;
   let initial!: Parameters<typeof notingFact>[0];
@@ -138,7 +138,7 @@ test("busy entries queue nothing; the next entry after publication admits the ne
 });
 
 test("failed Noting retries at later entry ends and disables memory after three failures", async () => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async () => reply("Incomplete Noter."));
   await h.prompt("word ".repeat(400)); await h.answer(); await h.drain();
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["failure"]);
@@ -153,7 +153,7 @@ test("failed Noting retries at later entry ends and disables memory after three 
 });
 
 test.each(["aborted", "error"] as const)("%s assistant entries admit without waiting for settlement", async outcome => {
-  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 30 });
   await h.prompt("word ".repeat(400));
   await h.emit("message_end", { message: { ...reply("partial"), stopReason: outcome } });
   await h.emit("agent_end"); await h.drain();
@@ -161,7 +161,7 @@ test.each(["aborted", "error"] as const)("%s assistant entries admit without wai
 });
 
 test("stop after an empty borrowed candidate fences the next borrowed launch", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 1e9 });
   await h.prompt(); await h.emit("message_end", { message: reply("Done.") });
   await h.emit("agent_end"); await h.drain();
   const store = h.memory.store;
@@ -198,7 +198,7 @@ test("installed Pi SDK settles a cancelled turn once and checks again on the nex
     pi.on("agent_end", () => { events.push("agent_end"); });
     pi.on("agent_settled", () => { events.push("agent_settled"); });
   }], env: { TRACE_MEMORY_CONFIG: JSON.stringify({ dbPath, "noting.triggerTokens": 30,
-    "noting.forkModeDefault": false, "dreaming.triggerTokens": 1e9 }) },
+    "dreaming.triggerTokens": 1e9 }) },
     prepare: ({ agentDir }) => writeFileSync(join(agentDir, "trace-memory-baseline.json"), JSON.stringify("2000-01-01T00:00:00.000Z")) });
   const observer = TraceMemory(dbPath, async () => { throw Error("observer never runs"); });
   try {

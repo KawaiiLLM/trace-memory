@@ -332,7 +332,6 @@ export function renderTraceSettings(input: SettingsInput): RenderedSettings {
     header: model.header,
     budgetLines: model.budgets.rows.map(row => `${row.label.padEnd(9)} ${row.value.padStart(6)}${row.qualifier ? `  ${row.qualifier}` : ""}`),
     derivedLine: model.budgets.derivedLine,
-    // Ticket: the mode column exists on Pi only, because Claude Code workers have no fork mode.
     workerHeader: "Workers        model                thinking",
     workerLines: model.workers.rows.map(w => `${w.phase.padEnd(14)} ${w.model.padEnd(20)} ${w.thinking}${w.source ? ` (${w.source})` : ""}`),
     closedSessionsLine: model.closedSessionsLine,
