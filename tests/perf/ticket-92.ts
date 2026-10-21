@@ -65,7 +65,7 @@ if (!process.argv.includes("--fixed-only")) for (const length of lengths) {
     const original = store.listBranchFacts(target.sessionId, target.branch, target.headTurnId)[0]!;
     const changed = store.commitConsolidationRun({ path: target,
       run: { kind: "manual", sessionId: target.sessionId, branch: target.branch, createdAt: "2026-09-26T00:00:00Z" },
-      operations: [{ op: "create", handle: "$change", author: "benchmark", text: "new synthetic rule",
+      operations: [{ op: "create", handle: "$change", author: "benchmark", title: "New synthetic rule", text: "new synthetic rule",
         category: "constraint", scope: "session", supports: [original.id], topics: [], reason: "benchmark", createdAt: "2026-09-26T00:00:00Z" }] });
     if (!changed.ok) throw Error(changed.problems.join("; "));
     sample("changed knowledge injection", length, () => memory.injection(target, supplied), { ...inventory, newVersions: changed.committed.length });
