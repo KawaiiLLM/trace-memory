@@ -95,7 +95,7 @@ for (const variant of variants)
       if (result.nativeLog) logs.push(result.nativeLog);
       return result;
     });
-    const project = memory.store.createProject({ name: "native-144", declaredBy: "mark" });
+    const project = memory.store.createProject({ name: "native-noter-two-tasks", declaredBy: "mark" });
     session = memory.store.createSession({ projectId: project.id, host: "cc:native", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const first = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "User established an earlier rule", assistantText: "Claude Code recorded the rule", startedAt: "now" });
     const second = memory.store.appendTurn({ sessionId: session.id, parentTurnId: first.id, kind: "turn", userPrompt: "New discussion", assistantText: "Claude Code considered it", startedAt: "later" });
