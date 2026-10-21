@@ -141,8 +141,8 @@ test("first prompt injects only global knowledge; project knowledge requires an 
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   const seeded = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, createdAt: "now" }, operations: [
-    { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "项目规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" },
-    { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e2", author: "fixture", text: "全局规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" },
+    { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "项目规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" },
+    { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e2", author: "fixture", text: "全局规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" },
   ] });
   expect(seeded.ok).toBe(true);
   const injection = await h.prompt();
@@ -254,7 +254,7 @@ test("29d: the knowledge block is offered until the selected context carries it,
   const seedEntry = store.listSourceEntries(seed.id).at(-1)!;
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, entryIds: [seedEntry.id], category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
   if (!noted.ok) throw new Error("seed");
-  store.commitConsolidationRun({ run: { kind: "manual", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "全局规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" }] });
+  store.commitConsolidationRun({ run: { kind: "manual", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "全局规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" }] });
   // A prompt whose message Pi never persisted leaves no baseline, so the next prompt offers it again.
   const offered = await h.emit("before_agent_start", { prompt: "dropped", systemPrompt: "host" });
   expect(offered?.message?.content).toContain("<knowledge>");
@@ -365,7 +365,7 @@ test("knowledge is injected once per visible baseline, only once something exist
     facts: [{ turnId: t.id, entryIds: [h.memory.store.sourcePath(1, "main", t.id).find(e => e.turnId === t.id && h.memory.store.getSourceEntry(e.id)?.role === "user")!.id], category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
   if (!recorded.ok) throw new Error("setup");
   h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" }, operations: [
-    { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
+    { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
   void p;
   const second = await h.prompt("again");
   expect(second?.message?.content).toContain("<knowledge>");
@@ -448,7 +448,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   const store = h.memory.store, own = store.getSession(1)!.projectId;
   const seed = (sessionId: number, fact: number, scopes: ("project" | "session")[]) => {
     const commit = store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: "now" }, operations: scopes.map((scope, i) => ({
-      op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fixture", text: scope === "project" ? "用 pnpm，不要 npm" : "仅当前会话", supports: [fact],
+      op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fixture", text: scope === "project" ? "用 pnpm，不要 npm" : "仅当前会话", supports: [fact],
       createdAt: "now", category: "constraint" as const, scope,
     })) });
     expect(commit.ok).toBe(true);

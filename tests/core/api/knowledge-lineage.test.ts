@@ -82,7 +82,7 @@ function fixture() {
     scope, supports, topics: [], reason: `change to ${text}`, createdAt: time });
   const rootPath = { sessionId: session.id, branch: "root", headTurnId: rootTurn.id };
   const initial = store.commitConsolidationRun({ path: rootPath, run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: time },
-    operations: [{ op: "create", handle: "$root", author: "test", ...content("root conclusion", [rootFact]) }] });
+    operations: [{ op: "create", title: "Fixture title", handle: "$root", author: "test", ...content("root conclusion", [rootFact]) }] });
   if (!initial.ok) throw new Error(initial.problems.join("; "));
   const created = initial.committed[0]!;
   return { memory, scenarios, store, project, session, rootTurn, rootEntry, rootFact, rootPath, append, note, write, content, created };
@@ -137,7 +137,7 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
   f.store.selectSourcePath(f.session.id, "child", [f.rootEntry.id, childEntry.id]);
   const childFact = f.note(childTurn.id, childEntry.id, "child-only evidence");
   const childPath = { sessionId: f.session.id, branch: "child", headTurnId: childTurn.id };
-  const childOnly = (await f.write(childPath, [{ op: "create", handle: "$child", author: "test", ...f.content("child-only conclusion", [childFact]) }]))[0]!;
+  const childOnly = (await f.write(childPath, [{ op: "create", title: "Fixture title", handle: "$child", author: "test", ...f.content("child-only conclusion", [childFact]) }]))[0]!;
   const merged = (await f.write(childPath, [{ op: "merge", intoKnowledgeId: f.created.knowledgeId, intoBaseCommit: f.created.commit,
     absorb: [{ knowledgeId: childOnly.knowledgeId, baseCommit: childOnly.commit }], ...f.content("complete merged conclusion", [f.rootFact]) }]))[0]!;
 
@@ -220,7 +220,7 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
     entryIds: [entry.id], category: "decision", actor: "user", text: "compound", source: [`T${turn.id}#E1`], createdAt: time }] });
   if (!facts.ok) throw new Error(facts.problems.join());
   const created = fstore.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
-    run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ op: "create", handle: "$parent", author: "test",
+    run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ op: "create", title: "Fixture title", handle: "$parent", author: "test",
       text: "first rule and second rule", category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: ["compound"], reason: "initial", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join());
   parent = created.committed[0]!;
@@ -273,7 +273,7 @@ test("34a migration labels legacy supports without changing ids, links or proces
     sources: [{ entry, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "legacy", createdAt: time,
   }]);
   const create = (handle: string) => store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
-    op: "create", handle, author: "legacy", text: handle, category: "constraint", scope: "project", supports: [fact.facts[0]!.id], topics: [], reason: "legacy", createdAt: time }] });
+    op: "create", title: "Fixture title", handle, author: "legacy", text: handle, category: "constraint", scope: "project", supports: [fact.facts[0]!.id], topics: [], reason: "legacy", createdAt: time }] });
   const first = create("$first"), second = create("$second");
   if (!first.ok || !second.ok) throw new Error("fixture failed");
   store.db.prepare("INSERT INTO knowledge_links VALUES (?,?,'merged_into',?,?)").run(first.committed[0]!.knowledgeId, first.committed[0]!.commit, second.committed[0]!.knowledgeId, second.committed[0]!.commit);

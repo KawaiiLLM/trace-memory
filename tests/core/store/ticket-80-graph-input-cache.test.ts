@@ -54,7 +54,7 @@ test.each(["consolidation", "budget", "cursor-back", "branch-switch", "path-rewr
     writer.selectSourcePath(sessionId, "side", [entry.id]);
     const path = { sessionId, branch: "main", headTurnId: child.id };
     const created = writer.commitConsolidationRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time }, path,
-      operations: [{ op: "create", handle: "$k", author: "test", text: "supported session knowledge",
+      operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "supported session knowledge",
         category: "constraint", scope: "session", supports: [factId], topics: [], reason: "fixture", createdAt: time }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     let mutate: () => void;
@@ -112,7 +112,7 @@ test("80: readers with the same signal share one global graph without sharing vi
   store.publishSourcePath(other.id, "main", [secondEntry.id], secondTurn.id, "other");
   const path = { sessionId, branch: "main", headTurnId: turnId };
   const created = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "create", handle: "$k", author: "test", text: "private session rule", category: "constraint",
+    operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "private session rule", category: "constraint",
       scope: "session", supports: [factId], topics: [], reason: "fixture", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   expect(store.progressSignal(sessionId)).toBe(store.progressSignal(other.id));
@@ -130,7 +130,7 @@ test("writers always rebuild: base validation of an archive sees its own transac
   const { sessionId, turnId, factId } = seeded(store);
   const path = { sessionId, branch: "main", headTurnId: turnId };
   const created = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "create", handle: "$k", author: "test", text: "a durable rule that is long enough to carry weight",
+    operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "a durable rule that is long enough to carry weight",
       category: "constraint", scope: "session", supports: [factId], topics: [], reason: "evidence", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const base = created.committed[0]!;
@@ -204,7 +204,7 @@ test("80: a revision (through a second connection) invalidates the graph memo, a
   const before = reader.knowledgePools(path);
   expect(before.flatMap(p => p.versions)).toHaveLength(0);
   const created = writer.commitConsolidationRun({ path, run: { kind: "manual", sessionId: ctx.sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "create", handle: "$k", author: "test", text: "a durable rule that is long enough to carry weight",
+    operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "a durable rule that is long enough to carry weight",
       category: "constraint", scope: "session", supports: [ctx.factId], topics: [], reason: "evidence", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const after = reader.knowledgePools(path);
@@ -234,7 +234,7 @@ test("80: cross-connection project reassignment (Pi's scenario) invalidates the 
   if (!bNoted.ok) throw new Error(bNoted.problems.join("; "));
   const bPath = { sessionId: b.id, branch: "main", headTurnId: bTurn.id };
   const shared = writer.commitConsolidationRun({ path: bPath, run: { kind: "manual", sessionId: b.id, branch: "main", createdAt: time },
-    operations: [{ op: "create", handle: "$k", author: "test", text: "shared project knowledge, long enough to carry weight",
+    operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "shared project knowledge, long enough to carry weight",
       category: "constraint", scope: "project", supports: [bNoted.facts[0]!.id], topics: [], reason: "evidence", createdAt: time }] });
   if (!shared.ok) throw new Error(shared.problems.join("; "));
 

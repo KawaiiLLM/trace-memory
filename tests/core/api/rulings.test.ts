@@ -7,6 +7,7 @@ import { compacted, recorded } from "../../source-fixture.ts";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { DEFAULT_WRITING_LIMITS, renderLimits } from "../../../src/core/prompts/limits.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, visibleTarget, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
@@ -31,7 +32,7 @@ import { handleCcHook } from "../../../src/hosts/cc/index.ts";
 import * as ccNative from "../../../src/hosts/cc/native-session.ts";
 import { CcImporter } from "../../../src/hosts/cc/importer.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyArchive, legacyFacts, session as seedSession } from "../../support/seed.ts";
+import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyArchive, legacyFacts, legacyKnowledge, session as seedSession } from "../../support/seed.ts";
 import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../../src/hosts/cc/slices.ts";
 import { KNOWLEDGE_RECENCY_NOTICE } from "../../../src/core/render/index.ts";
@@ -1005,6 +1006,38 @@ test("135/2026-09-07: a reversed live merge is atomic and keeps the older identi
 
 
 
+// A merge that omits its title inherits it from the survivor the Store keeps (the older identity), whichever
+// parent the call names first; a legacy untitled parent is refused only when it is the survivor.
+test("144: a reversed merge without a title takes the real survivor's title, untitled named survivor or not", async () => {
+  const { create, write, path } = memoryWriter();
+  const committed = (title: string, text: string) => write([{ ...create, title, text }]).committed[0] as { knowledgeId: number; version: string };
+  const older = committed("Older rule", "Use pnpm"), newer = committed("Newer rule", "Avoid npm");
+  const survivor = committed("Survivor rule", "Pin the Node version");
+  const legacy = legacyKnowledge(memory.store, path, { text: "Legacy rule body", category: "constraint", scope: "project", supports: [1] });
+  const trigger = createDreamerTrigger(memory, path, 2, 1);
+  let merged: Pick<MemoryReceipt, "results" | "committed"> | undefined;
+  const result = await admittedScenarios.run(memory, path, input => {
+    input.reportRequest({ fixture: "merge title" });
+    const writeTool = input.tools.find(tool => tool.name === "memory")!;
+    const files = memoryFiles(memory, input.reader!);
+    const addresses = [older, newer, survivor].map(item => `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, commitOf(item))}`);
+    const legacyAddress = tagged(legacy.knowledgeId, legacy.commit);
+    for (const address of [...addresses, legacyAddress, tagged(trigger.knowledgeId, trigger.commit)]) readHandle(file => files.read(file).content, address);
+    const { title: _title, ...untitled } = create;
+    const withoutTitle = (id: string, absorb: string) => ({ ...untitled, op: "merge", reason: "Merged duplicate knowledge.", id, absorb: [absorb], supports: ["F1", "F2"] });
+    merged = JSON.parse(dreamerWrite(writeTool, { operations: [
+      withoutTitle(addresses[1]!, addresses[0]!),             // names the newer one: the Store swaps, the older survives
+      withoutTitle(legacyAddress, addresses[2]!),             // names an untitled legacy item whose titled peer is older
+      { op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: ["F2"], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
+    return { outcome: "success", output: "merged", request: { fixture: "merge title" } };
+  });
+  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  expect(merged?.results, JSON.stringify(merged)).toEqual(["ok", "ok", "ok"]);
+  const titleOf = (item: { knowledgeId: number }) => memory.store.currentCommit(item.knowledgeId).map(revision => revision.title);
+  expect(titleOf(older)).toEqual(["Older rule"]);
+  expect(titleOf(survivor)).toEqual(["Survivor rule"]);
+});
+
 test.each(["success", "failure"] as const)("92: invalid knowledge slot is corrected but terminal %s decides joint publication and preserves audit", async outcome => {
   const { s, t } = session(); memory.close();
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
@@ -1250,7 +1283,7 @@ test("2026-09-07 B: store rechecks every base inside the transaction and rolls b
   const origin = memory.store.triggerOrigin(root, root.triggerEntryId);
   const run = memory.store.bindRunOrigin({ kind: "manual", sessionId: root.sessionId, createdAt: time }, origin);
   const result = memory.store.commitConsolidationRun({ path: root, run, operations: [
-    { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "Must roll back", category: "goal", scope: "project", supports: [1], createdAt: time },
+    { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "Must roll back", category: "goal", scope: "project", supports: [1], createdAt: time },
     { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 1, baseCommit: 1, supports: [1], createdAt: time },
   ] });
   expect(result.ok).toBe(false);
@@ -2770,7 +2803,7 @@ test("47/118: search reads every version without bypassing write validation", ()
 // The maintainer's current principle note supersedes 61/92's sentence pins. Semantic alignment is
 // reviewed against the frozen note with the change; keep composition and stage authority here.
 test("N and D compose shared definitions and principles with their permitted maintenance operations", () => {
-  const block = (name: string) => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8").trimEnd();
+  const block = (name: string) => renderLimits(readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8").trimEnd(), DEFAULT_WRITING_LIMITS);
   const shared = ["model", "facts", "knowledge", "common", "admission", "division", "citations", "writing", "maintenance", "archiving", "examples"];
   for (const file of STAGE_PROMPTS) {
     const composed = loadPrompt(file);
@@ -2933,7 +2966,7 @@ async function deliveryFixture(texts: string[]) {
   const evidence = legacyFacts(store, { kind: "manual", sessionId: seed.id, createdAt: time }, [{ sources: [{ entry: source,
     address: `T${turn.id}#E${source.entryOrdinal}` }], text: "rule", category: "decision", actor: "user", createdAt: time }]).facts[0]!;
   const committed = store.commitConsolidationRun({ path: { sessionId: seed.id, headTurnId: turn.id }, run: { kind: "manual", sessionId: seed.id, createdAt: time },
-    operations: texts.map((text, index) => ({ op: "create" as const, handle: `$${index + 1}`, author: "fixture", text, category: "constraint" as const,
+    operations: texts.map((text, index) => ({ op: "create" as const, title: "Fixture title", handle: `$${index + 1}`, author: "fixture", text, category: "constraint" as const,
       scope: "global" as const, supports: [evidence.id], topics: [], reason: "fixture", createdAt: time })) });
   if (!committed.ok) throw new Error(committed.problems.join());
   const { ccDeltaInjection } = await import("../../../src/hosts/cc/injection.ts");

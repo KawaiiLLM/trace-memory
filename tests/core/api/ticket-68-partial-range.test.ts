@@ -19,7 +19,7 @@ function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, tri
   const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{ turnId: turn.id, entryIds: [entry.id], category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#E1`], createdAt: "now" }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const create = (text: string, scope: "global" | "project" | "session" = "project") => {
-    const made = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", text, category: "constraint", scope, supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
+    const made = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", text, category: "constraint", scope, supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
     if (!made.ok) throw new Error(made.problems.join("; "));
     return made.committed[0]!;
   };

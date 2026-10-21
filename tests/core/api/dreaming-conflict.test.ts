@@ -26,7 +26,7 @@ function fixture() {
   }] });
   if (!facts.ok) throw new Error(facts.problems.join("; "));
   const content = { text: "rule", category: "constraint" as const, scope: "project" as const, supports: [facts.facts[0]!.id], topics: [], reason: "evidence", createdAt: "now" };
-  const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
+  const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", ...content }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const item = created.committed[0]!, pool = `project:${project.id}`;
   store.setKnowledgeBudget("project", Math.max(1, store.pendingPoolWeight(pool, target) * 4)); // 104: the pool fits its budget

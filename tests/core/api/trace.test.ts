@@ -57,7 +57,7 @@ async function consolidation(...operations: Operation[]) {
   return committed;
 }
 async function create(text = "use red tiles now") {
-  return (await consolidation({ op: "create", topics: [], reason: "Initial admission", handle: "$e1", author: "test", text,
+  return (await consolidation({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission", handle: "$e1", author: "test", text,
     category: "reference", scope: "project", supports: [1], createdAt: time }))[0]!.knowledgeId;
 }
 async function update(id: number, base: number, text: string) {

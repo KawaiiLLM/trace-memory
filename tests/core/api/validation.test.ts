@@ -15,7 +15,7 @@ async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string)
       Array.from({ length: 6 }, (_, i) => ({ sources: [{ entry: assistant, address: `T${t.id}#assistant` }],
         category: "observation" as const, actor: "agent" as const, text: `Evidence ${i}`, createdAt: "now" })));
     const seeded = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
-      operations: Array.from({ length: 10 }, (_, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category: "understanding" as const, scope: "project" as const, text: `Seed ${i}`, supports: [1], createdAt: "now" })) });
+      operations: Array.from({ length: 10 }, (_, i) => ({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category: "understanding" as const, scope: "project" as const, text: `Seed ${i}`, supports: [1], createdAt: "now" })) });
     if (!seeded.ok) throw new Error(seeded.problems.join("; "));
     const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
     const run = memory.store.listRuns(s.id).at(-1)!;
@@ -62,7 +62,7 @@ describe("checkMemoryBatch", async () => {
   });
 
   test("rejects a model-supplied knowledge handle", async () => {
-    const { problems = [] } = await checkMemoryBatch({ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "e1", text: "x", scope: "project", category: "understanding", supports: ["F1"] });
+    const { problems = [] } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "e1", text: "x", scope: "project", category: "understanding", supports: ["F1"] });
     expect(problems.some((p) => p.includes("handle"))).toBe(true);
   });
 

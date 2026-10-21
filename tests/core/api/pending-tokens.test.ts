@@ -53,7 +53,7 @@ test("Dreaming projection follows the selected head and current project, not dat
         sources: [{ entry: user, address: `T${turn.id}#user` }], category: "decision", actor: "user", text, createdAt: "now",
       }]);
       const written = s.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
-        { op: "create", handle: "$1", author: "test", text, category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
+        { op: "create", title: "Fixture title", handle: "$1", author: "test", text, category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
       ] });
       if (!written.ok) throw Error(written.problems.join());
       return { sessionId: session.id, branch: "main", headTurnId: turn.id };
@@ -88,7 +88,7 @@ test("104: dreamingPending is the session's summed pending weight and knowledge 
     }]);
     const create = (scope: "global" | "project" | "session", text: string) => {
       const written = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
-        { op: "create", handle: `$${scope}`, author: "test", text, category: "constraint", scope, supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
+        { op: "create", title: "Fixture title", handle: `$${scope}`, author: "test", text, category: "constraint", scope, supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
       ] });
       if (!written.ok) throw Error(written.problems.join());
     };

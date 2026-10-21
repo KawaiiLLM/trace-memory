@@ -45,7 +45,7 @@ function history(turns: number) {
   if (!committed.ok) throw new Error(committed.problems.join("; "));
   const path: KnowledgePath = { sessionId: session.id, headTurnId: turnIds.at(-1)!, branch: "main" };
   const knowledge = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time },
-    operations: [{ op: "create", handle: "$k1", author: "fake", text: "consolidated", category: "understanding", scope: "session",
+    operations: [{ op: "create", title: "Fixture title", handle: "$k1", author: "fake", text: "consolidated", category: "understanding", scope: "session",
       supports: [committed.facts[0]!.id, committed.facts[1]!.id], reason: "pin the snapshot", topics: [], createdAt: time }] });
   if (!knowledge.ok) throw new Error(knowledge.problems.join("; "));
   historicalConsolidation(store, session.id, [committed.facts[0]!.id]);
@@ -181,7 +181,7 @@ test("32b performance: batch and ordinary applicability agree for bindings, fore
   }
   const foreign = history(2);
   const shared = store.commitConsolidationRun({ path: siblingPath, run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
-    op: "create", handle: "$shared", author: "test", scope: "global", category: "understanding", text: "shared", topics: [],
+    op: "create", title: "Fixture title", handle: "$shared", author: "test", scope: "global", category: "understanding", text: "shared", topics: [],
     supports: [...facts, ...noted.facts, ...foreign.facts].map(f => f.id), reason: "all evidence shapes", createdAt: time }] });
   if (!shared.ok) throw Error(shared.problems.join());
   const input = store.commitGraphInput();

@@ -36,7 +36,7 @@ function setup(store = new Store(":memory:"), projectName = "A", projectId?: num
   const create = (scope: "global" | "project" | "session", text = `${scope} body`) => {
     const result = store.commitConsolidationRun({ path: target,
       run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{
-        op: "create", handle: "$1", author: "test", text, category: "constraint", scope,
+        op: "create", title: "Fixture title", handle: "$1", author: "test", text, category: "constraint", scope,
         supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now",
       }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
@@ -151,7 +151,7 @@ test("64c current versions: session visibility follows the selected branch and r
   }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const made = store.commitConsolidationRun({ path: { sessionId: session.id, branch: "left", headTurnId: left.id },
-    run: { kind: "manual", sessionId: session.id, branch: "left", createdAt: "now" }, operations: [{ op: "create", handle: "$1",
+    run: { kind: "manual", sessionId: session.id, branch: "left", createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$1",
       author: "test", text: "left only", category: "constraint", scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" }] });
   if (!made.ok) throw new Error(made.problems.join("; "));
   store.setCurrentPath(session.id, "left", left.id, "lineage");
@@ -171,7 +171,7 @@ test("64c current versions: merge absorption yields one current identity and spl
   const split = setup(), parent = split.create("global", "mixed"), splitRun = begin(split);
   const result = split.store.commitConsolidationRun({ run: splitRun.run, path: split.target, operations: [{ op: "split",
     knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: [], reason: "separate", createdAt: "now",
-    children: [{ text: "one", category: "constraint", topics: [] }, { text: "two", category: "constraint", topics: [] }] }] });
+    children: [{ title: "Fixture child", text: "one", category: "constraint", topics: [] }, { title: "Fixture child", text: "two", category: "constraint", topics: [] }] }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   expect(split.store.pendingVersions("global", split.target).map(v => v.revisionId)).toEqual(result.committed.map(v => v.commit));
 });
@@ -204,7 +204,7 @@ test.each(["update", "archive", "split"] as const)("126 writable set: one run ma
       supports: [], topics: [], reason: "maintenance", createdAt: "now" }
     : op === "archive" ? { op, kind: "budget" as const, knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [], reason: "budget", createdAt: "now" }
     : { op, knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [], reason: "separate", createdAt: "now",
-      children: [{ text: "one", category: "constraint" as const, topics: [] }, { text: "two", category: "constraint" as const, topics: [] }] };
+      children: [{ title: "Fixture child", text: "one", category: "constraint" as const, topics: [] }, { title: "Fixture child", text: "two", category: "constraint" as const, topics: [] }] };
   const result = f.store.commitConsolidationRun({ run: admitted.run, path: f.target,
     operations: items.map((item, index) => operation(item, (["global", "project", "session"] as const)[index]!)) });
   expect(result.ok, JSON.stringify(result)).toBe(true);
@@ -223,7 +223,7 @@ test.each(["update", "archive", "split"] as const)("126 writable set: a %s base 
     text: "forbidden", category: "constraint" as const, scope: "project" as const, supports: [], topics: [], reason: "cross pool", createdAt: "now" }
     : op === "archive" ? { op, kind: "budget" as const, knowledgeId: foreign.knowledgeId, baseCommit: foreign.commit, supports: [], reason: "cross pool", createdAt: "now" }
     : { op, knowledgeId: foreign.knowledgeId, baseCommit: foreign.commit, supports: [], reason: "cross pool", createdAt: "now",
-      children: [{ text: "one", category: "constraint" as const, topics: [] }, { text: "two", category: "constraint" as const, topics: [] }] };
+      children: [{ title: "Fixture child", text: "one", category: "constraint" as const, topics: [] }, { title: "Fixture child", text: "two", category: "constraint" as const, topics: [] }] };
   const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(foreign.knowledgeId) };
   const result = f.store.commitConsolidationRun({ run: admitted.run, path: f.target, operations: [operation] });
   expect(result.ok).toBe(false);
@@ -369,7 +369,7 @@ test.each(["current", "archive-parent"] as const)("92: pool metadata batching re
 test("67: create batches skip writer graphs while consuming operations recheck after prior mutations", () => {
   const f = setup(), graph = vi.spyOn(f.store, "commitGraphInput");
   try {
-    const operations = Array.from({ length: 30 }, (_, i) => ({ op: "create" as const, handle: `$${i}`, author: "test",
+    const operations = Array.from({ length: 30 }, (_, i) => ({ op: "create" as const, title: "Fixture title", handle: `$${i}`, author: "test",
       text: `body ${i}`, category: "constraint" as const, scope: "global" as const, supports: [f.fact.id], topics: [], reason: "test", createdAt: "now" }));
     const created = f.store.commitConsolidationRun({ path: f.target,
       run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" }, operations });

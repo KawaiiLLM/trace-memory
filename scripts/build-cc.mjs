@@ -23,7 +23,7 @@ export const promptLoader = {
     build.onLoad({ filter: /src\/core\/prompts\/load\.ts$/ }, async () => {
       const { composePrompt } = await import(pathToFileURL(resolve(root, "src/core/prompts/load.ts")).href);
       const prompts = Object.fromEntries(["noting.md", "dreaming.md"].map(file => [file, composePrompt(file)]));
-      return { contents: `import { canonicalToolNames, renderToolNames, validateToolNames } from "./tool-names.ts";\nconst PROMPTS = ${JSON.stringify(prompts)};\nexport function loadPrompt(file, names = canonicalToolNames) { const prompt = PROMPTS[file]; if (prompt === undefined) throw new Error("unknown prompt " + file); return renderToolNames(prompt, validateToolNames(names)); }\n`, loader: "ts" };
+      return { contents: `import { canonicalToolNames, renderToolNames, validateToolNames } from "./tool-names.ts";\nimport { DEFAULT_WRITING_LIMITS, renderLimits } from "./limits.ts";\nconst PROMPTS = ${JSON.stringify(prompts)};\nexport function loadPrompt(file, names = canonicalToolNames, limits = DEFAULT_WRITING_LIMITS) { const prompt = PROMPTS[file]; if (prompt === undefined) throw new Error("unknown prompt " + file); return renderLimits(renderToolNames(prompt, validateToolNames(names)), limits); }\n`, loader: "ts" };
     });
   },
 };

@@ -1,5 +1,5 @@
 import { isKnowledgeCategory, substantiveArchiveStatement, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
-import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath } from "../store/index.ts";
+import { mergeSwaps, type KnowledgeOperationInput, type RunInput, type Store, type KnowledgePath } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
@@ -146,11 +146,13 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (!inheritedCategory && !isKnowledgeCategory(category)) errors.push("invalid category");
       if (!KNOWLEDGE_SCOPES.includes(contentScope!)) errors.push("invalid scope");
     }
-    // Ticket 144: a new live version ends with a title, given or inherited from its base (a merge's
-    // survivor); a legacy base has none to give. Split children carry their own, checked above.
+    // Ticket 144: a new live version ends with a title, given or inherited from its base; a legacy base
+    // has none to give. A merge's base is the survivor the Store keeps, which may not be the one named.
+    // Split children carry their own, checked above.
     let title = value.title;
     if (op === "create" || op === "update" || op === "merge") {
-      const baseTitle = op === "create" || !dest ? undefined : store.getKnowledgeRevision(dest.knowledgeId, dest.baseCommit)?.title;
+      const from = op === "merge" && dest && absorb.length && mergeSwaps(dest.knowledgeId, absorb[0]!.knowledgeId) ? absorb[0] : dest;
+      const baseTitle = op === "create" || !from ? undefined : store.getKnowledgeRevision(from.knowledgeId, from.baseCommit)?.title;
       if (title === undefined && baseTitle === null) errors.push("title: the base version has no title; supply one");
       title ??= baseTitle ?? undefined;
       if (title !== undefined || op === "create") checkTitle(title);

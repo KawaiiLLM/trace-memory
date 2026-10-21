@@ -24,7 +24,7 @@ function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, dre
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   const create = (scope: "global" | "project" | "session", text: string) => {
     const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{
-      op: "create", handle: `$${text}`, author: "test", text, category: "constraint", scope,
+      op: "create", title: "Fixture title", handle: `$${text}`, author: "test", text, category: "constraint", scope,
       supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now",
     }] });
     if (!result.ok) throw new Error(result.problems.join("; "));

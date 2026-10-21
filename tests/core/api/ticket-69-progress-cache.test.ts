@@ -78,7 +78,7 @@ test("ticket 69: the cache invalidates on N knowledge publication and D settleme
     const primed = memory.progress(sessionId, "main", turnId);
     expect(primed).toMatchObject({ facts: 1, knowledge: 0 });
     const consolidated = commitNoterKnowledge(store, { run: { sessionId, branch: "main", createdAt: time },
-      operations: [{ op: "create", handle: "$k", author: "test", text: "durable rule", category: "constraint", scope: "session",
+      operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "durable rule", category: "constraint", scope: "session",
         supports: [noted.facts[0]!.id], topics: [], reason: "evidence", createdAt: time }] });
     if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
     const afterConsolidation = memory.progress(sessionId, "main", turnId);
@@ -109,7 +109,7 @@ test("ticket 69: merging another project into this session's project invalidates
       facts: [{ turnId: donorTurn, entryIds: [donorEntry.id], category: "decision", actor: "user", text: "rule", source: [`T${donorTurn}#E1`], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: donor, createdAt: time }, operations: [{
-      op: "create", handle: "$rule", author: "test", text: "project rule", category: "constraint", scope: "project",
+      op: "create", title: "Fixture title", handle: "$rule", author: "test", text: "project rule", category: "constraint", scope: "project",
       supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: time }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const before = memory.progress(sessionId, "main", turnId); // primes the cache for project A

@@ -79,7 +79,7 @@ test("72: a non-append path rewrite under an unchanged cursor recomputes", () =>
       facts: [{ turnId, entryIds: [entry2.id], category: "decision", actor: "user", text: "rule", source: [`T${turnId}#E2`], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: time }, operations: [{
-      op: "create", handle: "$rule", author: "test", text: "a durable rule", category: "constraint", scope: "session",
+      op: "create", title: "Fixture title", handle: "$rule", author: "test", text: "a durable rule", category: "constraint", scope: "session",
       supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: time }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const before = memory.progress(sessionId, "main", turnId); // primes with knowledge = 1

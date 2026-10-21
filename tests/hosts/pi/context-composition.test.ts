@@ -433,7 +433,7 @@ test("initial and on/project supplement carriers share assembly measurement; ret
     const messages: any[] = [];
     for (const [i, command] of ["", "on", "project changed-project"].entries()) {
       const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "test" }, operations: [
-        { op: "create", handle: "$1", author: "test", text: `Rule ${i}`, category: "constraint", scope: i ? "global" : "project",
+        { op: "create", title: "Fixture title", handle: "$1", author: "test", text: `Rule ${i}`, category: "constraint", scope: i ? "global" : "project",
           supports: [noted.facts[0]!.id], topics: [], reason: "new rule", createdAt: "test" },
       ] });
       expect(result.ok).toBe(true);

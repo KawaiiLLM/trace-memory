@@ -25,7 +25,7 @@ function session(store: Store, projectId: number, declaration: "undeclared" | "m
 }
 
 function create(store: Store, owner: ReturnType<typeof session>, text: string, scope: "project" | "global" | "session" = "project") {
-  const operation: KnowledgeOperationInput = { op: "create", handle: "$1", author: "test", text, category: "constraint", scope,
+  const operation: KnowledgeOperationInput = { op: "create", title: "Fixture title", handle: "$1", author: "test", text, category: "constraint", scope,
     supports: [owner.fact.id], topics: [], reason: "test", createdAt: "now" };
   const result = store.commitConsolidationRun({ path: owner.path, run: { kind: "manual", sessionId: owner.value.id, createdAt: "now" },
     operations: [operation] });

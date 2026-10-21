@@ -20,7 +20,7 @@ test("24a review: a footer refresh with session-scoped knowledge reads no run au
     const integrated = h.memory.store.commitConsolidationRun({ path: { sessionId: 1, branch: "main", headTurnId: 1 },
       run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "t", request: "Q".repeat(1_000_000),
         response: JSON.stringify({ usage: { input: 10, output: 2, cost: { total: 0.01 } } }) },
-      operations: [{ op: "create", handle: "k", text: "A scoped conclusion", category: "understanding", scope: "session",
+      operations: [{ op: "create", title: "Fixture title", handle: "k", text: "A scoped conclusion", category: "understanding", scope: "session",
         supports: [noted.facts[0]!.id], reason: "evidence", topics: [], author: "fake", createdAt: "t" }] });
     if (!integrated.ok) throw new Error(integrated.problems.join("; "));
     const bodies = countRunBodies();

@@ -128,7 +128,7 @@ function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemory
   const material = { bound: `Run wall-clock bound: ${config.dreaming.timeoutMs} ms. Wrap up before this deadline.${noPendingOrder}`,
     processed: old, changed, facts: direct };
   const text = [readingGuide(path.sessionId, names), ...Object.values(material)].join("\n\n");
-  const prompt = withRetrievalPolicy(loadPrompt("dreaming.md", names), names);
+  const prompt = withRetrievalPolicy(loadPrompt("dreaming.md", names, config.writing), names);
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
       tokens(prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingToolDefinitions(), names))) +
         (input.nativeReadToolTokens ?? 0) + tokens(text) > input.capacity.inputTokens))

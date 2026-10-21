@@ -23,7 +23,7 @@ test("135/134/92: D skips complete diffs by history address; mutation diagnostic
       sources: [{ entry: user, address: `T${turn.id}#user` }], category: "observation", actor: "agent", text: "Legacy mixed episode", createdAt: "now",
     }]);
     const content = { category: "constraint" as const, scope: "project" as const, topics: [], supports: [fact, legacy.facts[0]!.id], reason: "fixture", createdAt: "now" };
-    const created = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [1, 2, 3].map(n => ({ op: "create", handle: `$${n}`, author: "test", ...content, text: `Rule ${n}` })) });
+    const created = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [1, 2, 3].map(n => ({ op: "create", title: "Fixture title", handle: `$${n}`, author: "test", ...content, text: `Rule ${n}` })) });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const [a, b, c] = created.committed;
     const address = (id: number, commit: number) => `K${id}#${store.versionTag(id, commit)}`;

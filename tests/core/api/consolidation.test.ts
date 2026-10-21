@@ -40,7 +40,7 @@ function fact(text = memories.base, options: { sessionId?: number; branch?: stri
 }
 function knowledge(support: number, text = memories.knowledge) {
   const result = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time }, operations: [{
-    op: "create", handle: "$1", author: "fixture", text, category: "understanding", scope: "project", topics: [], supports: [support], reason: "Seed", createdAt: time,
+    op: "create", title: "Fixture title", handle: "$1", author: "fixture", text, category: "understanding", scope: "project", topics: [], supports: [support], reason: "Seed", createdAt: time,
   }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   const item = result.committed[0]!;

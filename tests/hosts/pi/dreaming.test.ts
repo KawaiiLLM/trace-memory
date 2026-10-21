@@ -23,7 +23,7 @@ async function seeded(config: Record<string, unknown> = {}, text = "Keep the use
     [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], text,
       category: "decision", actor: "user", createdAt: "now" }]).facts[0]!;
   const content = { text, category: "constraint" as const, scope: "project" as const, supports: [evidence.id], topics: [], reason: "evidence", createdAt: "now" };
-  const c = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
+  const c = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", ...content }] });
   if (!c.ok) throw Error(c.problems.join());
   const path = store.knowledgePath(1);
   const created = c.committed[0]!;
@@ -54,7 +54,7 @@ test("85: Pi does not launch Dreamer for an over-budget pool below its pending t
   store.releaseClaim(claim);
   const priorSize = store.poolSizes(path).find(value => value.pool === pool)!.tokens;
   const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [
-    { op: "create", handle: "$later", author: "test", ...content, text: "Small new rule" }] });
+    { op: "create", title: "Fixture title", handle: "$later", author: "test", ...content, text: "Small new rule" }] });
   if (!created.ok) throw Error(created.problems.join());
   h.memory.setKnowledgeBudget("project", priorSize - 1);
   expect(store.pendingPoolWeight(pool, path)).toBeLessThan(priorSize - 1);

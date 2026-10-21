@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
-import { legacyFacts } from "../../support/seed.ts";
+import { fixtureTitle, legacyFacts } from "../../support/seed.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -28,7 +28,7 @@ function fixture(runAgent?: Parameters<typeof TraceMemory>[1]) {
   const create = (text: string, scope: "global" | "project" | "session" = "project", topics: string[] = [], category: "constraint" | "open" | "goal" = "constraint") => {
     const result = memory.store.commitConsolidationRun({ path: target,
       run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{
-        op: "create", handle: `$${++sequence}`, author: "test", text, category, scope,
+        op: "create", title: fixtureTitle(text), handle: `$${++sequence}`, author: "test", text, category, scope,
         supports: [noted.facts[0]!.id], topics, reason: "consumer fixture", createdAt: "now",
       }] });
     if (!result.ok) throw new Error(result.problems.join("; "));

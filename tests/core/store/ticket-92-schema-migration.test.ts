@@ -126,13 +126,13 @@ test("92: only five new knowledge categories write through Store; old revisions 
     for (const category of ["constraint", "understanding", "goal", "open", "reference"] as const) {
       const result = f.store.commitConsolidationRun({ path,
         run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" },
-        operations: [{ op: "create", handle: `$${category}`, author: "manual", text: `new ${category}`, category,
+        operations: [{ op: "create", title: "Fixture title", handle: `$${category}`, author: "manual", text: `new ${category}`, category,
           scope: "session", supports: [f.facts[0]!], reason: "new category", topics: [], createdAt: "now" }] });
       expect(result.ok).toBe(true);
     }
     const rejected = f.store.commitConsolidationRun({ path,
       run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" },
-      operations: [{ op: "create", handle: "$old", author: "manual", text: "wrong", category: "mechanism",
+      operations: [{ op: "create", title: "Fixture title", handle: "$old", author: "manual", text: "wrong", category: "mechanism",
         scope: "session", supports: [f.facts[0]!], reason: "old category", topics: [], createdAt: "now" }] });
     expect(rejected.ok).toBe(false);
     expect(f.store.db.prepare("SELECT category FROM knowledge_revisions ORDER BY id").all().map(row => row.category))
@@ -161,7 +161,7 @@ test("99 budget archive preserves inherited legacy category, body, scope and top
       expect(child).toMatchObject({ op: "archive", archiveKind: "budget", text: parent.text,
         category: parent.category, scope: parent.scope, topics: parent.topics });
       const rejected = f.store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
-        operations: [{ op: "create", handle: "$old", author: "manual", text: "invalid", category: legacy,
+        operations: [{ op: "create", title: "Fixture title", handle: "$old", author: "manual", text: "invalid", category: legacy,
           scope: "session", supports: [f.facts[0]!], reason: "invalid category", topics: [], createdAt: "now" }] });
       expect(rejected.ok).toBe(false);
     } finally { f.store.close(); }

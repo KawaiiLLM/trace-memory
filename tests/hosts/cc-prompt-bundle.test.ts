@@ -25,5 +25,8 @@ test("the standalone CC bundle expands shared blocks but renders exposed names a
       }
     }
     expect(bundled("noting.md", ccWorkerToolNames)).not.toBe(bundled("noting.md", ccPluginToolNames));
+    const limits = { titleTokens: 13, bodyTokens: 321 };
+    expect(bundled("dreaming.md", ccWorkerToolNames, limits)).toBe(loadPrompt("dreaming.md", ccWorkerToolNames, limits));
+    expect(bundled("dreaming.md", ccWorkerToolNames, limits)).toContain("at most 13 tokens and a body at most 321 tokens");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

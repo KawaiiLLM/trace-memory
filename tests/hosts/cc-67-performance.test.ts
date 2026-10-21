@@ -43,7 +43,7 @@ function seedKnowledge(db: string, due: boolean) {
         if (!noted.ok) throw new Error(noted.problems.join("; "));
         const created = store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
           run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: at },
-          operations: Array.from({ length: 10 }, (_, i) => ({ op: "create" as const, handle: `$k${i}`, author: "fixture",
+          operations: Array.from({ length: 10 }, (_, i) => ({ op: "create" as const, title: "Fixture title", handle: `$k${i}`, author: "fixture",
             category: "reference" as const, scope: owner === 0 && due ? "global" as const : "session" as const,
             // 104: the due owner's pending weight, summed, reaches the 5k Dreamer trigger.
             text: `Rule ${owner}-${i}: ${"synthetic body ".repeat(owner === 0 && due ? 250 : 40)}`, supports: [noted.facts[0]!.id], topics: [],

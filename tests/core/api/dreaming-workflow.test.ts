@@ -36,7 +36,7 @@ function seeded(parents: ParentExample[]) {
   if (!facts.ok) throw new Error(facts.problems.join("; "));
   const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: parents.map((parent, index) => ({
-    op: "create" as const, handle: `$${index + 1}`, author: "workflow-fixture", ...parent, supports: [facts.facts[index]!.id], reason: "Seed reviewed parent", createdAt: "now",
+    op: "create" as const, title: "Fixture title", handle: `$${index + 1}`, author: "workflow-fixture", ...parent, supports: [facts.facts[index]!.id], reason: "Seed reviewed parent", createdAt: "now",
   })) });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const trigger = createDreamerTrigger(memory, path, facts.facts[0]!.id, 1, "project");

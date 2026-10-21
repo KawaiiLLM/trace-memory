@@ -38,7 +38,7 @@ function fixture(baseText = "divergent base") {
     branchFacts[branch] = result.facts[0]!.id;
   }
   const created = memory.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "root", headTurnId: turn.id },
-    run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: at }, operations: [{ op: "create", handle: "$base", author: "test",
+    run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: at }, operations: [{ op: "create", title: "Fixture title", handle: "$base", author: "test",
       text: baseText, category: "constraint", scope: "project", supports: [fact], topics: [], reason: "Initial rule.", createdAt: at }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const historical = created.committed[0]!;

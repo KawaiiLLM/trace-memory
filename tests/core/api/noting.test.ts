@@ -141,6 +141,21 @@ test("136 review SPEC4: a Noter's over-long search output is saved where its hos
   expect(unplaced).toContain("[Could not save the full output: this run has no place to save output]");
 });
 
+test("the configured title and body limits are rendered into a fresh and a fork prompt, and into the hash", () => {
+  const first = turn();
+  const target = { sessionId, branch: "main", headTurnId: first.id };
+  const defaults = freezeNoting(memory.store, { ...target, mode: "subagent" }, memory.config);
+  expect(defaults.prompt).toContain("a title of a fact or knowledge is at most 20 tokens and a body at most 200 tokens");
+  Object.assign(memory.config.writing, { titleTokens: 13, bodyTokens: 321 });
+  const fresh = freezeNoting(memory.store, { ...target, mode: "subagent" }, memory.config);
+  const fork = freezeNoting(memory.store, { ...target, mode: "fork", effectiveMode: "fork" }, memory.config);
+  for (const prompt of [fresh.prompt, fork.forkPrompt]) {
+    expect(prompt).toContain("a title of a fact or knowledge is at most 13 tokens and a body at most 321 tokens");
+    expect(prompt).not.toContain("{{limit.");
+  }
+  expect(fresh.promptHash).not.toBe(defaults.promptHash);
+});
+
 test("fork and refused-fork fresh admissions freeze distinct namespaces, guidance, exact costs and hashes", () => {
   const first = turn();
   const target = { sessionId, branch: "main", headTurnId: first.id, mode: "fork" as const };
@@ -301,7 +316,7 @@ test("an explicit empty submission notings the range; compactions cannot acquire
 test("read knowledge revisions and exact provider request are recorded, even when a knowledge item moves", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const created = commitNoterKnowledge(memory.store, { run: { sessionId, createdAt: time }, operations: [
-    { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", category: "understanding", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
+    { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", category: "understanding", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
   ] });
   expect(created.ok).toBe(true);
   const second = turn(first.id, 1), resolve = deferred(), pending = noting(second.id);
@@ -387,7 +402,7 @@ test("64c: no knowledge category bypasses the cap, newer commits are kept, and o
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const categories = ["constraint", "open", "goal", "understanding", "reference"] as const;
   expect(commitNoterKnowledge(memory.store, { run: { sessionId, createdAt: time }, operations: categories.map((category, i) => ({
-    op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const,
+    op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const,
     text: `${memories.knowledge} ${"word ".repeat(600)}`, supports: [1], createdAt: time,
   })) }).ok).toBe(true);
   const item = (id: number) => renderKnowledge(memory.store.currentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!, `K${id}#${memory.store.versionTag(id, id)}`);

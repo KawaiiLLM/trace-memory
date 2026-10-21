@@ -34,7 +34,7 @@ function owner(name: string, projectId = memory.store.createProject({ name, decl
   const supports = [fact(memory, path, `Needle ${name}`, [{ entry, text: `needle ${name} fact` }]).id];
   const put = async (text: string, scope: KnowledgeScope = "project", topics: string[] = [], base?: { knowledgeId: number; commit: number }, category: KnowledgeCategory = "reference") => {
     if (!base) {
-      const result = memory.store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: "new", author: "fixture", text, scope, category, topics, supports, reason: `Reason ${text}`, createdAt: time }] });
+      const result = memory.store.commitConsolidationRun({ path, run, operations: [{ op: "create", title: "Fixture title", handle: "new", author: "fixture", text, scope, category, topics, supports, reason: `Reason ${text}`, createdAt: time }] });
       if (!result.ok) throw new Error(result.problems.join("; "));
       return result.committed[0]!;
     }

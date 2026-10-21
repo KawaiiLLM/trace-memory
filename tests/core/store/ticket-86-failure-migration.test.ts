@@ -44,7 +44,7 @@ function legacyDatabase() {
     ] });
     if (!fact.ok) throw new Error(fact.problems.join("; "));
     const created = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, createdAt: "now" },
-      operations: [1, 2].map(index => ({ op: "create" as const, handle: `$${index}`, author: "fixture", text: `rule ${index} ` + "word ".repeat(40),
+      operations: [1, 2].map(index => ({ op: "create" as const, title: "Fixture title", handle: `$${index}`, author: "fixture", text: `rule ${index} ` + "word ".repeat(40),
         category: "constraint" as const, scope: "project" as const, supports: [fact.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" })) });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const [first, second] = created.committed, pool = `project:${project.id}`;

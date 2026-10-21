@@ -19,7 +19,7 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     const noted = JSON.parse(factResult);
     expect(noted.factIds).toHaveLength(1);
     const written = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [1, 2, 3].map(n => ({
-      op: "create", handle: `$${n}`, author: "fixture", text: `Rule ${n}`, category: "constraint", scope: "session", supports: [noted.factIds[0]], topics: [], reason: "evidence", createdAt: "now",
+      op: "create", title: "Fixture title", handle: `$${n}`, author: "fixture", text: `Rule ${n}`, category: "constraint", scope: "session", supports: [noted.factIds[0]], topics: [], reason: "evidence", createdAt: "now",
     })) });
     if (!written.ok) throw Error(written.problems.join("; "));
     const [changed, skipped, untouched] = written.committed;

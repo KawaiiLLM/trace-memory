@@ -23,7 +23,7 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   // These pre-existing manually seeded bodies may exceed the 1k cap on NEW N writes.
   const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: texts.map((value, index) => ({
-    op: "create" as const, handle: `$e${index + 1}`, author: "test", text: typeof value === "string" ? value : value.text,
+    op: "create" as const, title: "Fixture title", handle: `$e${index + 1}`, author: "test", text: typeof value === "string" ? value : value.text,
     category: typeof value === "string" ? "constraint" as const : value.category,
     scope: "project" as const, topics: [], supports: [noted.facts[0]!.id], reason: "Capacity fixture", createdAt: "2026-09-16T00:00:00Z",
   })) });

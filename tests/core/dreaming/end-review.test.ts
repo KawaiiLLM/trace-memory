@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { hydrate, sourceSeededMemory, type DreamingAgentInput } from "../../source-fixture.ts";
-import { archive, fact as seedFact, knowledgeBatch } from "../../support/seed.ts";
+import { archive, fact as seedFact, fixtureTitle, knowledgeBatch } from "../../support/seed.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
 
 const memories: { close(): void }[] = [];
@@ -12,7 +12,7 @@ const invalidReason = "The rule no longer holds: the user corrected its basis; a
 
 /** A pool of pending project knowledge, every item due, and a fake provider that plays the host's
  * pass protocol: first pass, then the end review once (`passEnd`) and, if it was sent, a second pass. */
-function pool(bodies: (string | { text: string; scope: "global" | "project" | "session" })[], pass: { first(task: DreamingAgentInput, tool: Tool, items: Item[]): void;
+function pool(bodies: (string | { text: string; scope: "global" | "project" | "session"; title?: string })[], pass: { first(task: DreamingAgentInput, tool: Tool, items: Item[]): void;
   second?(task: DreamingAgentInput, tool: Tool, items: Item[], review: string): void }, archived: number[] = []) {
   const reviews: (string | undefined)[] = [];
   let items!: Item[];
@@ -148,11 +148,11 @@ test("each operation kind renders as specified: merge, split, invalid and budget
   expect(blocks).toHaveLength(8);
   const survivorBlock = blocks.find(block => block.startsWith(`[${tag(survivor!)}]`))!;
   expect(survivorBlock).toContain("{+, with the absorbed rule+}");
-  expect(byHead(absorbed!)).toBe(`${absorbed!.tag} (merged into ${tag(survivor!)}):\n[-${bodies[1]}-]`);
-  expect(byHead(parent!)).toMatch(new RegExp(`^${parent!.tag} \\(split into K\\d+#[a-z]+, K\\d+#[a-z]+\\):\\n\\[-${bodies[2]}-\\]$`));
-  expect(blocks.filter(block => /\(split from K\d+\)/.test(block)).map(block => block.split("\n")[1])).toEqual(["{+Child one.+}", "{+Child two.+}"]);
-  expect(byHead(obsolete!)).toBe(`${tag(obsolete!)} (archive: invalid; reason: contradicted):\n[-${bodies[3]}-]\narchive text: ${invalidReason}`);
-  expect(byHead(budget!)).toBe(`${tag(budget!)} (archive: budget; reason: over budget):\n[-${bodies[4]}-]`);
+  expect(byHead(absorbed!)).toBe(`${absorbed!.tag} (merged into ${tag(survivor!)}):\n${fixtureTitle(bodies[1]!)}\n[-${bodies[1]}-]`);
+  expect(byHead(parent!)).toMatch(new RegExp(`^${parent!.tag} \\(split into K\\d+#[a-z]+, K\\d+#[a-z]+\\):\\n${fixtureTitle(bodies[2]!)}\\n\\[-${bodies[2]}-\\]$`));
+  expect(blocks.filter(block => /\(split from K\d+\)/.test(block)).map(block => block.split("\n").slice(1))).toEqual([["Fixture child", "{+Child one.+}"], ["Fixture child", "{+Child two.+}"]]); // a whole body carries its title
+  expect(byHead(obsolete!)).toBe(`${tag(obsolete!)} (archive: invalid; reason: contradicted):\n${fixtureTitle(bodies[3]!)}\n[-${bodies[3]}-]\narchive text: ${invalidReason}`);
+  expect(byHead(budget!)).toBe(`${tag(budget!)} (archive: budget; reason: over budget):\n${fixtureTitle(bodies[4]!)}\n[-${bodies[4]}-]`);
   expect(byHead(category!)).toBe(`[${tag(category!)}]\n  category: constraint -> reference`);
 });
 
@@ -202,11 +202,11 @@ test("an item rewritten and then archived, split or absorbed shows the body the 
 });
 
 test("an archived item revived with the same body is reported as restored, with its full body", async () => {
-  const p = pool(["Rule A body.", "Rule B body."], { first(_task, tool, [a, b]) {
+  const p = pool([{ text: "Rule A body.", scope: "project", title: "Rule A title" }, "Rule B body."], { first(_task, tool, [a, b]) {
     ok(tool("memory", { operations: [update(a!.tag, "Rule A body.")], skipped: [{ knowledge: b!.skip, because: "Reviewed unchanged" }] }));
   } }, [0]);
   const result = await p.run();
   expect(result.outcome, JSON.stringify(result)).toBe("success");
   const { changes } = sections(p.reviews[0]!), [a] = p.items();
-  expect(changes).toBe(`${p.current(a!)} (restored from archive):\n{+Rule A body.+}`);
+  expect(changes).toBe(`${p.current(a!)} (restored from archive):\nRule A title\n{+Rule A body.+}`);
 });

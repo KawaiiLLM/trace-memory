@@ -49,7 +49,7 @@ function retainedFixture() {
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const create = (text: string, support: number) => store.commitConsolidationRun({
     path: { sessionId: f.session.id, branch: "left", headTurnId: f.left.id },
-    run: { kind: "manual", sessionId: f.session.id, branch: "left", createdAt: at }, operations: [{ op: "create", handle: `$${text}`,
+    run: { kind: "manual", sessionId: f.session.id, branch: "left", createdAt: at }, operations: [{ op: "create", title: "Fixture title", handle: `$${text}`,
       author: "test", text, category: "constraint", scope: "project", supports: [support], topics: [], reason: "fixture", createdAt: at }],
   });
   const stable = create("stable", noted.facts[0]!.id);
@@ -67,7 +67,7 @@ function retainedFixture() {
       source: [`T${foreignChild.id}#E${foreignEntry.entryOrdinal}`], entryIds: [foreignEntry.id], createdAt: at }] });
   if (!foreignNoted.ok) throw new Error(foreignNoted.problems.join("; "));
   const unrelated = store.commitConsolidationRun({ path: { sessionId: foreign.id, branch: "child", headTurnId: foreignChild.id },
-    run: { kind: "manual", sessionId: foreign.id, branch: "child", createdAt: at }, operations: [{ op: "create", handle: "$foreign",
+    run: { kind: "manual", sessionId: foreign.id, branch: "child", createdAt: at }, operations: [{ op: "create", title: "Fixture title", handle: "$foreign",
       author: "test", text: "foreign obligation", category: "constraint", scope: "project", supports: [foreignNoted.facts[0]!.id],
       topics: [], reason: "fixture", createdAt: at }] });
   if (!unrelated.ok) throw new Error(unrelated.problems.join("; "));

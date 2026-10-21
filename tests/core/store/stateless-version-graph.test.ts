@@ -52,7 +52,7 @@ function compareCommittedGraph(store: Store, path: KnowledgePath) {
 
 function create(store: Store, path: KnowledgePath, support: number, scope: "session" | "project" | "global", text: string) {
   const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    operations: [{ op: "create", handle: "$new", author: "test", text, category: "constraint", scope,
+    operations: [{ op: "create", title: "Fixture title", handle: "$new", author: "test", text, category: "constraint", scope,
       supports: [support], reason: "Seed stateless graph fixture.", topics: [], createdAt: at }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!;

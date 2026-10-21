@@ -7,8 +7,11 @@ export function commitNoterKnowledge(store: Store, input: {
   path?: KnowledgePath; run: Omit<RunInput, "kind">; operations: KnowledgeOperationInput[];
 }): CommitConsolidationResult {
   const path = input.path ?? store.knowledgePath(input.run.sessionId!);
+  // As the Noter's prepare step does before the Store sees an update: an omitted title is the base's.
+  const operations = input.operations.map(op => op.op === "update" && op.title === undefined
+    ? { ...op, title: store.getKnowledgeRevision(op.knowledgeId, op.baseCommit)?.title ?? undefined } : op);
   const result = store.commitNotingRun({ run: { ...input.run, kind: "noting" }, facts: [],
-    held: { path, slots: [], validate() {}, knowledge: () => input.operations } });
+    held: { path, slots: [], validate() {}, knowledge: () => operations } });
   if (!result.ok) return result;
   const revisions = store.listCommitsByRun(result.runId);
   return { ok: true, runId: result.runId, committed: revisions.map(revision => ({

@@ -110,7 +110,7 @@ for (const change of ["leaf", "knowledge", "cancel"] as const) {
           const note = memory.tools({ kind: "manual", ...target, currentTurnId: 1 }).find(tool => tool.name === "note")!;
           const fact = JSON.parse(note.execute({ title: "Evidence", sources: "[T1#E1] Evidence" })).factIds[0];
           const result = memory.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: 1, createdAt: "now" },
-            operations: [{ op: "create", handle: "$new", author: "fixture", category: "constraint", scope: "project",
+            operations: [{ op: "create", title: "Fixture title", handle: "$new", author: "fixture", category: "constraint", scope: "project",
               text: "Knowledge changed during child preparation", supports: [fact], topics: [], reason: "fixture", createdAt: "now" }] });
           if (!result.ok) throw new Error(result.problems.join("; "));
         }
@@ -153,7 +153,7 @@ for (const delivery of ["landed", "missing", "offered-only", "budget-omitted"] a
       const fact = JSON.parse(note.execute({ title: "Original evidence", sources: "[T1#E1] User's original evidence" })).factIds[0];
       const create = () => {
         const result = memory.store.commitConsolidationRun({ path: target,
-          run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$new",
+          run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$new",
             author: "fixture", category: "constraint", scope: "project", text: delivery === "budget-omitted" ? "unfit body ".repeat(15000) : "Newly visible instruction", supports: [fact], topics: [], reason: "fixture", createdAt: "now" }] });
         if (!result.ok) throw new Error(result.problems.join("; "));
       };

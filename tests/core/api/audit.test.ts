@@ -21,7 +21,7 @@ for (const phase of ["noting", "dreaming"] as const)
       expect(memory.store.commitNotingRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time },
         facts: [{ turnId: turn.id, entryIds: [memory.store.sourcePath(sessionId, "main", turn.id)[0]!.id], text: "evidence", source: [`T${turn.id}#E1`], createdAt: time }] }).ok).toBe(true);
       expect(memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: time }, operations: [
-        { op: "create", handle: "$1", author: "fixture", text: "rule", category: "constraint", scope: "project", supports: [1], topics: [], reason: "evidence", createdAt: time },
+        { op: "create", title: "Fixture title", handle: "$1", author: "fixture", text: "rule", category: "constraint", scope: "project", supports: [1], topics: [], reason: "evidence", createdAt: time },
       ] }).ok).toBe(true);
     }
     const input = { sessionId, branch: "main", headTurnId: turn.id, mode: "subagent" as const };

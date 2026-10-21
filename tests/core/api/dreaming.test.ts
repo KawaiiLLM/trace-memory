@@ -31,7 +31,7 @@ function fixture() {
   const fact = noted.facts[0]!.id, target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   const create = (text: string, scope: "global" | "project" | "session" = "project", supports = [fact]) => {
     const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{
-      op: "create", handle: `$${store.listKnowledgeRevisions().length + 1}`, author: "test", text, category: "constraint", scope,
+      op: "create", title: "Fixture title", handle: `$${store.listKnowledgeRevisions().length + 1}`, author: "test", text, category: "constraint", scope,
       supports, topics: [], reason: "fixture", createdAt: "now",
     }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
@@ -246,6 +246,17 @@ test("136 review SPEC4: a Dreamer's over-long search output is saved where its h
   expect(answer).not.toContain("not saved");
   expect(saved).toHaveLength(1);
   expect(saved[0]!.startsWith("HEAD word")).toBe(true); expect(saved[0]!.endsWith(" TAIL")).toBe(true);
+});
+
+test("the Dreamer's audited prompt carries the configured title and body limits", async () => {
+  const f = fixture();
+  createDreamerTrigger(f.memory, f.target, f.fact, 1);
+  Object.assign(f.memory.config.writing, { titleTokens: 13, bodyTokens: 321 });
+  let prompt = "";
+  const result = await f.scenarios.run(f.memory, f.target, task => { prompt = task.prompt; return { outcome: "failure", output: "inspected" }; });
+  expect(result.outcome).toBe("failure");
+  expect(prompt).toContain("a title of a fact or knowledge is at most 13 tokens and a body at most 321 tokens");
+  expect(prompt).not.toContain("{{limit.");
 });
 
 test("Dreamer instructions use its fresh host's exposed check, memory and read tools in the audited prompt", async () => {

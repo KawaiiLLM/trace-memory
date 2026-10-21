@@ -18,7 +18,7 @@ async function seeded(sharedAllowance = 50) {
   const evidence = legacyFacts(s, { kind: "manual", sessionId: 1, createdAt: "seed" },
     [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], text: "Keep this rule",
       category: "decision", actor: "user", createdAt: "seed" }]).facts[0]!;
-  const c = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$1", author: "test", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: [evidence.id], topics: [], reason: "evidence", createdAt: "seed" }] });
+  const c = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: [evidence.id], topics: [], reason: "evidence", createdAt: "seed" }] });
   if (!c.ok) throw Error(c.problems.join());
   return { h, s, item: c.committed[0]! };
 }
@@ -46,7 +46,7 @@ test.each(["budget", "new knowledge"] as const)("64c: publication reprices %s wi
         // New same-pool versions arrive during preparation. Each manually written item stays below
         // the 1,000-token limit, while their aggregate exceeds the shared delivery allowance.
         const create = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "external" },
-          operations: Array.from({ length: 40 }, (_, index) => ({ op: "create" as const, handle: `$external${index}`,
+          operations: Array.from({ length: 40 }, (_, index) => ({ op: "create" as const, title: "Fixture title", handle: `$external${index}`,
             author: "consolidation", text: `external-${index} `.repeat(300), category: "constraint" as const,
             scope: "project" as const, supports: [1], topics: [], reason: "external concurrent create", createdAt: "external" })) });
         expect(create.ok, JSON.stringify(create)).toBe(true);

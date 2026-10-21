@@ -171,14 +171,17 @@ test("135: the advertised memory schema accepts exactly one body form per update
   const noterOnly: Array<[string, Record<string, unknown>]> = [
     ["edits on a create", { ...base, op: "create", title: "Fixture title", ...full, edits }],
   ];
+  // Complete, titled children: the only thing wrong with "edits on a split" below is `edits`.
+  const split = { ...base, op: "split", id: "K1#abcd", children: [1, 2].map(() => ({ title: "Part", text: "Part", category: "open", topics: [] })) };
   const dreamerOnly: Array<[string, Record<string, unknown>]> = [
     ["edits on a merge", { ...base, op: "merge", id: "K1#abcd", absorb: ["K2#efgh"], ...full, edits }],
-    ["edits on a split", { ...base, op: "split", id: "K1#abcd", edits, children: [1, 2].map(() => ({ text: "Part", category: "open", topics: [] })) }],
+    ["edits on a split", { ...split, edits }],
   ];
   for (const [name, tool, extra] of [["Noter and manual", noter, noterOnly], ["Dreamer", dreamer, dreamerOnly]] as const) {
     for (const [what, args] of accepted) expect(valid(tool, args), `${name} accepts ${what}`).toBe(true);
     for (const [what, args] of [...rejected, ...extra]) expect(valid(tool, args), `${name} rejects ${what}`).toBe(false);
   }
+  expect(valid(dreamer, split), "Dreamer accepts the same split without edits").toBe(true);
 });
 
 test("127: the Dreamer's memory schema is one operation, one skip or one scalar drop, with no root combinator", () => {
@@ -322,7 +325,7 @@ test("reads return every knowledge item while injection still applies the scope 
     const note = memory.tools(manual(sessionId, sessionId))[1]!;
     note.execute(fact(`T${sessionId}#E1`));
     memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: "now" }, operations:
-      (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "understanding" as const, scope, supports: [sessionId], createdAt: "now" })) });
+      (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "understanding" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [search] = memory.tools(manual());
   const hits = search!.execute({ query: "knowledge", layer: "knowledge" });

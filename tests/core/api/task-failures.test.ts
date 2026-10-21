@@ -83,7 +83,7 @@ test("32c: borrowed failures continue across executors, disable only the target 
   // Other target-phase work remains claimed while the third failure is settled.
   const fact = decision(second, target, "retained fact");
   const knowledge = second.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, operations: [{
-    op: "create", handle: "$1", author: "test", text: "pending maintenance", category: "constraint", scope: "session",
+    op: "create", title: "Fixture title", handle: "$1", author: "test", text: "pending maintenance", category: "constraint", scope: "session",
     supports: [fact.facts[0]!.id], reason: "evidence", topics: [], createdAt: "now",
   }] });
   if (!knowledge.ok) throw Error(knowledge.problems.join("; "));
@@ -116,7 +116,7 @@ test("92: N auto-off fences late D writes, settles skips and own output, and pre
   await note(m, target); await note(m, target);
   const noted = decision(m, target, "retained evidence");
   const created = m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, path: target, operations: [1, 2, 3].map(n => ({
-    op: "create", handle: `$${n}`, author: "test", text: `pending maintenance ${n}`, category: "constraint", scope: "session",
+    op: "create", title: "Fixture title", handle: `$${n}`, author: "test", text: `pending maintenance ${n}`, category: "constraint", scope: "session",
     supports: [noted.facts[0]!.id], reason: "evidence", topics: [], createdAt: "now",
   })) });
   if (!created.ok) throw Error(created.problems.join("; "));
@@ -236,7 +236,7 @@ test("68: Dreamer terminal outcomes consume accepted skips; a later range settle
   const facts = decision(m, target, "evidence");
   const create = (handle: string) => {
     const result = m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, path: target, operations: [
-      { op: "create", handle, author: "test", text: `${handle} ${"work ".repeat(600)}`, category: "constraint", scope: "session",
+      { op: "create", title: "Fixture title", handle, author: "test", text: `${handle} ${"work ".repeat(600)}`, category: "constraint", scope: "session",
         supports: [facts.facts[0]!.id], reason: "test", topics: [], createdAt: "now" }] });
     if (!result.ok) throw Error(result.problems.join("; "));
     return result.committed[0]!;
@@ -277,7 +277,7 @@ test("126: a session is the Dreamer's logical task; three failures turn memory o
   const create = (text: string) => {
     const committed = m.store.commitConsolidationRun({ path: target,
       run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, operations: [
-        { op: "create", handle: "$1", author: "test", text, category: "constraint", scope: "session",
+        { op: "create", title: "Fixture title", handle: "$1", author: "test", text, category: "constraint", scope: "session",
           topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" },
       ] });
     if (!committed.ok) throw Error(committed.problems.join("; "));
@@ -321,7 +321,7 @@ test("104/126: a timeout, an over-budget end and a run with no pending item each
   const target = seed(m), pool = `session:${target.sessionId}`;
   const facts = decision(m, target, "evidence");
   const made = m.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" },
-    operations: [{ op: "create", handle: "$1", author: "test", text: `Session rule ${"word ".repeat(200)}`, category: "constraint",
+    operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", text: `Session rule ${"word ".repeat(200)}`, category: "constraint",
       scope: "session", topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" }] });
   if (!made.ok) throw Error(made.problems.join("; "));
   const size = m.store.poolSizes(target).find(value => value.pool === pool)!.tokens;
@@ -381,7 +381,7 @@ test("104 F1: three consecutive timeouts at the default 30-minute bound settle a
     const target = seed(m);
     const facts = decision(m, target, "evidence");
     const made = m.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" },
-      operations: [{ op: "create", handle: "$1", author: "test", text: `Session rule ${"word ".repeat(200)}`, category: "constraint",
+      operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", text: `Session rule ${"word ".repeat(200)}`, category: "constraint",
         scope: "session", topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" }] });
     if (!made.ok) throw Error(made.problems.join("; "));
     const dreamStreak = () => streaks(m).filter(row => row.phase === "dreaming");

@@ -52,7 +52,7 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
   const content = (text: string) => ({ text, category: "constraint" as const, scope: "project" as const,
     supports: [fact], topics: ["widget"], reason: "test", createdAt: "now" });
   const created = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, createdAt: "now" },
-    operations: [{ op: "create", handle: "$old", author: "test", ...content("Original widget state") }] });
+    operations: [{ op: "create", title: "Fixture title", handle: "$old", author: "test", ...content("Original widget state") }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   old = created.committed[0]!;
 
@@ -64,7 +64,7 @@ test("48/92: the trusted facade revives an archived identity from exact tagged b
   archiveCommit = store.resolveVersionOrdinal(old.knowledgeId, 2);
 
   const returnedResult = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, createdAt: "now" },
-    operations: [{ op: "create", handle: "$returned", author: "test", ...content("Returned widget state") }] });
+    operations: [{ op: "create", title: "Fixture title", handle: "$returned", author: "test", ...content("Returned widget state") }] });
   if (!returnedResult.ok) throw new Error(returnedResult.problems.join("; "));
   returned = returnedResult.committed[0]!;
   trigger = createDreamerTrigger(memory, path, fact, 1, "project");

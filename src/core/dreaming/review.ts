@@ -1,5 +1,5 @@
 import type { KnowledgeRevision } from "../model/index.ts";
-import { renderKnowledgeDiff } from "../render/index.ts";
+import { knowledgeTitle, renderKnowledgeDiff } from "../render/index.ts";
 import type { Store } from "../store/index.ts";
 
 /** 125: the one end review a Dreamer run gets: what still blocks success, and the net change this
@@ -20,6 +20,9 @@ export function renderDreamingReview(store: Store, runId: number | undefined, bl
     }
     if (commit.op === "split") record();
   }
+  // Every whole body carries its title, as the views do; a legacy untitled version shows the derived one.
+  const whole = (revision: KnowledgeRevision, mark: "+" | "-") =>
+    `${knowledgeTitle(revision, store.writing.titleTokens)}\n${mark === "+" ? `{+${revision.text}+}` : `[-${revision.text}-]`}`;
   const latest = (knowledgeId: number) => address(own.get(knowledgeId)!.at(-1)!);
   const blocks = [...own].flatMap(([knowledgeId, revisions]) => {
     const gone = replaced.get(knowledgeId);
@@ -28,13 +31,13 @@ export function renderDreamingReview(store: Store, runId: number | undefined, bl
     const start = first === undefined ? gone?.last : parent?.knowledgeId === knowledgeId ? parent : undefined;
     const last = revisions.at(-1) ?? gone!.last;
     // What leaves the pool is the body the run started from, not a later rewrite of it.
-    const removed = `[-${(start ?? last).text}-]`;
+    const removed = whole(start ?? last, "-");
     if (gone) return [`${address(gone.last)} (${gone.op === "merge" ? "merged into" : "split into"} ${[...gone.by].map(latest).join(", ")}):\n${removed}`];
     if (last.op === "archive")
       return [`${address(last)} (archive: ${last.archiveKind}; reason: ${last.reason}):\n${last.archiveKind === "budget" ? removed
         : `${start ? `${removed}\n` : ""}archive text: ${last.text}`}`];
-    if (start?.op === "archive") return [`${address(last)} (restored from archive):\n{+${last.text}+}`];
-    if (!start) return [`${address(last)} (${parent ? `split from K${parent.knowledgeId}` : "new"}):\n{+${last.text}+}`];
+    if (start?.op === "archive") return [`${address(last)} (restored from archive):\n${whole(last, "+")}`];
+    if (!start) return [`${address(last)} (${parent ? `split from K${parent.knowledgeId}` : "new"}):\n${whole(last, "+")}`];
     const bodyChanged = start.text !== last.text || start.title !== last.title;
     if (!bodyChanged && start.category === last.category && start.scope === last.scope &&
         JSON.stringify(start.topics) === JSON.stringify(last.topics)) return [];

@@ -42,7 +42,7 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
     memory.selectEntries(session.id, "main", [entry.id]);
     const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{ turnId: turn.id, entryIds: [entry.id], category: "decision", actor: "user", text: "A rule", source: [`T${turn.id}#E1`], createdAt: "now" }] });
     if (!facts.ok) throw new Error(facts.problems.join("; "));
-    const made = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", text: "A durable rule", category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
+    const made = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", text: "A durable rule", category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
     if (!made.ok) throw new Error(made.problems.join("; "));
     const item = made.committed[0]!;
     frozen = `K${item.knowledgeId}@v1`;

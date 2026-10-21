@@ -301,7 +301,7 @@ function seedKnowledge(f: ReturnType<typeof fixture>, scope: "session" | "projec
   const fid = JSON.parse(note.execute(fact("User supplied enduring evidence"))).factIds[0] as number;
   const content = { text: "Old rule", category: "constraint" as const, scope, topics: [], supports: [fid], reason: "initial", createdAt: "now" };
   const created = f.memory.store.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
-    operations: [{ op: "create", author: "test", handle: "$seed", ...content }] });
+    operations: [{ op: "create", title: "Fixture title", author: "test", handle: "$seed", ...content }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const base = created.committed[0]!;
   const tag = `K${base.knowledgeId}#${f.memory.store.versionTag(base.knowledgeId, base.commit)}`;

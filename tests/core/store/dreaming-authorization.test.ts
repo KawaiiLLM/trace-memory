@@ -163,7 +163,7 @@ test("64b: empty-support merge unions both exact parents and split copies its ex
   const splitRun = split.store.bindDreamingRun(split.run);
   const result = split.store.commitConsolidationRun({ run: splitRun, path: split.target, operations: [{ op: "split",
     knowledgeId: split.item.knowledgeId, baseCommit: split.item.commit, supports: [], reason: "Separate claims.", createdAt: "now",
-    children: [{ text: "first", category: "constraint", topics: [] }, { text: "second", category: "constraint", topics: [] }],
+    children: [{ title: "Fixture child", text: "first", category: "constraint", topics: [] }, { title: "Fixture child", text: "second", category: "constraint", topics: [] }],
   }] });
   expect(result.ok).toBe(true);
   if (result.ok) expect(result.committed.map(value => split.store.knowledgeRevision(value.commit)!.supports))
@@ -175,7 +175,7 @@ test("64b: explicit evidence is not augmented and invalid evidence rolls back th
   const evidence = legacyFact(f.store, f.target,
     [{ entry: f.store.getSourceEntry(f.target.triggerEntryId!)!, address: `T${f.target.headTurnId}#user` }], "replacement evidence", "decision");
   const another = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{
-    op: "create", handle: "$2", author: "test", ...f.content, text: "another rule",
+    op: "create", title: "Fixture title", handle: "$2", author: "test", ...f.content, text: "another rule",
   }] });
   if (!another.ok) throw Error(another.problems.join());
   const run = f.store.bindDreamingRun(f.run);
@@ -210,7 +210,7 @@ test("64b: empty legacy parent support remains empty and Dreamer admission needs
 test("32d: trusted authority never grants empty-support create or a mixed partial batch", () => {
   const f = fixture();
   const run = f.store.bindDreamingRun(f.run);
-  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [f.archive, { op: "create", handle: "$1", author: "test", ...f.content, supports: [] }] });
+  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [f.archive, { op: "create", title: "Fixture title", handle: "$1", author: "test", ...f.content, supports: [] }] });
   expect(result.ok).toBe(false);
   expect(f.store.currentCommit(f.item.knowledgeId, f.target)[0]!.id).toBe(f.item.commit);
 });
@@ -298,7 +298,7 @@ test("32d: create plus merge is not a split; rejection has zero batch side effec
   const run = f.store.bindDreamingRun(f.run);
   const before = { revisions: f.store.listKnowledgeRevisions(), range: f.store.dreamingRange(f.run.dreamingRangeId!), links: f.store.listKnowledgeLinks(f.item.knowledgeId) };
   const merge = { op: "merge" as const, intoKnowledgeId: f.item.knowledgeId, intoBaseCommit: f.item.commit, absorb: [{ knowledgeId: item.knowledgeId, baseCommit: item.commit }], ...f.content };
-  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [{ op: "create", handle: "$split", author: "test", ...f.content }, merge] });
+  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [{ op: "create", title: "Fixture title", handle: "$split", author: "test", ...f.content }, merge] });
   expect(result.ok).toBe(false);
   expect(f.store.listKnowledgeRevisions()).toEqual(before.revisions);
   expect(f.store.dreamingRange(f.run.dreamingRangeId!)).toEqual(before.range);
@@ -310,7 +310,7 @@ test("32d: create plus merge is not a split; rejection has zero batch side effec
 test.each(["update", "archive"] as const)("34a: create plus authorized family %s cannot impersonate an explicit split", op => {
   const f = fixture(), run = f.store.bindDreamingRun(f.run);
   const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [
-    { op: "create", handle: "$split", author: "test", ...f.content },
+    { op: "create", title: "Fixture title", handle: "$split", author: "test", ...f.content },
     op === "archive" ? { ...f.archive, supports: [] } : { ...f.content, op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit },
   ] });
   expect(result.ok).toBe(false);
@@ -319,11 +319,11 @@ test.each(["update", "archive"] as const)("34a: create plus authorized family %s
 
 test("32d: an outside-family update cannot decorate create into a split", () => {
   const f = fixture(), run = f.store.bindDreamingRun(f.run);
-  const outside = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "create", handle: "$2", author: "test", ...f.content }] });
+  const outside = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$2", author: "test", ...f.content }] });
   if (!outside.ok) throw Error(outside.problems.join());
   const item = outside.committed[0]!, before = f.store.listKnowledgeRevisions();
   expect(f.store.commitConsolidationRun({ run, path: f.target, operations: [
-    { op: "create", handle: "$split", author: "test", ...f.content },
+    { op: "create", title: "Fixture title", handle: "$split", author: "test", ...f.content },
     { op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, ...f.content },
   ] }).ok).toBe(false);
   expect(f.store.listKnowledgeRevisions()).toEqual(before);

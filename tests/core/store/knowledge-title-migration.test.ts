@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
-import { entry, knowledge, legacyKnowledge, session } from "../../support/seed.ts";
+import { entry, legacyKnowledge, session } from "../../support/seed.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -53,7 +53,26 @@ test("a new version is titled while the legacy versions it follows stay untitled
     expect(f.store.getKnowledgeRevision(f.first.knowledgeId, updated.committed[0]!.commit)!.title).toBe("First rule");
     expect(f.store.getKnowledgeRevision(f.first.knowledgeId, f.first.commit)!.title).toBeNull();
     expect(f.store.getKnowledgeRevision(f.second.knowledgeId, f.second.commit)!.title).toBeNull();
-    const created = knowledge(f.store, f.path, "project", "constraint", [f.fact], "Created without a title");
-    expect(f.store.getKnowledgeRevision(created.knowledgeId, created.commit)!.title).toBe("Created without a title");
+  } finally { f.store.close(); }
+});
+
+// A derived title is how a legacy row renders; the Store never writes one. Every new live version arrives titled.
+test("a direct Store write of a new live version without a title is refused, and nothing is stored", () => {
+  const f = database();
+  try {
+    const run = { kind: "manual" as const, sessionId: f.path.sessionId, branch: "main", createdAt: "now" };
+    const common = { supports: [f.fact], topics: [], reason: "no title", createdAt: "now" };
+    const before = f.store.listKnowledgeRevisions();
+    const untitled = [
+      { op: "create" as const, handle: "$1", author: "test", text: "Untitled rule", category: "constraint" as const, scope: "project" as const, ...common },
+      // A legacy base has no title to inherit.
+      { op: "update" as const, knowledgeId: f.first.knowledgeId, baseCommit: f.first.commit, text: "Edited", category: "constraint" as const, scope: "project" as const, ...common },
+    ];
+    for (const operation of untitled) {
+      const result = f.store.commitConsolidationRun({ path: f.path, run, operations: [operation] });
+      expect(result.ok, operation.op).toBe(false);
+      expect(!result.ok && result.problems.join("; "), operation.op).toContain("requires a title");
+    }
+    expect(f.store.listKnowledgeRevisions()).toEqual(before);
   } finally { f.store.close(); }
 });

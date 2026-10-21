@@ -33,7 +33,7 @@ function seed(memory: ReturnType<typeof TraceMemory>) {
   }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{
-    op: "create", handle: "$deadline", author: "fixture", text: "timed knowledge", category: "constraint", scope: "project",
+    op: "create", title: "Fixture title", handle: "$deadline", author: "fixture", text: "timed knowledge", category: "constraint", scope: "project",
     supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now",
   }] });
   if (!created.ok) throw new Error(created.problems.join("; "));

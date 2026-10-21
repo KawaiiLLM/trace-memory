@@ -23,7 +23,7 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, t
   if (!facts.ok) throw Error(facts.problems.join());
   const content = (index: number) => ({ text: texts[index]!, category: "constraint" as const, scope: "project" as const, supports: [facts.facts[index]!.id], topics: [], reason: "fact", createdAt: "now" });
   const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" },
-    operations: texts.map((_, index) => ({ op: "create" as const, handle: `$${index + 1}`, author: "test", ...content(index) })) });
+    operations: texts.map((_, index) => ({ op: "create" as const, title: "Fixture title", handle: `$${index + 1}`, author: "test", ...content(index) })) });
   if (!created.ok) throw Error(created.problems.join());
   const pool = `project:${project.id}`;
   store.setKnowledgeBudget("project", roomyPoolBudget(store.pendingPoolWeight(pool, target)));

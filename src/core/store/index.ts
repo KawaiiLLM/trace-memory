@@ -15,7 +15,7 @@ import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecuti
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, dreamingDue, ALL_POOLS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize } from "./processing.ts";
-import { factAddresses, knowledgeTitle, renderKnowledge, renderKnowledgeChange, withKnowledgeCost, withFactDates, tokens } from "../render/index.ts";
+import { factAddresses, renderKnowledge, renderKnowledgeChange, withKnowledgeCost, withFactDates, tokens } from "../render/index.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import type {
   Actor,
@@ -398,6 +398,8 @@ export const sourceDigest = (raw: string): string => createHash("sha256").update
  * (outside the BMP, encoded as a UTF-16 surrogate pair) counts once, not twice. Below three, no
  * trigram exists to index or query, so `searchAddresses` keeps today's LIKE scan for these. */
 export const unicodeLength = (value: string): number => Array.from(value).length;
+/** A merge keeps the older (lower-id) knowledge as its survivor; the caller may name either one first. */
+export const mergeSwaps = (intoKnowledgeId: number, absorbedKnowledgeId: number): boolean => intoKnowledgeId > absorbedKnowledgeId;
 
 /** Ticket 81: the query as one quoted FTS5 phrase, so `MATCH` requires its trigrams contiguously
  * (substring semantics) rather than interpreting `"`, `*`, `:`, `(`, `NEAR`, `AND`, etc. as FTS5
@@ -3900,7 +3902,7 @@ export class Store {
       }
     }
     let reversed: Extract<KnowledgeOperationInput, { op: "merge" }> | undefined;
-    if (op.op === "merge" && op.intoKnowledgeId > op.absorb[0]!.knowledgeId) {
+    if (op.op === "merge" && mergeSwaps(op.intoKnowledgeId, op.absorb[0]!.knowledgeId)) {
       const merge = op, older = merge.absorb[0]!;
       if (this.getKnowledgeRevision(merge.intoKnowledgeId, merge.intoBaseCommit)?.op === "archive" ||
           this.getKnowledgeRevision(older.knowledgeId, older.baseCommit)?.op === "archive")
@@ -3967,10 +3969,9 @@ export class Store {
           !((revisionOp === "archive" || revisionOp === "update") && category === prior?.category) &&
           !(revisionOp === "create" && role === "noting" && inheritedCreateCategory !== undefined && category === inheritedCreateCategory))
         throw new Error(`invalid new knowledge category ${category}`);
-      // A new live version always ends with a title (ticket 144): the tools supply one, inherited from the
-      // base when omitted; a direct caller that omits it gets the start of its body, as a legacy item shows.
-      // Only an archive carries a legacy null.
-      title ??= revisionOp === "archive" ? null : knowledgeTitle({ title: null, text }, this.writing.titleTokens);
+      // A new live version always ends with a title (ticket 144), given or inherited from its base. A derived
+      // title is only how a legacy row renders; it is never stored. Only an archive carries a legacy null.
+      if (title === null && revisionOp !== "archive") throw new Error("a new live knowledge version requires a title");
       const info = this.db.prepare(`INSERT INTO knowledge_revisions
         (knowledge_id, parent_id, title, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role, archive_kind)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, title, text, category, scope,

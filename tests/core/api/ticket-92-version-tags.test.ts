@@ -99,7 +99,7 @@ test("92/03+04: concurrent N writers serialize version metadata and convert a st
       .execute({ title: "Rule evidence", sources: `[T${turn.id}#E1] Rule evidence` })).factIds[0];
     const content = { text: "Unchanged body", category: "constraint" as const, scope: "session" as const, topics: [], supports: [fact], reason: "revision", createdAt: "now" };
     const run = { kind: "manual" as const, sessionId: session.id, branch: "main", createdAt: "now" };
-    const created = memory.store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
+    const created = memory.store.commitConsolidationRun({ run, operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", ...content }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const initial = created.committed[0]!;
     const operation = { op: "update", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, ...content };
@@ -142,7 +142,7 @@ test("92/03+04: concurrent N writers serialize version metadata and convert a st
     expect(before.filter(row => row.knowledge_id !== initial.knowledgeId).map(row => row.ordinal)).toEqual([1]);
     expect(new Set(before.filter(row => row.knowledge_id === initial.knowledgeId).map(row => row.tag)).size).toBe(2);
     const failed = memory.store.commitConsolidationRun({ run, operations: [
-      { op: "create", handle: "$rollback", author: "test", ...content },
+      { op: "create", title: "Fixture title", handle: "$rollback", author: "test", ...content },
       { op: "archive", kind: "budget", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, supports: [fact], reason: "stale after insert", createdAt: "now" },
     ] });
     expect(failed.ok).toBe(false);

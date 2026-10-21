@@ -72,7 +72,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
   test("N terminal Store authority permits create/update/archive and rejects merge/split", () => {
     const f = fixture(() => {});
-    const base = publishN(f.session.id, [{ op: "create", handle: "$base", author: "noting", text: "beta.4 is current",
+    const base = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$base", author: "noting", text: "beta.4 is current",
       category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!base.ok) throw new Error(base.problems.join("; "));
     const baseCommit = base.committed[0]!;
@@ -117,7 +117,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
   test("N converts a legitimately advanced base to a new identity, while current-base updates stay on the original identity", () => {
     const f = fixture(() => {});
-    const base = publishN(f.session.id, [{ op: "create", handle: "$base", author: "noting", text: "v1",
+    const base = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$base", author: "noting", text: "v1",
       category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!base.ok) throw new Error(base.problems.join("; "));
     const first = base.committed[0]!;
@@ -158,7 +158,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
   test("D stale writes still refuse after N advances the frozen base; N's new version remains pending", async () => {
     const f = fixture(() => {});
-    const base = publishN(f.session.id, [{ op: "create", handle: "$base", author: "noting", text: "frozen base",
+    const base = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$base", author: "noting", text: "frozen base",
       category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!base.ok) throw new Error(base.problems.join("; "));
     const first = base.committed[0]!;
@@ -175,7 +175,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const fact = noted.facts[0]!.id;
     const created0 = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
-      operations: [{ op: "create", handle: "$base", author: "consolidation", text: "frozen base", category: "reference", scope: "project",
+      operations: [{ op: "create", title: "Fixture title", handle: "$base", author: "consolidation", text: "frozen base", category: "reference", scope: "project",
         topics: [], supports: [fact], reason: "Initial.", createdAt: time }] });
     if (!created0.ok) throw new Error(created0.problems.join("; "));
     const k5 = created0.committed[0]!;
@@ -226,7 +226,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       facts: [{ turnId: childTurn.id, entryIds: memory.store.listSourceEntries(f.session.id, childTurn.id).map(entry => entry.id), text: "child-only evidence", source: [`T${childTurn.id}#E1`], createdAt: time }] });
     if (!childFacts.ok) throw new Error(childFacts.problems.join("; "));
     const childFact = childFacts.facts[0]!.id;
-    const created0 = publishN(f.session.id, [{ op: "create", handle: "$p", author: "noting", text: "v1", category: "reference",
+    const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$p", author: "noting", text: "v1", category: "reference",
       scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!created0.ok) throw new Error(created0.problems.join("; "));
     const first = created0.committed[0]!;
@@ -256,7 +256,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
   test("scope and applicability: a global-scope N update is visible from every session", () => {
     const f = fixture(() => {});
-    const created0 = publishN(f.session.id, [{ op: "create", handle: "$g", author: "noting", text: "global v1", category: "reference",
+    const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$g", author: "noting", text: "global v1", category: "reference",
       scope: "global", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!created0.ok) throw new Error(created0.problems.join("; "));
     const first = created0.committed[0]!;
@@ -286,7 +286,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const fact = noted.facts[0]!.id;
     const createdRun = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time }, operations: [{
-      op: "create", handle: "$base", author: "consolidation", text: "base rule", category: "constraint", scope: "project",
+      op: "create", title: "Fixture title", handle: "$base", author: "consolidation", text: "base rule", category: "constraint", scope: "project",
       supports: [fact], topics: [], reason: "Initial rule.", createdAt: time,
     }] });
     if (!createdRun.ok) throw new Error(createdRun.problems.join("; "));
@@ -328,7 +328,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     const f = fixture(() => {});
 
     // Visible same-project advancement is the only conflict that N may convert.
-    const visBase = publishN(f.session.id, [{ op: "create", handle: "$v", author: "consolidation", text: "visible v1",
+    const visBase = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$v", author: "consolidation", text: "visible v1",
       category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!visBase.ok) throw new Error(visBase.problems.join("; "));
     const visFirst = visBase.committed[0]!;
@@ -344,7 +344,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     expect(memory.store.currentCommit(visFirst.knowledgeId)[0]!.id).toBe(visSecond.commit);
 
     // Invisible case: another project's N scopes the global item down; that successor cannot authorize conversion.
-    const global0 = publishN(f.session.id, [{ op: "create", handle: "$g", author: "consolidation", text: "public claim",
+    const global0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$g", author: "consolidation", text: "public claim",
       category: "reference", scope: "global", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!global0.ok) throw new Error(global0.problems.join("; "));
     const g1 = global0.committed[0]!;
@@ -379,7 +379,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
   describe("archives", () => {
     test("an N archive is pending with the weight of the removed body, and pool size excludes it", () => {
       const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", handle: "$a", author: "noting", text: "removable body",
+      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$a", author: "noting", text: "removable body",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const first = created0.committed[0]!;
@@ -403,7 +403,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
     test("case A: N creates then archives before D ever processes it shows the archived body whole, with no diff", () => {
       const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", handle: "$a", author: "noting", text: "case A body",
+      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$a", author: "noting", text: "case A body",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const first = created0.committed[0]!;
@@ -420,7 +420,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
     test("case B: D confirmed A, N changed A to B, then archived B: shows B whole with the diff A -> B", () => {
       const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", handle: "$b", author: "noting", text: "state A",
+      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$b", author: "noting", text: "state A",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const stateA = created0.committed[0]!;
@@ -467,7 +467,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       if (!noted.ok) throw new Error(noted.problems.join("; "));
       const fact = noted.facts[0]!.id;
       const createdRun = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time }, operations: [{
-        op: "create", handle: "$x", author: "consolidation", text: "to be archived by D", category: "reference", scope: "project",
+        op: "create", title: "Fixture title", handle: "$x", author: "consolidation", text: "to be archived by D", category: "reference", scope: "project",
         topics: [], supports: [fact], reason: "Initial.", createdAt: time,
       }] });
       if (!createdRun.ok) throw new Error(createdRun.problems.join("; "));
@@ -504,7 +504,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       if (!noted.ok) throw new Error(noted.problems.join("; "));
       const fact = noted.facts[0]!.id;
       const createdRun = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time }, operations: [{
-        op: "create", handle: "$r", author: "consolidation", text: "revivable body", category: "reference", scope: "project",
+        op: "create", title: "Fixture title", handle: "$r", author: "consolidation", text: "revivable body", category: "reference", scope: "project",
         topics: [], supports: [fact], reason: "Initial.", createdAt: time,
       }] });
       if (!createdRun.ok) throw new Error(createdRun.problems.join("; "));
@@ -539,7 +539,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
   describe("diff material and weight", () => {
     test("two consecutive N updates show one cumulative diff against the last-processed baseline", () => {
       const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", handle: "$c", author: "noting", text: "alpha beta gamma delta",
+      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$c", author: "noting", text: "alpha beta gamma delta",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
@@ -568,7 +568,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
     test("no processed ancestor: an update is shown whole as New, exactly as a create is", () => {
       const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", handle: "$n", author: "noting", text: "v1",
+      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$n", author: "noting", text: "v1",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
@@ -585,7 +585,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
     test("a Changed item shows the current revision's full topics and supports beside the diff, not only what changed", () => {
       const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", handle: "$t", author: "noting", text: "use red tiles",
+      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$t", author: "noting", text: "use red tiles",
         category: "reference", scope: "project", topics: ["ui", "theme"], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
@@ -605,7 +605,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
     test("metadata-only change (a scope change with unchanged body) weighs its change: more than zero, far less than the item", () => {
       const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", handle: "$m", author: "noting", text: "same body throughout, unchanged and reasonably sized so its whole render dwarfs one field's diff",
+      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$m", author: "noting", text: "same body throughout, unchanged and reasonably sized so its whole render dwarfs one field's diff",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
@@ -626,7 +626,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
     test("without a baseline in this pool: a project item changed to global weighs the whole item there", () => {
       const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", handle: "$s", author: "noting", text: "scoped body",
+      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$s", author: "noting", text: "scoped body",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;
@@ -651,7 +651,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       if (!noted.ok) throw new Error(noted.problems.join("; "));
       const fact = noted.facts[0]!.id;
       const c1 = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
-        operations: [{ op: "create", handle: "$k", author: "consolidation", text: "identical text", category: "reference", scope: "project",
+        operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "consolidation", text: "identical text", category: "reference", scope: "project",
           topics: [], supports: [fact], reason: "Initial.", createdAt: time }] });
       if (!c1.ok) throw new Error(c1.problems.join("; "));
       const v1 = memory.store.knowledgeRevision(c1.committed[0]!.commit)!;
@@ -668,7 +668,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
 
     test("create is full size; update is the changed tokens; archive is the removed body", () => {
       const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", handle: "$w", author: "noting", text: "a body long enough that its whole size clearly exceeds one small edit's weight",
+      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$w", author: "noting", text: "a body long enough that its whole size clearly exceeds one small edit's weight",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const v1 = created0.committed[0]!;

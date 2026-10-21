@@ -23,7 +23,7 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>) {
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   const create = (scope: "global" | "project" | "session", text: string) => {
     const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{
-      op: "create", handle: `$${Math.random()}`, author: "test", text, category: "constraint", scope,
+      op: "create", title: "Fixture title", handle: `$${Math.random()}`, author: "test", text, category: "constraint", scope,
       supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now",
     }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
@@ -240,7 +240,7 @@ test("68 untouched residual stays due before and after an older version becomes 
   const qn = f.store.commitNotingRun({ run: { kind: "manual", sessionId: qs.id, createdAt: "now" }, facts: [{ turnId: qt.id,
     entryIds: [qe.id], category: "decision", actor: "user", text: "q", source: [`T${qt.id}#E1`], createdAt: "now" }] });
   if (!qn.ok) throw new Error(qn.problems.join("; "));
-  const old = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: qs.id, createdAt: "now" }, operations: [{ op: "create",
+  const old = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: qs.id, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title",
     handle: "$old", author: "test", text: "old q item", category: "constraint", scope: "project", supports: [qn.facts[0]!.id], topics: [], reason: "old", createdAt: "now" }] });
   if (!old.ok) throw new Error(old.problems.join("; "));
 

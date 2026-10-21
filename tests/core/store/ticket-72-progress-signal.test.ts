@@ -54,7 +54,7 @@ test("85: settling a Dreaming range changes the signal through processing record
     facts: [{ turnId, entryIds: [entry.id], category: "observation", actor: "user", text: "a fact", source: [`T${turnId}#E1`], createdAt: time }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const consolidated = commitNoterKnowledge(store, { run: { sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "create", handle: "$k", author: "test", text: "a durable rule that is long enough to carry weight", category: "constraint",
+    operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "a durable rule that is long enough to carry weight", category: "constraint",
       scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "evidence", createdAt: time }] });
   if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
   const path = { sessionId, branch: "main", headTurnId: turnId };

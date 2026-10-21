@@ -40,7 +40,7 @@ function writeFact(store: Store, sessionId: number, branch: string, turnId: numb
 
 function create(store: Store, path: KnowledgePath, factId: number, scope: "global" | "project" | "session", text: string) {
   const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    operations: [{ op: "create", handle: `$${scope}`, author: "test", text, category: "constraint", scope,
+    operations: [{ op: "create", title: "Fixture title", handle: `$${scope}`, author: "test", text, category: "constraint", scope,
       topics: [], supports: [factId], reason: "represent current-path applicability", createdAt: at }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!;
@@ -456,7 +456,7 @@ test("64b validity pilot: competing same-base Store writes commit once and stale
     const base = create(first, path, fact.id, "session", "one base");
     const attempt = (store: Store, reason: string, includeCreate = false) => store.commitConsolidationRun({ path,
       run: { kind: "manual", sessionId: owner.id, branch: "main", createdAt: at }, operations: [
-        ...(includeCreate ? [{ op: "create" as const, handle: "$partial", author: "test", text: "must roll back",
+        ...(includeCreate ? [{ op: "create" as const, title: "Fixture title", handle: "$partial", author: "test", text: "must roll back",
           category: "constraint" as const, scope: "session" as const, supports: [fact.id], topics: [], reason: "Atomic probe.", createdAt: at }] : []),
         { op: "archive" as const, kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fact.id], reason, createdAt: at },
       ] });

@@ -35,7 +35,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     expect(factReceipt.factIds).toHaveLength(1);
     const fid = factReceipt.factIds[0];
     const written = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [1, 2, 3].map(n => ({
-      op: "create", handle: `$${n}`, author: "fixture", category: "constraint", scope: "session", text: `Rule ${n}`, supports: [fid], topics: [], reason: "evidence", createdAt: "now",
+      op: "create", title: "Fixture title", handle: `$${n}`, author: "fixture", category: "constraint", scope: "session", text: `Rule ${n}`, supports: [fid], topics: [], reason: "evidence", createdAt: "now",
     })) });
     if (!written.ok) throw Error(written.problems.join("; "));
     const [changed, skipped, untouched] = written.committed;

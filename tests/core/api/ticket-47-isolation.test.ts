@@ -78,10 +78,10 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
     if (!result.ok) throw new Error(result.problems.join("; "));
     return result.committed[0]!;
   };
-  const survivor = create(rootPath, { op: "create", handle: "$survivor", author: "test", ...content }, rootPending.id);
-  const maintained = create(rootPath, { op: "create", handle: "$maintained", author: "test", ...content, text: "maintained common rule" }, rootPending.id);
-  const archived = create(rootPath, { op: "create", handle: "$archived", author: "test", ...content, text: "archivable common rule" }, rootPending.id);
-  const victim = create(rootPath, { op: "create", handle: "$victim", author: "test", ...content, text: "merge-away common rule" }, rootPending.id);
+  const survivor = create(rootPath, { op: "create", title: "Fixture title", handle: "$survivor", author: "test", ...content }, rootPending.id);
+  const maintained = create(rootPath, { op: "create", title: "Fixture title", handle: "$maintained", author: "test", ...content, text: "maintained common rule" }, rootPending.id);
+  const archived = create(rootPath, { op: "create", title: "Fixture title", handle: "$archived", author: "test", ...content, text: "archivable common rule" }, rootPending.id);
+  const victim = create(rootPath, { op: "create", title: "Fixture title", handle: "$victim", author: "test", ...content, text: "merge-away common rule" }, rootPending.id);
   const targets = {
     head: { sessionId: session.id, branch: "main", headTurnId: headTurn.id },
     rewind: rootPath,
@@ -123,7 +123,7 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
   const siblingFact = siblingNoted.facts[0]!;
   const siblingPath = { sessionId: session.id, branch: "sibling", headTurnId: siblingTurn.id };
   const siblingContent = { ...content, supports: [siblingFact.id], reason: "sibling-only mutation", createdAt: "sibling" };
-  const siblingOnly = create(siblingPath, { op: "create", handle: "$sibling", author: "test", ...siblingContent, text: "sibling-only knowledge" }, siblingEntry.id);
+  const siblingOnly = create(siblingPath, { op: "create", title: "Fixture title", handle: "$sibling", author: "test", ...siblingContent, text: "sibling-only knowledge" }, siblingEntry.id);
   store.setCurrentPath(session.id, siblingPath.branch, siblingPath.headTurnId, "test-lineage");
   const trigger = createDreamerTrigger(memory, siblingPath, siblingFact.id, 1);
   let maintenanceReceipt: any;
@@ -170,7 +170,7 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
     source: [`T${terminalTurn.id}#E${terminalEntry.entryOrdinal}`], createdAt: "terminal",
   }] });
   if (!terminalNoted.ok) throw new Error(terminalNoted.problems.join("; "));
-  create({ sessionId: session.id, branch: "terminal", headTurnId: terminalTurn.id }, { op: "create", handle: "$terminal", author: "test",
+  create({ sessionId: session.id, branch: "terminal", headTurnId: terminalTurn.id }, { op: "create", title: "Fixture title", handle: "$terminal", author: "test",
     ...content, supports: [terminalNoted.facts[0]!.id], text: "older terminal-only knowledge", reason: "terminal-only", createdAt: "terminal" }, terminalEntry.id);
 
   const after = await capture("after");
@@ -216,7 +216,7 @@ test("64b/47: D head and rewind material follows the owner's foreground and igno
   const siblingFact = commitFact(sibling.id, siblingEntry.id, "sibling", "sibling-only fact");
   const create = (path: { sessionId: number; branch: string; headTurnId: number }, factId: number, text: string) => {
     const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: path.branch, createdAt: path.branch }, operations: [{
-      op: "create", handle: text.startsWith("root") ? "$root" : "$sibling", author: "test", text, category: "open", scope: "project", supports: [factId], topics: [], reason: "D isolation fixture", createdAt: path.branch,
+      op: "create", title: "Fixture title", handle: text.startsWith("root") ? "$root" : "$sibling", author: "test", text, category: "open", scope: "project", supports: [factId], topics: [], reason: "D isolation fixture", createdAt: path.branch,
     }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
   };

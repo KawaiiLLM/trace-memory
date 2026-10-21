@@ -212,7 +212,7 @@ test("ticket92material D pending slice is 10k inside K, direct facts are separat
   f.memory.setKnowledgeBudget("project", 1_000);
   for (let index = 0; index < 18; index++) {
     const committed = f.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
-      operations: [{ op: "create", handle: "$new", author: "fixture", category: "understanding", scope: "project",
+      operations: [{ op: "create", title: "Fixture title", handle: "$new", author: "fixture", category: "understanding", scope: "project",
         text: `${index} ${"knowledge ".repeat(320)}`, supports: [f.fact], topics: [], reason: "fixture", createdAt: "now" }] });
     if (!committed.ok) throw new Error(committed.problems.join("; "));
   }

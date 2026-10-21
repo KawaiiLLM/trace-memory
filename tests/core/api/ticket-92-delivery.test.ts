@@ -27,7 +27,7 @@ function fixture(file = false) {
   const fact = seedFact(memory, target, "Supplied evidence", [{ entry: user, text: "User supplied evidence" }]).id;
   const content = { author: "fixture", category: "constraint" as const, scope: "project" as const, topics: [], supports: [fact], reason: "fixture", createdAt: "now" };
   const create = (text: string) => {
-    const result = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ ...content, op: "create", handle: "$new", text }] });
+    const result = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ ...content, op: "create", title: "Fixture title", handle: "$new", text }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
     return result.committed[0]!;
   };

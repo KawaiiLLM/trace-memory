@@ -1,10 +1,11 @@
 import type { TraceMemory } from "../source-fixture.ts";
 import { commitNoterKnowledge } from "../noting-knowledge-fixture.ts";
 import type { Store, KnowledgePath, SourceEntry, SourceEntryMeta, FactCommitInput, RunInput, CommittedKnowledgeOp } from "../../src/core/store/index.ts";
-import type { Fact, FactCategory, KnowledgeCategory } from "../../src/core/model/index.ts";
+import { DEFAULT_WRITING_LIMITS, type Fact, type FactCategory, type KnowledgeCategory } from "../../src/core/model/index.ts";
 import { parseKnowledgeAddress } from "../../src/core/model/address.ts";
 import type { MemoryReceipt } from "../../src/core/knowledge-write/bind.ts";
 import { assignVersionTag } from "../../src/core/store/version-tags.ts";
+import { knowledgeTitle } from "../../src/core/render/index.ts";
 
 /** Resolve the shared tool receipt: authored update/merge/split tags, other history addresses. */
 export function receiptCommit(store: Store, item: Pick<MemoryReceipt["committed"][number], "knowledgeId" | "version">): number {
@@ -104,6 +105,9 @@ export function legacyFact(store: Store, path: KnowledgePath, sources: readonly 
     [{ sources, text, category, actor: "user", createdAt: at }]).facts[0]!;
 }
 
+/** The title a legacy item would have shown: its body's leading characters. Fixtures that need a title and do not care which use it. */
+export const fixtureTitle = (text: string): string => knowledgeTitle({ title: null, text }, DEFAULT_WRITING_LIMITS.titleTokens);
+
 type KnowledgeSeed = { scope: "global" | "project" | "session"; category: KnowledgeCategory; supports: number[];
   title?: string; text: string; topics?: string[]; createdAt?: string; author?: string; reason?: string };
 type KnowledgeRun = { kind: "manual" | "noting"; createdAt: string };
@@ -112,7 +116,7 @@ type KnowledgeRun = { kind: "manual" | "noting"; createdAt: string };
 export function knowledgeBatch(store: Store, path: KnowledgePath, items: readonly KnowledgeSeed[],
   run: KnowledgeRun = { kind: "noting", createdAt: at }) {
   const operations = items.map((item, index) => ({ op: "create" as const, handle: `$${index + 1}`,
-    author: item.author ?? "test", ...(item.title === undefined ? {} : { title: item.title }), text: item.text, category: item.category, scope: item.scope,
+    author: item.author ?? "test", title: item.title ?? fixtureTitle(item.text), text: item.text, category: item.category, scope: item.scope,
     supports: item.supports, topics: item.topics ?? [], reason: item.reason ?? "fixture",
     createdAt: item.createdAt ?? run.createdAt }));
   const recorded = { kind: run.kind, sessionId: path.sessionId, branch: path.branch, createdAt: run.createdAt };

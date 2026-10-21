@@ -31,7 +31,7 @@ function fact(f: ReturnType<typeof base>) {
 function knowledge(f: ReturnType<typeof base>, scope: "project" | "global" | "session" = "project") {
   const evidence = fact(f);
   const result = f.store.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, operations: [
-    { op: "create", handle: "$1", author: "test", text: "pending knowledge ".repeat(30), category: "constraint", scope,
+    { op: "create", title: "Fixture title", handle: "$1", author: "test", text: "pending knowledge ".repeat(30), category: "constraint", scope,
       supports: [evidence.id], topics: [], reason: "test", createdAt: "now" },
   ] });
   if (!result.ok) throw new Error(result.problems.join("; "));
@@ -217,7 +217,7 @@ function claimFixture() {
       sources: [{ entry: source, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "evidence", createdAt: "now",
     }]);
     const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
-      { op: "create", handle: "$1", author: "test", text: `pending ${name}`, category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
+      { op: "create", title: "Fixture title", handle: "$1", author: "test", text: `pending ${name}`, category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
     ] });
     if (!result.ok) throw new Error(result.problems.join("; "));
     return { sessionId: session.id, branch: "main", headTurnId: turn.id };

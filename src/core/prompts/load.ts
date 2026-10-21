@@ -1,4 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
+import { DEFAULT_WRITING_LIMITS, renderLimits } from "./limits.ts";
+import type { WritingLimits } from "../model/index.ts";
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "./tool-names.ts";
 
 const INCLUDE = /<!-- include:\s*([^\s>]+)\s*-->/g;
@@ -16,6 +18,7 @@ export function composePrompt(file: "noting.md" | "dreaming.md"): string {
   return composed;
 }
 
-export function loadPrompt(file: "noting.md" | "dreaming.md", names: ToolNames = canonicalToolNames): string {
-  return renderToolNames(composePrompt(file), validateToolNames(names));
+export function loadPrompt(file: "noting.md" | "dreaming.md", names: ToolNames = canonicalToolNames,
+  limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
+  return renderLimits(renderToolNames(composePrompt(file), validateToolNames(names)), limits);
 }

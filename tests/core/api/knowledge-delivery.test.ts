@@ -31,7 +31,7 @@ function fixture(config: Record<string, unknown> = {}) {
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const create = (text: string, supports: number[]) => {
     const result = memory.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
-      run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ op: "create", handle: `$${text}`,
+      run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ op: "create", title: "Fixture title", handle: `$${text}`,
         author: "fixture", text, category: "constraint", scope: "project", supports, topics: [], reason: "record conclusion", createdAt: time }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
     return result.committed[0]!;

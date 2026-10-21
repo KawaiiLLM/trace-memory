@@ -2,7 +2,7 @@ import { loadPrompt } from "../prompts/load.ts";
 import { readingGuide } from "../render/reading-guide.ts";
 import { withRetrievalPolicy } from "../render/retrieval-policy.ts";
 import { createHash } from "node:crypto";
-import { type Fact, type Turn } from "../model/index.ts";
+import { type Fact, type Turn, type WritingLimits } from "../model/index.ts";
 import type { Store, RunInput, SourceEntry, SourceEntryMeta } from "../store/index.ts";
 import { isThinkingOnly, type HumanUserDetector } from "../model/source.ts";
 import type { bindTools } from "../api/tools.ts";
@@ -19,11 +19,11 @@ import type { NotingDiagnostic } from "./review.ts";
 // Pricing includes the launch's rendered names, not the canonical template. The lazy per-map cache
 // avoids repeatedly tokenizing static schemas through the source-selection loop.
 const fixed = new Map<string, { domain: string; domainTokens: number; prompt: string; instructions: number; tools: number }>();
-const fixedCost = (names: ToolNames, nativeReadToolTokens: TaskOptions["nativeReadToolTokens"]) => {
-  const key = JSON.stringify([names, nativeReadToolTokens]);
+const fixedCost = (names: ToolNames, nativeReadToolTokens: TaskOptions["nativeReadToolTokens"], limits: WritingLimits) => {
+  const key = JSON.stringify([names, nativeReadToolTokens, limits]);
   let cost = fixed.get(key);
   if (!cost) {
-    const domain = loadPrompt("noting.md", names), prompt = withRetrievalPolicy(domain, names);
+    const domain = loadPrompt("noting.md", names, limits), prompt = withRetrievalPolicy(domain, names);
     cost = { domain, domainTokens: tokens(domain), prompt, instructions: tokens(prompt),
       tools: tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, names))) + (nativeReadToolTokens ?? 0) };
     fixed.set(key, cost);
@@ -198,7 +198,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // budget check inside the loop below is unchanged and still decides every freeze that passes here
   // (parent 22: "A fast preflight supplements the final guard; it does not replace it").
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
-  const { domain, domainTokens, prompt, instructions, tools } = fixedCost(names, input.nativeReadToolTokens);
+  const { domain, domainTokens, prompt, instructions, tools } = fixedCost(names, input.nativeReadToolTokens, config.writing);
   const inheriting = (input.effectiveMode ?? mode) === "fork";
   // 137: the retrieval policy is the fresh child's system text; a fork inherits it from its parent's.
   const forkPrompt = input.forkGuidance ? `${domain}\n\n${renderToolNames(input.forkGuidance, names)}` : domain;

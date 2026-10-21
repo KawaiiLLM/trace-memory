@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { memoryFiles } from "../../source-fixture.ts";
-import { fact as seedFact, legacyFacts, receiptCommit } from "../../support/seed.ts";
+import { fact as seedFact, fixtureTitle, legacyFacts, receiptCommit } from "../../support/seed.ts";
 import { readFileSync } from "node:fs";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { readFacade } from "../../../src/core/api/read.ts";
@@ -50,7 +50,7 @@ function noting(sessionId: number, turnId: number, text = fixture.base, branch =
 function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "goal" | "understanding" | "reference" = "constraint",
   scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time, topics: string[] = [], historicalManual = false) {
   const result = memory.store.commitConsolidationRun({ run: { sessionId, branch: "main", kind: "manual", createdAt: time },
-    operations: [{ op: "create", topics, reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
+    operations: [{ op: "create", title: fixtureTitle(text), topics, reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
   });
   if (!result.ok) throw new Error(JSON.stringify(result));
   return result.committed[0]!.knowledgeId;
