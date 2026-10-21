@@ -54,7 +54,7 @@ const ALLOWED: Record<TaskKind, readonly string[]> = {
 };
 
 const FIELDS: Record<string, readonly string[]> = {
-  fact: ["title"],
+  fact: ["title", "support", "negate"],
   create: ["title", "category", "scope", "topics", "supports", "reason"],
   update: ["title", "category", "scope", "topics", "supports", "reason"],
   merge: ["absorb", "title", "category", "scope", "topics", "supports", "reason"],
@@ -136,6 +136,8 @@ function planFacts(store: Store, task: Extract<WorkspaceTask, { kind: "noting-fa
     sourceTurns: sources.sourceTurns, initialPath: sources.initialPath });
   out.path = path; out.sources = sources;
   const labels = new Map<string, Block>();
+  // A relation may name an existing fact or an earlier label of this file; a label's position stands in for the `$n` handle.
+  const position = new Map(blocks.map((block, i) => [block.target, i + 1] as const).reverse());
   for (const block of blocks) {
     const where = describeBlock(block);
     out.problems.push(...checkFields(file, block, "fact", where, false));
@@ -144,14 +146,23 @@ function planFacts(store: Store, task: Extract<WorkspaceTask, { kind: "noting-fa
     else labels.set(block.target, block);
     const title = block.fields.get("title")?.value ?? "";
     // The body is one `[address] text` line per source, the form `note` takes; its length is the sum of its segments.
-    const raw = { title, sources: block.body };
+    const relations: Record<"support" | "negate", string[][]> = { support: [], negate: [] };
+    for (const kind of ["support", "negate"] as const) for (const item of list(block.fields.get(kind)?.value)) {
+      const match = /^(\S+)\s+(strong|weak)$/.exec(item), target = match?.[1];
+      const handle = !target ? undefined : /^F[1-9]\d*$/.test(target) ? target : position.has(target) ? `$${position.get(target)}` : undefined;
+      if (handle) relations[kind].push([handle, match![2]!]);
+      else out.problems.push(problem(file, block.fields.get(kind)!.line, where, `${kind}: \`${item}\` is not \`<F id or fact label> strong|weak\`; separate relations with commas`));
+    }
+    const raw = { title, sources: block.body, ...(relations.support.length ? { support: relations.support } : {}), ...(relations.negate.length ? { negate: relations.negate } : {}) };
     const syntax: string[] = [], shape = validateNotingFact("fact", raw, syntax);
     out.lengths.push({ block: where, field: "title", count: tokens(title), limit: store.writing.titleTokens });
     if (shape && !syntax.length)
       out.lengths.push({ block: where, field: "body", count: shape.sources.reduce((sum, source) => sum + tokens(source.text), 0), limit: store.writing.bodyTokens });
     if (!block.fields.has("title")) continue; // already reported as missing
-    try { out.facts.push({ block, label: block.target, fact: validator.validate(raw, block.index, () => false) }); }
-    catch (error) { out.problems.push(problem(file, block.line, where, (error instanceof Error ? error.message : String(error)).replace(/facts\[\d+\]\./g, ""))); }
+    try { out.facts.push({ block, label: block.target, fact: validator.validate(raw, block.index, n => n < (position.get(block.target) ?? 0)) }); }
+    // A relation target is reported under the label the file wrote, not the `$n` handle it stands for.
+    catch (error) { out.problems.push(problem(file, block.line, where, (error instanceof Error ? error.message : String(error)).replace(/facts\[\d+\]\./g, "")
+      .replace(/\$([1-9]\d*)/g, (handle, n) => blocks[Number(n) - 1]?.target ?? handle))); }
   }
 }
 

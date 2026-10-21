@@ -10,7 +10,7 @@ import { expect, test, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { host, reply, notingFact } from "./test-host.ts";
-import { call, noteAndMemory, fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
+import { call, noterTurn, fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 
 const at = "2026-09-08T00:00:00.000Z";

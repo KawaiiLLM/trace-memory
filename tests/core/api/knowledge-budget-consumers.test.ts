@@ -136,7 +136,7 @@ test("64c a larger configured Knowledge window never bypasses actual provider in
   const pending = f.memory.store.pendingVersions(`project:${f.memory.store.getSession(f.session.id)!.projectId}`, f.target);
   f.memory.setKnowledgeBudget("project", pending.reduce((sum, value) => sum + value.tokens, 0) * 2);
   f.memory.config.dreaming.triggerTokens = 1;
-  await expect(f.memory.dream({ ...f.target, capacity: { inputTokens: 100, prefixTokens: 0 } })).rejects
+  await expect(f.memory.dream({ ...f.target, capacity: { inputTokens: 100 } })).rejects
     .toThrow(/frozen material and tools exceed model input allowance/);
   expect(f.captured).toEqual([]);
   expect(f.memory.store.pendingVersions(pending[0]!.pool, f.target)).not.toEqual([]);

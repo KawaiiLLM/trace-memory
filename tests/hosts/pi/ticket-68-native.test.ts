@@ -40,13 +40,13 @@ test("Noter gets one fixed review at the exact tool-round cap; the second normal
     let responses = 0;
     f.script(() => ++responses === 1 ? call("first", "search", {}) : say(responses === 2 ? "First pass done" : "Review done"));
     const result = await runNative(nativeTask(f, { kind: "noting", maxToolRounds: 1,
-      passEnd: rounds => { reviews.push(rounds); return "Before publication, review this run once."; },
+      passEnd: rounds => { reviews.push(rounds); return "Your files do not pass the check"; },
       onRequest: body => { requests.push(body); } }));
     expect(result.outcome).toBe("success");
     expect(result.output, `requests=${requests.length} reviews=${reviews.join(",")}`).toBe("Review done");
     expect(reviews).toEqual([1]);
     expect(requests).toHaveLength(3);
-    expect(JSON.stringify(requests.at(-1))).toContain("Before publication, review this run once.");
+    expect(JSON.stringify(requests.at(-1))).toContain("Your files do not pass the check");
   } finally { await f.dispose(); }
 });
 

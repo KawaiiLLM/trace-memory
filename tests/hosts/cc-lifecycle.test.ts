@@ -21,6 +21,7 @@ import { CcImporter, type CcReconcileResult } from "../../src/hosts/cc/importer.
 import { processStartedAt, publishNativeSession } from "../../src/hosts/cc/native-session.ts";
 import { CcTranscriptCursor, CcTranscriptScan, classifySourceRecord, type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 import { legacyFacts } from "../support/seed.ts";
+import { submitEmpty } from "../support/noter.ts";
 
 const dirs: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -256,8 +257,7 @@ test("startup imports admit Noting at the newest persisted entry without another
     transport.runAgent = async raw => {
       const input = raw as NotingAgentInput; inputs.push(input);
       input.reportRequest({ fixture: "startup" });
-      input.tools.find(tool => tool.name === "note")!.execute({});
-      input.tools.find(tool => tool.name === "memory")!.execute({});
+      submitEmpty(input);
       return { outcome: "success", output: "done", request: { fixture: "startup" } };
     };
     return original.apply(this, args);
@@ -267,14 +267,14 @@ test("startup imports admit Noting at the newest persisted entry without another
     await coordinator.start();
     const { importer, scheduler } = coordinator as unknown as { importer: CcImporter; scheduler: CcTaskScheduler };
     await scheduler.settle();
-    expect(importer.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"]]);
+    expect(importer.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // write, then verify
     const entries = importer.memory.store.listSourceEntries(1), newest = entries.at(-1)!;
     expect(importer.memory.store.listRuns(1)[0]).toMatchObject({
       rangeTo: `S1/T${newest.turnId}`, origin: { sessionId: 1, entryIds: [newest.id] } });
     expect(inputs[0]!.entryIds).toEqual(entries.map(entry => entry.id));
     expect(entries.every(entry => importer.memory.store.entryNoted(entry.id))).toBe(true);
     await coordinator.requestReconcile("same imported leaf"); await scheduler.settle();
-    expect(inputs).toHaveLength(1);
+    expect(inputs).toHaveLength(2);
   } finally { await coordinator.shutdown("test"); spy.mockRestore(); }
 });
 
@@ -345,6 +345,8 @@ test.each(["hook", "transcript"] as const)("entry ingestion admits mid-turn and 
   try {
     await coordinator.start();
     if (mode === "hook") await markCcFunctionHook(f.config, f.nativeSessionId);
+    // Transcript mode admits a Noting run at startup, before the transport below is in place; let that run end first.
+    await internal.scheduler.settle();
     const memory = internal.importer.memory;
     const batches: number[][] = [];
     const held = new Promise<void>(resolve => { release = resolve; });
@@ -352,11 +354,11 @@ test.each(["hook", "transcript"] as const)("entry ingestion admits mid-turn and 
     const transport = internal.importer as unknown as { runAgent: RunAgent };
     transport.runAgent = async raw => {
       const input = raw as NotingAgentInput;
-      batches.push([...input.entryIds]);
+      // A batch is a write run and a verify run over the same entries; only the write run is a batch here.
+      if (input.task === "write") batches.push([...input.entryIds]);
       input.reportRequest({ fixture: "entry end" });
-      input.tools.find(tool => tool.name === "note")!.execute({});
-      input.tools.find(tool => tool.name === "memory")!.execute({});
-      if (batches.length === 1) await held;
+      submitEmpty(input);
+      if (input.task === "write" && batches.length === 1) await held;
       return { outcome: "success", output: "done", request: { fixture: "entry end" } };
     };
     const append = async (id: number) => {

@@ -304,3 +304,30 @@ describe("classify", () => {
     expect(text).toContain('scores.md:7: score line: expected `K<id> <score>`, got "K2 4.5"');
   });
 });
+
+describe("fact relations (ticket 144, Q3-A)", () => {
+  const fact = (b: WorkspaceBatch, label: string, fields: Record<string, string>, index = 0) =>
+    block(`fact ${label}`, { title: `fact ${label}`, ...fields }, b.source(index, `evidence for ${label}`));
+
+  test("`support:` and `negate:` accept an existing F id or an earlier label with a strength, separated by commas", () => {
+    const b = batch();
+    const old = b.existingFact();
+    expect(noterFacts(b, `${fact(b, "f1", { support: `F${old.id} strong` })}\n${fact(b, "f2", { support: "f1 weak", negate: `F${old.id} strong` }, 2)}`))
+      .toMatchObject({ ok: true, problems: [] });
+  });
+
+  test("a relation is refused when its target is unknown, later in the file, itself, or has no strength, in the label the file wrote", () => {
+    const b = batch();
+    const refused = (fields: Record<string, string>, other = "") => joined(noterFacts(b, `${fact(b, "f1", fields)}${other ? `\n${other}` : ""}`));
+    expect(refused({ support: "F99999 strong" })).toContain("F99999");
+    expect(refused({ support: "f1 strong" })).toContain("f1");              // itself
+    expect(refused({ negate: "f2 weak" }, fact(b, "f2", {}, 2))).toContain("f2"); // later in the file
+    expect(refused({ support: "f9 weak" })).toContain("is not `<F id or fact label> strong|weak`");
+    expect(refused({ support: "F1" })).toContain("is not `<F id or fact label> strong|weak`");
+  });
+
+  test("a relation field of another block is not a field of that block", () => {
+    const b = batch();
+    expect(joined(noterKnowledge(b, block("create", { ...create, negate: "f1 weak" }, "Use pnpm.")))).toContain("negate");
+  });
+});

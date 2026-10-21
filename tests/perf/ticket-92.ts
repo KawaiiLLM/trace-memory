@@ -3,7 +3,8 @@ import { copyFileSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:f
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { TraceMemory, noVisibility, type RunAgent } from "../../src/core/api/index.ts";
+import { TraceMemory, noVisibility, type NotingAgentInput, type RunAgent } from "../../src/core/api/index.ts";
+import { submit, verifyUnchanged } from "../support/noter.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { freezeNoting } from "../../src/core/noting/index.ts";
 import { tokens } from "../../src/core/render/index.ts";
@@ -94,22 +95,19 @@ if (!process.argv.includes("--fixed-only")) for (const length of lengths) {
     const copy = join(output, `task-${length}-${i}.db`);
     copyFileSync(db, copy);
     let commitMs = NaN;
+    // 144: the scripted Noter writes the two workspace files (write task) and finds nothing to correct (verify task).
     const agent: RunAgent = async raw => {
-      const task = raw as { tools: { name: string; execute: (input: unknown) => string }[]; reportRequest: (request: unknown) => void;
-        entryIds: number[] };
+      const task = raw as NotingAgentInput;
       const request = { messages: [{ role: "user", content: "synthetic benchmark" }] };
+      if (task.task === "verify") return verifyUnchanged(task, { request });
       task.reportRequest(request);
-      const write = (name: string, input: unknown) => {
-        const result = task.tools.find(tool => tool.name === name)!.execute(input);
-        if (result.includes("rejected:")) throw Error(`${name} rejected: ${result}`);
-      };
       const first = task.entryIds[0]!;
       const entry = local!.store.getSourceEntry(first)!;
       const path = local!.store.sourcePath(target.sessionId, target.branch, target.headTurnId);
       const ordinal = path.filter(item => item.turnId === entry.turnId).findIndex(item => item.id === first) + 1;
-      write("note", { title: "Synthetic user rule", sources: `[T${entry.turnId}#E${ordinal}] Synthetic user specified a durable rule` });
-      write("memory", { op: "create", title: "Fixture title", text: "Synthetic rule applies", category: "constraint",
-        scope: "session", supports: ["$1"], topics: [], reason: "benchmark" });
+      const message = await submit(task, local!, { noteInput: [{ title: "Synthetic user rule", sources: `[T${entry.turnId}#E${ordinal}] Synthetic user specified a durable rule` }],
+        memoryInput: { op: "create", title: "Fixture title", text: "Synthetic rule applies", category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "benchmark" } });
+      if (message) throw Error(`workspace files rejected: ${message}`);
       return { outcome: "success", output: "done", request };
     };
     let local: ReturnType<typeof TraceMemory> | undefined;
@@ -268,14 +266,12 @@ for (const length of lengths) {
     let local: ReturnType<typeof TraceMemory> | undefined, commitMs = NaN;
     const request = { messages: [{ role: "user", content: "synthetic benchmark" }] };
     const agent: RunAgent = async raw => {
-      const task = raw as { tools: { name: string; execute: (input: unknown) => string }[]; reportRequest: (request: unknown) => void };
+      const task = raw as NotingAgentInput;
+      if (task.task === "verify") return verifyUnchanged(task, { request });
       task.reportRequest(request);
-      const note = task.tools.find(tool => tool.name === "note")!.execute({ title: "Synthetic user rule",
-        sources: `[T${head - 2}#E1] Synthetic user rule` });
-      if (!note.includes("held: $1")) throw Error(`note rejected: ${note}`);
-      const knowledge = task.tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Synthetic rule",
-        category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "benchmark" });
-      if (!knowledge.includes("held: M1")) throw Error(`knowledge rejected: ${knowledge}`);
+      const message = await submit(task, local!, { noteInput: [{ title: "Synthetic user rule", sources: `[T${head - 2}#E1] Synthetic user rule` }],
+        memoryInput: { op: "create", title: "Fixture title", text: "Synthetic rule", category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "benchmark" } });
+      if (message) throw Error(`workspace files rejected: ${message}`);
       return { outcome: "success", output: "done", request };
     };
     local = TraceMemory(copy, agent);

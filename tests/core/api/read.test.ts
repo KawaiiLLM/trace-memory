@@ -11,6 +11,7 @@ import { charge, expandList } from "../../../src/core/render/index.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
+import { submitEmpty } from "../../support/noter.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/turns.json", import.meta.url), "utf8"));
@@ -21,8 +22,7 @@ beforeEach(() => { calls = 0;
   const fallback = async (raw: unknown) => { calls++;
     const input = raw as { kind: string; tools: { name: string; execute(input: unknown): string }[] };
     if (input.kind === "noting") {
-      input.tools.find(tool => tool.name === "note")!.execute({});
-      input.tools.find(tool => tool.name === "memory")!.execute({});
+      submitEmpty(input);
     }
     return { outcome: "success" as const, output: [], request: {} };
   };
@@ -322,7 +322,7 @@ test("20c/23 scenario 10, rescaled by 73: one bounded view of every entry under 
   if ("native" in delegated) throw new Error("unreachable");
   expect(delegated.truncated?.raw).toBeTruthy();
   expect(compacted(delegated)).toContain("earlier entries omitted from the Raw window");
-  const hosted = memory.compact(s.id, "main", next.id, [], false, { toolNames: { note: "host_note", memory: "host_memory", read: "Read", grep: "Grep", search: "host_search", check: "host_check" } });
+  const hosted = memory.compact(s.id, "main", next.id, [], false, { toolNames: { note: "host_note", memory: "host_memory", read: "Read", write: "Write", edit: "Edit", grep: "Grep", search: "host_search", check: "host_check" } });
   expect(compacted(hosted)).toContain(`trace://raw/S${s.id}/T`);
   expect(compacted(hosted)).not.toContain("read them with trace");
   expect(charged(hosted).raw).toBeLessThanOrEqual(memory.config.compaction.rawTokens);

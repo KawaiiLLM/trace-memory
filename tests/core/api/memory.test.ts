@@ -5,13 +5,16 @@ import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite, skipRest } from "../../dreaming-skips.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
+import { submit, verifyUnchanged } from "../../support/noter.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 let memory: ReturnType<typeof sourceSeededMemory>, admittedScenarios: AdmittedDreamerScenarios, triggerEntryId: number;
 afterEach(() => memory?.close());
 const create = { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
 const batch = create;
-function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>) {
-  admittedScenarios = new AdmittedDreamerScenarios(raw => agent(raw as NotingAgentInput));
+/** `reply` is what the verify task answers; the scripted `agent` is the write task. */
+function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>, reply?: Partial<RunAgentResult>) {
+  admittedScenarios = new AdmittedDreamerScenarios(raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify"
+    ? verifyUnchanged(raw, reply) : agent(raw as NotingAgentInput));
   memory = sourceSeededMemory(":memory:", admittedScenarios.agent);
   const project = memory.store.createProject({ name: "test", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
@@ -32,10 +35,9 @@ const dreamPath = () => ({ sessionId: 1, branch: "main", headTurnId: 1, triggerE
 test("payload-free acknowledgement preserves explicit native request-audit unavailability", async () => {
   setup(async input => {
     input.acknowledgeRequest();
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    expect(JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute(batch)).held).toHaveLength(1);
+    await submit(input, memory, { noteInput: [], memoryInput: batch });
     return { outcome: "success", output: "done", audit: { available: false, reason: "native request body unavailable" } };
-  });
+  }, { request: undefined, audit: { available: false, reason: "native request body unavailable" } });
   const result = await integrate();
   if (result.outcome !== "success") throw new Error("expected success");
   const run = memory.store.getRun(result.runId)!;
@@ -43,44 +45,41 @@ test("payload-free acknowledgement preserves explicit native request-audit unava
   expect(JSON.parse(run.response!)).toMatchObject({ usage: null, audit: { available: false }, problems: [] });
 });
 
-test("N publishes its held batch only on normal terminal success", async () => {
+test("N publishes its batch only after task 2 passes", async () => {
   setup(async input => {
     input.reportRequest({ first: true });
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    expect(input.tools.find(tool => tool.name === "memory")!.execute(batch)).toContain("held");
+    await submit(input, memory, { noteInput: [], memoryInput: batch });
     expect(memory.store.getKnowledge(1)).toBeNull();
     expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
     return success();
-  });
+  }, { request: { last: true } });
   const result = await integrate();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(memory.store.getKnowledge(1)).not.toBeNull();
   expect(memory.pendingEntries(1, "main", 1)).toEqual([]);
   expect(memory.store.listConsolidatedProjectFacts(1)).toEqual([]);
   const audit = JSON.parse(memory.store.getRun(result.runId)!.response!);
-  expect(audit.toolCalls[1].input).toEqual(batch);
-  expect(JSON.parse(audit.toolCalls[1].result).held).toHaveLength(1);
+  expect(audit).toMatchObject({ task: "verify", files: { knowledge: expect.stringContaining("## create") } });
+  expect(audit.writeRun).toBe(memory.store.listRuns(1).find(run => run.kind === "noting")!.id);
 });
 
-test("a rejected batch can be corrected before the first valid submission", async () => {
+test("a rejected batch can be corrected once, at the stop check", async () => {
   setup(async input => {
-    const write = input.tools.find(tool => tool.name === "memory")!; input.reportRequest({ first: true });
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    expect(write.execute({ ...create, supports: [] })).toContain("rejected:");
+    input.reportRequest({ first: true });
+    const message = await submit(input, memory, { noteInput: [], memoryInput: { ...create, supports: [] },
+      fix: () => ({ knowledge: "## create\ntitle: Fixture title\ncategory: constraint\nscope: project\ntopics: \nsupports: F1\nreason: Initial admission\n\nUse pnpm\n" }) });
+    expect(message).toContain("supports");
     expect(memory.store.getKnowledge(1)).toBeNull();
-    input.reportRequest({ second: true });
-    expect(JSON.parse(write.execute({ ...create, slot: "M1" })).held).toHaveLength(1);
     return success();
   });
   expect((await integrate()).outcome).toBe("success");
-  expect(memory.store.getKnowledge(2)).toBeNull();
+  expect(memory.store.getKnowledge(1)).not.toBeNull();
 });
 
-for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`N ${mode} after staging publishes nothing`, async () => {
+for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`N ${mode} after writing its files publishes nothing`, async () => {
   setup(async input => {
     input.reportRequest({ provider: "captured" });
-    input.tools.find(tool => tool.name === "note")!.execute({ title: "Additional evidence", sources: "[T1#E1] Additional evidence" });
-    expect(input.tools.find(tool => tool.name === "memory")!.execute(batch)).toContain("held");
+    await submit(input, memory, { noteInput: [{ title: "Additional evidence", sources: "[T1#E1] Additional evidence" }], memoryInput: batch });
     expect(memory.store.getKnowledge(1)).toBeNull();
     if (mode === "throw" || mode === "abort") { const error = new Error("late provider error"); if (mode === "abort") error.name = "AbortError"; throw error; }
     return { outcome: mode, output: "late provider error", request: { final: true } };
@@ -103,7 +102,7 @@ for (const mode of ["failure", "cancelled"] as const) test(`N ${mode} before sta
   expect(memory.store.getKnowledge(1)).toBeNull(); expect(memory.store.listConsolidatedProjectFacts(1)).toEqual([]);
 });
 
-test("N normal stop without explicit tools is incomplete", async () => {
+test("N normal stop without writing its files fails the check", async () => {
   setup(async () => success()); const result = await integrate();
   expect(result.outcome).toBe("failure"); expect(memory.store.getKnowledge(1)).toBeNull();
   expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
@@ -194,37 +193,6 @@ test("135: supplied edit metadata replaces the inherited fields", () => {
   });
 });
 
-test("135: N numbers a failed edit and replaces held edits under the same slot against the exact base", async () => {
-  let base = "";
-  const original = "Use pnpm; retain the lockfile.";
-  const write = setup(async input => {
-    input.reportRequest({ fixture: "135 held exact edits" });
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    const tool = input.tools.find(tool => tool.name === "memory")!;
-    const update = { op: "update", id: base, supports: ["F1"], reason: "Clarify the invocation" };
-    const refused = JSON.parse(tool.execute({ ...update, edits: [{ old: "Use", new: "Prefer" }, { old: "absent", new: "" }] }));
-    expect(refused.rejected.M1).toMatch(/edit 2.*(?:nothing|0 occurrences)/);
-    expect(JSON.parse(tool.execute({ ...update, slot: "M1", edits: [{ old: "pnpm", new: "yarn" }] })).held).toEqual(["M1"]);
-    const replaced = JSON.parse(tool.execute({ ...update, slot: "M1", edits: [{ old: "pnpm", new: "corepack pnpm" }] }));
-    expect(replaced.held).toEqual(["M1"]);
-    expect(replaced.rejected).toEqual({});
-    expect(memory.store.currentCommit(1)[0]!.text).toBe(original);
-    const review = input.passEnd();
-    const resultBody = review.split("\n").filter(line => line.startsWith("+ "))
-      .map(line => line.slice(2).replace(/\{\+([\s\S]*?)\+\}/g, "$1")).join("\n");
-    expect(resultBody).toBe("Use corepack pnpm; retain the lockfile.");
-    expect(review).not.toContain('"old":');
-    expect(review).not.toContain('"new":');
-    return success();
-  });
-  write.execute({ ...create, text: original, topics: ["lockfiles"] });
-  base = read(1);
-  const result = await integrate();
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-  expect(memory.store.currentCommit(1)[0]!).toMatchObject({ text: "Use corepack pnpm; retain the lockfile.", topics: ["lockfiles"] });
-  expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
-});
-
 test("135: D checks the edited full-body cap (144: 200 tokens) and a numbered resubmission inherits metadata and parent supports", async () => {
   const write = setup(async () => success());
   write.execute({ ...create, topics: ["packaging"] });
@@ -309,23 +277,6 @@ test("116: manual memory rejects malformed operations independently of valid com
   expect(tool.execute({ ...create, supports: ["F2"] })).toContain("not an available fact");
 });
 
-test("116: N rejects skipped without publishing its held operation", async () => {
-  setup(async input => {
-    for (const skipped of [null, { fact: "F999", because: "not durable" }, { fact: "F1", because: "" }, { fact: "F1", because: "skip", id: "F1" }]) {
-      expect(input.tools.find(tool => tool.name === "memory")!.execute({ operations: [create], skipped: [skipped] })).toContain("rejected:");
-      expect(memory.store.getKnowledge(1)).toBeNull();
-    }
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    return success();
-  });
-  const result = await integrate();
-  expect(result.outcome, JSON.stringify(result)).toBe("failure");
-  if (result.outcome !== "failure") throw new Error("expected incomplete rejected batch");
-  expect(result.problems.join(" ")).toContain("expects one item");
-  expect(memory.store.getKnowledge(1)).toBeNull();
-  expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
-});
-
 test("135: manual memory accepts create/update/archive but rejects merge and split", () => {
   const write = setup(async () => success());
   expect(JSON.parse(write.execute(create)).committed).toHaveLength(1);
@@ -342,8 +293,7 @@ test("135: manual memory accepts create/update/archive but rejects merge and spl
 test("N terminal success-audit failure rolls back facts, knowledge and Raw progress", async () => {
   setup(async input => {
     input.reportRequest({ first: true });
-    expect(input.tools.find(tool => tool.name === "note")!.execute({ title: "New evidence", sources: "[T1#E1] New evidence" })).toContain("held");
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ ...create, supports: ["$1"] })).toContain("held");
+    await submit(input, memory, { noteInput: [{ title: "New evidence", sources: "[T1#E1] New evidence" }], memoryInput: { ...create, supports: ["$1"] } });
     return success();
   });
   memory.store.db.exec(`CREATE TEMP TRIGGER reject_success_audit BEFORE INSERT ON runs
@@ -366,10 +316,9 @@ test("N terminal success-audit failure rolls back facts, knowledge and Raw progr
 test("N post-success claim-release failure reports cleanup without undoing terminal publication", async () => {
   setup(async input => {
     input.reportRequest({ exact: "terminal request" });
-    input.tools.find(tool => tool.name === "note")!.execute({ title: "New evidence", sources: "[T1#E1] New evidence" });
-    input.tools.find(tool => tool.name === "memory")!.execute({ ...create, supports: ["$1"] });
+    await submit(input, memory, { noteInput: [{ title: "New evidence", sources: "[T1#E1] New evidence" }], memoryInput: { ...create, supports: ["$1"] } });
     return success();
-  });
+  }, { request: { exact: "terminal request" } });
   const release = vi.spyOn(memory.store, "releaseClaim").mockImplementation(() => { throw new Error("cleanup unavailable"); });
   try {
     const result = await integrate();
@@ -645,32 +594,3 @@ test.each(["authored", "later-parent"] as const)("a merge keeps the identity of 
   expect(result.outcome, JSON.stringify(result)).toBe("success");
 });
 
-test("135: N preserves inherited legacy metadata through its existing concurrent update-to-create conversion", async () => {
-  let base = "";
-  const manual = setup(async input => {
-    const request = { fixture: "135 legacy inherited category concurrency" }; input.reportRequest(request);
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    const tool = input.tools.find(tool => tool.name === "memory")!;
-    // A legacy base has no title to inherit, so the update supplies one.
-    expect(JSON.parse(tool.execute({ op: "update", id: base, title: "Fixture title", edits: [{ old: "pnpm", new: "corepack pnpm" }],
-      supports: ["F1"], reason: "Clarify the invocation" })).held).toEqual(["M1"]);
-    const advanced = JSON.parse(manual.execute({ op: "update", id: base, title: "Newer invocation", text: "Use the newer confirmed invocation",
-      category: "understanding", scope: "project", topics: [], supports: ["F1"], reason: "A genuine concurrent update" }));
-    expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, advanced.committed[0]))!.text).toBe("Use the newer confirmed invocation");
-    return { outcome: "success", output: "done", request };
-  });
-  const imported = legacyKnowledge(memory.store, dreamPath(), { text: "Use pnpm", category: "mechanism", scope: "project",
-    supports: [1], topics: ["packages"] });
-  base = `K1#${memory.store.versionTag(imported.knowledgeId, imported.commit)}`;
-  const beforeCreate = memory.store.listKnowledgeRevisions();
-  expect(manual.execute({ ...create, category: "mechanism" })).toContain("invalid category");
-  expect(memory.store.listKnowledgeRevisions()).toEqual(beforeCreate);
-  const result = await integrate();
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-  expect(memory.store.currentCommit(1)[0]!.text).toBe("Use the newer confirmed invocation");
-  const converted = memory.store.currentCommit(2)[0]!;
-  expect(converted).toMatchObject({ op: "create", title: "Fixture title", category: "mechanism", scope: "project", topics: ["packages"], supports: [1] });
-  expect(converted.text).toBe(`Use corepack pnpm\n[Concurrent update converted to create; originally targeted ${base}; pending reconciliation.]`);
-  expect(memory.store.getKnowledgeRevision(1, imported.commit)!.text).toBe("Use pnpm");
-  expect(memory.pendingEntries(1, "main", 1)).toEqual([]);
-});

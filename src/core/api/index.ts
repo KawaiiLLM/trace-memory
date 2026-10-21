@@ -1,4 +1,4 @@
-export { toolDefinitions, toolRejected, reviewFeedback, renderToolDefinitions } from "./tools.ts";
+export { toolDefinitions, toolRejected, renderToolDefinitions } from "./tools.ts";
 export { validateSearchInput, SEARCH_HIT_TYPES, type SearchLayer, type SearchOptions } from "./search.ts";
 import type { SearchLayer, SearchOptions } from "./search.ts";
 export { canonicalToolNames } from "../prompts/tool-names.ts";
@@ -41,7 +41,8 @@ export type { SourceInput, SourceEntry, TaskTarget, DeliveredState, DeliveryNode
 export type { TriggerOrigin } from "../model/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
 export type { NotingDiagnostic, NotingNearAudit, NotingUnansweredNearPair } from "../noting/review.ts";
-export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
+export { NOTING_CAPACITY, NOTING_MEMBERSHIP } from "../noting/index.ts";
+export { defaultWorkspaceRoot, sweepStaleWorkspaces } from "../noting/workspace.ts";
 import { Store, type PathPending, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
 import { admitDreaming, freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
@@ -265,6 +266,11 @@ export interface TaskBoundary { maxEntryId?: number; exactEntryIds?: number[] }
 export interface TaskOptions {
   /** Host estimate of native Read's tool-input tokens for a fresh worker. */
   nativeReadToolTokens?: number;
+  /** The same for a fresh Noter's native Write and Edit tools (ticket 144). */
+  nativeWriteToolTokens?: number;
+  /** Where a Noter run makes its workspace directory (ticket 144). Claude Code names a directory inside its restricted
+   * cwd; absent, the system temporary directory. */
+  workspaceRoot?: string;
   borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary;
   /** Host result ceiling in JavaScript UTF-16 characters, passed only to bound read tools. */
   maxReadChars?: number;
@@ -796,6 +802,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     let claim: TaskClaim | null = null;
     let empty = false, projectId: number;
     let executionId: string;
+    let resumeRunId: number | undefined;
     let origin: import("../model/index.ts").TriggerOrigin | null = null;
     let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeDreaming> | null;
     try { frozen = store.transaction(() => {
@@ -834,7 +841,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       });
       if (!claim) return null;
       projectId = store.getSession(input.sessionId)!.projectId;
-      const selected = { ...input, ...target };
+      // A passed first task waiting for its second (ticket 144): resume it on the same batch when that batch is still pending on
+      // this branch and the boundary admits it whole. Any other state leaves the row for a later pass to replace or a publication to end.
+      const handoff = store.handoff(target.sessionId, "noting");
+      const admitted = handoff && handoff.branch === target.branch
+        ? notingPending(store, { ...target, boundary }, pendingNow).pending.map(e => e.id) : [];
+      const resuming = handoff && handoff.entryIds.length > 0 && handoff.entryIds.every(id => admitted.includes(id)) ? handoff : undefined;
+      resumeRunId = resuming?.runId;
+      const selected = { ...input, ...target, ...(resuming ? { boundary: { exactEntryIds: resuming.entryIds } } : {}) };
       const admittedOrigin = store.triggerOrigin(target, target.triggerEntryId);
       // 70: `pendingNow` above already read this exact session/branch/head's full pending set inside
       // this same admission transaction; nothing between there and here can mark an entry noted, so
@@ -877,14 +891,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     else external?.addEventListener("abort", onExternalAbort, { once: true });
     let hostSpill: ((text: string) => string) | undefined;
     const spill = (text: string) => (hostSpill ?? (() => { throw new Error("this run has no place to save output"); }))(text);
-    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, dreaming?: Parameters<typeof bindTools>[4]) => {
+    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, dreaming?: Parameters<typeof bindTools>[4], writer?: Parameters<typeof bindTools>[6]) => {
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
       run.executionId = executionId!;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
       Object.assign(run, store.bindRunOrigin(run, origin));
       if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
       const binding = bindTools(store, read, { ...context, ...(input.maxReadChars === undefined ? {} : { maxReadChars: input.maxReadChars }), spill },
-        run, dreaming, frozen!.names);
+        run, dreaming, frozen!.names, writer);
       task.close = binding.close;
       return binding;
     };
@@ -913,7 +927,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }, cfg.dreaming.timeoutMs);
     try {
       result = phase === "noting"
-        ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind)
+        ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind,
+          { workspaceRoot: input.workspaceRoot, executionId: executionId!, resumeRunId })
         : await runDreaming(store, frozen as ReturnType<typeof freezeDreaming>, agent, bind);
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);

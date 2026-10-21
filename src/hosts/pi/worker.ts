@@ -25,6 +25,8 @@ export interface WorkerBinding {
   /** The memory tools core bound for this run, as the host wrapped them. */
   tools: ToolDefinition[];
   read: ReturnType<typeof memoryReadTool>;
+  /** The Noter's write and edit, confined to its two workspace files (ticket 144). */
+  fileTools?: NativeTask["fileTools"];
   runsDir: string;
   cwd: string;
   agentDir: string;
@@ -57,9 +59,9 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
     const native = await runNative({
       kind: task.kind, runsDir: binding.runsDir, cwd: binding.cwd, agentDir: binding.agentDir, model,
       thinkingLevel: (task.subagentThinkingLevel ?? task.thinkingLevel) as ThinkingLevel | undefined,
-      tools: binding.tools, read: binding.read, maxToolRounds: binding.maxToolRounds,
+      tools: binding.tools, read: binding.read, fileTools: binding.fileTools, maxToolRounds: binding.maxToolRounds,
       signal: task.signal,
-      reportToolRejection: task.reportToolRejection,
+      ...(task.kind === "dreaming" ? { reportToolRejection: task.reportToolRejection } : {}),
       passEnd: task.passEnd, ...(task.kind === "dreaming" ? { reportRounds: task.reportRounds } : {}),
       onRequest: (body: unknown, contextTokens: number | undefined) => { binding.checkCapacity!(contextTokens); request = body; task.reportRequest(body); },
       onProgress: (state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: RunAgentResult["thinking"] }) => {

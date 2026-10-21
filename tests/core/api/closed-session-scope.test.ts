@@ -1,18 +1,14 @@
 import { expect, test } from "vitest";
 import { hydrate, sourceSeededMemory, validateConfig, type ClosedSessionScope, type NotingAgentInput } from "../../source-fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
+import { submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
 const at = "2026-09-09T00:00:00Z";
-/** Explicit scripted empty N output uses both tools. */
-const submitted = (raw: unknown) => {
-  const input = raw as NotingAgentInput;
-  if (input.kind === "noting") {
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    input.tools.find(tool => tool.name === "memory")!.execute({});
-  }
-};
+/** The scripted write task records nothing; its verify task finds nothing to correct. */
+const submitted = submitEmpty;
 function setup(scope: ClosedSessionScope = "project", agent: Parameters<typeof sourceSeededMemory>[1] = async raw => { submitted(raw); return { outcome: "success", output: "", request: {} }; }) {
-  const memory = sourceSeededMemory(":memory:", agent, { closedSessionScope: scope });
+  const memory = sourceSeededMemory(":memory:", raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify"
+    ? verifyUnchanged(raw, { request: {} }) : agent(raw), { closedSessionScope: scope });
   const p = memory.store.createProject({ name: "same", declaredBy: "mark" });
   const other = memory.store.createProject({ name: "other", declaredBy: "mark" });
   const session = (projectId: number, closed: boolean) => {
@@ -124,14 +120,12 @@ test("a project-scoped borrowed writer cannot commit after its executor moves to
   const { memory, active, same } = setup("project", async raw => {
     input = raw as NotingAgentInput;
     await new Promise<void>(resolve => { finish = resolve; });
+    await submit(input, memory, { noteInput: [{ title: "Late borrowed write", sources: `[T${same.headTurnId}#E1] late write` }], memoryInput: {} });
     return { outcome: "success", output: "", request: {} };
   });
   try {
     const pending = memory.noting({ ...same, borrowed: true, executorSessionId: active.sessionId });
     memory.declareProject(active.sessionId, "different", "mark", active);
-    const receipt = String(await input.tools.find(tool => tool.name === "note")!.execute({ title: "Late borrowed write", sources: `[T${same.headTurnId}#E1] late write` }));
-    expect(receipt).toContain("held");
-    input.tools.find(tool => tool.name === "memory")!.execute({});
     expect(memory.store.listTurnFacts(same.headTurnId)).toHaveLength(1); // only the prior manual fact
     finish();
     const result = await pending;

@@ -13,6 +13,7 @@ import { renderToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import type { NativeTask, ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
+import { factsFile } from "../../support/noter.ts";
 
 export type Body = Record<string, any>;
 export const sse = (events: unknown[]) => new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n",
@@ -26,13 +27,20 @@ export const call = (id: string, name: string, args: unknown, tokens = usage()) 
 export const calls = (id: string, name: string, args: readonly unknown[], tokens = usage()) => sse([
   { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta: { role: "assistant", tool_calls: args.map((value, index) =>
     ({ index, id: `${id}-${index + 1}`, type: "function", function: { name, arguments: JSON.stringify(value) } })) }, finish_reason: "tool_calls" }], usage: tokens }]);
-/** Explicit successful Noter script: both tools execute, then the caller must return a normal terminal reply. */
-export const noteAndMemory = (id: string, args: unknown, tokens = usage()) => sse([
-  { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0,
-    delta: { role: "assistant", tool_calls: [
-      { index: 0, id, type: "function", function: { name: "note", arguments: JSON.stringify(args) } },
-      { index: 1, id: `${id}-memory`, type: "function", function: { name: "memory", arguments: JSON.stringify({}) } },
-    ] }, finish_reason: "tool_calls" }], usage: tokens }]);
+/** The scripted Noter on the wire (ticket 144): call `check`; in the write task write the two files it names (the fact, if any, in the
+ * facts file); stop. A verify task finds nothing to correct and stops. Returns the reply to the request `body` holds. */
+export const noterTurn = (body: Body, fact: Record<string, unknown> = {}, tokens = usage(), knowledge = "## none\n"): Response => {
+  const names = new Map<string, string>();
+  for (const message of body.messages ?? []) for (const toolCall of message.tool_calls ?? []) names.set(toolCall.id, toolCall.function.name);
+  const results = (name: string): Body[] => (body.messages ?? []).filter((m: Body) => m.role === "tool" && names.get(m.tool_call_id) === name);
+  const report = results("check").at(-1);
+  if (!report) return call("check-1", "check", {}, tokens);
+  const text = typeof report.content === "string" ? report.content : (report.content ?? []).map((part: Body) => part.text ?? "").join("");
+  const files = /Files: (.+?\.md), (.+?\.md)/.exec(text);
+  if (!files || /^Task: verify/m.test(text) || results("write").length) return say("Done.", tokens);
+  return calls("write", "write", [{ path: files[1], content: Object.keys(fact).length ? factsFile([fact as never]) : "## none\n" },
+    { path: files[2], content: knowledge }], tokens);
+};
 export const broken = () => new Response(JSON.stringify({ error: { message: "provider exploded" } }), { status: 500, headers: { "content-type": "application/json" } });
 
 /** Tell the child's requests from the parent's by the production prompt they carry. */
@@ -42,7 +50,7 @@ export const toolResults = (body: Body) => (body.messages ?? []).filter((m: Body
  * answers with its closing reply instead of submitting twice. Unlike `toolResults`, an inherited
  * tool call of the parent conversation is not mistaken for the worker's own. */
 export const submitted = (body: Body) => (body.messages ?? []).some((m: Body) =>
-  (m.tool_calls ?? []).some((c: Body) => c.function?.name === "note"));
+  (m.tool_calls ?? []).some((c: Body) => c.function?.name === "write"));
 
 export const noteBatch = { title: "选择 pnpm", sources: "[T1#E1] 用 pnpm，不要 npm" };
 export const memoryBatch = {};
@@ -192,5 +200,11 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
     async dispose() { session.dispose(); await h.dispose(); vi.unstubAllGlobals(); },
   };
 }
+/** Waits out a Noter batch: its first (write) run is recorded, and when that task passed, so is the second task's run. Returns the first. */
 export const settled = async (f: Awaited<ReturnType<typeof fixture>>, kind: "noting" | "consolidation" = "noting") =>
-  await vi.waitFor(() => { const run = f.h.memory.store.listRuns(1).find(r => r.kind === kind); expect(run?.response).toBeTruthy(); return run!; }, { timeout: 5000 });
+  await vi.waitFor(() => {
+    const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === kind), first = runs[0];
+    expect(first?.response).toBeTruthy();
+    if (kind === "noting" && first!.outcome === "success") expect(runs.length).toBeGreaterThan(1);
+    return first!;
+  }, { timeout: 5000 });

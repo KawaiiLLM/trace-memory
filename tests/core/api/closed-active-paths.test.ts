@@ -4,17 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hydrate, sourceSeededMemory, type RunAgent, type NotingAgentInput } from "../../source-fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
+import { submitEmpty } from "../../support/noter.ts";
 
 const at = "2026-09-25T00:00:00Z";
 type Phase = "noting";
 function fixture(db = ":memory:") {
   let requests = 0;
   const agent: RunAgent = async raw => {
-    requests++;
     const input = raw as NotingAgentInput;
+    if (input.task !== "verify") requests++; // a batch is one request: its write task
     if (input.kind === "noting") {
-      input.tools.find(tool => tool.name === "note")!.execute({});
-      input.tools.find(tool => tool.name === "memory")!.execute({});
+      submitEmpty(input);
     }
     return { outcome: "success", output: "", request: {} };
   };

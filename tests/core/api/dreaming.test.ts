@@ -218,11 +218,11 @@ test("native Read token estimate counts in Dreamer capacity before dispatch", as
   const nativeReadToolTokens = 402;
   const definitions = pricedToolDefinitions(dreamingToolDefinitions(), canonicalToolNames);
   const price = tokens(base.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(base.text);
-  const bounded = { ...f.target, nativeReadToolTokens, capacity: { inputTokens: price - 1, prefixTokens: 0 } };
+  const bounded = { ...f.target, nativeReadToolTokens, capacity: { inputTokens: price - 1 } };
   const runs = f.store.listRuns(f.session.id).length;
   await expect(f.scenarios.run(f.memory, bounded, () => { throw new Error("over-cap dispatch"); })).rejects.toThrow(/Dreaming capacity/);
   expect(f.store.listRuns(f.session.id)).toHaveLength(runs);
-  const exact = { ...bounded, capacity: { inputTokens: price, prefixTokens: 0 } };
+  const exact = { ...bounded, capacity: { inputTokens: price } };
   await f.scenarios.run(f.memory, exact, task => {
     expect(tokens(task.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(task.text)).toBe(price);
     return stop(task);

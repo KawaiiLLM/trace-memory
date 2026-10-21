@@ -3,6 +3,7 @@ import { validateToolArguments } from "@earendil-works/pi-ai";
 import { hydrate, sourceSeededMemory, toolRejected, type NotingAgentInput, type RunAgent, type ToolContext } from "../../source-fixture.ts";
 import { dreamingToolDefinitions, toolDefinitions } from "../../../src/core/api/tools.ts";
 import { factSources } from "../../support/seed.ts";
+import { submit, verifyUnchanged } from "../../support/noter.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>, agent: RunAgent;
 const fact = (source = "T1#E1", extra: { source?: string[]; text?: string; [key: string]: unknown } = {}) => {
@@ -13,19 +14,18 @@ const manual = (sessionId = 1, currentTurnId = 1, branch = "main"): ToolContext 
 const record = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
 beforeEach(() => {
   agent = async () => ({ outcome: "success", output: "", request: {} });
-  memory = sourceSeededMemory(":memory:", raw => agent(raw));
+  memory = sourceSeededMemory(":memory:", raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify" ? verifyUnchanged(raw, { request: {} }) : agent(raw));
   const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
   memory.store.createSession({ enrollmentChoice: true, host: "pi:tools", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   memory.store.appendTurn({ sessionId: 1, kind: "turn", userPrompt: "project evidence", assistantText: "done", startedAt: "first source time" });
 });
 afterEach(() => memory.close());
 
-for (const outcome of ["failure", "cancelled"] as const) test(`92: ${outcome} after holding both layers publishes neither layer nor progress`, async () => {
+for (const outcome of ["failure", "cancelled"] as const) test(`92: ${outcome} after writing both files publishes neither layer nor progress`, async () => {
   agent = async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
-    expect(input.tools.find(tool => tool.name === "note")!.execute(fact())).toContain("held");
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Project rule", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" })).toContain("held");
+    await submit(input, memory, { noteInput: [fact()], memoryInput: { op: "create", title: "Fixture title", text: "Project rule", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" } });
     expect(memory.store.listSessionFacts(1)).toEqual([]);
     expect(memory.store.getKnowledge(1)).toBeNull();
     return { outcome, output: "connection stopped", request: { round: 2 } };
@@ -38,11 +38,10 @@ for (const outcome of ["failure", "cancelled"] as const) test(`92: ${outcome} af
   expect(memory.store.sourcePath(1, "main", 1).every(e => !memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.listRuns(1)).toHaveLength(1);
 });
-for (const kind of ["Error", "AbortError"]) test(`92: thrown ${kind} after staging retains audit but publishes no facts`, async () => {
+for (const kind of ["Error", "AbortError"]) test(`92: thrown ${kind} after writing retains audit but publishes no facts`, async () => {
   agent = async raw => {
     const input = raw as NotingAgentInput; input.reportRequest({ actual: true });
-    expect(input.tools.find(tool => tool.name === "note")!.execute(fact())).toContain("held");
-    input.tools.find(tool => tool.name === "memory")!.execute({});
+    await submit(input, memory, { noteInput: [fact()], memoryInput: {} });
     const error = new Error("stopped"); error.name = kind; throw error;
   };
   expect((await record()).outcome).toBe(kind === "AbortError" ? "cancelled" : "failure");
@@ -51,91 +50,27 @@ for (const kind of ["Error", "AbortError"]) test(`92: thrown ${kind} after stagi
   expect(memory.store.sourcePath(1, "main", 1).every(e => !memory.store.entryNoted(e.id))).toBe(true);
 });
 
-test("116: one rejected Noter item can be corrected without resending an accepted sibling", async () => {
-  agent = async raw => {
-    const input = raw as NotingAgentInput, note = input.tools.find(tool => tool.name === "note")!;
-    expect(note.execute(fact())).toContain("held: $1");
-    expect(note.execute(fact("T1#E1", { support: [["$3", "strong"]] }))).toContain("rejected: $2");
-    expect(memory.store.listSessionFacts(1)).toEqual([]);
-    expect(note.execute(fact("T1#E2", { slot: "$2", support: [["$1", "weak"]] }))).toContain("held: $2");
-    input.tools.find(tool => tool.name === "memory")!.execute({});
-    return { outcome: "success", output: "done", request: { messages: ["request", "rejection", "correction"] } };
-  };
-  const completed = await record();
-  expect(completed.outcome, JSON.stringify(completed)).toBe("success");
-  expect(JSON.parse(memory.store.getRun(1)!.response!).toolCalls).toHaveLength(4);
-  expect(memory.store.listSessionFacts(1)).toHaveLength(2);
-});
-
-test("116: scalar drops, empty calls, and malformed calls retain publication blockers", () => {
-  const tools = memory.tools({ kind: "noting", sessionId: 1, branch: "main", range: { from: "S1/T1", to: "S1/T1" } });
-  const note = tools.find(tool => tool.name === "note")!, knowledge = tools.find(tool => tool.name === "memory")!;
-  expect(note.execute(fact())).toContain("held: $1");
-  expect(note.execute(fact("T1#E1", { support: [["$9", "strong"]] }))).toContain("rejected: $2");
-  expect(note.execute({ slot: "$404", ...fact() })).toContain('"$2"');
-  expect(note.execute({ drop: "$2" })).toContain("dropped: $2");
-  expect(note.execute({ drop: "$1" })).toContain("dropped: $1");
-  expect(knowledge.execute({ op: "create", title: "Fixture title", text: "a", category: "constraint", scope: "project", topics: [], supports: ["F404"], reason: "test" })).toContain("rejected: M1");
-  expect(knowledge.execute({ skipped: [] })).toContain("rejected:");
-  expect(knowledge.execute({ drop: "M1" })).toContain("dropped: M1");
-  expect(knowledge.execute(null)).toContain("Not publishable:");
-  expect(knowledge.execute({})).toContain("Publishable:");
-  for (const tool of [note, knowledge]) {
-    expect(tool.execute({ bad: true })).toContain("rejected:");
-    const recovered = JSON.parse(tool.execute({}));
-    expect(recovered.rejected).toEqual({});
-    expect(recovered.status).toMatch(/^Publishable:/);
-  }
-});
-
-test("116: a refused legal empty call still counts as use but only that tool can clear its error", () => {
-  const tools = memory.tools({ kind: "noting", sessionId: 1, branch: "main", range: { from: "S1/T1", to: "S1/T1" } });
-  tools.find(tool => tool.name === "note")!.execute({});
-  memory.store.setEnrollment(1, false);
-  const refused = tools.find(tool => tool.name === "memory")!.execute({});
-  expect(refused).toContain("Disabled");
-  expect(refused).not.toContain("memory not called");
-  memory.store.setEnrollment(1, true);
-  expect(tools.find(tool => tool.name === "note")!.execute({})).toContain("Not publishable:");
-  expect(tools.find(tool => tool.name === "memory")!.execute({})).toContain("Publishable:");
-});
-
-test("116: native schema refusal invalidates only its addressed replacement slot", async () => {
-  agent = async raw => {
-    const input = raw as NotingAgentInput;
-    input.reportRequest({ round: 1 });
-    const note = input.tools.find(tool => tool.name === "note")!, knowledge = input.tools.find(tool => tool.name === "memory")!;
-    note.execute(fact());
-    note.execute(fact());
-    input.reportToolRejection("native-1", "note", { slot: "$2", title: "missing sources" }, "native schema rejected");
-    expect(note.execute({})).toContain('"$2":"native schema rejected"');
-    expect(note.execute(fact("T1#E1", { slot: "$2" }))).toContain("held: $2");
-    knowledge.execute({});
-    return { outcome: "success", output: "complete", request: { round: 1 } };
-  };
-  expect((await record()).outcome).toBe("success");
-  expect(memory.store.listSessionFacts(1)).toHaveLength(2);
-});
-
-test("116: public schemas distinguish full items, scalar drops and empty calls", () => {
+test("116: the public manual schemas distinguish full items from empty calls, and carry no draft fields", () => {
   const note = toolDefinitions.find(t => t.name === "note")!.parameters;
   const knowledge = toolDefinitions.find(t => t.name === "memory")!.parameters;
   for (const schema of [note, knowledge]) {
     expect(schema).not.toHaveProperty("anyOf");
     expect(schema).not.toHaveProperty("oneOf");
     expect(schema).not.toHaveProperty("allOf");
-    expect(schema).toMatchObject({ if: { required: ["drop"] }, then: { maxProperties: 1 }, else: { if: { minProperties: 1 } } });
+    expect(schema).toMatchObject({ if: { minProperties: 1 } });
     expect(schema.additionalProperties).toBe(false);
+    for (const field of ["slot", "drop"]) expect(schema.properties).not.toHaveProperty(field);
   }
-  expect(note.else).toMatchObject({ then: { required: ["title", "sources"] } });
-  expect(knowledge.else).toMatchObject({ then: { required: ["op", "supports", "reason"] } });
-  const rules = (knowledge.else as any).then.allOf as any[];
+  expect(note.then).toMatchObject({ required: ["title", "sources"] });
+  expect(knowledge.then).toMatchObject({ required: ["op", "supports", "reason"] });
+  const rules = (knowledge.then as any).allOf as any[];
   expect(rules).toHaveLength(4);
   expect(rules[0]).toMatchObject({ if: { properties: { op: { const: "create" } } }, else: { required: ["id"] } });
   expect(rules[2]).toMatchObject({ if: { properties: { op: { const: "archive" } } }, then: { required: ["kind"] },
     else: { if: { properties: { op: { const: "update" } } }, else: { required: ["text", "category", "scope", "topics"] } } });
   expect(rules[3]).toMatchObject({ if: { properties: { op: { const: "update" } } }, else: { not: { required: ["edits"] } } });
   expect((knowledge.properties as Record<string, unknown>).skipped).toBeUndefined();
+  expect((knowledge.properties as any).kind.enum).toEqual(["budget", "invalid", "inadmissible"]);
 });
 
 // 135: Pi and Claude Code validate a call against the advertised schema before it reaches Core, so this
@@ -259,21 +194,12 @@ test("116: malformed manual call rejects only itself; valid calls commit immedia
   expect(memory.store.listSessionFacts(1).map(f => f.id)).toEqual([1]);
 });
 
-test("tools freeze the N range, reject sibling sources, and keep no read ledger", async () => {
+test("the Noter's batch is frozen: a sibling source is refused, and the run keeps no read ledger", async () => {
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, assistantText: "sibling", startedAt: "later" });
-  const context: ToolContext = { kind: "noting", sessionId: 1, branch: "main",
-    range: { from: "S1/T1", to: "S1/T1" }, entryIds: memory.store.sourcePath(1, "main", 1).map(entry => entry.id) };
-  const bound = memory.tools(context).find(tool => tool.name === "note")!;
-  context.range.to = "S1/T2"; context.branch = "mutated";
-  context.entryIds!.push(...memory.store.listSourceEntries(1).filter(entry => entry.turnId === 2).map(entry => entry.id));
-  expect(bound.execute(fact("T2#E1"))).toContain("invalid source");
-  expect(bound.execute(fact("T1#E1", { slot: "$1" }))).toContain("held: $1");
-  expect(memory.store.listSessionFacts(1)).toEqual([]); // standalone tools still hold privately
   agent = async raw => {
     const input = raw as NotingAgentInput;
-    expect(input.tools.find(tool => tool.name === "note")!.execute(fact("T2#E1"))).toContain("rejected:");
-    expect(input.tools.find(tool => tool.name === "note")!.execute(fact("T1#E1", { slot: "$1" }))).toContain("held");
-    input.tools.find(tool => tool.name === "memory")!.execute({});
+    expect(await submit(input, memory, { noteInput: [fact("T2#E1")], memoryInput: {} })).toContain("invalid source");
+    expect(await submit(input, memory, { noteInput: [fact("T1#E1")], memoryInput: {} })).toBeUndefined();
     return { outcome: "success", output: "corrected", request: {} };
   };
   expect((await record()).outcome).toBe("success");
@@ -370,4 +296,19 @@ test("one reading of the model-facing result: a `rejected:` receipt and a batch 
   expect(toolRejected("search", search.execute({ query: "a", queries: ["b"] }) as string)).toBe(true);
   expect(toolRejected("note", note.execute(fact("T9#E1")))).toBe(true);
   expect(toolRejected("note", note.execute(fact()))).toBe(false);
+});
+
+// Ticket 144 (stage 2 leftover): `inadmissible` is a kind the `memory` tool accepts, and like `invalid` it needs an explanation.
+test("144: the memory tool archives with kind inadmissible, and the kind requires its explanation like invalid", () => {
+  const tools = memory.tools(manual());
+  tools.find(tool => tool.name === "note")!.execute(fact());
+  const knowledge = tools.find(tool => tool.name === "memory")!;
+  expect(knowledge.execute({ op: "create", title: "Fixture title", text: "A running log of the session", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "evidence" })).toContain('"committed"');
+  const archive = { op: "archive", id: `K1#${memory.store.versionTag(1, 1)}`, kind: "inadmissible", supports: ["F1"], reason: "not an understanding" };
+  expect(knowledge.execute(archive)).toContain("rejected:"); // no explanation
+  expect(memory.store.getKnowledgeRevision(1, 2)).toBeNull();
+  expect(knowledge.execute({ ...archive, text: "A running log of one session, not an understanding; nothing replaces it." })).toContain('"committed"');
+  expect(memory.store.getKnowledgeRevision(1, 2)).toMatchObject({ op: "archive", archiveKind: "inadmissible" });
+  for (const writer of [toolDefinitions.find(t => t.name === "memory")!, dreamingToolDefinitions().find(t => t.name === "memory")!])
+    expect(writer.description).toContain("inadmissible");
 });

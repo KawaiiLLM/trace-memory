@@ -7,6 +7,8 @@ export function memoryReadTool(cwd: string, read: (path: string) => MemoryFile, 
   autoResizeImages?: boolean; memoryOnly?: boolean;
   /** A memory-only reader may also open files under this directory (a run's saved search output), if it is set. */
   readableDirectory?: () => string | undefined;
+  /** ...and exactly these files (the Noter's workspace files). */
+  readableFiles?: () => readonly string[];
 } = {}) {
   const native = createReadToolDefinition(cwd, { autoResizeImages: options.autoResizeImages });
   const execute = native.execute;
@@ -15,6 +17,7 @@ export function memoryReadTool(cwd: string, read: (path: string) => MemoryFile, 
     if (path === null) {
       const directory = options.readableDirectory?.();
       if (options.memoryOnly && directory && isAbsolute(input.path) && resolve(input.path).startsWith(directory + sep)) return execute(id, input, signal, update, context);
+      if (options.memoryOnly && isAbsolute(input.path) && options.readableFiles?.().includes(input.path)) return execute(id, input, signal, update, context);
       if (options.memoryOnly) throw new Error("Trace Memory child read is restricted to trace://");
       return execute(id, input, signal, update, context);
     }

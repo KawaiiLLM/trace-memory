@@ -3,7 +3,7 @@
 // commit made by a running worker must show in the footer before the worker's trailing reply lands.
 import { expect, test, vi } from "vitest";
 import { host } from "./test-host.ts";
-import { fixture, worker, toolResults, say, noteAndMemory, noteBatch } from "./native-fixture.ts";
+import { fixture, worker, submitted, say, noterTurn, noteBatch } from "./native-fixture.ts";
 import { countRunBodies } from "../../perf/fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
 
@@ -32,17 +32,17 @@ test("24a review: a footer refresh with session-scoped knowledge reads no run au
   } finally { await h.dispose(); }
 });
 
-test("24a review: Noter held output stays pending in the footer until its normal terminal reply", async () => {
+test("24a review: a Noter's files stay unpublished in the footer until both tasks end normally", async () => {
   const f = await fixture({});
   let release!: (r: Response) => void;
   let closing = false;
   const pending = new Promise<Response>(resolve => { release = resolve; });
   let turn: Promise<unknown> | undefined;
   try {
-    // Both tools stage output; publication waits for the final reply held open at the wire.
-    f.script(body => !worker(body) ? say("parent reply") : toolResults(body)
-      ? closing ? say("done after review") : (closing = true, pending)
-      : noteAndMemory("n", noteBatch));
+    // Task 1 has written its files; its final reply is held open at the wire, and nothing is published until task 2 passes.
+    f.script(body => !worker(body) ? say("parent reply") : submitted(body) && !closing
+      ? (closing = true, pending)
+      : noterTurn(body, noteBatch));
     turn = f.turn();
     await vi.waitFor(() => { expect(closing).toBe(true); expect(f.h.memory.store.listSessionFacts(1)).toHaveLength(0); }, { timeout: 5000 });
     expect(f.h.memory.progress(1, "main", 1)).toMatchObject({ entries: 2, facts: 0 });

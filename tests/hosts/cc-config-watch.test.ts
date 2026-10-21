@@ -10,10 +10,10 @@ const provider = vi.hoisted(() => {
 });
 vi.mock("../../src/hosts/cc/worker.ts", () => ({
   createCcRunAgent: (config: any) => async (task: any) => {
-    await new Promise<void>(resolveCall => provider.calls.push({ model: config.worker.phases[task.kind].model,
+    // A batch is a write run and a verify run; the write run is the one held, and the verify run follows at once.
+    if (task.task === "write") await new Promise<void>(resolveCall => provider.calls.push({ model: config.worker.phases[task.kind].model,
       thinking: config.worker.phases[task.kind].thinking, task, release: resolveCall }));
-    task.tools.find((tool: any) => tool.name === "note")!.execute({});
-    task.tools.find((tool: any) => tool.name === "memory")!.execute({});
+    submitEmpty(task);
     return { outcome: "success", output: "mock provider completed", request: { mock: true } };
   },
 }));
@@ -23,6 +23,7 @@ import { executorSettings } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator } from "../../src/hosts/cc/lifecycle.ts";
 import { editedCcConfig, saveCcConfig } from "../../src/hosts/cc/menu-config.ts";
 import { readFileSync } from "node:fs";
+import { submitEmpty } from "../support/noter.ts";
 
 const dirs: string[] = [], children: ChildProcess[] = [];
 afterEach(() => {

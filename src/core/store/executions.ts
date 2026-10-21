@@ -32,6 +32,17 @@ CREATE TABLE IF NOT EXISTS execution_runs (
   run_id INTEGER PRIMARY KEY REFERENCES runs(id), execution_id TEXT NOT NULL REFERENCES task_executions(id)
 );
 ${TASK_FAILURES_TABLE};
+-- 144: the first task of a two-task run has passed and the second has not. The row says which task is next and
+-- names the first task's run, whose body holds the files; one row per session and phase, replaced by a later pass.
+CREATE TABLE IF NOT EXISTS task_handoffs (
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  phase TEXT NOT NULL CHECK (phase IN ('noting','dreaming')),
+  next_task TEXT NOT NULL,
+  run_id INTEGER NOT NULL REFERENCES runs(id),
+  branch TEXT, entry_ids TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, phase)
+);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_failure_head ON task_failures(session_id,phase,head) WHERE head IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_failure_pool ON task_failures(session_id,phase,pool) WHERE pool IS NOT NULL;
 `;
@@ -64,22 +75,34 @@ export function migrateDreamerTask126(store: Store): void {
 /** Admission supplies the oldest selected stable member, never a leaf or an attempt id.
  * A refusal carries this identity back; it does not settle it. Unfinished executions remain
  * visible after interruption, without inferring a terminal outcome from an attempt audit. */
-export function beginExecution(store: Store, task: LogicalTask, previous?: string): string {
+export function beginExecution(store: Store, task: LogicalTask): string {
   store.requireEnabled(task.sessionId);
   if (task.phase !== "noting" && task.phase !== "dreaming") throw new Error(`Unsupported live phase: ${task.phase}`);
   const head = task.phase === "noting" ? task.head ?? null : null, pool = task.phase === "dreaming" ? ALL_POOLS : null;
   if (task.phase === "noting" ? !Number.isSafeInteger(head) || head! <= 0 : task.head !== undefined)
     throw new Error(task.phase === "noting" ? "Logical task requires a stable backlog head" : "Dreamer logical task has no backlog head");
-  if (previous !== undefined) {
-    const row = store.db.prepare("SELECT * FROM task_executions WHERE id = ?").get(previous);
-    if (!row || row.session_id !== task.sessionId || row.phase !== task.phase || row.head !== head || row.pool !== pool || row.outcome !== null)
-      throw new Error("Fallback must continue the same unsettled logical task");
-    return previous;
-  }
   const id = randomUUID(), origin = task.origin ?? null;
   store.db.prepare("INSERT INTO task_executions(id,session_id,phase,head,pool,updated_at,origin_session_id,origin_entry_ids) VALUES (?,?,?,?,?,?,?,?)")
     .run(id, task.sessionId, task.phase, head, pool, new Date().toISOString(), origin?.sessionId ?? null, origin ? JSON.stringify(origin.entryIds) : null);
   return id;
+}
+
+/** What a passed first task leaves for the second: the files live in the first task's run body, so a restarted or
+ * borrowing executor finds them with this one indexed read. */
+export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; nextTask: string; runId: number; branch: string | null; entryIds: number[]; createdAt: string }
+export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"]): Handoff | null {
+  const row = store.db.prepare("SELECT * FROM task_handoffs WHERE session_id = ? AND phase = ?").get(sessionId, phase);
+  return row ? { sessionId, phase, nextTask: String(row.next_task), runId: Number(row.run_id), branch: row.branch === null ? null : String(row.branch),
+    entryIds: row.entry_ids === null ? [] : JSON.parse(String(row.entry_ids)) as number[], createdAt: String(row.created_at) } : null;
+}
+export function writeHandoff(store: Store, handoff: Omit<Handoff, "createdAt">): void {
+  store.db.prepare("INSERT OR REPLACE INTO task_handoffs(session_id,phase,next_task,run_id,branch,entry_ids,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run(handoff.sessionId, handoff.phase, handoff.nextTask, handoff.runId, handoff.branch, JSON.stringify(handoff.entryIds), new Date().toISOString());
+}
+/** A publication that processed any entry of the hand-off's batch ends the hand-off: the rest of that batch can no longer be taken whole. */
+export function dropHandoffCovering(store: Store, sessionId: number, phase: Handoff["phase"], entryIds: readonly number[]): void {
+  if (entryIds.length) store.db.prepare(`DELETE FROM task_handoffs WHERE session_id = ? AND phase = ? AND EXISTS (
+    SELECT 1 FROM json_each(task_handoffs.entry_ids) WHERE value IN (SELECT value FROM json_each(?)))`).run(sessionId, phase, JSON.stringify(entryIds));
 }
 
 export function linkExecutionRun(store: Store, runId: number, input: RunInput): void {

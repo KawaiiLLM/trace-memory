@@ -1,23 +1,28 @@
 import { expect, test } from "vitest";
 import { join } from "node:path";
 import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
-import { fixture, call, say, broken } from "./native-fixture.ts";
+import { fixture, broken, noterTurn, submitted, usage } from "./native-fixture.ts";
 import { runWorker } from "../../../src/hosts/pi/worker.ts";
 import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
-import { toolDefinitions, renderToolDefinitions, canonicalToolNames, memoryFiles } from "../../../src/core/api/index.ts";
+import { workspaceFileTools } from "../../../src/hosts/pi/workspace-files.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
 
-function frozenRead(memory: ReturnType<typeof sourceSeededMemory>, task: NotingAgentInput, cwd: string) {
+function frozenRead(memory: ReturnType<typeof sourceSeededMemory>, task: NotingAgentInput, cwd: string, files: string[]) {
   if (!task.reader) throw new Error("Pi worker fixture requires the Core-frozen reader");
-  const files = memoryFiles(memory, task.reader);
-  return memoryReadTool(cwd, path => files.read(path), { memoryOnly: true });
+  const reader = memoryFiles(memory, task.reader);
+  return memoryReadTool(cwd, path => reader.read(path), { memoryOnly: true, readableFiles: () => files });
 }
 
-for (const ending of ["success", "error"] as const) test(`04: actual Pi worker holds both tools until ${ending} terminal`, async () => {
+// Tickets 113, 116 and 117 (held slots, receipts, the closing review round) are superseded for the Noter on 2026-10-22: it writes
+// two files, and a request is a task's check, its writes and its stop. What this file keeps is the atomic publication seen on a
+// real Pi child.
+for (const ending of ["success", "error"] as const) test(`04: actual Pi worker leaves its two files private until the ${ending} terminal`, async () => {
   const f = await fixture();
   const memory = sourceSeededMemory(join(f.h.dir, "atomic.sqlite"), raw => {
     const task = raw as NotingAgentInput;
-    return runWorker(task, { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
-      read: frozenRead(memory, task, f.h.dir),
+    const files = workspaceFileTools(f.h.dir, task.workspace);
+    return runWorker(task, { model: f.model as never, checkCapacity: () => {}, tools: task.tools, fileTools: files.definitions as never,
+      read: frozenRead(memory, task, f.h.dir, files.paths),
       runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
       onRetry: () => {}, onRetryEnd: () => {} });
   });
@@ -26,162 +31,25 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker h
     const session = memory.store.createSession({ projectId: project.id, host: "pi:atomic", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "A durable rule", assistantText: "Acknowledged", startedAt: "now" });
     const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    let round = 0;
-    f.script(() => {
-      round++;
+    let rounds = 0;
+    f.script(body => {
+      rounds++;
       expect(memory.store.listSessionFacts(session.id)).toEqual([]);
       expect(memory.store.currentKnowledge(path)).toEqual([]);
-      if (round === 1) return call("note-held", "note", { title: "Durable rule", sources: "[T1#E1] User set a durable rule" });
-      if (round === 2) return call("memory-held", "memory", { op: "create", title: "Fixture title", text: "Follow the durable rule", category: "constraint",
-        scope: "session", topics: [], supports: ["$1"], reason: "User requirement" });
-      return ending === "success" ? say("Done") : broken();
+      if (ending === "error" && submitted(body)) return broken(); // the write task's files exist; its last reply fails
+      return noterTurn(body, { title: "Durable rule", sources: "[T1#E1] User set a durable rule" }, usage(),
+        "## create\ntitle: Fixture title\ncategory: constraint\nscope: session\ntopics: \nsupports: f1\nreason: User requirement\n\nFollow the durable rule\n");
     });
     const result = await memory.noting({ ...path });
     expect(result.outcome).toBe(ending === "success" ? "success" : "failure");
-    expect(round).toBeGreaterThanOrEqual(3);
+    expect(rounds).toBeGreaterThanOrEqual(ending === "success" ? 5 : 3);
     expect(memory.store.listSessionFacts(session.id)).toHaveLength(ending === "success" ? 1 : 0);
     expect(memory.store.currentKnowledge(path)).toHaveLength(ending === "success" ? 1 : 0);
     if (!("runId" in result)) throw new Error("missing audit");
     const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
-    expect(audit.toolCalls.map((value: any) => value.name)).toEqual(["note", "memory"]);
-    expect(audit.toolCalls[0].result).toContain("held: $1");
-    expect(audit.toolCalls[1].result).toContain("held: M1");
+    expect(audit.task).toBe(ending === "success" ? "verify" : "write");
+    expect(audit.toolCalls.map((value: any) => value.name)).toEqual(["check"]);
+    expect(audit.files.knowledge).toContain("Follow the durable rule");
     expect(audit.usage).not.toBeNull();
-  } finally { memory.close(); await f.dispose(); }
-});
-
-test("04: real Pi worker binds the shared schemas and publishes held corrections at the terminal reply", async () => {
-  const f = await fixture({ "noting.triggerTokens": 1e9 });
-  const memory = sourceSeededMemory(join(f.h.dir, "fork-atomic.sqlite"), raw => {
-    const task = raw as NotingAgentInput;
-    for (const name of ["note", "memory"]) {
-      const bound = task.tools.find(tool => tool.name === name)!;
-      const shared = renderToolDefinitions(toolDefinitions, canonicalToolNames).find(tool => tool.name === name)!;
-      expect({ name: bound.name, description: bound.description, parameters: bound.parameters }).toEqual(shared);
-    }
-    return runWorker(task, { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
-      read: frozenRead(memory, task, f.h.dir),
-      runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
-      onRetry: () => {}, onRetryEnd: () => {} });
-  });
-  try {
-    const project = memory.store.createProject({ name: "fork-atomic", declaredBy: "mark" });
-    const session = memory.store.createSession({ projectId: project.id, host: "pi:fork", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-    const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "用 pnpm，不要 npm", assistantText: "Parent reply", startedAt: "now" });
-    const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    const fact = (text: string) => ({ title: text, sources: `[T1#E1] ${text}` });
-    const knowledge = (text: string, supports: string[]) => ({ op: "create", title: "Fixture title", text, category: "constraint", scope: "session", topics: [], supports, reason: "user rule" });
-    let round = 0;
-    f.script(() => {
-      round++;
-      expect(memory.store.listSessionFacts(session.id)).toEqual([]);
-      const calls = [
-        ["note", fact("original")], ["note", fact("drop")], ["note", fact("third")],
-        ["note", { slot: "$1", ...fact("corrected") }], ["note", { drop: "$2" }],
-        ["memory", knowledge("Initial rule", ["$1", "$3"])],
-        ["memory", { slot: "M1", ...knowledge("Final rule", ["$3"]) }],
-        ["memory", knowledge("drop this", ["$1"])], ["memory", { drop: "M2" }],
-        ["note", { ...fact("fourth"), support: [["$3", "strong"]] }],
-      ] as const;
-      const next = calls[round - 1];
-      return next ? call(`item-${round}`, next[0], next[1]) : say("Done");
-    });
-    const result = await memory.noting({ ...path });
-    expect(result.outcome, JSON.stringify(result)).toBe("success");
-    expect(round).toBe(12); // ten scripted items, the terminal reply and the end review (117)
-    expect(memory.store.listSessionFacts(session.id)).toHaveLength(3);
-    expect(memory.store.currentKnowledge(path)[0]!.revision).toMatchObject({ text: "Final rule", supports: [2] });
-    expect(memory.store.listFactRelations(3)[0]).toMatchObject({ toFact: 2 });
-    if (!("runId" in result)) throw new Error("missing run");
-    const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
-    expect(audit.held.factMapping).toEqual({ "$1": "F1", "$3": "F2", "$4": "F3" });
-  } finally { memory.close(); await f.dispose(); }
-});
-
-for (const kind of ["note", "memory"] as const)
-  for (const defect of ["unexpected", "drop", ...(kind === "memory" ? ["skipped"] : [])])
-    for (const corrected of [false, true]) test(`04: Pi top-level ${kind} ${defect}; corrected=${corrected}`, async () => {
-      const f = await fixture();
-      let refusals = 0;
-      const memory = sourceSeededMemory(join(f.h.dir, "envelope.sqlite"), raw => {
-        const task = raw as NotingAgentInput;
-        return runWorker({ ...task, reportToolRejection: (...args) => {
-          refusals++; task.reportToolRejection(...args); task.reportToolRejection(...args);
-        } }, { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
-          read: frozenRead(memory, task, f.h.dir), runsDir: f.runsDir, cwd: f.h.dir,
-          agentDir: f.agentDir, maxToolRounds: 0, onRetry: () => {}, onRetryEnd: () => {} });
-      });
-      try {
-        const project = memory.store.createProject({ name: "envelope-pi", declaredBy: "mark" });
-        const session = memory.store.createSession({ projectId: project.id, host: "pi:envelope", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-        const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", assistantText: "Explanation", startedAt: "now" });
-        const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-        const fact = (text: string) => ({ title: text, sources: `[T1#E1] ${text}` });
-        const value = (text: string) => kind === "note" ? fact(text) : { op: "create", title: "Fixture title", text, category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "rule" };
-        const prefix = kind === "note" ? "$" : "M";
-        let round = 0;
-        f.script(body => {
-          round++;
-          if (round === 1) return call("original", "note", kind === "note" ? fact("original") : fact("evidence"));
-          if (round === 2) return call("sibling-fact", "note", kind === "note" ? fact("sibling") : fact("other evidence"));
-          if (round === 3) return call("original-knowledge", "memory", kind === "memory" ? value("original") : {});
-          if (round === 4 && kind === "memory") return call("sibling-knowledge", "memory", value("sibling"));
-          const invalidRound = kind === "memory" ? 5 : 4;
-          if (round === invalidRound) return call("invalid-item", kind, { slot: `${prefix}1`, ...value("refused"),
-            [defect]: defect === "unexpected" ? true : defect === "drop" ? [42] : "wrong" });
-          if (round === invalidRound + 1) return call("inspect", kind, {});
-          if (round === invalidRound + 2) {
-            const receipt = JSON.parse(body.messages.findLast((message: any) => message.role === "tool").content);
-            expect(receipt.held).toEqual([`${prefix}2`]);
-            expect(Object.keys(receipt.rejected)).toEqual([`${prefix}1`]);
-            if (corrected) return call("correct", kind, { slot: `${prefix}1`, ...value("corrected") });
-          }
-          if (corrected && round === invalidRound + 3) return call("appended", kind, value("appended"));
-          return say("Done");
-        });
-        const result = await memory.noting({ ...path });
-        expect(refusals).toBe(1); // exercised SDK refusal, not merely bound core execution
-        expect(result.outcome, JSON.stringify(result)).toBe(corrected ? "success" : "bounced");
-        const texts = kind === "note" ? memory.store.listSessionFacts(session.id).map(row => row.text)
-          : memory.store.currentKnowledge(path).map(row => row.revision.text);
-        expect(texts.sort()).toEqual(corrected ? ["appended", "corrected", "sibling"] : []);
-        if (!("runId" in result)) throw new Error("missing run");
-        const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
-        expect(audit.toolCalls.filter((item: any) => item.input?.[kind === "note" ? "title" : "text"] === "refused")).toHaveLength(1);
-        if (corrected) expect(audit.toolCalls.some((item: any) => item.result?.includes(`held: ${prefix}3`))).toBe(true);
-      } finally { memory.close(); await f.dispose(); }
-    });
-
-for (const [kind, corrected] of [["note", false], ["note", true], ["read", false]] as const) test(`04: native Pi ${kind} schema rejection; corrected=${corrected}`, async () => {
-  const f = await fixture();
-  const memory = sourceSeededMemory(join(f.h.dir, "schema.sqlite"), raw => {
-    const task = raw as NotingAgentInput;
-    const report = task.reportToolRejection;
-    return runWorker({ ...task, reportToolRejection: (...args) => { report(...args); report(...args); } },
-      { model: f.model as never, checkCapacity: () => {}, tools: task.tools,
-        read: frozenRead(memory, task, f.h.dir), runsDir: f.runsDir, cwd: f.h.dir,
-        agentDir: f.agentDir, maxToolRounds: 0, onRetry: () => {}, onRetryEnd: () => {} });
-  });
-  try {
-    const project = memory.store.createProject({ name: "schema-pi", declaredBy: "mark" });
-    const session = memory.store.createSession({ projectId: project.id, host: "pi:schema", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-    const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", assistantText: "Explanation", startedAt: "now" });
-    let round = 0;
-    f.script(() => {
-      round++;
-      if (round === 1) return call("valid", "note", { title: "original", sources: "[T1#E1] original" });
-      if (round === 2) return call("sibling", "note", { title: "sibling", sources: "[T1#E2] sibling" });
-      if (round === 3) return call("invalid", kind, kind === "note" ? { slot: "$1", title: "invalid" } : {});
-      if (round === 4) return call("memory-empty", "memory", {});
-      if (round === 5 && corrected) return call("corrected", "note", { slot: "$1", title: "corrected", sources: "[T1#E1] corrected" });
-      return say("Done");
-    });
-    const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: turn.id });
-    expect(result.outcome).toBe(corrected || kind === "read" ? "success" : "bounced");
-    const facts = memory.store.listSessionFacts(session.id);
-    expect(facts.map(fact => fact.text).sort()).toEqual(corrected ? ["corrected", "sibling"] : kind === "read" ? ["original", "sibling"] : []);
-    if (!("runId" in result)) throw new Error("missing run");
-    const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
-    expect(audit.toolCalls.filter((item: any) => item.input?.slot === "$1" && !item.input.sources)).toHaveLength(kind === "note" ? 1 : 0);
   } finally { memory.close(); await f.dispose(); }
 });

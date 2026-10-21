@@ -3,6 +3,7 @@ import { TraceMemory, memoryFiles, type DreamingAgentInput, type NotingAgentInpu
 import type { KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
+import { submit } from "../../support/noter.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -14,9 +15,7 @@ type Capture = {
   material: unknown;
   feedback?: string;
   hasReviewFeedback?: boolean;
-  operationEnum?: unknown;
-  hasId?: boolean;
-  hasAbsorb?: boolean;
+  tools?: string[];
 };
 
 
@@ -26,19 +25,12 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
   const scenarios = new AdmittedDreamerScenarios(async raw => {
     if ((raw as { kind: string }).kind === "noting") {
       const input = raw as NotingAgentInput;
-      const note = input.tools.find(tool => tool.name === "note")!;
-      const receipt = note.execute({ title: "Shared durable rule", sources: `[${source}] shared durable rule` });
-      expect(receipt).toContain("held:");
-      input.tools.find(tool => tool.name === "memory")!.execute({});
-      const memory = input.tools.find(tool => tool.name === "memory")!;
-      const operation = memory.parameters as any;
+      expect(await submit(input, memory, { noteInput: [{ title: "Shared durable rule", sources: `[${source}] shared durable rule` }], memoryInput: {} })).toBeUndefined();
       captures.set(`${key}:N`, {
         text: input.text,
         material: structuredClone(input.material),
         hasReviewFeedback: "reviewFeedback" in input,
-        operationEnum: structuredClone(operation.properties.op.enum),
-        hasId: "id" in operation.properties,
-        hasAbsorb: "absorb" in operation.properties,
+        tools: input.tools.map(tool => tool.name),
       });
       return cancelled;
     }
@@ -105,10 +97,8 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
     const notingCapture = captures.get(`before:${name}:N`)!;
     expect(notingCapture.hasReviewFeedback).toBe(false);
     expect(notingCapture.text).not.toMatch(/\b(?:NEAR|CLOSER)\b/);
-    // N owns the same three knowledge operations; fresh-N K assembly is integrated in 06.
-    expect(notingCapture.operationEnum).toEqual(["create", "update", "archive"]);
-    expect(notingCapture.hasId).toBe(true);
-    expect(notingCapture.hasAbsorb).toBe(true); // Shared public shape does not grant N merge authority.
+    // The Noter's only core tools are search and check; it writes files, and its knowledge operations are the file format's.
+    expect(notingCapture.tools).toEqual(["search", "check"]);
   }
 
   const siblingTurn = store.appendTurn({ sessionId: session.id, parentTurnId: rootTurn.id, kind: "turn", userPrompt: "sibling", startedAt: "sibling" });

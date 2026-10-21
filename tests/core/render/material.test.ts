@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, type ConfigOverride, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
+import { sourceSeededMemory, compacted, renderEntry, tokens, type ConfigOverride, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
@@ -20,6 +20,7 @@ import { memoryFiles } from "../../../src/core/api/files.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { canonicalToolNames, validateToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { ccPluginToolNames, ccWorkerToolNames } from "../../../src/hosts/cc/tool-names.ts";
+import { submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
 test("the reading guide names only available native tools within its framing ceiling", () => {
   const pi = readingGuide(Number.MAX_SAFE_INTEGER, validateToolNames(canonicalToolNames));
@@ -37,11 +38,14 @@ let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: Not
 const time = "2026-09-08T00:00:00Z";
 const tag = (knowledgeId: number, commit: number) => `K${knowledgeId}#${memory.store.versionTag(knowledgeId, commit)}`;
 
+/** Core ends the Noter\u2019s material with this line, so both tasks of a run begin with the same request. */
+const CHECK_FIRST = "\n\nCall check first: it names your task and your two files.";
 const ok = (): RunAgentResult => ({ outcome: "success", output: "[]", request: { fake: true } });
 
 /** These cases size items in thousands of tokens, as items written before the caps are (ticket 144); the caps are lifted here, not in each case. */
 const uncapped: ConfigOverride = { writing: { bodyTokens: 1_000_000 } };
 function open(config: ConfigOverride = uncapped) {
+  // The default stand-in writes no files, so each run fails its check and leaves its batch pending for the next call.
   scenarios = new AdmittedDreamerScenarios(async raw => { calls.push(raw as NotingAgentInput); return ok(); });
   memory = sourceSeededMemory(join(directory, "test.sqlite"), scenarios.agent, config);
 }
@@ -161,7 +165,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   expect(knowledgeBlockOf(noting.material)).toBe(withSize(knowledgeBlock));
   expect(noting.material.facts).toEqual([]);
   expect(noting.material.receipts).toEqual([factReceipt]);
-  expect(noting.text.endsWith(`Raw:\n\n${raw}\n</episodic>\n\nReceipts:\n${factReceipt}`)).toBe(true);
+  expect(noting.text.endsWith(`Raw:\n\n${raw}\n</episodic>\n\nReceipts:\n${factReceipt}${CHECK_FIRST}`)).toBe(true);
   memory.config.compaction.factsTokens = 10_000;
   // A legal oversized manual item pressures the same Knowledge selector used by N.
   const receipt = "omitted 2 constraint knowledge; expand: trace://K2, trace://K1";
@@ -174,7 +178,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const next = calls.at(-1)!;
   expect(next.material.receipts).toEqual([receipt]);
-  expect(next.text.endsWith(`Receipts:\n${receipt}`)).toBe(true);
+  expect(next.text.endsWith(`Receipts:\n${receipt}${CHECK_FIRST}`)).toBe(true);
   expect(next.text).not.toContain("Negated-evidence reminder");
 });
 
@@ -491,12 +495,12 @@ test("29b/92 (case 13): fresh N receives one full material dispatch across its t
   let rounds = 0;
   const worker = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
+    if (input.task === "verify") return verifyUnchanged(input, { request: { fake: true } });
     calls.push(input);
     if (input.kind === "noting") {
       // Two tool rounds inside one run: the child keeps its own messages and nothing is resent.
       memoryFiles(worker, input.reader!).read(`trace://raw/S${s.id}/T${t.id}#E1@user`); rounds++;
-      input.tools.find(tool => tool.name === "note")!.execute({});
-      input.tools.find(tool => tool.name === "memory")!.execute({}); rounds++;
+      submitEmpty(input); rounds++;
     }
     return { outcome: "success", output: "", request: { fake: true } };
   });

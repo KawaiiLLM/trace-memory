@@ -123,24 +123,27 @@ function releaseAgentDir(agentDir: string) {
   borrowedAgentDir = undefined;
 }
 
-/** An explicit note-only reply. It does not complete N without a separate memory call. */
-export const emptyNoteReply = (): Reply => ({ ...reply(""), stopReason: "toolUse",
-  content: [{ type: "toolCall", id: "note-empty", name: "note", arguments: {} }] });
-const latestNoteResult = (conversation: Conversation) => conversation.messages
-  .filter(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "note").at(-1) as Message | undefined;
-const parsedNoteResult = (conversation: Conversation): Record<string, unknown> | undefined => {
-  const result = latestNoteResult(conversation);
-  if (!result) return undefined;
-  try { const value = JSON.parse(partsText((result as { content: unknown }).content));
-    return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
-  } catch { return undefined; }
-};
-/** Held output is private until normal terminal publication; never treat a tool receipt as committed. */
-export const noteHeld = (conversation: Conversation): boolean => Array.isArray(parsedNoteResult(conversation)?.held);
-const memoryUsed = (conversation: Conversation) => conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "memory");
-const emptyMemoryReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-empty", name: "memory", arguments: {} }] });
+/** The scripted Noter's side of the two-task run (ticket 144), as a model behaves on the wire: call `check` first; in the write
+ * task, write the two files it names; stop. A verify task finds nothing to correct and stops. `plan` is the text written to each
+ * file; the default is `## none` in both. Returns undefined when the model has nothing left to say. */
+export function noterReply(conversation: Conversation, plan: { facts?: string; knowledge?: string } = {}): Reply | undefined {
+  const results = (name: string) => conversation.messages.filter(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === name);
+  const call = (calls: { id: string; name: string; arguments: JsonObject }[]): Reply => ({ ...reply(""), stopReason: "toolUse",
+    content: calls.map(value => ({ type: "toolCall" as const, ...value })) });
+  const checked = results("check").at(-1);
+  if (!checked) return call([{ id: "check-1", name: "check", arguments: {} }]);
+  const report = partsText((checked as { content: unknown }).content);
+  const files = /Files: (.+?\.md), (.+?\.md)/.exec(report);
+  if (!files || /^Task: verify/m.test(report) || results("write").length) return undefined;
+  return call([{ id: "write-facts", name: "write", arguments: { path: files[1]!, content: plan.facts ?? "## none\n" } },
+    { id: "write-knowledge", name: "write", arguments: { path: files[2]!, content: plan.knowledge ?? "## none\n" } }]);
+}
+/** The requests one scripted Noter batch makes: the write task (check, the two files, stop) and the verify task (check, stop). */
+export const NOTER_BATCH_REQUESTS = 5;
+/** The Noter has staged its files (its write task wrote them). */
+export const noteHeld = (conversation: Conversation): boolean => conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "write");
 export const emptyNote = (conversation: Conversation): Reply | undefined =>
-  conversation.systemPrompt?.startsWith("# Noting") ? !latestNoteResult(conversation) ? emptyNoteReply() : !memoryUsed(conversation) ? emptyMemoryReply() : undefined : undefined;
+  conversation.systemPrompt?.startsWith("# Noting") ? noterReply(conversation) : undefined;
 
 export function host(config: Record<string, unknown> = {}, options: { native?: NativeSource; agentDir?: string; fetch?: boolean; extension?: typeof extension; inflight?: () => number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-host-"));
@@ -237,7 +240,6 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     requests.push(structuredClone(body));
     inflight++; activity++;
     try {
-      if (autoStop && conversation.tools?.some(t => t.name === "note") && noteHeld(conversation) && memoryUsed(conversation)) return responseOf(reply("Done."));
       if (autoStop && conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "memory" && ((m as { content: { text: string }[] }).content[0]!.text.includes('"committed"')))) return responseOf(reply("Done."));
       // A held reply is a request in flight: cancelling the child must end it, as a real one would.
       const signal = init.signal as AbortSignal | undefined;
@@ -378,17 +380,22 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     setThinkingLevel: (level: ThinkingLevel) => { thinkingLevel = level; }, getThinkingLevel: () => thinkingLevel, dialogs, answers, dispose, dir, agentDir, dbPath, signals, ctx, eventBus, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean; ignoreAbort?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; ignoreAbort = options.ignoreAbort ?? false; } };
 }
-/** Explicit successful Noter script: one fact plus empty knowledge in the same assistant message. */
-export function notingFact(conversation: Conversation): Reply {
+/** Explicit successful Noter script: one fact from the batch, in the facts file, and `## none` for knowledge. */
+export function notingFact(conversation: Conversation, knowledge?: string): Reply {
   const input = String(conversation.messages[0]!.content);
   // 133: earlier user words are context, not writable sources from this frozen batch.
   const batch = input.split("\nRaw:\n")[1]?.split("\n</episodic>")[0] ?? input.split("\nSources:\n")[1] ?? "";
   const source = /\[(T\d+#E\d+)@user\] user:/.exec(batch)?.[1] ?? /\b(T\d+#E\d+)\b/.exec(batch)?.[1];
   if (!source) throw new Error("Noter fixture requires a source from its actual Raw batch or inherited source index");
-  const previous = latestNoteResult(conversation);
-  if (previous) return memoryUsed(conversation) ? reply("Done.") : emptyMemoryReply();
-  return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const,
-    id: previous ? "note-2" : "note-1", name: "note", arguments: { title: "选择 pnpm", sources: `[${source}] 用 pnpm，不要 npm` } }, { type: "toolCall" as const, id: "memory-empty", name: "memory", arguments: {} }] };
+  return noterReply(conversation, { facts: `## fact f1\ntitle: 选择 pnpm\n\n[${source}] 用 pnpm，不要 npm\n`, knowledge }) ?? reply("Done.");
+}
+
+/** A Noter batch whose first request is held open at the wire, as a worker still running; every other request of the batch
+ * (and of later ones) answers at once with `notingFact`. Returns the release: call it with the reply to the held request. */
+export function holdFirstRequest(h: Pick<ReturnType<typeof host>, "provider">): (value: Reply) => void {
+  let release!: (value: Reply) => void, held = false;
+  h.provider(async conversation => { if (held) return notingFact(conversation); held = true; return new Promise<Reply>(resolve => { release = resolve; }); });
+  return value => release(value);
 }
 
 /** 127: one scripted Dreamer response, one `memory` tool call per operation and then one per skip. */

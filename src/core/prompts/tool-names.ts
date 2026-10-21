@@ -1,11 +1,12 @@
 export const TOOL_ROLES = ["search", "note", "memory", "check"] as const;
 export type ToolRole = typeof TOOL_ROLES[number];
-export type ToolNames = Readonly<Record<ToolRole | "read", string> & { grep?: string }>;
+/** `read`, `write` and `edit` are the host's native tools (the Noter writes its files with the last two). */
+export type ToolNames = Readonly<Record<ToolRole | "read" | "write" | "edit", string> & { grep?: string }>;
 
 /** Canonical names are the actual public Core/Pi registration names. Hosted workers pass their
  * own exposed names at admission; the map never changes internal routing or authorization. */
-export const canonicalToolNames: ToolNames = { search: "search", note: "note", memory: "memory", check: "check", read: "read", grep: "grep" };
-const NAME_ROLES = [...TOOL_ROLES, "read"] as const;
+export const canonicalToolNames: ToolNames = { search: "search", note: "note", memory: "memory", check: "check", read: "read", write: "write", edit: "edit", grep: "grep" };
+const NAME_ROLES = [...TOOL_ROLES, "read", "write", "edit"] as const;
 
 export function validateToolNames(names: ToolNames): ToolNames {
   const roles = names?.grep === undefined ? NAME_ROLES : [...NAME_ROLES, "grep"] as const;
@@ -18,7 +19,7 @@ export function validateToolNames(names: ToolNames): ToolNames {
 
 /** Only explicit model-facing tool references are interpolated; ordinary prose and evidence are not. */
 export function renderToolNames(text: string, names: ToolNames): string {
-  return text.replace(/\{\{tool\.(search|note|memory|check|read|grep)\}\}/g, (_, role: keyof ToolNames) => {
+  return text.replace(/\{\{tool\.(search|note|memory|check|read|write|edit|grep)\}\}/g, (_, role: keyof ToolNames) => {
     const name = names[role];
     if (name === undefined) throw new Error(`Missing exposed tool name: ${role}`);
     return name;

@@ -1,10 +1,10 @@
-// 32c supersedes the 26a pause. These regressions retain its admission, cancellation,
-// native-child and session-isolation scenarios under the persisted three-failure rule.
+// 32c supersedes the 26a pause; 144 (2026-10-22) counts every Noter run that does not finish normally as one failure,
+// whichever task it stopped in. These regressions retain the admission, cancellation, native-child and session-isolation
+// scenarios under the persisted three-failure rule. A run whose files fail the stop check is such a failure.
 import { expect, test, vi } from "vitest";
-import type { JsonObject } from "@earendil-works/pi-ai";
-import { NOTING_INCOMPLETE, memoryFiles } from "../../../src/core/api/index.ts";
-import { host, reply, emptyNote, type Reply } from "./test-host.ts";
-import { noteAndMemory, fixture, say, submitted, worker } from "./native-fixture.ts";
+import { memoryFiles } from "../../../src/core/api/index.ts";
+import { host, reply, emptyNote, noterReply, type Reply } from "./test-host.ts";
+import { noterTurn, fixture, say, worker } from "./native-fixture.ts";
 
 type Host = ReturnType<typeof host>;
 const at = "2026-09-09T00:00:00.000Z";
@@ -25,22 +25,21 @@ const cancelled = async (h: Host) => {
 };
 const head = (h: Host) => h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)[0]!.id;
 
-test.each(["note", "memory"] as const)("92: an explicit %s-only worker ends without publishing or advancing Raw", async name => {
+test("144: a worker that writes only one of its two files ends without publishing or advancing Raw", async () => {
   const h = host(config);
   try {
     let requests = 0;
     h.provider(async c => {
-      if (++requests > 3) throw new Error("single-tool failure script repeated a request");
-      if (c.messages.some(message => message.role === "toolResult")) return reply("Done.");
-      const arguments_: JsonObject = name === "note"
-        ? { title: "Package choice", sources: "[T1#E1] User prefers pnpm" } : {};
-      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `only-${name}`, name, arguments: arguments_ }] };
+      if (++requests > 4) throw new Error("single-file failure script repeated a request");
+      const next = noterReply(c, { facts: "## fact f1\ntitle: Package choice\n\n[T1#E1] User prefers pnpm\n" });
+      // The knowledge file is never written: the stop check prompts once, the model has nothing more to do, the second check fails.
+      return next && { ...next, content: next.content.filter(part => part.type !== "toolCall" || part.id !== "write-knowledge") } || reply("Done.");
     }, { autoStop: false });
     await h.turn();
-    expect(requests).toBe(3);
+    expect(requests).toBe(4); // check, write facts, stop, stop again after the one follow-up
     const run = notingRuns(h)[0]!;
     expect(run.outcome).toBe("failure");
-    expect(JSON.parse(run.response!).problems).toEqual([NOTING_INCOMPLETE]);
+    expect(JSON.parse(run.response!).problems.join("\n")).toContain("knowledge.md");
     expect(h.memory.store.listSessionFacts(1)).toEqual([]);
     expect(h.memory.store.currentKnowledge()).toEqual([]);
     expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
@@ -105,7 +104,7 @@ test("32c replaces 26a: provider failure between incomplete runs counts as one f
     silent(h); await h.turn();
     h.provider(async () => ({ ...reply(""), stopReason: "error" as const, errorMessage: "provider exploded" }));
     await tick(h);
-    expect(JSON.parse(notingRuns(h).at(-1)!.response!).problems).not.toEqual([NOTING_INCOMPLETE]);
+    expect(JSON.parse(notingRuns(h).at(-1)!.response!).problems.join("\n")).toContain("provider exploded");
     expect(disabled(h)).toEqual([]);
     silent(h); await tick(h);
     expect(disabled(h)).toHaveLength(1);
@@ -150,7 +149,7 @@ test("32c replaces 26a: reopening resets neither an enabled streak nor disabled 
   } finally { await h.dispose(); }
 }, 20000);
 
-test("32c replaces 26a: real native fork children disable on the third incomplete execution, not the second", async () => {
+test("32c replaces 26a: real native children disable on the third incomplete execution, not the second", async () => {
   const f = await fixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : say("Nothing to note."));
@@ -164,9 +163,9 @@ test("32c replaces 26a: real native fork children disable on the third incomplet
     await f.turn("disabled opportunity " + "word ".repeat(400));
     expect(notingRuns(f.h)).toHaveLength(3);
     await command(f.h, "on");
-    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", {}));
+    f.script(body => !worker(body) ? say("好的。") : noterTurn(body, {}));
     await f.turn("enabled opportunity " + "word ".repeat(400));
-    await vi.waitFor(() => expect(notingRuns(f.h).filter(r => r.outcome === "success")).toHaveLength(1), { timeout: 5000 });
+    await vi.waitFor(() => expect(notingRuns(f.h).filter(r => r.outcome === "success")).toHaveLength(2), { timeout: 5000 }); // write and verify
   } finally { await f.dispose(); }
 }, 40000);
 

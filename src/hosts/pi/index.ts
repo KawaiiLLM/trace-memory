@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
-import { createGrepToolDefinition, createReadToolDefinition, SettingsManager, truncateHead, truncateLine, formatSize, DEFAULT_MAX_BYTES, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createEditToolDefinition, createGrepToolDefinition, createReadToolDefinition, createWriteToolDefinition, SettingsManager, truncateHead, truncateLine, formatSize, DEFAULT_MAX_BYTES, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { contextComposition } from "./context-composition.ts";
 import { statusBody } from "./session-status.ts";
 import { showSessionPanel } from "./session-panel.ts";
@@ -11,7 +11,8 @@ import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggle
 import { agentDirectory, configuration, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
-import { TraceMemory, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, isThinkingOnly, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, retrievalPolicy, toolRejected, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
+import { workspaceFileTools } from "./workspace-files.ts";
+import { TraceMemory, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, isThinkingOnly, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, defaultWorkspaceRoot, sweepStaleWorkspaces, retrievalPolicy, toolRejected, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -152,13 +153,15 @@ export default function (pi: ExtensionAPI) {
       writeFileSync(path, text, { mode: 0o600 });
       return path;
     });
+    // The Noter writes its two workspace files with Pi's own write and edit, confined to exactly those paths (ticket 144).
+    const files = input.kind === "noting" ? workspaceFileTools(callContext.cwd, input.workspace) : undefined;
     return runWorker(input, {
-      model: model as unknown as WorkerModel | undefined, checkCapacity, tools,
+      model: model as unknown as WorkerModel | undefined, checkCapacity, tools, fileTools: files?.definitions as never,
       runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
       read: memoryReadTool(callContext.cwd, path => {
         if (!input.reader) throw new Error("Memory worker read requires its frozen reader");
         return memoryFiles(memory, input.reader).read(path);
-      }, { memoryOnly: true, readableDirectory: () => outputDirectory }),
+      }, { memoryOnly: true, readableDirectory: () => outputDirectory, readableFiles: () => files?.paths ?? [] }),
       maxToolRounds: memory.config[input.kind].maxToolRounds,
       // Pi's own retry policy runs inside the child; the one warning per scheduled backoff stays the
       // adapter's. 51: the footer indicator no longer tracks a retry — the notify reports it.
@@ -349,14 +352,18 @@ export default function (pi: ExtensionAPI) {
       // A configuration error, not a transient wait: a manual catchup must fail on it, never retry (review 2026-09-08).
       return Promise.resolve({ outcome: "dropped", permanent } as const);
     }
-    const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM, prefixTokens: 0 };
+    const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM };
     // Fresh Pi children expose the native Read definition via memoryReadTool. Price that same
     // description and schema beside Core's memory tools.
     const { name, description, parameters } = createReadToolDefinition(context.cwd);
     const nativeReadToolTokens = tokens(JSON.stringify({ name, description, parameters }));
+    // The Noter also has Pi's write and edit.
+    const nativeWriteToolTokens = [createWriteToolDefinition(context.cwd), createEditToolDefinition(context.cwd)]
+      .reduce((sum, { name, description, parameters }) => sum + tokens(JSON.stringify({ name, description, parameters })), 0);
     const common = { ...target, model: selectedModel, thinkingLevel: inheritedThinking, subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
-      nativeReadToolTokens, ...(options.boundary ? { boundary: options.boundary } : {}) };
+      nativeReadToolTokens, ...(kind === "noting" ? { nativeWriteToolTokens, workspaceRoot: defaultWorkspaceRoot() } : {}),
+      ...(options.boundary ? { boundary: options.boundary } : {}) };
     return (kind === "dreaming" ? memory.dream(common) : memory.noting(common))
       .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); return result; });
   };
@@ -678,6 +685,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, context) => {
     restore(context);
     watchSettings();
+    // A crashed session leaves its Noter workspaces behind; remove the ones far older than any live run.
+    sweepStaleWorkspaces(defaultWorkspaceRoot());
     // 101: Pi keeps the first registration of a tool name; say what that costs when it is not ours.
     const tools = pi.getAllTools();
     for (const [name, description] of memoryTools) {
@@ -913,7 +922,7 @@ export default function (pi: ExtensionAPI) {
         const permanent = (result as { permanent?: string }).permanent;
         if (outcome === "dropped" && permanent) { c.outcome = "failed"; c.diagnostic = permanent; checkpoint = false; return; }
         if (outcome === "dropped") { if (phase === "noting") c.waitingPhase = phase; return; }
-        if (outcome === "failure" || outcome === "bounced") {
+        if (outcome === "failure") {
           c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
           if ((result as { automaticOff?: string }).automaticOff) c.outcome = "stopped";
           else retry = true;

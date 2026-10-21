@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, tokens, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import memories from "../../fixtures/noting/facts.json";
+import { submit, verifyUnchanged } from "../../support/noter.ts";
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, sessionId: number, projectId: number;
 let calls: NotingAgentInput[], script: ((input: NotingAgentInput) => Promise<RunAgentResult>)[];
@@ -18,6 +19,7 @@ beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-authority-")); calls = []; script = [];
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
+    if (input.task === "verify") return verifyUnchanged(input, { request });
     calls.push(input); input.reportRequest(request);
     const next = script.shift(); if (!next) throw new Error("unexpected call");
     return next(input);
@@ -47,18 +49,15 @@ function knowledge(support: number, text = memories.knowledge) {
   return { ...item, tag: `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, item.commit)}` };
 }
 const create = (support: number, text = memories.knowledge) => ({ op: "create", title: "Fixture title", text, category: "understanding", scope: "project", topics: [], supports: [`F${support}`], reason: "Initial admission" });
-function stage(input: NotingAgentInput, output: unknown) {
-  expect(input.tools.find(tool => tool.name === "note")!.execute({})).toContain("held");
-  const write = input.tools.find(tool => tool.name === "memory")!;
-  if (Array.isArray(output)) return output.map(op => write.execute(op)).at(-1);
-  return write.execute(output);
+async function stage(input: NotingAgentInput, output: unknown) {
+  await submit(input, memory, { noteInput: [], memoryInput: output as Record<string, unknown> });
 }
-function queue(output: unknown) { script.push(async input => { stage(input, output); return success(); }); }
+function queue(output: unknown) { script.push(async input => { await stage(input, output); return success(); }); }
 const run = (owner = sessionId, branch = "main", headTurnId = memory.store.knowledgePath(owner, branch).headTurnId!) => memory.noting({ sessionId: owner, branch, headTurnId });
 function deferred() {
   let resolve!: (output: unknown) => void;
   const promise = new Promise<unknown>(r => { resolve = r; });
-  script.push(async input => { stage(input, await promise); return success(); });
+  script.push(async input => { await stage(input, await promise); return success(); });
   return resolve;
 }
 
@@ -83,22 +82,22 @@ test("freezes branch, Raw membership and references until a single terminal publ
   if (result.outcome !== "success") throw new Error("missing success audit");
   const audit = memory.store.getRun(result.runId)!;
   expect(JSON.parse(audit.request!)).toEqual(request);
-  expect(JSON.parse(audit.response!).toolCalls).toHaveLength(2);
+  expect(JSON.parse(audit.response!).toolCalls).toHaveLength(1); // the verify task's check
   expect(JSON.parse(audit.response!)).not.toHaveProperty("readKnowledgeCommits");
 });
 
-for (const bad of ["json", "shape", "failure", "cancelled", "missing request", "throw", "abort"] as const) {
+for (const bad of ["shape", "failure", "cancelled", "missing request", "throw", "abort"] as const) {
   test(`${bad} records the attempt, advances neither layer and releases admission`, async () => {
     const evidence = fact();
     script.push(async input => {
       if (bad === "throw" || bad === "abort") { const error = new Error("stopped"); error.name = bad === "abort" ? "AbortError" : "Error"; throw error; }
       if (bad === "failure" || bad === "cancelled") return { outcome: bad, output: "stopped", request };
-      if (bad === "missing request") { stage(input, empty); return { outcome: "success", output: "done" }; }
-      stage(input, bad === "json" ? "{" : { ...create(evidence.id), category: "invalid" });
+      if (bad === "missing request") { await stage(input, empty); return { outcome: "success", output: "done" }; }
+      await stage(input, { ...create(evidence.id), category: "invalid" });
       return success();
     });
     const result = await run();
-    const expected = bad === "shape" ? "bounced" : bad === "cancelled" || bad === "abort" ? "cancelled" : "failure";
+    const expected = bad === "cancelled" || bad === "abort" ? "cancelled" : "failure";
     expect(result.outcome, JSON.stringify(result)).toBe(expected);
     if (!("runId" in result) || !result.runId) throw new Error("expected failed run audit");
     expect(memory.store.getRun(result.runId)!.outcome).toBe(expected);
@@ -133,16 +132,6 @@ test("empty Raw ranges create no run; successful explicit empties consume only R
   expect(memory.store.listRuns(sessionId)).toEqual(before);
 });
 
-test("N merge refusal creates neither survivor revision nor absorbed links", async () => {
-  const a = fact(), b = fact(memories.observation), survivor = knowledge(a.id), absorbed = knowledge(b.id);
-  queue({ op: "merge", id: survivor.tag, absorb: [absorbed.tag], text: memories.editedKnowledge, category: "understanding", scope: "project", topics: [], supports: [`F${a.id}`, `F${b.id}`], reason: "Merge duplicate" });
-  const result = await run();
-  expect(result.outcome).toBe("bounced");
-  expect("problems" in result && result.problems?.join(" ")).toContain("Dreamer");
-  expect(memory.store.listKnowledgeLinks(absorbed.knowledgeId)).toEqual([]);
-  expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
-});
-
 for (const bad of ["missing fact", "foreign fact", "late fact", "untagged base", "model handle", "duplicate target"] as const) test(`N resolution refuses ${bad} without publishing a sibling operation`, async () => {
   const evidence = fact(), base = knowledge(evidence.id);
   const foreignProject = memory.store.createProject({ name: "foreign", declaredBy: "mark" }).id;
@@ -156,7 +145,7 @@ for (const bad of ["missing fact", "foreign fact", "late fact", "untagged base",
     : create(bad === "missing fact" ? 999999 : bad === "foreign fact" ? foreign.id : late.id);
   resolve([bad === "duplicate target" ? update : create(evidence.id), operation]);
   const result = await pending;
-  expect(result.outcome, JSON.stringify(result)).toBe("bounced");
+  expect(result.outcome, JSON.stringify(result)).toBe("failure");
   expect(memory.store.listKnowledgeRevisions()).toHaveLength(1);
   expect(memory.store.currentCommit(base.knowledgeId)[0]!.id).toBe(base.commit);
   expect(memory.pendingEntries(sessionId, "main", late.turnId)).toHaveLength(2);
@@ -177,8 +166,7 @@ for (const sameProject of [false, true]) test(`independent sessions publish whil
 test("Raw progress failure inside terminal publication rolls back facts, knowledge and success audit", async () => {
   const evidence = fact();
   script.push(async input => {
-    expect(input.tools.find(tool => tool.name === "note")!.execute({ title: "New episode", sources: `[T${evidence.turnId}#E1] New episode` })).toContain("held");
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ ...create(evidence.id), supports: ["$1"] })).toContain("held");
+    await submit(input, memory, { noteInput: [{ title: "New episode", sources: `[T${evidence.turnId}#E1] New episode` }], memoryInput: { ...create(evidence.id), supports: ["$1"] } });
     return success();
   });
   memory.store.db.exec(`CREATE TEMP TRIGGER reject_progress AFTER INSERT ON noted_entries
@@ -206,21 +194,11 @@ test("simulation v7m Chinese evidence remains traceable through N knowledge publ
   for (const source of fixture.facts) expect(memory.trace(`F${ids.get(source.id)}`)).toContain(source.text);
 });
 
-test("N archive and create publish together with Raw progress, leaving historical fact accounting untouched", async () => {
-  const withdrawal = fact("The user withdrew the rule"), evidence = fact(), base = knowledge(evidence.id);
-  queue([create(evidence.id), { op: "archive", kind: "budget", id: base.tag, supports: [`F${withdrawal.id}`], reason: "Withdrawn" }]);
-  expect((await run()).outcome).toBe("success");
-  expect(memory.store.currentCommit(base.knowledgeId)[0]!.op).toBe("archive");
-  expect(memory.store.getKnowledge(base.knowledgeId + 1)).not.toBeNull();
-  expect(memory.pendingEntries(sessionId, "main", evidence.turnId)).toEqual([]);
-  expect(memory.store.listConsolidatedProjectFacts(projectId)).toEqual([]);
-});
-
 test("one malformed reason prevents valid siblings and Raw progress from publishing", async () => {
   const evidence = fact(), good = create(evidence.id);
   queue([good, { ...good, text: "Second conclusion", reason: "   " }]);
   const result = await run();
-  expect(result.outcome).toBe("bounced");
+  expect(result.outcome).toBe("failure");
   expect("problems" in result && result.problems?.join(" ")).toContain("reason");
   expect(memory.store.currentKnowledge()).toEqual([]);
   expect(memory.pendingEntries(sessionId, "main", evidence.turnId)).toHaveLength(1);
@@ -228,7 +206,7 @@ test("one malformed reason prevents valid siblings and Raw progress from publish
 
 // 144 supersedes the 200-versus-1000 half of this case: a body over 200 estimated tokens is now refused at the write call.
 test("new numbers are not an extra N rejection gate", async () => {
-  const evidence = fact("Measured 12 samples."), text = "Measured 12 samples. 42 2 999 " + "word ".repeat(100);
+  const evidence = fact("Measured 12 samples."), text = ("Measured 12 samples. 42 2 999 " + "word ".repeat(100)).trim(); // a file body is trimmed
   expect(tokens(text)).toBeLessThanOrEqual(200);
   queue(create(evidence.id, text));
   expect((await run()).outcome).toBe("success");

@@ -8,7 +8,7 @@
 import { mkdirSync } from "node:fs";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
   type ExtensionAPI, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
-import { toolRejected, type ToolDefinition } from "../../core/api/index.ts";
+import type { ToolDefinition } from "../../core/api/index.ts";
 import { THINKING_LEVELS, type ThinkingLevel } from "../phase-settings.ts";
 
 export { THINKING_LEVELS, type ThinkingLevel } from "../phase-settings.ts";
@@ -33,6 +33,8 @@ interface NativeCommon {
   /** Same frozen reader as this task's material; only trace:// execution is exposed. */
   read: ReturnType<typeof import("./memory-files.ts").memoryReadTool>;
   reportToolRejection?(id: string, name: "note" | "memory", input: unknown, reason: string): void;
+  /** The Noter's write and edit (ticket 144), already confined by the host to its two workspace files. */
+  fileTools?: PiToolDefinition[];
   /** 0 = unlimited, as `maxToolRounds` has always meant. */
   maxToolRounds: number;
   signal?: AbortSignal;
@@ -68,8 +70,6 @@ export interface NativeResult {
   nativeLog?: string;
   /** 26b: the level this child was asked to run at and the level Pi's clamp left it at. */
   thinking: { requested?: ThinkingLevel; effective: ThinkingLevel };
-  /** A whitelisted memory tool returned a non-rejection receipt in this run. */
-  committed: boolean;
   /** Observed tool-call order, including rejected non-whitelisted calls. */
   calls: { name: string; executed: boolean }[];
 }
@@ -107,13 +107,13 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     constrainedSampling?: PiToolDefinition["constrainedSampling"] }[] = [
     ...task.tools.map(definition => ({ name: definition.name, description: definition.description, parameters: definition.parameters as Body })),
     { name: task.read.name, description: task.read.description, parameters: { ...task.read.parameters },
-      constrainedSampling: task.read.constrainedSampling }];
+      constrainedSampling: task.read.constrainedSampling },
+    ...(task.fileTools ?? []).map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters as Body }))];
   const manager = SessionManager.create(task.cwd, task.runsDir);
   const nativeLog: string | undefined = manager.getSessionFile();
 
   const calls: { name: string; executed: boolean }[] = [];
-  let committed = false;
-  const attempts = new Map<string, { name: "note" | "memory"; input: unknown; executed: boolean }>();
+  const attempts = new Map<string, { name: "memory"; input: unknown; executed: boolean }>();
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
   // A fresh child registers bound memory tools plus restricted native Read. Tool EXECUTION allows
   // these tools only.
@@ -125,18 +125,15 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       const attempt = attempts.get(_id);
       if (attempt) attempt.executed = true;
       const bound = task.tools.find(t => t.name === tool.name);
-      const reading = tool.name === "read";
-      calls.push({ name: tool.name, executed: (reading || !!bound) && !exceeded });
+      const reading = tool.name === "read", file = task.fileTools?.find(t => t.name === tool.name);
+      calls.push({ name: tool.name, executed: (reading || !!file || !!bound) && !exceeded });
       if (exceeded) throw new Error(`rejected: tool rounds exceeded (${task.maxToolRounds})`);
       if (reading) return task.read.execute(_id, raw as never, task.signal, undefined, { cwd: task.cwd } as never);
+      if (file) return file.execute(_id, raw as never, task.signal, undefined, { cwd: task.cwd } as never);
       if (!bound) throw new Error(`rejected: ${tool.name} is not available to a Trace Memory worker`);
       let content: string;
       try { content = await bound.execute(raw); }
       catch (error) { content = `rejected: ${String(error)}`; }
-      // Held N receipts are not business commits, including the explicit empty calls.
-      let held = false;
-      try { held = Array.isArray(JSON.parse(content).held); } catch { /* Ordinary text receipt. */ }
-      if (!toolRejected(tool.name, content) && !held) committed ||= tool.name === "note" || tool.name === "memory";
       return { ...result(content), ...(task.kind === "dreaming" && task.passEnd && task.maxToolRounds > 0 && rounds >= task.maxToolRounds ? { terminate: true } : {}) };
     },
   })) satisfies { name: string }[] as unknown as PiToolDefinition[];
@@ -213,8 +210,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   };
   const unsubscribe = session.subscribe(event => {
     if (task.reportToolRejection) {
-      if (event.type === "tool_execution_start" && (event.toolName === "note" || event.toolName === "memory") && !attempts.has(event.toolCallId)
-          && (task.kind === "noting" || event.toolName === "memory")) // 127: the Dreamer exposes no note
+      if (event.type === "tool_execution_start" && event.toolName === "memory" && !attempts.has(event.toolCallId) && task.kind === "dreaming") // 127: only the Dreamer has a numbered write tool
         attempts.set(event.toolCallId, { name: event.toolName, input: structuredClone(event.args), executed: false });
       if (event.type === "tool_execution_end" && event.isError) {
         const attempt = attempts.get(event.toolCallId);
@@ -293,5 +289,5 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   const outcome = aborted ? "cancelled" as const : failed ? "failure" as const : "success" as const;
   const output = outcome === "success" ? text(terminal!)
     : failure ?? `${terminal?.stopReason ?? "no terminal assistant response"}${terminal?.errorMessage ? `: ${terminal.errorMessage}` : ""}${terminal && text(terminal) ? ` (partial output: ${text(terminal).slice(0, 200)})` : ""}`;
-  return { outcome, output, usage, request, retries, committed, calls, thinking, ...(nativeLog ? { nativeLog } : {}) };
+  return { outcome, output, usage, request, retries, calls, thinking, ...(nativeLog ? { nativeLog } : {}) };
 }

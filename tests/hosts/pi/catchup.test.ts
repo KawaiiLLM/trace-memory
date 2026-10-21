@@ -3,7 +3,9 @@ import { once } from "node:events";
 import { expect, test, vi } from "vitest";
 import { TraceMemory, type NotingAgentInput } from "../../../src/core/api/index.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { host, reply, notingFact, type Reply } from "./test-host.ts";
+import { host, reply, notingFact, NOTER_BATCH_REQUESTS, type Reply } from "./test-host.ts";
+import { submit } from "../../support/noter.ts";
+import { submitEmpty } from "../../support/noter.ts";
 
 type Memory = ReturnType<typeof TraceMemory>;
 const at = "2026-09-08T00:00:00.000Z";
@@ -27,7 +29,7 @@ function target(memory: Memory, options: { closed?: boolean; enabled?: boolean; 
 const tick = async (h: ReturnType<typeof host>) => { await h.prompt("next main turn"); await h.answer("eligible completion"); await h.drain(); };
 function hold(h: ReturnType<typeof host>) {
   const releases: ((reply: Reply) => void)[] = [];
-  h.provider(async c => c.messages.some(m => String(m.content).includes("Before publication, review this run once."))
+  h.provider(async c => c.messages.some(m => String(m.content).includes("Your files do not pass the check"))
     ? reply("Reviewed.") : new Promise(resolve => releases.push(resolve)));
   return releases;
 }
@@ -47,7 +49,7 @@ test("own pending N precedes closed tails; busy N does not fan out or chain on c
     release[0]!(reply("No durable material.")); await h.drain();
     expect(h.memory.store.listRuns(1).filter(r => r.kind !== "manual")).toHaveLength(1);
     expect(h.requests).toHaveLength(2); // one fixed review, no chained tail
-    expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Before publication, review this run once.");
+    expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Your files do not pass the check");
   } finally { await h.dispose(); }
 });
 
@@ -72,7 +74,7 @@ test("borrowed N follows the oldest retained branch; a busy slot never takes ano
     expect(h.signals[0]!.aborted).toBe(false); // arriving own work did not preempt borrowed N
     h.provider(async c => notingFact(c));
     await tick(h);
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success"]);
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success", "success"]); // write and verify
     expect(h.memory.pendingEntries(second.sessionId, second.branch, second.headTurnId)).toHaveLength(1);
   } finally { await h.dispose(); }
 });
@@ -86,8 +88,8 @@ test("closed tiny pending Raw is borrowed below own trigger; noted-only, live an
     const noted = target(h.memory, { noted: true, facts: 1 });
     const pending = target(h.memory);
     await tick(h);
-    expect(h.requests).toHaveLength(4); // explicit note, memory, normal reply, fixed review
-    expect(h.memory.store.listRuns(pending.sessionId).filter(r => r.kind === "noting")).toHaveLength(1);
+    expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch: both tasks
+    expect(h.memory.store.listRuns(pending.sessionId).filter(r => r.kind === "noting")).toHaveLength(2);
     expect(h.memory.pendingEntries(pending.sessionId, pending.branch, pending.headTurnId)).toEqual([]);
     expect(h.memory.store.listRuns(live.sessionId)).toHaveLength(0);
     expect(h.memory.store.listRuns(disabled.sessionId)).toHaveLength(0);
@@ -126,20 +128,11 @@ test("borrowed N publishes both layers to its target without a special executor 
     h.memory.declareProject(1, "Borrowed project", "mark", h.memory.store.knowledgePath(1, "main"));
     const t = target(h.memory, { project: "Borrowed project", branch: "target-branch" });
     const beforeDelivery = h.entries.filter(e => e.type === "custom_message").length;
-    h.provider(async c => {
-      const noteResult = c.messages.some(m => m.role === "toolResult" && m.toolName === "note");
-      const memoryResult = c.messages.some(m => m.role === "toolResult" && m.toolName === "memory");
-      if (memoryResult) return reply("Done");
-      if (noteResult) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "borrowed-memory", name: "memory",
-        arguments: { op: "create", title: "Fixture title", text: "Target knowledge", category: "understanding", scope: "project",
-          topics: [], reason: "Retain the target's finding.", supports: ["$1"] } }] };
-      const note = notingFact(c);
-      return { ...note, content: [note.content[0]!] };
-    });
+    h.provider(async c => notingFact(c, "## create\ntitle: Fixture title\ncategory: understanding\nscope: project\ntopics: \nsupports: f1\nreason: Retain the target's finding.\n\nTarget knowledge\n"));
     await tick(h);
     const runs = h.memory.store.listRuns(t.sessionId).filter(r => r.kind === "noting");
-    expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({ branch: t.branch, outcome: "success" });
+    expect(runs).toHaveLength(2); // write and verify
+    expect(runs[1]).toMatchObject({ branch: t.branch, outcome: "success" });
     const fact = h.memory.store.listSessionFacts(t.sessionId)[0]!;
     expect(fact).toBeDefined();
     const visible = h.memory.store.listVisibleKnowledge(t.sessionId, t.projectId);
@@ -194,7 +187,8 @@ test("an owned D pool uses a real pending version and keeps its global seat sepa
 test("N commit rejects a replaced borrowed claim token without publishing progress", async () => {
   const h = host();
   let input!: NotingAgentInput, finish!: () => void;
-  const worker = TraceMemory(h.dbPath, async raw => { input = raw as NotingAgentInput; input.reportRequest({ phase: "noting" }); await new Promise<void>(r => { finish = r; }); return { outcome: "success", output: "", request: {} }; });
+  const worker = TraceMemory(h.dbPath, async raw => { input = raw as NotingAgentInput; input.reportRequest({ phase: "noting" }); await new Promise<void>(r => { finish = r; });
+    await submit(input, worker, { noteInput: [{ title: "Late", sources: `[T${input.range.to.split("/")[1]}#E1] Late` }], memoryInput: {} }); return { outcome: "success", output: "", request: {} }; });
   try {
     await h.turn();
     const t = target(h.memory, { facts: 1 });
@@ -203,8 +197,6 @@ test("N commit rejects a replaced borrowed claim token without publishing progre
     h.memory.store.invalidateExecutor(old.executorId);
     const replacement = h.memory.store.acquireClaim(t, "noting", old.executorId, true)!;
     expect(replacement.token).not.toBe(old.token);
-    input.tools.find(tool => tool.name === "note")!.execute({ title: "Late", sources: `[T${t.headTurnId}#E1] Late` });
-    input.tools.find(tool => tool.name === "memory")!.execute({});
     finish(); expect((await pending).outcome).not.toBe("success");
     expect(h.memory.store.getClaim(t.sessionId, "noting")!.token).toBe(replacement.token);
     expect(h.memory.pendingEntries(t.sessionId, t.branch, t.headTurnId)).toHaveLength(1);
@@ -218,8 +210,7 @@ test("reopening a closed target replaces borrowed N token and prevents stale pub
   const old = TraceMemory(h.dbPath, async () => { await new Promise<void>(r => { finish = r; }); return { outcome: "success", output: "", request: {} }; });
   const own = TraceMemory(h.dbPath, async raw => {
     const input = raw as NotingAgentInput;
-    input.tools.find(t => t.name === "note")!.execute({});
-    input.tools.find(t => t.name === "memory")!.execute({});
+    submitEmpty(input);
     return { outcome: "success", output: "", request: {} }; });
   try {
     await h.turn();
@@ -328,8 +319,7 @@ test("claim-release failure after terminal N publication does not roll back comm
   const worker = TraceMemory(h.dbPath, async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ phase: "noting" });
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    input.tools.find(tool => tool.name === "memory")!.execute({});
+    submitEmpty(input);
     return { outcome: "success", output: "", request: {} };
   });
   try {
@@ -431,12 +421,12 @@ test("disabled executors cannot acquire or commit borrowed N; project change fen
 test("failed own capacity admission leaves its N slot free for a smaller closed tail", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   try {
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 21000 }; // 20,000 before 144: its larger Noter prompt moved the smaller tail over the allowance
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 20000 }; // small enough that the own batch is refused and the smaller closed tail still fits
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);
     await tick(h);
-    expect(h.requests, h.notices.join("\n")).toHaveLength(4);
+    expect(h.requests, h.notices.join("\n")).toHaveLength(NOTER_BATCH_REQUESTS);
     expect(h.conversations[0]!.messages[0]!.content).toContain(`S${t.sessionId}/T${t.headTurnId}`);
     expect(h.notices.join(" ")).toContain("Noting capacity: selected evidence cannot fit the model context");
     expect(h.memory.store.getClaim(1, "noting")).toBeNull();

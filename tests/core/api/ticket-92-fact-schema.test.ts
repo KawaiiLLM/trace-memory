@@ -8,6 +8,7 @@ import { renderFact, renderFactPreview, renderFactGroups } from "../../../src/co
 import { toolDefinitions, canonicalToolNames } from "../../../src/core/api/index.ts";
 import { CcForegroundTools } from "../../../src/hosts/cc/tools.ts";
 import type { CcCoordinator } from "../../../src/hosts/cc/lifecycle.ts";
+import { submitEmpty } from "../../support/noter.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -31,8 +32,7 @@ test("92: one note schema derives ordered entry roles and original harness, not 
   const f = fixture();
   try {
     const schema = toolDefinitions.find(t => t.name === "note")!.parameters.properties as any;
-    expect(Object.keys(schema)).toEqual(["title", "sources", "support", "negate", "slot", "drop"]);
-    expect(schema.slot.description).toContain("N only");
+    expect(Object.keys(schema)).toEqual(["title", "sources", "support", "negate"]); // 116 and 144: no draft slots, for any writer
     expect(schema.sources.type).toBe("string");
     const result = JSON.parse(f.note.execute(slice("User proposed A; Pi agent reported B; tool returned C.", f.source)));
     expect(result.factIds).toHaveLength(1);
@@ -192,8 +192,7 @@ test("92: N material carries legacy owner-session harness context without rewrit
     const input = raw as NotingAgentInput;
     inputText = input.text;
     input.reportRequest({ fixture: "legacy N" });
-    input.tools.find(t => t.name === "note")!.execute({});
-    input.tools.find(t => t.name === "memory")!.execute({});
+    submitEmpty(input);
     return { outcome: "success", output: "done", request: { fixture: "legacy N" } };
   });
   try {

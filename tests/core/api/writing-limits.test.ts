@@ -1,4 +1,4 @@
-// What `note` and `memory` refuse for length and title, for every writer: the Noter (held until it ends),
+// What `note`, `memory` and the Noter's check refuse for length and title, for every writer: the Noter (its files),
 // the Dreamer (one operation per call) and the manual tools. Title and body limits come from `writing`.
 import { afterEach, expect, test } from "vitest";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
@@ -6,6 +6,8 @@ import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-d
 import { skipRest } from "../../dreaming-skips.ts";
 import { fact as seedFact, legacyKnowledge, receiptCommit } from "../../support/seed.ts";
 import { tokens } from "../../../src/core/render/index.ts";
+import { writeFileSync } from "node:fs";
+import { factsFile, knowledgeFile, submit, verifyUnchanged, type Files } from "../../support/noter.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios, triggerEntryId: number;
 afterEach(() => memory?.close());
@@ -21,11 +23,12 @@ function sized(size: number, prefix = ""): string {
 
 const success = (): RunAgentResult => ({ outcome: "success", output: "done", request: { fixture: "writing limits" } });
 
-/** The scripted Noter of the case under test; the default ends without writing. */
+/** The scripted write task of the case under test; the default ends without writing. */
 let script: (input: NotingAgentInput) => Promise<RunAgentResult> = async () => success();
 function setup() {
   script = async () => success();
-  scenarios = new AdmittedDreamerScenarios(raw => script(raw as NotingAgentInput));
+  scenarios = new AdmittedDreamerScenarios(raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify"
+    ? verifyUnchanged(raw, { request: { fixture: "writing limits" } }) : script(raw as NotingAgentInput));
   memory = sourceSeededMemory(":memory:", scenarios.agent);
   const project = memory.store.createProject({ name: "limits", declaredBy: "mark" });
   const session = memory.store.createSession({ enrollmentChoice: true, host: "pi:limits", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
@@ -118,52 +121,50 @@ test("an update inherits its base's title; a base without one asks for it; an ar
   expect(memory.store.getKnowledgeRevision(second.knowledgeId, receiptCommit(memory.store, gone.committed[0]))!.title).toBeNull();
 });
 
-test("the Noter's calls are refused for length and title when they are made, and a corrected replacement publishes", async () => {
+/** What `check` says about these files: written to the workspace, then asked for, as a model does while it works. */
+async function checked(input: NotingAgentInput, files: Partial<Files>): Promise<string> {
+  if (files.facts !== undefined) writeFileSync(input.workspace.facts, files.facts);
+  if (files.knowledge !== undefined) writeFileSync(input.workspace.knowledge, files.knowledge);
+  return String(await input.tools.find(tool => tool.name === "check")!.execute({}));
+}
+test("the Noter's check refuses length and title with their counts, and a corrected file publishes", async () => {
   const seen: string[] = [];
   setup();
   script = async input => {
-    const note = input.tools.find(tool => tool.name === "note")!, write = input.tools.find(tool => tool.name === "memory")!;
     const address = "T1#E1";
-    seen.push(note.execute({ title: sized(21), sources: `[${address}] fine` }) as string);
-    seen.push(note.execute({ title: "Fits", sources: `[${address}] ${sized(201)}` }) as string);
-    seen.push(note.execute({ slot: "$1", title: "Fits", sources: `[${address}] Use pnpm` }) as string);
-    seen.push(write.execute(create(sized(21), "Use pnpm")) as string);
-    seen.push(write.execute({ ...create("Package manager", "Use pnpm"), title: undefined }) as string);
-    seen.push(write.execute(create("Package manager", sized(201))) as string);
-    seen.push(write.execute({ slot: "M1", ...create("Package manager", "Use pnpm") }) as string);
-    note.execute({ drop: "$2" }); write.execute({ drop: "M2" }); write.execute({ drop: "M3" });
+    seen.push(await checked(input, { facts: factsFile([{ title: sized(21), sources: `[${address}] fine` }]), knowledge: "## none\n" }));
+    seen.push(await checked(input, { facts: factsFile([{ title: "Fits", sources: `[${address}] ${sized(201)}` }]) }));
+    seen.push(await checked(input, { facts: factsFile([{ title: "Fits", sources: `[${address}] Use pnpm` }]),
+      knowledge: knowledgeFile(memory, create(sized(21), "Use pnpm")) }));
+    seen.push(await checked(input, { knowledge: knowledgeFile(memory, { ...create("Package manager", "Use pnpm"), title: undefined }) }));
+    seen.push(await checked(input, { knowledge: knowledgeFile(memory, create("Package manager", sized(201))) }));
+    await submit(input, memory, { noteInput: [{ title: "Fits", sources: `[${address}] Use pnpm` }], memoryInput: create("Package manager", "Use pnpm") });
     return success();
   };
   const result = await memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
   expect(seen[0]).toContain("title: 21 tokens, over the 20-token limit");
+  expect(seen[0]).toContain("title 21/20 (over)"); // and the count is reported with the others
   expect(seen[1]).toContain("sources: 201 tokens, over the 200-token limit");
-  expect(seen[2]).toContain("held: $1");
-  expect(seen[3]).toContain("title: 21 tokens, over the 20-token limit");
-  expect(seen[4]).toContain("title: expected a nonempty single-line string");
-  expect(seen[5]).toContain("text: 201 tokens, over the 200-token limit");
-  expect(seen[6]).toContain("held: M1");
+  expect(seen[2]).toContain("title: 21 tokens, over the 20-token limit");
+  expect(seen[3]).toContain("missing required field `title`");
+  expect(seen[4]).toContain("text: 201 tokens, over the 200-token limit");
   expect(result.outcome, JSON.stringify(result)).toBe("success");
   expect(stored(1)).toMatchObject({ title: "Package manager", text: "Use pnpm" });
 });
-
 test("a Noter update is checked on its resulting body and needs a title when its base has none", async () => {
   const { path } = setup();
   const legacy = legacyKnowledge(memory.store, path, { text: sized(250, "Legacy rule. "), category: "constraint", scope: "project", supports: [1] });
   const seen: string[] = [];
   script = async input => {
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    const update = { op: "update", id: tag(legacy.knowledgeId), supports: ["F1"], reason: "Compress", edits: [{ old: "Legacy rule.", new: "Rule." }] };
-    seen.push(write.execute(update) as string);
-    seen.push(write.execute({ ...update, title: "Legacy rule", slot: "M1" }) as string);
-    seen.push(write.execute({ op: "update", id: tag(legacy.knowledgeId), supports: ["F1"], reason: "Compress", title: "Legacy rule", slot: "M1",
-      text: "Rule, compressed.", category: "constraint", scope: "project", topics: [] }) as string);
+    const update = { op: "update", id: tag(legacy.knowledgeId), supports: ["F1"], reason: "Compress", category: "constraint", scope: "project", topics: [] };
+    seen.push(await checked(input, { facts: "## none\n", knowledge: knowledgeFile(memory, { ...update, text: "Rule, compressed." }) }));
+    seen.push(await checked(input, { knowledge: knowledgeFile(memory, { ...update, title: "Legacy rule", text: sized(250, "Legacy rule. ") }) }));
+    await submit(input, memory, { noteInput: [], memoryInput: { ...update, title: "Legacy rule", text: "Rule, compressed." } });
     return success();
   };
   const result = await memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
   expect(seen[0]).toContain("title: the base version has no title; supply one");
   expect(seen[1]).toMatch(/text: \d{3} tokens, over the 200-token limit/);
-  expect(seen[2]).toContain("held: M1");
   expect(result.outcome, JSON.stringify(result)).toBe("success");
   expect(stored(legacy.knowledgeId)).toMatchObject({ title: "Legacy rule", text: "Rule, compressed." });
 });

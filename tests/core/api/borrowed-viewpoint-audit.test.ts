@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import { sourceSeededMemory, recorded, hydrate, type RunAgent, type NotingAgentInput } from '../../source-fixture.ts';
 import { memoryFiles } from '../../../src/core/api/index.ts';
 import { fact as seedFact } from '../../support/seed.ts';
+import { submit, verifyUnchanged } from '../../support/noter.ts';
 
 const at = '2026-09-01T00:00:00.000Z';
 type Worker = NotingAgentInput;
@@ -47,7 +48,9 @@ async function execute(borrowed:boolean,dead:boolean) {
   let f:ReturnType<typeof fixture>;let captured:ReturnType<typeof material>|undefined;
   const checks:string[]=[];
   const agent:RunAgent=async raw=>{
-    const input=raw as Worker;captured=material(input);input.reportRequest({offlineAudit:true});
+    const input=raw as Worker;
+    if(input.task==='verify')return verifyUnchanged(input,{request:{offlineAudit:true}});
+    captured=material(input);input.reportRequest({offlineAudit:true});
     expect(input.sessionId).toBe(f.target.id);expect(input.branch).toBe('old');
     expect(input.text).toContain('OLD_TARGET_EVIDENCE');
     expect(input.text).not.toContain('SIBLING_MUST_NOT_LEAK');
@@ -57,24 +60,18 @@ async function execute(borrowed:boolean,dead:boolean) {
     const historical = memoryFiles(f.memory, input.reader!).read(`trace://F${f.liveFact.id}`).content;
     expect(historical, historical).toContain('SIBLING_MUST_NOT_LEAK');
     {
-      const note=input.tools.find(t=>t.name==='note')!;
-      const bad=note.execute({title:'Wrong sibling',sources:`[T${f.live.id}#E1] wrong sibling`});
-      expect(bad).toContain('rejected:');checks.push('sibling Raw citation rejected');
-      const badExecutor=note.execute({slot:'$1',title:'Wrong executor',sources:`[T${f.ex.id}#E1] wrong executor`});
-      expect(badExecutor).toContain('rejected:');checks.push('executor Raw citation rejected');
-      let receipt=note.execute({slot:'$1',title:'Target statement',sources:`[T${f.old.id}#E1] Recorded target statement`});
-      expect(receipt).not.toContain('rejected:');
+      // Neither a sibling's nor the executor's Raw is evidence for this target.
+      expect(await submit(input,f.memory,{noteInput:[{title:'Wrong sibling',sources:`[T${f.live.id}#E1] wrong sibling`}],memoryInput:{}})).toContain('invalid source');checks.push('sibling Raw citation rejected');
+      expect(await submit(input,f.memory,{noteInput:[{title:'Wrong executor',sources:`[T${f.ex.id}#E1] wrong executor`}],memoryInput:{}})).toContain('invalid source');checks.push('executor Raw citation rejected');
     }
     {
-      const write=input.tools.find(t=>t.name==='memory')!;
       const base = `K1#${f.s.versionTag(1, 1)}`;
       expect(memoryFiles(f.memory,input.reader!).read('trace://K1@v1').content).toContain(base);
       const op={op:'update',id:base,category:'constraint',scope:'project',text:'OLD_BRANCH_RESULT',topics:[],reason:'target evidence changes the rule'};
-      const bad=write.execute({...op,supports:[`F${f.liveFact.id}`]});
-      expect(bad).toContain('rejected:');checks.push('sibling fact citation rejected');
-      const receipt=write.execute({...op,slot:'M1',supports:['$1'] });
-      expect(receipt).toContain('held');
-      expect(write.execute({op:'create',title:'Fixture title',category:'constraint',scope:'project',text:'SHARED_ANCESTOR_RESULT',topics:[],reason:'shared ancestor remains on active path',supports:[`F${f.rootFact.id}`]})).toContain('held');
+      const target={title:'Target statement',sources:`[T${f.old.id}#E1] Recorded target statement`};
+      expect(await submit(input,f.memory,{noteInput:[target],memoryInput:{...op,supports:[`F${f.liveFact.id}`]}})).toContain('do not pass the check');checks.push('sibling fact citation rejected');
+      const create={op:'create',title:'Fixture title',category:'constraint',scope:'project',text:'SHARED_ANCESTOR_RESULT',topics:[],reason:'shared ancestor remains on active path',supports:[`F${f.rootFact.id}`]};
+      expect(await submit(input,f.memory,{noteInput:[target],memoryInput:[{...op,supports:['$1']},create]})).toBeUndefined();
       expect(f.s.currentCommit(1)[0]!.text).toBe('ROOT_KNOWLEDGE');
       expect(f.s.listSessionFacts(f.target.id).some(fact=>fact.text==='Recorded target statement')).toBe(false);
     }

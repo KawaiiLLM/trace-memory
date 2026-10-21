@@ -4,6 +4,8 @@ import { memoryFiles } from "../../../src/core/api/files.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { resolveFactSource, sourceAddresses } from "../../../src/core/model/source.ts";
 import { factSources, legacyFacts } from "../../support/seed.ts";
+import { checkWorkspace } from "../../../src/core/workspace/index.ts";
+import { factsFile } from "../../support/noter.ts";
 
 function fixture() {
   const m = TraceMemory(":memory:", async () => { throw Error("offline only"); }, {}, undefined, piSourceBlocks);
@@ -21,9 +23,13 @@ function fixture() {
 for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} rejects new thinking facts but retains explicit reads and mixed evidence`, () => {
   const f = fixture();
   try {
-    const tools = f.m.tools(kind === "manual" ? { kind, sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }
-      : { kind, sessionId: f.sessionId, branch: "main", entryIds: f.entries.map(e => e.id), range: { from: "S1/T1", to: "S1/T1" } });
-    const note = tools.find(t => t.name === "note")!;
+    // The Noter's facts are checked as a file; the manual tool commits.
+    const manual = f.m.tools({ kind: "manual", sessionId: f.sessionId, branch: "main", currentTurnId: f.turnId }).find(t => t.name === "note")!;
+    const note = kind === "manual" ? manual : { execute: (item: { title: string; sources: string }) => {
+      const checked = checkWorkspace(f.m.store, { kind: "noting-facts", file: { name: "facts.md", text: factsFile([item]) },
+        scope: { sessionId: f.sessionId, branch: "main", entryIds: f.entries.map(e => e.id), range: { from: "S1/T1", to: "S1/T1" } } });
+      return checked.ok ? "ok" : `rejected: ${checked.problems.join("; ")}`;
+    } };
     const files = memoryFiles(f.m, { sessionId: f.sessionId, branch: "main", headTurnId: f.turnId });
     const fact = (address: string) => ({ title: "Evidence check", sources: `[${address}] An observation` });
     expect(note.execute(fact("T1#E1"))).toContain("invalid source");
@@ -45,7 +51,7 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
     const accepted = [fact("T1#E2"), fact("T1#E3"), { title: "Mixed evidence", sources: factSources([
       { address: "T1#E2", text: "Public explanation" }, { address: "T1#E3", text: "Passed" }]) }].map(item => note.execute(item));
     if (kind === "manual") expect(accepted.map(receipt => JSON.parse(receipt).factIds).flat()).toHaveLength(3);
-    else accepted.forEach(receipt => expect(receipt).toContain("held"));
+    else accepted.forEach(receipt => expect(receipt).toBe("ok"));
   } finally { f.m.close(); }
 });
 

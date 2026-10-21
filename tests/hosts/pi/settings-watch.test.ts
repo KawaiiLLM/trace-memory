@@ -24,7 +24,7 @@ const edit = (file: string, values: Record<string, unknown>) => {
   const current = JSON.parse(readFileSync(file, "utf8"));
   writeFileSync(file, JSON.stringify({ ...current, "trace-memory": { ...current["trace-memory"], ...values } }));
 };
-const requestedLevels = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).map(r => JSON.parse(r.response!).thinking?.requested);
+const requestedLevels = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).filter(r => JSON.parse(r.response!).task !== "verify").map(r => JSON.parse(r.response!).thinking?.requested); // one entry per batch: its write run
 const notices = (h: ReturnType<typeof host>) => h.notices.filter(n => n.startsWith("Trace Memory: ") && /restart|could not be read/.test(n));
 /** The thinking level the session's next admitted Noting task requests: the observable effect of the Noter thinking setting. */
 const nextLevel = async (h: ReturnType<typeof host>) => { await h.turn(); return requestedLevels(h).at(-1); };

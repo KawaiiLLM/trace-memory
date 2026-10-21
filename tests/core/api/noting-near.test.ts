@@ -1,15 +1,17 @@
 // Ticket 92 removes live NEAR. Historical receipts remain readable; the old mandatory-review,
-// lexical-ranking and post-tool-commit tests are replaced by the held/terminal contract.
+// lexical-ranking and post-tool-commit tests are replaced by the terminal-publication contract.
 import { afterEach, expect, test } from "vitest";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
-import { reviewFeedback } from "../../../src/core/api/tools.ts";
+import { submit, verifyUnchanged } from "../../support/noter.ts";
 
 const close: (() => void)[] = [];
 afterEach(() => { close.splice(0).forEach(fn => fn()); });
-function fixture(script: (task: NotingAgentInput) => Partial<RunAgentResult> | void) {
+const unavailable = { available: false as const, reason: "native payload unavailable" };
+function fixture(script: (task: NotingAgentInput) => Partial<RunAgentResult> | void | Promise<Partial<RunAgentResult> | void>) {
   const memory = sourceSeededMemory(":memory:", async raw => {
     const task = raw as NotingAgentInput;
-    return { outcome: "success", output: "done", audit: { available: false, reason: "native payload unavailable" }, ...script(task) };
+    if (task.task === "verify") return verifyUnchanged(task, { request: undefined, audit: unavailable });
+    return { outcome: "success", output: "done", audit: unavailable, ...await script(task) };
   });
   close.push(() => memory.close());
   const project = memory.store.createProject({ name: "no-near", declaredBy: "mark" });
@@ -21,20 +23,17 @@ function fixture(script: (task: NotingAgentInput) => Partial<RunAgentResult> | v
   expect(note.execute({ title: "User rule", sources: "[T1#E1] The user set a rule" })).toContain("F1");
   return { memory, path, note, run: () => memory.noting(path) };
 }
-const use = (task: NotingAgentInput, name: "note" | "memory", input: unknown) => task.tools.find(tool => tool.name === name)!.execute(input) as string;
 for (const relation of [undefined, ["support", "strong"], ["support", "weak"], ["negate", "strong"], ["negate", "weak"]] as const)
   test(`92: identical facts need no lexical review; optional ${relation?.join(" ") ?? "no edge"}`, async () => {
     let ack!: () => void;
-    const f = fixture(task => {
+    const f = fixture(async task => {
       ack = task.acknowledgeRequest;
-      task.reportRequest({ exact: "payload" }); task.acknowledgeRequest();
-      const receipt = use(task, "note", { title: "User rule reviewed", sources: "[T1#E1] The user set a rule",
-        ...(relation ? { [relation[0]]: [["F1", relation[1]]] } : {}) });
-      expect(JSON.parse(receipt)).toMatchObject({ results: ["held: $1"] });
-      expect(reviewFeedback(receipt)).toBeUndefined();
+      task.reportRequest({ exact: "payload" });
+      expect(await submit(task, f.memory, { noteInput: [{ title: "User rule reviewed", sources: "[T1#E1] The user set a rule",
+        ...(relation ? { [relation[0]]: [["F1", relation[1]]] } : {}) }], memoryInput: {} })).toBeUndefined();
       expect(task).not.toHaveProperty("reviewFeedback");
-      use(task, "memory", {});
       expect(f.memory.store.listSessionFacts(f.path.sessionId)).toHaveLength(1);
+      return { request: { exact: "payload" } };
     });
     expect(f.memory.store).not.toHaveProperty("notingNearPool");
     const result = await f.run();
@@ -42,8 +41,9 @@ for (const relation of [undefined, ["support", "strong"], ["support", "weak"], [
     expect(f.memory.store.listFactRelations(2)).toHaveLength(relation ? 1 : 0);
     if (!("runId" in result)) throw new Error("missing run");
     const run = f.memory.store.getRun(result.runId!)!;
-    expect(JSON.parse(run.request!)).toEqual({ exact: "payload" });
     expect(JSON.parse(run.response!)).not.toHaveProperty("notingNearReview");
+    const write = f.memory.store.getRun(JSON.parse(run.response!).writeRun)!;
+    expect(JSON.parse(write.request!)).toEqual({ exact: "payload" });
     expect(() => ack()).toThrow("finished");
   });
 
@@ -53,15 +53,14 @@ test("92: old review receipts and audit remain readable but grant no write proto
   const saved = f.memory.store.recordRun({ kind: "noting", sessionId: f.path.sessionId, createdAt: "old", outcome: "success",
     response: JSON.stringify({ notingNearReview: legacy, diagnostics: [{ kind: "unanswered_near", pairs: [] }] }) });
   expect(JSON.parse(f.memory.store.getRun(saved.id)!.response!).notingNearReview).toEqual(legacy);
-  expect(reviewFeedback(JSON.stringify({ feedback: { role: "user", content: "NEAR: old record" } }))).toBe("NEAR: old record");
   expect(f.note.execute({ slot: "$1", title: "No manual draft", sources: "[T1#E1] No manual draft" })).toContain("rejected:");
   expect(f.note.execute({ drop: "$1" })).toContain("rejected:");
 });
 
 test("92: explicit audit unavailability is allowed; missing both request and declaration rejects before publication", async () => {
-  const f = fixture(task => {
+  const f = fixture(async task => {
     task.acknowledgeRequest();
-    use(task, "note", {}); use(task, "memory", {});
+    await submit(task, f.memory, { noteInput: [], memoryInput: {} });
     return { audit: undefined };
   });
   const result = await f.run();
@@ -71,14 +70,13 @@ test("92: explicit audit unavailability is allowed; missing both request and dec
 
 test("92: later same-Turn native entries cannot widen frozen source or processing membership", async () => {
   let lateId = 0;
-  const f = fixture(task => {
-    use(task, "note", { title: "Pi agent explanation", sources: "[T1#E2] Pi agent explained the rule" });
+  const f = fixture(async task => {
+    await submit(task, f.memory, { noteInput: [{ title: "Pi agent explanation", sources: "[T1#E2] Pi agent explained the rule" }], memoryInput: {} });
     const before = f.memory.store.sourcePath(f.path.sessionId, "main", 1);
     const late = f.memory.appendEntry({ sessionId: f.path.sessionId, nativeLineage: "fixture", nativeId: "late", turnId: 1,
       role: "assistant", text: "later", raw: JSON.stringify({ role: "assistant", text: "later" }), calls: [] });
     lateId = late.id;
     f.memory.store.selectSourcePath(f.path.sessionId, "main", [...before.map(entry => entry.id), late.id]);
-    use(task, "memory", {});
   });
   const result = await f.run(); expect(result.outcome).toBe("success");
   expect(f.memory.store.entryNoted(lateId)).toBe(false);

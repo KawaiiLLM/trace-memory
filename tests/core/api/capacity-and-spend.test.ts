@@ -7,12 +7,13 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory, tokens, toolDefinitions, type NotingAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, tokens, type NotingAgentInput } from "../../source-fixture.ts";
 import { countRunBodies } from "../../perf/fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { renderRun } from "../../../src/core/render/index.ts";
-import { pricedToolDefinitions } from "../../../src/core/api/tools.ts";
+import { pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { submitEmpty } from "../../support/noter.ts";
 
 /** 77: every real writer stores `response` and its five usage columns in one statement (Store's
  * private `usageColumns` helper), so a raw-SQL amendment that only sets `response` -- exactly what
@@ -45,10 +46,9 @@ let sessionId: number, turnId: number;
 function open(entries = 6) {
   calls = []; renders = 0;
   // 116: with nothing to record a Noter still calls both tools with {}.
-  memory = sourceSeededMemory(dbPath, async raw => { const input = raw as NotingAgentInput; calls.push(input);
+  memory = sourceSeededMemory(dbPath, async raw => { const input = raw as NotingAgentInput; if (input.task === "write") calls.push(input);
       if (input.kind === "noting") {
-        input.tools.find(tool => tool.name === "note")!.execute({});
-        input.tools.find(tool => tool.name === "memory")!.execute({});
+        submitEmpty(input);
       }
       return { outcome: "success", output: "", request: { probe: true } }; },
     {}, result => { renders++; return { text: result }; });
@@ -61,13 +61,13 @@ function open(entries = 6) {
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "trace-memory-22d-")); dbPath = join(directory, "trace.db"); open(); });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
-const noting = (capacity?: { inputTokens: number; prefixTokens: number }, extra: Record<string, unknown> = {}) =>
+const noting = (capacity?: { inputTokens: number }, extra: Record<string, unknown> = {}) =>
   memory.noting({ sessionId, branch: "main", headTurnId: turnId, ...(capacity ? { capacity } : {}), ...extra });
 
 test("22d: an allowance under the mandatory instruction and tool cost is rejected with nothing rendered, dispatched or recorded", async () => {
   const before = memory.pendingEntries(sessionId, "main", turnId);
   expect(before.length).toBeGreaterThan(1);
-  await expect(noting({ inputTokens: 2_000, prefixTokens: 0 })).rejects.toThrow(/Noting capacity/);
+  await expect(noting({ inputTokens: 2_000 })).rejects.toThrow(/Noting capacity/);
   expect(renders).toBe(0); // no candidate material was built: not one entry view
   expect(calls).toEqual([]); // no model dispatch
   expect(memory.store.listRuns(sessionId)).toEqual([]); // no run record
@@ -76,11 +76,11 @@ test("22d: an allowance under the mandatory instruction and tool cost is rejecte
 });
 
 test("22d: the rejection costs the same whatever the pending backlog is, and a workable allowance still renders each pending view once", async () => {
-  await expect(noting({ inputTokens: 2_000, prefixTokens: 0 })).rejects.toThrow(/Noting capacity/);
+  await expect(noting({ inputTokens: 2_000 })).rejects.toThrow(/Noting capacity/);
   expect(renders).toBe(0);
   memory.close();
   open(24); // four times the pending entries
-  await expect(noting({ inputTokens: 2_000, prefixTokens: 0 })).rejects.toThrow(/Noting capacity/);
+  await expect(noting({ inputTokens: 2_000 })).rejects.toThrow(/Noting capacity/);
   expect(renders).toBe(0);
   // The same freeze under a workable allowance: every pending tool result is rendered once, and the
   // re-freezing capacity negotiation reuses those views instead of rendering the batch per candidate.
@@ -95,18 +95,18 @@ test("22d: the rejection costs the same whatever the pending backlog is, and a w
 test("22d: the preflight is a floor and not the guard — an allowance over the fixed cost but under the material is still refused", async () => {
   expect((await noting()).outcome).toBe("success");
   const first = calls[0]!;
-  const fixed = tokens(first.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))); // what the preflight alone can see
+  const fixed = tokens(first.prompt) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))); // what the preflight alone can see
   memory.appendEntry({ sessionId, turnId, nativeLineage: "fixture", nativeId: "long-assistant", role: "assistant", text: "word ".repeat(5_000), raw: "", calls: [] });
   // Comfortably above the mandatory floor, so the preflight passes and says nothing; far below what
   // the pending material costs, so the hard-budget check inside the freeze must still refuse to send.
-  await expect(noting({ inputTokens: fixed + 500, prefixTokens: 0 })).rejects.toThrow(/Noting capacity/);
+  await expect(noting({ inputTokens: fixed + 500 })).rejects.toThrow(/Noting capacity/);
   expect(calls).toHaveLength(1); // nothing dispatched over the allowance
-  expect(memory.store.listRuns(sessionId)).toHaveLength(1); // the first run only; the refused freeze recorded none
+  expect(memory.store.listRuns(sessionId)).toHaveLength(2); // the first noting's two task runs only; the refused freeze recorded none
   // The same pending material under an allowance that fits runs, priced under what it was given.
   const generous = 60_000;
-  expect((await noting({ inputTokens: generous, prefixTokens: 0 })).outcome).toBe("success");
+  expect((await noting({ inputTokens: generous })).outcome).toBe("success");
   const run = calls.at(-1)!;
-  expect(tokens(run.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(run.text)).toBeLessThanOrEqual(generous);
+  expect(tokens(run.prompt) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))) + tokens(run.text)).toBeLessThanOrEqual(generous);
 });
 
 // 27a: the host's half of the rule (`contextWindow - 10,000`) is pinned in tests/hosts/pi/capacity.test.ts.
@@ -114,21 +114,21 @@ test("22d: the preflight is a floor and not the guard — an allowance over the 
 // refuses the same material one token above it.
 test("27a 2026-09-10: the freeze admits material the allowance exactly fits and refuses the same material one token above it", async () => {
   const price = (input: NotingAgentInput) =>
-    tokens(input.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(input.text);
+    tokens(input.prompt) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))) + tokens(input.text);
   // What this batch costs, priced by the same terms the freeze prices it by.
-  expect((await noting({ inputTokens: 60_000, prefixTokens: 0 })).outcome).toBe("success");
+  expect((await noting({ inputTokens: 60_000 })).outcome).toBe("success");
   const whole = calls[0]!;
   const fresh = price(whole);
 
   // Each re-open seeds the same conversation as a new session in the same database, so the batches are
   // compared by size and by price, not by entry id.
   memory.close(); open();
-  expect((await noting({ inputTokens: fresh, prefixTokens: 0 })).outcome).toBe("success");
+  expect((await noting({ inputTokens: fresh })).outcome).toBe("success");
   expect(calls[0]!.entryIds).toHaveLength(whole.entryIds.length); // equality: the whole batch, not a reduced one
   expect(price(calls[0]!)).toBe(fresh);
 
   memory.close(); open();
-  expect((await noting({ inputTokens: fresh - 1, prefixTokens: 0 })).outcome).toBe("success");
+  expect((await noting({ inputTokens: fresh - 1 })).outcome).toBe("success");
   expect(calls[0]!.entryIds.length).toBeLessThan(whole.entryIds.length); // one token more: refused, and reduced
 });
 
@@ -159,7 +159,7 @@ test("22d: spend totals come from the recorded usage without loading a run's req
 
   // A later usage amendment on the same run is reflected exactly, and nothing is double-counted.
   write(runId, { output: "x".repeat(200_000), usage: { ...usage, input: 2_200, cost: { total: 0.5 } }, problems: [] });
-  expect(memory.spend(sessionId)).toMatchObject({ input: 2_200, output: 300, cacheRead: 4_000, cost: 0.5, runs: { noting: 1, consolidation: 0, manual: 0 } });
+  expect(memory.spend(sessionId)).toMatchObject({ input: 2_200, output: 300, cacheRead: 4_000, cost: 0.5, runs: { noting: 2, consolidation: 0, manual: 0 } }); // a Noter run records one run per task
 });
 
 test("22d: an unknown or non-JSON usage counts its run and contributes no observed zero", async () => {
@@ -175,11 +175,11 @@ test("22d: an unknown or non-JSON usage counts its run and contributes no observ
   expect(cancelled).not.toBe(failed);
   const after = memory.spend(sessionId);
   expect(after).toMatchObject({ input: one.input, output: one.output, cacheRead: one.cacheRead, cacheWrite: one.cacheWrite, cost: one.cost });
-  expect(after.runs).toEqual({ noting: 2, consolidation: 1, dreaming: 0, manual: 0 }); // counted as runs, never as usage
+  expect(after.runs).toEqual({ noting: 3, consolidation: 1, dreaming: 0, manual: 0 }); // counted as runs, never as usage
   // A run that did record an all-zero usage is an observation, and stays one: the totals are unchanged
   // by it, but it is not confused with the two above — its usage is present in the projection.
   writeRunResponse(memory.store, cancelled, { output: "empty", usage: {} });
-  expect(memory.store.listRunUsage(sessionId).map(r => r.usage === null)).toEqual([false, false, true]);
+  expect(memory.store.listRunUsage(sessionId).map(r => r.usage === null)).toEqual([false, true, false, true]); // write task, verify task (no usage), the empty observation, the failed C run
   expect(memory.spend(sessionId)).toMatchObject({ input: one.input, cost: one.cost });
 });
 
@@ -217,8 +217,8 @@ test("77: listRunUsage never selects response or request, served by its covering
   // 79: the split (item 0) retired the covering idx_runs_session_usage -- `runs` has no body columns
   // to dodge anymore, so SCHEMA_SQL's plain idx_runs_session answers the same lookup on a tiny row.
   expect(statements[0]).toMatch(/INDEXED BY idx_runs_session\b/);
-  expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true, false]);
-  expect(usage[4]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null }); // the string usage: zero tokens, not reparsed; no cost.total, so the cost is unknown
+  expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true, true, false]); // the Noter run's verify task records no usage
+  expect(usage[5]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null }); // the string usage: zero tokens, not reparsed; no cost.total, so the cost is unknown
 });
 
 test("77: listRunUsage's persisted columns match 71's extraction SQL for every scalar shape, booleans included", async () => {

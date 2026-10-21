@@ -3,14 +3,14 @@ import { hydrate, sourceSeededMemory, type NotingAgentInput } from "../../source
 import { legacyFacts } from "../../support/seed.ts";
 import { MEMORY_PHASES } from "../../../src/hosts/phase-settings.ts";
 import { historicalConsolidation } from "../../noting-knowledge-fixture.ts";
+import { submitEmpty } from "../../support/noter.ts";
 
 function fixture() {
   const invoked: string[] = [];
   const memory = sourceSeededMemory(":memory:", async raw => {
-    const task = raw as NotingAgentInput; invoked.push(task.kind);
+    const task = raw as NotingAgentInput; if (task.task !== "verify") invoked.push(task.kind); // one entry per batch: its write task
     task.reportRequest({ fixture: "retirement" });
-    task.tools.find(tool => tool.name === "note")!.execute({});
-    task.tools.find(tool => tool.name === "memory")!.execute({});
+    submitEmpty(task);
     return { outcome: "success", output: "done", request: { fixture: "retirement" } };
   });
   const store = memory.store;

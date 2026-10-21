@@ -12,41 +12,25 @@ import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
-import { pricedToolDefinitions, toolDefinitions } from "../../../src/core/api/tools.ts";
+import { pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
+import { REQUEST, scriptedNoter, type NoterOutput, type ToolFact } from "../../support/noter.ts";
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
 let sessionId: number;
 let calls: NotingAgentInput[];
-type ScriptResult = RunAgentResult & { noteInput?: unknown; memoryInput?: unknown };
+type ScriptResult = NoterOutput;
 let script: ((input: NotingAgentInput) => Promise<ScriptResult>)[];
 const time = "2026-08-16 02:54";
-const request = { system: "actual host system", messages: [{ role: "user", content: "actual provider input" }], tools: [] };
-// 116: a Noter calls note once per fact, or note({}) for an empty batch.
-// `silent` submits neither tool and remains incomplete.
-const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "success", output: "Done.", noteInput: batches.flatMap((b) => b.facts), memoryInput: {}, request, usage: { tokens: 12 } });
-const silent = (): ScriptResult => ({ outcome: "success", output: "Nothing to note.", request, usage: { tokens: 12 } });
+const request = REQUEST;
+// A Noter's batch: its facts, and no knowledge. `silent` writes nothing at all, which the check refuses.
+const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "success", output: "Done.", noteInput: batches.flatMap((b) => b.facts) as ToolFact[], memoryInput: {}, request, usage: { tokens: 12 } });
 const fact = (extra: Record<string, unknown> = {}) => ({ title: "mapC terrain", sources: `[T1#E2] ${memories.base}`, ...extra });
 const batch = (turnId: number, facts = [fact()]) => ({ turn: `S${sessionId}/T${turnId}`, facts: facts.map(f => ({ ...f,
   sources: f.sources.replace("[T1#E2]", `[T${turnId}#E${hydrate(memory.store.listSourceEntries(sessionId), memory.store).find(e => e.turnId === turnId && e.role === "assistant")!.entryOrdinal}]`) })) });
 function open(config: ConfigOverride = {}) {
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), async (raw) => {
-    const input = raw as NotingAgentInput;
-    calls.push(input);
-    const next = script.shift();
-    if (!next) throw new Error("unexpected model call");
-    const result = await next(input);
-    if (result.request !== undefined) input.reportRequest(result.request);
-    if (result.noteInput !== undefined) {
-      const note = input.tools.find((t) => t.name === "note")!;
-      const items = result.noteInput as unknown[];
-      if (items.length) for (const item of items) note.execute(item);
-      else note.execute({});
-    }
-    if (result.memoryInput !== undefined) input.tools.find(tool => tool.name === "memory")!.execute(result.memoryInput);
-    return result;
-  }, config);
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), scriptedNoter(() => memory, script, { calls }).agent, config);
 }
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-noting-")); calls = []; script = []; open();
@@ -82,42 +66,33 @@ test("a hosted CC launch cannot silently use canonical names or accept an incomp
     toolNames: { ...canonicalToolNames, note: "" } }, memory.config)).toThrow("Missing or invalid exposed tool name");
 });
 
-test("worker tool names are rendered before capacity, audit and held-result status", async () => {
+const workerNames = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", write: "Write", edit: "Edit", grep: "Grep" };
+
+test("worker tool names are rendered before capacity and audit, and the first request ends by naming the check", async () => {
   const first = turn();
-  const names = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", grep: "Grep" };
-  const expected = withRetrievalPolicy(loadPrompt("noting.md", names), names);
+  const expected = withRetrievalPolicy(loadPrompt("noting.md", workerNames), workerNames);
   const canonical = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id }, memory.config);
-  const priced = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: names }, memory.config);
+  const priced = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: workerNames }, memory.config);
   expect(priced.prompt).toBe(expected);
-  expect(priced.prompt).toContain("mcp__trace_memory__note({})");
-  expect(priced.prompt).not.toContain("mcp__trace_memory__check"); // Noter cannot check.
+  for (const name of ["check", "search"]) expect(priced.prompt).toContain(`mcp__trace_memory__${name}`);
+  for (const native of ["Write", "Edit", "Read"]) expect(priced.prompt).toContain(`${native}`);
   expect(priced.prompt).not.toContain("`note(");
   expect(priced.prompt).not.toContain("{{tool.");
   expect(canonical.prompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
-  const price = tokens(expected) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, names))) + tokens(priced.prepared!.text);
-  expect(price).toBeGreaterThan(tokens(canonical.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames))) + tokens(canonical.prepared!.text));
-  expect(() => freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: names,
-    boundary: { exactEntryIds: priced.entries.map(e => e.id) }, capacity: { inputTokens: price - 1, prefixTokens: 0 } }, memory.config)).toThrow("Noting capacity");
-  expect(freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: names,
-    boundary: { exactEntryIds: priced.entries.map(e => e.id) }, capacity: { inputTokens: price, prefixTokens: 0 } }, memory.config).prepared!.text).toBe(priced.prepared!.text);
-  let blocked = "", clear = "", pendingError = "", missing = "";
+  expect(priced.prepared!.text.endsWith("Call mcp__trace_memory__check first: it names your task and your two files.")).toBe(true);
+  const price = tokens(expected) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, workerNames))) + tokens(priced.prepared!.text);
+  expect(price).toBeGreaterThan(tokens(canonical.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))) + tokens(canonical.prepared!.text));
+  expect(() => freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: workerNames,
+    boundary: { exactEntryIds: priced.entries.map(e => e.id) }, capacity: { inputTokens: price - 1 } }, memory.config)).toThrow("Noting capacity");
+  expect(freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: workerNames,
+    boundary: { exactEntryIds: priced.entries.map(e => e.id) }, capacity: { inputTokens: price } }, memory.config).prepared!.text).toBe(priced.prepared!.text);
   script.push(async input => {
     expect(input.prompt).toBe(expected);
     expect(input.promptHash).toBe(createHash("sha256").update(expected).digest("hex"));
-    const note = input.tools.find(tool => tool.name === "note")!;
-    expect(note.description).toContain("mcp__trace_memory__memory");
-    missing = JSON.parse(note.execute({})).status;
-    pendingError = note.execute({ facts: [], bogus: true });
-    blocked = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({})).status;
-    clear = JSON.parse(note.execute({})).status;
-    return { outcome: "success", output: "done", request };
+    expect(input.tools.map(tool => tool.name)).toEqual(["search", "check"]);
+    return success([]);
   });
-  expect((await memory.noting({ sessionId, branch: "main", headTurnId: first.id, toolNames: names })).outcome).toBe("success");
-  expect(missing).toContain("mcp__trace_memory__memory({})");
-  expect(pendingError).toContain("mcp__trace_memory__note expects one item");
-  expect(blocked).toContain("mcp__trace_memory__note call error:");
-  expect(blocked).not.toContain("call note(");
-  expect(clear).toContain("Publishable:");
+  expect((await memory.noting({ sessionId, branch: "main", headTurnId: first.id, toolNames: workerNames })).outcome).toBe("success");
   expect(memory.store.listRuns(sessionId).at(-1)!.promptHash).toBe(createHash("sha256").update(expected).digest("hex"));
 });
 
@@ -156,7 +131,7 @@ test("the configured title and body limits are rendered into the prompt and into
 test("a fresh admission freezes its tool namespace, exact cost and hash", () => {
   const first = turn();
   const target = { sessionId, branch: "main", headTurnId: first.id };
-  const freshNames = { ...canonicalToolNames, search: "mcp__trace_memory__search", note: "mcp__trace_memory__note", memory: "mcp__trace_memory__memory", check: "mcp__trace_memory__check", read: "Read", grep: "Grep" };
+  const freshNames = workerNames;
   const boundary = { exactEntryIds: freezeNoting(memory.store, { ...target }, memory.config).entries.map(e => e.id) };
   const fresh = freezeNoting(memory.store, { ...target, toolNames: freshNames, boundary }, memory.config);
   // 137: a fresh child carries the retrieval policy once, in its system prompt. Both are priced as sent.
@@ -165,11 +140,11 @@ test("a fresh admission freezes its tool namespace, exact cost and hash", () => 
   expect(fresh.prompt).toContain(`with ${freshNames.search};`);
   expect(fresh.prompt).not.toContain("mcp__plugin_trace-memory_traceMemory__");
   expect(fresh.promptHash).toBe(createHash("sha256").update(fresh.prompt!).digest("hex"));
-  const freshPrice = tokens(fresh.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, freshNames))) + tokens(fresh.prepared!.text);
+  const freshPrice = tokens(fresh.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, freshNames))) + tokens(fresh.prepared!.text);
   expect(() => freezeNoting(memory.store, { ...target, toolNames: freshNames, boundary,
-    capacity: { inputTokens: freshPrice - 1, prefixTokens: 0 } }, memory.config)).toThrow("Noting capacity");
+    capacity: { inputTokens: freshPrice - 1 } }, memory.config)).toThrow("Noting capacity");
   expect(freezeNoting(memory.store, { ...target, toolNames: freshNames, boundary,
-    capacity: { inputTokens: freshPrice, prefixTokens: 0 } }, memory.config).prompt).toBe(fresh.prompt);
+    capacity: { inputTokens: freshPrice } }, memory.config).prompt).toBe(fresh.prompt);
 });
 
 test("a turn arriving during the model call waits for the next trigger", async () => {
@@ -225,7 +200,7 @@ test("duplicate trigger is dropped, including another façade on the same file",
   expect(memory.store.getRun(1)).toBeNull();
   resolve(success([])); await pending;
   expect(calls).toHaveLength(1);
-  expect(memory.store.getRun(2)).toBeNull();
+  expect(memory.store.getRun(3)).toBeNull(); // the two tasks' runs are 1 and 2; the dropped trigger made none
 });
 
 for (const outcome of ["failure", "cancelled"] as const) test(`${outcome} records only the attempt and allows a retry`, async () => {
@@ -243,40 +218,41 @@ for (const name of ["Error", "AbortError"]) test(`thrown ${name} records an atte
 });
 
 for (const [label, changes, problem] of [
-  ["category", { category: "open" }, "category"],
-  ["actor", { actor: "tool" }, "actor"],
-  ["unknown fact", { support: [["F999", "weak"]] }, "F999"],
-  ["self handle", { support: [["$1", "weak"]] }, "$1"],
-  ["zero handle", { support: [["$0", "weak"]] }, "$0"],
-  ["forward handle", { support: [["$2", "weak"]] }, "$2"],
-  ["malformed handle", { support: [["$x", "weak"]] }, "target"],
-  ["relation shape", { support: ["F1"] }, "expected [target, strength]"],
-  ["event status", { status: "completed" }, "status"],
-] as const) test(`rejects ${label} with problems and only a run record`, async () => {
+  ["a fact-level category", { category: "open" }, "category"],
+  ["a fact-level actor", { actor: "tool" }, "actor"],
+  ["an event status", { status: "completed" }, "status"],
+  ["an unknown fact", { support: [["F999", "weak"]] }, "F999"],
+  ["a self label", { support: [["$1", "weak"]] }, "f1"],
+  ["a forward label", { support: [["$2", "weak"]] }, "f2"],
+  ["a malformed target", { support: [["$x", "weak"]] }, "f"],
+  ["a relation without strength", { support: ["F1"] }, "F1"],
+] as const) test(`refuses ${label} with problems and only a run record`, async () => {
   const t = turn(), output = [batch(t.id, [fact(changes)])];
   script.push(async () => success(output));
   const result = await noting(t.id);
-  const structural = ["category", "actor", "event status"].includes(label);
-  expect(result.outcome).toBe(structural ? "failure" : "bounced");
-  if (result.outcome !== "failure" && result.outcome !== "bounced") throw new Error("expected rejection");
-  expect(result.problems.join("\n")).toContain(structural ? "expects one item" : problem);
+  expect(result.outcome).toBe("failure");
+  if (result.outcome !== "failure") throw new Error("expected rejection");
+  expect(result.problems.join("\n")).toContain(problem);
   unchanged();
   const run = memory.store.getRun(result.runId)!;
-  expect(run.outcome).toBe(result.outcome);
-  expect(JSON.parse(run.response!).toolCalls[0].input).toEqual(output[0]!.facts[0]);
+  expect(run.outcome).toBe("failure");
+  expect(JSON.parse(run.response!).files.facts).toContain(output[0]!.facts[0]!.sources);
   expect(JSON.parse(run.response!).problems).toEqual(result.problems);
+  expect(memory.store.handoff(sessionId, "noting")).toBeNull(); // task 1 failed: nothing is handed over
 });
 
-test("26a: final text is never parsed and never an implicit submission; a successful reply without provider request fails", async () => {
-  const t = turn(); script.push(async () => ({ outcome: "success", output: "[", request }));
-  expect((await noting(t.id)).outcome).toBe("failure"); // ended without calling note: incomplete
+test("final text is never parsed; a successful reply without provider request fails; an empty file is refused", async () => {
+  const t = turn(); script.push(async () => ({ outcome: "success", output: "[", request, files: { facts: "", knowledge: "" } }));
+  const refused = await noting(t.id);
+  expect(refused.outcome).toBe("failure"); // the model wrote no file: not an implicit empty submission
+  if (refused.outcome === "failure") expect(refused.problems.join("\n")).toContain("empty file: write `## none`");
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
   unchanged(); // and no entry of the batch advanced, so the same entries are pending
-  script.push(async () => ({ outcome: "success", output: "[]" }));
+  script.push(async () => ({ outcome: "success", output: "[]", request: undefined }));
   expect((await noting(t.id)).outcome).toBe("failure");
   const next = turn(t.id);
   script.push(async () => success([]));
-  expect((await noting(next.id)).outcome).toBe("success"); // the explicit empty batch does advance them
+  expect((await noting(next.id)).outcome).toBe("success"); // the explicit `## none` does advance them
   expect(hydrate(memory.store.sourcePath(sessionId, "main", t.id), memory.store).length).toBeGreaterThan(0);
   expect(hydrate(memory.store.sourcePath(sessionId, "main", t.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
 });
@@ -284,7 +260,7 @@ test("26a: final text is never parsed and never an implicit submission; a succes
 test("model cannot write to a late turn outside the frozen range", async () => {
   const first = turn(), resolve = deferred(), pending = noting(first.id), late = turn(first.id, 1);
   resolve(success([batch(late.id)]));
-  expect((await pending).outcome).toBe("bounced"); unchanged();
+  expect((await pending).outcome).toBe("failure"); unchanged();
 });
 
 test("an explicit empty submission notings the range; compactions cannot acquire facts", async () => {

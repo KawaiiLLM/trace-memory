@@ -11,14 +11,14 @@ import { budgetMaterial, compactText, injectionText, notingText, rawWindowTokens
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite, skipRest } from "../../dreaming-skips.ts";
+import { submitEmpty } from "../../support/noter.ts";
 
 function seeded(config: Record<string, unknown> = {}) {
   const calls: NotingAgentInput[] = [];
   // 116: explicit empty N output requires one empty call to each tool.
-  const fallback = async (raw: unknown) => { const input = raw as NotingAgentInput; calls.push(input);
+  const fallback = async (raw: unknown) => { const input = raw as NotingAgentInput; if (input.task !== "verify") calls.push(input); // one entry per batch: the write task
     if (input.kind === "noting") {
-      input.tools.find(tool => tool.name === "note")!.execute({});
-      input.tools.find(tool => tool.name === "memory")!.execute({});
+      submitEmpty(input);
     }
     return { outcome: "success" as const, output: "", request: { probe: true } }; };
   const scenarios = new AdmittedDreamerScenarios(fallback);
@@ -63,7 +63,7 @@ test("review 2026-09-08: the oldest Noting entry dispatches despite exceeding it
     expect((await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id })).outcome).toBe("success");
     expect(f.calls).toHaveLength(1);
     expect((f.calls[0] as NotingAgentInput).entryIds).toContain(pending[0]!.id);
-    expect(f.m.store.listRuns(f.s.id)).toHaveLength(1);
+    expect(f.m.store.listRuns(f.s.id)).toHaveLength(2); // one per task
   } finally { f.m.close(); }
 });
 
@@ -93,7 +93,7 @@ test("review 2026-09-08, on Noting since 25a: a smaller model window trims the o
     const next = f.m.store.appendTurn({ sessionId: f.s.id, parentTurnId: f.t.id, kind: "turn", userPrompt: "Second request", assistantText: "Second reply", startedAt: "2026-09-08" });
     const entries = hydrate(f.m.pendingEntries(f.s.id, "main", next.id), f.m.store).length;
     const capacity = size(bare) + 500;
-    const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, capacity: { inputTokens: capacity, prefixTokens: 0 } });
+    const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, capacity: { inputTokens: capacity } });
     expect(result.outcome).toBe("success");
     const run = f.calls.at(-1) as NotingAgentInput;
     expect(run.entryIds).toHaveLength(entries); // every selected entry ran
@@ -154,7 +154,7 @@ test("review 2026-09-08: Noting runs the prepared material the capacity negotiat
     const capacity = size(f.calls[0] as NotingAgentInput) + 500;
     for (let i = 0; i < 4; i++) expect(f.note("Optional historical evidence " + "word ".repeat(1500))).toContain(`ok: F${i + 1}`);
     const next = f.m.store.appendTurn({ sessionId: f.s.id, parentTurnId: f.t.id, kind: "turn", userPrompt: "Next request", assistantText: "Okay", startedAt: "2026-09-08" });
-    const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, capacity: { inputTokens: capacity, prefixTokens: 0 } });
+    const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, capacity: { inputTokens: capacity } });
     expect(result.outcome).toBe("success");
     const run = f.calls.at(-1) as NotingAgentInput;
     expect(run.material.facts.length).toBeLessThan(4); // the history the negotiation trimmed stays trimmed

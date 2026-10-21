@@ -2,15 +2,17 @@ import { expect, test } from "vitest";
 import { TraceMemory, type NotingAgentInput, type SourceEntry } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { factSources } from "../../support/seed.ts";
+import { submit, verifyUnchanged } from "../../support/noter.ts";
 
 const time = "2026-09-01T00:00:00Z";
 function setup() {
-  let run: (input: NotingAgentInput) => void = () => {};
+  let run: (input: NotingAgentInput) => void | Promise<void> = () => {};
   const m = TraceMemory(":memory:", async raw => {
     const input = raw as NotingAgentInput;
     if (input.kind !== "noting") throw new Error("Only Noting is expected");
+    if (input.task === "verify") return verifyUnchanged(input, { request: { fixture: "source evidence" } });
     input.reportRequest({ fixture: "source evidence" });
-    run(input);
+    await run(input);
     return { outcome: "success", output: "done", request: { fixture: "source evidence" } };
   }, {}, undefined, piSourceBlocks);
   const projectId = m.store.createProject({ name: "completion", declaredBy: "mark" }).id;
@@ -28,7 +30,7 @@ function setup() {
   };
   const select = (entries: SourceEntry[], branch = "main") => m.selectEntries(sessionId, branch, entries.map(e => e.id));
   const manual = () => m.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turn.id }).find(t => t.name === "note")!;
-  const noting = async (entries: SourceEntry[], callback: (input: NotingAgentInput) => void) => {
+  const noting = async (entries: SourceEntry[], callback: (input: NotingAgentInput) => void | Promise<void>) => {
     run = callback;
     return m.noting({ sessionId, branch: "main", headTurnId: turn.id, boundary: { exactEntryIds: entries.map(e => e.id) } });
   };
@@ -49,11 +51,10 @@ for (const kind of ["manual", "noting"] as const) test.each(["success", "failure
         { address: address(dispatch), text: "Pi agent dispatched tests." }]) };
       if (kind === "manual") expect(JSON.parse(f.manual().execute(fact)).factIds).toHaveLength(1);
       else {
-        const done = await f.noting([dispatch, result], input => {
-          expect(input.tools.find(t => t.name === "note")!.execute(fact)).toContain("held");
-          expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);
+        const done = await f.noting([dispatch, result], async input => {
+          expect(await submit(input, f.m, { noteInput: [fact], memoryInput: {} })).toBeUndefined();
+          expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]); // private until task 2 passes
           expect(f.m.store.entryNoted(dispatch.id)).toBe(false);
-          input.tools.find(t => t.name === "memory")!.execute({});
         });
         expect(done.outcome, JSON.stringify(done)).toBe("success");
         expect(f.m.store.entryNoted(dispatch.id)).toBe(true);
@@ -76,15 +77,12 @@ for (const kind of ["manual", "noting"] as const) test.each(["category", "actor"
       const invalid = { ...fact, [field]: field === "status" ? "completed" : "user" };
       if (kind === "manual") expect(f.manual().execute(invalid)).toContain(`${field}: unexpected field`);
       else {
-        const done = await f.noting([dispatch], input => {
-          const note = input.tools.find(t => t.name === "note")!;
-          note.execute({});
-          expect(note.execute(invalid)).toContain(`${field}: unexpected field`);
-          input.tools.find(t => t.name === "memory")!.execute({});
+        const done = await f.noting([dispatch], async input => {
+          expect(await submit(input, f.m, { noteInput: [invalid], memoryInput: {} })).toContain(`field \`${field}\` is not allowed`);
         });
-        expect(done.outcome).toBe("bounced");
-        if (done.outcome !== "bounced") throw new Error(JSON.stringify(done));
-        expect(done.problems.join("\n")).toContain(`${field}: unexpected field`);
+        expect(done.outcome).toBe("failure");
+        if (done.outcome !== "failure") throw new Error(JSON.stringify(done));
+        expect(done.problems.join("\n")).toContain(`field \`${field}\` is not allowed`);
       }
       expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);
       expect(f.m.store.entryNoted(dispatch.id)).toBe(false);
@@ -99,11 +97,10 @@ for (const kind of ["manual", "noting"] as const) test.each(["T1", "T1#assistant
       const invalid = { title: "Invalid source shape", sources: factSources([{ address: source, text: "Invalid source shape" }]) };
       if (kind === "manual") expect(f.manual().execute(invalid)).toContain("invalid source");
       else {
-        const done = await f.noting([dispatch, result], input => {
-          expect(input.tools.find(t => t.name === "note")!.execute(invalid)).toContain("invalid source");
-          input.tools.find(t => t.name === "memory")!.execute({});
+        const done = await f.noting([dispatch, result], async input => {
+          expect(await submit(input, f.m, { noteInput: [invalid], memoryInput: {} })).toContain("invalid source");
         });
-        expect(done.outcome).toBe("bounced");
+        expect(done.outcome).toBe("failure");
       }
       expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);
       expect(f.m.store.entryNoted(dispatch.id)).toBe(false);
@@ -116,13 +113,12 @@ test.each(["already present", "arrives later"])("92 evidence: N cannot cite a re
     const dispatch = f.append("assistant");
     let result = timing === "already present" ? f.append("toolResult") : undefined;
     f.select(result ? [dispatch, result] : [dispatch]);
-    const done = await f.noting([dispatch], input => {
+    const done = await f.noting([dispatch], async input => {
       result ??= f.append("toolResult");
       f.select([dispatch, result]);
-      expect(input.tools.find(t => t.name === "note")!.execute({ title: "Result outside range", sources: factSources([{ address: address(result), text: "The tool returned a result" }]) })).toContain("invalid source");
-      input.tools.find(t => t.name === "memory")!.execute({});
+      expect(await submit(input, f.m, { noteInput: [{ title: "Result outside range", sources: factSources([{ address: address(result), text: "The tool returned a result" }]) }], memoryInput: {} })).toContain("invalid source");
     });
-    expect(done.outcome).toBe("bounced");
+    expect(done.outcome).toBe("failure");
     expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);
     expect(f.m.store.entryNoted(dispatch.id)).toBe(false);
   } finally { f.m.close(); }

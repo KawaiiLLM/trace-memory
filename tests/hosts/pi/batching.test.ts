@@ -3,7 +3,8 @@ import { TraceMemory, renderEntry, tokens, toolDefinitions, DEFAULT_CONFIG, type
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { conversationOf, host, reply, usage } from "./test-host.ts";
+import { conversationOf, host, NOTER_BATCH_REQUESTS, reply, usage } from "./test-host.ts";
+import { submit, verifyUnchanged } from "../../support/noter.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { hydrate } from "../../source-fixture.ts";
@@ -43,8 +44,8 @@ test.each([9999, 10000])("Noting threshold counts only material views (%s)", asy
     const entries = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
     const head = h.memory.store.listTurns(1).at(-1)!.id;
     expect(tokens(entries.filter(entry => entry.nativeId !== "thinking").map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBe(size);
-    // The default script calls note and memory, ends its first pass, then reviews once.
-    expect(h.requests).toHaveLength(size === 10000 ? 4 : 0);
+    // The default script runs one batch: a write task, then a verify task.
+    expect(h.requests).toHaveLength(size === 10000 ? NOTER_BATCH_REQUESTS : 0);
     const pending = hydrate(h.memory.pendingEntries(1, "main", head), h.memory.store);
     if (size === 9999) expect(pending.map(e => e.id)).toEqual(entries.map(e => e.id));
     else {
@@ -75,11 +76,11 @@ test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): olde
     h.persist(reply("new completion")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
     let previous = 0;
     for (let batch = 0; batch < 3; batch++) {
-      const run = h.memory.store.listRuns(1).filter(r => r.kind === "noting")[batch]!;
+      const run = h.memory.store.listRuns(1).filter(r => r.kind === "noting")[2 * batch]!; // each batch is a write run and a verify run
       const ids: number[] = JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id);
       const all = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
       expect(ids).toEqual(all.slice(previous, previous + ids.length).map(e => e.id));
-      const sent = batchText(h.conversations[4 * batch]!.messages[0]!.content as string); // note, memory, terminal reply, fixed review
+      const sent = batchText(h.conversations[NOTER_BATCH_REQUESTS * batch]!.messages[0]!.content as string); // the batch's first request
       expect(sent).toBe(ids.map(id => renderEntry(h.memory.store.getSourceEntry(id)!, h.memory.config.render).content).join("\n\n"));
       expect(tokens(sent)).toBeLessThanOrEqual(cap);
       if (batch < 2) expect(tokens(sent + "\n\n" + renderEntry(all[previous + ids.length]!, h.memory.config.render).content)).toBeGreaterThan(cap);
@@ -87,7 +88,7 @@ test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): olde
       if (severalTurns) expect(new Set(ids.map(id => h.memory.store.getSourceEntry(id)!.turnId)).size).toBeGreaterThan(1);
       else if (batch === 0) expect(new Set(ids.map(id => h.memory.store.getSourceEntry(id)!.turnId)).size).toBe(1);
       await h.emit("agent_settled"); await h.drain();
-      expect(h.conversations).toHaveLength(4 * (batch + 1)); // settling and completion of the worker start nothing
+      expect(h.conversations).toHaveLength(NOTER_BATCH_REQUESTS * (batch + 1)); // settling and completion of the worker start nothing
       if (batch < 2) { await h.prompt(`next batch ${batch}`); await h.answer(`completion ${batch}`); await h.drain(); }
     }
     expect(hydrate(h.memory.pendingEntries(1, "main", head), h.memory.store)).toEqual([]);
@@ -107,7 +108,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     h.ctx.model = { ...h.ctx.model!, contextWindow: fittingWindow };
     await h.emit("session_start");
     h.persist(reply("completion")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
-    expect(h.requests).toHaveLength(4); // note, memory, terminal reply, fixed review
+    expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch: both tasks
     expect(JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit.entries).toHaveLength(1);
     // 27a, replacing the whole-body estimate plus output reserve: what the child really sent had to
     // satisfy the one rule, measured as Pi measures the child's context — its messages, with no
@@ -117,7 +118,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     // Fixed instructions/tools still fit, but the remaining 1k cannot hold the oldest 2k view.
     h.ctx.model = { ...h.ctx.model!, contextWindow: fixed + 1_000 + CONTEXT_HEADROOM };
     await h.prompt("next capacity check"); await h.answer("next completion"); await h.drain();
-    expect(h.requests).toHaveLength(4); // the refused admission adds none
+    expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // the refused admission adds none
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).slice(0, pending.length)).toEqual(pending);
     expect(h.notices.join("\n")).toContain("Noting capacity: selected evidence cannot fit the model context");
   } finally { await h.dispose(); }
@@ -214,11 +215,9 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
   const h = host({ "noting.triggerTokens": 1000000000 });
   const runner = TraceMemory(join(h.dir, "trace.db"), async raw => {
     const input = raw as NotingAgentInput;
+    if (input.task === "verify") return verifyUnchanged(input, { request: { exact: true } });
     input.reportRequest({ exact: true });
-    if (input.kind === "noting") {
-      input.tools.find(tool => tool.name === "note")!.execute({ title: "Partial source", sources: "[T1#E1] partial source fact" });
-      input.tools.find(tool => tool.name === "memory")!.execute({});
-    }
+    if (input.kind === "noting") await submit(input, runner, { noteInput: [{ title: "Partial source", sources: "[T1#E1] partial source fact" }], memoryInput: {} });
     return { outcome: "success", output: "", request: { exact: true } };
   }, { noting: { batchTokens: 100 } });
   try {
@@ -271,7 +270,7 @@ test("20b 2026-09-08 scenario 5: a small oldest entry is not joined with a near-
     const all = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
     expect(tokens(renderEntry(all[1]!, h.memory.config.render).content)).toBe(DEFAULT_CONFIG.render.entryTokens);
     h.persist(reply("completion")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
-    const noted = (n: number) => JSON.parse(h.memory.store.listRuns(1).filter(r => r.kind === "noting")[n]!.response!).entryAudit.entries.map((e: { id: number }) => e.id);
+    const noted = (n: number) => JSON.parse(h.memory.store.listRuns(1).filter(r => r.kind === "noting")[2 * n]!.response!).entryAudit.entries.map((e: { id: number }) => e.id);
     expect(noted(0)).toEqual([all[0]!.id]); // the oldest alone: the near-ceiling entry does not fit beside it
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.id).slice(0, 2)).toEqual([all[1]!.id, all[2]!.id]);
     await h.prompt("next pending batch"); await h.answer("completion 2"); await h.drain();

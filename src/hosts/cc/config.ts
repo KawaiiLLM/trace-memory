@@ -6,6 +6,8 @@ import { retireConsolidationSettings } from "../retired-settings.ts";
 
 export const CC_AGENT_SDK_VERSION = "0.1.77";
 export const CC_CONTEXT_HEADROOM = 10_000;
+/** The Noter's workspaces live inside the worker's cwd, the one tree `--restricted` lets its native file tools reach. */
+export const ccWorkspaceRoot = (cwd: string): string => join(cwd, "workspaces");
 export const CC_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type CcEffort = typeof CC_EFFORT_LEVELS[number];
 
@@ -30,7 +32,7 @@ export interface CcWorkerConfig {
 export interface ResolvedCcPhaseConfig {
   model: string;
   thinking: CcEffort;
-  capacity: { inputTokens: number; prefixTokens: 0 };
+  capacity: { inputTokens: number };
 }
 
 export interface ResolvedCcWorkerConfig extends Omit<CcWorkerConfig, "responseOriginTimeoutMs" | "contextWindows" | "claudeVersion"> {
@@ -162,7 +164,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       const contextWindow = positive(`worker.contextWindows[${JSON.stringify(selected.model)}]`, value.contextWindows[selected.model]!);
       if (contextWindow <= CC_CONTEXT_HEADROOM)
         throw new Error(`Invalid CC worker.contextWindows[${JSON.stringify(selected.model)}]: must exceed the ${CC_CONTEXT_HEADROOM}-token headroom`);
-      return [phase, { ...selected, capacity: { inputTokens: contextWindow - CC_CONTEXT_HEADROOM, prefixTokens: 0 as const } }];
+      return [phase, { ...selected, capacity: { inputTokens: contextWindow - CC_CONTEXT_HEADROOM } }];
     })) as Record<MemoryPhase, ResolvedCcPhaseConfig>;
     worker = { claudeExecutable: resolve(value.claudeExecutable),
       contextWindows: { ...value.contextWindows }, phases, cwd: resolve(value.cwd),

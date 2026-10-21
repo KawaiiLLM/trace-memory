@@ -35,11 +35,11 @@ test.each(["session_start", "enable"] as const)(
     else await h.emit(boundary);
     await h.drain();
     const entries = h.memory.store.listSourceEntries(1), newest = entries.at(-1)!;
-    expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"]]);
+    expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // one batch: its write and verify runs
     expect(h.memory.store.listRuns(1)[0]!.origin).toEqual({ sessionId: 1, entryIds: [newest.id] });
     expect(entries.every(entry => h.memory.store.entryNoted(entry.id))).toBe(true);
     await h.emit("tool_execution_start"); await h.drain();
-    expect(h.memory.store.listRuns(1)).toHaveLength(1);
+    expect(h.memory.store.listRuns(1)).toHaveLength(2); // no further batch
   });
 
 test("one import spanning multiple turns admits work at its newest entry", async () => {
@@ -51,12 +51,12 @@ test("one import spanning multiple turns admits work at its newest entry", async
   }
   await h.emit("tool_execution_start"); await h.drain();
   const entries = h.memory.store.listSourceEntries(1), newest = entries.at(-1)!;
-  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"]]);
+  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // one batch: its write and verify runs
   expect(h.memory.store.listRuns(1)[0]).toMatchObject({
     rangeTo: `S1/T${newest.turnId}`, origin: { sessionId: 1, entryIds: [newest.id] } });
   expect(entries.every(entry => h.memory.store.entryNoted(entry.id))).toBe(true);
   await h.emit("tool_execution_start"); await h.drain();
-  expect(h.memory.store.listRuns(1)).toHaveLength(1);
+  expect(h.memory.store.listRuns(1)).toHaveLength(2); // no further batch
 });
 
 test("an import after mid-turn compaction checks the selected head, not the entry's owning Turn", async () => {
@@ -70,9 +70,9 @@ test("an import after mid-turn compaction checks the selected head, not the entr
   await h.emit("tool_execution_start"); await h.drain();
   const newest = h.memory.store.listSourceEntries(1).at(-1)!;
   expect(newest.turnId).not.toBe(head);
-  expect(h.memory.store.listRuns(1)).toEqual([expect.objectContaining({
-    kind: "noting", outcome: "success", rangeTo: `S1/T${newest.turnId}`,
-    origin: { sessionId: 1, entryIds: [newest.id] } })]);
+  const batch = expect.objectContaining({ kind: "noting", outcome: "success", rangeTo: `S1/T${newest.turnId}`,
+    origin: { sessionId: 1, entryIds: [newest.id] } });
+  expect(h.memory.store.listRuns(1)).toEqual([batch, batch]); // the write run and the verify run
 });
 
 test.each(["session_start", "session_tree"] as const)("%s with fully imported history launches nothing even when Noting is due", async boundary => {
@@ -95,12 +95,7 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
   const h = host({ "noting.triggerTokens": 300, "dreaming.triggerTokens": 1 });
   h.provider(async c => {
     if (c.systemPrompt?.startsWith("# Dreamer")) return skip();
-    const response = notingFact(c);
-    for (const block of response.content) if (block.type === "toolCall" && block.name === "memory") {
-      block.arguments = { op: "create", title: "Fixture title", text: "Use pnpm", category: "constraint", scope: "session",
-        supports: ["$1"], topics: [], reason: "Package choice" };
-    }
-    return response;
+    return notingFact(c, "## create\ntitle: Fixture title\ncategory: constraint\nscope: session\ntopics: \nsupports: f1\nreason: Package choice\n\nUse pnpm\n");
   });
   await h.prompt("short");
   await h.emit("message_end", { message: reply("short") });
@@ -109,7 +104,7 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
   expect(h.requests).toHaveLength(0);
   h.persist(reply("word ".repeat(400)));
   await h.emit("tool_execution_start"); await h.drain();
-  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // one batch: its write and verify runs
   h.persist(reply("next entry"));
   await h.emit("tool_execution_start"); await h.drain();
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success"]);
@@ -127,14 +122,14 @@ test("busy entries queue nothing; the next entry after publication admits the ne
   expect(h.requests).toHaveLength(1);
   release(notingFact(initial)); await h.drain();
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "noting");
-  expect(runs).toHaveLength(1);
-  expect(runs[0]!.outcome).toBe("success");
-  expect(h.memory.store.listFactsByRun(runs[0]!.id)).toHaveLength(1);
+  expect(runs).toHaveLength(2); // write and verify
+  expect(runs.map(r => r.outcome)).toEqual(["success", "success"]);
+  expect(h.memory.store.listFactsByRun(runs[1]!.id)).toHaveLength(1); // the verify run publishes
   expect(h.memory.store.pendingEntryIds(1, "main", 2).length).toBeGreaterThan(0);
   await h.emit("agent_settled"); await h.drain(); // duplicate terminal signal is not a new turn
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1);
-  h.persist(reply("next entry in the same turn")); await h.emit("tool_execution_start"); await h.drain();
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(2);
+  h.persist(reply("next entry in the same turn")); await h.emit("tool_execution_start"); await h.drain();
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(4); // the second batch's two runs
 });
 
 test("failed Noting retries at later entry ends and disables memory after three failures", async () => {
@@ -157,7 +152,7 @@ test.each(["aborted", "error"] as const)("%s assistant entries admit without wai
   await h.prompt("word ".repeat(400));
   await h.emit("message_end", { message: { ...reply("partial"), stopReason: outcome } });
   await h.emit("agent_end"); await h.drain();
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1);
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(2);
 });
 
 test("stop after an empty borrowed candidate fences the next borrowed launch", async () => {

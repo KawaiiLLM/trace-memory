@@ -7,6 +7,7 @@ import { renderKnowledgeChange } from "../../../src/core/render/index.ts";
 import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, memoryFiles, validateConfig, type NotingAgentInput } from "../../source-fixture.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
+import { submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
 // Ticket 92 transfers ticket 76's create/update/archive authority from C to N.
 // N publishes held operations terminally; D still reviews the diff against its processed baseline.
@@ -24,7 +25,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
   function fixture(agent: (input: NotingAgentInput) => Promise<void> | void) {
     memory = sourceSeededMemory(":memory:", async raw => {
       const input = raw as NotingAgentInput;
-      input.tools.find(tool => tool.name === "note")!.execute({});
+      if (input.task === "verify") return verifyUnchanged(input, { request: { one: "request" } });
       await agent(input);
       return { outcome: "success", output: "done", request: { one: "request" } };
     });
@@ -49,25 +50,21 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     return commitNoterKnowledge(memory.store, { run: { sessionId, branch: "main", createdAt: time }, operations });
   }
 
-  test("N holds editable operations and publishes the final replacement at terminal success", async () => {
+  test("N publishes the final content of its file at terminal success", async () => {
     let calls = 0;
-    const f = fixture(input => {
+    const f = fixture(async input => {
       calls++;
       input.reportRequest({ one: "request" });
-      if (calls > 1) return;
-      const memoryTool = input.tools.find(tool => tool.name === "memory")!;
-      const receipt = memoryTool.execute(created(f.fact, "beta.5 is current"));
-      expect(receipt).toContain('"held"');
+      await submit(input, memory, { noteInput: [], memoryInput: created(f.fact, "corrected") });
       expect(memory.store.currentKnowledge()).toEqual([]);
-      expect(memoryTool.execute({ ...created(f.fact, "corrected"), slot: "M1" })).toContain("held");
     });
     const result = await memory.noting({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
     expect(result.outcome).toBe("success");
     expect(memory.store.currentCommit(1)[0]!.text).toBe("corrected");
-    expect(calls).toBe(1); // The host's passEnd channel supplies the second pass; Core invokes runAgent once.
+    expect(calls).toBe(1); // the host's stop hook supplies any second pass; Core invokes the write task once
     const run = memory.store.getRun((result as { runId: number }).runId)!;
     expect(JSON.parse(run.request!)).toEqual({ one: "request" });
-    expect(JSON.parse(run.response!).toolCalls).toHaveLength(3);
+    expect(JSON.parse(run.response!).files.knowledge).toContain("corrected");
   });
 
   test("N terminal Store authority permits create/update/archive and rejects merge/split", () => {
@@ -94,25 +91,6 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       expect(rejected.ok).toBe(false);
       if (!rejected.ok) expect(rejected.problems.join(" ")).toBe("Noter permits create, update and archive only");
     }
-  });
-
-  test("shared N schema advertises create/update/archive and runtime rejects D-only operations", async () => {
-    const f = fixture(input => {
-      const definition = input.tools.find(tool => tool.name === "memory")!;
-      const schema = definition.parameters as any;
-      expect(schema.properties.op.enum).toEqual(["create", "update", "archive"]);
-      expect(schema.properties).toHaveProperty("id");
-      expect(schema.properties).toHaveProperty("absorb"); // Shared writer shape; N enforces operation permissions.
-      for (const operation of [
-        { op: "merge", id: "K1#aaaa", absorb: ["K2#bbbb"] },
-        { op: "split", id: "K1#aaaa" },
-      ]) {
-        const receipt = definition.execute({ ...created(f.fact, "new"), ...operation });
-        expect(receipt).toContain("Dreamer");
-      }
-    });
-    const result = await memory.noting({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
-    expect(result.outcome, JSON.stringify(result)).toBe("bounced");
   });
 
   test("N converts a legitimately advanced base to a new identity, while current-base updates stay on the original identity", () => {
@@ -708,13 +686,13 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       expect(input.prompt).not.toContain("Second-round user message");
       expect(input.prompt).not.toContain("NEAR");
       expect(input.prompt).not.toContain("CLOSER");
-      expect(input.prompt).toContain("create, update or archive knowledge");
+      expect(input.prompt).toContain("Merge, split and archive belong to curate");
       expect(input.text).not.toContain("Negated-evidence reminder");
       expect("reminders" in input.material).toBe(false);
-      input.tools.find(tool => tool.name === "memory")!.execute({});
+      submitEmpty(input);
     });
     expect(loadPrompt("noting.md")).not.toContain("Second-round user message");
-    expect(loadPrompt("noting.md")).toContain("create, update or archive knowledge");
+    expect(loadPrompt("noting.md")).toContain("Merge, split and archive belong to curate");
     expect((await memory.noting({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id })).outcome).toBe("success");
   });
 

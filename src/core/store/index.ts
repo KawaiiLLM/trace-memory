@@ -11,7 +11,7 @@ import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, mig
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
-import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
+import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, dreamingDue, ALL_POOLS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize } from "./processing.ts";
@@ -1783,12 +1783,8 @@ export class Store {
       this.enrolledCache?.delete(sessionId);
     });
   }
-  beginExecution(task: LogicalTask, previous?: string): string { return this.transaction(() => beginExecution(this, task, previous)); }
-  executionOrigin(id: string): TriggerOrigin | null {
-    const row = this.db.prepare("SELECT origin_session_id, origin_entry_ids FROM task_executions WHERE id = ?").get(id);
-    if (!row) throw new Error("Unknown execution");
-    return triggerOriginFromRow(row);
-  }
+  beginExecution(task: LogicalTask): string { return this.transaction(() => beginExecution(this, task)); }
+  handoff(sessionId: number, phase: Handoff["phase"]): Handoff | null { return readHandoff(this, sessionId, phase); }
   taskFailures(sessionId: number) {
     return this.db.prepare("SELECT * FROM task_failures WHERE session_id = ? ORDER BY phase, head, pool").all(sessionId).map(row => ({
       phase: row.phase as HistoricalPhase, head: row.head === null ? null : Number(row.head), pool: row.pool === null ? null : String(row.pool),
@@ -2452,6 +2448,7 @@ export class Store {
           if (this.getSourceEntry(id)?.sessionId !== sessionId) throw new Error("entry does not belong to the run session");
           this.db.prepare("INSERT INTO noted_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
         }
+        dropHandoffCovering(this, sessionId, "noting", input.entryIds ?? []);
         this.completeExecution(runId);
         return { runId, facts: batchIds.map((id) => this.getFact(id)!) };
       });
@@ -2461,6 +2458,22 @@ export class Store {
         problems: [err instanceof Error ? err.message : String(err)] }) } : input.run;
       return { ok: false, ...this.recordFailure(run, err) };
     }
+  }
+
+  /** The first task of a two-task Noter run passed (ticket 144): its run is recorded as a success that owns no fact
+   * and no noted entry, and the hand-off to the second task is written in the same transaction, fenced by the claim.
+   * A failure records a failure run and writes no hand-off. */
+  commitWriteTask(input: { run: RunInput; handoff: Omit<Handoff, "createdAt" | "runId" | "phase" | "sessionId"> }): CommitNotingResult {
+    try {
+      return this.transaction(() => {
+        const sessionId = this.requireRunSession(input.run);
+        this.requireEnabled(sessionId);
+        this.requireClaim(input.run);
+        const runId = this.insertRun({ ...input.run, outcome: "success" });
+        writeHandoff(this, { sessionId, phase: "noting", runId, ...input.handoff });
+        return { ok: true as const, runId, facts: [] };
+      });
+    } catch (err) { return { ok: false, ...this.recordFailure(input.run, err) }; }
   }
 
   /** Write the failure run record; if even that cannot be written, say so instead of pretending it was. */
@@ -2705,7 +2718,7 @@ export class Store {
     const member = this.db.prepare("SELECT s.turn_id FROM noted_entries e JOIN source_entries s ON s.id = e.entry_id JOIN runs r ON r.id = e.run_id WHERE r.session_id = ? AND r.branch = ? ORDER BY s.id DESC LIMIT 1").get(sessionId, branch) as { turn_id: number } | undefined;
     let recorded = member?.turn_id ?? 0;
     for (const row of this.db.prepare(`SELECT range_to FROM runs WHERE session_id = ? AND branch = ?
-      AND (kind = 'manual' OR (kind = 'noting' AND outcome = 'success'))`).all(sessionId, branch))
+      AND (kind = 'manual' OR (kind = 'noting' AND outcome = 'success' AND EXISTS (SELECT 1 FROM noted_entries n WHERE n.run_id = runs.id)))`).all(sessionId, branch))
       recorded = Math.max(recorded, Number(/\/T(\d+)$/.exec(String(row.range_to ?? ""))?.[1] ?? 0));
     return { sessionId, headTurnId: recorded || null, branch };
   }

@@ -1,9 +1,9 @@
 import type { DreamingResult, NotingResult, TraceMemory, TaskBoundary, TaskTarget } from "../../core/api/index.ts";
 import type { CcReconcileResult } from "./importer.ts";
-import type { ResolvedCcWorkerConfig } from "./config.ts";
+import { ccWorkspaceRoot, type ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 import { ccWorkerToolNames } from "./tool-names.ts";
-import { CC_NATIVE_READ_TOOL_TOKENS } from "./read-tool.ts";
+import { CC_NATIVE_READ_TOOL_TOKENS, CC_NATIVE_WRITE_TOOL_TOKENS } from "./read-tool.ts";
 
 export type CcWorkerPhase = "noting" | "dreaming";
 type CcTaskResult = NotingResult | DreamingResult;
@@ -230,6 +230,7 @@ export class CcTaskScheduler {
     const execution = this.worker!.phases[phase];
     return { ...target, borrowed, automatic, executorSessionId: target.sessionId, model: execution.model, capacity: execution.capacity, maxReadChars: CC_MAX_RESULT_CHARS,
       toolNames: ccWorkerToolNames, nativeReadToolTokens: CC_NATIVE_READ_TOOL_TOKENS,
+      ...(phase === "noting" ? { nativeWriteToolTokens: CC_NATIVE_WRITE_TOOL_TOKENS, workspaceRoot: ccWorkspaceRoot(this.worker!.cwd) } : {}),
       thinkingLevel: execution.thinking, subagentThinkingLevel: execution.thinking, ...(boundary ? { boundary } : {}) };
   }
 
@@ -259,7 +260,7 @@ export class CcTaskScheduler {
   private report(phase: CcWorkerPhase, target: TaskTarget, result: CcTaskResult): void {
     if (result.automaticOff) this.diagnostic(result.automaticOff);
     const problems = "problems" in result ? result.problems ?? [] : [];
-    if (result.outcome === "failure" || result.outcome === "bounced" || result.outcome === "cancelled" || problems.length)
+    if (result.outcome === "failure" || result.outcome === "cancelled" || problems.length)
       this.diagnostic(`${phase} worker ${result.outcome} for S${target.sessionId}${"runId" in result ? ` R${result.runId}` : ""}: ${problems.join("; ") || result.outcome}`);
   }
 
@@ -329,7 +330,7 @@ export class CcTaskScheduler {
           checkpoint = result.outcome === "success";
           if (result.outcome === "dropped") {
             if (phase === "noting") { drain.state = "waiting"; drain.phase = "noting"; }
-          } else if (result.outcome === "failure" || result.outcome === "bounced") {
+          } else if (result.outcome === "failure") {
             drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : undefined) || result.outcome;
             if (result.automaticOff) { drain.state = "stopped"; drain.phase = undefined; }
             else retry = true;

@@ -229,8 +229,10 @@ test.each([
 test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter, a concurrent commit survives it, and no summary re-enters the source queue", async () => {
   const h = host({ ...eager });
   try {
+    // Only the first request of a batch is held open; the batch's other requests answer at once.
     const releases: ((value: Reply) => void)[] = [];
-    h.provider(async () => new Promise<Reply>(resolve => releases.push(resolve)));
+    let holding = true;
+    h.provider(async conversation => { if (!holding) return notingFact(conversation); holding = false; return new Promise<Reply>(resolve => releases.push(resolve)); });
     await h.prompt(long("HEAD")); await h.answer(); await h.emit("agent_settled"); await h.drain();
     expect(h.requests).toHaveLength(1); // one Noter in flight, its reply held open
     const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 1_000 } });
@@ -241,6 +243,7 @@ test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter
     await vi.waitFor(() => expect(releases).toHaveLength(1), { timeout: 5000 });
     releases[0]!(notingFact(h.conversations[0]!));
     await h.drain();
+    holding = true; // the next batch is the one held below
     await vi.waitFor(() => expect(h.memory.store.listSessionFacts(1)).toHaveLength(1), { timeout: 5000 });
     expect(lastRun(h).outcome).toBe("success");
     // Progress came from the Noter and only from it: exactly the entries it froze are now recorded.
@@ -255,7 +258,7 @@ test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter
     await h.emit("session_before_compact", { preparation: { tokensBefore: 1_000 } });
     await h.drain();
     expect(h.requests).toHaveLength(requests);
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1); // The new run is still held.
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(2); // The first batch's two tasks; the new batch is still held.
     // The summary is the plugin's own message: it becomes no source entry, no fact and no receipt.
     const sources = h.memory.store.listSourceEntries(1).length;
     await h.emit("session_compact", { compactionEntry: h.compaction(block.compaction.summary), fromExtension: true });

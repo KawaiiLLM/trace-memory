@@ -3,7 +3,7 @@ import { sourceSeededMemory, recorded, seedSourceEntry } from "../../source-fixt
 import { facts, legacyFacts } from "../../support/seed.ts";
 import { charge, renderEntry, tokens, xmlBlock } from "../../../src/core/render/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
-import { pricedToolDefinitions, toolDefinitions } from "../../../src/core/api/tools.ts";
+import { pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
 import { FACT_TITLES_TITLE, measureRetainedMemoryText, rawWindowTokens } from "../../../src/core/render/material.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 
@@ -87,10 +87,10 @@ test("133: titles default to one hundred anchor-inclusive path turns, are config
     expect(n.prepared!.material.entries.map(e => e.id)).toEqual(n.entries.map(e => e.id));
     expect(n.prepared!.material.earlierUsers!.map(e => e.id)).toEqual(memory.store.sourcePath(session.id, "main", latest.id).filter(e => e.turnId >= latest.id - 99 && e.turnId < latest.id).map(e => e.id));
     expect(n.prepared!.material.factTitles!.map(line => Number(/\[F(\d+)\]/.exec(line)![1]))).toEqual(seeded.slice(3).filter(fact => fact.title && !full.has(fact.id)).map(fact => fact.id));
-    const fixed = tokens(n.prompt) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, n.names)));
+    const fixed = tokens(n.prompt) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, n.names)));
     const capacity = fixed + tokens(n.prepared!.text) - 200;
     const smaller = freezeNoting(memory.store, { sessionId: session.id, branch: "main", headTurnId: latest.id,
-      capacity: { inputTokens: capacity, prefixTokens: 0 } }, memory.config);
+      capacity: { inputTokens: capacity } }, memory.config);
     expect(smaller.entries.map(e => e.id)).toEqual(n.entries.map(e => e.id));
     expect(smaller.prepared!.material.facts).toEqual(n.prepared!.material.facts);
     // 140: negotiation trims both kinds from the oldest end, so the user entries shrink too.

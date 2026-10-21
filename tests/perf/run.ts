@@ -271,8 +271,8 @@ async function capacityScenarios(fixture: Fixture, size: string, main: ReturnTyp
       `${natural.entries.length} of ${store.pendingEntries(fixture.sessionId, fixture.branch, fixture.headTurnId).length} pending entries selected, ${naturalTokens} tokens priced`));
     rejected("noting freeze (impossible 2,000-token allowance)",
       `instructions ${noting} + tools ${toolCost} = ${noting + toolCost} mandatory tokens, allowance 2,000`,
-      () => freezeNoting(store, { ...target, capacity: { inputTokens: 2_000, prefixTokens: 0 } }, memory.config, memory.resultText));
-    const tight = { ...target, capacity: { inputTokens: naturalTokens - 500, prefixTokens: 0 } };
+      () => freezeNoting(store, { ...target, capacity: { inputTokens: 2_000 } }, memory.config, memory.resultText));
+    const tight = { ...target, capacity: { inputTokens: naturalTokens - 500 } };
     const reduced = freezeNoting(store, tight, memory.config, memory.resultText);
     samples.push(measure("noting freeze (allowance 500 under the natural size)", () => freezeNoting(store, tight, memory.config, memory.resultText),
       `${reduced.entries.length} entries, ${reduced.prepared!.material.facts.length} historical facts kept of ${natural.prepared!.material.facts.length}`));
@@ -283,7 +283,7 @@ async function capacityScenarios(fixture: Fixture, size: string, main: ReturnTyp
     // can know it has anything to do at all.
     rejected("noting freeze (impossible allowance, ordinary pending tail)",
       `${fixture.pendingEntryCount} pending entries on the untouched fixture, allowance 2,000`,
-      () => freezeNoting(main.store, { ...target, capacity: { inputTokens: 2_000, prefixTokens: 0 } }, main.config, main.resultText));
+      () => freezeNoting(main.store, { ...target, capacity: { inputTokens: 2_000 } }, main.config, main.resultText));
 
   } finally { memory.close(); rmSync(copy, { force: true }); }
   return samples;

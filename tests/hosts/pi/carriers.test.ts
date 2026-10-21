@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { BeforeAgentStartEventResult, CompactionEntry, CustomEntry, CustomMessageEntry, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
-import { noteAndMemory, fixture, noteBatch, say, settled, submitted, worker } from "./native-fixture.ts";
+import { noterTurn, fixture, noteBatch, say, settled, submitted, worker } from "./native-fixture.ts";
 import { tag } from "../../../src/hosts/pi/settings.ts";
 
 // Ticket 26c0 — fixture parity with Pi for the three carriers 26c reads coverage off. Nothing in
@@ -122,7 +122,7 @@ test("26c0: buildContextEntries follows Pi's rule — the selected ancestry, the
 test("26c0 native fixture: the message the hook returned is persisted through the real SessionManager and the real buildContextEntries carries it", async () => {
   const f = await fixture();
   try {
-    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : noteAndMemory("t1", noteBatch));
+    f.script(body => !worker(body) ? say("好的。") : noterTurn(body, noteBatch));
     await f.turn();
     await settled(f); // the Noter committed a fact
     // 29d: that commit reaches no prompt on its own, so the message this case needs is the one

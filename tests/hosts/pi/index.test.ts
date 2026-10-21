@@ -4,7 +4,8 @@ import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.t
 import { memoryFiles, canonicalToolNames } from "../../../src/core/api/index.ts";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { host as createHost, reply, notingFact, noteHeld, usage, dreamerReply, type Reply } from "./test-host.ts";
+import { knowledgeFile } from "../../support/noter.ts";
+import { host as createHost, reply, notingFact, NOTER_BATCH_REQUESTS, holdFirstRequest, noteHeld, usage, dreamerReply, type Reply } from "./test-host.ts";
 import { compacted, seedSourceEntry } from "../../source-fixture.ts";
 import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
@@ -111,20 +112,27 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
   await h.turn();
-  const run = h.memory.store.listRuns(1)[0]!;
-  expect(run.outcome).toBe("success");
+  const runs = h.memory.store.listRuns(1);
+  expect(runs.map(r => r.outcome)).toEqual(["success", "success"]); // write, then verify
+  const run = runs[0]!;
+  expect(JSON.parse(run.response!)).toMatchObject({ task: "write" });
+  expect(JSON.parse(runs[1]!.response!)).toMatchObject({ task: "verify" });
   expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test");
-  expect(JSON.parse(run.request!)).toEqual(h.requests.at(-1));
-  expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult", "assistant", "user"]);
-  expect(String(h.conversations.at(-1)!.messages.at(-1)!.content)).toContain("Before publication, review this run once.");
+  const writeRequests = 3; // check, write both files, stop
+  expect(JSON.parse(run.request!)).toEqual(h.requests[writeRequests - 1]);
+  expect(JSON.parse(runs[1]!.request!)).toEqual(h.requests.at(-1));
+  expect(h.conversations[writeRequests - 1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "assistant", "toolResult", "toolResult"]);
   // 137: a fresh Noter's system prompt is its instructions plus the retrieval policy, once.
   expect(h.conversations[0]!.systemPrompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
   expect(h.conversations[0]!.systemPrompt!.split("When to look up memory")).toHaveLength(2);
   expect(h.conversations[0]!.messages).toHaveLength(1);
-  expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["search", "note", "memory", "read"]);
-  // Usage is summed over every model call of the run, not the last reply's alone.
-  const calls = h.conversations.length;
-  expect(JSON.parse(run.response!).usage).toEqual({ ...usage, input: usage.input * calls, output: usage.output * calls, totalTokens: usage.totalTokens * calls });
+  expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["search", "check", "read", "write", "edit"]);
+  // Both tasks start from the same bytes: system prompt, tools and task text.
+  expect(h.conversations[writeRequests]!.systemPrompt).toBe(h.conversations[0]!.systemPrompt);
+  expect(h.conversations[writeRequests]!.tools).toEqual(h.conversations[0]!.tools);
+  expect(h.conversations[writeRequests]!.messages[0]).toEqual(h.conversations[0]!.messages[0]);
+  // Usage is summed over every model call of the task, not the last reply's alone.
+  expect(JSON.parse(run.response!).usage).toEqual({ ...usage, input: usage.input * writeRequests, output: usage.output * writeRequests, totalTokens: usage.totalTokens * writeRequests });
   expect(h.memory.store.listSessionFacts(1)[0]!.text).toBe("用 pnpm，不要 npm");
 });
 
@@ -201,24 +209,23 @@ test("raw is incremental and compaction contains intermediate assistant text wit
 test("29d case 24: a worker's completion starts no drain loop, and a tree switch launches nothing", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
-  await h.turn(); // one Noting run over T1, committing F1
+  await h.turn(); // one Noting batch over T1 (write, then verify), committing F1
   const after = h.requests.length;
-  expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success"]);
+  expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success"]);
   // Settling again, draining again and idling start nothing: the commit is not itself a trigger.
   await h.emit("agent_settled"); await h.emit("agent_end"); await h.drain();
   expect(h.requests).toHaveLength(after);
-  expect(h.memory.store.listRuns(1)).toHaveLength(1);
+  expect(h.memory.store.listRuns(1)).toHaveLength(2);
   // A tree switch re-selects the context and launches no extraction of its own.
   await h.emit("session_tree"); await h.drain();
   expect(h.requests).toHaveLength(after);
-  expect(h.memory.store.listRuns(1)).toHaveLength(1);
+  expect(h.memory.store.listRuns(1)).toHaveLength(2);
   expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
 });
 
 test("29d case 22: a worker's commit reaches no later prompt, on the branch it ran on or a sibling", async () => {
   const h = host({ "noting.triggerTokens": 30 });
-  let release!: (value: Reply) => void;
-  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  const release = holdFirstRequest(h);
   await h.turn();
   const original = [...h.entries];
   await h.prompt("second"); await h.answer();
@@ -266,8 +273,7 @@ test("29d: the knowledge block is offered until the selected context carries it,
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect((await h.prompt("third"))?.message).toBeUndefined();
   // A worker committing mid-turn changes none of it: no receipt on the next prompt, no queue behind it.
-  let release!: (value: Reply) => void;
-  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  const release = holdFirstRequest(h);
   await h.prompt("one"); await h.answer(); await h.emit("agent_settled"); await h.drain(); // noting A in flight
   await h.prompt("two");
   release(notingFact(h.conversations.at(-1)!)); await h.drain(); // A commits during turn two
@@ -279,8 +285,7 @@ test("29d: the knowledge block is offered until the selected context carries it,
 
 test("in-flight duplicate is dropped; new raw and branch switches cannot change its frozen range", async () => {
   const h = host({ "noting.triggerTokens": 30 });
-  let release!: (value: Reply) => void;
-  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  const release = holdFirstRequest(h);
   await h.prompt(); await h.answer(); await h.emit("agent_settled");
   await h.emit("agent_settled"); await h.drain(); expect(h.requests).toHaveLength(1);
   const old = [...h.entries];
@@ -297,18 +302,17 @@ test("ordinary N completion does not chain a retired stage or another N without 
   const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
   await h.turn();
-  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // write, then verify
   const sent = h.requests.length;
   await h.emit("agent_settled"); await h.emit("session_tree"); await h.drain();
   expect(h.requests).toHaveLength(sent);
-  expect(h.memory.store.listRuns(1)).toHaveLength(1);
+  expect(h.memory.store.listRuns(1)).toHaveLength(2);
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
 test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs — superseded 17c 2026-09-08: cancels, launches nothing, and closes the store", async reason => {
   const h = host({ "noting.triggerTokens": 30 });
-  let release!: (value: Reply) => void;
-  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  const release = holdFirstRequest(h);
   await h.turn();
   await h.drain();
   const shutdown = h.emit("session_shutdown", { reason });
@@ -328,8 +332,8 @@ test("core contains no Pi imports and host imports core only through the facade"
 test("17b supersedes watermark growth: compressed source labels count along with CJK content", async () => {
   const h = host({ "noting.triggerTokens": 16 }); // the two labels and their two characters, and nothing else
   await h.prompt("一"); await h.answer("a"); await h.drain();
-  expect(h.requests).toHaveLength(4); // explicit empty note, memory, terminal reply, fixed review reply
-  expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Before publication, review this run once.");
+  expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch: both tasks, each calling check and writing `## none`
+  expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Task: verify");
   expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
 });
 
@@ -344,14 +348,13 @@ test("provider failures retain captured request and do not advance a watermark",
 
 test("duplicate eligible boundaries do not adopt or multiply the running N task", async () => {
   const h = host({ "noting.triggerTokens": 30 });
-  let release!: (value: Reply) => void;
-  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  const release = holdFirstRequest(h);
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
   await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(1);
   h.provider(async c => notingFact(c));
   release(notingFact(h.conversations[0]!)); await h.drain();
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success"]);
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success", "success"]); // one batch: write, then verify
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
@@ -494,8 +497,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
 
 test("before-tree waits for a frozen pending noting and summarizes its facts plus later raw, and delivers nothing on either branch (29d)", async () => {
   const h = host({ "noting.triggerTokens": 30 });
-  let release!: (value: Reply) => void;
-  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  const release = holdFirstRequest(h);
   await h.turn(); const forkPoint = [...h.entries];
   await h.prompt("later unrecorded raw"); await h.answer("later reply");
   const tip = [...h.entries];
@@ -599,19 +601,18 @@ test("a former marker cannot make a new session merge an existing shared project
 // checks still gate the launch and are exercised by their own tests.
 test("29d: a note waits for no receipt and no prompt carries one", async () => {
   const h = host({ "noting.triggerTokens": 30, notingModel: "fake/noter" });
-  let release!: (value: Reply) => void;
-  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  const release = holdFirstRequest(h);
   await h.turn(); // Noting A in flight over T1.
   await h.prompt("second"); await h.answer();
   release(notingFact(h.conversations[0]!)); await h.drain();
   expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   h.provider(async c => notingFact(c));
   await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(3); // first run's fixed review, but no chained run for the busy second turn
-  expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Before publication, review this run once.");
+  expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // the first batch's two tasks, but no chained run for the busy second turn
+  expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Task: verify");
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(false);
   await h.answer(); await h.drain();
-  expect(h.requests).toHaveLength(6); // the later turn admits one batch and its fixed review
+  expect(h.requests).toHaveLength(2 * NOTER_BATCH_REQUESTS); // the later turn admits one more batch
 });
 
 test("a subagent Noter reads omitted evidence through virtual Read and records its last request", async () => {
@@ -623,17 +624,18 @@ test("a subagent Noter reads omitted evidence through virtual Read and records i
   const call = { type: "toolCall" as const, id: "call-1", name: "read", arguments: { path } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.prompt("next main turn"); await h.answer("word ".repeat(1000)); await h.drain();
-  expect(h.conversations).toHaveLength(4);
+  // Task 1: read, check, write, stop. Task 2 starts from the same first message, so its model reads the same evidence, then checks and stops.
+  expect(h.conversations).toHaveLength(7);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
-  expect(JSON.stringify(h.conversations.at(-1)!.messages)).toContain("Before publication, review this run once.");
+  expect(JSON.stringify(h.conversations.at(-1)!.messages)).toContain("Task: verify");
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
   expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
   expect(result.content[0]!.text).toBe(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(path).content);
   expect(result.content[0]!.text).toContain("x".repeat(5000));
-  expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["search", "note", "memory", "read"]);
+  expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["search", "check", "read", "write", "edit"]);
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.request!)).toEqual(h.requests.at(-1));
+  expect(JSON.parse(run.request!)).toEqual(h.requests[3]); // the write task's last request
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
@@ -645,9 +647,9 @@ test("a noting tool call for a bad address returns an error result and N still c
   const result = h.conversations[1]!.messages[2] as { content: { text: string }[] };
   expect(result.content[0]!.text).toContain("does not exist");
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
-  expect(h.conversations.every(c => c.tools!.map(t => t.name).join(",") === "search,note,memory,read")).toBe(true);
+  expect(h.conversations.every(c => c.tools!.map(t => t.name).join(",") === "search,check,read,write,edit")).toBe(true);
   const runs = h.memory.store.listRuns(1);
-  expect(runs.map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);
+  expect(runs.map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // write, then verify
   // The OpenAI tool message transports text only. Check native status in Pi's own log,
   // rather than reconstructing an isError flag from the HTTP result's wording.
   const nativeLog = JSON.parse(runs[0]!.response!).nativeLog;
@@ -877,7 +879,7 @@ test("the plugin's spend is a footer status item updated after every run, and th
   // 24a: idle; nothing left to note, one applicable fact and no knowledge yet.
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: 0->1 memory: 0\/0 cost: \$\d+\.\d{2}<\/dim>$/);
   const spend = h.memory.spend(1);
-  expect(spend.runs).toEqual({ noting: 1, consolidation: 0, dreaming: 0, manual: 0 });
+  expect(spend.runs).toEqual({ noting: 2, consolidation: 0, dreaming: 0, manual: 0 }); // write and verify are two runs
   expect(spend.input + spend.output).toBeGreaterThan(0);
   await h.prompt("more"); await h.answer();
   const result = await h.emit("session_before_tree");
@@ -915,8 +917,7 @@ test("a branch forked from an earlier point inherits the nearest recorded ancest
 
 test("the footer indicator is accent while N runs and dim after terminal success or failure, including after staging", async () => {
   const h = host({ "noting.triggerTokens": 30 });
-  let release!: (value: Reply) => void;
-  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  const release = holdFirstRequest(h);
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <accent>●<\/accent> /); // noting in flight
   h.provider(async c => notingFact(c));
@@ -997,7 +998,8 @@ test("a retry re-sends the same request: a stream error after a tool round does 
   const run = h.memory.store.listRuns(1)[0]!, response = JSON.parse(run.response!);
   expect(run.outcome).toBe("success");
   // Every attempt that reported usage counts; the attempt that died in transport reported none.
-  expect(response.usage.input).toBe(usage.input * (h.conversations.length - 1));
+  // The write task's requests: all but the dead attempt and the verify task's two (its own run).
+  expect(response.usage.input).toBe(usage.input * (h.conversations.length - 1 - 2));
   // Pi's own retry loop records the provider's error text as it arrived at the transport.
   expect(response.retries).toEqual([{ attempt: 1, error: expect.stringContaining("fetch failed") }]);
 });
@@ -1016,15 +1018,11 @@ test("51: the footer keeps the running phase's colour while a retry waits; the n
 
 test("N jointly publishes a fact and knowledge; the next prompt delivers only the missing knowledge body", async () => {
   const h = host({ "noting.triggerTokens": 30 });
-  h.provider(async c => {
-    if (c.messages.some(m => m.role === "toolResult")) return reply("Done.");
-    const note = notingFact(c).content[0]!;
-    return { ...reply(""), stopReason: "toolUse", content: [note, { type: "toolCall", id: "memory-1", name: "memory",
-      arguments: { op: "create", title: "Fixture title", topics: [], reason: "The user chose pnpm.", text: "Use pnpm, never npm",
-        category: "constraint", scope: "session", supports: ["$1"] } }] };
-  });
+  const knowledge = knowledgeFile(h.memory, { op: "create", title: "Fixture title", topics: [], reason: "The user chose pnpm.", text: "Use pnpm, never npm",
+    category: "constraint", scope: "session", supports: ["$1"] });
+  h.provider(async c => notingFact(c, knowledge));
   await h.turn();
-  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"]]);
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["noting", "success"]]);
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
   expect(h.memory.store.listVisibleKnowledge(1, h.memory.store.getSession(1)!.projectId)).toHaveLength(1);
   const carried = String((await h.prompt("second"))?.message?.content ?? "");

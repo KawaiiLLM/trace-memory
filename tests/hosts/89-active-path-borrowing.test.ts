@@ -4,6 +4,7 @@ import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { host, reply, type Reply } from "./pi/test-host.ts";
 import { knowledge, legacyFacts } from "../support/seed.ts";
+import { submitEmpty } from "../support/noter.ts";
 
 const at = "2026-09-24T00:00:00.000Z";
 function closedTarget(memory: ReturnType<typeof TraceMemory>, projectId: number, invalid = false) {
@@ -39,9 +40,10 @@ function abandonedSibling(memory: ReturnType<typeof TraceMemory>, target: TaskTa
 function expectConsumedOnlySibling(memory: ReturnType<typeof TraceMemory>, sessionId: number, sibling: ReturnType<typeof abandonedSibling>) {
   const store = memory.store;
   const runs = store.listRuns(sessionId).filter(run => run.kind !== "manual" && run.branch === "abandoned");
-  expect(runs).toHaveLength(1);
-  expect(runs[0]).toMatchObject({ kind: "noting", outcome: "success" });
-  expect(store.db.prepare("SELECT entry_id FROM noted_entries WHERE run_id = ?").all(runs[0]!.id).map(row => Number(row.entry_id))).toEqual([sibling.entry.id]);
+  expect(runs).toHaveLength(2); // the batch's write and verify runs
+  expect(runs.every(run => run.kind === "noting" && run.outcome === "success")).toBe(true);
+  // Only the verify run, which publishes, owns the processed entries.
+  expect(store.db.prepare("SELECT entry_id FROM noted_entries WHERE run_id = ?").all(runs[1]!.id).map(row => Number(row.entry_id))).toEqual([sibling.entry.id]);
   expect(store.pendingEntries(sessionId, "abandoned", sibling.turn.id)).toEqual([]);
   // C retirement does not clear or replay historical unprocessed facts.
   expect(store.consolidationBatch(sessionId, "abandoned", sibling.turn.id).map(fact => fact.id))
@@ -57,8 +59,8 @@ test("89: Pi borrows only active paths and consumes reactivated backlog at the n
     const sibling = abandonedSibling(h.memory, target);
     await h.prompt("executor opportunity"); await h.answer(); await h.drain();
     const runs = store.listRuns(target.sessionId).filter(run => run.kind !== "manual");
-    expect(runs).toHaveLength(1);
-    expect(runs[0]!.kind).toBe("noting");
+    expect(runs).toHaveLength(2); // one batch: write, then verify
+    expect(runs.every(run => run.kind === "noting")).toBe(true);
     expect(runs.every(run => run.branch === target.branch && run.outcome === "success")).toBe(true);
     expect(store.pendingEntries(target.sessionId, "abandoned", sibling.turn.id).map(value => value.id)).toEqual([sibling.entry.id]);
     expect(store.consolidationBatch(target.sessionId, "abandoned", sibling.turn.id).map(value => value.id))
@@ -86,8 +88,7 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
     inputs.push(input);
     input.reportRequest({ offline: true });
     if (input.kind === "noting") {
-      input.tools.find(tool => tool.name === "note")!.execute({});
-      input.tools.find(tool => tool.name === "memory")!.execute({});
+      submitEmpty(input);
     }
     return { outcome: "success", output: "No new knowledge.", request: { offline: true } };
   }, { noting: { triggerTokens: 1_000_000 } });
@@ -116,8 +117,10 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
       scheduler.reconcile(projection);
       if (ended) scheduler.turnEnd(projection, scheduler.catchupTicket());
     };
+    const batches = () => inputs.filter(input => input.task === "write"); // each batch is a write and a verify run
     opportunity([first], true); await scheduler.settle();
-    expect(inputs).toHaveLength(1);
+    expect(batches()).toHaveLength(1);
+    expect(inputs).toHaveLength(2);
     expect(inputs[0]!.kind).toBe("noting");
     expect(inputs.every(input => input.sessionId === target.sessionId && input.branch === "active")).toBe(true);
     expect(inputs.every(input => !input.text.includes("ABANDONED_SIBLING"))).toBe(true);
@@ -126,10 +129,10 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
       .toEqual(store.listSessionFacts(target.sessionId).map(fact => fact.id).sort((a, b) => a - b));
     store.setCurrentPath(target.sessionId, "abandoned", sibling.turn.id, "closed");
     opportunity([]); await scheduler.settle();
-    expect(inputs).toHaveLength(1);
+    expect(batches()).toHaveLength(1);
     opportunity([append()], true); await scheduler.settle();
-    expect(inputs).toHaveLength(2);
-    expect(inputs.slice(1).every(input => input.sessionId === target.sessionId && input.branch === "abandoned")).toBe(true);
+    expect(batches()).toHaveLength(2);
+    expect(inputs.slice(2).every(input => input.sessionId === target.sessionId && input.branch === "abandoned")).toBe(true);
     expectConsumedOnlySibling(memory, target.sessionId, sibling);
     expect(diagnostics).toEqual([]);
   } finally { memory.close(); }

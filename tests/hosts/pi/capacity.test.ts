@@ -121,7 +121,7 @@ test("27a 2026-09-10: a subagent is priced by core's material accounting alone; 
     h.setContextUsage({ tokens: 10_000_000, contextWindow: 200_000, percent: 5_000 });
     await h.prompt("word ".repeat(200)); await h.answer("word ".repeat(200));
     await h.emit("agent_settled"); await h.drain();
-    expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success"]);
+    expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success"]); // the batch's write and verify runs
     expect(h.requests.length).toBeGreaterThan(0);
   } finally { await h.dispose(); }
 });

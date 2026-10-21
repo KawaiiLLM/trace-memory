@@ -26,7 +26,8 @@ export interface BlockResult {
 
 export type ApplyResult =
   | { ok: true; runId: number; blocks: BlockResult[]; /** The ids the facts file's labels were published as. */ factIds: Record<string, number> }
-  | { ok: false; problems: string[] };
+  /** `runId` is the failure run the Store recorded when the commit itself failed; a file that did not check records none. */
+  | { ok: false; problems: string[]; runId?: number };
 
 export function applyWorkspace(store: Store, input: ApplyInput): ApplyResult {
   if (input.kind === "noting") return applyNoting(store, input);
@@ -54,7 +55,11 @@ function applyNoting(store: Store, input: Extract<ApplyInput, { kind: "noting" }
   const { path, sources } = facts as Required<Pick<typeof facts, "path" | "sources">> & typeof facts;
   const run: RunInput = input.run ?? { kind: "noting", sessionId: input.scope.sessionId, branch: input.scope.branch,
     rangeFrom: input.scope.range.from, rangeTo: input.scope.range.to, createdAt: new Date().toISOString() };
-  const committed = store.commitNotingRun({ run, facts: facts.facts.map(entry => entry.fact), entryIds: sources.frozenEntries,
+  // The audit says which fact each label became and which block each knowledge operation came from.
+  const responseForFacts = (ids: number[]) => JSON.stringify({ ...JSON.parse(run.response ?? "{}"),
+    labels: Object.fromEntries(facts.facts.map((entry, i) => [entry.label, `F${ids[i]}`])),
+    blocks: knowledge.knowledge.map(entry => ({ block: describeBlock(entry.block), line: entry.block.line })) });
+  const committed = store.commitNotingRun({ run, responseForFacts, facts: facts.facts.map(entry => entry.fact), entryIds: sources.frozenEntries,
     held: { path, slots: facts.facts.map((_, i) => i + 1),
       // The batch is published once: its frozen entries must still be pending on the path.
       validate: () => {
@@ -66,7 +71,7 @@ function applyNoting(store: Store, input: Extract<ApplyInput, { kind: "noting" }
         if (!made.operation) throw new Error(made.problems.join("; ") || "invalid knowledge operation");
         return made.operation;
       }) } });
-  if (!committed.ok) return { ok: false, problems: committed.problems };
+  if (!committed.ok) return { ok: false, problems: committed.problems, runId: committed.runId };
   const audit = (JSON.parse(store.getRun(committed.runId)!.response ?? "{}").knowledgeOperations ?? []) as
     { requested: { op: string }; applied: { op: string } | null; committed: { op: string; knowledgeId: number; commit: number }[] }[];
   const blocks = knowledge.knowledge.map((entry, i): BlockResult => ({ block: describeBlock(entry.block), line: entry.block.line, status: "applied",

@@ -85,8 +85,8 @@ function executableConfig(home: string): CcHostConfig {
 test("CC resolves one immutable execution setting per phase from the four flat Pi keys", () => {
   const f = fixture(), config = resolveCcHostConfig(executableConfig(f.home));
   expect(config.worker?.phases).toEqual({
-    noting: { model: "sonnet", thinking: "high", capacity: { inputTokens: 190_000, prefixTokens: 0 } },
-    dreaming: { model: "opus", thinking: "xhigh", capacity: { inputTokens: 290_000, prefixTokens: 0 } },
+    noting: { model: "sonnet", thinking: "high", capacity: { inputTokens: 190_000 } },
+    dreaming: { model: "opus", thinking: "xhigh", capacity: { inputTokens: 290_000 } },
   });
   expect(config).toMatchObject({ notingModel: "sonnet", notingThinking: "high",
     "dreaming.model": "opus", "dreaming.thinking": "xhigh" });

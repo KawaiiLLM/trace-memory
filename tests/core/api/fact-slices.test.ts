@@ -4,20 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { factSources } from "../../support/seed.ts";
+import { submit, verifyUnchanged } from "../../support/noter.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { DatabaseSync } from "node:sqlite";
 import { renderFact, tokens } from "../../../src/core/render/index.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => cleanup.splice(0).reverse().forEach(fn => fn()));
-function setup(worker?: (task: any) => void) {
+function setup(worker?: (task: any) => void | Promise<void>) {
   const dir = mkdtempSync(join(tmpdir(), "tm93-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const db = join(dir, "db.sqlite");
   const memory = sourceSeededMemory(db, async raw => {
     const task = raw as any;
+    if (task.task === "verify") return verifyUnchanged(task, { request: { messages: [{ role: "user", content: "test" }] } });
     task.reportRequest({ messages: [{ role: "user", content: "test" }] });
-    worker?.(task);
+    await worker?.(task);
     return { outcome: "success", output: "done", request: { messages: [{ role: "user", content: "test" }] } };
   });
   cleanup.push(() => memory.close());
@@ -101,10 +103,9 @@ test("93 columns rollback with schema transaction after an actual later budget f
 });
 
 test("normal N terminal publishes titled segments and marked Raw together", async () => {
-  const x = setup(task => {
+  const x = setup(async task => {
     const address = `T${x.turn.id}#E1`;
-    expect(task.tools.find((t: any) => t.name === "note")!.execute(f([{ address, text: "User opens" }]))).toContain("held: $1");
-    task.tools.find((t: any) => t.name === "memory")!.execute({});
+    expect(await submit(task, x.memory, { noteInput: [f([{ address, text: "User opens" }])], memoryInput: {} })).toBeUndefined();
   });
   expect((await x.memory.noting(x.path)).outcome).toBe("success");
   expect(x.memory.store.getFact(1)).toMatchObject({ title: "A discussion", segments: ["User opens"] });

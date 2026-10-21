@@ -1,11 +1,12 @@
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { createSdkMcpServer, query, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 import { memoryPath, resolvedMemoryPath, toolRejected } from "../../core/api/index.ts";
-import { CC_AGENT_SDK_VERSION, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
+import { sweepStaleWorkspaces } from "../../core/noting/workspace.ts";
+import { CC_AGENT_SDK_VERSION, ccWorkspaceRoot, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 import { materializeCcWorkerRead, saveCcWorkerOutput } from "./files.ts";
@@ -80,7 +81,7 @@ export class CcResponseOrigins {
   private readonly toolRoundIds = new Set<string>();
   private readonly origins = new Map<string, string>();
   private readonly claimed = new Set<string>();
-  private readonly pendingWrites = new Map<string, { name: "note" | "memory"; input: unknown }>();
+  private readonly pendingWrites = new Map<string, { name: "memory"; input: unknown }>();
   private readonly rejectedWrites = new Set<string>();
   private readonly waiters = new Map<string, WaitingOrigin[]>();
   private failure: Error | null = null;
@@ -112,10 +113,9 @@ export class CcResponseOrigins {
       if (prior && prior !== responseId)
         throw this.fail(new Error(`CC tool use ${block.id} is ambiguous across assistant responses`));
       this.origins.set(block.id, responseId);
-      const name = block.name === ccWorkerToolNames.note ? "note" : block.name === ccWorkerToolNames.memory ? "memory" : undefined;
-      // 127: the Dreamer's memory calls are tracked as the Noter's writes are; it exposes no note.
-      if (name !== undefined && (this.task.kind === "noting" || name === "memory") && !this.pendingWrites.has(block.id))
-        this.pendingWrites.set(block.id, { name, input: structuredClone(block.input) });
+      // 127: the Dreamer's memory calls are tracked so a native refusal reaches its numbered slot; the Noter writes files and has no write tool of core's.
+      if (this.task.kind === "dreaming" && block.name === ccWorkerToolNames.memory && !this.pendingWrites.has(block.id))
+        this.pendingWrites.set(block.id, { name: "memory", input: structuredClone(block.input) });
       for (const waiter of this.waiters.get(block.id) ?? []) {
         clearTimeout(waiter.timer); waiter.resolve(responseId);
       }
@@ -145,7 +145,7 @@ export class CcResponseOrigins {
    * never by parsing the error prose. A missing result/dispatch cannot establish correction. */
   rejected(id: string, reason: string): void {
     const attempt = this.pendingWrites.get(id);
-    if (!attempt || this.claimed.has(id) || this.rejectedWrites.has(id)) return;
+    if (!attempt || this.claimed.has(id) || this.rejectedWrites.has(id) || this.task.kind !== "dreaming") return;
     if (!this.task.reportToolRejection) throw this.fail(new Error("CC worker cannot report native tool rejection"));
     this.task.reportToolRejection(id, attempt.name, attempt.input, reason);
     this.rejectedWrites.add(id);
@@ -371,13 +371,38 @@ export class CcAgentWorker {
     // Ticket 136: an over-long search output lands in this directory and is registered as a rendering, so the
     // worker's restricted Read may open it.
     task.setSpill?.(text => { const path = saveCcWorkerOutput(readDirectory, text); rendered.set(path, "search output"); return path; });
+    const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse" as const,
+      permissionDecision: "deny" as const, permissionDecisionReason: reason } });
+    const allow = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse" as const,
+      permissionDecision: "allow" as const, permissionDecisionReason: reason } });
+    // Ticket 144: the Noter's two workspace files, and nothing else, may be read, written and edited. A path is one only when it is
+    // absolute and already normal, is exactly one of the two, is not a symbolic link, and sits directly in the run's directory.
+    const workspace = task.kind === "noting" ? task.workspace : undefined;
+    const workspaceFile = (file: unknown): { path: string } | { reason: string } | null => {
+      if (!workspace) return null;
+      if (typeof file !== "string" || !isAbsolute(file) || file !== resolve(file) || (file !== workspace.facts && file !== workspace.knowledge))
+        return { reason: "Trace Memory: this task may use only its two workspace files" };
+      try {
+        if (realpathSync(dirname(file)) !== realpathSync(workspace.dir)) return { reason: "Trace Memory: a workspace file must sit directly in the run's workspace" };
+        if (existsSync(file) && lstatSync(file).isSymbolicLink()) return { reason: "Trace Memory: a workspace file may not be a symbolic link" };
+      } catch (error) { return { reason: error instanceof Error ? error.message : String(error) }; }
+      return { path: file };
+    };
+    const onWrite = async (raw: unknown) => {
+      const event = raw as { tool_input?: Record<string, unknown> };
+      const checked = workspaceFile(event?.tool_input?.file_path);
+      return checked && "path" in checked ? allow("workspace file") : deny(checked?.reason ?? "CC worker has no Write or Edit");
+    };
     const onRead = async (raw: unknown) => {
-      const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse" as const,
-        permissionDecision: "deny" as const, permissionDecisionReason: reason } });
       const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown>; cwd?: unknown };
       const file = event?.tool_input?.file_path;
       try {
-        if (event.tool_name !== "Read" || typeof file !== "string") return deny("CC worker accepts only Read of trace://");
+        if (event.tool_name !== "Read" || typeof file !== "string") return deny(workspace ? "CC worker accepts only Read of trace:// and its workspace files" : "CC worker accepts only Read of trace://");
+        // An absolute path that names a workspace file is read as it is; the rendering rules below do not apply to it.
+        if (workspace && (file === workspace.facts || file === workspace.knowledge)) {
+          const checked = workspaceFile(file);
+          return checked && "path" in checked ? allow("workspace file") : deny(checked!.reason);
+        }
         const virtual = memoryPath(file) ?? resolvedMemoryPath(file, event.cwd);
         if (virtual !== null) {
           const path = materializeCcWorkerRead(this.config, frozenReader, virtual, readDirectory);
@@ -425,15 +450,17 @@ export class CcAgentWorker {
       this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error.message }),
       async () => { try {
       task.signal?.throwIfAborted();
-      const allowedTools = ["Read", ...task.tools.map(definition => ccWorkerToolNames[definition.name])];
+      // The Noter alone has native Write and Edit, confined by the hook above to its two files; `--restricted` keeps them inside the cwd.
+      const native = workspace ? ["Read", "Write", "Edit"] : ["Read"];
+      const allowedTools = [...native, ...task.tools.map(definition => ccWorkerToolNames[definition.name])];
       const execution = this.query({ prompt: input ?? task.text, options: {
         model: settings.model,
         cwd: this.worker.cwd,
         pathToClaudeCodeExecutable: this.worker.claudeExecutable,
         env: this.environment,
-        tools: ["Read"],
+        tools: native,
         allowedTools,
-        hooks: { PreToolUse: [{ matcher: "Read", hooks: [onRead] }] },
+        hooks: { PreToolUse: [{ matcher: "Read", hooks: [onRead] }, ...(workspace ? [{ matcher: "Write|Edit", hooks: [onWrite] }] : [])] },
         mcpServers: { [CC_WORKER_SERVER_NAME]: workerServer(task, origins, toolsAllowed) },
         abortController: controller,
         systemPrompt: task.prompt,
@@ -543,6 +570,8 @@ export class CcAgentWorker {
 export function createCcRunAgent(config: ResolvedCcHostConfig, dependencies: CcWorkerDependencies = {},
   maxToolRounds: (kind: CcAgentTask["kind"]) => number = () => 0): RunAgent {
   const worker = new CcAgentWorker(config, dependencies);
+  // A crashed executor leaves its Noter workspaces behind; this executor's start removes the ones far older than any live run.
+  if (config.worker) sweepStaleWorkspaces(ccWorkspaceRoot(config.worker.cwd));
   return (input: unknown) => {
     const task = input as CcAgentTask;
     if (task.kind !== "noting" && task.kind !== "dreaming")

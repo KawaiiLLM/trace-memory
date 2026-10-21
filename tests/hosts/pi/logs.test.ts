@@ -6,11 +6,11 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { noteAndMemory, fixture, noteBatch, say, settled, toolResults, worker } from "./native-fixture.ts";
+import { noterTurn, fixture, noteBatch, say, settled, toolResults, worker } from "./native-fixture.ts";
 import { host } from "./test-host.ts";
 
 const notingRun = (body: Record<string, any>) =>
-  !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : noteAndMemory("t1", noteBatch);
+  !worker(body) ? say("好的。") : noterTurn(body, noteBatch);
 const lines = (file: string) => readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
 
@@ -80,7 +80,8 @@ test("24c: changing the default moves nothing — an earlier run's recorded path
       oldRun = run.response!;
       expect(dirname(oldLog)).toBe(join(old, before.original.id));
     } finally { await before.dispose(); }
-    const bytes = readFileSync(oldLog), stamp = statSync(oldLog).mtimeMs;
+    const bytes = readFileSync(oldLog), stamp = statSync(oldLog).mtimeMs, oldFiles = readdirSync(join(old, before.original.id)).sort();
+    expect(oldFiles).toHaveLength(2); // one log per task of the batch
 
     // A second session on the same database, now on the 24c default.
     const after = await fixture({ dbPath });
@@ -95,7 +96,7 @@ test("24c: changing the default moves nothing — an earlier run's recorded path
       expect(after.h.memory.store.listRuns(1)[0]!.response).toBe(oldRun);
       expect(readFileSync(oldLog)).toEqual(bytes);
       expect(statSync(oldLog).mtimeMs).toBe(stamp);
-      expect(readdirSync(join(old, before.original.id))).toHaveLength(1);
+      expect(readdirSync(join(old, before.original.id)).sort()).toEqual(oldFiles);
       expect(readdirSync(old)).toEqual([before.original.id]);
     } finally { await after.dispose(); }
   } finally { rmSync(shared, { recursive: true, force: true }); }

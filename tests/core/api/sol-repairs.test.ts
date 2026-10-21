@@ -6,6 +6,8 @@ import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
 import { tracePage, wholeTrace } from "../../trace-pages.ts";
 import { factSources } from "../../support/seed.ts";
+import { checkWorkspace } from "../../../src/core/workspace/index.ts";
+import { factsFile } from "../../support/noter.ts";
 
 const time = "2026-09-01T00:00:00Z";
 function setup(normalized = true) {
@@ -23,10 +25,12 @@ function setup(normalized = true) {
   const result = (callId = call.callId) => m.appendEntry({ sessionId, turnId: turn.id, nativeLineage: "sol", nativeId: `result-${++next}`, role: "toolResult", text: "", calls: [{ ...call, callId, result: "passed", status: "success" }],
     raw: JSON.stringify({ role: "toolResult", toolCallId: callId, isError: false, content: [{ type: "text", text: "passed" }] }) });
   const select = (ids: number[], branch = "main") => m.selectEntries(sessionId, branch, ids);
-  const note = (kind: "manual" | "noting" = "manual", entryIds?: number[]) => m.tools(kind === "manual"
-    ? { kind, sessionId, currentTurnId: turn.id, branch: "main" }
-    : { kind, sessionId, branch: "main", entryIds, range: { from: `S${sessionId}/T${turn.id}`, to: `S${sessionId}/T${turn.id}` } }).find(tool => tool.name === "note")!;
-  return { m, sessionId, turn, text, dispatch, result, select, note };
+  const note = () => m.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" }).find(tool => tool.name === "note")!;
+  /** The Noter's side of the same contract: what its facts file may cite, as `check` answers it. */
+  const noting = (text: string) => { const result = checkWorkspace(m.store, { kind: "noting-facts", file: { name: "facts.md", text },
+    scope: { sessionId, branch: "main", range: { from: `S${sessionId}/T${turn.id}`, to: `S${sessionId}/T${turn.id}` } } });
+    return result.ok ? "ok" : `rejected: ${result.problems.join("; ")}`; };
+  return { m, sessionId, turn, text, dispatch, result, select, note, noting };
 }
 const slice = (text: string, addresses: string[]) => ({ title: "Evidence slice",
   sources: factSources(addresses.map((address, index) => ({ address, text: index === 0 ? text : `Contributed at ${address}` }))) });
@@ -91,7 +95,10 @@ test.each(["manual", "noting"] as const)("92 supersedes Sol 4 status policing: %
   try {
     const mixed = f.dispatch("I will start it"), pure = f.dispatch(), delivery = f.text("Here is the requested explanation."), sibling = f.result(), unrelated = f.result("other");
     f.select([mixed.id, pure.id, delivery.id, unrelated.id]);
-    const submit = (sources: string[]) => f.note(kind).execute(slice("Pi agent claimed delivery; evidence remains separately attributed.", sources));
+    const submit = (sources: string[]) => {
+      const fact = slice("Pi agent claimed delivery; evidence remains separately attributed.", sources);
+      return kind === "manual" ? f.note().execute(fact) : f.noting(factsFile([fact]));
+    };
     for (const sources of [["T1#E1@dispatch"], ["T1#t1"], ["T1#E1", "T1#E3@text"], ["T1#E1", "T1#E5@other"], ["T1#assistant"]])
       expect(submit(sources)).toContain("invalid source");
     expect(submit(["T1#E1", "T1#E4"])).toContain("invalid source");
@@ -100,7 +107,7 @@ test.each(["manual", "noting"] as const)("92 supersedes Sol 4 status policing: %
     for (const sources of [["T1#E4"], ["T1#E1", "T1#E4"]]) expect(submit(sources)).not.toContain("rejected:");
     if (kind === "manual") {
       expect(f.m.store.listTurnFacts(f.turn.id).at(-1)!.roles).toEqual([{ role: "assistant", harness: "Pi agent" }, { role: "observation" }]);
-    } else expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]); // tool holds do not publish
+    } else expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]); // a check publishes nothing
   } finally { f.m.close(); }
 });
 

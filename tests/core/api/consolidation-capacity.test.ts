@@ -3,7 +3,7 @@ import { freezeNoting, NOTING_CAPACITY } from "../../../src/core/noting/index.ts
 import { renderKnowledge, renderKnowledgeBlock, sessionKnowledgeNotice, tokens, budgetKnowledge } from "../../../src/core/render/index.ts";
 import { recorded, seedSourceEntry, sourceSeededMemory } from "../../source-fixture.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
-import { pricedToolDefinitions, toolDefinitions } from "../../../src/core/api/tools.ts";
+import { pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 
 const memories: ReturnType<typeof sourceSeededMemory>[] = [];
@@ -34,24 +34,24 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
   for (const text of pending.slice(1)) seedSourceEntry(memory, turn.id, "user", text);
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
   const freeze = (capacity?: number) => freezeNoting(memory.store,
-    { ...target, ...(capacity === undefined ? {} : { capacity: { inputTokens: capacity, prefixTokens: 0 } }) }, memory.config);
+    { ...target, ...(capacity === undefined ? {} : { capacity: { inputTokens: capacity } }) }, memory.config);
   return { memory, target, freeze, values: memory.store.currentKnowledge(memory.store.knowledgePath(session.id, "main", turn.id)),
     commits: created.committed.map(value => value.commit), pending: memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id) };
 }
 
-test("fresh Noter prices the native Read definition", () => {
+test("fresh Noter prices the native Read, Write and Edit definitions", () => {
   const f = fixture([]);
   // This boundary prices mandatory input only; optional history may legitimately shrink first.
   f.memory.config.compaction.factsTokens = 0;
   f.memory.config.compaction.temporaryTokens = 1;
-  const nativeReadToolTokens = 402;
-  const definitions = pricedToolDefinitions(toolDefinitions, canonicalToolNames);
-  const input = { ...f.target, nativeReadToolTokens, boundary: { exactEntryIds: f.pending } };
+  const nativeReadToolTokens = 402, nativeWriteToolTokens = 385; // Read, and Write with Edit
+  const definitions = pricedToolDefinitions(notingToolDefinitions, canonicalToolNames);
+  const input = { ...f.target, nativeReadToolTokens, nativeWriteToolTokens, boundary: { exactEntryIds: f.pending } };
   const full = freezeNoting(f.memory.store, input, f.memory.config);
-  const freshPrice = tokens(full.prompt!) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(full.prepared!.text);
-  expect(freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice, prefixTokens: 0 } }, f.memory.config)
+  const freshPrice = tokens(full.prompt!) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + nativeWriteToolTokens + tokens(full.prepared!.text);
+  expect(freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice } }, f.memory.config)
     .prepared!.selectedEntryIds).toEqual(f.pending);
-  expect(() => freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice - 1, prefixTokens: 0 } }, f.memory.config))
+  expect(() => freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice - 1 } }, f.memory.config))
     .toThrow(NOTING_CAPACITY);
   expect(f.memory.pendingEntries(f.target.sessionId, "main", f.target.headTurnId).map(entry => entry.id)).toEqual(f.pending);
 });
@@ -121,7 +121,7 @@ test("64c/92: shortened N batch keeps newer knowledge; frozen selection survives
   expect(shortened.prepared!.supplied.knowledgeCommitIds).toEqual([f.commits[1]]);
   // A re-admitted exact batch cannot take that smaller prefix: all members stay pending.
   expect(() => freezeNoting(f.memory.store, { ...f.target, boundary: { exactEntryIds: f.pending },
-    capacity: { inputTokens: high - 1, prefixTokens: 0 } }, f.memory.config)).toThrow(NOTING_CAPACITY);
+    capacity: { inputTokens: high - 1 } }, f.memory.config)).toThrow(NOTING_CAPACITY);
   expect(f.memory.pendingEntries(f.target.sessionId, "main", f.target.headTurnId).map(entry => entry.id)).toEqual(f.pending);
 
   const before = structuredClone(full.prepared);

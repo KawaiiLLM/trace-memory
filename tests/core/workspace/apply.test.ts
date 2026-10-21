@@ -227,3 +227,18 @@ describe("verify", () => {
     expect(current(b, gone.knowledgeId)[0]!.op).toBe("archive");
   });
 });
+
+describe("fact relations (ticket 144, Q3-A)", () => {
+  test("`support:` and `negate:` name an existing fact or an earlier label; the published fact carries both relations with their F ids", () => {
+    const b = batch();
+    const old = b.existingFact("Earlier claim", "User asked to use pnpm");
+    const first = block("fact f1", { title: "pnpm chosen", support: `F${old.id} strong` }, b.source(0, "User asked to use pnpm"));
+    const second = block("fact f2", { title: "lockfile condition", support: "f1 weak", negate: `F${old.id} weak` }, b.source(2, "User added the lockfile condition"));
+    const result = ok(noting(b, `${first}\n${second}`, "## none\n"));
+    const [f1, f2] = [result.factIds.f1!, result.factIds.f2!];
+    expect(b.store.listFactRelations(f1)).toContainEqual({ fromFact: f1, toFact: old.id, kind: "support", strength: "strong" });
+    expect(b.store.listFactRelations(f2)).toEqual(expect.arrayContaining([
+      { fromFact: f2, toFact: f1, kind: "support", strength: "weak" },
+      { fromFact: f2, toFact: old.id, kind: "negate", strength: "weak" }]));
+  });
+});

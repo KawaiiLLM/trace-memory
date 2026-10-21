@@ -2,16 +2,17 @@ import { describe, expect, test } from "vitest";
 import { hydrate, sourceSeededMemory, memoryFiles, type NotingAgentInput, type DreamingAgentInput } from "../../source-fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
 import { dreamerWrite } from "../../dreaming-skips.ts";
+import { scriptedNoter, type ToolOperation } from "../../support/noter.ts";
 
-// Exercise both explicit N tools and real terminal publication.
-async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string) => unknown)) {
-  const memory = sourceSeededMemory(":memory:", async raw => { const input = raw as NotingAgentInput; input.reportRequest({ fake: true }); input.tools.find(t => t.name === "note")!.execute({}); input.tools.find(t => t.name === "memory")!.execute(typeof output === "function" ? output((id: number) => `K${id}#${memory.store.versionTag(id, id)}`) : output); return { outcome: "success", output: "done", request: { fake: true } }; });
+// Exercise the Noter's knowledge file and its real terminal publication.
+async function checkMemoryBatch(operation: ToolOperation) {
+  const memory = sourceSeededMemory(":memory:", scriptedNoter(() => memory, [{ noteInput: [], memoryInput: operation }]).agent);
   try {
     const p = memory.store.createProject({ name: "validation", declaredBy: "mark" });
     const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
     const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", assistantText: "evidence", startedAt: "now" });
     const assistant = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(entry => entry.role === "assistant")!;
-    const noted = legacyFacts(memory.store, { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
+    legacyFacts(memory.store, { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
       Array.from({ length: 6 }, (_, i) => ({ sources: [{ entry: assistant, address: `T${t.id}#assistant` }],
         category: "observation" as const, actor: "agent" as const, text: `Evidence ${i}`, createdAt: "now" })));
     const seeded = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
@@ -20,7 +21,7 @@ async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string)
     const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
     const run = memory.store.listRuns(s.id).at(-1)!;
     const audit = JSON.parse(run.response!);
-    return { problems: "problems" in result ? result.problems : [], value: result.outcome === "success" ? audit.toolCalls.at(-1).input : null };
+    return { problems: "problems" in result ? result.problems : [], value: result.outcome === "success" ? audit.knowledgeOperations[0].requested : null };
   } finally { memory.close(); }
 }
 
@@ -29,41 +30,6 @@ describe("checkMemoryBatch", async () => {
     const { problems, value } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] });
     expect(problems).toEqual([]);
     expect(value!.op).toBe("create");
-  });
-
-  test("76/92: accepts N archive of a current tagged version", async () => {
-    const { problems, value } = await checkMemoryBatch((tag: (id: number) => string) => ({ op: "archive", kind: "budget", reason: "Retire stale knowledge.", id: tag(9), supports: ["F5"] }));
-    expect(problems).toEqual([]);
-    expect(value).toMatchObject({ op: "archive", kind: "budget" });
-  });
-
-  test("76/92: rejects N archive of a nonexistent version", async () => {
-    const { problems } = await checkMemoryBatch({ op: "archive", kind: "budget", reason: "Retire stale knowledge.", id: "K99#abcd", supports: ["F5"] });
-    expect((problems ?? []).join(" ")).toContain("knowledge version does not exist");
-  });
-
-  test("76/92: rejects N merge and split with Dreamer guidance", async () => {
-    const { problems: mergeProblems } = await checkMemoryBatch({ op: "merge", reason: "Merge duplicates.", id: "K1#abcd", absorb: ["K2#abcd"], text: "merged", category: "understanding", scope: "project", topics: [], supports: ["F5"] });
-    expect((mergeProblems ?? []).join(" ")).toContain("Dreamer");
-    const { problems: splitProblems } = await checkMemoryBatch({ op: "split", reason: "Split apart.", id: "K1#abcd", supports: ["F5"] });
-    expect((splitProblems ?? []).join(" ")).toContain("Dreamer");
-  });
-
-  test("accepts an empty Noter memory call", async () => {
-    const { problems, value } = await checkMemoryBatch({});
-    expect(problems).toEqual([]);
-    expect(value).toEqual({}); // The facade audit preserves the exact submitted object.
-  });
-
-  test("rejects a non-object top level", async () => {
-    const { problems = [], value } = await checkMemoryBatch([]);
-    expect(value).toBeNull();
-    expect(problems.length).toBeGreaterThan(0);
-  });
-
-  test("rejects a model-supplied knowledge handle", async () => {
-    const { problems = [] } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "e1", text: "x", scope: "project", category: "understanding", supports: ["F1"] });
-    expect(problems.some((p) => p.includes("handle"))).toBe(true);
   });
 
   test("rejects an unknown scope", async () => {
@@ -79,11 +45,6 @@ describe("checkMemoryBatch", async () => {
   test("rejects a supports knowledge that is not a fact id", async () => {
     const { problems = [] } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "understanding", supports: ["K1"] });
     expect(problems.some((p) => p.includes("K1"))).toBe(true);
-  });
-
-  test("rejects a malformed update id", async () => {
-    const { problems = [] } = await checkMemoryBatch({ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "5", text: "x", scope: "project", category: "understanding", supports: ["F1"] });
-    expect(problems.some((p) => p.includes("supply an exact K#tag version"))).toBe(true);
   });
 
   test("rejects a merge whose absorb list holds a non-knowledge-id", async () => {
@@ -121,13 +82,4 @@ describe("checkMemoryBatch", async () => {
     } finally { memory.close(); }
   });
 
-  test("N rejects retired fact-processing skips", async () => {
-    const { problems = [] } = await checkMemoryBatch({ skipped: [{ fact: "F1", because: "different conditions" }] });
-    expect(problems.join(" ")).toContain("skipped");
-  });
-
-  test("rejects an unknown batch field", async () => {
-    const { problems = [] } = await checkMemoryBatch({ extra: [] });
-    expect(problems.some((p) => p.includes("memory expects"))).toBe(true);
-  });
 });

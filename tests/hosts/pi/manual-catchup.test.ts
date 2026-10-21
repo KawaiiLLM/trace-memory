@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { host, reply, notingFact, emptyNote, type Reply } from "./test-host.ts";
+import { host, reply, notingFact, emptyNote, NOTER_BATCH_REQUESTS, type Reply } from "./test-host.ts";
 
 // Ticket 18b — manual catchup and stop. Parent scenarios 18 (manual finite drain), 19 (capacity
 // and command parity), 20 (stop and resume) and 21 (drain lifecycle), plus the three named revert
@@ -44,10 +44,11 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     await command(h, "catchup");
     await settle(h);
     const notingRuns = h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success");
-    expect(notingRuns.length).toBeGreaterThan(1); // several bounded batches, not one unbounded drain
+    const batches = notingRuns.length / 2; // each batch is a write run and a verify run
+    expect(batches).toBeGreaterThan(1); // several bounded batches, not one unbounded drain
     expect(h.memory.pendingEntries(1, "main", head)).toEqual([]); // the frozen entry boundary is fully processed
     const allFacts = h.memory.store.listSessionFacts(1).map(f => f.id).sort((a, b) => a - b);
-    expect(allFacts.length).toBe(2 + notingRuns.length); // 2 pre-existing plus one fact per Noting batch
+    expect(allFacts.length).toBe(2 + batches); // 2 pre-existing plus one fact per Noting batch
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "consolidation")).toEqual([]);
     const requestsBefore = h.requests.length;
     // A later ordinary Turn and a later manual fact must stay outside this already-completed target.
@@ -57,7 +58,7 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     expect(h.memory.store.listSessionFacts(1).some(f => f.text === "Later, unrelated")).toBe(true);
     await command(h, "");
-    expect(h.notices.at(-1)?.replace(/\s+/g, " ")).toContain(`Catchup: completed (${notingRuns.reduce((n, r) => n + JSON.parse(r.response!).entryAudit.entries.length, 0)} entries noted; below-threshold knowledge may remain pending)`);
+    expect(h.notices.at(-1)?.replace(/\s+/g, " ")).toContain(`Catchup: completed (${notingRuns.filter(r => JSON.parse(r.response!).task === "verify").reduce((n, r) => n + JSON.parse(r.response!).entryAudit.entries.length, 0)} entries noted; below-threshold knowledge may remain pending)`);
   } finally { await h.dispose(); }
 }, 30000);
 
@@ -106,13 +107,13 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
     h.provider(async c => emptyNote(c) ?? reply("No durable material."));
     release[0]!(reply("No durable material.")); // the ordinary run finishes, but does not chain a catchup batch
     await settle(h);
-    expect(h.requests).toHaveLength(4); // first response plus note, memory and fixed review
-    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(1);
+    expect(h.requests).toHaveLength(6); // the held first request, its one correcting pass (which writes the files), and the verify task; no chained batch
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(2);
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
     await command(h, "catchup"); // the ordinary run exhausted Raw; finish the waiting drain without another launch
     await settle(h);
-    expect(h.requests).toHaveLength(4);
-    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(1);
+    expect(h.requests).toHaveLength(6);
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(2);
     expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(2);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
@@ -255,7 +256,7 @@ test("18b 2026-09-08: a failure after one successful Noting batch preserves it a
     let notingCalls = 0;
     h.provider(async c => {
       notingCalls++;
-      return notingCalls <= 2 ? notingFact(c) : { ...reply(""), stopReason: "error" as const, errorMessage: "boom" };
+      return notingCalls <= NOTER_BATCH_REQUESTS ? notingFact(c) : { ...reply(""), stopReason: "error" as const, errorMessage: "boom" };
     });
     await command(h, "catchup");
     await settle(h);
@@ -278,7 +279,7 @@ test("18b 2026-09-08: an ordinary worker's completion does not chain a follow-up
     let first = true;
     h.provider(async (conversation, signal) => {
       if (first) { first = false; return reply("eligible completion handled"); }
-      if (conversation.messages.some(message => String(message.content).includes("Before publication, review this run once."))) return reply("Reviewed.");
+      if (conversation.messages.some(message => String(message.content).includes("Your files do not pass the check"))) return reply("Reviewed.");
       // A second logical run would be chaining outside catchup. Park it so the assertion catches it.
       return new Promise<Reply>(resolve => signal!.addEventListener("abort", () => resolve({ ...reply(""), stopReason: "aborted" }), { once: true }));
     });
@@ -312,8 +313,8 @@ test("18b 2026-09-08: stop prevents the next batch from being scheduled even whe
       await settle(h);
     } finally { spy.mockRestore(); }
     expect(stoppedOnce).toBe(true);
-    expect(h.requests).toHaveLength(4); // note, memory, terminal reply and fixed review; stop forbids a second batch
-    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(1);
+    expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch, both tasks; stop forbids a second batch
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(2);
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");

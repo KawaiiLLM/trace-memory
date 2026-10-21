@@ -3,11 +3,16 @@ import { sourceSeededMemory, seedSourceEntry, type NotingAgentInput } from "../s
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import type { CcReconcileResult } from "../../src/hosts/cc/importer.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { submitEmpty } from "../support/noter.ts";
 
 const worker = resolveCcHostConfig({ dbPath: "/unused/material.db", stateDir: "/unused/material",
   notingModel: "synthetic", notingThinking: "medium",
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
-  worker: { cwd: "/unused/material", claudeExecutable: "/never-invoke-claude", contextWindows: { synthetic: 200_000 } } }).worker;
+  // The worker's directory holds the Noter's workspaces, so it must exist.
+  worker: { cwd: mkdtempSync(join(tmpdir(), "material-")), claudeExecutable: "/never-invoke-claude", contextWindows: { synthetic: 200_000 } } }).worker;
 
 for (const cancel of [false, true]) {
   test(`ticket92material CC actual scheduler/core admission ${cancel ? "cancels without processing" : "drains exact multi-batch Raw"}`, async () => {
@@ -19,8 +24,7 @@ for (const cancel of [false, true]) {
       const request = { text: input.text };
       input.reportRequest(request);
       if (cancel) await new Promise<void>(resolve => { release = resolve; });
-      input.tools.find(tool => tool.name === "note")!.execute({});
-      input.tools.find(tool => tool.name === "memory")!.execute({});
+      submitEmpty(input);
       return { outcome: "success", output: "done", request };
     });
     let scheduler: CcTaskScheduler | undefined;
@@ -49,8 +53,10 @@ for (const cancel of [false, true]) {
         expect(tasks).toHaveLength(1);
       } else {
         await vi.waitFor(() => expect(scheduler!.catchupStatus().state).toBe("completed"));
-        expect(tasks.length).toBeGreaterThan(1);
-        expect(tasks.flatMap(task => task.entryIds)).toEqual(entries);
+        const writes = tasks.filter(task => task.task === "write"); // each batch is a write run and a verify run over the same entries
+        expect(writes.length).toBeGreaterThan(1);
+        expect(tasks).toHaveLength(2 * writes.length);
+        expect(writes.flatMap(task => task.entryIds)).toEqual(entries);
         for (const task of tasks) {
           expect(task.material.entries.map(entry => entry.id)).toEqual(task.entryIds);
           expect(task.text).toContain("Target session agent: Claude Code");

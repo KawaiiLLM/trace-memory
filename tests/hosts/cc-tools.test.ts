@@ -65,9 +65,9 @@ test("CC foreground lists only search and writers, with no trace or Dreamer capa
     expect(listed.map(tool => tool.name)).toEqual(["search", "note", "memory"]);
     expect(listed.map(tool => tool.description)).toEqual(expected.map(tool => tool.description));
     expect(listed.map(tool => tool.inputSchema)).toEqual(expected.map(tool => tool.parameters));
-    const note = listed.find(tool => tool.name === "note")!.inputSchema as { properties: Record<string, any>; else: { then: { required: string[] } } };
+    const note = listed.find(tool => tool.name === "note")!.inputSchema as { properties: Record<string, any>; then: { required: string[] } };
     expect(note).not.toHaveProperty("anyOf");
-    expect(note.else.then.required).toEqual(["title", "sources"]);
+    expect(note.then.required).toEqual(["title", "sources"]);
     expect(note.properties).toHaveProperty("title");
     expect(note.properties.sources).toMatchObject({ type: "string" });
     expect(note.properties).not.toHaveProperty("facts");

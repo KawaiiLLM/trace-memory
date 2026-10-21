@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import type { JsonObject } from "@earendil-works/pi-ai";
-import { host, reply, notingFact, dreamerReply, type Reply } from "./test-host.ts";
+import { host, reply, notingFact, noterReply, dreamerReply, type Reply } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
@@ -17,17 +17,11 @@ function backlog(h: ReturnType<typeof host>) {
     h.persist(reply(`history ${i} ` + "word ".repeat(3000)));
   }
 }
-/** Real N still stages both tools. The knowledge cites this run's held fact, not fixture writes. */
+/** Real N writes its two files; the knowledge cites this run's fact, not fixture writes. */
 function extract(c: Parameters<typeof notingFact>[0], scope: "global" | "session" = "session") {
   const results = c.messages.filter(m => m.role === "toolResult");
-  expect(results.length, JSON.stringify(c.messages)).toBeLessThanOrEqual(2);
   expect(JSON.stringify(results)).not.toContain("rejected:");
-  const result = notingFact(c);
-  for (const part of result.content) if (part.type === "toolCall" && part.name === "memory") {
-    part.arguments = { op: "create", title: "Fixture title", text: "Rule " + "word ".repeat(120),
-      category: "constraint", scope, topics: [], supports: ["$1"], reason: "Supported conclusion" };
-  }
-  return result;
+  return notingFact(c, `## create\ntitle: Fixture title\ncategory: constraint\nscope: ${scope}\ntopics: \nsupports: f1\nreason: Supported conclusion\n\nRule ${"word ".repeat(120)}\n`);
 }
 function retain(c: Parameters<typeof notingFact>[0]): Reply {
   const results = c.messages.filter(m => m.role === "toolResult");
@@ -97,7 +91,7 @@ test("92: catchup waits for ordinary N; its successful joint publication checkpo
     expect(h.memory.store.getClaim(1, "noting")).not.toBeNull();
     await command(h, "catchup"); expect(h.notices.at(-1)).toContain("waiting for noting");
     release(); await settle(h);
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(1);
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(2); // one batch: write and verify
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming" && r.outcome === "success")).toHaveLength(1);
     await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { release(); await h.dispose(); }
@@ -183,7 +177,7 @@ test("92: successful N checks but does not run D below its ordinary threshold", 
     await h.turn(); h.provider(async c => extract(c));
     const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
     await command(h, "catchup"); await settle(h);
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(1);
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(2); // one batch: write and verify
     expect(h.memory.store.currentKnowledge()).toHaveLength(1);
     expect(eligibility).toHaveBeenCalled();
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming")).toEqual([]);
@@ -221,26 +215,24 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
   } finally { await h.dispose(); }
 });
 
-for (const correct of [false, true]) test(`86: bounced N ${correct ? "retries the frozen entry successfully" : "turns memory off after three failures"} without an intervening D check`, async () => {
+for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries the frozen entry successfully" : "turns memory off after three failures"} without an intervening D check`, async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1e9 });
   try {
     await h.turn(); const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
     let attempts = 0; const checks: number[] = [];
     h.provider(async c => {
       if (dreaming(c)) throw new Error("Unexpected D admission");
-      const results = c.messages.filter(m => m.role === "toolResult");
-      if (results.length > 2) throw new Error("Unexpected Noter continuation after explicit note and memory");
-      if (results.length === 0) {
-        attempts++; checks.push(eligibility.mock.calls.length);
-        if (attempts > (correct ? 2 : 3)) throw new Error("Noter retried beyond its scripted terminal outcome");
-        return call("note", correct && attempts > 1 ? {} : { title: "Rejected source", sources: "[T99999#E1] Rejected source" });
-      }
-      if (!c.messages.some(m => m.role === "toolResult" && m.toolName === "memory")) return call("memory", {});
-      return reply("Done");
-    }, { autoStop: false });
+      const report = c.messages.filter(m => m.role === "toolResult" && m.toolName === "check").at(-1);
+      const written = c.messages.some(m => m.role === "toolResult" && m.toolName === "write");
+      if (!report || written) return noterReply(c) ?? reply("Done"); // the check call; nothing to correct afterwards
+      if (/^Task: verify/m.test((report.content as { text: string }[])[0]!.text)) return reply("Done");
+      attempts++; checks.push(eligibility.mock.calls.length);
+      if (attempts > (correct ? 2 : 3)) throw new Error("Noter retried beyond its scripted terminal outcome");
+      return noterReply(c, correct && attempts > 1 ? {} : { facts: "## fact f1\ntitle: Rejected source\n\n[T99999#E1] Rejected source\n" })!;
+    });
     await command(h, "catchup"); await settle(h);
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome))
-      .toEqual(correct ? ["bounced", "success"] : ["bounced", "bounced", "bounced"]);
+      .toEqual(correct ? ["failure", "success", "success"] : ["failure", "failure", "failure"]);
     expect(checks[0]).toBeGreaterThan(0);
     expect(new Set(checks).size).toBe(1);
     expect(attempts).toBe(correct ? 2 : 3);

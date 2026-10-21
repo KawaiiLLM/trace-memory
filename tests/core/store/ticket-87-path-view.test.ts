@@ -110,7 +110,8 @@ test("87: an origin records one exact trigger and a rewind selects the last on-a
     const execution = reader.beginExecution({ sessionId, phase: "noting", head: root.entry.id, origin: explicit });
     expect(() => reader.triggerOrigin(historical, next.entry.id)).toThrow("exact triggering entry");
     expect(reader.triggerOrigin({ ...historical, headTurnId: next.turn.id })).toEqual({ sessionId, entryIds: [next.entry.id] });
-    expect(reader.executionOrigin(execution)).toEqual(explicit); // retry keeps the admitted trigger
+    const stored = reader.db.prepare("SELECT origin_session_id, origin_entry_ids FROM task_executions WHERE id = ?").get(execution)!;
+    expect({ sessionId: stored.origin_session_id, entryIds: JSON.parse(String(stored.origin_entry_ids)) }).toEqual(explicit); // the execution keeps the admitted trigger
     writer.selectSourcePath(sessionId, "main", [root.entry.id]);
     expect(reader.triggerOrigin(historical)).toEqual({ sessionId, entryIds: [root.entry.id] });
   } finally { writer.close(); reader.close(); }

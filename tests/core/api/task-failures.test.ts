@@ -8,13 +8,16 @@ import { knowledge, legacyFacts } from "../../support/seed.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 import type { DreamingAgentInput } from "../../../src/core/api/index.ts";
+import { submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
 const memories: TraceMemory[] = [], dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const m of memories.splice(0)) m.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const request = { messages: [] };
 const failed: RunAgent = async () => ({ outcome: "failure", output: "provider failed after retries", request });
 const open = (file = ":memory:", agent: RunAgent = failed) => {
-  const m = sourceSeededMemory(file, agent, { closedSessionScope: "global" }); memories.push(m); return m;
+  // The scripted agent is the write task; a verify task finds nothing to correct.
+  const m = sourceSeededMemory(file, raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify" ? verifyUnchanged(raw, { request }) : agent(raw),
+    { closedSessionScope: "global" }); memories.push(m); return m;
 };
 const file = () => { const dir = mkdtempSync(join(tmpdir(), "trace-task-failures-")); dirs.push(dir); return join(dir, "test.sqlite"); };
 function seed(m: TraceMemory) {
@@ -121,7 +124,7 @@ test("92: N auto-off fences late D writes, settles skips and own output, and pre
   expect(dreamCalls).toBe(1);
 });
 
-test.each([false, true])("92: corrected refusal resets only after atomic terminal publication (audit failure: %s)", async auditFailure => {
+test.each([false, true])("92: the failure streak resets only after atomic terminal publication (audit failure: %s)", async auditFailure => {
   const m = open(); const target = seed(m);
   await note(m, target);
   const head = Number(streaks(m)[0]!.head);
@@ -131,13 +134,10 @@ test.each([false, true])("92: corrected refusal resets only after atomic termina
   const db = file();
   let attempt = 0;
   const good = open(db, async raw => {
-    const tools = (raw as NotingAgentInput).tools;
-    expect(tools.find(t => t.name === "note")!.execute({ title: "Invalid citation", sources: "[T999#E1] invalid citation" })).toContain("rejected");
-    expect(tools.find(t => t.name === "note")!.execute({ drop: "$1" })).not.toContain("rejected:");
+    const input = raw as NotingAgentInput;
     const text = `accepted attempt ${++attempt}`;
-    expect(tools.find(tool => tool.name === "note")!.execute({ title: "Held evidence", sources: `[T${t.headTurnId}#E1] ${text}` })).toContain("held: $2");
-    expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text,
-      category: "constraint", scope: "session", supports: ["$2"], topics: [], reason: "joint extraction" })).toContain("held");
+    await submit(input, good, { noteInput: [{ title: "Held evidence", sources: `[T${t.headTurnId}#E1] ${text}` }],
+      memoryInput: { op: "create", title: "Fixture title", text, category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "joint extraction" } });
     expect(good.store.listSessionFacts(t.sessionId)).toEqual([]);
     expect(good.store.listKnowledgeRevisions()).toEqual([]);
     return { outcome: "success", output: "corrected", request };
@@ -361,9 +361,7 @@ test("92: successful N publication resets its own task in the terminal transacti
   let succeed = false;
   const m = open(":memory:", async raw => {
     if (!succeed) return failed(raw);
-    const input = raw as NotingAgentInput;
-    expect(input.tools.find(t => t.name === "note")!.execute({})).not.toContain("rejected:");
-    expect(input.tools.find(t => t.name === "memory")!.execute({})).not.toContain("rejected:");
+    submitEmpty(raw);
     return { outcome: "success", output: "done", request };
   }), target = seed(m);
   const oldest = m.pendingEntries(target.sessionId, target.branch, target.headTurnId)[0]!.id;

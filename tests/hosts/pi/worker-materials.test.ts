@@ -3,7 +3,7 @@
 // is one a provider would have received: a real parent session, a real fresh native child, the production
 // prompt and the production tool definitions.
 import { expect, test, vi } from "vitest";
-import { noteAndMemory, fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
+import { noterTurn, fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
@@ -15,11 +15,10 @@ type Fixture = Awaited<ReturnType<typeof fixture>>;
 /** The first worker call writes F1 so the second task has a history to show; later ones stop with no
  * facts, which is a normal zero-fact success and leaves the second batch's material alone. */
 const script = (f: Fixture) => {
-  let workers = 0;
   f.script(body => {
     if (!worker(body)) return say("好的。");
-    if (toolResults(body)) return say("Done.");
-    return noteAndMemory(`n${++workers}`, workers === 1 ? noteBatch : {});
+    // Facts exist once the first batch has published (after its verify task), so both its tasks see none.
+    return noterTurn(body, f.h.memory.store.listSessionFacts(1).length ? {} : noteBatch);
   });
 };
 /** The task message of a worker request: the last message, which is what core's text was placed in. */
@@ -44,7 +43,7 @@ async function thirdPrompt(f: Fixture) {
   await f.turn("再来一次"); // No background-result delivery or receipt wait.
   const before = f.sent.length;
   await f.turn("第三次");
-  const run = await nthRun(f, 2);
+  const run = await nthRun(f, 4); // the second batch's verify run
   return { run, child: f.sent.slice(before).find(body => worker(body))! };
 }
 
@@ -56,8 +55,9 @@ test("25a 2026-09-09: the same task in subagent mode carries full history and ti
     expect(run.mode).toBe("subagent");
     // A fresh child: core's prompt as the system message, the whole fresh material as the task.
     expect(String(child.messages[0].content)).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
-    expect(child.tools.map((tool: Body) => tool.function.name)).toEqual(expect.arrayContaining(["read", "search", "note", "memory"]));
-    expect(String(child.messages[0].content)).toContain("`note({})`");
+    expect(child.tools.map((tool: Body) => tool.function.name)).toEqual(expect.arrayContaining(["read", "search", "check", "write", "edit"]));
+    expect(child.tools.map((tool: Body) => tool.function.name)).not.toEqual(expect.arrayContaining(["note"]));
+    expect(text(child.messages.at(-1)!)).toContain("Call check first");
     const body = text(child.messages.at(-1)!);
     expect(body).toContain("Recent facts (by Turn):");
     expect(body).toContain("[F1]"); // Both modes must supply this missing fact history.

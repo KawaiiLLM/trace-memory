@@ -3,12 +3,13 @@ import { sourceSeededMemory, memoryFiles, type NotingAgentInput } from "../../so
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { tokens } from "../../../src/core/render/index.ts";
+import { submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
-function fixture(agent: (input: NotingAgentInput) => void = () => {}) {
+function fixture(agent?: (input: NotingAgentInput) => Promise<void>) {
   const memory = sourceSeededMemory(":memory:", async raw => {
     const input = raw as NotingAgentInput;
-    input.tools.find(tool => tool.name === "note")!.execute({});
-    agent(input);
+    if (input.task === "verify") return verifyUnchanged(input, { request: {} });
+    if (agent) await agent(input); else submitEmpty(input);
     return { outcome: "success", output: "done", request: {} };
   }, { writing: { bodyTokens: 1_000_000 } }); // the oversized body below stands for an item written before the caps (ticket 144)
   const p = memory.store.createProject({ name: "A", declaredBy: "mark" });
@@ -27,13 +28,13 @@ function fixture(agent: (input: NotingAgentInput) => void = () => {}) {
 }
 
 test("92: omitted knowledge has no printed tag; an exact tag works without read registration", async () => {
-  const f = fixture(input => {
+  const f = fixture(async input => {
     expect(input).not.toHaveProperty("readKnowledgeCommits");
     expect(input.text).not.toContain("word ".repeat(400));
     const operation = { op: "update", id: "K1@1", ...f.content, text: "Updated concise rule using its exact version" };
-    expect(input.tools.find(tool => tool.name === "memory")!.execute(operation)).toContain("supply an exact K#tag");
+    expect(await submit(input, f.memory, { memoryInput: operation })).toContain("not a version address");
     operation.id = `K1#${f.memory.store.versionTag(1, 1)}`;
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ ...operation, slot: "M1" })).toContain("held: M1");
+    expect(await submit(input, f.memory, { memoryInput: operation })).toBeUndefined();
     expect(f.memory.store.currentKnowledge(f.memory.store.knowledgePath(1))[0]!.revision.text).toBe(f.content.text);
   });
   try {
@@ -56,8 +57,8 @@ test("32/92: material without status cues supplies no duplicate body and grants 
   } finally { f.memory.close(); }
 });
 
-test("92: omitted knowledge stays fully readable while N holds a distinct create until termination", async () => {
-  const f = fixture(input => {
+test("92: omitted knowledge stays fully readable while N has a distinct create in its file until task 2 passes", async () => {
+  const f = fixture(async input => {
     expect(input).not.toHaveProperty("readKnowledgeCommits");
     const read = memoryFiles(f.memory, f.target).read("trace://K1@v1").content;
     expect(read).toContain(`K1#${f.memory.store.versionTag(1, 1)}`);
@@ -65,7 +66,7 @@ test("92: omitted knowledge stays fully readable while N holds a distinct create
     // A read produces frozen output only; it never mutates the dispatch snapshot.
     expect(input).not.toHaveProperty("readKnowledgeCommits");
 
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", ...f.content, text: "A distinct durable rule" })).toContain("held: M1");
+    expect(await submit(input, f.memory, { memoryInput: { op: "create", title: "Fixture title", ...f.content, text: "A distinct durable rule" } })).toBeUndefined();
     expect(f.memory.store.currentKnowledge(f.memory.store.knowledgePath(1))).toHaveLength(1);
     input.reportRequest({ fixture: "held processing material" });
   });

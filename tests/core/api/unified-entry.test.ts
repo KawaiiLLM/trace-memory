@@ -1,10 +1,11 @@
 import { expect, test } from "vitest";
 import { TraceMemory, DEFAULT_CONFIG, renderEntry, tokens, type NotingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
+import { submit, verifyUnchanged } from "../../support/noter.ts";
 const time = "2026-09-01T00:00:00Z";
 function fixture() {
   let run: (input: NotingAgentInput) => Promise<RunAgentResult> = async () => { throw new Error("offline test"); };
-  const m = TraceMemory(":memory:", raw => run(raw as NotingAgentInput), {}, undefined, piSourceBlocks);
+  const m = TraceMemory(":memory:", raw => (raw as NotingAgentInput).task === "verify" ? verifyUnchanged(raw, { request: {} }) : run(raw as NotingAgentInput), {}, undefined, piSourceBlocks);
   const project = m.store.createProject({ name: "p", declaredBy: "mark" });
   const session = m.store.createSession({ host: "pi:entry", projectId: project.id, startedAt: time, firstReplyAt: time, enrollmentChoice: true });
   const turn = m.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "question", startedAt: time });
@@ -73,12 +74,11 @@ test("92: whole-entry frozen citations bind only that occurrence; block selector
     const a = f.append("user", "question"), b = f.append("assistant", "first"), c = f.append("assistant", "sibling");
     f.m.selectEntries(f.session.id, "main", [a.id, b.id, c.id]);
     f.setNoter(async input => {
-      const noter = input.tools.find(t => t.name === "note")!;
-      const fact = (source: string) => ({ slot: "$1", title: "Statement", sources: `[${source}] Pi agent reports a statement` });
-      expect(noter.execute({ title: "Rejected sibling", sources: `[T${f.turn.id}#E3] Sibling evidence` })).toContain("rejected:");
-      for (const source of [`T${f.turn.id}#E2@thinking`, `T${f.turn.id}#E2@nonexistent`, `T${f.turn.id}#E2@text`]) expect(noter.execute(fact(source))).toContain("rejected:");
-      expect(noter.execute(fact(`T${f.turn.id}#E2`))).toContain("held: $1");
-      input.tools.find(t => t.name === "memory")!.execute({});
+      const fact = (source: string) => ({ title: "Statement", sources: `[${source}] Pi agent reports a statement` });
+      expect(await submit(input, f.m, { noteInput: [{ title: "Rejected sibling", sources: `[T${f.turn.id}#E3] Sibling evidence` }], memoryInput: {} })).toContain("invalid source");
+      for (const source of [`T${f.turn.id}#E2@thinking`, `T${f.turn.id}#E2@nonexistent`, `T${f.turn.id}#E2@text`])
+        expect(await submit(input, f.m, { noteInput: [fact(source)], memoryInput: {} })).toContain("invalid source");
+      expect(await submit(input, f.m, { noteInput: [fact(`T${f.turn.id}#E2`)], memoryInput: {} })).toBeUndefined();
       expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);
       return { outcome: "success", output: "done", request: {} };
     });

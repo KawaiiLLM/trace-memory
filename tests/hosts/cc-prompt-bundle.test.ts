@@ -19,7 +19,7 @@ test("the standalone CC bundle expands shared blocks but renders exposed names a
     for (const file of ["noting.md", "dreaming.md"] as const) {
       for (const names of [ccWorkerToolNames, ccPluginToolNames]) {
         expect(bundled(file, names)).toBe(loadPrompt(file, names));
-        expect(bundled(file, names)).toContain(names.memory);
+        expect(bundled(file, names)).toContain(file === "noting.md" ? names.check : names.memory);
         expect(bundled(file, names)).not.toContain("{{tool.");
         expect(bundled(file, names)).not.toContain("<!-- include:");
       }

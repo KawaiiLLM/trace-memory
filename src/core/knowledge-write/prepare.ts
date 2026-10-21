@@ -5,6 +5,8 @@ import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
 export type ConsolidationDiagnostic = { kind: "unsupported_numbers"; knowledge: string; numbers: string[] };
 
+/** An archive of these kinds keeps its explanation as the new version's body; a `budget` archive keeps its parent's. */
+const explained = (kind: unknown): boolean => kind === "invalid" || kind === "inadmissible";
 /** A field over its cap, as the refusal states it: the field, its count and the limit (ticket 144). */
 export const overLimit = (field: string, count: number, limit: number): string =>
   `${field}: ${count} tokens, over the ${limit}-token limit`;
@@ -65,7 +67,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
         ? `${op} belongs to the Dreamer and is not available to ${run.kind === "noting" ? "the Noter" : "manual memory"}`
         : "invalid op");
     const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []), ...(op === "split" ? ["children"] : []),
-      ...(op === "archive" ? ["kind", ...(value.kind === "invalid" ? ["text"] : [])]
+      ...(op === "archive" ? ["kind", ...(explained(value.kind) ? ["text"] : [])]
         : ["title", "text", ...(op === "update" || op === "split" ? ["edits"] : []), "category", "scope", "topics"])];
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
     // model still writing the old shape is told which two fields replace it.
@@ -108,9 +110,9 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       return { title: child.title!, text: child.text!, category: child.category!, topics: labels(child.topics, errors) };
     }) : op === "split" ? (errors.push("split requires its primary part and one or more complete children"), []) : [];
     if (op === "archive") {
-      if (value.kind !== "budget" && value.kind !== "invalid") errors.push("archive kind must be budget or invalid");
-      if (value.kind === "invalid" && !substantiveArchiveStatement(value.text))
-        errors.push("invalid archive requires a substantive statement of grounds and evidence");
+      if (value.kind !== "budget" && !explained(value.kind)) errors.push("archive kind must be budget, invalid or inadmissible");
+      if (explained(value.kind) && !substantiveArchiveStatement(value.text))
+        errors.push(`${value.kind} archive requires a substantive statement of grounds and evidence`);
     }
     const editing = (op === "update" || op === "split") && "edits" in value;
     const base = editing && dest ? store.getKnowledgeRevision(dest.knowledgeId, dest.baseCommit) : null;
@@ -159,7 +161,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     // Caps apply to the body as written: an edited update's result, and a merge that omits text, which copies the later parent's.
     const body = op === "merge" && text === undefined && dest && absorb.length
       ? store.knowledgeRevision(Math.max(dest.baseCommit, ...absorb.map(parent => parent.baseCommit)))?.text
-      : op === "archive" ? (value.kind === "invalid" ? value.text : undefined) : text;
+      : op === "archive" ? (explained(value.kind) ? value.text : undefined) : text;
     if (typeof body === "string" && tokens(body) > limits.bodyTokens) errors.push(overLimit("text", tokens(body), limits.bodyTokens));
     const content = { title: title!, text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !dreaming && !emptySupports), reason: value.reason!,
       topics, createdAt: run.createdAt };
@@ -171,7 +173,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     if (!errors.length) operations.push(op === "create" ? { op: "create", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
       : op === "merge" ? { op: "merge", intoKnowledgeId: dest!.knowledgeId, intoBaseCommit: dest!.baseCommit, absorb, ...content }
       : op === "split" ? { op: "split", ...dest!, ...content, children }
-      : op === "archive" ? { op: "archive", ...dest!, kind: value.kind!, ...(value.kind === "invalid" ? { text: value.text } : {}), supports: content.supports, reason: content.reason, createdAt: run.createdAt }
+      : op === "archive" ? { op: "archive", ...dest!, kind: value.kind!, ...(explained(value.kind) ? { text: value.text } : {}), supports: content.supports, reason: content.reason, createdAt: run.createdAt }
       : { op: "update", ...dest!, ...content });
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });

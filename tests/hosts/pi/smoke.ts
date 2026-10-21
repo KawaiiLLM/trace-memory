@@ -28,10 +28,15 @@ try {
   await h.emit("session_start");
   await h.turn();
   const runs = h.memory.store.listRuns(1);
-  assert.equal(runs.length, 1);
-  assert.equal(runs[0]!.kind, "noting");
-  assert.equal(runs[0]!.outcome, "success");
-  assert.deepEqual(JSON.parse(runs[0]!.request!), h.requests.at(-1));
+  // 144: one Noter batch is two runs, a write and an independent verify, each a real child session with the same first request.
+  assert.equal(runs.length, 2);
+  assert.ok(runs.every(run => run.kind === "noting" && run.outcome === "success"));
+  assert.deepEqual(runs.map(run => JSON.parse(run.response!).task), ["write", "verify"]);
+  assert.deepEqual(JSON.parse(runs[0]!.request!), h.requests[2]); // the write task: check, write both files, stop
+  assert.deepEqual(JSON.parse(runs[1]!.request!), h.requests.at(-1));
+  assert.deepEqual(h.conversations[0]!.tools!.map(t => t.name), ["search", "check", "read", "write", "edit"]);
+  assert.equal(JSON.stringify(h.conversations[3]!.messages[0]), JSON.stringify(h.conversations[0]!.messages[0]), "both tasks open with the same task text");
+  assert.equal(h.conversations[3]!.systemPrompt, h.conversations[0]!.systemPrompt);
   const response = JSON.parse(runs[0]!.response!);
   // 24c: the default worker log is a direct child of `<agent dir>/sessions/trace-memory`.
   assert.equal(response.nativeLog && join(response.nativeLog, ".."), join(process.env.PI_CODING_AGENT_DIR!, "sessions", "trace-memory"), "the run links the native child log under Pi's sessions tree");
@@ -107,7 +112,7 @@ try {
   await trace("enable");                     // retired: the usage, and no change
   assert.ok(h.notices.at(-1)!.includes("is not a command form") && h.notices.at(-1)!.includes("/trace on"), "a retired subcommand prints the usage");
   assert.ok(h.memory.status(1).includes("Enabled (explicit choice)"), "and changes nothing");
-  console.log(`Pi smoke passed on Node ${process.versions.node}: one native noting run, one fact committed, /trace on|off and the retained forms.`);
+  console.log(`Pi smoke passed on Node ${process.versions.node}: one native noting batch (write, then verify), one fact committed, /trace on|off and the retained forms.`);
 } finally {
   await h.dispose();
 }

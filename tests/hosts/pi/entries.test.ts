@@ -6,6 +6,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { DEFAULT_CONFIG, TraceMemory, memoryFiles, renderEntry, tokens, type NotingAgentInput } from "../../../src/core/api/index.ts";
 import { compacted, hydrate } from "../../source-fixture.ts";
 import { host, reply } from "./test-host.ts";
+import { factsFile, submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 import { piResultText } from "../../../src/hosts/pi/index.ts";
 
 const quiet = { "noting.triggerTokens": 1_000_000_000 };
@@ -72,12 +73,20 @@ test("17a 2026-09-08: attach surfaces missing native ancestry without manufactur
 
 test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bind held facts to exact frozen entries", async () => {
   const h = host(quiet);
-  let release!: () => void;
-  let input!: NotingAgentInput;
+  let release!: () => void, writing!: () => void, stopMessage: string | undefined;
+  const started = new Promise<void>(resolve => { writing = resolve; });
+  let firstId = 0, lateOrdinal = 0;
   const noter = TraceMemory(join(h.dir, "trace.db"), async raw => {
-    input = raw as NotingAgentInput;
+    const input = raw as NotingAgentInput;
+    if (input.task === "verify") return verifyUnchanged(raw);
+    writing();
     await new Promise<void>(resolve => { release = resolve; });
-    return { outcome: "success", output: "zero facts", request: {} };
+    // The late result is not in the frozen batch: the check refuses it, and the Noter corrects its file.
+    stopMessage = await submit(input, noter, { noteInput: [
+      { title: "Late evidence", sources: `[T1#E${lateOrdinal}] Late evidence` },
+      { title: "First response", sources: `[T1#E${firstId}] The first response was produced.` }],
+      fix: () => ({ facts: factsFile([{ title: "First response", sources: `[T1#E${firstId}] The first response was produced.` }]) }) });
+    return { outcome: "success", output: "one fact", request: {} };
   });
   try {
     await h.prompt("Check");
@@ -91,20 +100,18 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
     const lateResult = hydrate(h.memory.store.sourcePath(1, "main", 1), h.memory.store).find(entry => entry.role === "toolResult")!;
     const read = memoryFiles(noter, { sessionId: 1, branch: "main", headTurnId: 1 }).read(`trace://raw/S1/T1#E${lateResult.entryOrdinal}`).content;
     expect(read).toContain("late result");
-    const note = input.tools.find(t => t.name === "note")!;
-    expect(note.execute({ title: "Late evidence", sources: `[T1#E${lateResult.entryOrdinal}] Late evidence` })).toContain("rejected:");
-    const held = JSON.parse(note.execute({ slot: "$1", title: "First response", sources: `[T1#E${before[1]!.entryOrdinal}] The first response was produced.` }));
-    expect(held.held).toEqual(["$1"]);
+    await started;
+    firstId = before[1]!.entryOrdinal; lateOrdinal = lateResult.entryOrdinal;
     expect(h.memory.store.listSessionFacts(1)).toEqual([]);
-    input.tools.find(t => t.name === "memory")!.execute({});
     release();
     expect((await pending).outcome).toBe("success");
+    expect(stopMessage).toContain("invalid source");
     expect(h.memory.store.factEntries(h.memory.store.listSessionFacts(1)[0]!.id)).toEqual([before[1]!.id]);
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store)).toHaveLength(2);
     const after = hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store);
     expect(after.map(e => e.role)).toEqual(["toolResult", "assistant"]);
     expect(renderEntry(h.memory.store.getSourceEntry(before[1]!.id)!, h.memory.config.render).content).toBe(oldView);
-    const audit = JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit;
+    const audit = JSON.parse(h.memory.store.listRuns(1).find(run => JSON.parse(run.response!).entryAudit)!.response!).entryAudit;
     expect(audit.entries.map((e: { id: number }) => e.id)).toEqual(before.map(e => e.id));
     expect(audit).toMatchObject({ branch: "main", viewVersion: "107-cc-result-content", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
     await h.emit("session_start");
@@ -181,10 +188,9 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
 
 test("17a 2026-09-08: forks reuse shared identities and ordinals but native short ids in different lineages never collide", async () => {
   const h = host(quiet);
-  // 116: a Noting run calls both tools explicitly; nothing to record is `{}` for each.
+  // 144: a Noting run with nothing to record writes `## none` to both files.
   const noter = TraceMemory(join(h.dir, "trace.db"), async raw => {
-    (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!.execute({});
-    (raw as NotingAgentInput).tools.find(tool => tool.name === "memory")!.execute({});
+    submitEmpty(raw);
     return { outcome: "success", output: "", request: {} }; });
   try {
     await h.prompt("same Turn");
