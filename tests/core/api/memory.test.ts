@@ -628,14 +628,14 @@ test.each(["authored", "later-parent"] as const)("a merge keeps the identity of 
     input.reportRequest({ fixture: "merge primary identity" });
     const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({
       op: "merge", id: newerTag, absorb: [olderTag], supports: [], reason: "Unify without losing the older identity",
-      category: "reference", scope: "project", topics: ["packages"], ...(body === "authored" ? { text: expected } : {}),
+      category: "constraint", scope: "project", topics: ["packages"], ...(body === "authored" ? { text: expected } : {}),
     }));
     expect(receipt.committed).toMatchObject([{ op: "merge", knowledgeId: 2, version: expect.stringMatching(/^K2#[a-z]{4,}$/) }]);
     expect(receipt.committed[0]).not.toHaveProperty("swappedFrom");
     expect(receipt.tokens.before).toEqual([newer.tokens.after[0], older.tokens.after[0]]);
     const commit = receiptCommit(memory.store, receipt.committed[0]);
     expect(memory.store.getKnowledgeRevision(2, commit)).toMatchObject({ parentId: newerCommit, text: expected, supports: [1],
-      reason: "Unify without losing the older identity", category: "reference", scope: "project", topics: ["packages"] });
+      reason: "Unify without losing the older identity", category: "constraint", scope: "project", topics: ["packages"] });
     expect(memory.store.listKnowledgeLinks(1)).toContainEqual({ fromKnowledge: 1, fromCommit: olderCommit, kind: "merged_into", toKnowledge: 2, toCommit: commit });
     expect(memory.store.currentCommit(1)).toEqual([]);
     expect(receipt.committed[0]).not.toHaveProperty("text");

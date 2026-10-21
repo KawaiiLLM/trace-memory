@@ -105,6 +105,19 @@ describe("curate", () => {
     }
   });
 
+  test.each([["newer", true], ["older", false]])("a merge naming the %s item as primary leaves exactly the primary current, with a warm graph cache", (_name, primaryIsNewer) => {
+    const b = batch();
+    const older = b.item("Rule a"), newer = b.item("Rule b");
+    const [primary, absorbed] = primaryIsNewer ? [newer, older] : [older, newer];
+    const visible = () => [...b.store.visibleKnowledgeVersions(b.path)].map(commit => b.store.knowledgeRevision(commit)!)
+      .filter(revision => [older.knowledgeId, newer.knowledgeId].includes(revision.knowledgeId));
+    expect(visible()).toHaveLength(2); // warms the graph cache before the merge
+    ok(dreaming(b, "curate", block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same rule" }, "Rules a and b, merged.")));
+    expect(visible().map(revision => [revision.knowledgeId, revision.op])).toEqual([[primary.knowledgeId, "merge"]]);
+    expect(current(b, absorbed.knowledgeId)).toEqual([]);
+    expect(current(b, primary.knowledgeId)).toHaveLength(1);
+  });
+
   test("a split keeps the identity as the primary part, creates the children and does not archive the item", () => {
     const b = batch();
     const item = b.item("Rule one and rule two");
@@ -124,33 +137,16 @@ describe("curate", () => {
     expect(b.store.listKnowledgeRevisions(item.knowledgeId).some(revision => revision.op === "archive")).toBe(false);
   });
 
-  test("archives: invalid and inadmissible write an archive version with the explanation; merged consumes the item into its successor", () => {
+  test("archives: invalid and inadmissible write an archive version with the explanation", () => {
     const b = batch();
-    const [invalid, inadmissible, merged, successor] = ["i", "n", "m", "s"].map(name => b.item(`Rule ${name}`));
+    const [invalid, inadmissible] = ["i", "n"].map(name => b.item(`Rule ${name}`));
     const result = ok(dreaming(b, "curate", [
       block(`archive ${invalid!.ref}`, { kind: "invalid", reason: "contradicted" }, "The user withdrew the rule on the same day."),
       block(`archive ${inadmissible!.ref}`, { kind: "inadmissible", reason: "a running log" }, "A running log of one session, not an understanding."),
-      block(`archive ${merged!.ref}`, { kind: "merged", successor: `K${successor!.knowledgeId}`, reason: "held elsewhere" }, "Rule s holds this rule now."),
     ].join("\n")));
-    expect(result.blocks.map(entry => entry.status)).toEqual(["applied", "applied", "applied"]);
+    expect(result.blocks.map(entry => [entry.status, entry.versions])).toEqual([["applied", [`K${invalid!.knowledgeId}@v2`]], ["applied", [`K${inadmissible!.knowledgeId}@v2`]]]);
     expect(current(b, invalid!.knowledgeId)[0]).toMatchObject({ op: "archive", archiveKind: "invalid", text: "The user withdrew the rule on the same day." });
     expect(current(b, inadmissible!.knowledgeId)[0]).toMatchObject({ op: "archive", archiveKind: "inadmissible" });
-    expect(current(b, merged!.knowledgeId)).toEqual([]);
-    expect(b.store.listKnowledgeLinks(merged!.knowledgeId)).toMatchObject([{ kind: "merged_into", toKnowledge: successor!.knowledgeId, toCommit: successor!.commit }]);
-    expect(read(b, `trace://K${merged!.knowledgeId}`)).toContain(`merged_into: K${successor!.knowledgeId}@v1`);
-    expect(current(b, successor!.knowledgeId)[0]!.text).toBe("Rule s");
-  });
-
-  test("a merged archive names the successor's version written by the same file", () => {
-    const b = batch();
-    const old = b.item("Rule o"), successor = b.item("Rule s");
-    ok(dreaming(b, "curate", [
-      block(`archive ${old.ref}`, { kind: "merged", successor: `K${successor.knowledgeId}`, reason: "held elsewhere" }, "Rule s holds this rule now."),
-      block(`update ${successor.ref}`, { reason: "absorbs o" }, "Rule s, with rule o."),
-    ].join("\n")));
-    const [link] = b.store.listKnowledgeLinks(old.knowledgeId);
-    expect(link!.toCommit).toBe(current(b, successor.knowledgeId)[0]!.id);
-    expect(current(b, old.knowledgeId)).toEqual([]);
   });
 
   test("a stale base is refused and reported, left for the next run; the rest of the file is applied", () => {
@@ -166,23 +162,20 @@ describe("curate", () => {
     expect(current(b, fresh.knowledgeId)[0]!.text).toBe("Rule b, tidied.");
   });
 
-  test("a merge or split with any stale base is refused whole, and an archive naming a refused successor goes with it", () => {
+  test("a merge or split with any stale base is refused whole; the rest of the file is applied", () => {
     const b = batch();
-    const primary = b.item("Rule p"), absorbed = b.item("Rule a"), parent = b.item("Rule s"), old = b.item("Rule o"), fine = b.item("Rule f");
+    const primary = b.item("Rule p"), absorbed = b.item("Rule a"), parent = b.item("Rule s"), fine = b.item("Rule f");
     concurrentUpdate(b, absorbed, "Rule a, changed by another writer");
     const child = `\n### child\ntitle: Child\ncategory: reference\nscope: project\ntopics:\nsupports: ${support(parent)}\nreason: split out\n\nChild body.\n`;
     const result = ok(dreaming(b, "curate", [
       block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same rule" }, "Rules p and a."),
-      block(`archive ${old.ref}`, { kind: "merged", successor: `K${primary.knowledgeId}`, reason: "held by p" }, "Rule p holds this rule now."),
       block(`split ${parent.ref}`, { reason: "two" }, "Rule s.") + child,
       block(`archive ${fine.ref}`, { kind: "invalid", reason: "r" }, "Does not hold any more, per the user."),
     ].join("\n")));
-    expect(result.blocks.map(entry => entry.status)).toEqual(["refused", "refused", "applied", "applied"]);
+    expect(result.blocks.map(entry => entry.status)).toEqual(["refused", "applied", "applied"]);
     expect(result.blocks[0]).toMatchObject({ stale: true });
-    expect(result.blocks[1]!.reason).toContain(`its successor K${primary.knowledgeId} was refused (block 1 \`## merge ${primary.ref}\`); left for the next run`);
     expect(current(b, primary.knowledgeId)[0]!.text).toBe("Rule p");
-    expect(current(b, old.knowledgeId)[0]!.text).toBe("Rule o");
-    expect(b.store.listKnowledgeLinks(old.knowledgeId)).toEqual([]);
+    expect(current(b, absorbed.knowledgeId)[0]!.text).toBe("Rule a, changed by another writer");
     // A stale split is refused the same way.
     const other = b.item("Rule x");
     concurrentUpdate(b, other, "Rule x, changed by another writer");
@@ -207,6 +200,18 @@ describe("verify", () => {
     const result = ok(dreaming(b, "verify", block(`revert K${item.knowledgeId}@v2 -> K${item.knowledgeId}@v1`, { reason: "the change misread the user", evidence: `trace://F${item.supports[0]}` })));
     expect(result.blocks[0]).toMatchObject({ status: "applied", versions: [`K${item.knowledgeId}@v3`] });
     expect(current(b, item.knowledgeId)[0]).toMatchObject({ text: "Rule one", parentId: changed.commit, title: b.store.getKnowledgeRevision(item.knowledgeId, item.commit)!.title });
+  });
+
+  test("a revert to a version over the current caps is refused with the counts; nothing is written", () => {
+    const b = workspaceBatch({ bodyTokens: 4 });
+    opened.push(b);
+    const item = b.item("one two three four five six seven eight"); // seeded before the caps, as production rows are
+    concurrentUpdate(b, item, "Short.");
+    const evidence = `trace://F${item.supports[0]}`;
+    const result = dreaming(b, "verify", block(`revert K${item.knowledgeId}@v2 -> K${item.knowledgeId}@v1`, { reason: "restore", evidence }));
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.problems.join("\n")).toMatch(/text: \d+ tokens, over the 4-token limit/);
+    expect(current(b, item.knowledgeId)[0]!.text).toBe("Short.");
   });
 
   test("a correction and an archive with evidence are applied", () => {

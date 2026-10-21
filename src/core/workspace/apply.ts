@@ -33,30 +33,18 @@ export function applyWorkspace(store: Store, input: ApplyInput): ApplyResult {
   const planned = plan(store, { kind: input.kind, sessionId: input.sessionId, path: input.path, file: input.file });
   if (planned.problems.length) return { ok: false, problems: planned.problems };
   const path = planned.path!;
-  // A merged archive points at its successor's version, so it is applied after everything that may write one.
-  const ordered = [...planned.knowledge.filter(entry => entry.successor === undefined), ...planned.knowledge.filter(entry => entry.successor !== undefined)];
-  const operations = ordered.map(entry => ({
-    operation: entry.make().operation!,
-    dependsOn: entry.successor === undefined ? undefined : ordered.flatMap((other, index) => other.successor === undefined && other.items[0] === entry.successor ? [index] : []),
-  }));
+  const blocks = planned.knowledge;
   const run: RunInput = input.run ?? { kind: "dreaming", sessionId: path.sessionId, branch: path.branch ?? null, createdAt: new Date().toISOString() };
-  const done = store.commitWorkspaceRun({ run, path, operations, response: results => JSON.stringify({ workspace: input.kind,
-    blocks: ordered.map((entry, i) => ({ block: describeBlock(entry.block), line: entry.block.line, result: results[i] })) }) });
-  const blocks = ordered.map((entry, i): BlockResult => {
+  const done = store.commitWorkspaceRun({ run, path, operations: blocks.map(entry => entry.make().operation!), response: results => JSON.stringify({ workspace: input.kind,
+    blocks: blocks.map((entry, i) => ({ block: describeBlock(entry.block), line: entry.block.line, result: results[i] })) }) });
+  return { ok: true, runId: done.runId, factIds: {}, blocks: blocks.map((entry, i): BlockResult => {
     const result = done.results[i]!, where = describeBlock(entry.block);
     if (result.ok) return { block: where, line: entry.block.line, status: "applied", versions: result.committed.map(item => version(store, item)) };
-    const dependent = result.dependent ? ordered.find(other => other.successor === undefined && other.items[0] === entry.successor) : undefined;
-    return { block: where, line: entry.block.line, status: "refused", versions: [], stale: result.stale,
-      reason: dependent ? `its successor K${entry.successor} was refused (${describeBlock(dependent.block)}); left for the next run`
-        : result.stale ? `${result.reason}; left for the next run` : result.reason };
-  }).sort((a, b) => a.line - b.line);
-  return { ok: true, runId: done.runId, blocks, factIds: {} };
+    return { block: where, line: entry.block.line, status: "refused", versions: [], stale: result.stale, reason: result.stale ? `${result.reason}; left for the next run` : result.reason };
+  }) };
 }
 
-const version = (store: Store, item: { knowledgeId: number; commit: number; op: string }): string => {
-  try { return `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`; }
-  catch { return `K${item.knowledgeId}`; } // a merged archive writes no version of its own
-};
+const version = (store: Store, item: { knowledgeId: number; commit: number }): string => `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`;
 
 function applyNoting(store: Store, input: Extract<ApplyInput, { kind: "noting" }>): ApplyResult {
   const facts = plan(store, { kind: "noting-facts", scope: input.scope, file: input.facts });

@@ -3112,11 +3112,35 @@ test("2026-10-21/22: a file holds at most one record per knowledge item, an abso
   } finally { b.memory.close(); }
 });
 
-test("2026-10-21: merged items share one category and scope", () => {
+// The rule is enforced where every merge passes: the Dreamer's `memory` tool and a workspace file both reach it.
+test("2026-10-21: merged items share one category and scope, through the memory tool and through a workspace file", async () => {
+  const { create, write, path } = memoryWriter();
+  const item = (over: Record<string, unknown>) => (write([{ ...create, text: `Rule ${Object.values(over).join(" ")}`, ...over }]).committed as Array<{ knowledgeId: number; version: string }>)[0]!;
+  const primary = item({ category: "constraint" }), sameKind = item({ category: "constraint", topics: ["same"] }),
+    otherCategory = item({ category: "reference" }), otherScope = item({ scope: "global" });
+  const trigger = createDreamerTrigger(memory, path, 2, 1);
+  let merged: Pick<MemoryReceipt, "results" | "committed"> | undefined;
+  await admittedScenarios.run(memory, path, input => {
+    input.reportRequest({ fixture: "merge sameness" });
+    const writeTool = input.tools.find(tool => tool.name === "memory")!;
+    const files = memoryFiles(memory, input.reader!);
+    const address = (found: { knowledgeId: number; version: string }) => tagged(found.knowledgeId, commitOf(found));
+    for (const found of [primary, sameKind, otherCategory, otherScope]) readHandle(file => files.read(file).content, found.version);
+    readHandle(file => files.read(file).content, tagged(trigger.knowledgeId, trigger.commit));
+    const merge = (other: { knowledgeId: number; version: string }) => ({ ...create, op: "merge", reason: "Merged.", id: address(primary), absorb: [address(other)], supports: ["F1"] });
+    merged = JSON.parse(dreamerWrite(writeTool, { operations: [merge(otherCategory), merge(otherScope), merge(sameKind),
+      { op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: ["F2"], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
+    return { outcome: "success", output: "merged", request: { fixture: "merge sameness" } };
+  });
+  expect(merged?.results[0], JSON.stringify(merged)).toContain("merge parents and result must share one category");
+  expect(merged?.results[1]).toContain("merge parents and result must share one scope");
+  expect(merged?.results[2]).toBe("ok");
+  expect(memory.store.currentCommit(otherCategory.knowledgeId)).toHaveLength(1);
+
   const b = workspaceBatch();
   try {
-    const primary = b.item("Rule p", { category: "constraint", scope: "project" });
-    const merge = (other: { ref: string }) => checkWorkspace(b.store, workspaceCurate(b, workspaceBlock(`merge ${primary.ref}`, { absorb: other.ref, reason: "same" }, "Merged.")));
+    const first = b.item("Rule p", { category: "constraint", scope: "project" });
+    const merge = (other: { ref: string }) => checkWorkspace(b.store, workspaceCurate(b, workspaceBlock(`merge ${first.ref}`, { absorb: other.ref, reason: "same" }, "Merged.")));
     expect(merge(b.item("Rule a", { category: "constraint", scope: "project" })).problems).toEqual([]);
     expect(merge(b.item("Rule b", { category: "reference", scope: "project" })).problems.join("\n")).toContain("merged items share one category");
     expect(merge(b.item("Rule c", { category: "constraint", scope: "global" })).problems.join("\n")).toContain("merged items share one scope");

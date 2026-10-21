@@ -589,13 +589,11 @@ export type KnowledgeOperationInput =
       op: "archive";
       knowledgeId: number;
       baseCommit: number;
-      /** The chosen archive cause is mandatory on new writes. `merged` (ticket 144) writes no archive version: the
-       * item is consumed by the current `successor`, exactly as a merge consumes an absorbed parent. */
-      kind: "budget" | "invalid" | "inadmissible" | "merged";
+      /** The chosen archive cause is mandatory on new writes. An item whose content lives on in another current
+       * item is absorbed with a `merge` (ticket 144), the one way to merge. */
+      kind: "budget" | "invalid" | "inadmissible";
       /** Every cause but budget supplies the archive statement. */
       text?: string;
-      /** The knowledge id of the current item that now holds this one's content (`merged` only). */
-      successor?: number;
       supports: number[];
       reason: string;
       createdAt: string;
@@ -684,7 +682,7 @@ export interface CommittedKnowledgeOp {
 }
 
 /** One workspace operation's outcome: the versions it wrote, or why it was refused (`stale`: its base is no longer current). */
-export type WorkspaceOperationResult = { ok: true; committed: CommittedKnowledgeOp[] } | { ok: false; stale: boolean; dependent?: boolean; reason: string };
+export type WorkspaceOperationResult = { ok: true; committed: CommittedKnowledgeOp[] } | { ok: false; stale: boolean; reason: string };
 
 export type CommitConsolidationResult =
   | { ok: true; runId: number; committed: CommittedKnowledgeOp[] }
@@ -3862,7 +3860,7 @@ export class Store {
    * Each operation commits or is refused on its own: a base that is no longer current (stale), like any other
    * failed precondition, is reported and left for the next run, and never fails the file. Supports left empty
    * are inherited from the parents, as a trusted Dreamer's are. Stage 4 supplies the admitted run and claim. */
-  commitWorkspaceRun(input: { run: RunInput; path: KnowledgePath; operations: readonly { operation: KnowledgeOperationInput; dependsOn?: readonly number[] }[];
+  commitWorkspaceRun(input: { run: RunInput; path: KnowledgePath; operations: readonly KnowledgeOperationInput[];
     response?: (results: WorkspaceOperationResult[]) => string }): { runId: number; results: WorkspaceOperationResult[] } {
     return this.transaction(() => {
       const sessionId = this.requireRunSession(input.run);
@@ -3871,9 +3869,7 @@ export class Store {
       const projectId = this.getSession(sessionId)!.projectId;
       const runId = this.insertRun({ ...input.run, outcome: "success" });
       const results: WorkspaceOperationResult[] = [];
-      for (const { operation: op, dependsOn } of input.operations) results.push((() => {
-        // An operation that relies on a refused one (an archive naming its successor) is refused with it.
-        if (dependsOn?.some(index => !results[index]?.ok)) return { ok: false, stale: false, dependent: true, reason: "it depends on an operation that was refused" } as const;
+      for (const op of input.operations) results.push((() => {
         try {
           const outcome = this.transaction(() => this.applyKnowledgeOperation(op, runId, projectId, sessionId, input.path, true, "dreaming"));
           if (outcome.ok) return { ok: true, committed: outcome.value };
@@ -3920,11 +3916,10 @@ export class Store {
   }
 
   private archiveProblem(op: Extract<KnowledgeOperationInput, { op: "archive" }>): string | null {
-    if (!["budget", "invalid", "inadmissible", "merged"].includes(op.kind)) return "archive kind must be budget, invalid, inadmissible or merged";
+    if (!["budget", "invalid", "inadmissible"].includes(op.kind)) return "archive kind must be budget, invalid or inadmissible";
     if (op.kind !== "budget" && !substantiveArchiveStatement(op.text))
       return `${op.kind} archive requires a substantive statement of grounds and evidence`;
     if (op.kind === "budget" && op.text !== undefined) return "budget archive cannot replace the parent body";
-    if ((op.kind === "merged") !== (op.successor !== undefined)) return "a merged archive names its successor, and no other kind does";
     return null;
   }
 
@@ -3981,9 +3976,12 @@ export class Store {
     }
     const prior = targets.length ? this.getKnowledgeRevision(targets[0]!.knowledgeId, targets[0]!.baseCommit)! : null;
     if (op.op === "merge") {
-      const parentScopes = new Set(targets.map(target => this.getKnowledgeRevision(target.knowledgeId, target.baseCommit)!.scope));
-      if (parentScopes.size !== 1 || !parentScopes.has(op.scope))
-        return { ok: false, reason: "merge parents and result must share one scope" };
+      // Ticket 144: merged items share one category and scope, whoever writes the merge.
+      for (const field of ["scope", "category"] as const) {
+        const parents = new Set(targets.map(target => this.getKnowledgeRevision(target.knowledgeId, target.baseCommit)![field]));
+        if (parents.size !== 1 || !parents.has(op[field]))
+          return { ok: false, reason: `merge parents and result must share one ${field}${field === "category" ? "; change a category with an update first" : ""}` };
+      }
     }
     const scope = op.op === "archive" ? prior!.scope : op.scope;
     const supports = op.supports.length ? op.supports : dreaming
@@ -3995,16 +3993,6 @@ export class Store {
     if (op.op === "archive") {
       const problem = this.archiveProblem(op);
       if (problem) return { ok: false, reason: problem };
-    }
-    if (op.op === "archive" && op.kind === "merged") {
-      // The successor is the identity's current version on the writer's path; this file's own earlier writes count.
-      const successor = writerGraph!.current.find(revision => revision.knowledgeId === op.successor && revision.op !== "archive");
-      if (op.successor === op.knowledgeId || !successor) return { ok: false, reason: `K${op.successor} is not a current item to merge into` };
-      if (successor.scope !== prior!.scope || successor.category !== prior!.category)
-        return { ok: false, reason: "a merged archive needs a successor of the same category and scope" };
-      this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")
-        .run(op.knowledgeId, op.baseCommit, successor.knowledgeId, successor.id);
-      return { ok: true, value: [{ op: "archive", knowledgeId: op.knowledgeId, commit: op.baseCommit }] };
     }
     // 123: only supports this operation writes are checked; inherited parent supports stay as visible knowledge had them.
     const bad = op.supports.length ? this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId)) : null;
