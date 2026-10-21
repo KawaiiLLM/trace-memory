@@ -230,7 +230,10 @@ export class CcTaskScheduler {
     const execution = this.worker!.phases[phase];
     return { ...target, borrowed, automatic, executorSessionId: target.sessionId, model: execution.model, capacity: execution.capacity, maxReadChars: CC_MAX_RESULT_CHARS,
       toolNames: ccWorkerToolNames, nativeReadToolTokens: CC_NATIVE_READ_TOOL_TOKENS,
-      ...(phase === "noting" ? { nativeWriteToolTokens: CC_NATIVE_WRITE_TOOL_TOKENS, workspaceRoot: ccWorkspaceRoot(this.worker!.cwd) } : {}),
+      nativeWriteToolTokens: CC_NATIVE_WRITE_TOOL_TOKENS, workspaceRoot: ccWorkspaceRoot(this.worker!.cwd),
+      // Stage 4 §1.2: the Dreamer's classify task runs on its own triple, frozen here with the others.
+      ...(phase === "dreaming" && this.worker!.phases.classify ? { classify: { model: this.worker!.phases.classify.model,
+        thinkingLevel: this.worker!.phases.classify.thinking, capacity: this.worker!.phases.classify.capacity } } : {}),
       thinkingLevel: execution.thinking, subagentThinkingLevel: execution.thinking, ...(boundary ? { boundary } : {}) };
   }
 

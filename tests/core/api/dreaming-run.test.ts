@@ -1,10 +1,12 @@
 // Ticket 144, stage 4: the Dreamer's run shape. One admission, the hand-off and resume, curate's batches and what a pass
 // leaves in the Store. A scripted model (tests/support/dreamer.ts) writes the files a host's model would.
 import { afterEach, expect, test } from "vitest";
-import { writeFileSync } from "node:fs";
-import type { RunAgent, TraceMemory } from "../../source-fixture.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { sourceSeededMemory, type RunAgent, type TraceMemory } from "../../source-fixture.ts";
 import { scriptedDreamer, type DreamerScript } from "../../support/dreamer.ts";
-import { archive } from "../../support/seed.ts";
+import { archive, knowledge } from "../../support/seed.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
 import { block, workspaceBatch } from "../../support/workspace.ts";
@@ -12,11 +14,11 @@ import { block, workspaceBatch } from "../../support/workspace.ts";
 const memories: TraceMemory[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 
-function dreamerFixture(script: DreamerScript = {}) {
+function dreamerFixture(script: DreamerScript = {}, dbPath?: string) {
   const dreamer = scriptedDreamer(script);
   /** A test swaps in its own runner (one that waits, or ignores a stop) for the calls that follow. */
   const runners: RunAgent[] = [];
-  const b = workspaceBatch({ agent: raw => (runners.shift() ?? dreamer.agent)(raw) });
+  const b = workspaceBatch({ agent: raw => (runners.shift() ?? dreamer.agent)(raw), dbPath });
   memories.push(b.memory);
   b.memory.config.dreaming.triggerTokens = 1;
   const target = { sessionId: b.session.id, branch: "main", headTurnId: b.path.headTurnId!, model: "scripted" };
@@ -264,4 +266,34 @@ test("the prefix shows unscored items whole and scored items whole by score whil
   expect(text).not.toContain("Low scored rule with a long body");
   expect(text).toContain("Low item"); // its header line, with the address and title
   expect(curatePrefix(f.store, f.path, items, Math.floor(whole * 0.8)).text).toBe(text);
+});
+
+// ---- Resume across a restart (§3.2) -----------------------------------------------------------------------------------------
+
+test("after a restart the hand-off resumes at the first category not done, and the earlier batch's coverage counts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-144-dreamer-restart-"));
+  try {
+    const file = join(dir, "memory.sqlite");
+    const first = dreamerFixture({ curate: { reference: ["## bogus\n"] } }, file);
+    const rule = first.item("Rule", { category: "constraint" }), ref = first.item("Reference", { category: "reference" });
+    first.dreamer.script.curate!.constraint = createBlock(first, "Added rule");
+    expect(await first.dream()).toMatchObject({ outcome: "failure" });
+    const { sessionId, branch, headTurnId } = first.target;
+    const laterFact = first.existingFact("Later");
+    first.memory.close(); memories.pop();
+    // A new executor on the same database: nothing of the first run lives anywhere but the Store.
+    const dreamer = scriptedDreamer();
+    const memory = sourceSeededMemory(file, dreamer.agent); memories.push(memory);
+    memory.config.dreaming.triggerTokens = 1;
+    expect(memory.store.handoff(sessionId, "dreaming")).toMatchObject({ nextTask: "curate", detail: { doneCategories: ["constraint"] } });
+    // The permanent failure waits for newer Noter changes; one arrives.
+    const path = { sessionId, branch, headTurnId };
+    knowledge(memory.store, path, "project", "reference", [laterFact.id], "A later reference", { operation: { title: "Later item" } });
+    expect(await memory.dream({ sessionId, branch, headTurnId, model: "scripted" })).toMatchObject({ outcome: "success" });
+    expect(dreamer.reports).toHaveLength(1);
+    expect(dreamer.reports[0]).toContain("batch 1 of 1, category reference");
+    const processed = memory.store.db.prepare("SELECT revision_id FROM knowledge_processed").all().map(row => Number(row.revision_id));
+    expect(processed).toEqual(expect.arrayContaining([rule.commit, ref.commit]));
+    expect(memory.store.handoff(sessionId, "dreaming")).toBeNull();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

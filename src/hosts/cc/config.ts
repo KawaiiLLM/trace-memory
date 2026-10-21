@@ -1,7 +1,7 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { canonicalFlatConfig, validateConfig, type ClosedSessionScope, type ConfigOverride, type TraceMemoryConfig } from "../../core/api/index.ts";
-import { MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-settings.ts";
+import { CLASSIFY_SETTING_KEYS, MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-settings.ts";
 import { retireConsolidationSettings } from "../retired-settings.ts";
 
 export const CC_AGENT_SDK_VERSION = "0.1.77";
@@ -50,6 +50,9 @@ export interface CcHostConfig {
   notingThinking?: string;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
+  /** Optional: the Dreamer's classify task; absent, it runs on the `dreaming` settings. */
+  "dreaming.classifyModel"?: string;
+  "dreaming.classifyThinking"?: string;
   "noting.triggerTokens"?: number;
   "dreaming.triggerTokens"?: number;
   "dreaming.timeoutMs"?: number;
@@ -84,6 +87,8 @@ export interface ResolvedCcHostConfig {
   notingThinking?: string;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
+  "dreaming.classifyModel"?: string;
+  "dreaming.classifyThinking"?: string;
   baseline?: string;
   retry?: CcRetryConfig;
   pollIntervalMs: number;
@@ -114,8 +119,8 @@ function retry(input: CcRetryConfig | undefined): CcRetryConfig | undefined {
   return { maxRetries: input.maxRetries };
 }
 
-function phaseFields(input: CcHostConfig, phase: MemoryPhase): { model: string; thinking: CcEffort } {
-  const keys = PHASE_SETTING_KEYS[phase];
+function phaseFields(input: CcHostConfig, phase: MemoryPhase | "classify"): { model: string; thinking: CcEffort } {
+  const keys = phase === "classify" ? CLASSIFY_SETTING_KEYS : PHASE_SETTING_KEYS[phase];
   const model = input[keys.model as keyof CcHostConfig];
   const thinking = input[keys.thinking as keyof CcHostConfig];
   if (typeof model !== "string" || !model.trim())
@@ -158,7 +163,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       throw new Error("Invalid CC worker.cwd: expected an absolute path");
     if (!value.contextWindows || typeof value.contextWindows !== "object" || Array.isArray(value.contextWindows))
       throw new Error("Invalid CC worker.contextWindows: expected model-to-capacity object");
-    const phases = Object.fromEntries(MEMORY_PHASES.map(phase => {
+    const phases = Object.fromEntries([...MEMORY_PHASES, ...(input["dreaming.classifyModel"] !== undefined || input["dreaming.classifyThinking"] !== undefined ? ["classify" as const] : [])].map(phase => {
       const selected = phaseFields(input, phase);
       if (!Object.hasOwn(value.contextWindows, selected.model))
         throw new Error(`Invalid CC worker.contextWindows: no capacity for selected ${phase} model ${selected.model}`);
@@ -166,12 +171,12 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       if (contextWindow <= CC_CONTEXT_HEADROOM)
         throw new Error(`Invalid CC worker.contextWindows[${JSON.stringify(selected.model)}]: must exceed the ${CC_CONTEXT_HEADROOM}-token headroom`);
       return [phase, { ...selected, capacity: { inputTokens: contextWindow - CC_CONTEXT_HEADROOM } }];
-    })) as Record<MemoryPhase, ResolvedCcPhaseConfig>;
+    })) as ResolvedCcWorkerConfig["phases"];
     worker = { claudeExecutable: resolve(value.claudeExecutable),
       contextWindows: { ...value.contextWindows }, phases, cwd: resolve(value.cwd),
       responseOriginTimeoutMs: positive("worker.responseOriginTimeoutMs", value.responseOriginTimeoutMs ?? 5_000) };
   }
-  const phaseValues = Object.fromEntries(Object.values(PHASE_SETTING_KEYS).flatMap(keys =>
+  const phaseValues = Object.fromEntries([...Object.values(PHASE_SETTING_KEYS), CLASSIFY_SETTING_KEYS].flatMap(keys =>
     [keys.model, keys.thinking].flatMap(key => input[key as keyof CcHostConfig] === undefined ? [] : [[key, input[key as keyof CcHostConfig]]]))) as Partial<ResolvedCcHostConfig>;
   const coreConfig = validateConfig({
     closedSessionScope,
