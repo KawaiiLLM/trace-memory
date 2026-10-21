@@ -4815,10 +4815,14 @@ export class Store {
         (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm,
         (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id = 1) AS bp,
         (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cv,
-        (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv`)
+        (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv,
+        -- 144 stage 4 §2.5: what moves a Dreamer's due state besides coverage: its hand-off row, its failure count, and a score.
+        (SELECT IFNULL(group_concat(next_task || '/' || run_id || '/' || IFNULL(detail, ''), ','), '') FROM task_handoffs WHERE phase = 'dreaming') AS ho,
+        (SELECT IFNULL(group_concat(count, ','), '') FROM task_failures WHERE phase = 'dreaming') AS df,
+        (SELECT IFNULL(MAX(scored_run), 0) FROM knowledge) AS sr`)
       .get() as { f: number; cf: number; ne: number; kr: number; kp: number; pa: string | null; pm: number;
-        bp: string; cv: number; sv: number };
-    return `${row.f}:${row.cf}:${row.ne}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.cv}:${row.sv}`;
+        bp: string; cv: number; sv: number; ho: string; df: string; sr: number };
+    return `${row.f}:${row.cf}:${row.ne}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.cv}:${row.sv}:${row.ho}:${row.df}:${row.sr}`;
   }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
    * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).

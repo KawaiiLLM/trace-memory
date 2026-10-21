@@ -9,6 +9,7 @@ import { scriptedDreamer, type DreamerScript } from "../../support/dreamer.ts";
 import { archive, knowledge } from "../../support/seed.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
+import { TASK_GAP_MS, executionLimitMs, remainingTasks } from "../../../src/core/dreaming/index.ts";
 import { block, workspaceBatch } from "../../support/workspace.ts";
 
 const memories: TraceMemory[] = [];
@@ -296,4 +297,25 @@ test("after a restart the hand-off resumes at the first category not done, and t
     expect(processed).toEqual(expect.arrayContaining([rule.commit, ref.commit]));
     expect(memory.store.handoff(sessionId, "dreaming")).toBeNull();
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- Arming and the backstop arithmetic (§2.5, §1.3) ------------------------------------------------------------------------
+
+test("a Dreamer failure moves the progress signal, so the next check evaluates the retry", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  const before = f.store.progressSignal(f.session.id);
+  f.next(async () => ({ outcome: "failure", output: "network error" }));
+  await f.dream();
+  expect(f.store.progressSignal(f.session.id)).not.toBe(before);
+});
+
+test("the backstop leaves every task a full timeout and a gap, and a resumed run only for the tasks it has left", () => {
+  expect(executionLimitMs(remainingTasks(undefined), 1000)).toBe(3 * 1000 + 4 * TASK_GAP_MS);
+  expect(executionLimitMs(remainingTasks("classify"), 1000)).toBe(1000 + 2 * TASK_GAP_MS);
+  // The last deadline (admission + n timeouts + n - 1 gaps at most, clamped to the limit minus one gap) is always before the limit.
+  for (const next of [undefined, "verify", "classify"] as const) {
+    const left = remainingTasks(next), limit = executionLimitMs(left, 1000);
+    expect(left * 1000 + (left - 1) * TASK_GAP_MS).toBeLessThan(limit - TASK_GAP_MS + 1);
+  }
 });
