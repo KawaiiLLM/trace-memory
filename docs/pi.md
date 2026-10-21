@@ -189,7 +189,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
 - `before_agent_start` evaluates foreground Knowledge publication on **every enabled ordinary
   prompt**. Worker completion is not itself a delivery trigger, and there are no initial-only or
   `/trace on`/`/trace project` generation triggers. Those commands only change enrollment or project
-  attribution; the next ordinary prompt runs the same predicate. Worker `note`/`memory` tool receipts,
+  attribution; the next ordinary prompt runs the same predicate. Worker `memory` tool receipts,
   manual foreground tool results, explicit reads and compaction content are unchanged.
 
   The host obtains Pi's selected compaction-aware entries, builds their trusted visible view, and asks
@@ -346,7 +346,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   writes one Knowledge operation immediately within the caller's authority; `note({})` and
   `memory({})` are explicit empty calls. The Noter writes workspace files instead (144); the Dreamer sends one operation or one `{skip, because}` per call (127). Every operation
   carries `supports` and a `reason`; create/update/merge also
-  carry the revision's complete `topics` set. Noter permits create/update/archive; manual calls permit
+  carry the revision's complete `topics` set. The Noter's file permits create/update; manual calls permit
   fact-backed create/archive; Dreamer alone may merge, split or submit support-inheriting
   maintenance operations. Main-agent executions call `tools(context)` with kind `manual` and
   the current session, branch and turn. Writes commit immediately; `tool_result`
@@ -913,7 +913,7 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    tokens produce no Noting. Continue with substantial conversation material
    until an eligible completion reaches the threshold; inspect the resulting run's
    entry audit and exact progress. The reply after it carries no receipt of that run (29d): read the
-   new facts with `read` on `trace://F<id>` if you want to see them. Invalid model output may bounce; inspect the run
+   new facts with `read` on `trace://F<id>` if you want to see them. Invalid model output fails the run; inspect the run
    result.
 4. Run `/compact`. Expect immediate compaction with `<knowledge>` and `<episodic>`,
    pending compressed Raw views, recent facts, and no compaction model request. The
@@ -965,8 +965,9 @@ manager is never passed in and never mutated. Its `getSessionFile()` is the run'
 
 - **System prompt.** One inline extension, supplied explicitly by the adapter, returns core's domain
   prompt from `before_agent_start`.
-- **Tools.** The child registers only the four memory tools core bound for the run (plus restricted
-  native Read), with `noTools: "all"` and an explicit `tools` allowlist so nothing else can appear;
+- **Tools.** The child registers only the tools core bound for the run (the Noter's `search` and `check`; the
+  Dreamer's `search`, `memory` and `check`), plus restricted native Read and, for the Noter, Pi's own `write` and `edit`
+  confined to its two workspace files, with `noTools: "all"` and an explicit `tools` allowlist so nothing else can appear;
   tool EXECUTION is whitelisted to them. Any other call returns an error result and never runs.
   Execution is sequential (`agent.toolExecution` plus a per-tool `executionMode`); Pi's tested default is parallel.
 - **Discovery.** Extensions, skills, prompt templates, themes and project context files are
@@ -1007,8 +1008,8 @@ completion starts no next task beyond the Dreamer check after a successful run; 
 longer runs recovery tasks: 73). Manual catchup alone rechecks all phases after its own successful
 completions.
 
-A terminal failure adds one. Incomplete
-Noting and unresolved submission refusal count; cancellation, busy admission and audit errors
+A terminal failure adds one. A Noting run that does not finish
+normally, in either task, and an unresolved Dreamer submission refusal count; cancellation, busy admission and audit errors
 after business success do not. Duplicate observers and process restarts cannot count an
 execution twice. A successful task resets its own streak.
 
@@ -1236,7 +1237,7 @@ invalid one, fail with a diagnostic before anything is sent.
 
 The measure is Pi's, taken where Pi takes it:
 
-- **Admission** hands core `contextWindow - 10,000` as its input allowance (and `prefixTokens: 0`, a field kept in the admission shape since the Noter became fresh-only).
+- **Admission** hands core `contextWindow - 10,000` as its input allowance.
 - **A subagent** is priced by the existing core material accounting alone — instructions, tool
   definitions and the frozen material — because a fresh child inherits no context to measure.
 - **Every round the child sends** is checked in `hosts/pi/native.ts` on the child session's own

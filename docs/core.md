@@ -52,7 +52,7 @@ the domain prompt and its hash, the frozen range and knowledge commits, the mode
 `reportRequest`, `entryAudit`, one `material` object of rendered, budgeted parts, `text` — one
 prepared string, whatever mode runs the task (29b; the `{fresh, inherited}` pair is gone) — and
 `supplied`, the identities that text actually carries. The host decides which message carries the
-text; it lays out no block of its own and chooses between no representations. Noting additionally supplies `passEnd()`, core's fixed N end-review text built from held operations and blockers; the host delivers it through the existing pass-end channel after the first normal pass. Historical NEAR receipts no longer run. Consolidation is retired.
+text; it lays out no block of its own and chooses between no representations. Noting additionally supplies `passEnd()`, the Noter's stop check (144): the follow-up message listing its workspace files' problems, or nothing when they pass; the host delivers it once, after the task's first normal end. Historical NEAR receipts no longer run. Consolidation is retired.
 
 **Audit availability.** A host that cannot expose a provider request returns
 `audit: {available: false, reason}` instead of `request`; core records the limitation in the run
@@ -127,7 +127,7 @@ An update accepts exactly one body form (135):
 - **Exact edits:** `edits` is a non-empty array of `{old, new}`. Each non-empty `old` must occur
   exactly once in the exact tagged base body as it stands at that step; edits apply in order.
   An empty `new` deletes. A failed edit refuses the whole operation and names its position and
-  zero/multiple matches, including overlapping occurrences. N and D retain the normal refused `Mn`.
+  zero/multiple matches, including overlapping occurrences. D retains the normal refused `Mn`.
 - **Metadata:** omitted category, scope or topics inherit only with edits; supplied fields replace
   them under the existing rules. Inherited legacy categories remain unchanged, not reclassified.
   Supports and reason retain the role's existing requirements.
@@ -163,12 +163,11 @@ Knowledge selection keeps complete items and charges framing and receipts.
 
 Dreamer reference and pending item headers show their pool item cost: the canonical version header,
 body, supports and topics, excluding the count annotation itself. Pool category framing remains part
-of the pool total. An item carries this one annotation only: an `Archived` item shows it once on its removed body, and the
-Noter's `(body/1000 tokens)` annotation (cap check) never appears in the same view. Committed shared-memory receipts report `tokens.before` and `tokens.after` arrays:
+of the pool total. An item carries this one annotation only: an `Archived` item shows it once on its removed body. Committed shared-memory receipts report `tokens.before` and `tokens.after` arrays:
 create has no parents; update has one; merge lists the primary then the absorbed parents; split lists
 its parent once, then the primary part and the children; archive reports the removed item cost then zero.
 Committed update, merge and split results each carry the newly authored version's `K#tag`, usable
-directly for the next mutation. Uncommitted Noter `Mn` handles and archive history addresses are unchanged.
+directly for the next mutation. Archive history addresses are unchanged.
 
 Pending changes, Dreamer end reviews and Knowledge range reads use the same
 lossless sentence-first unified diff. Sentences end after `。；！？`, retaining the
@@ -253,11 +252,11 @@ A logical task is `(target session, phase, backlog key)`, independent of its run
 
 Ticket 86's one-time normal-open upgrade clears only legacy Dreamer failure counters, whose heads used range IDs and could collide with revision IDs. SQLite `user_version = 1` records completion in the same transaction; reopening preserves new counters. N/C counters, run/execution audit and enrollment are unchanged. Historical execution heads retain their original meaning; they are not rewritten.
 
-`Store.beginExecution(task, previous?)` creates a durable execution or continues the same unsettled Noting or Consolidation execution. Each attempt run carries `RunInput.executionId` and is linked through `execution_runs`. Attempt audit outcomes do not settle executions.
+`Store.beginExecution(task)` creates a durable execution. Each attempt run carries `RunInput.executionId` and is linked through `execution_runs`. Attempt audit outcomes do not settle executions.
 
 `Store.settleExecution(id, outcome, runId, reason?)` records one authoritative terminal outcome and updates the logical task's streak in the same transaction. Successful Noting and Consolidation commits settle inside their business transactions. Dreamer processing records skipped frozen versions and own commits, then settles that one execution. Failure and cancellation retain the same partial processing semantics: untouched versions remain pending, and partial writes survive.
 
-Final business failure includes incomplete Noting, unresolved submission refusal and a failed Dreamer run after partial writes. Cancellation, shutdown, busy admission and corrected refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason, last run and update time. Success resets its key; explicit enrollment on clears all target streaks, while reopen does not.
+Final business failure includes a Noting run that does not finish normally in either task (144), an unresolved Dreamer submission refusal and a failed Dreamer run after partial writes. Cancellation, shutdown, busy admission and corrected refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason, last run and update time. Success resets its key; explicit enrollment on clears all target streaks, while reopen does not.
 
 The third failure atomically persists enrollment off and expires every target claim. The façade
 then closes and aborts locally owned target tasks. Only the transitioning settlement returns
@@ -281,26 +280,21 @@ Call `noting({ sessionId, branch, headTurnId, model? })` at the existing
 trigger boundary. The core freezes exact pending entries, owning Turns, rendered
 views, recent facts and applicable knowledge before calling the model.
 
-The noting result has `outcome`: `success` with `runId` and facts; `bounced`,
+The noting result has `outcome`: `success` with `runId` and facts;
 `failure` or `cancelled` with `runId` and problems; or `dropped`/`empty` without
 a run record. A duplicate is dropped per target session and phase across branches,
-hosts and processes by a thirty-minute SQLite claim. No automatic retry or feedback call follows a bounce.
+hosts and processes by a thirty-minute SQLite claim. No automatic retry or feedback call follows a failure.
 Historically, one `note({facts})` submitted a batch; `note({facts: []})` submitted zero facts.
-The current N protocol stages individual `note` and `memory` calls (both required even when
-empty), reviews once after a normal first pass, then publishes both
-layers and frozen progress together on normal termination.
-Stopping normally without submitting is **incomplete**: outcome `failure` with the
-exported `NOTING_INCOMPLETE` diagnostic and the oldest frozen entry on
-`incompleteHeadEntryId`, the attempt and its usage recorded, and no business progress —
-the same entries are frozen again next time. Final prose is never read as facts nor as an
-implicit empty submission. An uncorrected rejected submission is `bounced`
-and advances nothing. Failure/cancellation before commit also advances nothing.
+The current N protocol is the two-task workspace-file run of [Noter publication](#noter-publication-9204):
+both layers and frozen progress are published together when task 2 passes. A run whose task does not end
+normally, or whose files still fail the check at the end, is a `failure` and advances nothing; the same
+entries are frozen again next time (a failed task 2 resumes on task 1's files). Final prose is never read as facts.
+Failure/cancellation before commit also advances nothing.
 A committed batch keeps outcome `success` even if the provider subsequently
 fails or is cancelled; the trailing problem is recorded without undoing business
 writes (user ruling 2026-09-07).
 
-`runAgent` receives `NotingAgentInput` (material and control, above) with the four `tools` definitions:
-`trace`, `search`, `note`, `memory` in the retired ticket-02 protocol. Today the public tools are `search`, `note` and `memory`; `trace://` reads use host-native tools. Each historical definition had a name, description, JSON-schema parameters, and synchronous `execute(input): string`. Hosts execute calls and
+`runAgent` receives `NotingAgentInput` (material and control, above) with its `tools` definitions: the Noter's own `search` and `check` (144; `trace://` reads and the two workspace files use the host's native read, write and edit). The retired ticket-02 protocol gave it `trace`, `search`, `note` and `memory`. Each definition has a name, description, JSON-schema parameters, and synchronous `execute(input): string`. Hosts execute calls and
 continue the provider conversation until it stops. `reportRequest(request)`
 reports each exact provider request before tool execution; the returned `request`
 is the last request sent. A result carrying no request — `null` or absent — leaves the last reported
@@ -312,7 +306,8 @@ trace evidence, the tool-call input/result sequence, problems and committed IDs.
 `tools(context)` also binds these definitions to a main agent with
 `{kind: "manual", sessionId, branch, currentTurnId}`, or to a Noting context
 with `{kind: "noting", sessionId, branch, range: {from, to},
-readKnowledgeCommits, entryIds}`. `note({facts})` validates every item and commits nothing
+readKnowledgeCommits, entryIds}` (`search` and `check` only since 144). The rest of this paragraph describes the retired
+ticket-02 `note({facts})` batch and its NEAR review, kept as history. `note({facts})` validates every item and commits nothing
 on any rejection; a corrected whole batch may be resubmitted. On the first valid Noting submission,
 the binding reads and holds the same-session facts applicable to its immutable source-path snapshot.
 It uses character-bigram Jaccard at `noting.nearThreshold` (default 0.40) and selects at most three
@@ -367,10 +362,9 @@ translation or compatibility shim is provided.
 Every task runs in a fresh child (ruling 2026-10-22: the Noter runs fresh only, because a fork's prefix is the main conversation, not the compaction memory the Noter starts from). `noting.forkModeDefault` and its alias `noting.branchModeDefault` are removed settings that fail the load by name. Provider prefix verification no longer exists: the Pi host has one runner, a fresh native child for every task — ordinary, borrowed or catchup — and a host that cannot construct its worker at all returns a failed run with a reason, which leaves the queue pending.
 
 **Budget before selection (ticket 19 gate 4, ticket 20 capacity negotiation, ticket 27a).** The host
-reports its available material budget (`capacity {inputTokens, prefixTokens}`) in the same
+reports its available material budget (`capacity {inputTokens}`) in the same
 `noting(...)` call that starts the task. Since 27a `inputTokens` is the model's context window minus
-the host's fixed 10,000-token headroom — no output reserve and no 85% multiplier enter it — and
-`prefixTokens` is retained in the admission shape and is always 0 since the Noter became fresh-only.
+the host's fixed 10,000-token headroom — no output reserve and no 85% multiplier enter it.
 Core prices against `inputTokens` and never learns how it was obtained: it reads no provider
 request body, no image and no transport field.
 
@@ -1056,7 +1050,7 @@ No Pi SDK or migration enters core. The facade owns an executor id, atomic task
 admission, cancellation signals and conditional claim release. `taskEligibility(phase, target)`
 shares the trigger threshold with host preselection; `automatic: true` rechecks it in admission. Since
 29d it answers `{due}` alone: the delivery pause that used to hold a Noting task until its
-predecessor's facts had reached the foreground is gone. For Noting and Consolidation only, `borrowed: true` requires a closed target and an enabled, open `executorSessionId`, and forces subagent mode. Dreaming never borrows closed-session work. `closedSessionScope` defaults to
+predecessor's facts had reached the foreground is gone. For Noting and Consolidation only, `borrowed: true` requires a closed target and an enabled, open `executorSessionId`, and runs as a fresh subagent. Dreaming never borrows closed-session work. `closedSessionScope` defaults to
 `project` (matching project ids); `global` allows any project and `off` leaves closed
 tails pending. Hosts pass `memory.config.closedSessionScope` to `store.closedTasks`;
 core rechecks the policy transactionally at admission and commit. `configure` accepts
