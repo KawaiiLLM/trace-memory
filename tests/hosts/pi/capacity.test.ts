@@ -10,7 +10,7 @@
 import { expect, test } from "vitest";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { tokens } from "../../../src/core/api/index.ts";
-import { host, reply, usage } from "./test-host.ts";
+import { host, reply, usage, notingFact } from "./test-host.ts";
 
 /** The run this host recorded, with its problems joined — where a refused last check lands. */
 const problemsOf = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).map(r => r.response ?? "").join("\n");
@@ -123,5 +123,21 @@ test("27a 2026-09-10: a subagent is priced by core's material accounting alone; 
     await h.emit("agent_settled"); await h.drain();
     expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success"]); // the batch's write and verify runs
     expect(h.requests.length).toBeGreaterThan(0);
+  } finally { await h.dispose(); }
+});
+
+test("a batch's two tasks run on the model it was admitted on, whatever the foreground switches to between them", async () => {
+  const h = host({ "noting.triggerTokens": 30 });
+  try {
+    let switched = false;
+    h.provider(async conversation => {
+      // The foreground moves to a model with a window too small for the batch while the write task is at the wire.
+      if (!switched) { switched = true; h.ctx.model = { ...h.ctx.model!, id: "test-mini", contextWindow: 12_000 }; }
+      return notingFact(conversation);
+    }, { autoStop: true });
+    await h.turn();
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success", "success"]);
+    expect(h.requests.length).toBeGreaterThan(1);
+    expect(h.requests.map((body: any) => body.model)).toEqual(h.requests.map(() => "test"));
   } finally { await h.dispose(); }
 });

@@ -5,13 +5,19 @@ import { tmpdir } from "node:os";
 
 const provider = vi.hoisted(() => {
   const calls: { model: string; thinking: string; task: any; release: () => void }[] = [];
-  return { calls };
+  const runs: { task: string; thinking: string }[] = [];
+  return { calls, runs };
 });
 vi.mock("../../src/hosts/cc/worker.ts", () => ({
   createCcRunAgent: (config: any) => async (task: any) => {
-    // A batch is a write run and a verify run; the write run is the one held, and the verify run follows at once with the same settings.
-    if (task.task === "write") await new Promise<void>(resolve => provider.calls.push({ model: config.worker.phases[task.kind].model,
-      thinking: config.worker.phases[task.kind].thinking, task, release: resolve }));
+    const settings = config.worker.phases[task.kind];
+    provider.runs.push({ task: task.task, thinking: settings.thinking });
+    // The real worker (cc/worker.ts) refuses a task whose frozen thinking is not its own configuration.
+    if (task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
+      return { outcome: "failure", output: `task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}` };
+    // A batch is a write run and a verify run; the write run is the one held, and the verify run follows at once.
+    if (task.task === "write") await new Promise<void>(resolve => provider.calls.push({ model: settings.model,
+      thinking: settings.thinking, task, release: resolve }));
     expect(task.kind).toBe("noting");
     submitEmpty(task);
     return { outcome: "success", output: "mock provider completed", request: { mock: true } };
@@ -26,14 +32,15 @@ import { readCcMenu } from "../../src/hosts/cc/menu.ts";
 import { submitEmpty } from "../support/noter.ts";
 
 const dirs: string[] = [];
-afterEach(() => { for (const call of provider.calls) call.release(); provider.calls.length = 0;
+afterEach(() => { for (const call of provider.calls) call.release(); provider.calls.length = 0; provider.runs.length = 0;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const tick = async (condition: () => boolean) => {
   for (let i = 0; i < 100 && !condition(); i++) await new Promise(resolve => setTimeout(resolve, 10));
   expect(condition()).toBe(true);
 };
 
-test("CLI apply leaves held provider on old settings and next admission takes new settings without edit-triggered launch", async () => {
+/** A session whose first batch is held at its write task. */
+async function heldBatch() {
   const dir = mkdtempSync(join(tmpdir(), "cc82-hot-")); dirs.push(dir);
   const path = join(dir, "cc.config.json"), transcript = join(dir, "native.jsonl"), native = "cc82-hot";
   const base = { dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"),
@@ -57,6 +64,11 @@ test("CLI apply leaves held provider on old settings and next admission takes ne
   await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: native,
     transcript_path: transcript, source: "startup" }, "2026-01-01T00:00:00.000Z");
   const coordinator = new CcCoordinator(config, native, () => {});
+  return { dir, path, base, native, config, records, publish, coordinator };
+}
+
+test("CLI apply leaves held provider on old settings and next admission takes new settings without edit-triggered launch", async () => {
+  const { path, base, native, config, records, publish, coordinator } = await heldBatch();
   try {
     await coordinator.start();
     await coordinator.turnEnd("first-answer", "answer", new AbortController().signal);
@@ -99,5 +111,18 @@ test("CLI apply leaves held provider on old settings and next admission takes ne
     await tick(() => provider.calls.length === 2);
     expect(provider.calls[1]).toMatchObject({ model: "claude-sonnet-5", thinking: "medium" });
     provider.calls[1]!.release();
+  } finally { for (const call of provider.calls) call.release(); await coordinator.shutdown("test done"); }
+});
+
+test("a batch's verify task runs on the worker its write task started on, whatever is applied between the two", async () => {
+  const { path, native, coordinator } = await heldBatch();
+  try {
+    await coordinator.start();
+    await coordinator.turnEnd("first-answer", "answer", new AbortController().signal);
+    await tick(() => provider.calls.length === 1);
+    await runCcCommand(["cli", "--config", path, "--session", native, "setting", "noting.thinking", "medium"]);
+    provider.calls[0]!.release();
+    await tick(() => (coordinator as unknown as { scheduler: { running(): string[] } }).scheduler.running().length === 0);
+    expect(provider.runs).toEqual([{ task: "write", thinking: "high" }, { task: "verify", thinking: "high" }]);
   } finally { for (const call of provider.calls) call.release(); await coordinator.shutdown("test done"); }
 });

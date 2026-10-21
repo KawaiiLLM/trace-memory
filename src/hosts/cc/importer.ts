@@ -1,4 +1,4 @@
-import { TraceMemory, directoryAllocation, sourceDigest, type TraceMemory as TraceMemoryFacade } from "../../core/api/index.ts";
+import { TraceMemory, directoryAllocation, sourceDigest, type NotingAgentInput, type RunAgent, type TraceMemory as TraceMemoryFacade } from "../../core/api/index.ts";
 import { StaleSourcePathError, type SourceEntry, type SourcePathState, type Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
@@ -594,11 +594,31 @@ export class CcImporter {
     this.workerDependencies = workerDependencies;
     this.runAgent = config.worker ? createCcRunAgent(config, workerDependencies,
       kind => memory.config[kind].maxToolRounds) : undefined;
-    memory = TraceMemory(config.dbPath, input => this.runAgent ? this.runAgent(input) : unavailableRunner(),
-      config.coreConfig, ccResultText,
+    memory = TraceMemory(config.dbPath, input => this.dispatch(input), config.coreConfig, ccResultText,
       entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined, ccHumanUser);
     this.memory = memory;
     this.projection = new CcProjection(config, binding, memory);
+  }
+
+  /** One Noter batch is two tasks on one worker (ticket 144): the write task pins the worker it starts on, keyed by the
+   * batch's workspace directory, and the verify task of that batch takes it, so a configuration applied between the
+   * two reaches only later batches. A resumed verify has a new directory and takes the current worker, whose settings
+   * its fresh admission froze. shortcut: a write that passed but whose hand-off then failed leaves its entry until the
+   * importer closes; upgrade if such failures become common. */
+  private readonly batchRunners = new Map<string, RunAgent>();
+  private async dispatch(input: unknown) {
+    const { kind, task, workspace } = input as Partial<NotingAgentInput>;
+    const batch = kind === "noting" ? workspace?.dir : undefined;
+    const run = (batch !== undefined && task === "verify" ? this.batchRunners.get(batch) : undefined) ?? this.runAgent;
+    if (!run) return unavailableRunner();
+    let keep = false;
+    try {
+      const result = await run(input);
+      keep = task === "write" && result.outcome === "success";
+      return result;
+    } finally {
+      if (batch !== undefined) { if (keep) this.batchRunners.set(batch, run); else this.batchRunners.delete(batch); }
+    }
   }
 
   currentBinding(): CcSessionBinding { return this.projection.currentBinding(); }
