@@ -33,7 +33,7 @@ Keep enough for a newcomer to recover the discussion's main line, important bran
 
 **Writing**
 
-1. **Write a situational title**: say what this discussion or work was doing, for recognition and lookup. A title is never only the final conclusion and never replaces the body.
+1. **Write an index title**: name the object and the activity, enough to recognize and find it; do not narrate the course of events or restate the body.
 2. **Summarize source by source**: give each contributing entry its own cited segment, in order of occurrence. Write only that source's contribution to this topic; an entry touching several topics may serve each of their facts. Add none of your own explanation, and do not write later explanations back into earlier segments.
 3. **Separate results from interpretation**: a tool segment records what actually returned; an agent segment records the original agent's analysis, proposals or actions. Calls with no new contribution, repeated searches and routine steps need no citation.
 4. **Resolve references**: name the concrete objects. An approval, withdrawal, rebuttal or correction says what it concerns, what was there before and what changed, not merely "the user agreed" or "overturned the earlier claim".
@@ -63,7 +63,7 @@ Keep enough for a newcomer to recover the discussion's main line, important bran
 - **Temporary historical context**: a separate allowance holds missing human user words and fact titles within their recent path turns, filled turn by turn from the newest so both reach the same depth. Both reaches include the batch's newest turn and never fill older material. User entries retain head and tail; title-only facts can be read at their addresses.
 - **This batch**: the oldest pending whole Raw entries within their own 10,000-token allowance. A batch may span Turns and a Turn may span batches. Only the listed frozen entries belong to it. You see the current batch and the past, nothing later.
 - **Entry views**: a tool-call part shows at most 100 tokens, a tool-result part at most 100, an entry at most 2,000, labels and markers included; results are cut first, then arguments, then natural language.
-- **Visible knowledge**: a fresh run receives current visible versions within the main context's Knowledge base plus shared allowance. A fork inherits the parent's already-published knowledge, without an extra block. In a fresh run each visible item header shows its body's estimated tokens against the 1,000 limit, as `(912/1000 tokens)` after the `[category/scope]` tag.
+- **Visible knowledge**: a fresh run receives current visible versions within the main context's Knowledge base plus shared allowance. A fork inherits the parent's already-published knowledge, without an extra block. In a fresh run each visible item header shows its body's estimated tokens against the body limit, as `(B/L tokens)` after the `[category/scope]` tag.
 <!-- include: live -->
 - **Live supplement**: the head turn's final reply is appended because the captured request cannot contain it. The source index lists every frozen entry and the addresses its bounded Raw view exposes, never body previews or every thinking block. Only the selected path's last assistant entry gets this supplement, and only when it belongs to the batch and is not already in Raw.
 
@@ -101,9 +101,10 @@ A relation in a later batch — the user withdraws the pnpm rule recorded as F34
 - `drop: "$n"` or `drop: "Mn"` in its own call removes slots without recycling numbers. A fact referenced by another fact or operation cannot be dropped.
 - A relation names an existing `F<id>` or an accepted earlier `$n` slot. Knowledge supports may cite any accepted fact slot in this run.
 - Empty calls confirm use but neither clear drafts nor resolve rejected slots. A subsequent structurally valid call clears a top-level call error only. Correct or drop rejected slots separately.
-- Knowledge create/update carries nonempty supports and reason; create carries complete text, category, scope and topics.
-- An update carries either the complete resulting text with category, scope and topics, or exact `edits` (`[{old, new}]`, each old string matching the base body exactly once). With `edits`, omitted category, scope and topics are inherited.
-- Archive carries op, id, kind, supports and reason, plus text for an invalid archive, and inherits category, scope and topics. Each newly written fact and knowledge body is at most 1,000 estimated tokens.
+- Knowledge create/update carries nonempty supports and reason; create carries title, complete text, category, scope and topics.
+- An update carries either the complete resulting text with category, scope and topics, or exact `edits` (`[{old, new}]`, each old string matching the base body exactly once). With `edits`, omitted category, scope and topics are inherited. An update without `title` inherits its base's; a base that has none requires one.
+- Archive carries op, id, kind, supports and reason, plus text for an invalid archive, and inherits category, scope and topics.
+- A title or body over its limit is refused, stating the field, its count and the limit.
 - Ending without both tools, with unresolved errors, after failure or cancellation publishes nothing.
 - Each source cites a whole frozen entry of this batch, never a guessed ordinal, a collection, a range or a later entry of the same Turn.
 - The plugin's injected messages (knowledge block, compaction block, branch carry) and synthetic compaction summaries are never fact sources. Facts come only from this branch's conversation.

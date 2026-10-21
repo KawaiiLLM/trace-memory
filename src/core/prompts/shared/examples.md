@@ -5,6 +5,7 @@ These only show how to write; they are not Raw entry evidence. Real facts must c
 > **Fact title**: Claude Code investigates the slow import
 > Tool result segment: timing shows that database commits take most of the time, but gives no breakdown inside the commit.
 > Agent segment: Claude Code suspects disk synchronization, but the results cannot tell it apart from other commit costs; it proposes measuring the parts separately.
+> If the slow import is a long-standing unresolved problem, distill it into the following knowledge. If it is only the temporary state of this investigation, record only a fact.
 > **Knowledge (open)**: The slow import's root cause is unsettled. Claude Code's timing investigation located most of the time in the commit phase; disk synchronization is only a candidate explanation, to be told apart by measuring the parts.
 
 Do not write "disk synchronization was proven to cause the slowdown".
@@ -21,7 +22,11 @@ The knowledge keeps the current understanding, the reason and the entry point; i
 
 > Original item: "The user requires delivery state to be maintained uniformly by the database; the implementation is deployed; the slow recovery has not been investigated."
 > Judgment: once the slow recovery is resolved, the user's ruling still holds; a change in the ruling would not settle the slow recovery either. The two therefore need independent maintenance.
-> Handling: record the ruling with its necessary reasons, and the recovery investigation's current state and gap, separately; then classify them by content as `constraint` and `open`. If the deployment state affects later judgment, keep it in the relevant item; the deployment process that can be looked up stays in facts. Once the investigation concludes, update the understanding worth keeping under its original identity and classify it again, then keep or archive it by admission and budget.
+> Handling: record the user's ruling with its necessary reasons as `constraint`.
+> If the slow recovery is a long-standing unresolved problem or known risk, record it as `open` with the question, the grounds and where to look.
+> Investigation progress such as "not yet investigated" stays at the fact layer, and "the implementation is deployed" is not kept; keep a version or environment only if a lasting understanding needs it as a condition.
+> Once the problem is resolved, rewrite it under its identity as a conclusion worth keeping and classify it again.
+> Archive only when the understanding no longer holds, is merged into a current item, or fails admission.
 
 The division follows whether parts change and are maintained independently, not category labels; knowledge of the same category may also need separating. This example does not prescribe how many items a piece of work must produce.
 

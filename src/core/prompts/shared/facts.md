@@ -4,7 +4,7 @@ A situational slice of one topic over a continuous stretch of time, restoring wh
 
 The writer fills:
 
-- **`title`**: a one-line situational title saying what this discussion or work was doing, for recognition and lookup. It is not only the final conclusion and does not replace the body.
+- **`title`**: a one-line index for recognition and lookup: name the object and the activity, enough to recognize and find it. Do not narrate the course of events or restate the body.
 - **`sources`**: one `{address, text}` segment per contributing entry. `address` is the entry's address; `text` summarizes only that entry's contribution to this topic. One entry gets one segment within a fact.
 - **`support`** and **`negate`** (optional): relations to existing facts, each naming the target fact and a strength.
   - `support`: this fact affirms the target, such as adoption, approval, agreement, an answer, a restatement or execution of a ruling.

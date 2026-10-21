@@ -131,7 +131,7 @@ test("borrowed N publishes both layers to its target without a special executor 
       const memoryResult = c.messages.some(m => m.role === "toolResult" && m.toolName === "memory");
       if (memoryResult) return reply("Done");
       if (noteResult) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "borrowed-memory", name: "memory",
-        arguments: { op: "create", text: "Target knowledge", category: "understanding", scope: "project",
+        arguments: { op: "create", title: "Fixture title", text: "Target knowledge", category: "understanding", scope: "project",
           topics: [], reason: "Retain the target's finding.", supports: ["$1"] } }] };
       const note = notingFact(c);
       return { ...note, content: [note.content[0]!] };
@@ -431,7 +431,7 @@ test("disabled executors cannot acquire or commit borrowed N; project change fen
 test("failed own capacity admission leaves its N slot free for a smaller closed tail", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   try {
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 20000 };
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 21000 }; // 20,000 before 144: its larger Noter prompt moved the smaller tail over the allowance
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);
