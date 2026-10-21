@@ -7,6 +7,7 @@ What the long-term suite in `tests/` keeps, where a ticket's own evidence goes, 
 A long-term test protects one of these:
 
 - **Tool contracts.** What `note`, `memory` and `search` accept, reject and return; what `trace://` paths render before host-native pagination.
+- **The workspace file contract.** What `src/core/workspace/` accepts, refuses and publishes for each task kind: the block format and its parse errors, the operations a task may write, caps and host-measured lengths, references that must resolve, and the Store effects of apply (identities, merge and split lineage, stale refusals).
 - **Host delivery.** What reaches the model on each host: injection, compaction, carriers and their accounting.
 - **Storage.** Migrations, atomic publication and rollback, idempotence, and preservation of existing rows.
 - **Ruled performance bounds.** Tickets 79, 80, 87, 88, 104 and 136 (a project-sized Raw search with code), and Claude Code's 100 ms heartbeat gate.

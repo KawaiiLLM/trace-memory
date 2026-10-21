@@ -25,6 +25,8 @@ import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { receiptCommit } from "../../support/seed.ts";
+import { block as workspaceBlock, workspaceBatch } from "../../support/workspace.ts";
+import { applyWorkspace, checkWorkspace } from "../../../src/core/workspace/index.ts";
 import { resolveCcHostConfig } from "../../../src/hosts/cc/config.ts";
 import { readBinding, recordSessionStart } from "../../../src/hosts/cc/binding.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../../src/hosts/cc/lifecycle.ts";
@@ -3092,4 +3094,82 @@ test("133: pending Raw uses only the temporary allowance; unused Knowledge allow
   expect(large.charged!.temporary).toBeLessThanOrEqual(400);
   expect(large.knowledgeAllowance).toBe(small.knowledgeAllowance);
   expect(large.charged!.knowledge + large.charged!.facts + large.charged!.raw + large.charged!.temporary).toBeLessThanOrEqual(large.charged!.envelope);
+});
+
+
+// Ticket 144, Stage 2: the workspace file contract. Each ruling it implements has a named test.
+const workspaceCurate = (b: ReturnType<typeof workspaceBatch>, text: string) =>
+  ({ kind: "curate" as const, sessionId: b.session.id, path: b.path, file: { name: "curate.md", text } });
+
+test("2026-10-21/22: a file holds at most one record per knowledge item, an absorbed item included", () => {
+  const b = workspaceBatch();
+  try {
+    const [primary, absorbed] = [b.item("Rule p"), b.item("Rule a")];
+    const twice = `${workspaceBlock(`update ${primary.ref}`, { reason: "one" }, "One.")}\n${workspaceBlock(`update ${primary.ref}`, { reason: "two" }, "Two.")}`;
+    expect(checkWorkspace(b.store, workspaceCurate(b, twice)).problems.join("\n")).toContain(`K${primary.knowledgeId} already has a record in this file`);
+    const absorbedTwice = `${workspaceBlock(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same" }, "Merged.")}\n${workspaceBlock(`update ${absorbed.ref}`, { reason: "again" }, "Again.")}`;
+    expect(checkWorkspace(b.store, workspaceCurate(b, absorbedTwice)).problems.join("\n")).toContain(`K${absorbed.knowledgeId} already has a record in this file`);
+  } finally { b.memory.close(); }
+});
+
+test("2026-10-21: merged items share one category and scope", () => {
+  const b = workspaceBatch();
+  try {
+    const primary = b.item("Rule p", { category: "constraint", scope: "project" });
+    const merge = (other: { ref: string }) => checkWorkspace(b.store, workspaceCurate(b, workspaceBlock(`merge ${primary.ref}`, { absorb: other.ref, reason: "same" }, "Merged.")));
+    expect(merge(b.item("Rule a", { category: "constraint", scope: "project" })).problems).toEqual([]);
+    expect(merge(b.item("Rule b", { category: "reference", scope: "project" })).problems.join("\n")).toContain("merged items share one category");
+    expect(merge(b.item("Rule c", { category: "constraint", scope: "global" })).problems.join("\n")).toContain("merged items share one scope");
+  } finally { b.memory.close(); }
+});
+
+test("2026-10-21/22: update keeps the identity and adds a version; create makes a new identity", () => {
+  const b = workspaceBatch();
+  try {
+    const item = b.item("Rule one");
+    const created = { title: "Fresh rule", category: "constraint", scope: "project", topics: "", supports: `F${item.supports[0]}`, reason: "new" };
+    const result = applyWorkspace(b.store, workspaceCurate(b, `${workspaceBlock(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")}\n${workspaceBlock("create", created, "A fresh rule.")}`));
+    if (!result.ok) throw new Error(result.problems.join("\n"));
+    expect(result.blocks[0]!.versions).toEqual([`K${item.knowledgeId}@v2`]);
+    expect(Number(result.blocks[1]!.versions[0]!.match(/^K(\d+)/)![1])).toBeGreaterThan(item.knowledgeId);
+  } finally { b.memory.close(); }
+});
+
+test("2026-10-22: split children may take their own category", () => {
+  const b = workspaceBatch();
+  try {
+    const item = b.item("Rule one and rule two", { category: "open" });
+    const child = (category: string) => `\n### child\ntitle: Child ${category}\ncategory: ${category}\nscope: project\ntopics:\nsupports: F${item.supports[0]}\nreason: split out\n\nChild body.\n`;
+    const text = workspaceBlock(`split ${item.ref}`, { reason: "mixed" }, "The open question.") + child("constraint") + child("reference");
+    expect(checkWorkspace(b.store, workspaceCurate(b, text))).toMatchObject({ ok: true });
+    const result = applyWorkspace(b.store, workspaceCurate(b, text));
+    if (!result.ok) throw new Error(result.problems.join("\n"));
+    const [, ...children] = result.blocks[0]!.versions.map(version => Number(version.match(/^K(\d+)/)![1]));
+    expect(children.map(id => b.store.currentCommit(id, b.path)[0]!.category)).toEqual(["constraint", "reference"]);
+    expect(b.store.currentCommit(item.knowledgeId, b.path)[0]!.category).toBe("open");
+  } finally { b.memory.close(); }
+});
+
+test("2026-10-21: a verify correction without evidence is refused", () => {
+  const b = workspaceBatch();
+  try {
+    const item = b.item("Rule one");
+    const verify = (fields: Record<string, string>) => checkWorkspace(b.store, { kind: "verify", sessionId: b.session.id, file: { name: "verify.md",
+      text: workspaceBlock(`update ${item.ref}`, { reason: "attribution", ...fields }, "Rule one, corrected.") } });
+    expect(verify({}).problems.join("\n")).toContain("missing required field `evidence`");
+    expect(verify({ evidence: `trace://F${item.supports[0]}` }).problems).toEqual([]);
+  } finally { b.memory.close(); }
+});
+
+test("2026-10-21/22: the Noter writes no parents, merge, split or archive", () => {
+  const b = workspaceBatch();
+  try {
+    const item = b.item("Rule one");
+    const facts = { name: "facts.md", text: workspaceBlock("fact f1", { title: "pnpm chosen" }, b.source(0, "User asked to use pnpm")) };
+    const knowledge = (text: string) => checkWorkspace(b.store, { kind: "noting-knowledge", scope: b.scope, file: { name: "knowledge.md", text }, facts }).problems.join("\n");
+    const create = { title: "Use pnpm", category: "constraint", scope: "project", topics: "", supports: "f1", reason: "choice" };
+    expect(knowledge(workspaceBlock("create", create, "Use pnpm."))).toBe("");
+    expect(knowledge(workspaceBlock("create", { ...create, parents: item.ref }, "Use pnpm."))).toContain("field `parents` is not allowed here");
+    for (const op of ["merge", "split", "archive"]) expect(knowledge(workspaceBlock(`${op} ${item.ref}`, { reason: "r" }, "Body."))).toContain(`\`## ${op}\` is not allowed in a noting-knowledge file`);
+  } finally { b.memory.close(); }
 });
