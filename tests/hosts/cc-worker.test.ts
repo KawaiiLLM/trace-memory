@@ -198,6 +198,34 @@ test("fresh CC Read uses Core's frozen reader, denies other files, and re-render
   expect(observed).toBe(true);
 });
 
+test("the Noter's file hooks fail closed: an exception inside either denies the call", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-failclosed-")); dirs.push(directory);
+  const workspace = { dir: directory, facts: join(directory, "facts.md"), knowledge: join(directory, "knowledge.md") };
+  const broken = (tool_name: string) => ({ tool_name, get tool_input(): never { throw new Error("hook defect"); } });
+  const decisions: string[] = [];
+  const fakeQuery = ((request: { options: Record<string, any> }) => {
+    const stream = (async function* () {
+      const [read, write] = request.options.hooks.PreToolUse.map((entry: { hooks: ((event: unknown) => Promise<any>)[] }) => entry.hooks[0]!);
+      // Control: the same hook allows an ordinary write to a workspace file.
+      decisions.push((await write({ tool_name: "Write", tool_input: { file_path: workspace.facts } })).hookSpecificOutput.permissionDecision);
+      decisions.push((await read(broken("Read"))).hookSpecificOutput.permissionDecision);
+      const denied = (await write(broken("Write"))).hookSpecificOutput;
+      decisions.push(denied.permissionDecision);
+      expect(denied.permissionDecisionReason).toContain("hook defect");
+      yield { type: "system", subtype: "init", session_id: "failclosed", claude_code_version: TEST_CC_VERSION, cwd: directory,
+        tools: ["Read", "Write", "Edit"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "success", session_id: "failclosed", is_error: false, result: "ok", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], workspace, acknowledgeRequest: vi.fn(),
+    passEnd: vi.fn(() => undefined), reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
+  await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0);
+  expect(decisions).toEqual(["allow", "deny", "deny"]);
+});
+
 test.each(["noting", "dreaming"] as const)("136 review SPEC4: a fresh %s worker's saved search output is a rendering its own Read may open", async kind => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-spill-")); dirs.push(directory);
   const config = workerConfig(directory);

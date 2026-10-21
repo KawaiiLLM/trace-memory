@@ -428,6 +428,10 @@ export class CcAgentWorker {
         return deny(error instanceof Error ? error.message : String(error));
       }
     };
+    // These hooks are the only guard on a child's file access: whatever they throw, the call is denied.
+    const failClosed = <R,>(hook: (raw: unknown) => Promise<R>) => async (raw: unknown): Promise<R | ReturnType<typeof deny>> => {
+      try { return await hook(raw); } catch (error) { return deny(`CC worker file hook failed: ${error instanceof Error ? error.message : String(error)}`); }
+    };
     let assistantMessagesAfterResult: SDKAssistantMessage[] = [];
     const input = new CcUserInput();
     input?.push(userMessage(task.text));
@@ -460,7 +464,7 @@ export class CcAgentWorker {
         env: this.environment,
         tools: native,
         allowedTools,
-        hooks: { PreToolUse: [{ matcher: "Read", hooks: [onRead] }, ...(workspace ? [{ matcher: "Write|Edit", hooks: [onWrite] }] : [])] },
+        hooks: { PreToolUse: [{ matcher: "Read", hooks: [failClosed(onRead)] }, ...(workspace ? [{ matcher: "Write|Edit", hooks: [failClosed(onWrite)] }] : [])] },
         mcpServers: { [CC_WORKER_SERVER_NAME]: workerServer(task, origins, toolsAllowed) },
         abortController: controller,
         systemPrompt: task.prompt,
