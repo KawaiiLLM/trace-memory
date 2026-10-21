@@ -171,17 +171,20 @@ test("135: the advertised memory schema accepts exactly one body form per update
   const noterOnly: Array<[string, Record<string, unknown>]> = [
     ["edits on a create", { ...base, op: "create", title: "Fixture title", ...full, edits }],
   ];
-  // Complete, titled children: the only thing wrong with "edits on a split" below is `edits`.
-  const split = { ...base, op: "split", id: "K1#abcd", children: [1, 2].map(() => ({ title: "Part", text: "Part", category: "open", topics: [] })) };
+  // A split's own fields are its primary part (an update of the item), plus complete, titled children (2026-10-22).
+  const children = [1, 2].map(() => ({ title: "Part", text: "Part", category: "open", topics: [] }));
+  const split = { ...base, op: "split", id: "K1#abcd", ...full, children };
   const dreamerOnly: Array<[string, Record<string, unknown>]> = [
     ["edits on a merge", { ...base, op: "merge", id: "K1#abcd", absorb: ["K2#efgh"], ...full, edits }],
-    ["edits on a split", { ...split, edits }],
+    ["a split with text and edits together", { ...split, edits }],
+    ["a split without its primary part", { ...base, op: "split", id: "K1#abcd", children }],
   ];
   for (const [name, tool, extra] of [["Noter and manual", noter, noterOnly], ["Dreamer", dreamer, dreamerOnly]] as const) {
     for (const [what, args] of accepted) expect(valid(tool, args), `${name} accepts ${what}`).toBe(true);
     for (const [what, args] of [...rejected, ...extra]) expect(valid(tool, args), `${name} rejects ${what}`).toBe(false);
   }
-  expect(valid(dreamer, split), "Dreamer accepts the same split without edits").toBe(true);
+  expect(valid(dreamer, split), "Dreamer accepts a split with its primary part").toBe(true);
+  expect(valid(dreamer, { ...base, op: "split", id: "K1#abcd", edits, children }), "Dreamer accepts a split whose primary part is edits").toBe(true);
 });
 
 test("127: the Dreamer's memory schema is one operation, one skip or one scalar drop, with no root combinator", () => {
@@ -195,7 +198,8 @@ test("127: the Dreamer's memory schema is one operation, one skip or one scalar 
     else: { if: { required: ["skip"] }, then: { required: ["skip", "because"] }, else: { required: ["op", "supports", "reason"] } } });
   expect(schema.properties.op.enum).toEqual(["update", "merge", "split", "archive"]);
   expect(schema.properties.skip.pattern).toBe("^K[1-9][0-9]*@v[1-9][0-9]*$");
-  expect(schema.properties.children).toMatchObject({ type: "array", minItems: 2, maxItems: 2 });
+  expect(schema.properties.children).toMatchObject({ type: "array", minItems: 1 });
+  expect(schema.properties.children).not.toHaveProperty("maxItems");
   // A skip carries no operation field, and an operation carries no because.
   expect(schema.else.then.not.anyOf).toContainEqual({ required: ["op"] });
   expect(schema.else.else.not).toEqual({ required: ["because"] });

@@ -966,49 +966,9 @@ test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要�
   expect(write([{ ...create, text: long }]).results[0]).toBe("ok");
 });
 
-test("135/2026-09-07: a reversed live merge is atomic and keeps the older identity with an explicit swap receipt", async () => {
-  const { create, write, path } = memoryWriter();
-  const created = (write([create, { ...create, text: "Avoid npm", supports: ["F2"] }]).committed as Array<{ knowledgeId: number; version: string }>)
-    .map(item => ({ ...item, commit: commitOf(item) }));
-  const first = created[0], second = created[1];
-  if (!first || !second) throw new Error(`merge fixture needs two identities: ${JSON.stringify(created)}`);
-  const trigger = createDreamerTrigger(memory, path, 2, 1);
-  const request = { fixture: "merge atomic" };
-  let merged: Pick<MemoryReceipt, "results" | "committed"> | undefined;
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request); const writeTool = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    for (const item of [first, second]) readHandle(file => files.read(file).content, item.version);
-    const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the survivor.",
-      id: tagged(second.knowledgeId, second.commit), absorb: [tagged(first.knowledgeId, first.commit)], supports: ["F1", "F2"] };
-    // 127 removed the Dreamer's batch: a refused sibling call no longer undoes a merge, so only the merge's own atomicity is checked.
-    const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
-    readHandle(file => files.read(file).content, triggerAddress);
-    merged = JSON.parse(dreamerWrite(writeTool, { operations: [merge, { op: "archive", kind: "budget", id: triggerAddress, supports: ["F2"],
-      reason: "Retire the explicit fixture trigger." }], skipped: [] }));
-    return { outcome: "success", output: "merged", request };
-  });
-  expect(result.outcome).toBe("success");
-  if (!merged) throw new Error(`merge fixture did not submit: ${JSON.stringify(result)}`);
-  expect(merged.results).toEqual(["ok", "ok"]);
-  const mergedIdentity = merged.committed[0];
-  if (!mergedIdentity) throw new Error(`merge fixture committed nothing: ${JSON.stringify(merged)}`);
-  expect(mergedIdentity).toMatchObject({ knowledgeId: first.knowledgeId, swappedFrom: tagged(second.knowledgeId, second.commit) });
-  const mergeCommit = commitOf(mergedIdentity);
-  expect(memory.store.currentCommit(second.knowledgeId)).toEqual([]);
-  expect(memory.store.getKnowledge(second.knowledgeId)).toMatchObject({ id: second.knowledgeId });
-  expect(memory.store.listKnowledgeLinks(second.knowledgeId)).toEqual([{ fromKnowledge: second.knowledgeId,
-    fromCommit: second.commit, kind: "merged_into", toKnowledge: first.knowledgeId, toCommit: mergeCommit }]);
-  const files = memoryFiles(memory, path);
-  expect(files.read(`trace://${history(second.knowledgeId, second.commit)}`).content).toContain("Avoid npm");
-  expect(files.read(`trace://K${second.knowledgeId}`).content).toContain(`merged_into: ${history(first.knowledgeId, mergeCommit)}`);
-});
-
-
-
-// A merge that omits its title inherits it from the survivor the Store keeps (the older identity), whichever
-// parent the call names first; a legacy untitled parent is refused only when it is the survivor.
-test("144: a reversed merge without a title takes the real survivor's title, untitled named survivor or not", async () => {
+// A merge that omits its title inherits it from the primary it names, whichever of the two is older; an untitled
+// legacy primary requires one (2026-10-22: the named primary keeps its identity, no older-survivor rule, no swap).
+test("144/2026-10-22: a merge without a title takes the named primary's title, the newer item included; an untitled legacy primary is refused", async () => {
   const { create, write, path } = memoryWriter();
   const committed = (title: string, text: string) => write([{ ...create, title, text }]).committed[0] as { knowledgeId: number; version: string };
   const older = committed("Older rule", "Use pnpm"), newer = committed("Newer rule", "Avoid npm");
@@ -1026,16 +986,87 @@ test("144: a reversed merge without a title takes the real survivor's title, unt
     const { title: _title, ...untitled } = create;
     const withoutTitle = (id: string, absorb: string) => ({ ...untitled, op: "merge", reason: "Merged duplicate knowledge.", id, absorb: [absorb], supports: ["F1", "F2"] });
     merged = JSON.parse(dreamerWrite(writeTool, { operations: [
-      withoutTitle(addresses[1]!, addresses[0]!),             // names the newer one: the Store swaps, the older survives
-      withoutTitle(legacyAddress, addresses[2]!),             // names an untitled legacy item whose titled peer is older
+      withoutTitle(addresses[1]!, addresses[0]!),             // names the newer one: it keeps its identity and its title
+      withoutTitle(legacyAddress, addresses[2]!),             // names an untitled legacy primary: a title is required
       { op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: ["F2"], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
     return { outcome: "success", output: "merged", request: { fixture: "merge title" } };
   });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-  expect(merged?.results, JSON.stringify(merged)).toEqual(["ok", "ok", "ok"]);
+  expect(result.outcome, JSON.stringify(result)).toBe("failure");
+  expect(merged?.results[0], JSON.stringify(merged)).toBe("ok");
+  expect(merged?.results[1]).toContain("the base version has no title");
   const titleOf = (item: { knowledgeId: number }) => memory.store.currentCommit(item.knowledgeId).map(revision => revision.title);
-  expect(titleOf(older)).toEqual(["Older rule"]);
-  expect(titleOf(survivor)).toEqual(["Survivor rule"]);
+  expect(titleOf(newer)).toEqual(["Newer rule"]);
+  expect(titleOf(older)).toEqual([]);
+});
+
+// 2026-10-22 (supersedes tickets 44 and 135): the primary a merge names keeps its identity, newer or not.
+test("2026-10-22: a merge keeps the identity of the primary it names even when that is the newer item", async () => {
+  const { create, write, path } = memoryWriter();
+  const created = (write([create, { ...create, text: "Avoid npm", supports: ["F2"] }]).committed as Array<{ knowledgeId: number; version: string }>)
+    .map(item => ({ ...item, commit: commitOf(item) }));
+  const first = created[0], second = created[1];
+  if (!first || !second) throw new Error(`merge fixture needs two identities: ${JSON.stringify(created)}`);
+  const trigger = createDreamerTrigger(memory, path, 2, 1);
+  const request = { fixture: "merge primary" };
+  let merged: Pick<MemoryReceipt, "results" | "committed"> | undefined;
+  const result = await admittedScenarios.run(memory, path, input => {
+    input.reportRequest(request); const writeTool = input.tools.find(tool => tool.name === "memory")!;
+    const files = memoryFiles(memory, input.reader!);
+    for (const item of [first, second]) readHandle(file => files.read(file).content, item.version);
+    const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the primary.",
+      id: tagged(second.knowledgeId, second.commit), absorb: [tagged(first.knowledgeId, first.commit)], supports: ["F1", "F2"] };
+    const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
+    readHandle(file => files.read(file).content, triggerAddress);
+    merged = JSON.parse(dreamerWrite(writeTool, { operations: [merge, { op: "archive", kind: "budget", id: triggerAddress, supports: ["F2"],
+      reason: "Retire the explicit fixture trigger." }], skipped: [] }));
+    return { outcome: "success", output: "merged", request };
+  });
+  expect(result.outcome).toBe("success");
+  if (!merged) throw new Error(`merge fixture did not submit: ${JSON.stringify(result)}`);
+  expect(merged.results).toEqual(["ok", "ok"]);
+  const primary = merged.committed[0];
+  if (!primary) throw new Error(`merge fixture committed nothing: ${JSON.stringify(merged)}`);
+  expect(primary).toMatchObject({ knowledgeId: second.knowledgeId });
+  expect(primary).not.toHaveProperty("swappedFrom");
+  const mergeCommit = commitOf(primary);
+  expect(memory.store.currentCommit(first.knowledgeId)).toEqual([]);
+  expect(memory.store.listKnowledgeLinks(first.knowledgeId)).toEqual([{ fromKnowledge: first.knowledgeId,
+    fromCommit: first.commit, kind: "merged_into", toKnowledge: second.knowledgeId, toCommit: mergeCommit }]);
+  const files = memoryFiles(memory, path);
+  expect(files.read(`trace://K${first.knowledgeId}`).content).toContain(`merged_into: ${history(second.knowledgeId, mergeCommit)}`);
+});
+
+// 2026-10-22: a split keeps the item as its primary part; only the children are new identities.
+test("2026-10-22: a split keeps the original identity as the primary part, creates the children and does not archive the original", async () => {
+  const { create, write, path } = memoryWriter();
+  const original = (write([{ ...create, text: "Use pnpm and keep the lockfile" }]).committed as Array<{ knowledgeId: number; version: string }>)
+    .map(item => ({ ...item, commit: commitOf(item) }))[0]!;
+  const trigger = createDreamerTrigger(memory, path, 2, 1);
+  const request = { fixture: "split primary" };
+  let split: Pick<MemoryReceipt, "results" | "committed"> | undefined;
+  const result = await admittedScenarios.run(memory, path, input => {
+    input.reportRequest(request); const writeTool = input.tools.find(tool => tool.name === "memory")!;
+    const files = memoryFiles(memory, input.reader!);
+    const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
+    for (const address of [original.version, triggerAddress]) readHandle(file => files.read(file).content, address);
+    split = JSON.parse(dreamerWrite(writeTool, { operations: [{ op: "split", id: tagged(original.knowledgeId, original.commit),
+      text: "Use pnpm", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "Two independent rules.",
+      children: [{ title: "Lockfile", text: "Keep the lockfile", category: "reference", topics: [] }, { title: "Registry", text: "Use the mirror", category: "goal", topics: [] }] },
+      { op: "archive", kind: "budget", id: triggerAddress, supports: ["F2"], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
+    return { outcome: "success", output: "split", request };
+  });
+  expect(result.outcome).toBe("success");
+  if (!split) throw new Error(`split fixture did not submit: ${JSON.stringify(result)}`);
+  const [primary, ...children] = split.committed.filter(item => item.knowledgeId !== trigger.knowledgeId);
+  expect(primary).toMatchObject({ op: "split", knowledgeId: original.knowledgeId });
+  expect(children.map(child => child.knowledgeId)).not.toContain(original.knowledgeId);
+  expect(children).toHaveLength(2);
+  // The original is not archived: it continues with the primary part's text, and only the children are new.
+  expect(memory.store.currentCommit(original.knowledgeId).map(revision => [revision.op, revision.text])).toEqual([["split", "Use pnpm"]]);
+  expect(children.map(child => memory.store.currentCommit(child.knowledgeId)[0]!.category)).toEqual(["reference", "goal"]);
+  expect(memory.store.listKnowledgeLinks(original.knowledgeId).map(link => [link.kind, link.fromCommit, link.toKnowledge]))
+    .toEqual(children.map(child => ["split_from", original.commit, child.knowledgeId]));
+  expect(memory.store.listKnowledgeRevisions(original.knowledgeId).some(revision => revision.op === "archive")).toBe(false);
 });
 
 test.each(["success", "failure"] as const)("92: invalid knowledge slot is corrected but terminal %s decides joint publication and preserves audit", async outcome => {
@@ -2820,7 +2851,7 @@ test("N and D compose shared definitions and principles with their permitted mai
     expect(dreaming).toContain(principle);
   }
   expect(dreaming).toContain("Comparison is within one scope; items of different scopes are never merged.");
-  expect(dreaming).toContain("A merge may omit `text`: the later parent's body then becomes the survivor's next version verbatim.");
+  expect(dreaming).toContain("A merge may omit `text`: the latest parent's body then becomes the primary's next version verbatim.");
 });
 
 
@@ -3034,7 +3065,7 @@ test("knowledge text, split child text and invalid-archive text may name F- and 
   expect(mem.execute(create("Second item."))).toContain("committed");
   const [a, b] = memory.store.currentKnowledge(memory.store.knowledgePath(s.id)).map(v => `K${v.knowledge.id}#${memory.store.versionTag(v.knowledge.id, v.revision.id)}`);
   // Split is Dreamer-only, so manual memory still rejects it, but for that reason alone: the ids in the child text add no error.
-  const split = JSON.parse(mem.execute({ op: "split", id: a, supports: [fact], reason: "test",
+  const split = JSON.parse(mem.execute({ op: "split", id: a, supports: [fact], reason: "test", text: "Primary part.", category: "constraint", scope: "project", topics: [],
     children: [{ title: "Fixture child", text: "Part K14 of it.", category: "constraint", topics: [] }, { title: "Fixture child", text: "Part F2 of it.", category: "constraint", topics: [] }] }));
   expect(split.results).toEqual(["rejected: split belongs to the Dreamer and is not available to manual memory"]);
   const archive = JSON.parse(mem.execute({ op: "archive", id: b, kind: "invalid", supports: [fact], reason: "test",

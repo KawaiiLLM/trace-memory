@@ -117,11 +117,12 @@ test("64b stateless graph: genuine alternative split operations keep only the op
       memoryFiles(memory, path).read(`trace://${tag(store, base)}`);
       memoryFiles(memory, path).read(`trace://${tag(store, trigger)}`);
       const receipt = JSON.parse(dreamerWrite(write, { operations: [
-        { op: "split", id: tag(store, base), supports: [`F${support}`], reason: "Alternative atomic split.",
+        { op: "split", id: tag(store, base), text: `primary ${sequence}`, category: "constraint", scope: "global", topics: [],
+          supports: [`F${support}`], reason: "Alternative atomic split.",
           children: labels.map(text => ({ title: "Fixture child", text, category: "constraint", topics: [] })) },
         { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
       ], skipped: [] }));
-      children = receipt.committed.filter((item: { op: string }) => item.op === "split").map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
+      children = receipt.committed.filter((item: { op: string; knowledgeId: number }) => item.op === "split" && item.knowledgeId !== base.knowledgeId).map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
       expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
       return { outcome: "success", output: labels.join("/"), request };
     });
@@ -295,12 +296,13 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
       { op: "merge", id: tag(store, survivor), absorb: [tag(store, absorbed)],
         text: "merged result with B support", category: "constraint", scope: "global", supports: [`F${bFact.id}`],
         reason: "Merge distinct identities.", topics: [] },
-      { op: "split", id: tag(store, splitParent), supports: [`F${bFact.id}`], reason: "Split into atomic results.",
+      { op: "split", id: tag(store, splitParent), text: "split primary part", category: "constraint", scope: "global", topics: [],
+        supports: [`F${bFact.id}`], reason: "Split into atomic results.",
         children: [{ title: "Fixture child", text: "split result one", category: "constraint", topics: [] }, { title: "Fixture child", text: "split result two", category: "constraint", topics: [] }] },
       { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${aFact.id}`], reason: "Retire trigger." },
     ], skipped: [] }));
     mergeCommit = publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === survivor.knowledgeId));
-    splitChildren = receipt.committed.filter((item: { op: string }) => item.op === "split").map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
+    splitChildren = receipt.committed.filter((item: { op: string; knowledgeId: number }) => item.op === "split" && item.knowledgeId !== splitParent.knowledgeId).map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
 
     const admittedRun = commit.mock.calls.at(-1)![0].run;
     store.setCurrentPath(c.id, "main", c1.turn.id, "test-lineage");

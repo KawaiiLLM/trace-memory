@@ -75,7 +75,7 @@ async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, s
     const common = { text, category: "constraint", scope: "project", supports: [`F${f.branchFacts[branch]}`], topics: [], reason: `${operation} on ${branch}.` };
     let operationInput: Record<string, unknown>;
     if (operation === "archive") operationInput = { op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason };
-    else if (operation === "split") operationInput = { op: "split", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason,
+    else if (operation === "split") operationInput = { op: "split", id: tagged(f.store, f.base.knowledgeId, f.base.commit), text: "Primary part.", category: "constraint", scope: "project", topics: [], supports: common.supports, reason: common.reason,
       children: [{ title: "Fixture child", text: `${text} one`, category: "constraint", topics: [] }, { title: "Fixture child", text: `${text} two`, category: "constraint", topics: [] }] };
     else if (operation === "merge-into") {
       const other = mergeOther ?? (() => { throw new Error("missing merge identity"); })();

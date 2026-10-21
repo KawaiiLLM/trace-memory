@@ -307,11 +307,13 @@ test("88: every external commit, foreground move and rollback agrees with a fres
       intoBaseCommit: members[0]!.commit, absorb: [{ knowledgeId: members[1]!.knowledgeId, baseCommit: members[1]!.commit }],
       text: "joined", category: "constraint", scope: "global", supports: [a.facts[1]!.id],
       topics: [], reason: "real merge", createdAt: at })[0]!;
+    // The split item continues as its primary part (first), beside its two children.
     const children = maintain({ op: "split", knowledgeId: merged.knowledgeId, baseCommit: merged.commit,
+      text: "joined, primary part", category: "constraint", scope: "global", topics: [],
       children: [{ title: "Fixture child", text: "left", category: "constraint", topics: [] }, { title: "Fixture child", text: "right", category: "constraint", topics: [] }],
       supports: [a.facts[0]!.id], reason: "real split", createdAt: at });
     const transitive = maintain({ op: "merge", intoKnowledgeId: members[2]!.knowledgeId, intoBaseCommit: members[2]!.commit,
-      absorb: [{ knowledgeId: children[0]!.knowledgeId, baseCommit: children[0]!.commit }],
+      absorb: [{ knowledgeId: children[1]!.knowledgeId, baseCommit: children[1]!.commit }],
       text: "transitive", category: "constraint", scope: "global", supports: [a.facts[0]!.id],
       topics: [], reason: "transitive merge", createdAt: at })[0]!;
     // Actual resolver invocations, not a cache hit or an invalidation signal: each commit
@@ -412,6 +414,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
           case "split": {
             const base = active().at(random() % active().length)!;
             runOp({ op: "split", knowledgeId: base.knowledgeId, baseCommit: base.id,
+              text: `primary ${sequence}`, category: "constraint", scope: "global", topics: [],
               children: [{ title: "Fixture child", text: `left ${sequence}`, category: "constraint", topics: [] },
                 { title: "Fixture child", text: `right ${sequence}`, category: "constraint", topics: [] }],
               supports: [a.facts[0]!.id], reason: "random split", createdAt: at });

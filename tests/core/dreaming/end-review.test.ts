@@ -133,7 +133,7 @@ test("each operation kind renders as specified: merge, split, invalid and budget
     ok(tool("memory", { operations: [
       { op: "merge", id: survivor!.tag, absorb: [absorbed!.tag], text: "Survivor body " + "x".repeat(60) + " end, with the absorbed rule.",
         category: "constraint", scope: "project", topics: [], supports: [], reason: "same rule" },
-      { op: "split", id: parent!.tag, children: [{ title: "Fixture child", text: "Child one.", category: "constraint", topics: [] },
+      { op: "split", id: parent!.tag, text: "Primary part.", category: "constraint", scope: "project", topics: [], children: [{ title: "Fixture child", text: "Child one.", category: "constraint", topics: [] },
         { title: "Fixture child", text: "Child two.", category: "reference", topics: [] }], supports: [], reason: "two rules" },
       { op: "archive", kind: "invalid", id: obsolete!.tag, text: invalidReason, supports: [], reason: "contradicted" },
       { op: "archive", kind: "budget", id: budget!.tag, supports: [], reason: "over budget" },
@@ -149,7 +149,9 @@ test("each operation kind renders as specified: merge, split, invalid and budget
   const survivorBlock = blocks.find(block => block.startsWith(`[${tag(survivor!)}]`))!;
   expect(survivorBlock).toContain("{+, with the absorbed rule+}");
   expect(byHead(absorbed!)).toBe(`${absorbed!.tag} (merged into ${tag(survivor!)}):\n${fixtureTitle(bodies[1]!)}\n[-${bodies[1]}-]`);
-  expect(byHead(parent!)).toMatch(new RegExp(`^${parent!.tag} \\(split into K\\d+#[a-z]+, K\\d+#[a-z]+\\):\\n${fixtureTitle(bodies[2]!)}\\n\\[-${bodies[2]}-\\]$`));
+  // The split item continues as its primary part (2026-10-22), so it shows as a change, not as removed.
+  expect(byHead(parent!)).not.toContain("split into");
+  expect(byHead(parent!)).toContain("Primary part.");
   expect(blocks.filter(block => /\(split from K\d+\)/.test(block)).map(block => block.split("\n").slice(1))).toEqual([["Fixture child", "{+Child one.+}"], ["Fixture child", "{+Child two.+}"]]); // a whole body carries its title
   expect(byHead(obsolete!)).toBe(`${tag(obsolete!)} (archive: invalid; reason: contradicted):\n${fixtureTitle(bodies[3]!)}\n[-${bodies[3]}-]\narchive text: ${invalidReason}`);
   expect(byHead(budget!)).toBe(`${tag(budget!)} (archive: budget; reason: over budget):\n${fixtureTitle(bodies[4]!)}\n[-${bodies[4]}-]`);
@@ -186,7 +188,7 @@ test("an item rewritten and then archived, split or absorbed shows the body the 
     ok(tool("memory", { operations: [
       { op: "merge", id: survivor!.tag, absorb: [p.current(absorbed!)], text: "Survivor body.", category: "constraint", scope: "project", topics: [], supports: [], reason: "same rule" },
       { op: "archive", kind: "budget", id: p.current(budget!), supports: [], reason: "over budget" },
-      { op: "split", id: p.current(parent!), children: [{ title: "Fixture child", text: "One.", category: "constraint", topics: [] }, { title: "Fixture child", text: "Two.", category: "constraint", topics: [] }], supports: [], reason: "two rules" },
+      { op: "split", id: p.current(parent!), text: "Primary part.", category: "constraint", scope: "project", topics: [], children: [{ title: "Fixture child", text: "One.", category: "constraint", topics: [] }, { title: "Fixture child", text: "Two.", category: "constraint", topics: [] }], supports: [], reason: "two rules" },
       { op: "archive", kind: "invalid", id: p.current(invalid!), text: invalidReason, supports: [], reason: "contradicted" }], skipped: [] }));
   } });
   const result = await p.run();
@@ -196,7 +198,10 @@ test("an item rewritten and then archived, split or absorbed shows the body the 
   const block = (item: Item) => blocks.find(value => value.startsWith(`K${item.knowledgeId}#`))!;
   expect(block(absorbed!)).toContain(`\n[-${bodies[1]}-]`);
   expect(block(budget!)).toContain(`\n[-${bodies[2]}-]`);
-  expect(block(parent!)).toContain(`\n[-${bodies[3]}-]`);
+  // The split item continues as its primary part, so it shows as a change to the run's starting body, never as removed.
+  const continued = blocks.find(value => value.includes(`K${parent!.knowledgeId}#`))!;
+  expect(continued).not.toContain("split into");
+  expect(continued).toContain(bodies[3]!);
   expect(block(invalid!)).toContain(`\n[-${bodies[4]}-]\narchive text: ${invalidReason}`);
   for (const value of blocks) expect(value).not.toContain(`[-${kept} (`); // never the intermediate rewrite
 });

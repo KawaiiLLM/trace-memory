@@ -58,7 +58,7 @@ function fixture() {
         if (operation.op === "update") { const id = tagged(store, operation.knowledgeId, operation.baseCommit); addressed.add(history(store, operation.knowledgeId, operation.baseCommit)); read(id);
           return { op: "update", id, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
         if (operation.op === "split") { const id = tagged(store, operation.knowledgeId, operation.baseCommit); addressed.add(history(store, operation.knowledgeId, operation.baseCommit)); read(id);
-          return { op: "split", id, children: operation.children, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
+          return { op: "split", id, text: "Primary part.", category: "constraint", scope: "project", topics: [], children: operation.children, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
         if (operation.op === "merge") { const id = tagged(store, operation.intoKnowledgeId, operation.intoBaseCommit), absorb = operation.absorb.map(parent => tagged(store, parent.knowledgeId, parent.baseCommit));
           addressed.add(history(store, operation.intoKnowledgeId, operation.intoBaseCommit));
           for (const parent of operation.absorb) addressed.add(history(store, parent.knowledgeId, parent.baseCommit));
@@ -110,7 +110,7 @@ test("64b: change revisions use only direct facts and do not inherit historical 
   expect(f.store.currentCommit(f.created.knowledgeId, f.rootPath).map(r => r.id)).toEqual([second.commit]);
   expect(f.store.currentCommit(f.created.knowledgeId, childPath).map(r => r.id)).toEqual([second.commit]);
 
-  const split = await f.write(childPath, [{ op: "split", knowledgeId: f.created.knowledgeId,
+  const split = await f.write(childPath, [{ op: "split", knowledgeId: f.created.knowledgeId, text: "Primary part.", category: "constraint", scope: "project", topics: [],
     baseCommit: second.commit, supports: [f.rootFact], reason: "separate the complete result", createdAt: time,
     children: [{ title: "Fixture child", text: "first complete result", category: "constraint", topics: [] }, { title: "Fixture child", text: "second complete result", category: "goal", topics: [] }] }]);
   f.store.setCurrentPath(f.session.id, "root", f.rootTurn.id, "test-lineage");
@@ -158,7 +158,8 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
     const malformed = dreamerWrite(tool, { operations: [{ op: "merge", id: tagged(f.store, f.created.knowledgeId, merged.commit),
       absorb: [tagged(f.store, childOnly.knowledgeId, childOnly.commit), tagged(f.store, f.created.knowledgeId, f.created.commit)],
       text: "illegal three-parent merge", category: "constraint", scope: "project", topics: [], supports: [`F${f.rootFact}`], reason: "invalid fixture" }], skipped: [] });
-    expect(malformed).toContain("absorb as exactly one distinct other parent");
+    // Many-way merges are legal (2026-10-22); this one is refused because an absorbed base is the primary's own superseded version.
+    expect(malformed).toContain("not the latest effective applicable revision");
     expect(tool.execute({ drop: "M1" })).toContain("dropped: M1"); // 127: a refusal blocks until withdrawn
     const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(history(f.store, trigger.knowledgeId, trigger.commit));
     dreamerWrite(tool, { operations: [{ op: "archive", kind: "budget", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [`F${f.rootFact}`], reason: "Retire the explicit invalid-merge trigger." }],
@@ -182,25 +183,27 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
     const illegalCreate = dreamerWrite(tool, { operations: [{ op: "create", title: "Fixture title", text: "not a split", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "illegal" }], skipped: [] });
     expect(illegalCreate).toContain("rejected: M1");
     expect(tool.execute({ drop: "M1" })).toContain("dropped: M1");
-    const invalid = dreamerWrite(tool, { operations: [{ op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), supports: [], reason: "separate independent rules",
+    const invalid = dreamerWrite(tool, { operations: [{ op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), text: "Primary part.", category: "constraint", scope: "project", topics: [], supports: [], reason: "separate independent rules",
       children: [{ title: "Fixture child", text: "first rule", category: "constraint", topics: [] }, { title: "Fixture child", text: "", category: "goal", topics: [] }] }], skipped: [] });
     expect(invalid).toContain("rejected: M2");
     expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
     const parentCost = Number(new RegExp(`\\[K${parent.knowledgeId}#[a-z]+\\] \\[[^\\]]+\\] \\((\\d+) tokens(?:; facts [^)]*)?\\)`)
       .exec(input.material.changed)![1]);
-    const split = JSON.parse(tool.execute({ slot: "M2", op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit),
+    const split = JSON.parse(tool.execute({ slot: "M2", op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), text: "Primary part.", category: "constraint", scope: "project", topics: [], 
       supports: [], reason: "separate independent rules",
       children: [{ title: "Fixture child", text: "first rule", category: "constraint", topics: ["first"] }, { title: "Fixture child", text: "second rule", category: "goal", topics: ["second"] }] }));
-    expect(split.committed).toHaveLength(2);
+    // The split item continues as its primary part, beside its two children.
+    expect(split.committed).toHaveLength(3);
     expect(split.tokens.before).toEqual([parentCost]);
-    const [first, second] = split.committed as { knowledgeId: number; version: string }[];
+    const [primary, first, second] = split.committed as { knowledgeId: number; version: string }[];
+    expect(primary!.knowledgeId).toBe(parent.knowledgeId);
     const read = (address: string) => memoryFiles(memory, input.reader!).read(`trace://${address}`).content;
     expect(read(first!.version)).not.toContain("rejected:");
     const update = JSON.parse(tool.execute({ op: "update", id: first!.version,
       text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }));
     const secondUpdate = JSON.parse(tool.execute({ op: "update", id: second!.version,
       text: "second rule", category: "goal", scope: "project", topics: ["second"], supports: [], reason: "Keep the second independent ruling" }));
-    expect(split.tokens.after).toEqual([update.tokens.before[0], secondUpdate.tokens.before[0]]);
+    expect(split.tokens.after.slice(1)).toEqual([update.tokens.before[0], secondUpdate.tokens.before[0]]);
     expect(update.committed).toHaveLength(1);
     read(history(memory.store, trigger.knowledgeId, trigger.commit));
     expect(dreamerWrite(tool, { operations: [{ op: "archive", kind: "budget", id: tagged(memory.store, trigger.knowledgeId, trigger.commit),
@@ -231,7 +234,8 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
   expect(result.outcome, JSON.stringify(result)).toBe("success");
   expect(attempted).toBe(true);
   const revisions = fstore.listKnowledgeRevisions();
-  const children = revisions.filter(r => r.op === "split");
+  const children = revisions.filter(r => r.op === "split" && r.knowledgeId !== parent.knowledgeId);
+  expect(revisions.filter(r => r.op === "split" && r.knowledgeId === parent.knowledgeId)).toHaveLength(1); // the primary part
   expect(children).toHaveLength(2);
   expect(new Set(children.map(r => r.knowledgeId)).size).toBe(2);
   expect(children.every(r => r.parentId === parent.commit && r.scope === "project" && r.supports.length === 1 && r.actorRole === "dreaming")).toBe(true);
@@ -241,8 +245,8 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
   expect(fstore.listKnowledgeLinks(parent.knowledgeId).filter(link => link.kind === "split_from")).toHaveLength(2);
   expect(revisions.some(r => r.op === "archive" && r.knowledgeId !== trigger.knowledgeId)).toBe(false);
   const current = fstore.currentKnowledge({ sessionId: session.id, branch: "main", headTurnId: turn.id }).map(v => v.revision);
-  expect(current).toHaveLength(2);
-  expect(current.map(r => r.text).sort()).toEqual(["first rule, clarified", "second rule"]);
+  expect(current).toHaveLength(3);
+  expect(current.map(r => r.text).sort()).toEqual(["Primary part.", "first rule, clarified", "second rule"]);
   const pool = `project:${project.id}`;
   expect(fstore.pendingVersions(pool, { sessionId: session.id, branch: "main", headTurnId: turn.id })).toEqual([]);
   const retained = fstore.db.prepare("SELECT * FROM dreaming_ranges WHERE id = 1").get()!;

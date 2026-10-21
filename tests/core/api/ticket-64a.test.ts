@@ -87,7 +87,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     for (const forbidden of [
       { op: "merge", intoKnowledgeId: baseCommit.knowledgeId, intoBaseCommit: baseCommit.commit, absorb: [{ knowledgeId: 99, baseCommit: 99 }],
         text: "merged", category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "x", createdAt: time },
-      { op: "split", knowledgeId: baseCommit.knowledgeId, baseCommit: baseCommit.commit, children: [
+      { op: "split", knowledgeId: baseCommit.knowledgeId, baseCommit: baseCommit.commit, text: "Primary part.", category: "reference", scope: "project", topics: [], children: [
         { title: "Fixture child", text: "a", category: "reference", topics: [] }, { title: "Fixture child", text: "b", category: "reference", topics: [] }], supports: [f.fact], reason: "x", createdAt: time },
     ] satisfies KnowledgeOperationInput[]) {
       const rejected = publishN(f.session.id, [forbidden]);

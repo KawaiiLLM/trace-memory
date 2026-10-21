@@ -86,7 +86,8 @@ function retainedFixture() {
 test("64b: stale guidance follows split descendants instead of reporting the old identity has no tip", () => {
   const f = retainedFixture();
   const split = f.store.commitConsolidationRun({ run: f.run, path: f.target, operations: [{ op: "split",
-    knowledgeId: f.stable.knowledgeId, baseCommit: f.stable.commit, supports: [], reason: "split", createdAt: at,
+    knowledgeId: f.stable.knowledgeId, baseCommit: f.stable.commit, text: "stable, primary part", category: "constraint", scope: "project", topics: [],
+    supports: [], reason: "split", createdAt: at,
     children: [
       { title: "Fixture child", text: "stable A", category: "constraint", topics: [] },
       { title: "Fixture child", text: "stable B", category: "constraint", topics: [] },

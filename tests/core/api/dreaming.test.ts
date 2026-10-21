@@ -156,7 +156,7 @@ test.each(["update", "archive", "merge survivor", "merge absorbed", "split"] as 
       const operation = kind === "merge survivor" || kind === "merge absorbed"
         ? { op: "merge", id: kind === "merge survivor" ? lateAddress : address(f, survivor),
           absorb: [kind === "merge absorbed" ? lateAddress : address(f, absorbed)], text: "merged", ...content }
-        : kind === "split" ? { op: kind, id: lateAddress, supports: [], reason: "two topics",
+        : kind === "split" ? { op: kind, id: lateAddress, text: "primary part", ...content, supports: [], reason: "two topics",
           children: [{ title: "Fixture child", text: "first child", category: "constraint", topics: [] }, { title: "Fixture child", text: "second child", category: "reference", topics: [] }] }
         : kind === "archive" ? { op: kind, id: lateAddress, kind: "budget", supports: [], reason: "budget" }
         : { op: kind, id: lateAddress, text: "updated", ...content };
@@ -189,7 +189,7 @@ test("Dreaming accepts its own successive versions and accounts for merge, split
     const content = { supports: [], reason: "maintenance", category: "constraint", scope: "project", topics: [] };
     const merged = JSON.parse(memory.execute({ op: "merge", id: address(f, older), absorb: [address(f, newer)], text: "combined", ...content }));
     expect(merged.results).toEqual(["ok"]);
-    const split = JSON.parse(memory.execute({ op: "split", id: merged.committed[0].version, supports: [], reason: "separate topics",
+    const split = JSON.parse(memory.execute({ op: "split", id: merged.committed[0].version, text: "Primary part.", category: "constraint", scope: "project", topics: [], supports: [], reason: "separate topics",
       children: [{ title: "Fixture child", text: "first rule", category: "constraint", topics: [] }, { title: "Fixture child", text: "second rule", category: "reference", topics: [] }] }));
     expect(split.results).toEqual(["ok"]);
     const moved = JSON.parse(memory.execute({ op: "update", id: split.committed[0].version, text: "global rule", ...content, scope: "global" }));
@@ -421,8 +421,8 @@ test("127: update, merge, split and both archive kinds are each one call that co
     const content = { category: "constraint", scope: "project", topics: [], supports: [] };
     call({ op: "update", id: address(f, updated!), text: "updated", ...content, reason: "rewrite" }, 1);
     call({ op: "merge", id: address(f, survivor!), absorb: [address(f, absorbed!)], text: "merged", ...content, reason: "same rule" }, 1);
-    expect(call({ op: "split", id: address(f, parent!), children: [{ title: "Fixture child", text: "one", category: "constraint", topics: [] },
-      { title: "Fixture child", text: "two", category: "reference", topics: [] }], supports: [], reason: "two rules" }, 2).committed).toHaveLength(2);
+    expect(call({ op: "split", id: address(f, parent!), text: "Primary part.", category: "constraint", scope: "project", topics: [], children: [{ title: "Fixture child", text: "one", category: "constraint", topics: [] },
+      { title: "Fixture child", text: "two", category: "reference", topics: [] }], supports: [], reason: "two rules" }, 3).committed).toHaveLength(3);
     call({ op: "archive", kind: "budget", id: address(f, budget!), supports: [], reason: "over budget" }, 1);
     call({ op: "archive", kind: "invalid", id: address(f, invalid!), text: "The rule no longer holds: the user corrected its basis; nothing replaces it.",
       supports: [], reason: "contradicted" }, 1);
@@ -435,7 +435,8 @@ test("127: update, merge, split and both archive kinds are each one call that co
   expect(current(updated!)?.text).toBe("updated");
   expect(current(survivor!)?.text).toBe("merged");
   expect(current(absorbed!)).toBeUndefined();
-  expect([current(parent!), current(budget!)?.archiveKind, current(invalid!)?.archiveKind]).toEqual([undefined, "budget", "invalid"]);
+  // The split item continues as its primary part; its two children are new identities.
+  expect([current(parent!)?.text, current(budget!)?.archiveKind, current(invalid!)?.archiveKind]).toEqual(["Primary part.", "budget", "invalid"]);
 });
 
 test("127: a refused call holds Mn and blocks check and the end pass until slot or drop; a later sibling's commit never clears it", async () => {

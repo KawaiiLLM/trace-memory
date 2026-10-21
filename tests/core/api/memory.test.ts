@@ -616,7 +616,7 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   expect(archivedCommit).toBeGreaterThan(mergedCommit);
 });
 
-test.each(["authored", "later-parent"] as const)("135: a live reversed merge swaps to the older identity with $0 text and states the swap", async body => {
+test.each(["authored", "later-parent"] as const)("a merge keeps the identity of the primary it names, the newer one included, with $0 text", async body => {
   const write = setup(async () => success());
   const older = JSON.parse(write.execute({ ...create, text: "Use pnpm.", topics: ["old"] }));
   const newer = JSON.parse(write.execute({ ...create, text: "Use corepack pnpm.", topics: ["new"] }));
@@ -625,45 +625,21 @@ test.each(["authored", "later-parent"] as const)("135: a live reversed merge swa
   const expected = body === "authored" ? "Use pnpm and retain the lockfile." : "Use corepack pnpm.";
   createDreamerTrigger(memory, path, 1, 1);
   const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest({ fixture: "135 automatic merge direction" });
+    input.reportRequest({ fixture: "merge primary identity" });
     const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({
       op: "merge", id: newerTag, absorb: [olderTag], supports: [], reason: "Unify without losing the older identity",
       category: "reference", scope: "project", topics: ["packages"], ...(body === "authored" ? { text: expected } : {}),
     }));
-    expect(receipt.committed).toMatchObject([{ op: "merge", knowledgeId: 1, version: expect.stringMatching(/^K1#[a-z]{4,}$/), swappedFrom: newerTag }]);
+    expect(receipt.committed).toMatchObject([{ op: "merge", knowledgeId: 2, version: expect.stringMatching(/^K2#[a-z]{4,}$/) }]);
+    expect(receipt.committed[0]).not.toHaveProperty("swappedFrom");
     expect(receipt.tokens.before).toEqual([newer.tokens.after[0], older.tokens.after[0]]);
     const commit = receiptCommit(memory.store, receipt.committed[0]);
-    expect(memory.store.getKnowledgeRevision(1, commit)).toMatchObject({ parentId: olderCommit, text: expected, supports: [1],
+    expect(memory.store.getKnowledgeRevision(2, commit)).toMatchObject({ parentId: newerCommit, text: expected, supports: [1],
       reason: "Unify without losing the older identity", category: "reference", scope: "project", topics: ["packages"] });
-    expect(memory.store.listKnowledgeLinks(2)).toContainEqual({ fromKnowledge: 2, fromCommit: newerCommit, kind: "merged_into", toKnowledge: 1, toCommit: commit });
-    expect(memory.store.currentCommit(2)).toEqual([]);
+    expect(memory.store.listKnowledgeLinks(1)).toContainEqual({ fromKnowledge: 1, fromCommit: olderCommit, kind: "merged_into", toKnowledge: 2, toCommit: commit });
+    expect(memory.store.currentCommit(1)).toEqual([]);
     expect(receipt.committed[0]).not.toHaveProperty("text");
     skipRest(input, ["K1@v1", "K2@v1"]);
-    return success();
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-});
-
-test.each(["survivor", "absorbed"] as const)("135: a reversed merge with an archived $0 refuses without reviving either identity", async archived => {
-  const write = setup(async () => success());
-  write.execute({ ...create, text: "Use pnpm." });
-  write.execute({ ...create, text: "Retain the lockfile." });
-  const archiveId = archived === "survivor" ? 2 : 1;
-  write.execute({ op: "archive", id: read(archiveId), kind: "budget", supports: ["F1"], reason: "Retire this identity" });
-  const olderTag = read(1, archiveId === 1 ? 2 : 1), newerTag = read(2, archiveId === 2 ? 2 : 1), path = dreamPath();
-  createDreamerTrigger(memory, path, 1, 1);
-  const before = memory.store.listKnowledgeRevisions();
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest({ fixture: "135 archived merge direction" });
-    const tool = input.tools.find(tool => tool.name === "memory")!;
-    const refused = JSON.parse(tool.execute({ op: "merge", id: newerTag, absorb: [olderTag], text: "Use pnpm and retain the lockfile.",
-      supports: [], reason: "Attempt a reversed revival", category: "constraint", scope: "project", topics: [] }));
-    expect(refused.rejected).toHaveProperty("M1");
-    expect(refused.committed).toBeUndefined();
-    expect(memory.store.listKnowledgeRevisions()).toEqual(before);
-    expect(memory.store.currentCommit(archiveId)[0]!.op).toBe("archive");
-    tool.execute({ drop: "M1" });
-    skipRest(input);
     return success();
   });
   expect(result.outcome, JSON.stringify(result)).toBe("success");

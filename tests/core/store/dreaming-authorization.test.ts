@@ -162,12 +162,13 @@ test("64b: empty-support merge unions both exact parents and split copies its ex
   const split = fixture();
   const splitRun = split.store.bindDreamingRun(split.run);
   const result = split.store.commitConsolidationRun({ run: splitRun, path: split.target, operations: [{ op: "split",
-    knowledgeId: split.item.knowledgeId, baseCommit: split.item.commit, supports: [], reason: "Separate claims.", createdAt: "now",
+    knowledgeId: split.item.knowledgeId, baseCommit: split.item.commit, text: "primary claim", category: "constraint", scope: "project", topics: [],
+    supports: [], reason: "Separate claims.", createdAt: "now",
     children: [{ title: "Fixture child", text: "first", category: "constraint", topics: [] }, { title: "Fixture child", text: "second", category: "constraint", topics: [] }],
   }] });
   expect(result.ok).toBe(true);
   if (result.ok) expect(result.committed.map(value => split.store.knowledgeRevision(value.commit)!.supports))
-    .toEqual([split.content.supports, split.content.supports]);
+    .toEqual([split.content.supports, split.content.supports, split.content.supports]);
 });
 
 test("64b: explicit evidence is not augmented and invalid evidence rolls back the whole batch", () => {

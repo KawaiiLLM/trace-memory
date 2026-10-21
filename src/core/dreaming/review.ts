@@ -10,15 +10,15 @@ export function renderDreamingReview(store: Store, runId: number | undefined, bl
   const own = new Map<number, KnowledgeRevision[]>();
   const replaced = new Map<number, { last: KnowledgeRevision; by: Set<number>; op: "merge" | "split" }>();
   for (const commit of runId === undefined ? [] : store.listCommitsByRun(runId)) {
-    // A split lists its parent before its children; a merge its survivor before the absorbed item.
-    const record = () => own.set(commit.knowledgeId, [...own.get(commit.knowledgeId) ?? [], commit]);
-    if (commit.op !== "split") record();
+    // A merge lists its primary before the absorbed items; a split lists the item it continues before its children.
+    own.set(commit.knowledgeId, [...own.get(commit.knowledgeId) ?? [], commit]);
     if (commit.op === "merge" || commit.op === "split") for (const parent of store.commitParents(commit)) if (parent.knowledgeId !== commit.knowledgeId) {
+      // A split item continues as its primary part, so only an item the run did not continue is replaced.
+      if (commit.op === "split" && own.get(parent.knowledgeId)?.length) continue;
       own.set(parent.knowledgeId, own.get(parent.knowledgeId) ?? []);
       const entry = replaced.get(parent.knowledgeId) ?? { last: parent, by: new Set<number>(), op: commit.op };
       entry.by.add(commit.knowledgeId); replaced.set(parent.knowledgeId, entry);
     }
-    if (commit.op === "split") record();
   }
   // Every whole body carries its title, as the views do; a legacy untitled version shows the derived one.
   const whole = (revision: KnowledgeRevision, mark: "+" | "-") =>

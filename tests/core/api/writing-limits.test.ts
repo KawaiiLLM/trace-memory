@@ -195,12 +195,16 @@ test("the Dreamer's operations are refused for length and title, each on its own
     // A merge that omits its text copies the later parent's body, which is a long legacy body here.
     expect(refuse({ op: "merge", id: base, absorb: [tag(long.knowledgeId)], title: "Merged", category: "constraint", scope: "project",
       topics: [], supports: [], reason: "Merge" })).toMatch(/text: \d{3} tokens, over the 200-token limit/);
-    expect(refuse({ op: "split", id: base, supports: [], reason: "Split",
+    expect(refuse({ op: "split", id: base, text: "Primary.", category: "constraint", scope: "project", topics: [], supports: [], reason: "Split",
       children: [{ title: "One", text: sized(201), category: "constraint", topics: [] }, { title: "Two", text: "Two.", category: "constraint", topics: [] }] }))
       .toContain("child 1: text: 201 tokens, over the 200-token limit");
-    expect(refuse({ op: "split", id: base, supports: [], reason: "Split",
+    expect(refuse({ op: "split", id: base, text: "Primary.", category: "constraint", scope: "project", topics: [], supports: [], reason: "Split",
       children: [{ text: "One.", category: "constraint", topics: [] }, { title: sized(21), text: "Two.", category: "constraint", topics: [] }] }))
       .toMatch(/child 1: title: expected a nonempty single-line string; child 2: title: 21 tokens, over the 20-token limit/);
+    // The split item continues as its primary part, which obeys the same cap.
+    expect(refuse({ op: "split", id: base, category: "constraint", scope: "project", topics: [], text: sized(201), supports: [], reason: "Split",
+      children: [{ title: "One", text: "One.", category: "constraint", topics: [] }] }))
+      .toContain("text: 201 tokens, over the 200-token limit");
     expect(refuse({ op: "archive", kind: "invalid", id: base, supports: [], reason: "Withdrawn", text: sized(201, "No longer holds: ") }))
       .toContain("text: 201 tokens, over the 200-token limit");
     skipRest(input);

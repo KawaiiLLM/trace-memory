@@ -365,10 +365,11 @@ test("34c merge notices are scoped to visible parents and do not grant the survi
   expect(state.knowledgeStates).toEqual([{ fromCommit: second.commit, toCommits: [merge[0]!.commit] }]);
 });
 
-test("34c split notice names both children while partial budgeting grants body visibility only to the child kept", async () => {
+test("34c a split item's old version is shown as its primary part; budgeting keeps a child's body out of its category", async () => {
   const f = fixture();
   const parent = f.create("compound parent ".repeat(4_000), [f.facts[0]!.id]);
-  const split = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`,
+  // The split item continues as its primary part (2026-10-22); its two children are new items.
+  const [primary, first, second] = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, text: "Primary part.", category: "constraint", scope: "project", topics: [],
     supports: [], reason: "separate", children: [
       { title: "Fixture child", text: "first child ".repeat(450), category: "constraint", topics: [] }, { title: "Fixture child", text: "second child ".repeat(450), category: "goal", topics: [] }] },
   [`K${parent.knowledgeId}@${parent.commit}`], false);
@@ -379,19 +380,20 @@ test("34c split notice names both children while partial budgeting grants body v
     const offered = f.memory.injection(f.target, visible);
     if (offered.knowledgeCommitIds.length === 1 && offered.knowledgeStates?.length === 1) { partial = offered; break; }
   }
-  expect(partial?.text).toContain(`split into K${split[0]!.knowledgeId}@v1 and K${split[1]!.knowledgeId}@v1`);
-  expect(partial?.knowledgeCommitIds).toHaveLength(1);
-  expect(partial?.knowledgeStates).toEqual([{ fromCommit: parent.commit, toCommits: split.map(item => item.commit) }]);
-  expect(partial?.knowledgeCommitIds).toEqual([split[1]!.commit]);
-  expect(partial?.text).toContain(`omitted 1 constraint knowledge; expand: trace://K${split[0]!.knowledgeId}`);
+  expect(primary!.knowledgeId).toBe(parent.knowledgeId);
+  expect(partial?.text).toContain(`K${parent.knowledgeId}@v1 is shown as K${parent.knowledgeId}@v2`);
+  // Budgets are per category: the goal child's body fits, the constraint item and child are omitted.
+  expect(partial?.knowledgeCommitIds).toEqual([second!.commit]);
+  expect(partial?.knowledgeStates).toEqual([{ fromCommit: parent.commit, toCommits: [primary!.commit] }]);
+  expect(partial?.text).toContain(`omitted 2 constraint knowledge; expand: trace://K${first!.knowledgeId}`);
   expect(partial?.text).not.toContain("first child");
   expect(partial?.text).toContain("second child");
 });
 
-test("92 split notice names only the visible child and never mislabels a partially hidden split as a merge", async () => {
+test("92 split notice names only the visible results and never mislabels a partially hidden split as a merge", async () => {
   const f = fixture({ dreaming: { triggerTokens: 1 } });
   const parent = f.create("compound parent", [f.facts[0]!.id]);
-  const split = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`,
+  const split = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, text: "Primary part.", category: "constraint", scope: "project", topics: [],
     supports: [], reason: "separate", children: [
       { title: "Fixture child", text: "public child", category: "constraint", topics: [] },
       { title: "Fixture child", text: "child later private", category: "constraint", topics: [] }] }, [`K${parent.knowledgeId}@${parent.commit}`], false);
@@ -403,14 +405,15 @@ test("92 split notice names only the visible child and never mislabels a partial
     text: "Private evidence", source: [`T${turn.id}#E${entry.entryOrdinal}`], createdAt: time }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const changed = commitNoterKnowledge(f.memory.store, { path: { sessionId: peer.id, branch: "main", headTurnId: turn.id },
-    run: { sessionId: peer.id, createdAt: time }, operations: [{ op: "update", knowledgeId: split[1]!.knowledgeId,
-      baseCommit: split[1]!.commit, text: "Private successor", scope: "session", category: "constraint", supports: [noted.facts[0]!.id], topics: [], reason: "private scope", createdAt: time }] });
+    run: { sessionId: peer.id, createdAt: time }, operations: [{ op: "update", knowledgeId: split[2]!.knowledgeId,
+      baseCommit: split[2]!.commit, text: "Private successor", scope: "session", category: "constraint", supports: [noted.facts[0]!.id], topics: [], reason: "private scope", createdAt: time }] });
   if (!changed.ok) throw new Error(changed.problems.join("; "));
   const result = f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([parent.commit]), knowledgeTokens: 100 }));
-  expect(result.knowledgeCommitIds).toEqual([split[0]!.commit]);
+  // Visible: the item as its primary part and the public child; the second child moved into a private scope.
+  expect(result.knowledgeCommitIds).toEqual([split[0]!.commit, split[1]!.commit]);
   expect(result.knowledgeStates).toEqual([{ fromCommit: parent.commit, toCommits: [split[0]!.commit] }]);
-  expect(result.text).toContain(`is split; visible result: K${split[0]!.knowledgeId}@v1`);
-  expect(result.text).not.toContain(`K${split[1]!.knowledgeId}`);
+  expect(result.text).toContain(`K${parent.knowledgeId}@v1 is shown as K${split[0]!.knowledgeId}@v2`);
+  expect(result.text).not.toContain(`K${split[2]!.knowledgeId}`);
   expect(result.text).not.toContain("merged");
   expect(result.text).not.toContain("Private successor");
 });

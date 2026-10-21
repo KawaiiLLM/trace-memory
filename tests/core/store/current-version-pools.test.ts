@@ -160,7 +160,7 @@ test("64c current versions: session visibility follows the selected branch and r
   expect(store.pendingVersions(`session:${session.id}`, { sessionId: session.id, branch: "right", headTurnId: right.id })).toEqual([]);
 });
 
-test("64c current versions: merge absorption yields one current identity and split yields two", () => {
+test("64c current versions: merge absorption yields one current identity and split yields the item and its children", () => {
   const merged = setup(), first = merged.create("global", "first"), second = merged.create("global", "second"), mergeRun = begin(merged);
   const merge = merged.store.commitConsolidationRun({ run: mergeRun.run, path: merged.target, operations: [{ op: "merge",
     intoKnowledgeId: first.knowledgeId, intoBaseCommit: first.commit, absorb: [{ knowledgeId: second.knowledgeId, baseCommit: second.commit }],
@@ -170,9 +170,12 @@ test("64c current versions: merge absorption yields one current identity and spl
 
   const split = setup(), parent = split.create("global", "mixed"), splitRun = begin(split);
   const result = split.store.commitConsolidationRun({ run: splitRun.run, path: split.target, operations: [{ op: "split",
-    knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: [], reason: "separate", createdAt: "now",
+    knowledgeId: parent.knowledgeId, baseCommit: parent.commit, text: "mixed, primary part", category: "constraint", scope: "global", topics: [], supports: [], reason: "separate", createdAt: "now",
     children: [{ title: "Fixture child", text: "one", category: "constraint", topics: [] }, { title: "Fixture child", text: "two", category: "constraint", topics: [] }] }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
+  // The split item continues as its primary part beside its two children: three current versions.
+  expect(result.committed).toHaveLength(3);
+  expect(result.committed[0]!.knowledgeId).toBe(parent.knowledgeId);
   expect(split.store.pendingVersions("global", split.target).map(v => v.revisionId)).toEqual(result.committed.map(v => v.commit));
 });
 
@@ -203,7 +206,7 @@ test.each(["update", "archive", "split"] as const)("126 writable set: one run ma
     ? { op, knowledgeId: base.knowledgeId, baseCommit: base.commit, text: `${scope} rewritten`, category: "constraint" as const, scope,
       supports: [], topics: [], reason: "maintenance", createdAt: "now" }
     : op === "archive" ? { op, kind: "budget" as const, knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [], reason: "budget", createdAt: "now" }
-    : { op, knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [], reason: "separate", createdAt: "now",
+    : { op, knowledgeId: base.knowledgeId, baseCommit: base.commit, text: `${scope} primary`, category: "constraint" as const, scope, topics: [], supports: [], reason: "separate", createdAt: "now",
       children: [{ title: "Fixture child", text: "one", category: "constraint" as const, topics: [] }, { title: "Fixture child", text: "two", category: "constraint" as const, topics: [] }] };
   const result = f.store.commitConsolidationRun({ run: admitted.run, path: f.target,
     operations: items.map((item, index) => operation(item, (["global", "project", "session"] as const)[index]!)) });
@@ -222,7 +225,7 @@ test.each(["update", "archive", "split"] as const)("126 writable set: a %s base 
   const operation = op === "update" ? { op, knowledgeId: foreign.knowledgeId, baseCommit: foreign.commit,
     text: "forbidden", category: "constraint" as const, scope: "project" as const, supports: [], topics: [], reason: "cross pool", createdAt: "now" }
     : op === "archive" ? { op, kind: "budget" as const, knowledgeId: foreign.knowledgeId, baseCommit: foreign.commit, supports: [], reason: "cross pool", createdAt: "now" }
-    : { op, knowledgeId: foreign.knowledgeId, baseCommit: foreign.commit, supports: [], reason: "cross pool", createdAt: "now",
+    : { op, knowledgeId: foreign.knowledgeId, baseCommit: foreign.commit, text: "forbidden", category: "constraint" as const, scope: "project" as const, topics: [], supports: [], reason: "cross pool", createdAt: "now",
       children: [{ title: "Fixture child", text: "one", category: "constraint" as const, topics: [] }, { title: "Fixture child", text: "two", category: "constraint" as const, topics: [] }] };
   const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(foreign.knowledgeId) };
   const result = f.store.commitConsolidationRun({ run: admitted.run, path: f.target, operations: [operation] });

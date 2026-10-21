@@ -398,8 +398,6 @@ export const sourceDigest = (raw: string): string => createHash("sha256").update
  * (outside the BMP, encoded as a UTF-16 surrogate pair) counts once, not twice. Below three, no
  * trigram exists to index or query, so `searchAddresses` keeps today's LIKE scan for these. */
 export const unicodeLength = (value: string): number => Array.from(value).length;
-/** A merge keeps the older (lower-id) knowledge as its survivor; the caller may name either one first. */
-export const mergeSwaps = (intoKnowledgeId: number, absorbedKnowledgeId: number): boolean => intoKnowledgeId > absorbedKnowledgeId;
 
 /** Ticket 81: the query as one quoted FTS5 phrase, so `MATCH` requires its trigrams contiguously
  * (substring semantics) rather than interpreting `"`, `*`, `:`, `(`, `NEAR`, `AND`, etc. as FTS5
@@ -574,7 +572,15 @@ export type KnowledgeOperationInput =
       op: "split";
       knowledgeId: number;
       baseCommit: number;
-      children: { title?: string; text: string; category: KnowledgeCategory; topics: string[] }[];
+      /** The primary part: the split item continues with this new version (ticket 144), fields as an update's. */
+      title?: string;
+      text: string;
+      category: KnowledgeCategory;
+      scope: KnowledgeScope;
+      topics: string[];
+      /** Each child is a new identity recorded as split from the item; scope, supports and reason default to the operation's. */
+      children: { title?: string; text: string; category: KnowledgeCategory; topics: string[];
+        scope?: KnowledgeScope; supports?: number[]; reason?: string }[];
       supports: number[];
       reason: string;
       createdAt: string;
@@ -672,8 +678,6 @@ export interface CommittedKnowledgeOp {
   handle?: string;
   knowledgeId: number;
   commit: number;
-  /** A live merge reversed its requested survivor; the actual survivor is knowledgeId. */
-  swappedFrom?: string;
 }
 
 export type CommitConsolidationResult =
@@ -3888,8 +3892,8 @@ export class Store {
     dreamingPools: readonly string[] | null = null, inheritedCreateCategory?: KnowledgeCategory,
     dreamingScope?: DreamingScope): { ok: true; value: CommittedKnowledgeOp[] } | { ok: false; reason: string | KnowledgeVersionProblem } {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
-    if (op.op === "merge" && (op.absorb.length !== 1 || op.absorb[0]!.baseCommit === op.intoBaseCommit))
-      return { ok: false, reason: "merge requires id as the survivor and absorb as exactly one distinct other parent" };
+    if (op.op === "merge" && !op.absorb.length)
+      return { ok: false, reason: "merge requires id as the primary and absorb as at least one other parent" };
     if (dreamingScope) {
       const bases = op.op === "create" ? [] : op.op === "merge"
         ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb]
@@ -3900,16 +3904,6 @@ export class Store {
           return { ok: false, reason: new KnowledgeVersionProblem(address =>
             `${address(base.knowledgeId, base.id)} was written after this run's freeze and is outside this run; left for the next Dreaming run. This item needs no skip.`) };
       }
-    }
-    let reversed: Extract<KnowledgeOperationInput, { op: "merge" }> | undefined;
-    if (op.op === "merge" && mergeSwaps(op.intoKnowledgeId, op.absorb[0]!.knowledgeId)) {
-      const merge = op, older = merge.absorb[0]!;
-      if (this.getKnowledgeRevision(merge.intoKnowledgeId, merge.intoBaseCommit)?.op === "archive" ||
-          this.getKnowledgeRevision(older.knowledgeId, older.baseCommit)?.op === "archive")
-        return { ok: false, reason: new KnowledgeVersionProblem(address => `merge survivor K${merge.intoKnowledgeId} is newer than absorbed K${older.knowledgeId}; swap them: use ${address(older.knowledgeId, older.baseCommit)} as the survivor and absorb ${address(merge.intoKnowledgeId, merge.intoBaseCommit)}`) };
-      reversed = merge;
-      op = { ...merge, intoKnowledgeId: older.knowledgeId, intoBaseCommit: older.baseCommit,
-        absorb: [{ knowledgeId: merge.intoKnowledgeId, baseCommit: merge.intoBaseCommit }] };
     }
     const targets = op.op === "create" ? [] : op.op === "merge"
       ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb]
@@ -3950,7 +3944,7 @@ export class Store {
       if (parentScopes.size !== 1 || !parentScopes.has(op.scope))
         return { ok: false, reason: "merge parents and result must share one scope" };
     }
-    const scope = op.op === "archive" || op.op === "split" ? prior!.scope : op.scope;
+    const scope = op.op === "archive" ? prior!.scope : op.scope;
     const supports = op.supports.length ? op.supports : dreaming
       ? [...new Set(targets.flatMap(target => this.getKnowledgeRevision(target.knowledgeId, target.baseCommit)!.supports))]
       : [];
@@ -3964,9 +3958,11 @@ export class Store {
     // 123: only supports this operation writes are checked; inherited parent supports stay as visible knowledge had them.
     const bad = op.supports.length ? this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId)) : null;
     if (bad) return { ok: false, reason: bad };
-    const insertRevision = (knowledgeId: number, parentId: number | null, title: string | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp) => {
+    // A split child may carry its own scope, supports and reason; every other revision uses the operation's.
+    const insertRevision = (knowledgeId: number, parentId: number | null, title: string | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp,
+      own: { scope?: KnowledgeScope; supports?: number[]; reason?: string } = {}) => {
       if (!isKnowledgeCategory(category) &&
-          !((revisionOp === "archive" || revisionOp === "update") && category === prior?.category) &&
+          !((revisionOp === "archive" || revisionOp === "update" || revisionOp === "split") && category === prior?.category) &&
           !(revisionOp === "create" && role === "noting" && inheritedCreateCategory !== undefined && category === inheritedCreateCategory))
         throw new Error(`invalid new knowledge category ${category}`);
       // A new live version always ends with a title (ticket 144), given or inherited from its base. A derived
@@ -3974,34 +3970,42 @@ export class Store {
       if (title === null && revisionOp !== "archive") throw new Error("a new live knowledge version requires a title");
       const info = this.db.prepare(`INSERT INTO knowledge_revisions
         (knowledge_id, parent_id, title, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role, archive_kind)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, title, text, category, scope,
-          JSON.stringify(supports), revisionOp, op.reason, JSON.stringify(topics), runId, op.createdAt, role,
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, title, text, category, own.scope ?? scope,
+          JSON.stringify(own.supports ?? supports), revisionOp, own.reason ?? op.reason, JSON.stringify(topics), runId, op.createdAt, role,
           revisionOp === "archive" ? (op as Extract<KnowledgeOperationInput, { op: "archive" }>).kind : null);
       const commitId = Number(info.lastInsertRowid);
       assignVersionTag(this.db, knowledgeId, commitId);
       return commitId;
     };
     if (op.op === "split") {
-      if (op.children.length !== 2) return { ok: false, reason: "split requires exactly two complete children" };
-      if (op.children.some(child => !child.text.trim() || !isKnowledgeCategory(child.category) ||
+      if (!op.children.length) return { ok: false, reason: "split requires at least one complete child" };
+      if (!op.text.trim() || op.children.some(child => !child.text.trim() || !isKnowledgeCategory(child.category) ||
           !Array.isArray(child.topics) || child.topics.some(topic => typeof topic !== "string" || !topic.trim())))
-        return { ok: false, reason: "split requires exactly two complete children with text, category and topics" };
+        return { ok: false, reason: "split requires its primary part and every child complete with text, category and topics" };
+      if (op.children.some(child => child.supports !== undefined &&
+          (!child.supports.length || child.supports.some(id => !Number.isSafeInteger(id) || id <= 0))))
+        return { ok: false, reason: "a child's supports must not be empty" };
+      if (op.children.some(child => child.reason !== undefined && !child.reason.trim()))
+        return { ok: false, reason: "a child's reason must be a non-empty commit message" };
+      // The split item continues as the primary part; each child is a new identity recorded as split from it.
+      // Both are `split` revisions of the one run on one base, so the lineage lanes let them coexist.
       const author = this.getKnowledge(op.knowledgeId)!.author;
-      const values = op.children.map(child => {
+      const primary = insertRevision(op.knowledgeId, prior!.id, op.title ?? prior!.title, op.text, op.category, op.topics, "split");
+      const values = [{ op: "split" as const, knowledgeId: op.knowledgeId, commit: primary }, ...op.children.map(child => {
         const knowledgeId = Number(this.db.prepare("INSERT INTO knowledge (project_id, origin_session_id, author) VALUES (?, ?, ?)")
           .run(projectId, sessionId, author).lastInsertRowid);
-        const commit = insertRevision(knowledgeId, prior!.id, child.title ?? null, child.text, child.category, child.topics, "split");
+        const commit = insertRevision(knowledgeId, prior!.id, child.title ?? null, child.text, child.category, child.topics, "split", child);
         this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'split_from', ?, ?)")
           .run(op.knowledgeId, op.baseCommit, knowledgeId, commit);
         return { op: "split" as const, knowledgeId, commit };
-      });
+      })];
       return { ok: true, value: values };
     }
     const knowledgeId = op.op === "create" ? Number(this.db.prepare(
       "INSERT INTO knowledge (project_id, origin_session_id, author) VALUES (?, ?, ?)",
     ).run(projectId, sessionId, op.author).lastInsertRowid) : targets[0]!.knowledgeId;
     const text = op.op === "archive" ? op.kind === "budget" ? prior!.text : op.text! : op.op === "merge" && op.text === undefined
-      ? this.knowledgeRevision(Math.max(op.intoBaseCommit, op.absorb[0]!.baseCommit))!.text
+      ? this.knowledgeRevision(Math.max(op.intoBaseCommit, ...op.absorb.map(parent => parent.baseCommit)))!.text
       : op.text!;
     const commitId = insertRevision(knowledgeId, prior?.id ?? null, op.op === "archive" ? prior!.title : op.title ?? (op.op === "create" ? null : prior!.title), text,
       op.op === "archive" ? prior!.category : op.category, op.op === "archive" ? prior!.topics : op.topics, op.op);
@@ -4010,7 +4014,7 @@ export class Store {
         .run(parent.knowledgeId, parent.baseCommit, knowledgeId, commitId);
     }
     return { ok: true, value: [{ op: op.op, ...(op.op === "create" ? { handle: op.handle } : {}), knowledgeId, commit: commitId,
-      ...(reversed ? { swappedFrom: `K${reversed.intoKnowledgeId}#${this.versionTag(reversed.intoKnowledgeId, reversed.intoBaseCommit)}` } : {}) }] };
+    }] };
   }
 
   // -- shared exact Dreamer processing; no automatic worker is launched by these primitives --

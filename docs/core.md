@@ -115,8 +115,8 @@ revision is outside the reader's scope, the identity is hidden rather than falli
 participate in current selection and then hide the identity.
 
 An `update`, `archive` or `split` base must be the visible current revision on the writer's branch; a
-`merge` requires both current parents in its authorized pool. The existing revival exception allows
-an applicable archived older survivor to absorb an active item; it does not permit arbitrary writes
+`merge` requires its primary and every absorbed parent current in its authorized pool. The existing revival exception allows
+an applicable archived primary to absorb an active item; it does not permit arbitrary writes
 against archives. Resolution, claim validation and mutation happen in one transaction. Exact
 historical reads do not make stale revisions writable.
 
@@ -145,18 +145,17 @@ Storage, Knowledge history, injection and both end reviews use complete revision
 the original request remains in the human audit. Immediate update receipts carry the new tag and
 pool item cost before/after without echoing the result body.
 
-A merge joins two identities of one scope and keeps the older identity. If a call names the newer
-survivor and neither exact base is archived, Store swaps the parents without changing submitted text,
-supports or reason. The committed receipt's `swappedFrom` names the requested survivor; `knowledgeId`
-and `version` name the actual older survivor. Before-costs remain in requested `id`, `absorb` order.
-An archived base retains the direction refusal: swapping would change the revival identity.
-A merge may omit `text`, in which case the later exact parent's body is copied verbatim.
-A split atomically creates two continuation identities and both inherit the parent's scope.
+A merge joins identities of one scope and keeps the identity of the primary the call names, whether
+older or newer (2026-10-22; no older-survivor rule, no swap); `id` is the primary, `absorb` lists one or
+more other parents. A merge may omit `text`, in which case the latest exact parent's body is copied verbatim.
+A split keeps the named item as its primary part: the call's own text (or `edits`) and fields are the
+item's new version, and each child, one or more, is a new identity inheriting the item's scope and
+recorded as split from it. The split item is not archived.
 
 Evidence-driven maintenance stores the submitted direct facts. A trusted Dreamer maintenance
 operation may submit empty `supports`; core materializes the parents' supports in the same commit:
-`update` and `archive` copy one parent, `merge` takes both parents' union, and both split outputs copy
-the split parent. There is no system maintenance fact. Historical empty supports are repaired by the
+`update` and `archive` copy one parent, `merge` takes all parents' union, and the split item and each
+child copy the split parent. There is no system maintenance fact. Historical empty supports are repaired by the
 schema migration in parent-before-child order; an all-empty ancestry remains empty.
 
 ### Material, maintenance and completion
@@ -170,8 +169,8 @@ Dreamer reference and pending item headers show their pool item cost: the canoni
 body, supports and topics, excluding the count annotation itself. Pool category framing remains part
 of the pool total. An item carries this one annotation only: an `Archived` item shows it once on its removed body, and the
 Noter's `(body/1000 tokens)` annotation (cap check) never appears in the same view. Committed shared-memory receipts report `tokens.before` and `tokens.after` arrays:
-create has no parents; update has one; merge lists the survivor then the absorbed parent; split lists
-its parent once and both resulting children; archive reports the removed item cost then zero.
+create has no parents; update has one; merge lists the primary then the absorbed parents; split lists
+its parent once, then the primary part and the children; archive reports the removed item cost then zero.
 Committed update, merge and split results each carry the newly authored version's `K#tag`, usable
 directly for the next mutation. Uncommitted Noter `Mn` handles and archive history addresses are unchanged.
 

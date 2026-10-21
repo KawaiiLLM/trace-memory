@@ -301,9 +301,9 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   30,000-token Knowledge-base-plus-shared-allowance window; direct facts have a separate 10,000-token cap.
   There is no automatic Raw block or `note` tool.
 
-  Dreamer may update, binary-merge, binary-split or archive, but never create. Evidence-driven
+  Dreamer may update, merge, split or archive, but never create (a new identity comes only from a split child). Evidence-driven
   operations cite their direct facts. A trusted maintenance operation may submit empty supports;
-  core then materializes the exact parent supports: one parent for update/archive/split and both
+  core then materializes the exact parent supports: one parent for update/archive/split and all
   parents' union for merge. Exact current bases and the live database-wide Dreamer claim are checked
   atomically. Processing records skipped frozen versions and the run's own commits, including on
   failure or cancellation. Untouched versions remain pending; own outputs do not trigger themselves.

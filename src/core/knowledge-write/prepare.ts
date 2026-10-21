@@ -1,5 +1,5 @@
 import { isKnowledgeCategory, substantiveArchiveStatement, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
-import { mergeSwaps, type KnowledgeOperationInput, type RunInput, type Store, type KnowledgePath } from "../store/index.ts";
+import { type KnowledgeOperationInput, type RunInput, type Store, type KnowledgePath } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
@@ -62,10 +62,9 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       ["update", "merge", "split", "archive"].includes(op)
         ? `${op} belongs to the Dreamer and is not available to ${run.kind === "noting" ? "the Noter" : "manual memory"}`
         : "invalid op");
-    const structural = op === "split";
-    const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []),
-      ...(structural ? ["children"] : op === "archive" ? ["kind", ...(value.kind === "invalid" ? ["text"] : [])]
-        : ["title", "text", ...(op === "update" ? ["edits"] : []), "category", "scope", "topics"])];
+    const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []), ...(op === "split" ? ["children"] : []),
+      ...(op === "archive" ? ["kind", ...(value.kind === "invalid" ? ["text"] : [])]
+        : ["title", "text", ...(op === "update" || op === "split" ? ["edits"] : []), "category", "scope", "topics"])];
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
     // model still writing the old shape is told which two fields replace it.
     for (const key of Object.keys(value)) if (key === "because") errors.push('because: removed field; supply "reason" (a string) and "supports" (the commit\'s evidence)');
@@ -94,9 +93,9 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       return { knowledgeId: id, baseCommit: base };
     };
     const dest = op !== "create" ? target(value.id) : undefined;
-    const absorb = op === "merge" ? (Array.isArray(value.absorb) && value.absorb.length === 1 ? value.absorb.map(target)
-      : (errors.push("merge requires id as the survivor and absorb as exactly one distinct other parent"), [])) : [];
-    const children = op === "split" && Array.isArray(value.children) && value.children.length === 2 ? value.children.map((raw, childIndex) => {
+    const absorb = op === "merge" ? (Array.isArray(value.absorb) && value.absorb.length ? value.absorb.map(target)
+      : (errors.push("merge requires id as the primary and absorb as one or more distinct other parents"), [])) : [];
+    const children = op === "split" && Array.isArray(value.children) && value.children.length ? value.children.map((raw, childIndex) => {
       const child = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as NonNullable<typeof value.children>[number];
       const name = `child ${childIndex + 1}`;
       if (Object.keys(child).some(key => !["title", "text", "category", "topics"].includes(key))) errors.push(`${name}: inapplicable field`);
@@ -105,16 +104,16 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       checkTitle(child.title, name);
       if (!isKnowledgeCategory(child.category)) errors.push(`${name}: invalid category`);
       return { title: child.title!, text: child.text!, category: child.category!, topics: labels(child.topics, errors) };
-    }) : op === "split" ? (errors.push("split requires exactly two complete children"), []) : [];
+    }) : op === "split" ? (errors.push("split requires its primary part and one or more complete children"), []) : [];
     if (op === "archive") {
       if (value.kind !== "budget" && value.kind !== "invalid") errors.push("archive kind must be budget or invalid");
       if (value.kind === "invalid" && !substantiveArchiveStatement(value.text))
         errors.push("invalid archive requires a substantive statement of grounds and evidence");
     }
-    const editing = op === "update" && "edits" in value;
+    const editing = (op === "update" || op === "split") && "edits" in value;
     const base = editing && dest ? store.getKnowledgeRevision(dest.knowledgeId, dest.baseCommit) : null;
     let text = value.text;
-    if (op === "update" && ("text" in value) === editing) errors.push("update requires exactly one of text or edits");
+    if ((op === "update" || op === "split") && ("text" in value) === editing) errors.push(`${op} requires exactly one of text or edits`);
     if (editing) {
       if (!Array.isArray(value.edits) || !value.edits.length) errors.push("edits: expected a non-empty array of {old, new}");
       else {
@@ -137,9 +136,9 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const inheritedCategory = editing && !("category" in value) && base !== null;
     const category = inheritedCategory ? base.category : value.category;
     const contentScope = editing && !("scope" in value) ? base?.scope : value.scope;
-    const topics = op === "archive" || op === "split" ? []
+    const topics = op === "archive" ? []
       : editing && !("topics" in value) && base ? base.topics : labels(value.topics, errors);
-    if (op !== "archive" && op !== "split") {
+    if (op !== "archive") {
       if (!(op === "merge" && text === undefined)
           && (typeof text !== "string" || !text.length))
         errors.push("text: expected non-empty text");
@@ -147,31 +146,29 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (!KNOWLEDGE_SCOPES.includes(contentScope!)) errors.push("invalid scope");
     }
     // Ticket 144: a new live version ends with a title, given or inherited from its base; a legacy base
-    // has none to give. A merge's base is the survivor the Store keeps, which may not be the one named.
-    // Split children carry their own, checked above.
+    // has none to give. A merge or a split continues the named item, whose title it inherits. Split children carry their own, checked above.
     let title = value.title;
-    if (op === "create" || op === "update" || op === "merge") {
-      const from = op === "merge" && dest && absorb.length && mergeSwaps(dest.knowledgeId, absorb[0]!.knowledgeId) ? absorb[0] : dest;
-      const baseTitle = op === "create" || !from ? undefined : store.getKnowledgeRevision(from.knowledgeId, from.baseCommit)?.title;
+    if (op === "create" || op === "update" || op === "merge" || op === "split") {
+      const baseTitle = op === "create" || !dest ? undefined : store.getKnowledgeRevision(dest.knowledgeId, dest.baseCommit)?.title;
       if (title === undefined && baseTitle === null) errors.push("title: the base version has no title; supply one");
       title ??= baseTitle ?? undefined;
       if (title !== undefined || op === "create") checkTitle(title);
     }
     // Caps apply to the body as written: an edited update's result, and a merge that omits text, which copies the later parent's.
     const body = op === "merge" && text === undefined && dest && absorb.length
-      ? store.knowledgeRevision(Math.max(dest.baseCommit, absorb[0]!.baseCommit))?.text
+      ? store.knowledgeRevision(Math.max(dest.baseCommit, ...absorb.map(parent => parent.baseCommit)))?.text
       : op === "archive" ? (value.kind === "invalid" ? value.text : undefined) : text;
     if (typeof body === "string" && tokens(body) > limits.bodyTokens) errors.push(overLimit("text", tokens(body), limits.bodyTokens));
     const content = { title: title!, text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !dreaming), reason: value.reason!,
       topics, createdAt: run.createdAt };
-    const scope = op === "archive" || op === "split" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : contentScope;
+    const scope = op === "archive" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : contentScope;
     if (scope && content.supports.every(Number.isSafeInteger)) {
       const bad = store.citationProblem(content.supports.filter(id => id > 0), scope, path);
       if (bad) errors.push(bad);
     }
     if (!errors.length) operations.push(op === "create" ? { op: "create", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
       : op === "merge" ? { op: "merge", intoKnowledgeId: dest!.knowledgeId, intoBaseCommit: dest!.baseCommit, absorb, ...content }
-      : op === "split" ? { op: "split", ...dest!, children, supports: content.supports, reason: content.reason, createdAt: run.createdAt }
+      : op === "split" ? { op: "split", ...dest!, ...content, children }
       : op === "archive" ? { op: "archive", ...dest!, kind: value.kind!, ...(value.kind === "invalid" ? { text: value.text } : {}), supports: content.supports, reason: content.reason, createdAt: run.createdAt }
       : { op: "update", ...dest!, ...content });
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
@@ -212,7 +209,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       return numbers(`${fact.text}\n${fact.quote ?? ""}`);
     }));
     // A shorthand merge copies an existing body in the transaction; it submits no new text to audit.
-    const bodies = op.op === "split" ? op.children.map((child, index) => ({ label: `${label}/child${index + 1}`, text: child.text }))
+    const bodies = op.op === "split" ? [{ label, text: op.text }, ...op.children.map((child, index) => ({ label: `${label}/child${index + 1}`, text: child.text }))]
       : op.text === undefined ? [] : [{ label, text: op.text }];
     for (const body of bodies) {
       const unsupported = [...new Set(numbers(body.text))].filter(n => !cited.has(n));

@@ -92,7 +92,7 @@ test("68: deliberated count measures frozen parents, not output revisions", asyn
     const ids = handles(task), write = task.tools.find(tool => tool.name === "memory")!;
     const merged = JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: readHandle(path => memoryFiles(f.memory, f.target).read(path).content, ids[0]!), absorb: [readHandle(path => memoryFiles(f.memory, f.target).read(path).content, ids[1]!)], text: "One rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "duplicate" }], skipped: [] }));
     expect(merged.committed).toHaveLength(1);
-    const split = JSON.parse(dreamerWrite(write, { operations: [{ op: "split", id: readHandle(path => memoryFiles(f.memory, f.target).read(path).content, ids[2]!), supports: [], reason: "independent rules", children: [{ title: "Fixture child", text: "First", category: "constraint", topics: [] }, { title: "Fixture child", text: "Second", category: "constraint", topics: [] }] }], skipped: [] }));
+    const split = JSON.parse(dreamerWrite(write, { operations: [{ op: "split", id: readHandle(path => memoryFiles(f.memory, f.target).read(path).content, ids[2]!), text: "Primary part.", category: "constraint", scope: "project", topics: [], supports: [], reason: "independent rules", children: [{ title: "Fixture child", text: "First", category: "constraint", topics: [] }, { title: "Fixture child", text: "Second", category: "constraint", topics: [] }] }], skipped: [] }));
     expect(split.committed).toHaveLength(2);
     return { outcome: "success", output: "done", ...exact };
   });
