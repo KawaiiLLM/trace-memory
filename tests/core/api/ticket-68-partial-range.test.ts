@@ -87,19 +87,27 @@ test.each(["success", "failure", "cancelled", "timeout"] as const)("68: 86 froze
 });
 
 test("68: deliberated count measures frozen parents, not output revisions", async () => {
+  // Assertions run outside the scripted agent, where a failure would be caught as an agent error and read as the expected failure.
+  const receipts: { merged?: { committed: unknown[] }; split?: { committed: unknown[] } } = {};
+  let returned = false;
   const f = setup(async task => {
     task.acknowledgeRequest();
     const ids = handles(task), write = task.tools.find(tool => tool.name === "memory")!;
     const merged = JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: readHandle(path => memoryFiles(f.memory, f.target).read(path).content, ids[0]!), absorb: [readHandle(path => memoryFiles(f.memory, f.target).read(path).content, ids[1]!)], text: "One rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "duplicate" }], skipped: [] }));
-    expect(merged.committed).toHaveLength(1);
+    receipts.merged = merged;
     const split = JSON.parse(dreamerWrite(write, { operations: [{ op: "split", id: readHandle(path => memoryFiles(f.memory, f.target).read(path).content, ids[2]!), text: "Primary part.", category: "constraint", scope: "project", topics: [], supports: [], reason: "independent rules", children: [{ title: "Fixture child", text: "First", category: "constraint", topics: [] }, { title: "Fixture child", text: "Second", category: "constraint", topics: [] }] }], skipped: [] }));
-    expect(split.committed).toHaveLength(2);
+    receipts.split = split;
+    returned = true;
     return { outcome: "success", output: "done", ...exact };
   });
   for (const text of ["first", "duplicate", "mixed", "untouched"]) f.create(text);
   const result = await f.memory.dream(f.target);
+  // The agent returned success having merged one item and split another into its primary part and two children.
+  expect(returned).toBe(true);
+  expect(receipts.merged!.committed).toHaveLength(1);
+  expect(receipts.split!.committed).toHaveLength(3);
   expect(result.outcome).toBe("failure"); // 104: the untouched item is not deliberated
   if (!("runId" in result) || result.runId === undefined) throw new Error("missing run audit");
-  expect(JSON.parse(f.store.getRun(result.runId)!.response!)).toMatchObject({ deliberated: 3, frozen: 4 });
+  expect(JSON.parse(f.store.getRun(result.runId)!.response!)).toMatchObject({ output: "done", deliberated: 3, frozen: 4 });
   expect(f.store.pendingVersions(f.pool, f.target)).toHaveLength(1);
 });
