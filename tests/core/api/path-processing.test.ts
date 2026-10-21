@@ -46,7 +46,7 @@ function pathFixture(seedOlderSurvivor = false) {
   }
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "root", currentTurnId: turn.id, triggerEntryId: root.id });
   const create = (text: string) => {
-    const receipt = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ op: "create", text,
+    const receipt = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text,
       category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: `Create ${text}.` }));
     expect(receipt.committed).toHaveLength(1);
     const item = receipt.committed[0] as { knowledgeId: number; version: string };
@@ -76,7 +76,7 @@ async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, s
     let operationInput: Record<string, unknown>;
     if (operation === "archive") operationInput = { op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason };
     else if (operation === "split") operationInput = { op: "split", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason,
-      children: [{ text: `${text} one`, category: "constraint", topics: [] }, { text: `${text} two`, category: "constraint", topics: [] }] };
+      children: [{ title: "Fixture child", text: `${text} one`, category: "constraint", topics: [] }, { title: "Fixture child", text: `${text} two`, category: "constraint", topics: [] }] };
     else if (operation === "merge-into") {
       const other = mergeOther ?? (() => { throw new Error("missing merge identity"); })();
       read(tagged(f.store, other.knowledgeId, other.commit));

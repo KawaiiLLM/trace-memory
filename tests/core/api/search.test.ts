@@ -38,9 +38,10 @@ const lines = (text: unknown) => String(text).split("\n");
 
 test("defaults: layer all, topk 10 with a query, knowledge then facts then Raw, one line each", () => {
   const f = corpus();
-  const rule = knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], "The widget rule is final");
+  const rule = knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], "The widget rule is final",
+    { operation: { title: "Widget rule" } });
   const out = lines(memory.search("widget"));
-  expect(out[0]).toMatch(/^\[K\d+@v1\] \[constraint\/project\] The widget rule is final$/);
+  expect(out[0]).toMatch(/^\[K\d+@v1\] \[constraint\/project\] Widget rule — The widget rule is final$/);
   expect(out.findIndex(l => l.startsWith("[F"))).toBeGreaterThan(0);
   expect(out.findIndex(l => l.startsWith("[S"))).toBeGreaterThan(out.findIndex(l => l.startsWith("[F")));
   expect(rule.knowledgeId).toBe(1);
@@ -76,10 +77,10 @@ test("with no query: every entry, or the newest topk across the layers", () => {
 test("every knowledge version is a candidate, labelled with its status; the current one is unmarked", () => {
   const f = corpus();
   const old = knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], "gadget rule one");
-  const kept = knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], "gadget rule two");
+  const kept = knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], "gadget rule two", { operation: { title: "Gadget rule two" } });
   archive(memory.store, f.path, old.knowledgeId, old.commit, [f.widgetFact.id], "invalid", "The gadget rule no longer holds: the user withdrew it for good reasons.");
   const found = lines(memory.search("gadget", "knowledge", f.path));
-  expect(found.find(l => l.includes("rule two"))).toMatch(/^\[K2@v1\] \[constraint\/project\] gadget rule two$/);
+  expect(found.find(l => l.includes("rule two"))).toMatch(/^\[K2@v1\] \[constraint\/project\] Gadget rule two — gadget rule two$/);
   expect(found.find(l => l.includes("rule one"))).toMatch(/^\[K1@v1\] \(superseded\) \[constraint\/project\]/);
   expect(found.find(l => l.includes("no longer holds"))).toMatch(/^\[K1@v2\] \(archived\) \[constraint\/project\]/);
   expect(kept.knowledgeId).toBe(2);

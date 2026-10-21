@@ -20,7 +20,8 @@ async function fixture(nativePrefix = "mcp__traceMemory__", forkToolCall: (id: s
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-tools-")); directories.push(directory);
   const transcriptPath = join(directory, "native.jsonl"), nativeSessionId = "cc-tools-session";
   const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
-    baseline: "2025-01-01T00:00:00.000Z", pollIntervalMs: 5, writeSourceTimeoutMs: 50 });
+    baseline: "2025-01-01T00:00:00.000Z", pollIntervalMs: 5, writeSourceTimeoutMs: 50,
+    "writing.bodyTokens": 1_000_000 }); // some fixtures here write bodies longer than the caps (ticket 144)
   const records: any[] = [
     { uuid: "user", parentUuid: null, type: "user", timestamp: "2026-01-01T00:00:00.000Z", promptId: "p1", promptSource: "typed",
       message: { role: "user", content: "run a write" } },
@@ -86,7 +87,7 @@ test("135: CC foreground rejects removed trace and history write bases but commi
     expect(f.importer.memory.store.listTurnFacts(f.exact.headTurnId)[0]?.title).toBe("Persisted write");
     const removedTool = await f.tools.call("trace", { address: `T${f.exact.headTurnId}#E1` }, undefined);
     expect(removedTool.isError).toBe(true); expect(text(removedTool)).toContain("unknown foreground tool");
-    const create = await f.tools.call("memory", { op: "create", text: "body ".repeat(3000), category: "reference", scope: "session",
+    const create = await f.tools.call("memory", { op: "create", title: "Fixture title", text: "body ".repeat(3000), category: "reference", scope: "session",
       supports: ["F1"], reason: "fixture", topics: [] }, { "claudecode/toolUseId": "call-memory" });
     expect(create.isError).toBeUndefined();
     const preview = await f.tools.call("search", { query: "body", layer: "knowledge" }, undefined);
@@ -106,8 +107,8 @@ test("search scope, layer and code execute through the CC surface; removed param
   const f = await fixture();
   try {
     expect((await f.tools.call("note", { title: "Surface evidence", sources: `[T${f.exact.headTurnId}#E1] surface evidence` }, { "claudecode/toolUseId": "call-note" })).isError).toBeUndefined();
-    expect((await f.tools.call("memory", { op: "create", text: "session alpha ".repeat(200), category: "reference", scope: "session", supports: ["F1"], reason: "seed", topics: ["alpha"] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
-    expect((await f.tools.call("memory", { op: "create", text: "global beta", category: "open", scope: "global", supports: ["F1"], reason: "seed", topics: ["beta"] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
+    expect((await f.tools.call("memory", { op: "create", title: "Fixture title", text: "session alpha ".repeat(200), category: "reference", scope: "session", supports: ["F1"], reason: "seed", topics: ["alpha"] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
+    expect((await f.tools.call("memory", { op: "create", title: "Fixture title", text: "global beta", category: "open", scope: "global", supports: ["F1"], reason: "seed", topics: ["beta"] }, { "claudecode/toolUseId": "call-memory" })).isError).toBeUndefined();
     const defaults = text(await f.tools.call("search", { layer: "knowledge" }, undefined));
     expect(defaults).toContain("session alpha"); expect(defaults).toContain("global beta");
     const session = text(await f.tools.call("search", { layer: "knowledge", scope: "session" }, undefined));

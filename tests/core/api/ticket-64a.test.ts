@@ -14,7 +14,7 @@ import { dreamerWrite } from "../../dreaming-skips.ts";
 
 const time = "2026-09-23T00:00:00Z";
 const created = (fact: number, text: string, reason = "New durable conclusion.") => ({
-  op: "create", text, category: "reference", scope: "project", topics: ["release"], supports: [`F${fact}`], reason,
+  op: "create", title: "Fixture title", text, category: "reference", scope: "project", topics: ["release"], supports: [`F${fact}`], reason,
 });
 
 describe("76/92 Noter updates and archives; Dreamer reviews", () => {
@@ -88,7 +88,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       { op: "merge", intoKnowledgeId: baseCommit.knowledgeId, intoBaseCommit: baseCommit.commit, absorb: [{ knowledgeId: 99, baseCommit: 99 }],
         text: "merged", category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "x", createdAt: time },
       { op: "split", knowledgeId: baseCommit.knowledgeId, baseCommit: baseCommit.commit, children: [
-        { text: "a", category: "reference", topics: [] }, { text: "b", category: "reference", topics: [] }], supports: [f.fact], reason: "x", createdAt: time },
+        { title: "Fixture child", text: "a", category: "reference", topics: [] }, { title: "Fixture child", text: "b", category: "reference", topics: [] }], supports: [f.fact], reason: "x", createdAt: time },
     ] satisfies KnowledgeOperationInput[]) {
       const rejected = publishN(f.session.id, [forbidden]);
       expect(rejected.ok).toBe(false);

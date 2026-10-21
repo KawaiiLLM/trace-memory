@@ -8,7 +8,7 @@ import { memoryFiles } from "../../../src/core/api/files.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 let memory: ReturnType<typeof sourceSeededMemory>, admittedScenarios: AdmittedDreamerScenarios, triggerEntryId: number;
 afterEach(() => memory?.close());
-const create = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
+const create = { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
 const batch = create;
 function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>) {
   admittedScenarios = new AdmittedDreamerScenarios(raw => agent(raw as NotingAgentInput));
@@ -182,7 +182,7 @@ test("135: update rejects both body forms, neither, malformed edits and missing 
   }
 });
 
-test("135: supplied edit metadata replaces the inherited fields and a manual update result is not capped", () => {
+test("135: supplied edit metadata replaces the inherited fields", () => {
   const write = setup(async () => success());
   write.execute({ ...create, topics: ["packaging"] });
   const base = read(1);
@@ -192,11 +192,6 @@ test("135: supplied edit metadata replaces the inherited fields and a manual upd
   expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, result.committed[0]))).toMatchObject({
     text: "Use corepack pnpm", category: "reference", scope: "session", topics: [], supports: [1],
   });
-  // A manual create is not capped, so a manual update result is not either (a Noter or Dreamer result is).
-  const long = "word ".repeat(1_100);
-  const grown = JSON.parse(write.execute({ ...update, id: result.committed[0].version, edits: [{ old: "corepack", new: long }] }));
-  expect(grown.committed).toHaveLength(1);
-  expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, grown.committed[0]))!.text).toBe(`Use ${long} pnpm`);
 });
 
 test("135: N numbers a failed edit and replaces held edits under the same slot against the exact base", async () => {
@@ -230,7 +225,7 @@ test("135: N numbers a failed edit and replaces held edits under the same slot a
   expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
 });
 
-test("135: D checks the edited full-body cap and a numbered resubmission inherits metadata and parent supports", async () => {
+test("135: D checks the edited full-body cap (144: 200 tokens) and a numbered resubmission inherits metadata and parent supports", async () => {
   const write = setup(async () => success());
   write.execute({ ...create, topics: ["packaging"] });
   const base = read(1), path = dreamPath();
@@ -240,8 +235,8 @@ test("135: D checks the edited full-body cap and a numbered resubmission inherit
     input.reportRequest({ fixture: "135 immediate exact edits" });
     const tool = input.tools.find(tool => tool.name === "memory")!;
     const update = { op: "update", id: base, supports: [], reason: "Clarify the invocation" };
-    const refused = JSON.parse(tool.execute({ ...update, edits: [{ old: "pnpm", new: "word ".repeat(1_100) }] }));
-    expect(refused.rejected.M1).toContain("1000-token limit");
+    const refused = JSON.parse(tool.execute({ ...update, edits: [{ old: "pnpm", new: "word ".repeat(300) }] }));
+    expect(refused.rejected.M1).toContain("text: 301 tokens, over the 200-token limit");
     expect(memory.store.listKnowledgeRevisions()).toEqual(before);
     const committed = JSON.parse(tool.execute({ ...update, slot: "M1", edits: [{ old: "pnpm", new: "corepack pnpm" }] }));
     expect(committed.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);
@@ -680,9 +675,10 @@ test("135: N preserves inherited legacy metadata through its existing concurrent
     const request = { fixture: "135 legacy inherited category concurrency" }; input.reportRequest(request);
     input.tools.find(tool => tool.name === "note")!.execute({});
     const tool = input.tools.find(tool => tool.name === "memory")!;
-    expect(JSON.parse(tool.execute({ op: "update", id: base, edits: [{ old: "pnpm", new: "corepack pnpm" }],
+    // A legacy base has no title to inherit, so the update supplies one.
+    expect(JSON.parse(tool.execute({ op: "update", id: base, title: "Fixture title", edits: [{ old: "pnpm", new: "corepack pnpm" }],
       supports: ["F1"], reason: "Clarify the invocation" })).held).toEqual(["M1"]);
-    const advanced = JSON.parse(manual.execute({ op: "update", id: base, text: "Use the newer confirmed invocation",
+    const advanced = JSON.parse(manual.execute({ op: "update", id: base, title: "Newer invocation", text: "Use the newer confirmed invocation",
       category: "understanding", scope: "project", topics: [], supports: ["F1"], reason: "A genuine concurrent update" }));
     expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, advanced.committed[0]))!.text).toBe("Use the newer confirmed invocation");
     return { outcome: "success", output: "done", request };
@@ -697,7 +693,7 @@ test("135: N preserves inherited legacy metadata through its existing concurrent
   expect(result.outcome, JSON.stringify(result)).toBe("success");
   expect(memory.store.currentCommit(1)[0]!.text).toBe("Use the newer confirmed invocation");
   const converted = memory.store.currentCommit(2)[0]!;
-  expect(converted).toMatchObject({ op: "create", category: "mechanism", scope: "project", topics: ["packages"], supports: [1] });
+  expect(converted).toMatchObject({ op: "create", title: "Fixture title", category: "mechanism", scope: "project", topics: ["packages"], supports: [1] });
   expect(converted.text).toBe(`Use corepack pnpm\n[Concurrent update converted to create; originally targeted ${base}; pending reconciliation.]`);
   expect(memory.store.getKnowledgeRevision(1, imported.commit)!.text).toBe("Use pnpm");
   expect(memory.pendingEntries(1, "main", 1)).toEqual([]);

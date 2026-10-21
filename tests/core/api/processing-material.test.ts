@@ -11,14 +11,14 @@ function fixture(agent: (input: NotingAgentInput) => void = () => {}) {
     input.tools.find(tool => tool.name === "note")!.execute({});
     agent(input);
     return { outcome: "success", output: "done", request: {} };
-  });
+  }, { writing: { bodyTokens: 1_000_000 } }); // the oversized body below stands for an item written before the caps (ticket 144)
   const p = memory.store.createProject({ name: "A", declaredBy: "mark" });
   const s = memory.store.createSession({ host: "test", enrollmentChoice: true, projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const turn = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use this rule", startedAt: "now" });
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: turn.id });
   tools.find(tool => tool.name === "note")!.execute({ title: "Rule", sources: `[T${turn.id}#E1] rule` });
   const content = { text: "word ".repeat(5_200), category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "test" };
-  expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", ...content })).toContain("committed");
+  expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", ...content })).toContain("committed");
   // Derive an exact 5,000-token Knowledge window from the real pool policy.
   // The oversized body then exercises omission without a retired fixed allowance.
   setKnowledgeCapacity(memory, 5_000);
@@ -79,7 +79,7 @@ test("92: omitted knowledge stays fully readable while N holds a distinct create
     // A read produces frozen output only; it never mutates the dispatch snapshot.
     expect(input).not.toHaveProperty("readKnowledgeCommits");
 
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ op: "create", ...f.content, text: "A distinct durable rule" })).toContain("held: M1");
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", ...f.content, text: "A distinct durable rule" })).toContain("held: M1");
     expect(f.memory.store.currentKnowledge(f.memory.store.knowledgePath(1))).toHaveLength(1);
     input.reportRequest({ fixture: "held processing material" });
   });
@@ -96,10 +96,10 @@ test("N material shows each knowledge body's cap-check token count; injection do
   const f = fixture();
   try {
     const body = "Short rule. ".repeat(40);
-    expect(f.tools.find(tool => tool.name === "memory")!.execute({ op: "create", ...f.content, text: body })).toContain("committed");
+    expect(f.tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", ...f.content, text: body })).toContain("committed");
     setKnowledgeCapacity(f.memory, 20_000);
     const material = f.freeze().prepared!.text;
-    expect(material).toContain(`[constraint/project] (${tokens(body)}/1000 tokens) ${body}`);
+    expect(material).toContain(`[constraint/project] (${tokens(body)}/${f.memory.config.writing.bodyTokens} tokens) Fixture title\n${body}`);
     expect(material).not.toMatch(/\(\d+ tokens\)/); // 134: the Dreamer's pool-cost form never joins it for the same item
     expect(f.memory.injection(f.target).text).not.toContain("tokens) ");
   } finally { f.memory.close(); }

@@ -22,13 +22,13 @@ function seeded(config: Record<string, unknown> = {}) {
     }
     return { outcome: "success" as const, output: "", request: { probe: true } }; };
   const scenarios = new AdmittedDreamerScenarios(fallback);
-  const m = sourceSeededMemory(":memory:", scenarios.agent, config);
+  const m = sourceSeededMemory(":memory:", scenarios.agent, { writing: { bodyTokens: 1_000_000 }, ...config });
   const p = m.store.createProject({ name: "review", declaredBy: "mark" });
   const s = m.store.createSession({ host: "review", startedAt: "2026-09-08", firstReplyAt: "2026-09-08", projectId: p.id, enrollmentChoice: true });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });
   const tools = m.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ title: "Review evidence", sources: `[T${t.id}#E1] ${text}`, ...extra });
-  const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] });
+  const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] });
   return { m, calls, s, t, note, knowledge, scenarios };
 }
 
@@ -182,7 +182,7 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
     expect(f.note("Use SQLite")).toContain("ok: F1");
     const memory = f.m.tools({ kind: "manual", sessionId: f.s.id, branch: "main", currentTurnId: f.t.id }).find(tool => tool.name === "memory")!;
     const content = { text: "Use SQLite", category: "constraint", scope: "project", supports: ["F1"], reason: "Classify this conclusion." };
-    expect(memory.execute({ op: "create", ...content, topics: ["a, b"] })).toContain("committed");
+    expect(memory.execute({ op: "create", title: "Fixture title", ...content, topics: ["a, b"] })).toContain("committed");
     const entries = hydrate(f.m.store.sourcePath(f.s.id, "main", f.t.id), f.m.store);
     f.m.selectEntries(f.s.id, "main", entries.map(entry => entry.id));
     const path = { sessionId: f.s.id, branch: "main", headTurnId: f.t.id, triggerEntryId: entries.at(-1)!.id };

@@ -13,7 +13,7 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 test("92/03: a tagged exact base works without trace, unknown tags fail, revisions retain ordinal across reopen", () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-92-tags-")); dirs.push(dir);
   const file = join(dir, "memory.sqlite");
-  const open = () => sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "not invoked" }));
+  const open = () => sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "not invoked" }), { writing: { bodyTokens: 1_000_000 } });
   const memory = open();
   const project = memory.store.createProject({ name: "tag-test", declaredBy: "mark" });
   const session = memory.store.createSession({ projectId: project.id, host: "pi:test", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
@@ -22,7 +22,7 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
   const note = memory.tools(context).find(tool => tool.name === "note")!;
   const fact = JSON.parse(note.execute({ title: "Preserve a rule", sources: `[T${turn.id}#E1] User wants to preserve a rule` })).factIds[0];
   const create = memory.tools(context).find(tool => tool.name === "memory")!;
-  const createdReceipt = create.execute({ op: "create", text: "First rule", category: "constraint", scope: "session", topics: [], reason: "initial", supports: [`F${fact}`] });
+  const createdReceipt = create.execute({ op: "create", title: "Fixture title", text: "First rule", category: "constraint", scope: "session", topics: [], reason: "initial", supports: [`F${fact}`] });
   if (createdReceipt.startsWith("rejected:")) throw new Error(createdReceipt);
   const created = JSON.parse(createdReceipt);
   expect(created.committed).toHaveLength(1);
@@ -39,7 +39,7 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
   const read = files.read(`trace://K${knowledgeId}@v1`).content;
   expect(read).toContain(`[K${knowledgeId}#${tag}]`);
   expect(read).not.toContain(`K${knowledgeId}@${commit}`);
-  const second = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "create", text: "Second rule: " + "long body segment ".repeat(90), category: "reference", scope: "session", topics: [], reason: "second", supports: [`F${fact}`] }));
+  const second = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Second rule: " + "long body segment ".repeat(90), category: "reference", scope: "session", topics: [], reason: "second", supports: [`F${fact}`] }));
   const secondId = second.committed[0].knowledgeId;
   const secondVersion = `K${secondId}#${memory.store.versionTag(secondId, memory.store.resolveVersionOrdinal(secondId, 1))}`;
   expect(files.read(`trace://K${secondId}@v1`).content).toContain(secondVersion);
@@ -63,7 +63,7 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
 });
 
 test("118: exact knowledge reads carry a complete tagged body; search previews remain tagless", () => {
-  const memory = sourceSeededMemory(":memory:", async () => ({ outcome: "failure" as const, output: "unused" }));
+  const memory = sourceSeededMemory(":memory:", async () => ({ outcome: "failure" as const, output: "unused" }), { writing: { bodyTokens: 1_000_000 } });
   try {
     const project = memory.store.createProject({ name: "paged-project", declaredBy: "mark" });
     const session = memory.store.createSession({ projectId: project.id, host: "pi:paging", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
@@ -72,7 +72,7 @@ test("118: exact knowledge reads carry a complete tagged body; search previews r
     const tools = memory.tools(context);
     const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "A paging example", sources: `[T${turn.id}#E1] A paging example` })).factIds[0];
     const body = "长行😀 Mixed body. ".repeat(60);
-    const receipt = JSON.parse(tools.find(t => t.name === "memory")!.execute({ op: "create", text: body,
+    const receipt = JSON.parse(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", text: body,
       category: "reference", scope: "project", topics: [], reason: "created", supports: [`F${fact}`] }));
     const { knowledgeId } = receipt.committed[0];
     const version = `K${knowledgeId}#${memory.store.versionTag(knowledgeId, memory.store.resolveVersionOrdinal(knowledgeId, 1))}`;
@@ -89,7 +89,7 @@ test("118: exact knowledge reads carry a complete tagged body; search previews r
 test("92/03+04: concurrent N writers serialize version metadata and convert a stale update; failed manual batches roll back", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-92-tag-writers-")); dirs.push(dir);
   const file = join(dir, "memory.sqlite");
-  const memory = sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "unused" }));
+  const memory = sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "unused" }), { writing: { bodyTokens: 1_000_000 } });
   const workers: Worker[] = [];
   try {
     const project = memory.store.createProject({ name: "writers", declaredBy: "mark" });
@@ -162,7 +162,7 @@ test("92/03+04: concurrent N writers serialize version metadata and convert a st
 test("92/03: an existing collision stays stable; only the later version extends, and no reopen repairs missing metadata", () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-92-tags-collision-")); dirs.push(dir);
   const file = join(dir, "memory.sqlite");
-  const open = () => sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "not invoked" }));
+  const open = () => sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "not invoked" }), { writing: { bodyTokens: 1_000_000 } });
   const memory = open();
   const project = memory.store.createProject({ name: "collision", declaredBy: "mark" });
   const session = memory.store.createSession({ projectId: project.id, host: "pi:test", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
@@ -170,7 +170,7 @@ test("92/03: an existing collision stays stable; only the later version extends,
   const context = { kind: "manual" as const, sessionId: session.id, currentTurnId: turn.id, branch: "main" };
   const note = memory.tools(context).find(tool => tool.name === "note")!;
   const fact = JSON.parse(note.execute({ title: "Archive a rule", sources: `[T${turn.id}#E1] Keep an archived rule` })).factIds[0];
-  const created = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "create", text: "An initial body", category: "constraint", scope: "session", topics: [], reason: "initial", supports: [`F${fact}`] }));
+  const created = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "An initial body", category: "constraint", scope: "session", topics: [], reason: "initial", supports: [`F${fact}`] }));
   const { knowledgeId, version } = created.committed[0];
   const commit = memory.store.resolveVersionOrdinal(knowledgeId, Number(version.split("@v")[1]));
   const expectedNext = commit + 1;

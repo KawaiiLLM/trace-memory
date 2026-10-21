@@ -9,6 +9,7 @@ import { knowledgeReadSelection } from "./knowledge-read.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
+import { DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import { sourceBlocks, resultHasText, isThinkingOnly, type SourceNormalizer, type HumanUserDetector } from "../model/source.ts";
 export { isThinkingOnly } from "../model/source.ts";
 import { readFacade, readProfile, type ListingOptions, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
@@ -82,6 +83,8 @@ export interface TraceMemoryConfig {
     /** Cooperative wall-clock deadline shared by every host. */
     timeoutMs: number;
   };
+  /** Per-item length caps for every writer (ticket 144), in `tokens()` units. */
+  writing: WritingLimits;
   /** Episodic bases, a Knowledge-only shared allowance, and a separate temporary allowance. */
   compaction: {
     factsTokens: number;
@@ -97,7 +100,7 @@ export interface TraceMemoryConfig {
 
 /** The configuration sections, in one place: the loader, the validator and the host's flat
  * `section.key` layer all enumerate them from here rather than repeating the list (28a added one). */
-export const CONFIG_SECTIONS = ["render", "noting", "dreaming", "compaction"] as const;
+export const CONFIG_SECTIONS = ["render", "noting", "dreaming", "compaction", "writing"] as const;
 
 export const DEFAULT_CONFIG: TraceMemoryConfig = {
   closedSessionScope: "project",
@@ -114,6 +117,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     maxToolRounds: 0,
   },
   dreaming: { triggerTokens: DEFAULT_DREAMING_TRIGGER_TOKENS, maxToolRounds: 0, timeoutMs: 1_800_000 },
+  writing: { ...DEFAULT_WRITING_LIMITS },
   compaction: {
     factsTokens: 10_000,
     rawTokens: 10_000,
@@ -132,6 +136,7 @@ export type ConfigOverride = {
   noting?: Partial<TraceMemoryConfig["noting"]> & { branchModeDefault?: boolean };
   dreaming?: Partial<TraceMemoryConfig["dreaming"]>;
   compaction?: Partial<TraceMemoryConfig["compaction"]>;
+  writing?: Partial<TraceMemoryConfig["writing"]>;
 };
 
 /** Legacy configuration spellings accepted at the boundary, `section.key` on both sides (ticket 19
@@ -244,6 +249,7 @@ function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMe
     noting: { ...base.noting, ...override.noting },
     dreaming: { ...base.dreaming, ...override.dreaming },
     compaction: { ...base.compaction, ...override.compaction },
+    writing: { ...base.writing, ...override.writing },
   };
 }
 
@@ -500,7 +506,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   /** Ticket 23: the host's one result-text extractor, registered here (default: the stored string). */
   resultText: ResultExtractor = rawResultText, normalizeSource?: SourceNormalizer, humanUser?: HumanUserDetector): TraceMemory {
   const cfg = validateConfig(config);
-  const store = new Store(dbPath, normalizeSource);
+  const store = new Store(dbPath, normalizeSource, () => cfg.writing);
   const executorId = randomUUID();
   let stopping = false;
   const tasks = new Set<{ sessionId: number; phase: Phase; executionId: string; claimToken: string; controller: AbortController; force(): void; close(): void }>();
@@ -569,7 +575,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
             const address = display.modelFacing ? (revision: typeof r) => revision.id === r.id
               ? `K${id}#${store.versionTag(id, r.id)}` : shown(revision) : undefined;
             return renderKnowledgeTrace({ knowledge, revision: r }, parents, children, itemCap, fields, historyLines, undefined, address,
-              display.modelFacing && historyLines ? shown(r) : undefined, supportTitles);
+              display.modelFacing && historyLines ? shown(r) : undefined, supportTitles, store.writing);
           });
         }
       };
@@ -1076,7 +1082,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const next = validateConfig({
         closedSessionScope: requested.closedSessionScope === undefined ? cfg.closedSessionScope : requested.closedSessionScope,
         render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, dreaming: cfg.dreaming,
-        compaction: cfg.compaction,
+        compaction: cfg.compaction, writing: cfg.writing,
       });
       // One object identity throughout, so every existing reader sees the new default at its next
       // admission; nothing else of the frozen configuration moves.

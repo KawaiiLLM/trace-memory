@@ -28,6 +28,8 @@ Core phase bounds use optional top-level keys in the same file:
 | `compaction.userTurns` | 100 | User-word reach including the anchor, counted along its path |
 | `compaction.titleTurns` | 100 | Fact-title reach including the anchor, counted along its path |
 | `compaction.userEntryTokens` | 300 | Middle-cut cap for each earlier human user entry |
+| `writing.titleTokens` | 20 | Longest title of a fact or knowledge item, for every writer |
+| `writing.bodyTokens` | 200 | Longest body of a fact (its segments summed) or knowledge item, for every writer |
 
 The shared material allowance is this configured value, not derived from the N or D triggers.
 Noter publishes facts and knowledge together; facts have no later processing queue. Database pool

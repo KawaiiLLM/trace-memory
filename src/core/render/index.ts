@@ -1,5 +1,5 @@
 import { diffArrays } from "diff";
-import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup } from "../model/index.ts";
+import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import type { KnowledgeCategory, KnowledgeRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
 import { entryAddress, fragmentAddress, sourceBlocks, blockText } from "../model/source.ts";
@@ -10,8 +10,6 @@ import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 // every existing `from ".../render/index.ts"` import of these three names keeps working.
 import { tokens, tokensJoined, JoinedTokens } from "./tokens.ts";
 export { tokens, tokensJoined, JoinedTokens };
-/** The cap on one Fact or Knowledge body written by a worker, in `tokens()` units. */
-export const WORKER_ITEM_TOKENS = 1_000;
 
 export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean; includeThinking?: boolean; rawTurn?: boolean }
 export interface Rendered { content: string; receipts: string[] }
@@ -560,10 +558,20 @@ export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap =
 // Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
 
-export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`, showSize = false): string {
+/** The title a knowledge version shows (ticket 144): its own, or for a legacy untitled version the
+ * leading characters of its body, flattened to one line and cut to `titleTokens`. */
+export function knowledgeTitle(r: Pick<KnowledgeRevision, "title" | "text">, titleTokens: number): string {
+  if (r.title !== null) return r.title;
+  const characters = Array.from(r.text.replace(/\s+/g, " ").trim());
+  return characters.slice(0, fit(count => characters.slice(0, count).join(""), characters.length, titleTokens)).join("");
+}
+
+export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`, showSize = false,
+  limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  const size = showSize ? ` (${tokens(r.text)}/${WORKER_ITEM_TOKENS} tokens)` : "";
-  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size} ${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  const size = showSize ? ` (${tokens(r.text)}/${limits.bodyTokens} tokens)` : "";
+  const tags = `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size}`;
+  return `${tags} ${knowledgeTitle(r, limits.titleTokens)}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 /** Canonical headings contain an address and category/scope; price without re-rendering metadata. */
@@ -610,18 +618,19 @@ export function renderKnowledgePreview(value: KnowledgeWithRevision, status: str
 
 export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
   fields?: ReadonlySet<string>, historyLine = false, pathStatus?: string,
-  address?: (revision: KnowledgeRevision) => string, versionLabel?: string, supportTitles?: ReadonlyMap<number, string>): string {
+  address?: (revision: KnowledgeRevision) => string, versionLabel?: string, supportTitles?: ReadonlyMap<number, string>,
+  limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
   const shown = address ?? ((r: KnowledgeRevision) => `K${r.knowledgeId}@${r.id}`);
   const addresses = (commits: KnowledgeRevision[]) => commits.map(shown).join(", ") || "none";
   if (!fields) {
-    const whole = [renderKnowledge(value, shown(value.revision)),
+    const whole = [renderKnowledge(value, shown(value.revision), false, limits),
       ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
       `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
-    const prefix = `[${shown(value.revision)}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] `;
+    const prefix = `[${shown(value.revision)}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] ${knowledgeTitle(value.revision, limits.titleTokens)}\n`;
     return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
   }
-  const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "";
-  const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] `;
+  const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "", title = knowledgeTitle(r, limits.titleTokens);
+  const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${title}\n`;
   const suffix = [
     ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields.has("topics") ? topicList(r.topics) : ""}`] : []),
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
@@ -630,11 +639,11 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
     ...(fields.has("links") ? [`\n  parents: ${addresses(parents)}`, `\n  children: ${addresses(children)}`] : []),
     ...(historyLine ? [`\n${selectedCommitLine(r, fields, versionLabel ?? (address ? `K${r.knowledgeId}` : undefined))}`] : []),
   ].join("");
-  if (!fields.has("text")) return `${address ? `[K${value.knowledge.id}]` : `[${shown(r)}]`}${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}]` + suffix;
+  if (!fields.has("text")) return `${address ? `[K${value.knowledge.id}]` : `[${shown(r)}]`}${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${title}` + suffix;
   const rendered = renderSemantic(prefix, r.text, suffix, cap);
   // A content cap may omit part of the body. Such a preview is never a version handle.
   return !address || rendered === prefix + r.text + suffix ? rendered
-    : renderSemantic(`[K${value.knowledge.id}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] `, r.text, suffix, cap);
+    : renderSemantic(`[K${value.knowledge.id}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${title}\n`, r.text, suffix, cap);
 }
 
 const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
@@ -730,7 +739,8 @@ export function sentenceDiff(before: string, after: string): SentenceDiff {
  * zero for a real change, far less than the whole item for a metadata-only one (76 ruling "(a)"); the
  * `K@commit` address itself is never part of the comparison. */
 export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRevision, current: KnowledgeRevision,
-  address = `K${knowledgeId}@${current.id}`, poolTokens?: number): { text: string; addedTokens: number; removedTokens: number } {
+  address = `K${knowledgeId}@${current.id}`, poolTokens?: number,
+  limits: WritingLimits = DEFAULT_WRITING_LIMITS): { text: string; addedTokens: number; removedTokens: number } {
   const body = sentenceDiff(baseline.text, current.text);
   const categoryChanged = knowledgeCategoryGroup(baseline.category) !== knowledgeCategoryGroup(current.category), scopeChanged = baseline.scope !== current.scope;
   const supportsAdded = current.supports.filter(id => !baseline.supports.includes(id));
@@ -739,7 +749,8 @@ export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRe
   const topicsRemoved = baseline.topics.filter(t => !current.topics.includes(t));
   const supportLabel = current.supportSemantics === "change" ? "change supports" : "supports";
   const lines = [
-    `[${address}] [${knowledgeCategoryGroup(current.category)}/${current.scope}]${poolTokens === undefined ? "" : ` (${poolTokens} tokens)`}\n${body.text}`,
+    `[${address}] [${knowledgeCategoryGroup(current.category)}/${current.scope}]${poolTokens === undefined ? "" : ` (${poolTokens} tokens)`} ${knowledgeTitle(current, limits.titleTokens)}\n${body.text}`,
+    ...(baseline.title !== current.title ? [`  title: ${baseline.title ?? "(none)"} -> ${current.title ?? "(none)"}`] : []),
     `  ${supportLabel} added: ${factAddresses(supportsAdded)} removed: ${factAddresses(supportsRemoved)}`,
     ...(categoryChanged ? [`  category: ${knowledgeCategoryGroup(baseline.category)} -> ${knowledgeCategoryGroup(current.category)}`] : []),
     ...(scopeChanged ? [`  scope: ${baseline.scope} -> ${current.scope}`] : []),
@@ -751,9 +762,10 @@ export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRe
     `  current supports: ${factAddresses(current.supports)}`,
     `  current topics: ${JSON.stringify(current.topics)}`,
   ];
-  const added = [body.added, categoryChanged ? current.category : "", scopeChanged ? current.scope : "",
+  const titleChanged = baseline.title !== current.title;
+  const added = [body.added, titleChanged ? current.title ?? "" : "", categoryChanged ? current.category : "", scopeChanged ? current.scope : "",
     supportsAdded.length ? factAddresses(supportsAdded) : "", topicsAdded.join(" ")].filter(Boolean).join(" ");
-  const removed = [body.removed, categoryChanged ? baseline.category : "", scopeChanged ? baseline.scope : "",
+  const removed = [body.removed, titleChanged ? baseline.title ?? "" : "", categoryChanged ? baseline.category : "", scopeChanged ? baseline.scope : "",
     supportsRemoved.length ? factAddresses(supportsRemoved) : "", topicsRemoved.join(" ")].filter(Boolean).join(" ");
   return { text: lines.join("\n"), addedTokens: tokens(added), removedTokens: tokens(removed) };
 }
@@ -765,6 +777,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
   if (fields) {
     const prefix = fields.has("text") ? `${identity}\n  text:\n` : identity;
     const lines = [
+      ...(fields.has("text") && a.title !== b.title ? [`  title: ${a.title ?? "(none)"} -> ${b.title ?? "(none)"}`] : []),
       ...(fields.has("supports") ? [`  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
         `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`] : []),
       ...(fields.has("status") && a.category !== b.category ? [`  category: ${a.category} -> ${b.category}`] : []),
@@ -781,6 +794,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
   const whole = [prefix + text,
     `  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
     `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
+    ...(a.title === b.title ? [] : [`  title: ${a.title ?? "(none)"} -> ${b.title ?? "(none)"}`]),
     ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),
     ...(a.scope === b.scope ? [] : [`  scope: ${a.scope} -> ${b.scope}`]),
     ...(a.reason === b.reason ? [] : [`  reason: ${a.reason} -> ${b.reason}`]),
@@ -854,7 +868,7 @@ const knowledgeBody = (items: RenderedKnowledgeItem[], recencyNotice = KNOWLEDGE
 /** Linear rendering and conservative measurement of one complete, stably ordered knowledge pool.
  * Callers use this before the bounded prefix selector so a pool that already fits is never subjected
  * to repeated prefix scans. The cost is the same estimator `budgetKnowledge` applies to its body. */
-export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge): BudgetedKnowledge {
+export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowledge: KnowledgeWithRevision) => string = value => renderKnowledge(value)): BudgetedKnowledge {
   return { ...knowledgeBody(orderedKnowledge(knowledge, line)), receipts: [] };
 }
 
@@ -862,7 +876,7 @@ export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowle
  * Required exact versions cannot be omitted. Optional items keep newest commits first by default;
  * compaction may omit their receipts too rather than spend required overflow on optional framing.
  * No item is rewritten to fit, and omitted items remain stored and traceable. */
-export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
+export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = value => renderKnowledge(value),
   budget = "Knowledge capacity", required?: ReadonlySet<number>,
   priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): BudgetedKnowledge {
   // Selection remains newest-first; presentation is grouped by category, oldest first inside a group.

@@ -107,7 +107,7 @@ test("the main agent reads trace:// through read and grep, other paths reach Pi'
     const seen = results(f.sent.at(-1)!);
     expect(seen.get("tm_read")).toMatch(/^trace:\/\/K1  \[constraint\/global\] Use pnpm, never npm\.$/m);
     expect(seen.get("tm_grep")).toBe("trace://K1@v1");
-    expect(seen.get("tm_lines")).toMatch(/^trace:\/\/K1@v1:1: \[K1#[a-z]+\] \[K1@v1\] \[constraint\/global\] Use pnpm, never npm\.$/);
+    expect(seen.get("tm_lines")).toMatch(/^trace:\/\/K1@v1:1: \[K1#[a-z]+\] \[K1@v1\] \[constraint\/global\] Use pnpm, never npm\.\ntrace:\/\/K1@v1:2: Use pnpm, never npm\.$/);
     expect(seen.get("real_read")).toContain("a real file line");
     expect(seen.get("tm_write")).toContain(MEMORY_READ_ONLY);
     // 128: `/tm` reaches Pi's own tools like any other path: their own not-found answers, no pointer to trace://.

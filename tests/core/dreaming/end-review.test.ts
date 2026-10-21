@@ -133,8 +133,8 @@ test("each operation kind renders as specified: merge, split, invalid and budget
     ok(tool("memory", { operations: [
       { op: "merge", id: survivor!.tag, absorb: [absorbed!.tag], text: "Survivor body " + "x".repeat(60) + " end, with the absorbed rule.",
         category: "constraint", scope: "project", topics: [], supports: [], reason: "same rule" },
-      { op: "split", id: parent!.tag, children: [{ text: "Child one.", category: "constraint", topics: [] },
-        { text: "Child two.", category: "reference", topics: [] }], supports: [], reason: "two rules" },
+      { op: "split", id: parent!.tag, children: [{ title: "Fixture child", text: "Child one.", category: "constraint", topics: [] },
+        { title: "Fixture child", text: "Child two.", category: "reference", topics: [] }], supports: [], reason: "two rules" },
       { op: "archive", kind: "invalid", id: obsolete!.tag, text: invalidReason, supports: [], reason: "contradicted" },
       { op: "archive", kind: "budget", id: budget!.tag, supports: [], reason: "over budget" },
       { ...update(category!.tag, "Category body."), category: "reference" }], skipped: [] }));
@@ -186,7 +186,7 @@ test("an item rewritten and then archived, split or absorbed shows the body the 
     ok(tool("memory", { operations: [
       { op: "merge", id: survivor!.tag, absorb: [p.current(absorbed!)], text: "Survivor body.", category: "constraint", scope: "project", topics: [], supports: [], reason: "same rule" },
       { op: "archive", kind: "budget", id: p.current(budget!), supports: [], reason: "over budget" },
-      { op: "split", id: p.current(parent!), children: [{ text: "One.", category: "constraint", topics: [] }, { text: "Two.", category: "constraint", topics: [] }], supports: [], reason: "two rules" },
+      { op: "split", id: p.current(parent!), children: [{ title: "Fixture child", text: "One.", category: "constraint", topics: [] }, { title: "Fixture child", text: "Two.", category: "constraint", topics: [] }], supports: [], reason: "two rules" },
       { op: "archive", kind: "invalid", id: p.current(invalid!), text: invalidReason, supports: [], reason: "contradicted" }], skipped: [] }));
   } });
   const result = await p.run();

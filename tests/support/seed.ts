@@ -36,11 +36,19 @@ export const factSources = (segments: readonly { address: string; text: string }
 type NewSeed = { title: string; sources: readonly { entry: SourceEntry; text: string }[];
   negate?: readonly (readonly [number, "strong" | "weak"])[] };
 
-/** One real manual note call per supplied fact; Core owns ordering, roles and owning Turn. */
+/** One real manual note call per supplied fact; Core owns ordering, roles and owning Turn. A seeded fact
+ * stands for one already in the database, and production holds facts written before the caps (ticket 144)
+ * that are far over them, so the caps are lifted while seeding; the caps' own contract tests call `note`. */
 export function facts(memory: TraceMemory, path: KnowledgePath, items: readonly NewSeed[]): Fact[] {
   if (path.headTurnId === null || !path.branch) throw new Error("facts require an explicit headed branch");
   const tool = memory.tools({ kind: "manual", sessionId: path.sessionId, branch: path.branch,
     currentTurnId: path.headTurnId }).find(tool => tool.name === "note")!;
+  const limits = { ...memory.config.writing };
+  Object.assign(memory.config.writing, { titleTokens: Infinity, bodyTokens: Infinity });
+  try { return seedFacts(memory, tool, items); } finally { Object.assign(memory.config.writing, limits); }
+}
+
+function seedFacts(memory: TraceMemory, tool: { execute(input: unknown): string }, items: readonly NewSeed[]): Fact[] {
   const ids = items.map(item => {
     const receipt = tool.execute({ title: item.title, sources: factSources(item.sources.map(source => ({
       address: `T${source.entry.turnId}#E${source.entry.entryOrdinal}`, text: source.text,
@@ -97,14 +105,14 @@ export function legacyFact(store: Store, path: KnowledgePath, sources: readonly 
 }
 
 type KnowledgeSeed = { scope: "global" | "project" | "session"; category: KnowledgeCategory; supports: number[];
-  text: string; topics?: string[]; createdAt?: string; author?: string; reason?: string };
+  title?: string; text: string; topics?: string[]; createdAt?: string; author?: string; reason?: string };
 type KnowledgeRun = { kind: "manual" | "noting"; createdAt: string };
 
 /** One real create-only manual/N knowledge run; caller owns path, run time and each item's metadata. */
 export function knowledgeBatch(store: Store, path: KnowledgePath, items: readonly KnowledgeSeed[],
   run: KnowledgeRun = { kind: "noting", createdAt: at }) {
   const operations = items.map((item, index) => ({ op: "create" as const, handle: `$${index + 1}`,
-    author: item.author ?? "test", text: item.text, category: item.category, scope: item.scope,
+    author: item.author ?? "test", ...(item.title === undefined ? {} : { title: item.title }), text: item.text, category: item.category, scope: item.scope,
     supports: item.supports, topics: item.topics ?? [], reason: item.reason ?? "fixture",
     createdAt: item.createdAt ?? run.createdAt }));
   const recorded = { kind: run.kind, sessionId: path.sessionId, branch: path.branch, createdAt: run.createdAt };
@@ -118,8 +126,8 @@ export function knowledgeBatch(store: Store, path: KnowledgePath, items: readonl
 
 export function knowledge(store: Store, path: KnowledgePath, scope: "global" | "project" | "session",
   category: KnowledgeCategory, supports: number[], text: string,
-  options: { run?: KnowledgeRun; operation?: { createdAt?: string; topics?: string[] } } = {}) {
-  return knowledgeBatch(store, path, [{ scope, category, supports, text, topics: options.operation?.topics,
+  options: { run?: KnowledgeRun; operation?: { createdAt?: string; topics?: string[]; title?: string } } = {}) {
+  return knowledgeBatch(store, path, [{ scope, category, supports, text, title: options.operation?.title, topics: options.operation?.topics,
     createdAt: options.operation?.createdAt }], options.run).committed[0]!;
 }
 

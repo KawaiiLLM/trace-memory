@@ -9,7 +9,7 @@ import { factSources } from "../../support/seed.ts";
 
 const time = "2026-09-01T00:00:00Z";
 function setup(normalized = true) {
-  const m = TraceMemory(":memory:", async () => { throw new Error("offline only"); }, {}, undefined, normalized ? piSourceBlocks : undefined);
+  const m = TraceMemory(":memory:", async () => { throw new Error("offline only"); }, { writing: { bodyTokens: 1_000_000 } }, undefined, normalized ? piSourceBlocks : undefined);
   const projectId = m.store.createProject({ name: "sol", declaredBy: "mark" }).id;
   const sessionId = m.store.createSession({ host: "pi:sol", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true }).id;
   const turn = m.store.appendTurn({ sessionId, kind: "turn", startedAt: time });

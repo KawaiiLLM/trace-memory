@@ -32,7 +32,7 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker h
       expect(memory.store.listSessionFacts(session.id)).toEqual([]);
       expect(memory.store.currentKnowledge(path)).toEqual([]);
       if (round === 1) return call("note-held", "note", { title: "Durable rule", sources: "[T1#E1] User set a durable rule" });
-      if (round === 2) return call("memory-held", "memory", { op: "create", text: "Follow the durable rule", category: "constraint",
+      if (round === 2) return call("memory-held", "memory", { op: "create", title: "Fixture title", text: "Follow the durable rule", category: "constraint",
         scope: "session", topics: [], supports: ["$1"], reason: "User requirement" });
       return ending === "success" ? say("Done") : broken();
     });
@@ -74,7 +74,7 @@ for (const obsolete of [false, true]) test(`04: real Pi fork shared schemas pres
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "用 pnpm，不要 npm", assistantText: "Parent reply", startedAt: "now" });
     const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     const fact = (text: string) => ({ title: text, sources: `[T1#E1] ${text}` });
-    const knowledge = (text: string, supports: string[]) => ({ op: "create", text, category: "constraint", scope: "session", topics: [], supports, reason: "user rule" });
+    const knowledge = (text: string, supports: string[]) => ({ op: "create", title: "Fixture title", text, category: "constraint", scope: "session", topics: [], supports, reason: "user rule" });
     let round = 0;
     f.script(() => {
       round++;
@@ -127,7 +127,7 @@ for (const kind of ["note", "memory"] as const)
         const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", assistantText: "Explanation", startedAt: "now" });
         const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
         const fact = (text: string) => ({ title: text, sources: `[T1#E1] ${text}` });
-        const value = (text: string) => kind === "note" ? fact(text) : { op: "create", text, category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "rule" };
+        const value = (text: string) => kind === "note" ? fact(text) : { op: "create", title: "Fixture title", text, category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "rule" };
         const prefix = kind === "note" ? "$" : "M";
         let round = 0;
         f.script(body => {

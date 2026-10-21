@@ -175,7 +175,7 @@ test.each([false, true])("92: corrected refusal resets only after atomic termina
     expect(tools.find(t => t.name === "note")!.execute({ drop: "$1" })).not.toContain("rejected:");
     const text = `accepted attempt ${++attempt}`;
     expect(tools.find(tool => tool.name === "note")!.execute({ title: "Held evidence", sources: `[T${t.headTurnId}#E1] ${text}` })).toContain("held: $2");
-    expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", text,
+    expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text,
       category: "constraint", scope: "session", supports: ["$2"], topics: [], reason: "joint extraction" })).toContain("held");
     expect(good.store.listSessionFacts(t.sessionId)).toEqual([]);
     expect(good.store.listKnowledgeRevisions()).toEqual([]);

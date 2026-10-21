@@ -213,7 +213,7 @@ test("24a: the counts follow the selected branch, so a sibling entry of the same
     .find(value => value.entryOrdinal === ordinal)!;
   fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha rule",
     [{ entry: h.memory.store.getSourceEntry(source(1).id)!, text: "Use alpha everywhere" }]);
-  expect(write("main").find(tool => tool.name === "memory")!.execute({ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
+  expect(write("main").find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
     supports: ["F1"], reason: "Admitted from the shared ancestry." })).not.toContain("rejected:");
   // A withdrawal bound to a sibling entry of the same Turn: only main holds it.
   h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });

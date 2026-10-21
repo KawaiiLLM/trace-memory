@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
-import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
@@ -15,8 +15,8 @@ import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecuti
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, dreamingDue, ALL_POOLS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize } from "./processing.ts";
-import { factAddresses, renderKnowledge, renderKnowledgeChange, withKnowledgeCost, withFactDates, tokens, WORKER_ITEM_TOKENS } from "../render/index.ts";
-import { isKnowledgeCategory, substantiveArchiveStatement } from "../model/index.ts";
+import { factAddresses, knowledgeTitle, renderKnowledge, renderKnowledgeChange, withKnowledgeCost, withFactDates, tokens } from "../render/index.ts";
+import { isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import type {
   Actor,
   Knowledge,
@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   knowledge_id INTEGER NOT NULL REFERENCES knowledge(id),
   parent_id INTEGER REFERENCES knowledge_revisions(id),
   text TEXT NOT NULL,
+  title TEXT,
   category TEXT NOT NULL CHECK (category IN ('constraint','understanding','open','dispute','goal','mechanism','term','reference')),
   scope TEXT NOT NULL CHECK (scope IN ('session','project','global')),
   supports TEXT NOT NULL,
@@ -528,6 +529,8 @@ export type KnowledgeOperationInput =
       op: "create";
       handle: string; // system-generated candidate label
       author: string;
+      /** `prepareMemory` always supplies one (ticket 144); a direct caller that omits it gets the start of its body. */
+      title?: string;
       text: string;
       category: KnowledgeCategory;
       scope: KnowledgeScope;
@@ -541,6 +544,8 @@ export type KnowledgeOperationInput =
       op: "update";
       knowledgeId: number;
       baseCommit: number;
+      /** Omitted: inherited from the base, else the start of the body. */
+      title?: string;
       text: string;
       category: KnowledgeCategory;
       scope: KnowledgeScope;
@@ -554,6 +559,7 @@ export type KnowledgeOperationInput =
       intoKnowledgeId: number;
       intoBaseCommit: number;
       absorb: { knowledgeId: number; baseCommit: number }[];
+      title?: string;
       text?: string;
       category: KnowledgeCategory;
       scope: KnowledgeScope;
@@ -566,7 +572,7 @@ export type KnowledgeOperationInput =
       op: "split";
       knowledgeId: number;
       baseCommit: number;
-      children: { text: string; category: KnowledgeCategory; topics: string[] }[];
+      children: { title?: string; text: string; category: KnowledgeCategory; topics: string[] }[];
       supports: number[];
       reason: string;
       createdAt: string;
@@ -752,6 +758,7 @@ function toKnowledgeRevision(row: any): KnowledgeRevision {
     knowledgeId: row.knowledge_id,
     parentId: row.parent_id,
     text: row.text,
+    title: row.title ?? null,
     category: row.category,
     scope: row.scope,
     supports: JSON.parse(row.supports),
@@ -976,7 +983,7 @@ export class Store {
     return authority.scope.pools.map(({ pool }) => ({
       pool, budget: this.poolBudget(pool), tokens: tokens(processedBlock(
         [...values.values()].filter(value => value.pool === pool).map(value => value.value),
-        value => renderKnowledge(value, `K${value.knowledge.id}#${this.versionTag(value.knowledge.id, value.revision.id)}`))),
+        value => renderKnowledge(value, `K${value.knowledge.id}#${this.versionTag(value.knowledge.id, value.revision.id)}`, false, this.writing))),
     }));
   }
 
@@ -1011,8 +1018,12 @@ export class Store {
   }
 
   private readonly normalizeSource: SourceNormalizer | undefined;
-  constructor(path: string, normalizeSource?: SourceNormalizer) {
+  private readonly limits: () => WritingLimits;
+  /** The per-item caps in force now; a runtime reconfiguration is seen by the next write or render. */
+  get writing(): WritingLimits { return this.limits(); }
+  constructor(path: string, normalizeSource?: SourceNormalizer, limits: () => WritingLimits = () => DEFAULT_WRITING_LIMITS) {
     this.normalizeSource = normalizeSource;
+    this.limits = limits;
     this.db = new DatabaseSync(path);
     let began = false;
     let priorBudgetPolicy: { global: number; project: number; session: number } | null = null;
@@ -1276,6 +1287,7 @@ export class Store {
       migrateFactAndKnowledge92(this.db);
       migrateFactSegments93(this.db);
       migrateArchiveKind99(this.db);
+      migrateKnowledgeTitle144(this.db);
       migrateVersionTags(this.db);
       // The policy is part of the same schema transaction. Concurrent openers serialize at BEGIN;
       // INSERT OR IGNORE preserves an edited existing row and initializes an absent row once.
@@ -2363,7 +2375,6 @@ export class Store {
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const batchIds: number[] = [];
         for (const f of facts) {
-          if (input.run.kind === "noting") this.requireWorkerItemSize(f.text, "Fact");
           const turn = this.getTurn(f.turnId);
           if (!turn || turn.sessionId !== sessionId) {
             throw new Error(`turn T${f.turnId} does not belong to session S${sessionId}`);
@@ -3842,7 +3853,6 @@ export class Store {
       const problem = this.archiveProblem(op);
       if (problem) throw new Error(problem);
     }
-    if (op.op !== "archive" || op.kind === "invalid") this.requireWorkerItemSize(op.text!, "Knowledge item");
     if (op.op === "create") return op;
     const input = this.commitGraphInput();
     const bad = this.baseDiagnostic(op.knowledgeId, op.baseCommit, path, false, input.metadata);
@@ -3857,8 +3867,8 @@ export class Store {
     const annotation = /[\u3400-\u9fff]/u.test(op.text)
       ? `〔并发冲突转新建，原拟更新 ${address}，待核对。〕`
       : `[Concurrent update converted to create; originally targeted ${address}; pending reconciliation.]`;
+    // The annotation is system text appended after the accepted write; it is not re-checked against the cap (ticket 144).
     const text = `${op.text}\n${annotation}`;
-    this.requireWorkerItemSize(text, "Knowledge item");
     const { knowledgeId: _knowledgeId, baseCommit: _baseCommit, ...content } = op;
     return { ...content, op: "create", handle: address, author: "noting", text };
   }
@@ -3869,11 +3879,6 @@ export class Store {
       return "invalid archive requires a substantive statement of grounds and evidence";
     if (op.kind === "budget" && op.text !== undefined) return "budget archive cannot replace the parent body";
     return null;
-  }
-
-  private requireWorkerItemSize(text: string, label: string): void {
-    const size = tokens(text);
-    if (size > WORKER_ITEM_TOKENS) throw new Error(`${label} exceeds ${WORKER_ITEM_TOKENS}-token limit: ${size} tokens${label === "Knowledge item" ? ". Recheck it against Admission and Division: progress keeps only the necessary goal, the latest evidenced state, key open points and where to check; detail that retained clues lead back to stays in facts, Raw or documents; record separately what must be maintained separately." : ""}`);
   }
 
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,
@@ -3957,17 +3962,18 @@ export class Store {
     // 123: only supports this operation writes are checked; inherited parent supports stay as visible knowledge had them.
     const bad = op.supports.length ? this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId)) : null;
     if (bad) return { ok: false, reason: bad };
-    const insertRevision = (knowledgeId: number, parentId: number | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp) => {
+    const insertRevision = (knowledgeId: number, parentId: number | null, title: string | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp) => {
       if (!isKnowledgeCategory(category) &&
           !((revisionOp === "archive" || revisionOp === "update") && category === prior?.category) &&
           !(revisionOp === "create" && role === "noting" && inheritedCreateCategory !== undefined && category === inheritedCreateCategory))
         throw new Error(`invalid new knowledge category ${category}`);
-      // Budget stores the exact parent body; old valid parents may exceed the new-write cap.
-      if (role !== "manual" && !(revisionOp === "archive" && op.op === "archive" && op.kind === "budget"))
-        this.requireWorkerItemSize(text, "Knowledge item");
+      // A new live version always ends with a title (ticket 144): the tools supply one, inherited from the
+      // base when omitted; a direct caller that omits it gets the start of its body, as a legacy item shows.
+      // Only an archive carries a legacy null.
+      title ??= revisionOp === "archive" ? null : knowledgeTitle({ title: null, text }, this.writing.titleTokens);
       const info = this.db.prepare(`INSERT INTO knowledge_revisions
-        (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role, archive_kind)
-        VALUES (?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, text, category, scope,
+        (knowledge_id, parent_id, title, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role, archive_kind)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, title, text, category, scope,
           JSON.stringify(supports), revisionOp, op.reason, JSON.stringify(topics), runId, op.createdAt, role,
           revisionOp === "archive" ? (op as Extract<KnowledgeOperationInput, { op: "archive" }>).kind : null);
       const commitId = Number(info.lastInsertRowid);
@@ -3983,7 +3989,7 @@ export class Store {
       const values = op.children.map(child => {
         const knowledgeId = Number(this.db.prepare("INSERT INTO knowledge (project_id, origin_session_id, author) VALUES (?, ?, ?)")
           .run(projectId, sessionId, author).lastInsertRowid);
-        const commit = insertRevision(knowledgeId, prior!.id, child.text, child.category, child.topics, "split");
+        const commit = insertRevision(knowledgeId, prior!.id, child.title ?? null, child.text, child.category, child.topics, "split");
         this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'split_from', ?, ?)")
           .run(op.knowledgeId, op.baseCommit, knowledgeId, commit);
         return { op: "split" as const, knowledgeId, commit };
@@ -3996,7 +4002,7 @@ export class Store {
     const text = op.op === "archive" ? op.kind === "budget" ? prior!.text : op.text! : op.op === "merge" && op.text === undefined
       ? this.knowledgeRevision(Math.max(op.intoBaseCommit, op.absorb[0]!.baseCommit))!.text
       : op.text!;
-    const commitId = insertRevision(knowledgeId, prior?.id ?? null, text,
+    const commitId = insertRevision(knowledgeId, prior?.id ?? null, op.op === "archive" ? prior!.title : op.title ?? (op.op === "create" ? null : prior!.title), text,
       op.op === "archive" ? prior!.category : op.category, op.op === "archive" ? prior!.topics : op.topics, op.op);
     if (op.op === "merge") for (const parent of op.absorb) {
       this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")
@@ -4112,7 +4118,7 @@ export class Store {
     };
     return pools.map(([pool, budget]) => {
       const values = versions.get(pool)!;
-      const rendered = new Map(values.map(value => [value.revision.id, renderKnowledge(value, tagged(value.revision))]));
+      const rendered = new Map(values.map(value => [value.revision.id, renderKnowledge(value, tagged(value.revision), false, this.writing)]));
       const size = tokens(processedBlock(values, value => rendered.get(value.revision.id)!));
       // 134: item counts describe the same canonical rendering charged by the pool. Material-only
       // annotations are never fed back into its size or an existing change/archive weight.
@@ -4133,7 +4139,7 @@ export class Store {
             shown: withFactDates(material, factDates(value.revision)) };
         }
         const change = renderKnowledgeChange(value.revision.knowledgeId, baseline, value.revision,
-          tagged(value.revision), itemTokens.get(value.revision.id));
+          tagged(value.revision), itemTokens.get(value.revision.id), this.writing);
         const material = `Changed ${address(value.revision)} (from ${address(baseline)}):\n${change.text}`;
         return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: change.addedTokens + change.removedTokens, material,
           shown: withFactDates(material, factDates(value.revision)) };
@@ -4146,11 +4152,11 @@ export class Store {
         const parent = value.revision.parentId === null ? undefined : input.metadata.revisions!.get(value.revision.parentId);
         if (!parent) throw new Error(`K${value.revision.knowledgeId}@${value.revision.id}: archive has no archived body`);
         const parentValue = { knowledge: value.knowledge, revision: parent };
-        const archivedBody = renderKnowledge(parentValue, tagged(parent));
+        const archivedBody = renderKnowledge(parentValue, tagged(parent), false, this.writing);
         const archivedTokens = tokens(archivedBody);
         const shownBody = withKnowledgeCost(archivedBody, archivedTokens);
         const baseline = baselines.get(value.revision.id);
-        const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent, address(parent)).text}` : "";
+        const diffLine = baseline && baseline.id !== parent.id ? `\n${renderKnowledgeChange(value.revision.knowledgeId, baseline, parent, address(parent), undefined, this.writing).text}` : "";
         // 76 review: the archive revision's own supports are the evidence that caused the archive
         // (e.g. F3), distinct from the archived body's own supports already inside `archivedBody`.
         // Show them explicitly, labelled as the archive's evidence, beside the body they retire.
@@ -4569,9 +4575,9 @@ export class Store {
     // revision however many labels (or text and labels together) match. Knowledge membership is
     // resolved by the caller's path and version filter rather than by its author's session here.
     const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT knowledge_id, id FROM knowledge_revisions
-      WHERE text LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM json_each(topics) WHERE value LIKE ? ESCAPE '\\')
+      WHERE text LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM json_each(topics) WHERE value LIKE ? ESCAPE '\\')
       ORDER BY knowledge_id, id`)
-      .all(pattern, pattern) as { knowledge_id: number; id: number }[]).map((r) => `K${r.knowledge_id}@${r.id}`);
+      .all(pattern, pattern, pattern) as { knowledge_id: number; id: number }[]).map((r) => `K${r.knowledge_id}@${r.id}`);
     return scope === "all" ? [...facts, ...knowledge, ...raw()] : [...facts, ...knowledge];
   }
 

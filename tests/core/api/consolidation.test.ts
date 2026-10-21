@@ -46,7 +46,7 @@ function knowledge(support: number, text = memories.knowledge) {
   const item = result.committed[0]!;
   return { ...item, tag: `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, item.commit)}` };
 }
-const create = (support: number, text = memories.knowledge) => ({ op: "create", text, category: "understanding", scope: "project", topics: [], supports: [`F${support}`], reason: "Initial admission" });
+const create = (support: number, text = memories.knowledge) => ({ op: "create", title: "Fixture title", text, category: "understanding", scope: "project", topics: [], supports: [`F${support}`], reason: "Initial admission" });
 function stage(input: NotingAgentInput, output: unknown) {
   expect(input.tools.find(tool => tool.name === "note")!.execute({})).toContain("held");
   const write = input.tools.find(tool => tool.name === "memory")!;
@@ -199,7 +199,7 @@ test("simulation v7m Chinese evidence remains traceable through N knowledge publ
   const fixture = JSON.parse(readFileSync(new URL("../../fixtures/consolidation.json", import.meta.url), "utf8"));
   const ids = new Map<number, number>();
   for (const source of fixture.facts) ids.set(source.id, fact(source.text, { actor: source.actor, category: source.category, quote: source.quote, createdAt: source.timestamp }).id);
-  queue({ op: "create", topics: [], reason: "Initial admission", ...fixture.knowledge, category: "understanding", supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) });
+  queue({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission", ...fixture.knowledge, category: "understanding", supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) });
   const result = await run();
   expect(result.outcome, JSON.stringify(result)).toBe("success");
   expect(memory.trace("K1")).toContain(fixture.knowledge.text);
@@ -226,10 +226,10 @@ test("one malformed reason prevents valid siblings and Raw progress from publish
   expect(memory.pendingEntries(sessionId, "main", evidence.turnId)).toHaveLength(1);
 });
 
-test("new numbers and a body over 200 estimated tokens but within 1000 are not extra N rejection gates", async () => {
-  const evidence = fact("Measured 12 samples."), text = "Measured 12 samples. 42 2 999 " + "word ".repeat(350);
-  expect(tokens(text)).toBeGreaterThan(200);
-  expect(tokens(text)).toBeLessThanOrEqual(1000);
+// 144 supersedes the 200-versus-1000 half of this case: a body over 200 estimated tokens is now refused at the write call.
+test("new numbers are not an extra N rejection gate", async () => {
+  const evidence = fact("Measured 12 samples."), text = "Measured 12 samples. 42 2 999 " + "word ".repeat(100);
+  expect(tokens(text)).toBeLessThanOrEqual(200);
   queue(create(evidence.id, text));
   expect((await run()).outcome).toBe("success");
   expect(memory.store.currentCommit(1)[0]!.text).toBe(text);

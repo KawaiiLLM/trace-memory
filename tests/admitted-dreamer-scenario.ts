@@ -1,6 +1,7 @@
 import type { DreamingAgentInput, RunAgent, RunAgentResult } from "../src/core/api/index.ts";
 import type { TaskTarget } from "../src/core/store/index.ts";
 import type { TraceMemory } from "./source-fixture.ts";
+import { knowledge } from "./support/seed.ts";
 
 export type DreamerScenario = (input: DreamingAgentInput) => Promise<RunAgentResult> | RunAgentResult;
 
@@ -43,14 +44,12 @@ export function createDreamerTrigger(memory: TraceMemory, path: TaskTarget, fact
   scope: "global" | "project" | "session" = "project") {
   // The trigger item below is sized for a 5,000-token threshold; the fixture pins it so the default can move.
   memory.config.dreaming.triggerTokens = Math.min(memory.config.dreaming.triggerTokens, 5_000);
-  const tools = memory.tools({ kind: "manual", sessionId: path.sessionId, branch: path.branch,
-    currentTurnId: path.headTurnId });
-  const operation = (text: string) => ({ op: "create", text, category: "reference" as const,
-    scope, supports: [`F${factId}`], topics: ["test-fixture"],
-    reason: "Explicit trigger for a genuinely later admitted Dreamer fixture run." });
-  const receipt = JSON.parse(tools.find(tool => tool.name === "memory")!.execute(operation(`Fixture trigger ${sequence}: ${"trigger ".repeat(5_500)}`)));
-  if (!receipt.committed?.[0]) throw new Error(`could not create Dreamer fixture trigger: ${JSON.stringify(receipt)}`);
-  const item = receipt.committed[0] as { knowledgeId: number; version: string };
-  return { knowledgeId: item.knowledgeId,
-    commit: memory.store.resolveVersionOrdinal(item.knowledgeId, Number(item.version.split("@v")[1])) };
+  // The item is far over the writing caps on purpose (its weight crosses the trigger), so it is seeded
+  // through the store, as an item written before the caps would be, not through the capped manual tool.
+  const now = new Date().toISOString();
+  const item = knowledge(memory.store, path, scope, "reference", [factId],
+    `Fixture trigger ${sequence}: ${"trigger ".repeat(5_500)}`,
+    { run: { kind: "manual", createdAt: now }, operation: { topics: ["test-fixture"], createdAt: now } });
+  return { knowledgeId: item.knowledgeId, commit: item.commit };
 }
+

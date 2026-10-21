@@ -18,7 +18,7 @@ function seedKnowledge(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   const receipt = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "Package choice", sources: "[T1#E1] Use pnpm" }));
   expect(receipt.factIds).toHaveLength(1);
-  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", text: "Use pnpm", category: "constraint",
+  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Use pnpm", category: "constraint",
     scope: "session", supports: [`F${receipt.factIds[0]}`], topics: [], reason: "Rule" })).not.toContain("rejected:");
 }
 const skip = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "m1", name: "memory",
@@ -97,7 +97,7 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
     if (c.systemPrompt?.startsWith("# Dreamer")) return skip();
     const response = notingFact(c);
     for (const block of response.content) if (block.type === "toolCall" && block.name === "memory") {
-      block.arguments = { op: "create", text: "Use pnpm", category: "constraint", scope: "session",
+      block.arguments = { op: "create", title: "Fixture title", text: "Use pnpm", category: "constraint", scope: "session",
         supports: ["$1"], topics: [], reason: "Package choice" };
     }
     return response;

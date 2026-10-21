@@ -3,7 +3,7 @@ import type { KnowledgeRevision } from "../../../src/core/model/index.ts";
 import { renderKnowledgeDiff, sentenceDiff } from "../../../src/core/render/index.ts";
 
 const baseline: KnowledgeRevision = {
-  id: 1, knowledgeId: 1, parentId: null, text: "A stable explanation.", category: "mechanism",
+  id: 1, knowledgeId: 1, parentId: null, title: null, text: "A stable explanation.", category: "mechanism",
   scope: "project", supports: [], supportSemantics: "change", op: "create", reason: "Initial explanation",
   topics: [], runId: null, createdAt: "2026-10-01T00:00:00Z",
 };

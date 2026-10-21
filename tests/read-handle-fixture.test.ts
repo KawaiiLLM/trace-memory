@@ -3,7 +3,7 @@ import { sourceSeededMemory, memoryFiles } from "./source-fixture.ts";
 import { readHandle } from "./read-handle-fixture.ts";
 
 for (const long of [false, true]) test(`92: fixture reads the complete tagged body without translating legacy addresses (long=${long})`, () => {
-  const memory = sourceSeededMemory(":memory:", async () => { throw Error("offline fixture"); });
+  const memory = sourceSeededMemory(":memory:", async () => { throw Error("offline fixture"); }, { writing: { bodyTokens: 1_000_000 } });
   try {
     const project = memory.store.createProject({ name: "handle", declaredBy: "mark" });
     const session = memory.store.createSession({ projectId: project.id, host: "pi:fixture", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
@@ -11,7 +11,7 @@ for (const long of [false, true]) test(`92: fixture reads the complete tagged bo
     const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
     const note = tools.find(tool => tool.name === "note")!, write = tools.find(tool => tool.name === "memory")!;
     expect(note.execute({ title: "Rule evidence", sources: `[T${turn.id}#E1] Keep this rule` })).not.toContain("rejected:");
-    expect(write.execute({ op: "create", text: long ? "Rule detail. ".repeat(4000) : "A short rule", category: "constraint",
+    expect(write.execute({ op: "create", title: "Fixture title", text: long ? "Rule detail. ".repeat(4000) : "A short rule", category: "constraint",
       scope: "project", topics: [], supports: ["F1"], reason: "Fixture evidence" })).toContain("committed");
     const files = memoryFiles(memory, { sessionId: session.id, branch: "main", headTurnId: turn.id });
     const read = (path: string) => files.read(path).content;

@@ -24,7 +24,7 @@ function extract(c: Parameters<typeof notingFact>[0], scope: "global" | "session
   expect(JSON.stringify(results)).not.toContain("rejected:");
   const result = notingFact(c);
   for (const part of result.content) if (part.type === "toolCall" && part.name === "memory") {
-    part.arguments = { op: "create", text: "Rule " + "word ".repeat(120),
+    part.arguments = { op: "create", title: "Fixture title", text: "Rule " + "word ".repeat(120),
       category: "constraint", scope, topics: [], supports: ["$1"], reason: "Supported conclusion" };
   }
   return result;
@@ -44,7 +44,7 @@ function retain(c: Parameters<typeof notingFact>[0]): Reply {
 function seed(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   expect(tools.find(t => t.name === "note")!.execute({ title: "Keep conclusion", sources: "[T1#E1] Keep this conclusion." })).toContain("ok: F1");
-  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", topics: [],
+  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [],
     reason: "Seed pending revision", text: "Rule " + "word ".repeat(120), category: "constraint", scope: "session", supports: ["F1"] })).not.toContain("rejected:");
   return h.memory.store.listKnowledgeRevisions().at(-1)!;
 }
@@ -205,7 +205,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
     const tools = h.memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: turn.id });
     expect(tools.find(t => t.name === "note")!.execute({ title: "Foreign rule", sources: `[T${turn.id}#E1] Foreign rule` })).toContain("ok:");
     const fact = store.listSessionFacts(foreign.id)[0]!;
-    expect(tools.find(t => t.name === "memory")!.execute({ op: "create", text: "Foreign rule", category: "constraint",
+    expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Foreign rule", category: "constraint",
       scope: "session", supports: [`F${fact.id}`], topics: [], reason: "Foreign pending pool" })).not.toContain("rejected:");
     const claim = store.acquireClaim({ sessionId: foreign.id, branch: "main", headTurnId: turn.id }, "dreaming", "foreign-executor")!;
     expect(claim).not.toBeNull();

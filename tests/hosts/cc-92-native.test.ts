@@ -49,7 +49,7 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
       tool(9, "note", fact("Ninth episode", "T2#E99")),
       tool(10, "note", { slot: "$9", ...fact("Corrected ninth episode") }),
       tool(11, "memory", { op: "update", id: "BASE", text: "Claude Code retains the user rule", category: "constraint", scope: "session", topics: [], supports: ["OLD", "$9"], reason: "New episode confirms rule" }),
-      tool(12, "memory", { op: "create", text: "Claude Code suggests a possible explanation, not a confirmed finding", category: "open", scope: "session", topics: [], supports: ["$1"], reason: "Speculative discussion" }),
+      tool(12, "memory", { op: "create", title: "Fixture title", text: "Claude Code suggests a possible explanation, not a confirmed finding", category: "open", scope: "session", topics: [], supports: ["$1"], reason: "Speculative discussion" }),
     ] : variant === "empty-knowledge" ? [tool(1, "note", fact("Useful discussion with no durable rule")), tool(2, "memory", empty)]
       : [tool(1, "note", fact("Original accepted fact")),
         tool(2, "note", { slot: "$1", ...fact("Illegal selected block", "T2#E1@text") }),
@@ -89,7 +89,7 @@ for (const variant of ["nine-corrected", "empty-knowledge", "unresolved-block", 
       const source = memory.store.sourcePath(session.id, "main", first.id).find(entry => entry.entryOrdinal === 1)!;
       oldId = seedFact(memory, memory.store.knowledgePath(session.id, "main", first.id), "Earlier user rule",
         [{ entry: memory.store.getSourceEntry(source.id)!, text: "Earlier user rule" }]).id;
-      expect(manual.find(t => t.name === "memory")!.execute({ op: "create", text: "Earlier rule", category: "constraint", scope: "session", topics: [], supports: [`F${oldId}`], reason: "Earlier user rule" })).toContain("committed");
+      expect(manual.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Earlier rule", category: "constraint", scope: "session", topics: [], supports: [`F${oldId}`], reason: "Earlier user rule" })).toContain("committed");
       const prior = memory.store.currentKnowledge({ sessionId: session.id, branch: "main", headTurnId: first.id })[0]!;
       tag = `K${prior.knowledge.id}#${memory.store.versionTag(prior.knowledge.id, prior.revision.id)}`;
       const operation = (steps[10]!.blocks[0] as { input: { id?: string; supports: string[] } }).input;

@@ -150,13 +150,13 @@ export function holdNoting(store: Store, run: RunInput, path: KnowledgePath,
     const changes = [...operations.rows].flatMap(([slot, row]) => {
       if (row.value === undefined) return [];
       const operation = row.value;
-      if (operation.op === "create") return [`M${slot} (create):\n${operation.text}`];
+      if (operation.op === "create") return [`M${slot} (create):\n${operation.title ?? ""}\n${operation.text}`];
       if (operation.op !== "update" && operation.op !== "archive") throw new Error(`Noter cannot hold ${operation.op}`);
       const address = `K${operation.knowledgeId}#${store.versionTag(operation.knowledgeId, operation.baseCommit)}`;
       if (operation.op === "archive") return [`M${slot} ${address} (archive: ${operation.kind}):\n${operation.text ?? "No archive text."}`];
       const parent = store.getKnowledgeRevision(operation.knowledgeId, operation.baseCommit)!;
       return [`M${slot} ${address} (update):\n${renderKnowledgeDiff(parent,
-        { ...parent, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics },
+        { ...parent, title: operation.title ?? parent.title, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics },
         [], Infinity, new Set(["text", "status", "topics"]), undefined, address)}`];
     });
     return `Before publication, review this run once.\n\nBlockers:\n${blockers(toolProblems).join("\n") || "None."}\n\nKnowledge changes held in this run:\n${changes.join("\n\n") || "None."}\n\nCheck each knowledge change against your Principles. Correct a change that violates them with a complete replacement under its slot, or drop it. Resolve every blocker. Leave compliant changes as they are. Then end; ending with a blocker left publishes nothing.`;

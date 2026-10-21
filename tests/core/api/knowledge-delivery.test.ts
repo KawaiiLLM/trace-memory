@@ -17,7 +17,7 @@ afterEach(() => { while (memories.length) memories.pop()!.close(); });
 
 function fixture(config: Record<string, unknown> = {}) {
   const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("offline only"); });
-  const memory = TraceMemory(":memory:", scenarios.agent, config);
+  const memory = TraceMemory(":memory:", scenarios.agent, { writing: { bodyTokens: 1_000_000 }, ...config });
   memories.push(memory);
   const project = memory.store.createProject({ name: "delivery", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
@@ -370,7 +370,7 @@ test("34c split notice names both children while partial budgeting grants body v
   const parent = f.create("compound parent ".repeat(4_000), [f.facts[0]!.id]);
   const split = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`,
     supports: [], reason: "separate", children: [
-      { text: "first child ".repeat(450), category: "constraint", topics: [] }, { text: "second child ".repeat(450), category: "goal", topics: [] }] },
+      { title: "Fixture child", text: "first child ".repeat(450), category: "constraint", topics: [] }, { title: "Fixture child", text: "second child ".repeat(450), category: "goal", topics: [] }] },
   [`K${parent.knowledgeId}@${parent.commit}`], false);
   const visible = view({ knowledgeCommitIds: new Set([parent.commit]) });
   let partial: ReturnType<typeof f.memory.injection> | undefined;
@@ -393,8 +393,8 @@ test("92 split notice names only the visible child and never mislabels a partial
   const parent = f.create("compound parent", [f.facts[0]!.id]);
   const split = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`,
     supports: [], reason: "separate", children: [
-      { text: "public child", category: "constraint", topics: [] },
-      { text: "child later private", category: "constraint", topics: [] }] }, [`K${parent.knowledgeId}@${parent.commit}`], false);
+      { title: "Fixture child", text: "public child", category: "constraint", topics: [] },
+      { title: "Fixture child", text: "child later private", category: "constraint", topics: [] }] }, [`K${parent.knowledgeId}@${parent.commit}`], false);
   const peer = f.memory.store.createSession({ host: "peer", projectId: f.session.projectId, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
   const turn = f.memory.store.appendTurn({ sessionId: peer.id, kind: "turn", userPrompt: "Private evidence", startedAt: time });
   const entry = f.memory.appendEntry({ sessionId: peer.id, turnId: turn.id, nativeLineage: "peer", nativeId: "private", role: "user", text: "Private evidence", raw: "{}", calls: [] });

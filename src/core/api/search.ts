@@ -5,7 +5,7 @@
 import type { KnowledgeRevision } from "../model/index.ts";
 import { knowledgeCategoryGroup, KNOWLEDGE_SCOPES, type KnowledgeScope } from "../model/index.ts";
 import type { SourceEntry, Store } from "../store/index.ts";
-import { renderEntryWhole, renderFactPreview, snippet, rawResultText } from "../render/index.ts";
+import { renderEntryWhole, renderFactPreview, snippet, rawResultText, knowledgeTitle } from "../render/index.ts";
 import { capOutput, formatCodeResult, runCode } from "./code.ts";
 import { knowledgeReadSelection } from "./knowledge-read.ts";
 import { similarity } from "./similarity.ts";
@@ -96,10 +96,11 @@ export function searchFacade(store: Store) {
         // 101: a legacy archive written before 99 has no body of its own; its parent's stands in.
         const text = r.op === "archive" && !r.text ? selection.byCommit.get(r.parentId ?? -1)?.text ?? "" : r.text;
         const group = knowledgeCategoryGroup(r.category), version = ordinals.get(r.id)!;
-        yield { item: { layer: "knowledge", address: `trace://K${r.knowledgeId}@v${version}`, time: r.createdAt, text,
+        const title = knowledgeTitle({ title: r.title, text }, store.writing.titleTokens);
+        yield { item: { layer: "knowledge", address: `trace://K${r.knowledgeId}@v${version}`, time: r.createdAt, text, title,
             id: r.knowledgeId, version, status, archiveKind: r.archiveKind ?? null, category: group, scope: r.scope, topics: r.topics,
             supports: r.supports, reason: r.reason },
-          line: () => `[K${r.knowledgeId}@v${version}] ${status === "current" ? "" : `(${status}) `}[${group}/${r.scope}] ${snippet(text, query)}` };
+          line: () => `[K${r.knowledgeId}@v${version}] ${status === "current" ? "" : `(${status}) `}[${group}/${r.scope}] ${title} — ${snippet(text, query)}` };
       }
     }
 
@@ -197,7 +198,7 @@ export function searchFacade(store: Store) {
  * Code Mode declare theirs); a test holds the declaration to the fields real hits carry. */
 export const SEARCH_HIT_TYPES = `type Hit = Knowledge | Fact | Raw;
 interface Base { address: string; time: string; text: string }
-interface Knowledge extends Base { layer: "knowledge"; id: number; version: number; status: "current" | "superseded" | "archived"; archiveKind: "budget" | "invalid" | null; category: string; scope: "global" | "project" | "session"; topics: string[]; supports: number[]; reason: string }
+interface Knowledge extends Base { layer: "knowledge"; title: string; id: number; version: number; status: "current" | "superseded" | "archived"; archiveKind: "budget" | "invalid" | null; category: string; scope: "global" | "project" | "session"; topics: string[]; supports: number[]; reason: string }
 interface Fact extends Base { layer: "facts"; session: number; turn: number; id: number; title: string | null; sources: { address: string; role: string | null; text: string }[]; citedBy: number[] }
 interface Raw extends Base { layer: "raw"; session: number; turn: number; entry: number; role: "user" | "assistant" | "observation"; matchLines: number[]; citedBy: number[] }`;
 

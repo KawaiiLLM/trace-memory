@@ -344,7 +344,7 @@ for (const resolved of [false, true]) test(`127: a Dreamer memory call Pi refuse
         .find(text => text.includes("Before this run ends, review it once.")) ?? "";
       switch (++round) {
         // `create` is outside the Dreamer's op enum: Pi refuses the call before it reaches core.
-        case 1: return dreamerReply("first", { operations: [{ op: "create", text: "A new rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "invalid op" },
+        case 1: return dreamerReply("first", { operations: [{ op: "create", title: "Fixture title", text: "A new rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "invalid op" },
           { op: "update", id: item.tagged, text: "Keep the user's constraint", category: "constraint", scope: "project", supports: [], topics: [], reason: "clarify" }] });
         case 2: return reply("Done first pass");
         case 3: return resolved ? call("drop", "memory", { drop: "M1" }) : reply("Reviewed");

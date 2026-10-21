@@ -51,7 +51,7 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   expect(h.memory.store.getFact(result.factIds[0])!.title).toBe("Newer policy");
   expect(h.tools.has("trace")).toBe(false);
   const write = h.tools.get("memory")!;
-  const created = await write.execute("create", { op: "create", text: "Keep the chosen policy", category: "constraint", scope: "session",
+  const created = await write.execute("create", { op: "create", title: "Fixture title", text: "Keep the chosen policy", category: "constraint", scope: "session",
     topics: [], supports: [`F${result.factIds[0]}`], reason: "policy" }, undefined, undefined, h.ctx);
   const identity = JSON.parse(created.content[0].text).committed[0];
   expect(identity.version).toBe(`K${identity.knowledgeId}@v1`);
@@ -677,7 +677,7 @@ test("main facade tools bind each call to the current turn, commit immediately a
   expect(h.memory.store.listRuns(1)[0]).toMatchObject({ kind: "manual", branch: "main", rangeFrom: "S1/T1", request: JSON.stringify(note) });
   expect(h.memory.store.listToolCalls(1)).toHaveLength(1);
   await h.prompt("Make it durable"); await h.answer();
-  const batch = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
+  const batch = { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
   expect(await call("memory", batch)).not.toContain("rejected:");
   expect(h.memory.store.getKnowledge(1)).not.toBeNull();
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ kind: "manual", rangeFrom: "S1/T2", request: JSON.stringify(batch) });
@@ -802,7 +802,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   h.entries.splice(0, h.entries.length, ...root); await h.emit("session_tree");
   const rootFact = note("Root rule");
   const rootTools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: 1, branch: state().branch, triggerEntryId: target().triggerEntryId });
-  const rootReceipt = JSON.parse(rootTools.find(t => t.name === "memory")!.execute({ op: "create", topics: [], reason: "Create from the root path.",
+  const rootReceipt = JSON.parse(rootTools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Create from the root path.",
     text: "Root rule", category: "constraint", scope: "project", supports: [`F${rootFact}`] }));
   const rootCommit = rootReceipt.committed[0].commit as number;
 
@@ -1021,7 +1021,7 @@ test("N jointly publishes a fact and knowledge; the next prompt delivers only th
     if (c.messages.some(m => m.role === "toolResult")) return reply("Done.");
     const note = notingFact(c).content[0]!;
     return { ...reply(""), stopReason: "toolUse", content: [note, { type: "toolCall", id: "memory-1", name: "memory",
-      arguments: { op: "create", topics: [], reason: "The user chose pnpm.", text: "Use pnpm, never npm",
+      arguments: { op: "create", title: "Fixture title", topics: [], reason: "The user chose pnpm.", text: "Use pnpm, never npm",
         category: "constraint", scope: "session", supports: ["$1"] } }] };
   });
   await h.turn();

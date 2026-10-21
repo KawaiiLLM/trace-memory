@@ -10,7 +10,7 @@ const at = "2026-09-20T12:00:00Z";
 
 function fixture(baseText = "divergent base") {
   const scenarios = new AdmittedDreamerScenarios(async () => ({ outcome: "success", output: "unused", request: {} }));
-  const memory = sourceSeededMemory(":memory:", scenarios.agent);
+  const memory = sourceSeededMemory(":memory:", scenarios.agent, { writing: { bodyTokens: 1_000_000 } }); // an oversized parent stands for an item written before the caps (ticket 144)
   const project = memory.store.createProject({ name: "64b-material-locality", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "root", startedAt: at });
@@ -56,7 +56,7 @@ type Fixture = ReturnType<typeof fixture>;
 
 function create(f: Fixture, branch: string, text: string) {
   const receipt = JSON.parse(f.memory.tools({ kind: "manual", sessionId: f.session.id, branch, currentTurnId: f.turn.id })
-    .find(tool => tool.name === "memory")!.execute({ op: "create", text, category: "reference", scope: "project",
+    .find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text, category: "reference", scope: "project",
       supports: [`F${f.fact}`], topics: ["test-fixture"], reason: "Deterministic Dreamer input." }));
   if (!receipt.committed?.[0]) throw new Error(JSON.stringify(receipt));
   const item = receipt.committed[0] as { knowledgeId: number; version: string };

@@ -30,7 +30,7 @@ function fixture(script: (task: NotingAgentInput) => Promise<Partial<RunAgentRes
 }
 const call = (task: NotingAgentInput, name: "note" | "memory", input: unknown) => task.tools.find(tool => tool.name === name)!.execute(input) as string;
 const fact = (text = "User set the rule", source = "T1#E1") => ({ title: "Rule evidence", sources: `[${source}] ${text}` });
-const knowledge = (supports = ["$1"]) => ({ op: "create", text: "Use the stated rule", category: "constraint", scope: "session", supports, reason: "new rule", topics: [] });
+const knowledge = (supports = ["$1"]) => ({ op: "create", title: "Fixture title", text: "Use the stated rule", category: "constraint", scope: "session", supports, reason: "new rule", topics: [] });
 const emptyMemory = (task: NotingAgentInput) => call(task, "memory", {});
 
 test("04: nine facts, only rejected ninth corrected; two layers stay private until normal terminal", async () => {
@@ -340,7 +340,7 @@ test("Noter end review lists current create and archive only, with dropped slots
     call(task, "memory", { op: "archive", kind: "invalid", id: seed.tag,
       text: "Old rule invalid because the user withdrew it.", supports: ["$1"], reason: "Withdrawal" });
     const first = task.passEnd();
-    expect(first).toContain("M1 (create):\nUse the stated rule");
+    expect(first).toContain("M1 (create):\nFixture title\nUse the stated rule");
     expect(first).toContain(`M2 ${seed.tag} (archive: invalid):\nOld rule invalid`);
     call(task, "memory", { drop: "M1" });
     const second = task.passEnd();
@@ -427,23 +427,23 @@ for (const when of ["before staging", "before publication"]) for (const op of ["
     expect(audit.knowledgeOperations[0].applied?.op ?? null).toBe(op === "update" ? "create" : null);
   });
 
-for (const when of ["stage", "terminal"] as const) test(`04: final conflict annotation obeys the 1000-token cap at ${when}`, async () => {
+// 144 supersedes the ruling that the final conflict annotation obeys the cap: the cap is checked at the
+// write call, and the note the system appends to a converted update afterwards is not checked again.
+for (const when of ["stage", "terminal"] as const) test(`144/04: a body at the cap keeps its appended conflict annotation when the conflict is found at ${when}`, async () => {
   let body = "";
-  while (tokens(`${body}x `) <= 1000) body += "x ";
-  expect(tokens(body)).toBe(1000);
+  while (tokens(`${body}x `) <= 200) body += "x ";
+  expect(tokens(body)).toBe(200);
   const f = fixture(task => {
     call(task, "note", fact("Refinement"));
     if (when === "stage") seed.advance();
-    const receipt = call(task, "memory", { ...knowledge(), op: "update", id: seed.tag, text: body });
-    expect(receipt).toContain(when === "stage" ? "exceeds 1000-token limit" : "held: M1");
+    expect(call(task, "memory", { ...knowledge(), op: "update", id: seed.tag, text: body })).toContain("held: M1");
     if (when === "terminal") seed.advance();
   });
   const seed = seedKnowledge(f);
-  const result = await f.run();
-  expect(result).toMatchObject({ outcome: when === "stage" ? "bounced" : "failure", problems: [expect.stringContaining("exceeds 1000-token limit")] });
-  expect(f.memory.store.listSessionFacts(f.session.id)).toHaveLength(1);
-  expect(f.memory.store.currentKnowledge(f.path)).toHaveLength(1);
-  expect(f.entries.some(entry => f.memory.store.entryNoted(entry.id))).toBe(false);
+  expect(await f.run()).toMatchObject({ outcome: "success" });
+  const created = f.memory.store.currentKnowledge(f.path).find(item => item.knowledge.id !== seed.base.knowledgeId)!;
+  expect(created.revision.text.startsWith(body)).toBe(true);
+  expect(tokens(created.revision.text)).toBeGreaterThan(200);
 });
 
 test("04: stale archive still validates local sources after replacement", async () => {
@@ -547,7 +547,7 @@ for (const structural of ["merge", "split"] as const)
         const tag = (index: number) => `K${current[index]!.knowledge.id}#${f.memory.store.versionTag(current[index]!.knowledge.id, current[index]!.revision.id)}`;
         const operation = structural === "merge"
           ? { op: "merge", id: tag(0), absorb: [tag(1)], text: "Merged rule", category: "constraint", scope: "session", topics: [], supports: [], reason: "combine" }
-          : { op: "split", id: tag(0), children: [{ text: "First rule", category: "constraint", topics: [] }, { text: "Second rule", category: "constraint", topics: [] }], supports: [], reason: "separate" };
+          : { op: "split", id: tag(0), children: [{ title: "Fixture child", text: "First rule", category: "constraint", topics: [] }, { title: "Fixture child", text: "Second rule", category: "constraint", topics: [] }], supports: [], reason: "separate" };
         expect(call(task, "memory", operation)).not.toContain("rejected:");
         task.tools.find(tool => tool.name === "check")!.execute({});
         return;

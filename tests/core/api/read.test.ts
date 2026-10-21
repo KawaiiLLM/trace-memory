@@ -84,7 +84,7 @@ const defaultWindows = () => {
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
   const { s, t } = populated();
   const next = turn(s.id, rawFixture[1].userPrompt, t.id);
-  const knowledge = `${readingGuide(s.id, canonicalToolNames)}\n\n<knowledge>\nItems are grouped by category. Within a category they are ordered by last change, oldest to newest; position does not compare items across categories. For claims about the same object within a category, the later item takes precedence until maintenance merges them.\nSession S${s.id}.\n## constraint (1)\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
+  const knowledge = `${readingGuide(s.id, canonicalToolNames)}\n\n<knowledge>\nItems are grouped by category. Within a category they are ordered by last change, oldest to newest; position does not compare items across categories. For claims about the same object within a category, the later item takes precedence until maintenance merges them.\nSession S${s.id}.\n## constraint (1)\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
   expect(memory.inject(s.id)).toBe(knowledge);
   // The exact bound source is already supplied as Raw, so the Fact is not duplicated.
   const compact = memory.compact(s.id, "main");
@@ -737,7 +737,8 @@ test("search marks historical, merged and archived knowledge hits so they do not
   // The current version carries no status mark, and sorts ahead of its superseded parent.
   const installs = (memory.search("for installs", "knowledge") as string).split("\n");
   expect(installs.map(l => l.slice(0, l.indexOf(" ")))).toEqual([`[K${a}@v2]`, `[K${a}@v1]`]);
-  expect(installs[0]).toMatch(/^\[K\d+@v2\] \[constraint\/project\] Use npm for installs/);
+  // An update that names no title keeps its base's, so the line carries the old title before the new body.
+  expect(installs[0]).toMatch(/^\[K\d+@v2\] \[constraint\/project\] .+ — Use npm for installs/);
 });
 
 test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", async () => {

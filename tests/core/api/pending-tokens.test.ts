@@ -99,14 +99,14 @@ test("104: dreamingPending is the session's summed pending weight and knowledge 
     create("session", "session body ".repeat(15));
     memory.setKnowledgeBudget("global", 150);
     memory.setKnowledgeBudget("project", 200);
-    memory.setKnowledgeBudget("session", 120);
+    memory.setKnowledgeBudget("session", 160); // 120 before 144: an untitled item now also renders a title taken from its body
     const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     const pools = store.knowledgePools(target);
     expect(pools.every(pool => pool.pending.length > 0 && pool.tokens <= pool.budget)).toBe(true);
     const pending = pools.reduce((sum, pool) => sum + pool.pending.reduce((total, value) => total + value.tokens, 0), 0);
     memory.config.dreaming.triggerTokens = pending;
     expect(memory.dreamingPending(target)).toEqual({ state: "known", pending: { tokens: pending, trigger: pending },
-      knowledge: { tokens: pools.reduce((sum, pool) => sum + pool.tokens, 0), window: 150 + 200 + 120 + memory.config.compaction.sharedAllowanceTokens } });
+      knowledge: { tokens: pools.reduce((sum, pool) => sum + pool.tokens, 0), window: 150 + 200 + 160 + memory.config.compaction.sharedAllowanceTokens } });
     expect(memory.taskEligibility("dreaming", target).due).toBe(true);
     memory.config.dreaming.triggerTokens = pending + 1;
     expect(memory.taskEligibility("dreaming", target).due).toBe(false);

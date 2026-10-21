@@ -51,6 +51,13 @@ export function migrateArchiveKind99(db: DatabaseSync): void {
     db.exec("ALTER TABLE knowledge_revisions ADD COLUMN archive_kind TEXT CHECK (archive_kind IS NULL OR archive_kind IN ('budget','invalid'))");
 }
 
+/** Ticket 144: knowledge versions gain a nullable title. Existing rows keep NULL and are never rewritten. */
+export function migrateKnowledgeTitle144(db: DatabaseSync): void {
+  if (!db.isTransaction) throw new Error("144 migration requires Store's schema transaction");
+  if (!db.prepare("PRAGMA table_info(knowledge_revisions)").all().some(row => row.name === "title"))
+    db.exec("ALTER TABLE knowledge_revisions ADD COLUMN title TEXT");
+}
+
 export function migrateFactSegments93(db: DatabaseSync): void {
   if (!db.isTransaction) throw new Error("93 migration requires Store's schema transaction");
   if (!db.prepare("PRAGMA table_info(facts)").all().some(row => row.name === "title"))

@@ -157,7 +157,7 @@ test.each(["update", "archive", "merge survivor", "merge absorbed", "split"] as 
         ? { op: "merge", id: kind === "merge survivor" ? lateAddress : address(f, survivor),
           absorb: [kind === "merge absorbed" ? lateAddress : address(f, absorbed)], text: "merged", ...content }
         : kind === "split" ? { op: kind, id: lateAddress, supports: [], reason: "two topics",
-          children: [{ text: "first child", category: "constraint", topics: [] }, { text: "second child", category: "reference", topics: [] }] }
+          children: [{ title: "Fixture child", text: "first child", category: "constraint", topics: [] }, { title: "Fixture child", text: "second child", category: "reference", topics: [] }] }
         : kind === "archive" ? { op: kind, id: lateAddress, kind: "budget", supports: [], reason: "budget" }
         : { op: kind, id: lateAddress, text: "updated", ...content };
       const before = f.store.listKnowledgeRevisions();
@@ -190,7 +190,7 @@ test("Dreaming accepts its own successive versions and accounts for merge, split
     const merged = JSON.parse(memory.execute({ op: "merge", id: address(f, older), absorb: [address(f, newer)], text: "combined", ...content }));
     expect(merged.results).toEqual(["ok"]);
     const split = JSON.parse(memory.execute({ op: "split", id: merged.committed[0].version, supports: [], reason: "separate topics",
-      children: [{ text: "first rule", category: "constraint", topics: [] }, { text: "second rule", category: "reference", topics: [] }] }));
+      children: [{ title: "Fixture child", text: "first rule", category: "constraint", topics: [] }, { title: "Fixture child", text: "second rule", category: "reference", topics: [] }] }));
     expect(split.results).toEqual(["ok"]);
     const moved = JSON.parse(memory.execute({ op: "update", id: split.committed[0].version, text: "global rule", ...content, scope: "global" }));
     expect(moved.results).toEqual(["ok"]);
@@ -410,8 +410,8 @@ test("127: update, merge, split and both archive kinds are each one call that co
     const content = { category: "constraint", scope: "project", topics: [], supports: [] };
     call({ op: "update", id: address(f, updated!), text: "updated", ...content, reason: "rewrite" }, 1);
     call({ op: "merge", id: address(f, survivor!), absorb: [address(f, absorbed!)], text: "merged", ...content, reason: "same rule" }, 1);
-    expect(call({ op: "split", id: address(f, parent!), children: [{ text: "one", category: "constraint", topics: [] },
-      { text: "two", category: "reference", topics: [] }], supports: [], reason: "two rules" }, 2).committed).toHaveLength(2);
+    expect(call({ op: "split", id: address(f, parent!), children: [{ title: "Fixture child", text: "one", category: "constraint", topics: [] },
+      { title: "Fixture child", text: "two", category: "reference", topics: [] }], supports: [], reason: "two rules" }, 2).committed).toHaveLength(2);
     call({ op: "archive", kind: "budget", id: address(f, budget!), supports: [], reason: "over budget" }, 1);
     call({ op: "archive", kind: "invalid", id: address(f, invalid!), text: "The rule no longer holds: the user corrected its basis; nothing replaces it.",
       supports: [], reason: "contradicted" }, 1);
@@ -581,7 +581,7 @@ test("134: Changed material supplies its current tag for a committed update with
   const base = f.create("保留范围。使用 red tiles。");
   const reference = JSON.parse(f.memory.tools({ kind: "manual", sessionId: f.session.id,
     branch: "main", currentTurnId: f.turn.id }).find(tool => tool.name === "memory")!.execute({
-    op: "create", text: "Keep the independent reference unchanged.", category: "constraint", scope: "project",
+    op: "create", title: "Fixture title", text: "Keep the independent reference unchanged.", category: "constraint", scope: "project",
     topics: ["retrieval context"], supports: [`F${f.fact}`], reason: "An unchanged reference for the next D",
   }));
   const first = await f.scenarios.run(f.memory, f.target, task => {

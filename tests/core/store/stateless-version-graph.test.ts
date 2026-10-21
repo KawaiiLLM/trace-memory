@@ -31,7 +31,7 @@ function fact(store: Store, path: KnowledgePath, turnId: number, entryId: number
 
 function revision(id: number, parentId: number | null, op: KnowledgeRevision["op"] = parentId === null ? "create" : "update",
   knowledgeId = 1, runId: number | null = id): KnowledgeRevision {
-  return { id, knowledgeId, parentId, op, runId, text: `revision ${id}`, category: "constraint", scope: "global",
+  return { id, knowledgeId, parentId, op, runId, title: null, text: `revision ${id}`, category: "constraint", scope: "global",
     supports: [id], supportSemantics: "change", reason: "Pure graph fixture.", topics: [], createdAt: at };
 }
 
@@ -118,7 +118,7 @@ test("64b stateless graph: genuine alternative split operations keep only the op
       memoryFiles(memory, path).read(`trace://${tag(store, trigger)}`);
       const receipt = JSON.parse(dreamerWrite(write, { operations: [
         { op: "split", id: tag(store, base), supports: [`F${support}`], reason: "Alternative atomic split.",
-          children: labels.map(text => ({ text, category: "constraint", topics: [] })) },
+          children: labels.map(text => ({ title: "Fixture child", text, category: "constraint", topics: [] })) },
         { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
       ], skipped: [] }));
       children = receipt.committed.filter((item: { op: string }) => item.op === "split").map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
@@ -296,7 +296,7 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
         text: "merged result with B support", category: "constraint", scope: "global", supports: [`F${bFact.id}`],
         reason: "Merge distinct identities.", topics: [] },
       { op: "split", id: tag(store, splitParent), supports: [`F${bFact.id}`], reason: "Split into atomic results.",
-        children: [{ text: "split result one", category: "constraint", topics: [] }, { text: "split result two", category: "constraint", topics: [] }] },
+        children: [{ title: "Fixture child", text: "split result one", category: "constraint", topics: [] }, { title: "Fixture child", text: "split result two", category: "constraint", topics: [] }] },
       { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${aFact.id}`], reason: "Retire trigger." },
     ], skipped: [] }));
     mergeCommit = publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === survivor.knowledgeId));

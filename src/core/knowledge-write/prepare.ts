@@ -3,9 +3,11 @@ import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath } from "..
 import { tokens } from "../render/index.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
-export type ConsolidationDiagnostic =
-  | { kind: "unsupported_numbers"; knowledge: string; numbers: string[] }
-  | { kind: "over_200_tokens"; knowledge: string; tokens: number };
+export type ConsolidationDiagnostic = { kind: "unsupported_numbers"; knowledge: string; numbers: string[] };
+
+/** A field over its cap, as the refusal states it: the field, its count and the limit (ticket 144). */
+export const overLimit = (field: string, count: number, limit: number): string =>
+  `${field}: ${count} tokens, over the ${limit}-token limit`;
 const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 
 /** Validate the complete batch before writes, including every merge participant. */
@@ -18,6 +20,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
   const projectId = store.getSession(sessionId)!.projectId;
   const touched = new Set<number>();
   const dreaming = store.isDreamingRun(run);
+  const limits = store.writing;
   if (run.kind !== "noting" && batch && typeof batch === "object" && "drop" in batch)
     return { results: ["rejected: drop is N-only; this role uses immediate memory writes"], operations, batch,
       diagnostics: [] as ConsolidationDiagnostic[], declinedCommits: new Map<MemoryBatch["skipped"][number], number>() };
@@ -62,13 +65,19 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const structural = op === "split";
     const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []),
       ...(structural ? ["children"] : op === "archive" ? ["kind", ...(value.kind === "invalid" ? ["text"] : [])]
-        : ["text", ...(op === "update" ? ["edits"] : []), "category", "scope", "topics"])];
+        : ["title", "text", ...(op === "update" ? ["edits"] : []), "category", "scope", "topics"])];
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
     // model still writing the old shape is told which two fields replace it.
     for (const key of Object.keys(value)) if (key === "because") errors.push('because: removed field; supply "reason" (a string) and "supports" (the commit\'s evidence)');
       else if (key === "slot") errors.push("slot is N-only; this role uses immediate memory writes");
       else if (!keys.includes(key)) errors.push(`${key}: inapplicable field`);
     if (typeof value.reason !== "string" || !value.reason.trim()) errors.push("reason: expected a non-empty commit message");
+    // A title is one nonempty line within its cap. `prefix` names a split child.
+    const checkTitle = (title: unknown, prefix = "") => {
+      const field = prefix ? `${prefix}: title` : "title";
+      if (typeof title !== "string" || !title.trim() || /[\r\n\u2028\u2029]/.test(title)) errors.push(`${field}: expected a nonempty single-line string`);
+      else if (tokens(title) > limits.titleTokens) errors.push(overLimit(field, tokens(title), limits.titleTokens));
+    };
     const target = (address: unknown) => {
       const match = typeof address === "string" ? /^K([1-9]\d*)#([a-z]{4,})$/.exec(address) : null;
       const id = Number(match?.[1]);
@@ -89,10 +98,13 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       : (errors.push("merge requires id as the survivor and absorb as exactly one distinct other parent"), [])) : [];
     const children = op === "split" && Array.isArray(value.children) && value.children.length === 2 ? value.children.map((raw, childIndex) => {
       const child = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as NonNullable<typeof value.children>[number];
-      if (Object.keys(child).some(key => !["text", "category", "topics"].includes(key))) errors.push(`child ${childIndex + 1}: inapplicable field`);
-      if (typeof child.text !== "string" || !child.text.length) errors.push(`child ${childIndex + 1}: expected non-empty text`);
-      if (!isKnowledgeCategory(child.category)) errors.push(`child ${childIndex + 1}: invalid category`);
-      return { text: child.text!, category: child.category!, topics: labels(child.topics, errors) };
+      const name = `child ${childIndex + 1}`;
+      if (Object.keys(child).some(key => !["title", "text", "category", "topics"].includes(key))) errors.push(`${name}: inapplicable field`);
+      if (typeof child.text !== "string" || !child.text.length) errors.push(`${name}: expected non-empty text`);
+      else if (tokens(child.text) > limits.bodyTokens) errors.push(`${name}: ${overLimit("text", tokens(child.text), limits.bodyTokens)}`);
+      checkTitle(child.title, name);
+      if (!isKnowledgeCategory(child.category)) errors.push(`${name}: invalid category`);
+      return { title: child.title!, text: child.text!, category: child.category!, topics: labels(child.topics, errors) };
     }) : op === "split" ? (errors.push("split requires exactly two complete children"), []) : [];
     if (op === "archive") {
       if (value.kind !== "budget" && value.kind !== "invalid") errors.push("archive kind must be budget or invalid");
@@ -134,7 +146,21 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (!inheritedCategory && !isKnowledgeCategory(category)) errors.push("invalid category");
       if (!KNOWLEDGE_SCOPES.includes(contentScope!)) errors.push("invalid scope");
     }
-    const content = { text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !dreaming), reason: value.reason!,
+    // Ticket 144: a new live version ends with a title, given or inherited from its base (a merge's
+    // survivor); a legacy base has none to give. Split children carry their own, checked above.
+    let title = value.title;
+    if (op === "create" || op === "update" || op === "merge") {
+      const baseTitle = op === "create" || !dest ? undefined : store.getKnowledgeRevision(dest.knowledgeId, dest.baseCommit)?.title;
+      if (title === undefined && baseTitle === null) errors.push("title: the base version has no title; supply one");
+      title ??= baseTitle ?? undefined;
+      if (title !== undefined || op === "create") checkTitle(title);
+    }
+    // Caps apply to the body as written: an edited update's result, and a merge that omits text, which copies the later parent's.
+    const body = op === "merge" && text === undefined && dest && absorb.length
+      ? store.knowledgeRevision(Math.max(dest.baseCommit, absorb[0]!.baseCommit))?.text
+      : op === "archive" ? (value.kind === "invalid" ? value.text : undefined) : text;
+    if (typeof body === "string" && tokens(body) > limits.bodyTokens) errors.push(overLimit("text", tokens(body), limits.bodyTokens));
+    const content = { title: title!, text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !dreaming), reason: value.reason!,
       topics, createdAt: run.createdAt };
     const scope = op === "archive" || op === "split" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : contentScope;
     if (scope && content.supports.every(Number.isSafeInteger)) {
@@ -189,7 +215,6 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     for (const body of bodies) {
       const unsupported = [...new Set(numbers(body.text))].filter(n => !cited.has(n));
       if (unsupported.length) diagnostics.push({ kind: "unsupported_numbers", knowledge: body.label, numbers: unsupported });
-      if (tokens(body.text) > 200) diagnostics.push({ kind: "over_200_tokens", knowledge: body.label, tokens: tokens(body.text) });
     }
   }
   return { results, operations, batch, diagnostics, declinedCommits };

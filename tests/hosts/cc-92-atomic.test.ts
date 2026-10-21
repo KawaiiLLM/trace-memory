@@ -48,7 +48,7 @@ for (const ending of ["success", "bare note", "error", "cancel", "native rejecti
           }
           for (const [name, args] of [
             ["note", { title: "User rule", sources: "[T1#E1] User set a rule" }],
-            ["memory", { op: "create", text: "Follow the rule", category: "constraint", scope: "session",
+            ["memory", { op: "create", title: "Fixture title", text: "Follow the rule", category: "constraint", scope: "session",
               topics: [], supports: ["$1"], reason: "User requirement" }],
           ] as const) {
             const id = `held-${name}`;
@@ -79,7 +79,7 @@ for (const ending of ["success", "bare note", "error", "cancel", "native rejecti
             }
             if (ending.startsWith("corrected")) {
               const value = kind === "note" ? { title: "Corrected rule", sources: "[T1#E1] Corrected rule" }
-                : { op: "create", text: "Corrected rule", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "User requirement" };
+                : { op: "create", title: "Fixture title", text: "Corrected rule", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "User requirement" };
               const corrected = { slot, ...value };
               yield { type: "assistant", message: { id: "corrected-response", content: [{ type: "tool_use", id: "corrected-note", name: ccWorkerToolNames[kind], input: corrected }] } };
               expect((await client.callTool({ name: kind, arguments: corrected, _meta: { "claudecode/toolUseId": "corrected-note" } })).isError).not.toBe(true);

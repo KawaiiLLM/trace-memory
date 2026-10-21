@@ -18,7 +18,8 @@ function fixture(extra = { knowledge: 0, facts: 0, raw: 0 }, noted = false, hist
   const t = memory.store.appendTurn({ sessionId: s.id, userPrompt: "word ".repeat(extra.raw) + "source", assistantText: null, kind: "turn", startedAt: time });
   const entries = memory.store.sourcePath(s.id, "main", t.id);
   const factText = "word ".repeat(extra.facts) + "required fact";
-  const knowledgeText = "word ".repeat(extra.knowledge) + "current complete knowledge";
+  // A fixed lead longer than the title limit keeps the title a legacy item derives from its body the same size at every calibration.
+  const knowledgeText = "current complete knowledge " + "anchor ".repeat(40) + "word ".repeat(extra.knowledge);
   // Oversized facts are isolated as manual/historical writes, not new Noter output.
   const f = legacyFacts(memory.store, { sessionId: s.id, branch: "main", kind: historicalManual ? "manual" : "noting", createdAt: time }, [
     { sources: [{ entry: entries[0]!, address: `T${t.id}#user` }], text: factText,

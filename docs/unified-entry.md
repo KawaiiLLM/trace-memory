@@ -15,7 +15,7 @@ Manual writers and the Noter use one fact per call, with fields at the top level
 
 Each source starts on a line with `[address] ` and may continue on following lines. Text before the first marker is rejected. Core trims each segment's trailing whitespace, orders segments by their entries' positions, derives source roles, joins the body and assigns the earliest source Turn. Duplicate resolved entries, empty segments and multiline titles are rejected. The writer supplies neither a fact-level body nor a fact-wide actor.
 
-A slice ends at a topic pivot, batch boundary or size limit, not merely a speaker change. Assistant segments name the original harness. Results and the agent's interpretation use their own sources; later corrections form a new slice. Noter bodies have a 1,000-estimated-token limit, excluding title and generated citations; manual facts keep their size exemption. Material windows charge complete rendering. Noter publication is atomic at normal termination; manual writes commit immediately. Sources cite whole frozen entries, not `trace://` paths.
+A slice ends at a topic pivot, batch boundary or size limit, not merely a speaker change. Assistant segments name the original harness. Results and the agent's interpretation use their own sources; later corrections form a new slice. Every writer's fact is capped (144): the title at `writing.titleTokens` and the body, its segments counted one by one and summed, at `writing.bodyTokens`, excluding generated citations. Material windows charge complete rendering. Noter publication is atomic at normal termination; manual writes commit immediately. Sources cite whole frozen entries, not `trace://` paths.
 
 ## Paths and views
 

@@ -131,6 +131,8 @@ export interface KnowledgeRevision {
   knowledgeId: number;
   parentId: number | null;
   text: string;
+  /** One-line index title. Legacy versions have none (null) and are never rewritten (ticket 144). */
+  title: string | null;
   category: KnowledgeCategory;
   scope: KnowledgeScope;
   supports: number[];
@@ -270,13 +272,18 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
   };
 }
 
+/** Per-item length caps in `tokens()` units, applied to every writer's title and body (ticket 144). */
+export interface WritingLimits { titleTokens: number; bodyTokens: number }
+export const DEFAULT_WRITING_LIMITS: WritingLimits = { titleTokens: 20, bodyTokens: 200 };
+
 // ---- Memory tool input ----
 export interface MemoryOperation {
   op: "create" | "update" | "merge" | "split" | "archive";
+  title?: string;
   kind?: "budget" | "invalid";
   id?: string;
   absorb?: string[];
-  children?: { text: string; category: KnowledgeCategory; topics: string[] }[];
+  children?: { title: string; text: string; category: KnowledgeCategory; topics: string[] }[];
   text?: string;
   edits?: { old: string; new: string }[];
   category?: KnowledgeCategory;

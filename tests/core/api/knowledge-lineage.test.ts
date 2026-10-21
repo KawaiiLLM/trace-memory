@@ -112,7 +112,7 @@ test("64b: change revisions use only direct facts and do not inherit historical 
 
   const split = await f.write(childPath, [{ op: "split", knowledgeId: f.created.knowledgeId,
     baseCommit: second.commit, supports: [f.rootFact], reason: "separate the complete result", createdAt: time,
-    children: [{ text: "first complete result", category: "constraint", topics: [] }, { text: "second complete result", category: "goal", topics: [] }] }]);
+    children: [{ title: "Fixture child", text: "first complete result", category: "constraint", topics: [] }, { title: "Fixture child", text: "second complete result", category: "goal", topics: [] }] }]);
   f.store.setCurrentPath(f.session.id, "root", f.rootTurn.id, "test-lineage");
   expect(f.store.currentKnowledge(f.rootPath).map(v => v.revision.id)).toEqual(split.map(v => v.commit));
   f.store.setCurrentPath(f.session.id, "child", childTurn.id, "test-lineage");
@@ -179,18 +179,18 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
     if (input.kind !== "dreaming") throw new Error("unexpected phase");
     input.reportRequest({ offline: true });
     const tool = input.tools.find(t => t.name === "memory")!;
-    const illegalCreate = dreamerWrite(tool, { operations: [{ op: "create", text: "not a split", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "illegal" }], skipped: [] });
+    const illegalCreate = dreamerWrite(tool, { operations: [{ op: "create", title: "Fixture title", text: "not a split", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "illegal" }], skipped: [] });
     expect(illegalCreate).toContain("rejected: M1");
     expect(tool.execute({ drop: "M1" })).toContain("dropped: M1");
     const invalid = dreamerWrite(tool, { operations: [{ op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), supports: [], reason: "separate independent rules",
-      children: [{ text: "first rule", category: "constraint", topics: [] }, { text: "", category: "goal", topics: [] }] }], skipped: [] });
+      children: [{ title: "Fixture child", text: "first rule", category: "constraint", topics: [] }, { title: "Fixture child", text: "", category: "goal", topics: [] }] }], skipped: [] });
     expect(invalid).toContain("rejected: M2");
     expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
     const parentCost = Number(new RegExp(`\\[K${parent.knowledgeId}#[a-z]+\\] \\[[^\\]]+\\] \\((\\d+) tokens(?:; facts [^)]*)?\\)`)
       .exec(input.material.changed)![1]);
     const split = JSON.parse(tool.execute({ slot: "M2", op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit),
       supports: [], reason: "separate independent rules",
-      children: [{ text: "first rule", category: "constraint", topics: ["first"] }, { text: "second rule", category: "goal", topics: ["second"] }] }));
+      children: [{ title: "Fixture child", text: "first rule", category: "constraint", topics: ["first"] }, { title: "Fixture child", text: "second rule", category: "goal", topics: ["second"] }] }));
     expect(split.committed).toHaveLength(2);
     expect(split.tokens.before).toEqual([parentCost]);
     const [first, second] = split.committed as { knowledgeId: number; version: string }[];
@@ -315,7 +315,7 @@ test("34a: bound origin freezes the ordered native path through the exact same-T
     entryIds: [trigger.id], category: "decision", actor: "user", text: "evidence", source: [`T${turn.id}#E2`], createdAt: time }] });
   if (!facts.ok) throw new Error(facts.problems.join());
   const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id, triggerEntryId: trigger.id });
-  const result = tools.find(t => t.name === "memory")!.execute({ op: "create", text: "origin-backed", category: "constraint", scope: "project",
+  const result = tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "origin-backed", category: "constraint", scope: "project",
     topics: [], supports: [`F${facts.facts[0]!.id}`], reason: "initial" });
   expect(result).not.toContain("rejected:");
   const frozen = store.listRuns(session.id).at(-1)!.origin;

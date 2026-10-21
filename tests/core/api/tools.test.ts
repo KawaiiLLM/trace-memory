@@ -25,7 +25,7 @@ for (const outcome of ["failure", "cancelled"] as const) test(`92: ${outcome} af
     const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
     expect(input.tools.find(tool => tool.name === "note")!.execute(fact())).toContain("held");
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ op: "create", text: "Project rule", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" })).toContain("held");
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Project rule", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" })).toContain("held");
     expect(memory.store.listSessionFacts(1)).toEqual([]);
     expect(memory.store.getKnowledge(1)).toBeNull();
     return { outcome, output: "connection stopped", request: { round: 2 } };
@@ -75,7 +75,7 @@ test("116: scalar drops, empty calls, and malformed calls retain publication blo
   expect(note.execute({ slot: "$404", ...fact() })).toContain('"$2"');
   expect(note.execute({ drop: "$2" })).toContain("dropped: $2");
   expect(note.execute({ drop: "$1" })).toContain("dropped: $1");
-  expect(knowledge.execute({ op: "create", text: "a", category: "constraint", scope: "project", topics: [], supports: ["F404"], reason: "test" })).toContain("rejected: M1");
+  expect(knowledge.execute({ op: "create", title: "Fixture title", text: "a", category: "constraint", scope: "project", topics: [], supports: ["F404"], reason: "test" })).toContain("rejected: M1");
   expect(knowledge.execute({ skipped: [] })).toContain("rejected:");
   expect(knowledge.execute({ drop: "M1" })).toContain("dropped: M1");
   expect(knowledge.execute(null)).toContain("Not publishable:");
@@ -169,7 +169,7 @@ test("135: the advertised memory schema accepts exactly one body form per update
     ["edits on an archive", { ...archive, edits }],
   ];
   const noterOnly: Array<[string, Record<string, unknown>]> = [
-    ["edits on a create", { ...base, op: "create", ...full, edits }],
+    ["edits on a create", { ...base, op: "create", title: "Fixture title", ...full, edits }],
   ];
   const dreamerOnly: Array<[string, Record<string, unknown>]> = [
     ["edits on a merge", { ...base, op: "merge", id: "K1#abcd", absorb: ["K2#efgh"], ...full, edits }],
@@ -214,7 +214,7 @@ test("116: manual memory commits one operation at a time and rejects Noter-only 
   const tools = memory.tools(manual());
   expect(tools.find(tool => tool.name === "note")!.execute(fact())).toContain("F1");
   const knowledge = tools.find(tool => tool.name === "memory")!;
-  const create = { op: "create", text: "rule", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "evidence" };
+  const create = { op: "create", title: "Fixture title", text: "rule", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "evidence" };
   expect(knowledge.execute({ ...create, skipped: [] })).toContain("rejected:");
   expect(knowledge.execute({ ...create, supports: ["$1"] })).toContain("rejected:");
   expect(memory.store.getKnowledge(1)).toBeNull();

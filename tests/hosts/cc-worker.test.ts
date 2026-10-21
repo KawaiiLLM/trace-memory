@@ -863,7 +863,7 @@ test.each([false, true])("production MCP N corrects its held batch (invalid firs
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const receipts: string[] = [];
-  const valid = { op: "create", text: "Durable CC conclusion", category: "reference", scope: "project",
+  const valid = { op: "create", title: "Fixture title", text: "Durable CC conclusion", category: "reference", scope: "project",
     topics: ["cc"], supports: ["F1"], reason: "New durable conclusion." };
   const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
     const stream = (async function* () {
@@ -1316,7 +1316,7 @@ test("scheduler reserves independent N/D slots and failed worker completion does
   const seed = append(memory, session.id, "seed", "A pending raw source.");
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: seed.turn.id });
   expect(manual.find(value => value.name === "note")!.execute({ title: "Pending fact", sources: `[T${seed.turn.id}#E1] A separate pending fact.` })).toContain("ok: F1");
-  expect(manual.find(value => value.name === "memory")!.execute({ op: "create", text: "Pending maintenance", category: "constraint",
+  expect(manual.find(value => value.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Pending maintenance", category: "constraint",
     scope: "session", topics: [], supports: ["F1"], reason: "Seed D pool" })).not.toContain("rejected:");
   const diagnostics: string[] = [], notingAdmission = vi.spyOn(memory, "noting"), dreamingAdmission = vi.spyOn(memory, "dream");
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, message => diagnostics.push(message));
@@ -1486,7 +1486,7 @@ test("92: catchup retries failed N without publishing held facts or knowledge tw
     expect(memory.store.currentKnowledge()).toEqual([]);
     const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
     expect(input.tools.find(tool => tool.name === "note")!.execute({ title: "Durable evidence", sources: `[${source}] Durable evidence` })).toContain("held");
-    expect(input.tools.find(tool => tool.name === "memory")!.execute({ op: "create", text: "Durable reference", category: "reference",
+    expect(input.tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Durable reference", category: "reference",
       scope: "session", topics: [], supports: ["$1"], reason: "Supported" })).toContain("held");
     return { outcome: attempts === 1 ? "failure" : "success", output: "terminal", audit: { available: false, reason: "test" } };
   }, { noting: { triggerTokens: 1_000_000 } });

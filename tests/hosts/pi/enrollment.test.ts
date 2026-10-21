@@ -160,7 +160,7 @@ test.each([true, false])("34c: automatic material ignores the Noter mode (%s); d
   // Live N publication is exercised separately by the host atomic and scheduler tests.
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   expect(seedFact(h, "Shared rule").text).toBe("Shared rule");
-  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", topics: [], reason: "Initial admission",
+  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission",
     text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"] })).not.toContain("rejected:");
   expect((await h.prompt("no receipts"))?.message?.content ?? "").not.toContain("<noted>");
   await h.answer(); await h.emit("agent_settled"); await h.answer("consolidation opportunity"); await h.drain();
@@ -309,7 +309,7 @@ test.each([true, false])("92: disable during D rejects late %s mutation and pres
   const h = setup({ "dreaming.triggerTokens": 1 }); await h.turn();
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   expect(seedFact(h, "Pending knowledge").id).toBe(1);
-  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", text: "Retain rule", category: "constraint",
+  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Retain rule", category: "constraint",
     scope: "session", topics: [], supports: ["F1"], reason: "Seed pending D revision" })).not.toContain("rejected:");
   const original = h.memory.store.listKnowledgeRevisions()[0]!;
   let release!: (value: ReturnType<typeof reply>) => void;

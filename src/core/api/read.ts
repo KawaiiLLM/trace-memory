@@ -330,7 +330,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const factGroups = (facts: Fact[], relations = store.listFactRelationsOf(facts.map(fact => fact.id))) =>
     renderFactGroups(facts, f => factLine(f.id, relations.get(f.id) ?? []), store.factTurnTimes(facts));
   const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge(value,
-    `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`);
+    `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, false, store.writing);
   // The knowledge part of the shared material contract (20a): the applicable commits at one node,
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
   const applicable = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) =>
@@ -488,9 +488,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const shown = (r: KnowledgeRevision) => r.id === revision.id ? tag : labels.get(r.id)!;
         const plain = (r: KnowledgeRevision) => r.id === revision.id ? `K${knowledge.id}` : labels.get(r.id)!;
         return (): string | TaggedBody => {
-          const full = renderKnowledgeTrace(value, parents, children, Infinity, fields, historyLine, status, shown, labels.get(revision.id), titles);
+          const full = renderKnowledgeTrace(value, parents, children, Infinity, fields, historyLine, status, shown, labels.get(revision.id), titles, store.writing);
           if (!fields.has("text") || tokens(full) > profile.entryTokens)
-            return renderKnowledgeTrace(value, parents, children, profile.entryTokens, fields, historyLine, status, plain, labels.get(revision.id), titles);
+            return renderKnowledgeTrace(value, parents, children, profile.entryTokens, fields, historyLine, status, plain, labels.get(revision.id), titles, store.writing);
           return { lines: full.split("\n"), taggedHeader, plainHeader, tag };
         };
       };
@@ -519,7 +519,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
             const value = { knowledge: records.get(revision.knowledgeId)!, revision };
             return options.modelFacing ? knowledgeBody(value, parents, children, status, false, projectTitles)
               : () => renderKnowledgeTrace(value, parents, children, profile.entryTokens, fields, false, status,
-                undefined, undefined, projectTitles);
+                undefined, undefined, projectTitles, store.writing);
           });
           const facts = store.listProjectFacts(project.id);
           const relations = options.sessionId === undefined ? store.listFactRelationsOf(facts.map(fact => fact.id)) : (() => {
@@ -738,7 +738,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const notice = sessionKnowledgeNotice(sessionId);
       // The count is part of the rendered line, so the budget below charges it like any other text.
       const line = options.showKnowledgeSize ? (value: KnowledgeWithRevision) => renderKnowledge(value,
-        `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, true) : knowledgeLine;
+        `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, true, store.writing) : knowledgeLine;
       const active = budgetKnowledge(knowledge, Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
         line, "Knowledge base plus shared allowance", new Set(), undefined, notice);
       const knowledgeUsed = knowledgeNoticeCost + active.cost;

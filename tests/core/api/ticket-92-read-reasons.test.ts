@@ -12,7 +12,7 @@ test("92/41b: reasons belong to history metadata, not current or exact bodies", 
     const write = memory.tools({ kind: "manual", ...path, currentTurnId: turn.id }).find(tool => tool.name === "memory")!;
     const user = memory.store.getSourceEntry(memory.store.listSourceEntries(session.id, turn.id)[0]!.id)!;
     fact(memory, path, "Rule requested", [{ entry: user, text: "User requested the rule" }]);
-    const content = { op: "create", text: "The durable rule", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "REASON_INITIAL" };
+    const content = { op: "create", title: "Fixture title", text: "The durable rule", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "REASON_INITIAL" };
     expect(write.execute(content)).toContain("committed");
     expect(write.execute({ ...content, text: "Another identity", reason: "OTHER_REASON" })).toContain("committed");
     const tag = `K1#${memory.store.versionTag(1, 1)}`;

@@ -12,7 +12,7 @@ function fixture(runAgent?: Parameters<typeof TraceMemory>[1]) {
   const memory = TraceMemory(":memory:", async raw => {
     captured.push(raw as DreamingAgentInput);
     return runAgent ? runAgent(raw) : { outcome: "failure", output: "capture only", request: {} };
-  });
+  }, { writing: { bodyTokens: 1_000_000 } });
   memories.push(memory);
   const project = memory.store.createProject({ name: "budgets", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
@@ -109,9 +109,9 @@ test("92: no Knowledge window explicitly rejects a mandatory pending header and 
   const changedCost = tokens(["Pending current knowledge:", ...pending.map(value => value.material)].join("\n"));
   const knowledgeWindow = f.memory.knowledgeBudgets().injection + f.memory.config.compaction.sharedAllowanceTokens;
   expect(knowledgeWindow).toBe(0);
-  expect(changedCost).toBe(39); // 35 before 134 added the "(N tokens)" annotation
+  expect(changedCost).toBe(44); // 35 before 134 added the "(N tokens)" annotation, 39 before 144 added the title line
   expect(tokens("Current pool knowledge outside this range:\n")).toBe(8);
-  expect(changedCost + 1 + 8).toBe(48);
+  expect(changedCost + 1 + 8).toBe(53);
   const failure = await f.memory.dream(f.target).then(() => "resolved", error => String(error));
   expect(f.captured).toEqual([]);
   expect(f.memory.store.openDreamingRange(f.session.id, "main")).toBeNull();

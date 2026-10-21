@@ -39,7 +39,9 @@ const tag = (knowledgeId: number, commit: number) => `K${knowledgeId}#${memory.s
 
 const ok = (): RunAgentResult => ({ outcome: "success", output: "[]", request: { fake: true } });
 
-function open(config: ConfigOverride = {}) {
+/** These cases size items in thousands of tokens, as items written before the caps are (ticket 144); the caps are lifted here, not in each case. */
+const uncapped: ConfigOverride = { writing: { bodyTokens: 1_000_000 } };
+function open(config: ConfigOverride = uncapped) {
   scenarios = new AdmittedDreamerScenarios(async raw => { calls.push(raw as NotingAgentInput); return ok(); });
   memory = sourceSeededMemory(join(directory, "test.sqlite"), scenarios.agent, config);
 }
@@ -56,14 +58,14 @@ function seeded() {
   const user = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(e => e.role === "user")!;
   expect(seedFact(memory, path, "Package manager decision", [{ entry: user, text: "Use pnpm" }]).id).toBe(1);
   expect(seedKnowledge(memory.store, path, "project", "constraint", [1], "The project uses pnpm",
-    { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [] } }).knowledgeId).toBe(1);
+    { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [], title: "Package manager" } }).knowledgeId).toBe(1);
   // 118: identity framing stays in the block; the complete injection carries one guide.
-  knowledgeBlock = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n## constraint (1)\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] The project uses pnpm\n  change supports: F1\n</knowledge>`;
+  knowledgeBlock = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n## constraint (1)\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] Package manager\nThe project uses pnpm\n  change supports: F1\n</knowledge>`;
   return { s, t, user, read: (address: string) => memoryFiles(memory, path).read(`trace://${address}`).content };
 }
 let knowledgeBlock: string;
 /** Fresh N alone shows the body's cap-check token count after the category tag. */
-const withSize = (block: string) => block.replace("[constraint/project] The project uses pnpm", `[constraint/project] (${tokens("The project uses pnpm")}/1000 tokens) The project uses pnpm`);
+const withSize = (block: string) => block.replace("[constraint/project] Package manager", `[constraint/project] (${tokens("The project uses pnpm")}/${memory.config.writing.bodyTokens} tokens) Package manager`);
 const views = (sessionId: number, head: number) =>
   hydrate(memory.pendingEntries(sessionId, "main", head), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
 
@@ -187,7 +189,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   // A legal oversized manual item pressures the same Knowledge selector used by N.
   const receipt = "omitted 2 constraint knowledge; expand: trace://K2, trace://K1";
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  tools.find(tool => tool.name === "memory")!.execute({ op: "create", topics: [],
+  tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [],
     reason: "Exercise a database-derived omission boundary.", text: "The project uses pnpm " + "word ".repeat(5_200),
     category: "constraint", scope: "project", supports: ["F1"] });
   setKnowledgeCapacity(memory, 5_000);
@@ -320,7 +322,7 @@ test("21b/92: foreground, compact and N render topics through one renderer, with
   const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: tag(1, 1),
     topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.", text: "The project uses pnpm",
     category: "constraint", scope: "project", supports: ["F1"] }, tag(1, 1)))[0]!;
-  const labelled = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n## constraint (1)\n[${tag(1, changed.commit)}] [constraint/project] The project uses pnpm\n  change supports: F1 · topics: ["packaging","storage"]\n</knowledge>`;
+  const labelled = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n## constraint (1)\n[${tag(1, changed.commit)}] [constraint/project] Package manager\nThe project uses pnpm\n  change supports: F1 · topics: ["packaging","storage"]\n</knowledge>`;
   const injection = `${readingGuide(s.id, canonicalToolNames)}\n\n${labelled}`;
   expect(memory.inject(s.id)).toBe(injection);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(injection)).toBe(true);
@@ -682,7 +684,7 @@ test("64c/92: foreground and fresh N keep the same newer items and receipt omitt
   const { s, t } = seeded();
   const write = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!;
   const committed = ["constraint", "understanding", "reference"].flatMap(category => {
-    const receipt = JSON.parse(write.execute({ op: "create", category, scope: "project", text: `new ${category} ` + "word ".repeat(2_000),
+    const receipt = JSON.parse(write.execute({ op: "create", title: "Fixture title", category, scope: "project", text: `new ${category} ` + "word ".repeat(2_000),
       topics: [], supports: ["F1"], reason: "durable conclusion" }));
     return receipt.committed;
   });

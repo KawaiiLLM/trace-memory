@@ -33,7 +33,7 @@ test("92/118: all-branch history owns stable ordinals, current selection follows
       if (!result.ok) throw new Error(result.problems.join("; "));
       return result.committed[0]!;
     };
-    const content = { category: "constraint" as const, scope: "session" as const, topics: [], reason: "history", createdAt: "now" };
+    const content = { title: "History rule", category: "constraint" as const, scope: "session" as const, topics: [], reason: "history", createdAt: "now" };
     const initial = write(paths[0]!, [{ op: "create", handle: "$1", author: "test", ...content, text: "Initial body", supports: [facts[0]!] }]);
     const first = write(paths[1]!, [{ op: "update", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, ...content, text: "Left body", supports: [facts[1]!] }]);
     const second = write(paths[2]!, [{ op: "update", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, ...content, text: "Right body", supports: [facts[2]!] }]);

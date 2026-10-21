@@ -26,7 +26,7 @@ async function checkMemoryBatch(output: unknown | ((tag: (id: number) => string)
 
 describe("checkMemoryBatch", async () => {
   test("64a/92: N creates knowledge backed by preceding facts", async () => {
-    const { problems, value } = await checkMemoryBatch({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] });
+    const { problems, value } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] });
     expect(problems).toEqual([]);
     expect(value!.op).toBe("create");
   });
@@ -67,17 +67,17 @@ describe("checkMemoryBatch", async () => {
   });
 
   test("rejects an unknown scope", async () => {
-    const { problems = [] } = await checkMemoryBatch({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "team", category: "understanding", supports: ["F1"] });
+    const { problems = [] } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "team", category: "understanding", supports: ["F1"] });
     expect(problems.some((p) => p.includes("scope"))).toBe(true);
   });
 
   test("rejects an unknown category", async () => {
-    const { problems = [] } = await checkMemoryBatch({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "noting", supports: ["F1"] });
+    const { problems = [] } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "noting", supports: ["F1"] });
     expect(problems.some((p) => p.includes("category"))).toBe(true);
   });
 
   test("rejects a supports knowledge that is not a fact id", async () => {
-    const { problems = [] } = await checkMemoryBatch({ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "understanding", supports: ["K1"] });
+    const { problems = [] } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "understanding", supports: ["K1"] });
     expect(problems.some((p) => p.includes("K1"))).toBe(true);
   });
 
@@ -110,7 +110,7 @@ describe("checkMemoryBatch", async () => {
       const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", startedAt: "now" });
       const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
       expect(tools.find(tool => tool.name === "note")!.execute({ title: "Rule admission", sources: `[T${turn.id}#E1] Rule` })).toContain("F1");
-      expect(JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ op: "create", text: "Rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Seed" })).committed).toHaveLength(1);
+      expect(JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Seed" })).committed).toHaveLength(1);
       const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id });
       expect(result.outcome, JSON.stringify(result)).toBe("failure");
       if (result.outcome !== "failure") throw new Error("expected refused D batch");

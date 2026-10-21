@@ -35,7 +35,7 @@ export function renderDreamingReview(store: Store, runId: number | undefined, bl
         : `${start ? `${removed}\n` : ""}archive text: ${last.text}`}`];
     if (start?.op === "archive") return [`${address(last)} (restored from archive):\n{+${last.text}+}`];
     if (!start) return [`${address(last)} (${parent ? `split from K${parent.knowledgeId}` : "new"}):\n{+${last.text}+}`];
-    const bodyChanged = start.text !== last.text;
+    const bodyChanged = start.text !== last.text || start.title !== last.title;
     if (!bodyChanged && start.category === last.category && start.scope === last.scope &&
         JSON.stringify(start.topics) === JSON.stringify(last.topics)) return [];
     return [renderKnowledgeDiff(start, last, [], Infinity, new Set([...bodyChanged ? ["text"] : [], "status", "topics"]),

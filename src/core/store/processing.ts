@@ -98,7 +98,7 @@ export interface DreamingRange {
 }
 
 /** Full block, never a truncated budget selection. Shared by budget reporting and Dreamer input. */
-export function processedBlock(values: KnowledgeWithRevision[], render = renderKnowledge): string {
+export function processedBlock(values: KnowledgeWithRevision[], render: (value: KnowledgeWithRevision) => string = value => renderKnowledge(value)): string {
   return renderKnowledgeBlock(wholeKnowledge(values, render).groups);
 }
 

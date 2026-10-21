@@ -122,7 +122,7 @@ test("135/92: exact edits inherit legacy metadata without rewriting history, sea
     const tools = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" });
     expect(memoryFiles(f.memory, options).read(`trace://K${knowledgeId}@v1`).content).toContain("legacy mechanism needle");
     const write = tools.find(tool => tool.name === "memory")!, tag = `K${knowledgeId}#${f.memory.store.versionTag(knowledgeId, commit)}`;
-    const update = { op: "update", id: tag, edits: [{ old: "needle", new: "updated needle" }], supports: [`F${factId}`], reason: "Clarify the legacy body" };
+    const update = { op: "update", id: tag, title: "Legacy mechanism", edits: [{ old: "needle", new: "updated needle" }], supports: [`F${factId}`], reason: "Clarify the legacy body" };
     expect(write.execute({ ...update, category: "mechanism" })).toContain("invalid category");
     const updated = JSON.parse(write.execute(update));
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, receiptCommit(f.memory.store, updated.committed[0]))).toMatchObject({

@@ -18,7 +18,7 @@ const samples: { name: string; text: string; real: number }[] = [
   { name: "korean", real: 21, text: "한국어 텍스트도 토큰 추정 대상입니다. 음절 단위로 계산합니다." },
   { name: "mixed prose", real: 18, text: "整合按 turn 边界切批次 and the threshold only triggers the run." },
   { name: "json payload", real: 70,
-    text: JSON.stringify({ operations: [{ op: "create", text: "统一用 pnpm，不要 npm", category: "constraint", scope: "project", supports: ["F1", "F2"] }], skipped: [] }, null, 2) },
+    text: JSON.stringify({ operations: [{ op: "create", title: "Fixture title", text: "统一用 pnpm，不要 npm", category: "constraint", scope: "project", supports: ["F1", "F2"] }], skipped: [] }, null, 2) },
   { name: "shell log", real: 43,
     text: "$ bun test\n  ✓ 361 passed\nError: FOREIGN KEY constraint failed\n  at Store.commitIntegrationRun (core/store/index.ts:877:11)\n数据库写入失败，回滚整个事务。" },
   { name: "fact line", real: 61,

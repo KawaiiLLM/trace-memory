@@ -7,7 +7,7 @@ import { dreamerWrite } from "../../dreaming-skips.ts";
 
 const time = "2026-09-01T00:00:00Z";
 function setup(agent: RunAgent = async () => { throw Error("offline only"); }) {
-  const m = TraceMemory(":memory:", agent, {}, undefined, piSourceBlocks);
+  const m = TraceMemory(":memory:", agent, { writing: { bodyTokens: 1_000_000 } }, undefined, piSourceBlocks);
   const projectId = m.store.createProject({ name: 'alpha"beta', declaredBy: "mark" }).id;
   const sessionId = m.store.createSession({ host: "pi:source-budget", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true }).id;
   const turn = m.store.appendTurn({ sessionId, kind: "turn", startedAt: time });
@@ -87,7 +87,7 @@ test("92 exact historical versions retain complete tags without granting stale u
     const note = tools.find(t => t.name === "note")!, memory = tools.find(t => t.name === "memory")!;
     expect(note.execute({ title: "Started check", sources: factSources([{ address: "T1#E1", text: "Started the check." }]) })).not.toContain("rejected:");
     const text = "A complete durable claim has its conditions and evidence. ".repeat(500);
-    expect(memory.execute({ op: "create", text, category: "understanding", scope: "project", supports: ["F1"], reason: "Initial evidence", topics: [] })).not.toContain("rejected:");
+    expect(memory.execute({ op: "create", title: "Fixture title", text, category: "understanding", scope: "project", supports: ["F1"], reason: "Initial evidence", topics: [] })).not.toContain("rejected:");
     const path = { sessionId, headTurnId: turn.id, branch: "main" };
     const trigger = createDreamerTrigger(m, path, 1, 1, "project");
     const settled = await scenarios.run(m, path, input => {

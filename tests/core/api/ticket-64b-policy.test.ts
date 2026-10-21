@@ -88,8 +88,8 @@ test("64b: stale guidance follows split descendants instead of reporting the old
   const split = f.store.commitConsolidationRun({ run: f.run, path: f.target, operations: [{ op: "split",
     knowledgeId: f.stable.knowledgeId, baseCommit: f.stable.commit, supports: [], reason: "split", createdAt: at,
     children: [
-      { text: "stable A", category: "constraint", topics: [] },
-      { text: "stable B", category: "constraint", topics: [] },
+      { title: "Fixture child", text: "stable A", category: "constraint", topics: [] },
+      { title: "Fixture child", text: "stable B", category: "constraint", topics: [] },
     ] }] });
   expect(split.ok).toBe(true);
   if (!split.ok) return;

@@ -23,8 +23,12 @@ function setup(second = false, initialText = "body A") {
     if (operations.length !== 1) throw new Error("manual memory writes one operation per call (ticket 116)");
     return binding.find(tool => tool.name === "memory")!.execute(operations[0]);
   };
-  expect(write([{ op: "create", ...content }])).not.toContain("rejected:");
-  if (second) expect(write([{ op: "create", ...content, text: "second" }])).not.toContain("rejected:");
+  // The initial item may be oversized, as an item written before the caps (ticket 144) can be; the caps are lifted for the seed only.
+  const limits = { ...m.config.writing };
+  m.config.writing.bodyTokens = 1_000_000;
+  expect(write([{ op: "create", title: "Fixture title", ...content }])).not.toContain("rejected:");
+  if (second) expect(write([{ op: "create", title: "Fixture title", ...content, text: "second" }])).not.toContain("rejected:");
+  Object.assign(m.config.writing, limits);
   const tag = (id: number, ordinal = 1) => `K${id}#${m.store.versionTag(id, m.store.resolveVersionOrdinal(id, ordinal))}`;
   return { m, context, scenarios, path: { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: rootEntry.id }, content, tools, write, t, rootEntry, tag };
 }
@@ -38,7 +42,7 @@ test("Dreamer invalidation body observes the new-write cap; budget can retain an
     const id = a.tag(trigger.knowledgeId);
     const oversized = "Substantive evidence and grounds ".repeat(1000);
     expect(dreamerWrite(memory, { operations: [{ op: "archive", kind: "invalid", id, text: oversized,
-      supports: ["F1"], reason: "Invalidated after evidence changed" }], skipped: [] })).toContain("exceeds 1000-token limit");
+      supports: ["F1"], reason: "Invalidated after evidence changed" }], skipped: [] })).toContain("over the 200-token limit");
     expect(dreamerWrite(memory, { operations: [{ op: "archive", kind: "budget", id: a.tag(1),
       supports: ["F1"], reason: "Budget retirement retains full parent" }], skipped: [] })).toContain("committed");
     expect(a.m.store.currentCommit(1, a.path)[0]).toMatchObject({ op: "archive", archiveKind: "budget", text: a.content.text });
@@ -158,7 +162,7 @@ test("manual writers freeze fact sources and knowledge supports at the exact tri
   expect(lateTools.find(tool => tool.name === "note")!.execute({ title: "Later evidence", sources: `[T${a.t.id}#E${later.entryOrdinal}] later` })).not.toContain("rejected:");
   const earlyTools = a.m.tools({ ...a.context, triggerEntryId: carrier.id, entryIds: [a.rootEntry.id, carrier.id] });
   expect(earlyTools.find(tool => tool.name === "note")!.execute({ title: "Too late", sources: `[T${a.t.id}#E${later.entryOrdinal}] too late` })).toContain("invalid source");
-  expect(earlyTools.find(tool => tool.name === "memory")!.execute({ op: "create", ...a.content, supports: ["F2"] })).toContain("after the exact triggering source prefix");
+  expect(earlyTools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", ...a.content, supports: ["F2"] })).toContain("after the exact triggering source prefix");
 });
 
 test("92 supersedes named-read grants: copied Raw tags do not prove reading, but still identify the exact version", () => {

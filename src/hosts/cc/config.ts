@@ -57,6 +57,9 @@ export interface CcHostConfig {
   "compaction.userTurns"?: number;
   "compaction.titleTurns"?: number;
   "compaction.userEntryTokens"?: number;
+  /** Per-item caps on every fact and knowledge title and body (144). */
+  "writing.titleTokens"?: number;
+  "writing.bodyTokens"?: number;
   /** Installation baseline. Unknown or malformed values keep provisional enrollment disabled. */
   baseline?: string;
   /** Omitted preserves Claude Code's native default. No adapter retry policy is added. */
@@ -181,6 +184,10 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       ...(input["compaction.userTurns"] === undefined ? {} : { userTurns: input["compaction.userTurns"] }),
       ...(input["compaction.titleTurns"] === undefined ? {} : { titleTurns: input["compaction.titleTurns"] }),
       ...(input["compaction.userEntryTokens"] === undefined ? {} : { userEntryTokens: input["compaction.userEntryTokens"] }),
+    },
+    writing: {
+      ...(input["writing.titleTokens"] === undefined ? {} : { titleTokens: input["writing.titleTokens"] }),
+      ...(input["writing.bodyTokens"] === undefined ? {} : { bodyTokens: input["writing.bodyTokens"] }),
     },
   } as ConfigOverride);
   return {

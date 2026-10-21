@@ -41,7 +41,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput,
           if (revision.op === "archive") value = { count: 0 };
           else {
             const tagged = `K${knowledgeId}#${store.versionTag(knowledgeId, commit)}`;
-            value = { tagged, count: tokens(renderKnowledge({ knowledge: store.getKnowledge(knowledgeId)!, revision }, tagged)) };
+            value = { tagged, count: tokens(renderKnowledge({ knowledge: store.getKnowledge(knowledgeId)!, revision }, tagged, false, store.writing)) };
           }
           versions.set(commit, value);
           return value;
