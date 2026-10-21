@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, type RunAgent, type TraceMemory } from "../../source-fixture.ts";
 import { scriptedDreamer, type DreamerScript } from "../../support/dreamer.ts";
-import { archive, knowledge } from "../../support/seed.ts";
+import { archive, knowledge, legacyKnowledge, updateKnowledge } from "../../support/seed.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
 import { TASK_GAP_MS, executionLimitMs, remainingTasks } from "../../../src/core/dreaming/index.ts";
@@ -318,4 +318,46 @@ test("the backstop leaves every task a full timeout and a gap, and a resumed run
     const left = remainingTasks(next), limit = executionLimitMs(left, 1000);
     expect(left * 1000 + (left - 1) * TASK_GAP_MS).toBeLessThan(limit - TASK_GAP_MS + 1);
   }
+});
+
+// ---- Titles, stale bases and a Noter write during the run (§4) ----------------------------------------------------------------
+
+test("touching an untitled legacy item requires a title", async () => {
+  const f = dreamerFixture();
+  const legacy = legacyKnowledge(f.store, f.path, { scope: "project", category: "constraint", supports: [f.existingFact("Legacy support").id], text: "A legacy body without a title" });
+  const touch = (title?: string) => block(`update K${legacy.knowledgeId}@v1`, { ...(title ? { title } : {}), reason: "tidy" }, "A legacy body, tidied");
+  f.item("A Noter item that makes the run due", { category: "reference" }); // a legacy row is not a Noter change
+  f.dreamer.script.curate!.constraint = [touch(), touch("Legacy item")];
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(f.dreamer.messages[0]).toMatch(/title/i);
+  expect(f.store.listKnowledgeRevisions(legacy.knowledgeId).at(-1)!.title).toBe("Legacy item");
+});
+
+test("a base that moved on during the run is refused for that operation only and left for the next run; the batch still passes", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Rule", { category: "constraint" }), other = f.item("Other rule", { category: "constraint" });
+  f.dreamer.script.curate!.constraint = [
+    block(`update K${rule.knowledgeId}@v${rule.ordinal}`, { reason: "tidy" }, "Rule, tidied"),
+    block(`update K${other.knowledgeId}@v${other.ordinal}`, { reason: "tidy" }, "Other rule, tidied"),
+  ].join("\n");
+  f.next(async raw => { // a manual write lands on `rule` after the prefix was frozen
+    updateKnowledge(f.store, f.path, rule.knowledgeId, rule.commit, "Rule, edited by hand", rule.supports);
+    return f.dreamer.agent(raw);
+  });
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  const run = f.store.listRuns(f.session.id).find(value => value.kind === "dreaming" && JSON.parse(value.response ?? "{}").category === "constraint")!;
+  const results = (JSON.parse(run.response!).blocks as { result: { ok: boolean; stale?: boolean } }[]).map(entry => entry.result);
+  expect(results.map(result => result.ok)).toEqual([false, true]);
+  expect(results[0]!.stale).toBe(true);
+  expect(f.store.currentKnowledge(f.path).find(value => value.knowledge.id === rule.knowledgeId)!.revision.text).toBe("Rule, edited by hand");
+});
+
+test("a Noter version written after the prefix was frozen is not covered by the pass and still counts", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  let late: { commit: number } | undefined;
+  f.next(async raw => { late = f.item("Written by the Noter mid-run", { category: "reference" }); return f.dreamer.agent(raw); });
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(covered(f)).not.toContain(late!.commit);
+  expect(f.store.noterChangedTokens(f.path)).toBeGreaterThan(0);
 });
