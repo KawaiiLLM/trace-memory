@@ -51,6 +51,10 @@ Keep enough for a newcomer to recover the discussion's main line, important bran
 <!-- include: maintenance -->
 <!-- include: archiving -->
 
+## Bad smells
+
+<!-- include: verifying -->
+
 ## Examples
 
 <!-- include: examples -->
@@ -82,8 +86,8 @@ A task's work is two Markdown files in its workspace: the facts file and the kno
 1. Call {{tool.check}} first. It names your task: **write** (task 1) or **verify** (task 2).
 2. Task 1, write: read the earlier facts, then the batch. Write the facts file under the Facts principles. With the Raw entries still available, write the knowledge file under the Knowledge principles, continuing an existing item by updating its exact `K<id>@v<n>`.
 3. Task 2, verify: you see the same material and task 1's files, not its reasoning. Read both files, and change only what the evidence shows is wrong.
-   - Correct the facts first against the batch's Raw entries: sources, roles and attribution (such as a subagent report delivered in the user role), dropped conditions and limits.
-   - Then correct the knowledge operations against the corrected facts: attribution, conditions, admission and limits.
+   - Correct the facts first against the batch's Raw entries, going through the Facts list under Bad smells; Read an entry in full where your material shows it clipped.
+   - Then check the knowledge operations for accuracy only, against the corrected facts, going through the Knowledge accuracy list.
 4. In either task, call {{tool.check}} once the files are written, correct what it reports, then stop.
 5. The same check runs when you stop. You get one chance to fix its findings; a second failure fails the task. Facts and knowledge are published together only after task 2 passes.
 
