@@ -7,6 +7,7 @@ import { sourceSeededMemory, type DreamingAgentInput, type NotingAgentInput, typ
 import { Store } from "../../../src/core/store/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { REQUEST, scriptedNoter, type NoterOutput } from "../../support/noter.ts";
+import { block } from "../../support/workspace.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -213,13 +214,21 @@ test("04: an archived descendant is a legitimate advance", async () => {
   expect(f.memory.store.currentKnowledge(f.path)[0]!.revision.text).toContain(seed.tag);
 });
 
-test.each([["an unknown version", "K1#zzzzzzzz"], ["evidence that does not exist", "F999"]])("04: %s never converts; the check refuses it", async (_label, bad) => {
-  const f = fixture(() => ({ noteInput: [fact()], memoryInput: bad.startsWith("K")
-    ? { ...knowledge(), op: "update", id: bad } : { ...knowledge([bad]), op: "update", id: seed.tag } }), undefined);
+// Each case reaches the workspace check itself: the file names a version or a fact that does not exist, and the check's problem is what fails the run.
+test.each([
+  ["an unknown version", (seed: ReturnType<typeof seedKnowledge>) => ({ files: { knowledge: block(`update K${seed.base.knowledgeId}@v99`,
+    { title: "Fixture title", category: "constraint", scope: "session", topics: "", supports: "f1", reason: "refine" }, "Use the stated rule") } }),
+    (seed: ReturnType<typeof seedKnowledge>) => `K${seed.base.knowledgeId}@v99 does not exist`],
+  ["evidence that does not exist", (seed: ReturnType<typeof seedKnowledge>) => ({ memoryInput: { ...knowledge(["F999"]), op: "update", id: seed.tag } }),
+    () => "F999"],
+])("04: %s never converts; the check refuses it", async (_label, written, problem) => {
+  const f = fixture(() => ({ noteInput: [fact()], ...written(seed) }));
   const seed = seedKnowledge(f);
   const result = await f.run();
   expect(result.outcome).toBe("failure");
+  expect(JSON.stringify((result as { problems?: string[] }).problems)).toContain(problem(seed));
   expect(noted(f)).toBe(false);
+  expect(f.memory.store.currentKnowledge(f.path).map(item => item.revision.text)).toEqual(["Old rule"]);
 });
 
 test("04: a converted new identity is reconciled by ordinary D merge without a special queue", async () => {
