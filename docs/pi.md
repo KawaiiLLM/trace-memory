@@ -4,17 +4,14 @@ The current [entry-address and budget contract](unified-entry.md) supersedes old
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `src/core/api/index.ts`, including
-its exposed store. Noting uses a fresh subagent by default and may request verified fork mode;
-Dreamer is always a fresh subagent. Live Consolidation is retired. Automatic N/D checks occur after
+its exposed store. Noting and Dreamer always use a fresh subagent (the Noter runs fresh only, ruling 2026-10-22); Live Consolidation is retired. Automatic N/D checks occur after
 each persisted main-session entry (141), not only at main-turn settlement. Ordinary task completion
 launches no phase. The current scheduling and publication contracts supersede turn-end-only checks,
 chained runs and live C settings in the historical numbered sections below. Historical `note({facts: []})`, immediate N commit and NEAR examples below are not current call guidance.
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
-(`native.ts`): fork mode in a child forked from the parent session file at its persisted
-leaf, every fresh-context task in a private child session. Pi owns the model call, the tool
-loop, the retry policy, cancellation and persistence; this adapter keeps the byte-level gate
-on a fork's first request and the run record. The request-copy runner — its own conversation
+(`native.ts`): every task in a private child session. Pi owns the model call, the tool
+loop, the retry policy, cancellation and persistence; this adapter keeps the run record. The request-copy runner — its own conversation
 loop, its provider-message construction and its handwritten retry-settings reader — was
 deleted in 19c; there is no second runtime and no fallback to one.
 
@@ -51,7 +48,7 @@ Pi exposes the same flat `note` and `memory` definitions to N and manual callers
 
 N stages facts in `$n` slots and knowledge operations in `Mn` slots. A call without `slot` appends, an explicit `slot` replaces the entire item, and `drop: "$n"` or `drop: "Mn"` removes one slot in a separate call. `note({})` and `memory({})` explicitly confirm no item; N must call both tools even when empty. An empty call does not clear a rejected slot.
 
-After the first normal pass, each non-fork N run receives one fixed end-review user message, even if already publishable or empty. It reports real held blockers (including host-specific empty calls for missing tools) and every held knowledge change (update body/metadata diff, full create body or archive kind/text). The second pass can correct a slot, drop it or leave a compliant change untouched. Only after that pass does normal termination attempt atomic publication; unresolved blockers bounce the run. Failure or cancellation gets no review, and there is no third pass. CC fork remains excluded; D keeps its pre-existing pass-end conditions.
+After the first normal pass, each N run receives one fixed end-review user message, even if already publishable or empty. It reports real held blockers (including host-specific empty calls for missing tools) and every held knowledge change (update body/metadata diff, full create body or archive kind/text). The second pass can correct a slot, drop it or leave a compliant change untouched. Only after that pass does normal termination attempt atomic publication; unresolved blockers bounce the run. Failure or cancellation gets no review, and there is no third pass. D keeps its pre-existing pass-end conditions.
 
 ## Automatic checkpoints (141)
 
@@ -71,7 +68,7 @@ gate 6), with one deliberate exception. The memory child applies
 amendment 1), after the resource loader's reload, which rebuilds the merged settings from the
 files and would otherwise drop it. Automatic compaction of a worker session would answer a
 provider overflow by deleting the failed reply, paying for a native summary and retrying, and the
-overflow would never reach the fallback below. The override is in memory only: it writes no file,
+overflow would never reach the adapter. The override is in memory only: it writes no file,
 and the foreground agent — with Pi's compaction hooks and the user's own settings — is untouched.
 The plugin never writes settings.
 For example, either settings file can contain:
@@ -79,8 +76,6 @@ For example, either settings file can contain:
 ```json
 {
   "trace-memory": {
-    "noting.forkModeDefault": false,
-    "consolidation.forkModeDefault": false,
     "noting.triggerTokens": 10000,
     "noting.batchTokens": 10000,
     "noting.nearThreshold": 0.4,
@@ -130,7 +125,7 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
 - `dreaming.model` and `dreaming.thinking` use the same model/thinking Settings selectors,
-  defaults and precedence as the other phases. Dreamer has no fork option or new settings page.
+  defaults and precedence as the other phases. Dreamer has no new settings page.
   `dreaming.maxToolRounds` is fixed at 0 (unlimited). The shared `dreaming.timeoutMs` default is
   1,800,000 milliseconds; this adds a wall-clock bound to Pi. Expiry fails the run, fences writes and
   releases its claim. Provider retries do not reset the deadline. Budget checks no longer trigger a host-generated repair pass; the model may correct rejected
@@ -140,34 +135,16 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - `notingThinking` and `consolidationThinking` (26d) accept `inherit` (the default) or one of Pi's
   own levels `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; anything else is rejected at
   load by name with that list. They set the level this phase's **subagent** runs think at; `inherit`
-  and omission both mean the foreground level frozen at admission (26b). A fork run keeps inheriting
-  either way, so on a forking Noter the value reaches only the fallback child.
+  and omission both mean the foreground level frozen at admission (26b).
 - Core settings use dotted names: every `render.*`, `noting.*`, `consolidation.*`, and `dreaming.*` key
   in `DEFAULT_CONFIG` is accepted with the core's default and value type.
-- `noting.forkModeDefault` defaults to `false` (subagent). Set it to `true` for fork
-  notings. Defaults apply only when no explicit override is supplied; existing `true` settings,
-  including the accepted legacy `noting.branchModeDefault` alias, keep selecting fork. A noting that really runs as a fork uses the session model, because that is the context it
-  inherits. **27c: every other noting uses `notingModel`** — explicit subagent mode, and a requested
-  fork that does not run as one for any reason at all, which is admitted as a subagent on that model
-  and priced by that model's own capacity (see "Per-task fork fallback" below).
-- `consolidation.forkModeDefault` (**29e**, superseding 25b) is the same option for the other phase,
-  and defaults to **`false`**: the choice is restored, the existing default is not switched. Set it
-  to `true` to consolidate in a fork of the foreground. Everything the Noter's mode implies applies
-  unchanged — the session model for a fork, `consolidationModel` for every other consolidation, the
-  same capacity rule, the same one re-admission, the same audit. The one phase difference is
-  evidence: 29c's Raw-availability rule is the Noter's alone, because the Consolidator processes
-  facts and its material carries the complete body of every selected fact the child cannot see (29b).
+- `noting.forkModeDefault` and its legacy alias `noting.branchModeDefault` are **removed settings** (ruling 2026-10-22: the Noter runs fresh only, because a fork's prefix is the main conversation, not the compaction memory the Noter starts from). Finding either in any settings layer, `TRACE_MEMORY_CONFIG` or `memory.configure` fails the load by name: `Removed setting noting.forkModeDefault: the Noter runs fresh only; remove this key`. Every noting uses `notingModel`, priced by that model's own capacity.
 - `nativeRunner` (19a) is **gone** (19c). The native runner is the only runner, so the key
   selects nothing; like any other unrecognized key it is rejected at load with
   `Unknown setting nativeRunner`, which is 18a's rule for configuration that does not exist.
-  When a fork cannot be prepared, or its first body fails prefix verification before anything
-  is sent, the task is admitted once more as a subagent (27c) and that run records `fallbackReason`
-  (`native runner: …`) together with the rejected gate result under `verification.native`. If
-  the second admission cannot fit the batch either, its own refusal is what is reported and the
-  queue stays pending for the next permitted trigger.
 - `runsDir` (19a) **defaults to `<resolved Pi agent directory>/sessions/trace-memory` (24c)** —
   ordinarily `~/.pi/agent/sessions/trace-memory/`, or under `PI_CODING_AGENT_DIR` when that is set.
-  A new fork or subagent log is a *direct* child of it, named with Pi's own
+  A new worker log is a *direct* child of it, named with Pi's own
   `<timestamp>_<child id>.jsonl`, with no per-parent subdirectory. **This supersedes ticket 19's
   ruling 19:5** ("native worker logs live next to the database … not Pi's session directory"), whose
   default was `<dbPath's directory>/runs/<parent Pi session id>/`. The reason is external
@@ -186,10 +163,8 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   never moved, copied, symlinked, deleted or rewritten — and their run records keep naming them.
   Logs outside the scanned tree are not retroactively part of anyone's daily total. Retention is
   still a documented v1 limit: nothing prunes either directory.
-- **Consolidation runs as a subagent unless `consolidation.forkModeDefault` is set** (ticket 29e,
-  superseding 25 amendment 2). The ordinary slot follows that preference; borrowed closed-session
-  work and manual catchup stay fresh-context. The first valid `memory`
-  submission commits immediately. `consolidation.subagentModeDefault`
+- Borrowed closed-session work and manual catchup run fresh-context like every other task. The first valid `memory`
+  submission of historical Consolidation committed immediately. `consolidation.subagentModeDefault`
   — the retired *inverse* key — stays **removed**. Tree navigation launches no extraction.
 
 The peer dependency supplies Pi SDK types. The declared minimum is Pi >=0.86.0;
@@ -245,14 +220,6 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   offer; a later prompt recomputes. Persistence, not an offered hook return, establishes visibility.
   Reopen, rewind and sibling navigation therefore derive solely from the selected native ancestry.
 
-  A fork Noting appends control material only (25a): the range, the head turn's
-  final reply and the source-address index. It adds no knowledge block, no
-  historical-fact block, no fact index and no Raw view — the foreground it inherits
-  already carries the injected knowledge (29d: not the facts of earlier runs, which are no longer
-  delivered to it; a fork that needs one reads it by address). A
-  fork that falls back to a subagent sends the complete subagent material — history
-  within 10,000 tokens and bounded Raw within 10,000, independently capped — and is
-  priced on it.
 - Source identity is `(Trace Memory session, native session lineage, Pi entry id)`. Pi publishes one
   persisted lineage cursor for its selected foreground on reconcile and Turn end. Each lineage moves
   independently; closing retains its cursor and reopening adopts the same key. Fact liveness requires
@@ -287,9 +254,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   The effective batch also reserves instructions, knowledge, tools and the existing
   context: since 27a the host reports `contextWindow - 10,000` as the input allowance
   (see "Request capacity" below). An oldest entry that cannot fit remains
-  pending with a capacity notification — unless it was a *fork* that could not fit, which 27b
-  re-admits once as a subagent instead. Unknown model capacity still leaves work pending.
-  Native fork context is additional to the new-material budget and is never compressed.
+  pending with a capacity notification. Unknown model capacity still leaves work pending.
 - Dreaming is checked **per session** at each entry end through arming, over `global`, this session's
   project and this session together. Pending is each pool's current visible, non-archived revision lacking a
   `(pool, revision)` processing record, one revision per identity at its full rendered size. A run is
@@ -329,13 +294,9 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   database's Knowledge base plus shared allowance, frozen at task admission. Any configuration layer
   that supplies the old key fails by name and directs the user to the three database Knowledge budgets
   in Settings; the value is never reinterpreted or ignored.
-- `consolidation.subagentModeDefault` is **removed** (ticket 25 amendment 2; still removed under 29e,
-  which restored the choice under `consolidation.forkModeDefault`). It stays a removed setting rather
-  than becoming an alias because it is the **inverse** boolean: reading a saved `true` as fork mode
-  would silently switch the meaning of the value. A saved value of either polarity fails the load with
-  `Removed setting consolidation.subagentModeDefault: use consolidation.forkModeDefault (the inverse
-  boolean: true means fork)`. Nothing is normalized behind the setting and no settings file is
-  rewritten. Runs recorded in fork mode before 25b keep that mode and read back as themselves in Runs
+- `consolidation.subagentModeDefault` is **removed** (ticket 25 amendment 2). A saved value of either polarity fails the load with
+  `Removed setting consolidation.subagentModeDefault: Consolidation is retired; remove this key`. Nothing is normalized behind the setting and no settings file is
+  rewritten. Runs recorded in fork mode before the Noter became fresh-only keep that mode and read back as themselves in Runs
   and in the historical internal run audit.
 - `render.stdoutHeadTokens`, `render.stdoutTailTokens` and `render.stderrTailTokens` are **removed**
   (ticket 23). They budgeted a stdout/stderr result shape Pi never produces, so they were never
@@ -633,28 +594,19 @@ available native history through the existing reconciliation path without starti
 **Ticket 18a's read-only settings menu is superseded.** The menu no longer lists every
 effective key with its source; it edits these preferences.
 
-Noter and Consolidator each expose mode, model and thinking preferences on one select-and-write
-path; both default to subagent mode. Dreamer is always a fresh subagent and therefore exposes only
-model and thinking. A model or thinking line discloses an inherited foreground value exactly when
-Noter or Consolidator is configured for fork.
+Noter and Dreamer each expose model and thinking preferences on one select-and-write
+path (the Noter has no execution-mode preference: it runs fresh only, 2026-10-22).
 
 | Preference | Choices | Key | Default |
 |---|---|---|---|
-| Noter mode | fork / subagent | `noting.forkModeDefault` | subagent |
 | Noter model | Follow foreground / an available `provider/model-id` | `notingModel` | `session` |
 | Noter thinking | inherit / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `notingThinking` | `inherit` |
-| Consolidator mode | fork / subagent | `consolidation.forkModeDefault` | subagent |
-| Consolidator model | Follow foreground / an available `provider/model-id` | `consolidationModel` | `session` |
-| Consolidator thinking | inherit / one of Pi's levels | `consolidationThinking` | `inherit` |
 | Dreamer model | Follow foreground / an available `provider/model-id` | `dreaming.model` | `session` |
 | Dreamer thinking | inherit / one of Pi's levels | `dreaming.thinking` | `inherit` |
 | Closed-session scope | off / project / global | `closedSessionScope` | `project` |
 
-**The three thinking entries (26d/32d)** choose the level this phase's *subagent* runs think at;
-`inherit` is 26b's rule, the foreground level frozen at admission. A fork keeps inheriting the
-foreground level whatever is configured, so the Noter's line and its selection dialog disclose that
-while Noting or Consolidation is in fork mode the value reaches only a fallback child. Dreamer
-is always a subagent, so its configured level always applies. A saved level reaches tasks admitted afterwards; a running
+**The thinking entries (26d/32d)** choose the level this phase's runs think at;
+`inherit` is 26b's rule, the foreground level frozen at admission. A saved level reaches tasks admitted afterwards; a running
 task keeps the level it was frozen with, and Pi's own clamp still normalizes a level the worker
 model cannot do (visible as `thinking: { requested, effective }` in the run record).
 
@@ -666,10 +618,7 @@ environment value is still loaded, still validated by name, and still documented
 
 Models come from Pi's own registry (`getAvailable`, the auth-resolved snapshot, plus
 the foreground model). Nothing asks for a credential and nothing calls a model to
-validate a selection; a chosen identity is checked with `find(provider, id)`. In fork
-mode the model line discloses that the child inherits the foreground model, and the
-selection dialog says the choice applies to subagent runs — a saved subagent model is
-preserved across mode switches, and selecting a model never switches the mode.
+validate a selection; a chosen identity is checked with `find(provider, id)`.
 
 A save re-reads the resolved global settings file, merges the one canonical key into
 its `trace-memory` section, validates the merged layer through the load path, and
@@ -687,9 +636,8 @@ edit look effective; the notice names the layer that keeps winning.
 
 A saved preference applies to memory tasks admitted afterwards **in this instance**,
 without a reload: the settings layers are re-read exactly as a session start reads
-them, the host's model selection follows them, and core's two `forkModeDefault` booleans and
-`closedSessionScope` are replaced through the façade's `configure` (29e); every other core key is
-refused there. A task already running keeps its admission scope, mode, model,
+them, the host's model selection follows them, and core's `closedSessionScope` is replaced through the
+façade's `configure`; every other core key is refused there. A task already running keeps its admission scope, model,
 evidence and budgets. Setting scope to `off` does not cancel it; use Stop to end
 running work. Another Pi process sees the new
 global default through its own settings load; there is no cross-process watcher.
@@ -798,66 +746,6 @@ are not completion. Only `session_compact`, after Pi persists the result, update
 reports success. Failed or cancelled attempts leave the last successful boundary unchanged. A native
 summary is accepted as lossy and carries no promise that pending Raw or facts survived.
 
-## Noter fork eligibility by Raw availability (29c)
-
-A requested Noter fork requires **every non-thinking-only entry of its target to be available
-in the inherited context in a representation it may extract from**:
-
-```text
-available Raw = native ids the visible view marks "source"  (Pi retained the entry)
-              ∪ native ids it marks "view"                  (a carrier supplied its bounded view)
-fork allowed  ⇔ every non-thinking-only entry of the target ∈ available Raw
-```
-
-Thinking-only entries do not decide visibility at admission or launch, but remain frozen processing members and are marked processed on publication.
-
-That set is 29a's `VisibleView.raw` as 30 left it — every marked compressed view counts, the one
-bounded representation and both legacy tiers alike — so what does **not** count needs no rule of
-its own: a summary with no carrier behind it (a compaction Pi wrote itself), an id that appears
-only in rendered prose, and an absent tool result are simply not in `raw`.
-An incomplete tool-call group stays where it already was — `forkable()` rejects the checkpoint
-in the native gate and defers the launch through `checkpointReadiness` — and 29c adds nothing
-there.
-
-**The target is the batch this task would freeze**, not everything still pending: the pending
-set the task's boundary admits (18b's `maxEntryId`, 27d's exact `entryIds`), cut to the oldest
-prefix that fits `noting.batchTokens`. The host asks core for it (`memory.notingBatch(target,
-boundary)`), which runs the very selection `freezeNoting` runs, so admission and the freeze can
-never disagree about which entries the task is about. Rendering that batch costs what a freeze
-costs, so it is asked for only once the whole pending set — a superset of the batch — is known
-to be missing something; when nothing pending is missing, neither is the batch.
-
-**The decision is made at admission, before the freeze**, and again at the actual launch against
-the exact frozen entry set, so a task admitted before a compaction but held for a slot, a claim
-or native readiness is caught too. Nothing is cached beyond 29a's per-context memo, so reopening
-and tree navigation give the same answer.
-
-One unavailable entry sends the **whole** target down the existing fallback (27c): the task runs
-as a subagent on the configured Noter model, priced by that model's capacity, with fresh material
-and its exact membership. The invisible entry is never skipped to manufacture a forkable batch.
-The reason names the first unavailable entry and becomes the run's `fallbackReason`:
-
-```text
-Raw availability: entry 7 (T3, native 9e89d8e6) of this batch is not in the inherited context:
-Pi retained no source for it and no compaction carrier supplied its primary view
-```
-
-**An unknown view is not availability.** A selected context holding no conversation entry of ours
-establishes nothing about what a fork would inherit, so it is refused the same way ticket 27a
-refuses an unknown context measure — `Raw availability: the selected context holds no conversation
-entry of ours, …` — rather than being read as "nothing is missing".
-
-**The head reply needs no exception.** It is the one entry `buildContextEntries()` holds that a
-fork's captured request stops before, which is why 29b's increment always restates it — but it is
-also not a member of the target while it is the head reply: Noting's target ends before the head
-Turn's own reply. Once the head moves on and a later task does select it, the view marks it a
-retained `source` like any other entry. So a target whose only non-inherited entry is the head
-reply forks, and the view is the right authority as it stands.
-
-Untouched by this rule: checkpoint readiness, `forkable()`, prefix
-verification and capacity. Visibility is necessary, not proof that a prefix check or provider
-caching will succeed.
-
 ## Visible material carriers (29a)
 
 Two entries put memory material into the conversation, and each states what it supplied in
@@ -894,14 +782,13 @@ reported on the host's diagnostic stream. Runtime
 validation covers complete arrays, safe integer identities, source representation, binding and
 legacy generation; any malformed field rejects the entire envelope without donating visibility or
 completion. Valid empty injections and legacy tier markers remain readable. Command generations
-belong to the originating Pi session even when a fork legitimately inherits material bound to the
+belong to the originating Pi session even when a Pi session fork legitimately inherits material bound to the
 same memory session.
 
 `visibility(sessionManager)` (exported from `hosts/pi/index.ts`) owns one mutable selected-context
 view. An unchanged leaf and identity return it without enumerating entries; an append-only parent
 chain extends it using only new entries. Navigation, compaction and binding changes rebuild it from
-the native selected context. Readers do not mutate this view; actual fork admission copies it once
-before asynchronous work. Database changes do not invalidate delivery: current applicability is
+the native selected context. Readers do not mutate this view. Database changes do not invalidate delivery: current applicability is
 resolved independently, so an external commit at the same leaf remains observable.
 
 ## Manual catchup and stop (18b)
@@ -929,7 +816,7 @@ N and C can overlap. Successful owned completions remain checkpoints after the f
 Stop/off/shutdown/path changes fence those callbacks. This remains the sole exception to ordinary
 no-completion-chaining; entry events do not expand the frozen N boundary.
 Core enforces that boundary through `boundary.maxEntryId`. Other exact-membership
-forms remain available for fork fallback; they do not force a catchup C tail.
+forms remain available to a host that re-admits a frozen batch; they do not force a catchup C tail.
 
 The drain reuses ordinary capacity: one N and one C per session, independently
 concurrent, and one database-wide D seat. The explicit frozen N drain retains its
@@ -1003,7 +890,7 @@ npm run typecheck
 
 The registration test imports the default extension with a stub ExtensionAPI, checks
 registration, runs `/trace`, and asserts that it created no session or model
-request. The host suite also checks trigger boundaries, request-body capture,
+request. The host suite also checks trigger boundaries,
 consolidation continuation, incremental raw, compaction, explicit project attribution, the absence of
 any receipt on branch return (29d), frozen in-flight ranges, duplicate noting/consolidation calls,
 provider failures, and absence of Pi imports in core.
@@ -1051,369 +938,65 @@ Automated verification uses a fake provider; it does not establish live provider
 credentials or replace the manual conversation above.
 
 
-## Fork request and verification contract (the gate)
-
-A fork inherits the parent's persisted conversation, not a copy of its request: the child is
-branched from the parent session file at its persisted leaf, and Pi's own adapter serializes
-the body. What the capture is still for is the **gate**: the byte-level comparison that proves
-the child's first outgoing body reproduces the parent's request prefix, so the provider's cache
-lookup walks identical bytes.
-
-`before_provider_request` captures a detached JSON snapshot for this extension instance (one
-per Pi session) in memory. It is never appended to the Pi session file. Session/tree
-restoration invalidates the capture; a missing capture, a capture from another branch and a
-session model change since the capture all refuse the fork and take the fresh-context fallback
-with a recorded reason. Persisted originals before the latest compaction or branch-summary
-boundary are conservatively excluded from capture coverage. Payload-rewriting extensions must
-run before this capture hook; native ancestry is not proof against arbitrary later rewrites.
-
-A fork needs no *new* capture: once the checkpoint is persisted and reopenable, the capture
-already held for this branch is enough, and the fork may run while the foreground is still
-inside the same Turn (19c readiness). A capture older than the newest entries is not a
-correctness problem: the child forks the real ancestry, so those entries are in its context,
-and the gate compares only the prefix.
-
-`fork.ts` supports `anthropic-messages`, `openai-completions`, and `openai-responses`
-(including `openai-codex-responses`) payloads: it reads the parent's system prompt and tool
-definitions out of the captured body so the child can be built with the same bytes, and it
-compares bodies. Other APIs refuse the fork with an explicit reason. It no longer builds any
-provider message — that ended with the request-copy runner (19c).
-
-Every fork request is compared, first body and every later round. Comparison sorts JSON object
-keys recursively, preserves array order and every string character (including whitespace and
-Unicode), and compares the complete bodies allowing only the appended items. It therefore
-covers each message prefix, tools, system instructions and other body options. `differingPath`
-identifies the first unequal path. Hashes cover the two complete deterministically serialized
-UTF-8 bodies, so the captured hash and request hash normally **differ**. The one normalization
-is the ruled `cache_control` stripping described under The runner; nothing else is ignored.
-
-`runs.response.verification` contains `passed`, `capturedHash`, `requestHash`,
-`appendedMessages`, `differingPath`, `normalized`, `key`, and `rounds`. The top-level hashes
-identify the capture and the child's first request. Each `rounds` entry records `capturedHash`
-(the previous request), `requestHash` (the new request), `appendedMessages`, `passed`, and
-`differingPath`. `runs.request` is the **last** request sent, which embeds every earlier round.
-Top-level `passed` becomes false if any round fails. Reply `usage.cacheRead` is also copied to
-`verification.cache_read` when numeric; it never affects `passed`. Missing usage leaves the
-observation absent. Pi-ai normalizes some absent provider counters to zero: zero is not proof
-of an explicit provider measurement. Its Anthropic adapter maps `cache_read_input_tokens`;
-OpenAI maps `cached_tokens` (verified in nested `dist/api/anthropic-messages.js:411`,
-`openai-completions.js:1180`, and `openai-responses-shared.js:441`). `response.usage`
-preserves the full SDK usage.
-
-A rejected first body throws inside `onPayload`, before anything is sent: nothing is billed, and
-the task is admitted once more as a subagent (27c) with the full fresh-context material on the
-configured Noter model. That run records `mode: subagent`, `requestedMode: fork`,
-`response.fallbackReason` and the rejected gate result (both hashes and the differing path) under
-`verification.native`. Missing or unsupported captures have a reason but no fabricated comparison
-or hashes. Notification happens once per Pi session. A later round mismatch fails that round with no fallback; the record
-retains the last request actually sent and the failed comparison, and a prior committed batch
-stays committed. Provider failures after a passed comparison stay fork failures, with one
-exception, which is 27b's post-attempt fallback below: a rejection pi-ai's own `isContextOverflow`
-classifies as a context overflow, in a run that committed nothing and was not cancelled.
-
-Fallback keeps the run honest: it accepts the actual returned `mode`, records `requestedMode`
-beside it, and preserves `verification`/`fallbackReason` in the response envelope. Since 19b the
-fresh-context material comes from the same frozen task rather than from a second core string, and
-since 29b from the same builder: the re-admission carries no visible view, so its material is the
-complete fresh one and a fallback cannot send range-only context or falsely record fork mode.
-No store schema changed.
-
 ## Message binding (20a)
 
 This adapter composes no domain text. Core prepares ONE text per frozen task (29b) and this host
 only binds it to a native message (user ruling 2026-09-08; `compose.ts` and its test were deleted
-with the layout that lived in them):
-
-- **Inherited context (`fork`)**: `${input.prompt}\n\n${input.text}` as the appended user message.
-  A fork has no system slot of its own, so the instructions ride in that message.
-- **Fresh context (`subagent`)**: `input.prompt` becomes the child's system prompt and `input.text`
-  its first user message.
-
-There is no representation to choose any more: what the text contains is decided by the initial
-state this host froze with the task at admission — the 29a visible view for a fork, nothing for a
-fresh child — and the titles, block order and separators inside it are core's, pinned in
+with the layout that lived in them): `input.prompt` becomes the child's system prompt and
+`input.text` its first user message. What the text contains is decided by core from the frozen
+task alone, and the titles, block order and separators inside it are core's, pinned in
 `tests/core/render/material.test.ts`.
 
-## The visible view at admission (29b)
+## The visible view (29a)
 
 `visibility(context.sessionManager)` (29a) is created in `restore` and held for the session; it
 memoizes by leaf id, entry count and binding, so a streaming token re-reads the cached view while a
-rewind, a new entry, a compaction and the memory-session allocation each invalidate it. Admission
-passes `visible` to core only for a task whose effective mode is `fork`, beside the
-`capacity.prefixTokens` measure it freezes at the same moment. An explicit subagent, and a fork re-admitted as a subagent after any refusal (`fallbackReason` makes
-the effective mode subagent), pass none and get the complete fresh material. Noter's fixed end
-review follows a normal first pass; a CC fork receives none. Historical Consolidation's first valid
+rewind, a new entry, a compaction and the memory-session allocation each invalidate it. It serves the
+foreground injection and compaction; admission passes a worker nothing from it (the Noter runs fresh
+only, 2026-10-22). Noter's fixed end review follows a normal first pass. Historical Consolidation's first valid
 submission committed immediately. If a later corrective request after a rejected tool call exceeds
 capacity, the normal overflow/refusal path applies.
 
 ## The runner (19a/19b, sole runner since 19c)
 
-The runner is real Pi child sessions for **both** modes. Branch work runs in a child forked
-from the parent session file; every fresh-context task — explicit subagent mode, a fork that
-could not be prepared, and borrowed closed-session catch-up — runs in a private child. There is
-no other runner: a child that cannot be constructed at all is a run failure with a reason, and
-the queue stays pending. `native.ts` opens the parent's own JSONL through an **independent**
-`SessionManager` whose session directory is the runs directory, calls
-`createBranchedSession` at the parent's persisted leaf, and hands that manager to
-`createAgentSession`. The foreground manager is never passed in and never mutated;
-`SessionManager.forkFrom` (whole-file copy) is not used, so sibling branches and later
-foreground entries stay out of the child.
+The runner is real Pi child sessions: every task — ordinary, borrowed closed-session catch-up and
+manual catchup — runs in a private fresh child. There is no other runner: a child that cannot be
+constructed at all is a run failure with a reason, and the queue stays pending. `native.ts` builds
+the child with `SessionManager.create(cwd, runsDir)` — Pi's own new-session constructor, in the
+runs directory (24c: `<agent dir>/sessions/trace-memory` by default), with no parent file and
+therefore no inherited history — and hands that manager to `createAgentSession`. The foreground
+manager is never passed in and never mutated. Its `getSessionFile()` is the run's `nativeLog`.
 
-The child is built to reproduce the parent's request bytes through the SDK's own options:
-
-- **System prompt.** One inline extension, supplied explicitly by the adapter, returns the
-  parent's captured system prompt bytes from `before_agent_start`. Pi's
-  `DefaultResourceLoader` `systemPrompt` option cannot be used for this: `buildSystemPrompt`
-  appends `\nCurrent working directory: <cwd>\n` to any custom prompt, so the child's prompt
-  would differ from the parent's by that line.
-- **Tools.** The child registers the parent's *whole* tool list, in the parent's order, as
-  `customTools` synthesized from the captured body (name, description, schema), with
-  `noTools: "all"` and an explicit `tools` allowlist so nothing else can appear. Tool
-  DEFINITIONS are the parent's because the gate compares them; tool EXECUTION is whitelisted
-  to the four memory tools core bound for the run. Any other call — including one the copied
-  history invites — returns an error result and never runs. Execution is sequential
-  (`agent.toolExecution` plus a per-tool `executionMode`); Pi's tested default is parallel.
+- **System prompt.** One inline extension, supplied explicitly by the adapter, returns core's domain
+  prompt from `before_agent_start`.
+- **Tools.** The child registers only the four memory tools core bound for the run (plus restricted
+  native Read), with `noTools: "all"` and an explicit `tools` allowlist so nothing else can appear;
+  tool EXECUTION is whitelisted to them. Any other call returns an error result and never runs.
+  Execution is sequential (`agent.toolExecution` plus a per-tool `executionMode`); Pi's tested default is parallel.
 - **Discovery.** Extensions, skills, prompt templates, themes and project context files are
-  all disabled in the worker. Copied `trace-memory` custom entries travel into the child's
-  JSONL and activate nothing.
-- **Identity.** `agent.sessionId` is set to the parent's Pi session id so the provider sees
-  the parent's request/transport identity for cache affinity. The child's own SessionManager
-  id and file stay its own, as does Trace Memory's target attribution.
+  all disabled in the worker.
 - **Task delivery.** The text core prepared is the child's user prompt. Noter's fixed end review is delivered as a native user message after a normal first pass; ordinary tool rejections remain tool results.
 - **Thinking level (26b, extended by 26d).** The child is created with Pi's own `thinkingLevel`
   option. Admission freezes **two** levels with the task, beside its model and its material: the
-  foreground level the host reads once there (`pi.getThinkingLevel()`), and the phase's subagent
-  level — `notingThinking` / `consolidationThinking` when that preference is not `inherit`, the same
-  foreground level otherwise. A **fork run keeps inheriting the foreground level**, because its
-  request prefix must still match the captured parent request; **every fresh child takes the
-  subagent level** — explicit subagent mode, a fork fallback, borrowed closed-session work and
-  `/trace catchup` alike. A Consolidation fork inherits the foreground level like any other fork, so
-  its configured level reaches a fork task only through that task's fallback child (29e).
-  The frozen level wins over the level a forked ancestry carries, over the per-model preference and
-  over the global default, and Pi's own clamp normalizes a level the worker model does not support.
-  Borrowed work uses the active executor's levels, never a historical target session's. Both values
-  are frozen as values, so a foreground switch or a preference saved while a worker runs reaches
-  neither that worker's later rounds nor its fallback. The gate is untouched: a level that makes the
-  inherited request differ from the captured parent request is refused by the existing prefix
-  verification and falls back like any other mismatch — and that fallback child, being fresh, runs at
-  the configured level. The run record's response carries `thinking: { requested, effective }` — the
-  level this run asked for (configured or inherited) and the level the child really ran at, side by
-  side, so a clamp is visible instead of silent.
+  foreground level the host reads once there (`pi.getThinkingLevel()`), and the phase's
+  level — `notingThinking` when that preference is not `inherit`, the same
+  foreground level otherwise. **Every child takes the configured level** — ordinary work, borrowed
+  closed-session work and `/trace catchup` alike. The frozen level wins over the per-model
+  preference and over the global default, and Pi's own clamp normalizes a level the worker model does
+  not support. Borrowed work uses the active executor's levels, never a historical target session's.
+  Both values are frozen as values, so a foreground switch or a preference saved while a worker runs
+  reaches none of that worker's later rounds. The run record's response carries
+  `thinking: { requested, effective }` — the level this run asked for (configured or inherited) and
+  the level the child really ran at, side by side, so a clamp is visible instead of silent.
 
-### The fresh child (19b subagent parity)
+Usage is summed from the child's newly generated assistant messages only. `auto_retry_start`
+events are recorded as `retries`, and a failed attempt's usage is included. A cancelled child with
+no reported usage records unknown, not zero. The outcome comes from the child's terminal assistant
+response, never from `prompt()` resolving; a provider error after a memory tool committed leaves the
+commit in place and core records the problem.
 
-The same `runNative` serves `mode: "subagent"` with four differences and no second runtime:
-
-- The manager is `SessionManager.create(cwd, runsDir)` — Pi's own new-session constructor, in the
-  runs directory (24c: `<agent dir>/sessions/trace-memory` by default), with no parent file and
-  therefore no inherited history. Its `getSessionFile()` is the run's `nativeLog`.
-- The system prompt is core's domain prompt (through the same inline `before_agent_start`
-  extension), and only the four memory tools core bound for the run are registered at all: there
-  is no parent body whose tool list has to be matched.
-- No gate runs and no `verification` is recorded, for the same reason. Everything else — the
-  execution whitelist, sequential execution, disabled discovery, usage from new assistant
-  messages only, outcome from the terminal response, cancellation, disposal — is identical.
-- The child keeps its own `agent.sessionId`; the parent's request identity is a fork-only
-  decision.
-
-**Per-task fork fallback: one path (27c; 27b before it; parent 27 "Per-task fork fallback",
-amendments 1, 4, 5 and 6).** One rule covers every reason a requested fork does not run as one:
-
-> the task runs as a **subagent on that phase's configured model** (`notingModel` /
-> `consolidationModel` (29e), the `session`
-> preference included), priced by **that model's** capacity (`contextWindow − 10,000`), with fresh
-> material, and the run audit records the requested mode `fork`, the effective mode `subagent`, the
-> reason (`fallbackReason`) and the model that actually ran.
-
-The reasons, and where each is decided:
-
-- **At admission, from this host's live state.** For a Noter only, 29c's Raw availability. Nothing is frozen yet, so this admission simply selects the phase's model
-  and its capacity: no second admission, and the reason is frozen with the task
-  (`TaskOptions.fallbackReason`, opaque to core) as the run's `fallbackReason`.
-- **At admission, from the freeze (27b).** A fork whose inherited context plus instructions cannot
-  fit the allowance, and a session Pi reports no context measure for (no fork base at all). Instead
-  of leaving feasible work pending, the host admits the task **once more** with the model, the
-  capacity and the fresh material above, under the ordinary exact selection.
-- **After admission, at the launch.** Every condition `forkLaunch` rechecks against the live state
-  for the task it is about to run — Raw availability, a branch changed since
-  admission, a missing or foreign capture, a session model changed since the capture, an
-  unpersisted parent, no persisted leaf — and the native gate's rejection of the child's first body
-  (`native runner: <reason>`, with the rejected comparison under `verification.native`). Nothing
-  was sent. `runWorker` returns the refusal rather than rerunning the frozen task itself, and the
-  host admits it once more.
-- **After a real attempt (27b).** A provider rejection that pi-ai's own `isContextOverflow`
-  classifies as a context overflow of this model's window — called with the child's terminal
-  assistant message, never a pattern list or an error string of ours — in a run whose core commit
-  state shows no business submission (`note` or `memory` returned a non-rejection receipt; a tool
-  name or a display string is never read as one) and that was not cancelled.
-  `fallbackReason: "context overflow: <the provider's own words> (fork attempt log: <the fork
-  child's own JSONL>)"`. Authentication, network and rate-limit rejections are not capacity failures
-  and end the run as themselves; so does any failure after a commit, a cancellation, a stop, a
-  shutdown, a lost claim and a disabled enrollment (all of which reach the run as an aborted signal).
-
-**One transition per task, structurally.** A re-admitted task carries its reason, and a task
-carrying one is not offered a fork at all, so it cannot be refused one — its own failure is the
-run's failure, never hidden by the warning. A task that already ran keeps its frozen evidence
-membership across the re-admission through the task boundary — **27d/29e: `exactEntryIds` and
-`exactFactIds`, the frozen batch's exact ids, never `maxEntryId`'s upper bound or a manual catchup's
-larger `allowedFactIds` set** (parent 27 amendment 6; the two meanings are separated by name since
-29e). The freeze takes those members whole: it trims optional material if that is what makes them
-fit — the Noter's history, the Consolidator's knowledge block — never pops one, and leaves the whole
-batch pending under the existing `NOTING_CAPACITY` / `CONSOLIDATION_CAPACITY` diagnostic when the
-fallback model cannot hold it. A member that is no longer pending was completed by another executor
-under its own claim, and drops this task with the `NOTING_MEMBERSHIP` / `CONSOLIDATION_MEMBERSHIP`
-reason instead of re-processing the rest. Evidence that arrived while the attempt was in flight
-waits for the next batch either way.
-
-**Consolidation takes this path unchanged (29e).** Before its first valid submission, a fork overflow
-may be re-admitted on the same exact frozen fact target. A valid submission is already the business
-commit; any later provider failure belongs to that run and starts no second execution.
-
-**One run record per attempt** (user ruling 2026-09-10; it supersedes 27c's "one run record for
-both attempts", which was ticket text and never a ruling). An attempt that **sent a provider
-request** and was then refused is finalized by core before the refusal goes back to the host:
-requested mode `fork`, outcome `failure`, the refusal reason among its `problems`, and exactly the
-usage, retries, request and `nativeLog` it reported — no `fallbackReason`, which belongs to the run
-that fell back. Core returns that record's id with the refusal (`NotingResult.runId`), and the
-re-admitted run names it in its own reason (`… (fork attempt recorded as R<n>)`) while charging
-only what it spent itself. A refusal that **sent nothing** — a launch-time refusal, the native
-gate's rejection inside `onPayload` — is not an attempt: it records no run, and its rejected gate
-result travels in `TaskOptions.forkAttempt` into the re-admitted run's record. So a task whose
-fallback never runs (an unavailable fallback model, a batch the fallback cannot hold) still leaves
-the attempt's own accounting behind. A rejected request reports the SDK's placeholder zeros, which
-stay unknown: never a paid successful generation, never a zero.
-
-**The levels and the cancellation fence travel with the refusal** (27d). The `thinkingLevel` and
-`subagentThinkingLevel` frozen at the first admission are reused by the re-admission, which reads
-neither `pi.getThinkingLevel()` nor the phase's `…Thinking` preference again — repricing fresh
-material is not permission to reread a frozen policy choice (parent 27 line 96; 26d's freeze rule).
-Under ticket 29's policy freeze, the configured subagent model is also selected at first admission,
-including the concrete model for `session`. Core exposes its cancellation generation, which
-`cancelTasks()` advances whether or not it is stopping. The host freezes it before preflight, so even
-an unknown-measure or freeze-capacity refusal carries both levels and the cancellation fence. A
-re-admission that arrives after a `/trace stop`, a shutdown or a disabled enrollment is dropped
-with `reason: "cancelled before fallback"` — it launches nothing and warns nothing (parent 27
-line 83). Before releasing a refused attempt's claim, core checks the original token, executor and
-expiry in the same Store transaction. Lost ownership suppresses continuation even if another
-executor already released its replacement and the exact target is still pending. A still-owned
-claim may be released for the authorized fallback; that release is not mistaken for ownership loss.
-Sent attempts retain their own run records and usage in either case.
-
-Every one of these is a warning, not an error: none changes a setting, a
-default mode or a persisted mode, and a later task may request fork again. One warning per Pi
-session names the reason.
-
-`agent.onPayload` is wrapped (the extension runner's own handler is still called): the first
-body is checked against the captured parent request with `verifyForkRequest`, appended messages
-being everything past the captured message count. Later rounds are checked the same way against
-the previous round. A rejected first body throws inside `onPayload`, **before** the request
-leaves, so the task is admitted once more as a subagent (27c) with
-`fallbackReason: native runner: …` and the rejected result under `verification.native` (both hashes
-and the differing path). Nothing is billed twice.
-
-**Gate result (19a).** With the production Noter and Consolidator prompts and the production
-tool definitions, driven through the real installed pi-ai adapter:
-
-- `openai-completions` (and, by the same construction, the other APIs with no adapter-placed
-  cache markers): **passes**. The child's first body is byte-identical to the captured parent
-  body outside the appended messages — system prompt, tool definitions and order, model
-  parameters, and the whole message prefix.
-- `anthropic-messages`: **passes with one normalization** (user ruling 2026-09-08, amending
-  ticket 19 gate 1). The adapter places the ephemeral cache breakpoint on *the last user message
-  of the body it is building*: in the parent that is the message the child inherits, in the
-  child it is the appended task message, so the raw bodies always differ at
-  `$.messages.<parent's last user message>.content.<n>.cache_control`. No public option changes
-  that placement (`cacheRetention: "none"` removes every marker, which differs the other way),
-  and reproducing it would need the custom message builder ticket 19 exists to delete. The
-  marker is a caching hint, not content: the provider's cache lookup walks the identical bytes
-  before it. So the gate (`verifyForkRequest`) compares both bodies with `cache_control`
-  stripped from both sides and **nothing else**; the hashes stay those of the raw bodies and
-  the verification records `normalized: ["cache_control"]`. Any other difference still fails.
-
-Usage is summed from the child's newly generated assistant messages only — copied parent
-responses are restored into the child's state but were never re-sent, so native session
-statistics must not be used. `auto_retry_start` events are recorded as `retries`, and a failed
-attempt's usage is included. A cancelled child with no reported usage records unknown, not zero.
-The outcome comes from the child's terminal assistant response, never from `prompt()`
-resolving; a provider error after a memory tool committed leaves the commit in place and core
-records the problem.
-
-Limits: the fork path still requires the parent request capture, because that capture is what
-the gate compares against; the runs directory is never pruned; a gate rejection after the child
-file was created leaves that (unused) child log behind; and no live provider run was made —
-every check above uses stubbed HTTP with the real adapters.
-
-## Launch readiness and cache-miss warnings (19c, 108)
-
-### Readiness: trigger and launch are different authorities
-
-17b's thresholds still decide that a task is *due*. Whether it may *launch* as a fork is a
-separate question about the native checkpoint, asked in `checkQueues` before admission:
-
-- The checkpoint is the persisted leaf of the selected path. `checkpointReadiness(parentFile,
-  checkpoint)` reopens the parent's own file through an independent `SessionManager.open` — the
-  same reopen the launch performs, read-only, creating nothing — and refuses when the entry is
-  not in the file yet, when the file cannot be reopened, or when the ancestry contains an
-  assistant tool-call group whose results are missing (`forkable`). Pi's message-completion
-  callback runs *before* persistence, so a message the extension has just seen completed is not
-  a checkpoint.
-- A refusal is a **wait**, not a failure: the own-branch candidate is left out of this
-  opportunity, no claim is taken, no progress is made, no duplicate task is created and no timer
-  is set. The next persistence boundary asks again; starting there is not a new extraction
-  trigger. Borrowed closed-session work is fresh-context and is never held back by this.
-- A fork that is impossible for this task rather than merely early — no capture for this branch,
-  no persisted parent file, an unforkable checkpoint at launch — still takes 19b's documented
-  native subagent fallback with `requestedMode`, actual `mode` and `fallbackReason` recorded.
-- **No capture dependency, read with gate 1.** A fork never waits for a *new* provider request:
-  a persisted, valid checkpoint plus the capture already held for this branch is enough, and the
-  fork may run while the foreground is still inside the same Turn. It does need *that* capture,
-  because it is what the fork gate compares the child's first body against; without one the task
-  takes the subagent fallback instead of waiting.
-- A tree switch invalidates a stale launch context instead of retargeting it: `restore()` drops
-  the capture and gives the memory session a new branch identity, and the fork branch refuses to
-  run when the task's frozen branch is no longer the selected one. The waiting task's entries
-  stay pending on their own branch; the new position's work is its own task.
-
-### Cache-miss observation
-
-Gate 3: the deterministic prefix check runs first on every fork request. A body that differs
-from the parent prefix is a known miss, routed to subagent for that task **without a cache-miss
-warning**. Only a response whose request passed the gate can count, which is why the observation is
-recorded inside `verification` and why the fresh-context runner is never given the callback.
-
-An eligible miss is judged per completed fork response, on that response's own usage:
-
-| Provider family | Minimum cacheable input | Source |
-|---|---:|---|
-| `anthropic-messages`, Haiku family | 2048 tokens | Anthropic prompt caching |
-| `anthropic-messages`, other models | 1024 tokens | Anthropic prompt caching |
-| `openai-completions`, `openai-responses`, `openai-codex-responses` | 1024-token prefix | OpenAI automatic prompt caching |
-| anything else | unknown — never a miss | no universal minimum is invented |
-
-**Read-ratio rule (user rulings 2026-09-09, after the beta dogfood; supersede the 2026-09-08
-30,000-uncached-token rule):** a completed fork response is a **miss when its `cacheRead` is below
-half of its input** (`CACHE_MISS_READ_RATIO = 0.5`; input is `input + cacheRead + cacheWrite`), and
-a **hit** otherwise. A response whose input is below the provider's documented cacheable minimum
-(table above) is neither: it could not have been cached. The observation carries
-`{model, api, minimum, ratio, input, cacheRead, cacheWrite, total, miss}`.
-
-**Ticket 108 removed the session downgrade** (the latch and the two-consecutive-miss rule). Every eligible miss emits
-one TUI warning naming how much of the input the cache served — `Trace Memory: fork cache miss (… of … input tokens
-read from cache).` — and nothing else follows: no consecutive count, no downgrade notice, no persisted state. The rule
-lives in `src/core/api/cache-miss.ts`, shared with Claude Code.
-
-pi-ai normalizes both families to one counting convention: `input` excludes `cacheRead` and
-`cacheWrite` (`openai-completions` subtracts them from `prompt_tokens`; `anthropic-messages`
-copies `input_tokens`, which already excludes them). The compared quantity is therefore
-`input + cacheRead + cacheWrite`, never compressed Raw size. Everything unknown is not a miss:
-missing usage, non-numeric or absent cache counts, the SDK's placeholder zeros on an errored or
-cancelled response, an Anthropic body that carried no `cache_control` marker (a disabled cache),
-and an unlisted provider.
-
-The detecting run continues untouched: same native session, same tool protocol, same trailing replies, no replay, no
-extra trigger, and its run record keeps `mode: "fork"`. The run's first miss is audited as
-`verification.cacheMiss = {model, api, minimum, ratio, input, cacheRead, cacheWrite, total, miss}`. Later tasks are
-admitted as before: a miss never turns the requested fork into a subagent.
+Limits: the runs directory is never pruned, and no live provider run was made — every check above
+uses stubbed HTTP with the real adapters.
 
 ## Three failures turn memory off (32c)
 
@@ -1428,8 +1011,7 @@ completion starts no next task beyond the Dreamer check after a successful run; 
 longer runs recovery tasks: 73). Manual catchup alone rechecks all phases after its own successful
 completions.
 
-Provider retries and fork fallback share one durable execution identity. A refused fork followed
-by successful fresh execution adds no failure; a terminal fresh failure adds one. Incomplete
+A terminal failure adds one. Incomplete
 Noting and unresolved submission refusal count; cancellation, busy admission and audit errors
 after business success do not. Duplicate observers and process restarts cannot count an
 execution twice. A successful task resets its own streak.
@@ -1444,95 +1026,6 @@ summary; user cancellation still takes precedence.
 **Only explicit `/trace on` resets all target streaks and re-enables memory.** Reopening and
 `/trace catchup` do neither. Status retains the automatic-off cause. This replaces the old
 process-local two-incomplete-Noting pause; it adds no retry loop, scheduler or setting.
-
-## Live prefix identity procedure
-
-This is a human-run check, not an automated claim of live cache hits.
-
-1. Create `/private/tmp/trace-memory-manual` and place this diagnostic extension
-   in `/private/tmp/trace-memory-manual/capture.ts`. It writes only a diagnostic
-   body outside the Pi session file:
-
-   ```ts
-   import { writeFileSync } from "node:fs";
-   export default function (pi) {
-     pi.on("before_provider_request", event => {
-       writeFileSync("/private/tmp/trace-memory-manual/captured.json", JSON.stringify(event.payload));
-     });
-   }
-   ```
-
-2. Enable fork mode and a low compressed-token trigger with an isolated database:
-
-   ```sh
-   export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/fork.db","noting.forkModeDefault":true,"noting.triggerTokens":100}'
-   node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
-     --extension /private/tmp/trace-memory-manual/capture.ts \
-     --extension /absolute/path/to/trace-memory/src/hosts/pi/index.ts
-   ```
-
-   Use a session model with one of the three supported APIs. Load both diagnostic
-   and Trace Memory hooks **after all payload-rewriting extensions**, in the
-   order above. Pi runs hooks in load order; a later rewriter can invalidate the
-   capture without this host seeing it. Verify the active extension order in Pi.
-   No payload rewriter should follow Trace Memory.
-
-3. Send a substantial prompt with several explicit project constraints. Wait for
-   the assistant and the noting to finish before another prompt; reading the status is
-   read-only. From a second terminal, in the repository root, run:
-
-   ```sh
-   node --input-type=module <<'JS'
-   import assert from 'node:assert/strict';
-   import { readFileSync } from 'node:fs';
-   import { DatabaseSync } from 'node:sqlite';
-   import { hash, serialize, stripCacheControl } from './src/hosts/pi/fork.ts';
-   const db = new DatabaseSync('/private/tmp/trace-memory-manual/fork.db', { readOnly: true });
-   const run = db.prepare("SELECT * FROM runs WHERE kind='noting' ORDER BY id DESC LIMIT 1").get();
-   assert.ok(run, 'Wait for the noting to finish');
-   const response = JSON.parse(run.response);
-   console.log({ mode: run.mode, model: run.model, outcome: run.outcome, ...response });
-   assert.equal(run.mode, 'fork');
-   const captured = JSON.parse(readFileSync('/private/tmp/trace-memory-manual/captured.json', 'utf8'));
-   const sent = JSON.parse(run.request);
-   const key = Array.isArray(captured.messages) ? 'messages' : 'input';
-   const verification = response.verification;
-   assert.equal(verification.passed, true);
-   let body = sent; // runs.request is the LAST body sent; walk the rounds back to the first
-   for (const round of [...verification.rounds].reverse()) {
-     assert.equal(round.passed, true);
-     assert.equal(hash(body), round.requestHash);
-     const count = round.appendedMessages.length;
-     assert.deepEqual(stripCacheControl(body[key].slice(body[key].length - count)), round.appendedMessages);
-     body = { ...body, [key]: body[key].slice(0, body[key].length - count) };
-     assert.equal(hash(body), round.capturedHash);
-   }
-   assert.equal(hash(body), verification.requestHash);
-   // The child's own tail: the inherited head reply plus the task message. The gate compares
-   // both bodies with cache_control stripped and nothing else (ruling 2026-09-08).
-   const appended = verification.appendedMessages.length;
-   const prefix = stripCacheControl({ ...body, [key]: body[key].slice(0, body[key].length - appended) });
-   assert.deepEqual(Buffer.from(serialize(prefix)), Buffer.from(serialize(stripCacheControl(captured))));
-   assert.equal(hash(captured), verification.capturedHash);
-   assert.deepEqual(sent.tools, captured.tools);
-   assert.ok(response.nativeLog); // the child's own JSONL, under runsDir
-   db.close();
-   JS
-   ```
-
-4. Save the two bodies and printed response. Check `usage.cacheRead` and
-   `verification.cache_read` for cached input tokens. A positive count is an
-   observation, not identity proof; zero/missing counts do not fail comparison — but note that
-   one *eligible* zero-cache fork response emits one cache-miss warning (108). Hashes should each match their respective body, not each
-   other. Inspect the appended tail: the inherited head reply, then the noting prompt with
-   range-only input and no copied raw. `response.nativeLog` points at the child's own JSONL.
-5. Change the session model, then send another prompt and wait. A model change since the
-   capture must refuse the fork with a reason, not reuse the stale body; after a new capture
-   the next run forks again. Repeat after changing active tool definitions. For an unsupported
-   API expect subagent mode, a fallback reason and one notice, rather than invented hashes.
-   Compare with a separate database using `noting.forkModeDefault: false` to
-   evaluate extraction quality and cost before choosing the operational default.
-
 
 ## Attribution and tree navigation (ticket 07)
 
@@ -1663,20 +1156,8 @@ reads and search listings are unchanged. See [Fact groups](core.md#fact-groups) 
   stated on the entry Pi persisted for it rather than on a settle-time confirmation.
 - Pi's `--fork` and clone continue the same Trace Memory session on a new branch;
   redeclaring the project there changes the shared session's project.
-- On `anthropic-messages` the gate passes only with the ruled `cache_control` normalization
-  (see The runner). Nothing prunes `runsDir`, and since 24c its default sits inside Pi's own
+- Nothing prunes `runsDir`, and since 24c its default sits inside Pi's own
   sessions tree, so worker conversations are listed by Pi's all-session browser.
-- A fork inherits the parent's persisted ancestry, so a capture older than the newest entries
-  is not a correctness problem any more: the child's context holds them and the gate compares
-  only the prefix. The request-copy runner's "captured prefix does not contain the selected
-  source entries" refusal went with it (19c).
-- The readiness probe reopens the parent's session file once per launch decision, and again at
-  each boundary while a task waits. It is read-only and creates nothing, but on a very large
-  session file it is repeated read I/O, bounded by how often a task is actually due.
-- The cacheable-minimum table is a documented constant, not a provider query. A provider that
-  changes its minimum, or a model family the table does not name, yields "unknown", which is never a miss — the conservative direction.
-- No live provider run backs any of it: the eligibility numbers in the tests are stubbed usage
-  values fed through the real pi-ai adapters, so nothing here claims a real cache hit or miss.
 
 ## Entry views and Noting progress (17a, rule replaced in 23)
 
@@ -1733,22 +1214,14 @@ result are stored exactly as before, and `trace` with `full: true` renders them
 uncut. Edit diffs live only in `details`, so they leave the Noter view with a
 marker in their place.
 
-The same entry bytes supply subagent Noting, subagent fallback, compaction
+The same entry bytes supply Noting, compaction
 Raw, branch-carry Raw and the explicit `trace` of a Turn without `full` (23b),
 which assembles that Turn's selected entries in path order and seals every call
 `tool` did not select at its label line and omission marker. Existing episodic budgets count these compressed bytes
 when deciding which whole facts fit. A Noting batch whose views, framing and cues cannot
 fit the episodic budget or the model's reported capacity is reduced oldest-first and
 re-frozen, or left pending with a capacity error (review 2026-09-08); compact is the one
-consumer that escalates to lossier views instead. The shared estimator is unchanged. **Fork-mode Noting keeps reading the uncompressed
-native provider prefix and gains nothing from the compressed view.** This is the
-accepted 2026-09-08 fork-mode choice: its value is prefix reuse. The captured
-prefix is never rewritten or compressed. Its one appended user message still
-contains the Noting instruction, range, head reply and source index; the index
-contains only the frozen sources. Existing exact-prefix verification and fallback
-remain authoritative. A capture that predates a selected user or tool source falls
-back to the same compressed subagent input; source previews are not evidence of
-full prefix coverage. Native request capacity is checked before each Noting and
+consumer that escalates to lossier views instead. The shared estimator is unchanged. Native request capacity is checked before each Noting and
 Consolidation provider call, including continuations, without rewriting the prefix; both
 phases receive the model's capacity before selection (review 2026-09-08).
 
@@ -1762,34 +1235,19 @@ context measure + 10,000 <= context window
 The 10,000 tokens are fixed headroom, not an output reserve, not a promised output size and not a
 setting; `CONTEXT_HEADROOM` in `src/hosts/pi/index.ts` is the only place it is written. The 85%
 window multiplier and the subtraction of `model.maxTokens` are gone from both guards, and no
-accounting of ours reads a provider request body for tokens any more (the fork gate's own byte
-comparison of the captured body is untouched). A window that cannot exceed the headroom, and an
+accounting of ours reads a provider request body for tokens any more. A window that cannot exceed the headroom, and an
 invalid one, fail with a diagnostic before anything is sent.
 
 The measure is Pi's, taken where Pi takes it:
 
-- **Admission** hands core `contextWindow - 10,000` as its input allowance. For a fork it also hands
-  it `prefixTokens`, the value of `ctx.getContextUsage().tokens` read **once** at admission and frozen
-  with the task beside the model and the thinking level: Pi's real usage of the latest valid reply on
-  the path (`input + cacheRead + cacheWrite + output`, since that reply is history at the checkpoint)
-  plus Pi's own estimate of the messages after it. A foreground turn after admission cannot move it.
-  Because it is Pi's number, images and encrypted reasoning in the parent history need no rule of
-  ours — whatever they really cost is already inside it.
-- **Not a fork base:** an unknown measure (`tokens: null`, which is what Pi reports right after a
-  compaction until a valid reply answers on the new prefix), a missing model, or a capture whose model
-  or provider is not the current one. A capture from another branch or model is refused at launch and
-  runs as a fresh child, as before; an unknown measure is refused at admission instead, because
-  nothing downstream would. No whole-body estimate ever stands in for the measure. Since 27b that
-  refusal — and the freeze's own capacity refusal of a fork — is not a wait but one re-admission as a
-  subagent ("Per-task fork fallback" above).
+- **Admission** hands core `contextWindow - 10,000` as its input allowance (and `prefixTokens: 0`, a field kept in the admission shape since the Noter became fresh-only).
 - **A subagent** is priced by the existing core material accounting alone — instructions, tool
   definitions and the frozen material — because a fresh child inherits no context to measure.
 - **Every round the child sends** is checked in `hosts/pi/native.ts` on the child session's own
   `getContextUsage()` — Pi's getter, which runs pi-ai's `estimateContextTokens` over the child's
   messages: its latest real assistant usage once it has one, plus an estimate of what follows it. For
-  a fork's first round that is the parent's reported prompt cost plus the increment. The guard is
-  handed that number and nothing else, so it reads no provider shape at all and a subagent on any API
-  the SDK can call keeps running; the four-API table belongs to the fork gate alone.
+  The guard is handed that number and nothing else, so it reads no provider shape at all and a child on any API
+  the SDK can call keeps running.
 
   Pi's getter is used rather than importing `estimateContextTokens` directly because a subpath import
   of `@earendil-works/pi-ai` does not resolve inside an installed Pi extension — the loader maps the
@@ -1812,8 +1270,7 @@ the earlier writer, even if an explicit `trace://raw` read can display it. Run r
 include `entryAudit`: native identities, owning Turns, frozen branch, view-budget
 version and values, and the exact omission markers. Entry processing, facts, run
 audit commit atomically. Rejected or failed work remains
-pending. A fork inherits processed shared entries and keeps its sibling entries
-out of the selected ancestry.
+pending.
 
 The derived `getWatermark`/`listWatermarks` readers and the status watermark line
 are removed in 17b, along with the already-removed writable watermark table.

@@ -17,7 +17,7 @@ Turn listings select sources and fact contributions in bulk, without rendering e
 
 The guide names Pi's `read` and `grep`, but only `Read` on Claude Code main sessions and fresh N/D workers. Claude Code main sessions have no Grep or Glob tool; ticket 137 removed the `trace://` hooks that never fired.
 
-Ticket 137: the retrieval policy (`src/core/render/retrieval-policy.ts`) says when to look memory up, apart from the guide. One text, each host's own search tool name; with the guide it stays within 500 estimated tokens. It sits once in the system prompt of each run: a section `trace-memory-retrieval` that the CC plugin's `prompt.compose` function hook appends to the main session's system prompt (Claude Code 2.1.293 keeps a plugin MCP server's `instructions` as a message it may drop at `/compact`, so the executor sends none), a Pi prompt section set in `before_agent_start`, and the system prompt of a fresh Noter or Dreamer (`prompt`). A fork inherits it from its parent and its task prompt (`forkPrompt`) does not carry it. Claude Code renders its system prompt once per session and again only at `/compact` and `/clear`, so the CC hook's answer (memory on, by the rule injection uses) takes effect at those points: a session turned on or off by `/trace` changes at its next `/compact`, and a new session whose first prompt still reads as not enrolled has the policy from its first `/compact` or `/clear`. Without the function module, a CC main session gets no policy.
+Ticket 137: the retrieval policy (`src/core/render/retrieval-policy.ts`) says when to look memory up, apart from the guide. One text, each host's own search tool name; with the guide it stays within 500 estimated tokens. It sits once in the system prompt of each run: a section `trace-memory-retrieval` that the CC plugin's `prompt.compose` function hook appends to the main session's system prompt (Claude Code 2.1.293 keeps a plugin MCP server's `instructions` as a message it may drop at `/compact`, so the executor sends none), a Pi prompt section set in `before_agent_start`, and the system prompt of a fresh Noter or Dreamer (`prompt`). Claude Code renders its system prompt once per session and again only at `/compact` and `/clear`, so the CC hook's answer (memory on, by the rule injection uses) takes effect at those points: a session turned on or off by `/trace` changes at its next `/compact`, and a new session whose first prompt still reads as not enrolled has the policy from its first `/compact` or `/clear`. Without the function module, a CC main session gets no policy.
 
 Ordinary reads use host-native limits; offset/limit continuations use the original `trace://` path and render again without exposing backing paths or adding model-visible text. Session knowledge, compaction views and exact entries are whole on main sessions and Pi children; CC fresh workers retain SDK Read limits. One shared guide (at most 200 Core-estimated tokens) is emitted once per injection/material, never once per knowledge block. It is fixed framing outside the Knowledge, facts, Raw and shared selection windows; its actual bytes still count toward delivered text and model capacity. Read records no delivery or state. Search pagination is unchanged.
 
@@ -28,10 +28,10 @@ This contract supersedes the older immediate-Noting and NEAR descriptions below.
 - Foreground and N advertise identical `note`/`memory` definitions. Each call carries one fact or one knowledge operation in top-level fields, rather than `facts` or `operations` arrays. Core enforces role permissions. Manual writes remain immediate and reject N-only slots, drops and local knowledge supports; manual fact relations cite existing F IDs. Manual `memory` allows fact-backed create/update/archive (135); D's own `memory` takes one operation or one `{skip, because}` per call and commits each legal call at once; a refused one holds an `Mn` slot that blocks success until `slot` resubmits or `drop` withdraws it (127).
 - N holds facts in stable `$n` slots and knowledge operations in `Mn` slots. Omitted slot appends; explicit slot fully replaces. `drop: "$n"` or `drop: "Mn"` is a separate call. A rejected replacement invalidates the prior value. Drop leaves a gap and cannot remove a referenced fact. N has no `skipped` field. Empty `note({})` and `memory({})` calls confirm use but do not clear drafts or slot errors.
 - A valid call clears top-level errors only. Host schema refusals are correlated by native call ID and original arguments, including failures before core execution. Duplicate refusal events cannot allocate another slot. A missing CC dispatch/refusal fails the run explicitly.
-- Every non-fork N run with a normally completed first pass receives one fixed end-review message, even if publishable or empty. It lists real held blockers (rejected slots, call errors and missing tools with their host-specific empty calls) and every held knowledge change: update parent-to-new-body diff and changed metadata, full create body, or archive kind and text. The model may replace or drop a slot in the second pass. Provider failure and cancellation receive no supplement; a CC fork receives none. There is no third pass; D keeps its existing pass-end conditions.
+- Every N run with a normally completed first pass receives one fixed end-review message, even if publishable or empty. It lists real held blockers (rejected slots, call errors and missing tools with their host-specific empty calls) and every held knowledge change: update parent-to-new-body diff and changed metadata, full create body, or archive kind and text. The model may replace or drop a slot in the second pass. Provider failure and cancellation receive no supplement. There is no third pass; D keeps its existing pass-end conditions.
 - Only normal termination after the review where applicable, both tools used and no unresolved refusal permits publication. Unresolved publication blockers bounce the run without progress; provider failure and cancellation retain their respective outcomes. One short Store transaction revalidates sources, roles, path, enrollment, project, claim, supports and tagged bases; allocates F IDs; maps structured references; writes knowledge, Raw progress and successful execution. Rollback exposes neither layer nor successful progress. Audit keeps final usage and requested/applied operations.
 - An applicable, authorized predecessor consumed by a visible effective descendant permits N's update-to-annotated-create or archive-to-no-op conversion. Missing tags, invalid evidence or authority do not convert. The converted identity enters ordinary D pending accounting.
-- Pi forks preserve captured tool definitions and the existing prefix gate. Incompatible old definitions are refused through the existing fallback path. The SDK's structured pre-execution failures invalidate held slots; no schema is loosened to bypass validation.
+- The SDK's structured pre-execution failures invalidate held slots; no schema is loosened to bypass validation.
 - Live NEAR capture, feedback and its configuration are removed. Historical audit types and reading remain. Explicit `noting.nearThreshold` configuration now reports a removed-setting error.
 
 The [entry-address contract](unified-entry.md) supersedes older ticket descriptions below of Raw labels, source previews, trace content limits and full-read branch scope. It is the current reference for stable E identities, ordered normalized blocks, per-child budgets and semantic read completion.
@@ -45,7 +45,7 @@ The [entry-address contract](unified-entry.md) supersedes older ticket descripti
 - render/material.ts  the shared material contract and the block layout of every consumer (20a).
 - prompts/ noting.md, dreaming.md — the live stage prompts, each declaring the shared memory-model blocks it includes (`shared/model.md`, `facts.md`, `knowledge.md` — definitions; `admission.md`, `atomicity.md`, `evidence.md`, `grounding.md`, `identity.md`, `authority.md`, `protection.md`, `body.md`, `reading.md` — principles; `formats.md`, `live.md` — inputs) at `<!-- include: name -->` markers that `load.ts` splices in — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
 
-Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: fork mode = inherited context, or subagent mode = fresh context). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, `audit`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file. One result field is not recorded at all: `refused` (27c), by which a host says it would not run the frozen task in the mode it was admitted for and will admit it once more itself — core records no run for that attempt and returns the value to the caller unread, with `outcome: "dropped"`.
+Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (a fresh child; the Noter has no inherited-context mode, ruling 2026-10-22). Optional result fields ride along into the run record's response JSON: `verification`, `retries`, `audit`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file. 
 
 **Core builds no provider message or body; core owns the domain text (ticket 19b, revised by the
 user's ruling of 2026-09-08 in ticket 20).** `runAgent` receives structured task material and core's
@@ -67,11 +67,9 @@ visible as requested-versus-actual.
 
 Both hosts check Noting and Dreaming after each persisted main-session user, assistant or observation entry, admitting at most one run per phase under the existing seats and claims. Subagent entries are excluded. A busy phase queues nothing; ordinary completion schedules nothing. The first entry after settlement checks afresh, so a tail left after the last entry waits for the next entry.
 
-An import that persists new selected entries checks own N/D once after publishing the complete path, using the selected head after import as `headTurnId` and the newest persisted entry as `triggerEntryId`. This includes live imports and historical bootstrap: CC executor startup, Pi `session_start` restore and enabling memory, only when they actually persist new selected history. Fully imported restart/resume, zero-append scans and sibling-only imports create no opportunity. Pi tree switches never check, even when they import new history. Manual catchup freezes its own boundary; CC's function turn-end and fork-source reconciles retain the turn-end check instead.
+An import that persists new selected entries checks own N/D once after publishing the complete path, using the selected head after import as `headTurnId` and the newest persisted entry as `triggerEntryId`. This includes live imports and historical bootstrap: CC executor startup, Pi `session_start` restore and enabling memory, only when they actually persist new selected history. Fully imported restart/resume, zero-append scans and sibling-only imports create no opportunity. Pi tree switches never check, even when they import new history. Manual catchup freezes its own boundary; CC's function turn-end reconcile retains the turn-end check instead.
 
 Noting uses the incremental pending count, stopping at its trigger. Dreaming retains a not-due result until a knowledge commit, restore, enrollment or budget change, or a change of `Store.progressSignal` re-arms it; Raw ingestion alone does not re-arm it. Failed automatic tasks retry at a later entry end; three consecutive business failures still disable memory. Explicit catchup retains its drain and completion checkpoints. Closed-session borrowing remains turn-end-driven. Thresholds, batch limits and project-declaration checks are unchanged.
-
-A requested CC fork without a live turn-end checkpoint starts fresh immediately and records that fallback reason. The `turn.complete` fork path remains available when Noting first becomes due there; no slot waits for a future hook. Core checks inherited input plus its increment against the reported capacity. Missing inherited sources or an explicit pre-start refusal use the existing fresh runner and record the reason; a started or ambiguous fork failure is not a fresh fallback. CC accepts originals only in a compaction carrier as a fresh case; no persistent Raw/carrier association is added. Pi's existing coverage and readiness checks remain unchanged.
 
 ## Dreamer execution
 
@@ -257,7 +255,7 @@ A logical task is `(target session, phase, backlog key)`, independent of its run
 
 Ticket 86's one-time normal-open upgrade clears only legacy Dreamer failure counters, whose heads used range IDs and could collide with revision IDs. SQLite `user_version = 1` records completion in the same transaction; reopening preserves new counters. N/C counters, run/execution audit and enrollment are unchanged. Historical execution heads retain their original meaning; they are not rewritten.
 
-`Store.beginExecution(task, previous?)` creates a durable execution or continues the same unsettled Noting or Consolidation execution after fork refusal. Each attempt run carries `RunInput.executionId` and is linked through `execution_runs`. Attempt audit outcomes do not settle executions.
+`Store.beginExecution(task, previous?)` creates a durable execution or continues the same unsettled Noting or Consolidation execution. Each attempt run carries `RunInput.executionId` and is linked through `execution_runs`. Attempt audit outcomes do not settle executions.
 
 `Store.settleExecution(id, outcome, runId, reason?)` records one authoritative terminal outcome and updates the logical task's streak in the same transaction. Successful Noting and Consolidation commits settle inside their business transactions. Dreamer processing records skipped frozen versions and own commits, then settles that one execution. Failure and cancellation retain the same partial processing semantics: untouched versions remain pending, and partial writes survive.
 
@@ -278,15 +276,12 @@ The exposed store's transaction groups ingestion with Turn/tool projections.
 `notingBatch(target, boundary?)` answers what a Noting freeze of that target would
 select — the pending set the boundary admits, cut to the oldest prefix that fits
 `noting.batchTokens` — through the same selection `freezeNoting` uses, without
-freezing, claiming or diagnosing anything (29c: the Pi host decides a fork's Raw
-availability against exactly the entries the task will process).
+freezing, claiming or diagnosing anything.
 `pendingEntries(sessionId, branch, headTurnId)` derives work from native path
 membership and committed entry processing; it is not a queue of results for the foreground.
-Call `noting({ sessionId, branch, headTurnId, model?, mode? })` at the existing
+Call `noting({ sessionId, branch, headTurnId, model? })` at the existing
 trigger boundary. The core freezes exact pending entries, owning Turns, rendered
-views, recent facts and applicable knowledge before calling the model. A fork
-uses a new branch identity even when its native source head changes inside the
-same Turn. Shared processed entries are inherited by identity.
+views, recent facts and applicable knowledge before calling the model.
 
 The noting result has `outcome`: `success` with `runId` and facts; `bounced`,
 `failure` or `cancelled` with `runId` and problems; or `dropped`/`empty` without
@@ -294,7 +289,7 @@ a run record. A duplicate is dropped per target session and phase across branche
 hosts and processes by a thirty-minute SQLite claim. No automatic retry or feedback call follows a bounce.
 Historically, one `note({facts})` submitted a batch; `note({facts: []})` submitted zero facts.
 The current N protocol stages individual `note` and `memory` calls (both required even when
-empty), reviews once after a normal first pass outside CC fork mode, then publishes both
+empty), reviews once after a normal first pass, then publishes both
 layers and frozen progress together on normal termination.
 Stopping normally without submitting is **incomplete**: outcome `failure` with the
 exported `NOTING_INCOMPLETE` diagnostic and the oldest frozen entry on
@@ -349,7 +344,7 @@ The diagnostic is audit output only: it derives no relation or state and never g
 computed from the binding's held pool and actual committed identities inside the commit response path,
 without rereading current facts. A pre-commit failure has no committed diagnostic. Ordinary finalization
 and provider failure, overflow or cancellation after commit retain it beside the provider problem and
-business-success outcome. A fork fallback creates a new binding; failed and committing attempts retain
+business-success outcome. Failed and committing attempts retain
 their own shown evidence and cannot share diagnostic inputs. The batch, run record and frozen entry
 progress commit in one transaction.
 Manual writes commit immediately as a `manual` run with the tool input/result
@@ -371,23 +366,14 @@ retain `[target, strength]`, with `$n` restricted to earlier facts in the batch.
 The v1 schema changes in place. No production-data migration, legacy coverage
 translation or compatibility shim is provided.
 
-Each phase's config chooses its fork/subagent mode (29e: `noting.forkModeDefault`,
-`consolidation.forkModeDefault`), both defaulting to `false` (subagent) only when no explicit
-configuration is supplied. Explicit `true`, the legacy `noting.branchModeDefault` alias and a task's
-own `mode: "fork"` remain supported; provider prefix verification
-remains the host's responsibility, as is the choice of runner behind a mode. Since 19c the Pi
-host has one runner: fork work runs in a native Pi child forked from the session file, and
-every subagent task — explicit, fallback or borrowed — in a fresh native child. Core sees the
-same `runAgent` contract either way, and a host that cannot construct its worker at all returns
-a failed run with a reason, which leaves the queue pending.
+Every task runs in a fresh child (ruling 2026-10-22: the Noter runs fresh only, because a fork's prefix is the main conversation, not the compaction memory the Noter starts from). `noting.forkModeDefault` and its alias `noting.branchModeDefault` are removed settings that fail the load by name. Provider prefix verification no longer exists: the Pi host has one runner, a fresh native child for every task — ordinary, borrowed or catchup — and a host that cannot construct its worker at all returns a failed run with a reason, which leaves the queue pending.
 
 **Budget before selection (ticket 19 gate 4, ticket 20 capacity negotiation, ticket 27a).** The host
 reports its available material budget (`capacity {inputTokens, prefixTokens}`) in the same
 `noting(...)` call that starts the task. Since 27a `inputTokens` is the model's context window minus
 the host's fixed 10,000-token headroom — no output reserve and no 85% multiplier enter it — and
-`prefixTokens` is the host's own measure of the context an inherited-context run starts from, counted
-once (in the Pi host, `ctx.getContextUsage()` frozen at admission; docs/pi.md "Request capacity").
-Core prices against those two numbers and never learns how either was obtained: it reads no provider
+`prefixTokens` is retained in the admission shape and is always 0 since the Noter became fresh-only.
+Core prices against `inputTokens` and never learns how it was obtained: it reads no provider
 request body, no image and no transport field.
 
 Core selects and freezes once inside that call: it prices the domain text it prepared for that
@@ -396,22 +382,10 @@ every unselected entry pending. The material, the write eligibility and the audi
 re-frozen together, so a reduced task can never keep the larger progress range. Extra context a host
 can supply is never evidence permission — the frozen range bounds what may be written whatever the
 model can see. If the oldest entry alone does not fit, core raises a capacity problem (opening with
-`NOTING_CAPACITY`) and advances nothing. The host may answer that problem by admitting the same task
-once more without an inherited prefix — the Pi host does, on its subagent model (27b) — which is an
-ordinary second `noting(...)` call, freezing its own material: core neither loops nor retries. The
-same is true of a task the host refuses *after* admission (`refused`, 27c): the re-admission is one
-more ordinary call, bounded to the frozen batch by `boundary.entryIds` — exact membership, 27d — if
-the host wants the same entries. Most of what core carries for either is opaque and unread —
-`fallbackReason` and `forkAttempt`, handed back with the frozen task beside `thinkingLevel`.
-`cancellation` is not: it is core's own generation, exposed for host preflight, frozen at admission, handed to the run and
-compared when the host admits the task again (27d, parent 27 line 83), so a task cancelled while its
-attempt was in flight is dropped with `reason: "cancelled before fallback"` instead of launching a
-fallback. 27d also made each attempt its own run record: a refusal whose result carries a `request`
-really sent one, so core finalizes that attempt (`fork`/`failure`, its own usage, retries, request
-and `nativeLog`) and returns its id as `NotingResult.runId`; a refusal with no request recorded
-nothing, and the run the re-admission makes charges only itself. Before releasing a refused attempt,
-core atomically verifies its original claim token, executor and expiry. A lost claim drops the
-continuation; only still-owned work authorizes the release and fresh admission.
+`NOTING_CAPACITY`) and advances nothing. `boundary.exactEntryIds` (27d) takes exactly the named
+members together or leaves them pending, so a host that wants the same entries again names them.
+`cancellation` is core's own generation, exposed for host preflight: it advances on every cancellation, and a host that
+queues work freezes it before admitting anything and abandons the queue once it has moved.
 
 ## Rendering decisions
 
@@ -495,17 +469,7 @@ is the text the host's extractor returns, cut head and tail. The rules that name
 memory writers are gone (ticket 23b), and so are their budgets. The host records
 tool status; the renderer does not infer completion from text.
 
-In fork mode the run sends what its own context does not already hold (29b): with the whole target
-visible that is the range, the head reply and the frozen source index — the shape 20a fixed by layout
-— but it is now the output of one subtraction, so a partly visible target sends the Raw of the rest,
-and the missing applicable history is supplied in either mode (superseding 25a's "a Noter fork never
-adds historical facts"). The native prefix remains uncompressed; fork Noting gains nothing from the
-compressed view (accepted 2026-09-08). Subagent Noting and fallback start from the empty view and
-therefore send the complete entry views below. A fork is priced as its inherited measure plus the
-instructions plus the text it supplies — never the cost of a fresh representation it does not build
-(29b, superseding 22d/25a's "a fork is priced on the complete subagent material"); the fallback is
-guarded instead by the re-admitted subagent's own freeze, which re-prices the fresh material at the
-fresh model's capacity and refuses the batch there if it does not fit.
+The Noter always starts from the empty view and sends the complete entry views below; it is priced as the instructions plus the tool definitions plus the text it supplies.
 
 Noter's frozen Raw batch and full historical facts retain independent 10,000-token bases,
 `noting.batchTokens` and `compaction.factsTokens`. Historical facts must be applicable on the
@@ -515,8 +479,7 @@ the same `compact()` allocator as main-agent compaction.
 Thinking-only entries (every normalized block is thinking) remain members of the frozen
 processing batch but supply no Noting body, label, marker, source-index line or head reply.
 The pending token count joins only the other entries' views; batch and model-capacity pricing
-likewise charge only material Noting reads. Both hosts exclude thinking-only entries from fork
-visibility checks, including Pi's launch-time recheck. A successful publication marks every frozen member
+likewise charge only material Noting reads. A successful publication marks every frozen member
 processed, including thinking-only entries. An all-thinking pending path weighs zero; an explicit
 catchup can still process it. Compaction, `trace://raw`, search and citation validation are unchanged:
 thinking-only entries remain readable but cannot support new facts.
@@ -531,9 +494,8 @@ nor titles grant full-body coverage or enlarge the frozen processing batch.
 When the host's measured input capacity is insufficient, optional temporary material is
 trimmed first, then full historical facts, then the selected batch is reduced and re-frozen.
 An oldest admissible unit that cannot fit stays pending with a capacity diagnostic.
-Fresh Noter material also carries current Knowledge within its own base plus shared allowance;
-a fork retains its existing inherited-context adaptation. Visible revisions at admission remain
-the frozen read base.
+Noter material also carries current Knowledge within its own base plus shared allowance. Visible
+revisions at admission remain the frozen read base.
 The budgets themselves, and what each one charges, are in "Material budgets (20b)" below.
 Historically, this ticket emitted expansion addresses for future trace support and
 implemented only `T<n>` and `F<n>` trace targets. Current model reads use `trace://`.
@@ -559,13 +521,12 @@ corrected it):
 | Main-agent compact (`compactText`) | knowledge/status → fact titles → full historical facts → earlier user words → Raw → running tasks → receipts |
 
 25a retired the Consolidator's already-consolidated history block. Ticket 92 restored current
-Knowledge to fresh Noter material; a fork's inherited foreground Knowledge remains untouched.
+Knowledge to Noter material.
 
-## One material builder, two initial states (29b)
+## One material builder (29b)
 
-Each phase has ONE builder, and the only thing that separates a fork's material from a fresh child's
-is the initial state it is given: `{visible: VisibleView, inheritedTokens}` — the empty view and zero
-for a fresh child, the parent's real view (29a) and the host's context measure for a fork.
+Each phase has ONE builder. Since the Noter became fresh-only (2026-10-22) the Noter's child always starts from the empty
+view, so its supplied material is its whole processing target; the foreground compaction subtracts the view it retains (29a).
 `notingIncrement` and the `MaterialText` pair are gone.
 
 A task has two sets, frozen separately. The **processing target** is chosen regardless of visibility —
@@ -577,14 +538,7 @@ the injection budget. Never a budget-limited prefix with visibility subtracted a
 newest facts already visible, the whole history allowance goes to the older ones the child cannot see.
 The allowance is a ceiling, never a target — fewer needed facts make a smaller block, not filler.
 
-- **Noting.** A target entry is withheld when the view holds its native id as a retained `source` or a
-  carrier's bounded `view` (30: one representation, and a legacy tier-1 or tier-2 carrier counts as it).
-  Withheld
-  bodies leave the mandatory framing standing: the range, the source index for the non-thinking-only
-  entries in the frozen range, and the head reply — restated only when the head entry's own body was
-  withheld, because the captured request a fork inherits stops before the reply it produced. Optional: the applicable historical facts
-  the view does not hold, within the same `render.episodicBlockTokens - noting.batchTokens` ceiling; no
-  knowledge block, and no borrowing from the Raw allowance.
+- **Noting.** The whole target is supplied. Optional: the applicable historical facts, within the same `render.episodicBlockTokens - noting.batchTokens` ceiling, and the current knowledge within its own base plus shared allowance.
 - **Consolidation.** Target fact bodies the view does not hold by id, with `factAddresses` still naming
   the whole target. Optional: the current applicable knowledge the view does not hold at that exact
   commit — a visible predecessor covers nothing — plus one status line per inherited commit that is no
@@ -804,15 +758,6 @@ any selected fact is given up, the twin of the Noter's history trim. It is dropp
 by a lowered cap because a cap small enough to matter is also too small for the block's own omission
 receipt, which `budgetKnowledge` refuses outright.
 
-**Two execution modes (29e, superseding 25b).** `mode` is the request's own or
-`consolidation.forkModeDefault` (default `false`), exactly as Noting reads `noting.forkModeDefault`;
-`effectiveMode` still decides what the material and the price are built for. A fork is priced as its
-inherited measure plus the instructions plus the text it newly supplies (29b), and its preflight
-floor is that same price. There is no Raw prerequisite for this phase: its selected pending facts are
-present either in the inherited context or in the complete fact block the builder injects (29b case
-14), and inherited unrelated Raw grants no citation authority. A refused fork comes back to the host
-as `{ outcome: "dropped", refused }`, with the `runId` of the attempt's own record when it sent a
-request — the same 27c/27d contract Noting has. A refused attempt is not a business commit; the re-admitted run restarts on the same frozen fact target.
 
 The host receives one `ConsolidationAgentInput` with frozen `input`, the four bound tools and `reportRequest`. It executes tool calls and extends the same conversation
 until the provider stops. `reportRequest` captures each exact provider request before
@@ -871,7 +816,7 @@ Pass `null` explicitly for legacy null branches.
 versions from the current visible graph. Facts and Raw do not replace missing Knowledge bodies.
 The host reconstructs delivery from its latest retained compact and subsequent actual carriers, never
 from a historical visibility query. Core reuses 88's reader projection; SQLite transactional reads use
-their own graph input. Source coverage still governs compact selection and fork evidence.
+their own graph input. Source coverage still governs compact selection.
 
 Every retained carrier occurrence is charged first against
 the Knowledge base plus the shared allowance (30,000 maximum under the default policy). Missing state transitions then fit as complete items in
@@ -1112,8 +1057,8 @@ queue inspection remain available; automatic blocks are gated.
 No Pi SDK or migration enters core. The facade owns an executor id, atomic task
 admission, cancellation signals and conditional claim release. `taskEligibility(phase, target)`
 shares the trigger threshold with host preselection; `automatic: true` rechecks it in admission. Since
-29d it answers `{due}` alone: the delivery pause that used to hold a fork-mode Noting task until its
-predecessor's facts had reached the foreground is gone, so the worker mode no longer changes it. For Noting and Consolidation only, `borrowed: true` requires a closed target and an enabled, open `executorSessionId`, and forces subagent mode. Dreaming never borrows closed-session work. `closedSessionScope` defaults to
+29d it answers `{due}` alone: the delivery pause that used to hold a Noting task until its
+predecessor's facts had reached the foreground is gone. For Noting and Consolidation only, `borrowed: true` requires a closed target and an enabled, open `executorSessionId`, and forces subagent mode. Dreaming never borrows closed-session work. `closedSessionScope` defaults to
 `project` (matching project ids); `global` allows any project and `off` leaves closed
 tails pending. Hosts pass `memory.config.closedSessionScope` to `store.closedTasks`;
 core rechecks the policy transactionally at admission and commit. `configure` accepts
@@ -1162,7 +1107,7 @@ selection query. Manual catchup drains its frozen Noting boundary. Ticket 68 che
 at start and after every successful catchup-owned phase completion; C and D use ordinary eligibility.
 Ticket 86 immediately retries a failed catchup step in the same phase and boundary, without checking
 other phases. It uses the ordinary three-business-failures rule; off or cancellation ends the drain.
-It no longer freezes a fact set for forced below-threshold Consolidation. The *exact* target is what a fork fallback re-admits on: `exactEntryIds`
+It no longer freezes a fact set for forced below-threshold Consolidation. The *exact* target is what a host that re-admits a frozen batch names: `exactEntryIds`
 (27d's `entryIds`) and `exactFactIds` (29e). Under either, the freeze selects exactly those pending
 members, trims optional material to fit them — the Noter's history, the Consolidator's knowledge
 block — never pops one, raises `NOTING_CAPACITY` / `CONSOLIDATION_CAPACITY` when they
@@ -1177,16 +1122,11 @@ chaining, slots, waiting and cancellation are entirely host-local (18b), reusing
 17c's claims, token fence and `cancelTasks()` unchanged.
 
 
-## Fork cache misses are audited and warned, never a session state (108)
+## Spend and the retired cache-miss latch (108)
 
-Ticket 19c's cache-miss latch (`sessions.fork_suppressed_at` and `fork_suppressed_run`, with the store methods
-`suppressFork`, `forkSuppression`, `linkForkSuppression` and `clearForkSuppression`) is gone in both hosts, and a
-migration drops the two columns from an existing database. A host that observes a fork response whose cache read is
-below half of its input (`src/core/api/cache-miss.ts`, `cacheObservation`: the one rule both hosts judge by) audits it
-under `verification.cacheMiss` in the run and warns once per miss, naming how many input tokens were read from cache.
-Nothing follows from a miss: `selectNotingMode` takes no suppression and there is no `cache miss latch` fallback reason.
+Ticket 19c's cache-miss latch (`sessions.fork_suppressed_at` and `fork_suppressed_run`) is gone in both hosts, and a
+migration drops the two columns from an existing database. The fork cache-miss audit that replaced it went with the Noter fork (2026-10-22).
 
 Spend keeps an unknown cost apart from a zero (108). `runs.usage_cost` is null when a run recorded tokens without a
-price, and `Store.amendRunUsage` lets a host add the price (or the partial usage of a stopped run) to a recorded run
-later. `spend` and `spendSince` count such runs in `unknown` (tokens without a price, or a cancelled run with no usage)
+price. `spend` and `spendSince` count such runs in `unknown` (tokens without a price, or a cancelled run with no usage)
 and leave them out of `cost`; every display marks the total as a lower bound instead of counting them as free.
