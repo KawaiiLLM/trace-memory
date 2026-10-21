@@ -198,7 +198,7 @@ export function searchFacade(store: Store) {
  * Code Mode declare theirs); a test holds the declaration to the fields real hits carry. */
 export const SEARCH_HIT_TYPES = `type Hit = Knowledge | Fact | Raw;
 interface Base { address: string; time: string; text: string }
-interface Knowledge extends Base { layer: "knowledge"; title: string; id: number; version: number; status: "current" | "superseded" | "archived"; archiveKind: "budget" | "invalid" | null; category: string; scope: "global" | "project" | "session"; topics: string[]; supports: number[]; reason: string }
+interface Knowledge extends Base { layer: "knowledge"; title: string; id: number; version: number; status: "current" | "superseded" | "archived"; archiveKind: "budget" | "invalid" | "inadmissible" | null; category: string; scope: "global" | "project" | "session"; topics: string[]; supports: number[]; reason: string }
 interface Fact extends Base { layer: "facts"; session: number; turn: number; id: number; title: string | null; sources: { address: string; role: string | null; text: string }[]; citedBy: number[] }
 interface Raw extends Base { layer: "raw"; session: number; turn: number; entry: number; role: "user" | "assistant" | "observation"; matchLines: number[]; citedBy: number[] }`;
 

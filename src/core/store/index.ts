@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
-import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
@@ -203,7 +203,7 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   run_id INTEGER REFERENCES runs(id),
   created_at TEXT NOT NULL,
   actor_role TEXT CHECK(actor_role IS NULL OR actor_role IN ('noting','consolidation','dreaming','manual')),
-  archive_kind TEXT CHECK (archive_kind IS NULL OR archive_kind IN ('budget','invalid')),
+  archive_kind TEXT CHECK (archive_kind IS NULL OR archive_kind IN ('budget','invalid','inadmissible')),
   UNIQUE (knowledge_id, id)
 );
 
@@ -589,10 +589,13 @@ export type KnowledgeOperationInput =
       op: "archive";
       knowledgeId: number;
       baseCommit: number;
-      /** The chosen archive cause is mandatory on new writes. */
-      kind: "budget" | "invalid";
-      /** Only invalidation supplies a replacement archive statement. */
+      /** The chosen archive cause is mandatory on new writes. `merged` (ticket 144) writes no archive version: the
+       * item is consumed by the current `successor`, exactly as a merge consumes an absorbed parent. */
+      kind: "budget" | "invalid" | "inadmissible" | "merged";
+      /** Every cause but budget supplies the archive statement. */
       text?: string;
+      /** The knowledge id of the current item that now holds this one's content (`merged` only). */
+      successor?: number;
       supports: number[];
       reason: string;
       createdAt: string;
@@ -679,6 +682,9 @@ export interface CommittedKnowledgeOp {
   knowledgeId: number;
   commit: number;
 }
+
+/** One workspace operation's outcome: the versions it wrote, or why it was refused (`stale`: its base is no longer current). */
+export type WorkspaceOperationResult = { ok: true; committed: CommittedKnowledgeOp[] } | { ok: false; stale: boolean; dependent?: boolean; reason: string };
 
 export type CommitConsolidationResult =
   | { ok: true; runId: number; committed: CommittedKnowledgeOp[] }
@@ -1294,6 +1300,7 @@ export class Store {
       migrateFactSegments93(this.db);
       migrateArchiveKind99(this.db);
       migrateKnowledgeTitle144(this.db);
+      migrateInadmissibleKind144(this.db);
       migrateVersionTags(this.db);
       // The policy is part of the same schema transaction. Concurrent openers serialize at BEGIN;
       // INSERT OR IGNORE preserves an edited existing row and initializes an absent row once.
@@ -3851,6 +3858,39 @@ export class Store {
     }
   }
 
+  /** Ticket 144: the knowledge operations of a checked Dreaming workspace file, in the order given, as one run.
+   * Each operation commits or is refused on its own: a base that is no longer current (stale), like any other
+   * failed precondition, is reported and left for the next run, and never fails the file. Supports left empty
+   * are inherited from the parents, as a trusted Dreamer's are. Stage 4 supplies the admitted run and claim. */
+  commitWorkspaceRun(input: { run: RunInput; path: KnowledgePath; operations: readonly { operation: KnowledgeOperationInput; dependsOn?: readonly number[] }[];
+    response?: (results: WorkspaceOperationResult[]) => string }): { runId: number; results: WorkspaceOperationResult[] } {
+    return this.transaction(() => {
+      const sessionId = this.requireRunSession(input.run);
+      this.requireEnabled(sessionId);
+      this.requireClaim(input.run);
+      const projectId = this.getSession(sessionId)!.projectId;
+      const runId = this.insertRun({ ...input.run, outcome: "success" });
+      const results: WorkspaceOperationResult[] = [];
+      for (const { operation: op, dependsOn } of input.operations) results.push((() => {
+        // An operation that relies on a refused one (an archive naming its successor) is refused with it.
+        if (dependsOn?.some(index => !results[index]?.ok)) return { ok: false, stale: false, dependent: true, reason: "it depends on an operation that was refused" } as const;
+        try {
+          const outcome = this.transaction(() => this.applyKnowledgeOperation(op, runId, projectId, sessionId, input.path, true, "dreaming"));
+          if (outcome.ok) return { ok: true, committed: outcome.value };
+          const stale = outcome.reason instanceof KnowledgeVersionProblem;
+          return { ok: false, stale, reason: outcome.reason instanceof KnowledgeVersionProblem
+            ? outcome.reason.describe((knowledgeId, commitId) => `K${knowledgeId}@v${this.versionOrdinal(knowledgeId, commitId)}`) : outcome.reason };
+        } catch (error) { return { ok: false, stale: false, reason: error instanceof Error ? error.message : String(error) }; }
+      })());
+      if (input.response) {
+        this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(input.response(results), runId);
+        this.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
+          .run(...this.usageColumns(input.response(results)), runId);
+      }
+      return { runId, results };
+    });
+  }
+
   /** Only an applicable, scope-authorized tagged predecessor consumed by a later visible
    * descendant is a Noter concurrency conversion. Other invalid bases remain errors. */
   normalizeNotingOperation(op: KnowledgeOperationInput, path: KnowledgePath): KnowledgeOperationInput | null {
@@ -3880,10 +3920,11 @@ export class Store {
   }
 
   private archiveProblem(op: Extract<KnowledgeOperationInput, { op: "archive" }>): string | null {
-    if (op.kind !== "budget" && op.kind !== "invalid") return "archive kind must be budget or invalid";
-    if (op.kind === "invalid" && !substantiveArchiveStatement(op.text))
-      return "invalid archive requires a substantive statement of grounds and evidence";
+    if (!["budget", "invalid", "inadmissible", "merged"].includes(op.kind)) return "archive kind must be budget, invalid, inadmissible or merged";
+    if (op.kind !== "budget" && !substantiveArchiveStatement(op.text))
+      return `${op.kind} archive requires a substantive statement of grounds and evidence`;
     if (op.kind === "budget" && op.text !== undefined) return "budget archive cannot replace the parent body";
+    if ((op.kind === "merged") !== (op.successor !== undefined)) return "a merged archive names its successor, and no other kind does";
     return null;
   }
 
@@ -3954,6 +3995,16 @@ export class Store {
     if (op.op === "archive") {
       const problem = this.archiveProblem(op);
       if (problem) return { ok: false, reason: problem };
+    }
+    if (op.op === "archive" && op.kind === "merged") {
+      // The successor is the identity's current version on the writer's path; this file's own earlier writes count.
+      const successor = writerGraph!.current.find(revision => revision.knowledgeId === op.successor && revision.op !== "archive");
+      if (op.successor === op.knowledgeId || !successor) return { ok: false, reason: `K${op.successor} is not a current item to merge into` };
+      if (successor.scope !== prior!.scope || successor.category !== prior!.category)
+        return { ok: false, reason: "a merged archive needs a successor of the same category and scope" };
+      this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")
+        .run(op.knowledgeId, op.baseCommit, successor.knowledgeId, successor.id);
+      return { ok: true, value: [{ op: "archive", knowledgeId: op.knowledgeId, commit: op.baseCommit }] };
     }
     // 123: only supports this operation writes are checked; inherited parent supports stay as visible knowledge had them.
     const bad = op.supports.length ? this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId)) : null;

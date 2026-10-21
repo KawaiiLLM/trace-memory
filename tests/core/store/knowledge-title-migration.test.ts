@@ -76,3 +76,32 @@ test("a direct Store write of a new live version without a title is refused, and
     expect(f.store.listKnowledgeRevisions()).toEqual(before);
   } finally { f.store.close(); }
 });
+
+// Ticket 144: an archive may also state `inadmissible`. A database whose CHECK predates it is rebuilt once.
+test("a database whose archive kinds predate `inadmissible` keeps every knowledge row and then accepts the new kind", () => {
+  const f = database();
+  const db = f.store.db;
+  db.exec("PRAGMA foreign_keys = OFF");
+  const old = String((db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_revisions'").get() as { sql: string }).sql)
+    .replace("'budget','invalid','inadmissible'", "'budget','invalid'").replace("CREATE TABLE knowledge_revisions", "CREATE TABLE knowledge_revisions_old");
+  db.exec(`${old}; INSERT INTO knowledge_revisions_old SELECT * FROM knowledge_revisions; DROP TABLE knowledge_revisions; ALTER TABLE knowledge_revisions_old RENAME TO knowledge_revisions`);
+  const before = db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all();
+  expect(String((db.prepare("SELECT sql FROM sqlite_master WHERE name='knowledge_revisions'").get() as { sql: string }).sql)).not.toContain("inadmissible");
+  f.store.close();
+  for (let opens = 0; opens < 2; opens++) { // the second open finds the new kind and changes nothing
+    const upgraded = new Store(f.file);
+    try {
+      expect(upgraded.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all()).toEqual(before);
+      expect(upgraded.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect(upgraded.db.prepare("SELECT 1 FROM sqlite_master WHERE name='knowledge_revisions' AND sql LIKE '%inadmissible%'").get()).toBeTruthy();
+    } finally { upgraded.close(); }
+  }
+  const reopened = new Store(f.file);
+  try {
+    const archived = reopened.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.path.sessionId, branch: "main", createdAt: "now" }, operations: [
+      { op: "archive", kind: "inadmissible", knowledgeId: f.first.knowledgeId, baseCommit: f.first.commit, text: "A running log, not an understanding.", supports: [f.fact], reason: "fails admission", createdAt: "now" }] });
+    if (!archived.ok) throw new Error(archived.problems.join("; "));
+    expect(reopened.getKnowledgeRevision(f.first.knowledgeId, archived.committed[0]!.commit)).toMatchObject({ op: "archive", archiveKind: "inadmissible" });
+    expect(archived.committed[0]!.commit).toBeGreaterThan(Number((before.at(-1) as { id: number }).id));
+  } finally { reopened.close(); }
+});

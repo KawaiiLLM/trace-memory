@@ -140,7 +140,7 @@ export interface KnowledgeRevision {
   supportSemantics: SupportSemantics;
   op: KnowledgeOp;
   /** Legacy archives have no kind. */
-  archiveKind?: "budget" | "invalid" | null;
+  archiveKind?: "budget" | "invalid" | "inadmissible" | null;
   /** The commit message: why this change was made. Never evidence, scope or applicability (ticket 21a). */
   reason: string;
   /** Subject labels of this revision: classification only, never scope, lifecycle or citation rights (21b). */

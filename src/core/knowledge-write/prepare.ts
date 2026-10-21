@@ -14,7 +14,9 @@ const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 export function prepareMemory(store: Store, sessionId: number, raw: unknown, run: RunInput,
   path: KnowledgePath = store.knowledgePath(sessionId),
   eligibleSupport?: (factId: number) => boolean, skippable?: (commit: number) => string | undefined,
-  localFacts?: ReadonlyMap<number, { text: string; quote?: string | null }>, names: ToolNames = canonicalToolNames) {
+  localFacts?: ReadonlyMap<number, { text: string; quote?: string | null }>, names: ToolNames = canonicalToolNames,
+  /** A workspace update may leave supports empty: the Store then inherits the parents' (ticket 144). */
+  emptySupports = false) {
   const results: string[] = [], operations: KnowledgeOperationInput[] = [];
   const batch = raw as MemoryBatch;
   const projectId = store.getSession(sessionId)!.projectId;
@@ -159,7 +161,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       ? store.knowledgeRevision(Math.max(dest.baseCommit, ...absorb.map(parent => parent.baseCommit)))?.text
       : op === "archive" ? (value.kind === "invalid" ? value.text : undefined) : text;
     if (typeof body === "string" && tokens(body) > limits.bodyTokens) errors.push(overLimit("text", tokens(body), limits.bodyTokens));
-    const content = { title: title!, text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !dreaming), reason: value.reason!,
+    const content = { title: title!, text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !dreaming && !emptySupports), reason: value.reason!,
       topics, createdAt: run.createdAt };
     const scope = op === "archive" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : contentScope;
     if (scope && content.supports.every(Number.isSafeInteger)) {

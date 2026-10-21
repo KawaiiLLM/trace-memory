@@ -58,6 +58,24 @@ export function migrateKnowledgeTitle144(db: DatabaseSync): void {
     db.exec("ALTER TABLE knowledge_revisions ADD COLUMN title TEXT");
 }
 
+/** Ticket 144: an archive may also state `inadmissible` (the item fails knowledge admission). SQLite cannot alter a
+ * CHECK, so the table is rebuilt once with ids, indexes and the AUTOINCREMENT sequence preserved (the 92 recipe). */
+export function migrateInadmissibleKind144(db: DatabaseSync): void {
+  if (!db.isTransaction) throw new Error("144 migration requires Store's schema transaction");
+  const table = "knowledge_revisions", target = "'budget','invalid','inadmissible'";
+  const sql = String((db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as { sql: string }).sql);
+  if (sql.includes(target)) return;
+  const next = sql.replace("'budget','invalid'", target);
+  if (next === sql) throw new Error("144 migration refused unknown knowledge_revisions schema");
+  const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY name")
+    .all(table) as { sql: string }[];
+  const sequence = db.prepare("SELECT seq FROM sqlite_sequence WHERE name=?").get(table) as { seq: number } | undefined;
+  db.exec(next.replace(/CREATE TABLE (?:IF NOT EXISTS )?"?knowledge_revisions"?/i, "CREATE TABLE knowledge_revisions_144"));
+  db.exec(`INSERT INTO knowledge_revisions_144 SELECT * FROM ${table}; DROP TABLE ${table}; ALTER TABLE knowledge_revisions_144 RENAME TO ${table}`);
+  if (sequence) db.prepare("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name=?").run(sequence.seq, table);
+  for (const object of objects) db.exec(object.sql);
+}
+
 export function migrateFactSegments93(db: DatabaseSync): void {
   if (!db.isTransaction) throw new Error("93 migration requires Store's schema transaction");
   if (!db.prepare("PRAGMA table_info(facts)").all().some(row => row.name === "title"))

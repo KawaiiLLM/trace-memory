@@ -122,87 +122,50 @@ export function reviewFeedback(toolResult: string): string | undefined {
   catch { return undefined; }
 }
 
-export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput,
-  dreaming?: { path: KnowledgePath; check(): string; /** 59: why a commit may not be skipped, or undefined when it is a supplied untouched handle. */ skippable(commit: number): string | undefined },
-  exposedNames: ToolNames = canonicalToolNames) {
-  const names = validateToolNames(supplied.toolNames ?? exposedNames);
-  const { spill, ...cloneable } = supplied; // a function cannot be cloned; the rest is frozen against later mutation
-  const context = structuredClone(cloneable) as ToolContext;
-  const session = store.getSession(context.sessionId);
-  if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
+/** The Turns a Noting batch froze: the range's ancestry from its last Turn back to its first. */
+export function frozenTurnIds(store: Store, sessionId: number, range: { from: string; to: string }): Set<number> {
+  const parse = (address: string) => {
+    const m = /^S([1-9]\d*)\/T([1-9]\d*)$/.exec(address);
+    if (!m || Number(m[1]) !== sessionId) throw new Error("invalid frozen range");
+    return Number(m[2]);
+  };
   const allowed = new Set<number>();
-  if (context.kind === "manual") {
-    if (store.getTurn(context.currentTurnId)?.sessionId !== session.id) throw new Error("current turn must belong to the calling session");
-  } else if (context.kind === "noting") {
-    const parse = (address: string) => {
-      const m = /^S([1-9]\d*)\/T([1-9]\d*)$/.exec(address);
-      if (!m || Number(m[1]) !== session.id) throw new Error("invalid frozen range");
-      return Number(m[2]);
-    };
-    const from = parse(context.range.from); let id: number | null = parse(context.range.to);
-    while (id !== null && !allowed.has(id)) {
-      const turn = store.getTurn(id);
-      if (!turn || turn.sessionId !== session.id) throw new Error("invalid frozen range");
-      allowed.add(id); if (id === from) break; id = turn.parentTurnId;
-    }
-    if (!allowed.has(from)) throw new Error("invalid frozen range ancestry");
+  const from = parse(range.from); let id: number | null = parse(range.to);
+  while (id !== null && !allowed.has(id)) {
+    const turn = store.getTurn(id);
+    if (!turn || turn.sessionId !== sessionId) throw new Error("invalid frozen range");
+    allowed.add(id); if (id === from) break; id = turn.parentTurnId;
   }
-  // The branch rides on the path so applicability is judged per source entry (review 2026-09-08 P1).
-  const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId, branch: context.branch }
-    : context.kind === "noting" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]), branch: context.branch }
-    : dreaming!.path;
-  const plain: RunInput = { kind: context.kind, sessionId: session.id, branch: context.branch,
-    rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
-    rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
-  const run = metadata ?? store.bindRunOrigin(plain, store.triggerOrigin(path, context.triggerEntryId));
-  if (context.kind === "dreaming" && (!dreaming || !store.isDreamingRun(run))) throw new Error("Dreamer tools require an admitted trusted run binding");
-  // Source resolution, range checks and candidate applicability share one binding-time database/path
-  // membership. Later tree movement and same-Turn entry ingestion cannot change any half of the run.
-  const initial = context.kind === "noting" ? store.transaction(() => ({
-    path: store.sourcePath(session.id, context.branch, path.headTurnId!), snapshot: store.pathSnapshot(path),
-  })) : undefined;
-  const initialPath = initial?.path ?? [], initialPathSnapshot = initial?.snapshot;
-  const sourceTurns = initialPathSnapshot?.turns ?? store.pathTurns(path);
-  const manualPath = context.kind === "manual" && context.entryIds ? store.sourcePath(session.id, context.branch, path.headTurnId!) : [];
-  const manualTrigger = context.kind === "manual" && context.entryIds && context.triggerEntryId !== undefined
-    ? manualPath.findIndex(entry => entry.id === context.triggerEntryId) : manualPath.length - 1;
-  if (context.kind === "manual" && context.entryIds && context.triggerEntryId !== undefined && manualTrigger < 0)
-    throw new Error("manual source prefix does not contain the exact triggering entry");
-  const manualEntries = context.kind === "manual" && context.entryIds ? manualPath.slice(0, manualTrigger + 1) : [];
-  if (context.kind === "manual" && context.entryIds && (context.entryIds.length !== manualEntries.length ||
-      context.entryIds.some((id, index) => id !== manualEntries[index]!.id)))
-    throw new Error("manual source prefix does not match the exact triggering ancestry");
-  const manualEntryIds = context.kind === "manual" && context.entryIds ? new Set(context.entryIds) : null;
-  const frozenEntries = context.kind === "noting" ? (context.entryIds ?? initialPath.filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];
-  const frozenIds = new Set(frozenEntries);
-  const memory = bindMemory(store, session.id, run, path, manualEntryIds
-    ? factId => {
-      const fact = store.getFact(factId);
-      if (!fact) return false;
-      const entries = store.factEntries(factId);
-      return entries.length ? entries.every(entryId => manualEntryIds.has(entryId)) : fact.turnId !== path.headTurnId;
-    } : undefined, dreaming?.skippable, names);
-  const sequence = memory.sequence;
-  // Historical run audits retain their read field; public trace calls no longer populate it.
-  const fetched: { address: string; input: unknown; content: string }[] = [];
-  let closed = false, committed: { runId: number; facts: Fact[]; diagnostics: NotingDiagnostic[] } | undefined;
-  let problems: string[] = [];
-  // Reads resolve any existing address (user ruling 2026-09-07: no visibility limits on reads);
-  // injection and Consolidation keep their scope rules elsewhere. Writes still bind sources to the run.
-  const existingFact = (id: number) => !!store.getFact(id);
+  if (!allowed.has(from)) throw new Error("invalid frozen range ancestry");
+  return allowed;
+}
+
+/** What a Noting batch may cite, read once at binding time: the source entries of its path, the path's Turns and the frozen entries. */
+export function notingSources(store: Store, path: KnowledgePath, allowed: ReadonlySet<number>, entryIds?: readonly number[]) {
+  const initial = store.transaction(() => ({ path: store.sourcePath(path.sessionId, path.branch!, path.headTurnId!), snapshot: store.pathSnapshot(path) }));
+  const frozenEntries = entryIds ? [...entryIds] : initial.path.filter(e => allowed.has(e.turnId)).map(e => e.id);
+  return { initialPath: initial.path, sourceTurns: initial.snapshot.turns, frozenEntries, frozenIds: new Set(frozenEntries) };
+}
+
+/** Fact validation for `note` and for the workspace facts file: sources are addresses of the writer's entry set
+ * (the frozen batch for the Noter), one segment per entry, roles checked, and the one title/body cap (ticket 144).
+ * A call or a file shares one source resolution; `reset` forgets it before the next. */
+export function factValidator(store: Store, scope: { sessionId: number; noting: boolean; frozenIds: ReadonlySet<number>;
+  sourceTurns: ReturnType<Store["pathTurns"]>; initialPath: ReturnType<Store["sourcePath"]> }) {
   // One synchronous call/pass only: corrections and terminal validation must reread sources.
   const resolvedSources = new Map<string, SourceResolution[]>();
   const hydratedSources = new Map<number, SourceEntry>();
-  const validateFact = (raw: unknown, index: number, earlier: (slot: number) => boolean,
-    sourcePath: ReturnType<Store["sourcePath"]> = initialPath): FactCommitInput => {
+  const existingFact = (id: number) => !!store.getFact(id);
+  const validate = (raw: unknown, index: number, earlier: (slot: number) => boolean,
+    sourcePath: ReturnType<Store["sourcePath"]> = scope.initialPath): FactCommitInput => {
     const errors: string[] = [];
     const fact = validateNotingFact(`facts[${index}]`, raw, errors);
-    const candidates = context.kind === "noting" ? sourcePath.filter(entry => frozenIds.has(entry.id)) : sourcePath;
+    const candidates = scope.noting ? sourcePath.filter(entry => scope.frozenIds.has(entry.id)) : sourcePath;
     const cited = new Map<number, { hit: SourceResolution; address: string; text: string }>();
     if (fact) {
       for (const source of fact.sources) {
-        const scope = sourceAddressScope(source.address);
-        const entries = scope ? candidates.filter(entry => entry.turnId === scope.turn && entry.entryOrdinal === scope.ordinal) : [];
+        const address = sourceAddressScope(source.address);
+        const entries = address ? candidates.filter(entry => entry.turnId === address.turn && entry.entryOrdinal === address.ordinal) : [];
         let matches = resolvedSources.get(source.address);
         if (!matches) {
           const missing = entries.filter(entry => !hydratedSources.has(entry.id));
@@ -211,7 +174,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
           resolvedSources.set(source.address, matches);
         }
         const turn = matches.length === 1 ? store.getTurn(matches[0]!.entry.turnId) : null;
-        if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || turn.kind === "compaction")
+        if (!turn || turn.sessionId !== scope.sessionId || !scope.sourceTurns.has(turn.id) || turn.kind === "compaction")
           errors.push(`invalid source ${source.address}; expected admissible Raw in the eligible entry set`);
         else if (cited.has(matches[0]!.entry.id)) errors.push(`duplicate source entry ${source.address}`);
         else cited.set(matches[0]!.entry.id, { hit: matches[0]!, address: source.address, text: source.text });
@@ -238,13 +201,70 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       turnId: first, createdAt: store.getTurn(first)!.startedAt,
       entryIds: ordered.map(segment => segment.hit.entry.id) };
   };
+  return { validate, reset: () => { resolvedSources.clear(); hydratedSources.clear(); } };
+}
+
+export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput,
+  dreaming?: { path: KnowledgePath; check(): string; /** 59: why a commit may not be skipped, or undefined when it is a supplied untouched handle. */ skippable(commit: number): string | undefined },
+  exposedNames: ToolNames = canonicalToolNames) {
+  const names = validateToolNames(supplied.toolNames ?? exposedNames);
+  const { spill, ...cloneable } = supplied; // a function cannot be cloned; the rest is frozen against later mutation
+  const context = structuredClone(cloneable) as ToolContext;
+  const session = store.getSession(context.sessionId);
+  if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
+  let allowed: ReadonlySet<number> = new Set<number>();
+  if (context.kind === "manual") {
+    if (store.getTurn(context.currentTurnId)?.sessionId !== session.id) throw new Error("current turn must belong to the calling session");
+  } else if (context.kind === "noting") allowed = frozenTurnIds(store, session.id, context.range);
+  // The branch rides on the path so applicability is judged per source entry (review 2026-09-08 P1).
+  const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId, branch: context.branch }
+    : context.kind === "noting" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]), branch: context.branch }
+    : dreaming!.path;
+  const plain: RunInput = { kind: context.kind, sessionId: session.id, branch: context.branch,
+    rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
+    rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
+  const run = metadata ?? store.bindRunOrigin(plain, store.triggerOrigin(path, context.triggerEntryId));
+  if (context.kind === "dreaming" && (!dreaming || !store.isDreamingRun(run))) throw new Error("Dreamer tools require an admitted trusted run binding");
+  // Source resolution, range checks and candidate applicability share one binding-time database/path
+  // membership. Later tree movement and same-Turn entry ingestion cannot change any half of the run.
+  const noted = context.kind === "noting" ? notingSources(store, path, allowed, context.entryIds) : undefined;
+  const initialPath = noted?.initialPath ?? [];
+  const sourceTurns = noted?.sourceTurns ?? store.pathTurns(path);
+  const manualPath = context.kind === "manual" && context.entryIds ? store.sourcePath(session.id, context.branch, path.headTurnId!) : [];
+  const manualTrigger = context.kind === "manual" && context.entryIds && context.triggerEntryId !== undefined
+    ? manualPath.findIndex(entry => entry.id === context.triggerEntryId) : manualPath.length - 1;
+  if (context.kind === "manual" && context.entryIds && context.triggerEntryId !== undefined && manualTrigger < 0)
+    throw new Error("manual source prefix does not contain the exact triggering entry");
+  const manualEntries = context.kind === "manual" && context.entryIds ? manualPath.slice(0, manualTrigger + 1) : [];
+  if (context.kind === "manual" && context.entryIds && (context.entryIds.length !== manualEntries.length ||
+      context.entryIds.some((id, index) => id !== manualEntries[index]!.id)))
+    throw new Error("manual source prefix does not match the exact triggering ancestry");
+  const manualEntryIds = context.kind === "manual" && context.entryIds ? new Set(context.entryIds) : null;
+  const frozenEntries = noted?.frozenEntries ?? [];
+  const frozenIds = noted?.frozenIds ?? new Set<number>();
+  const memory = bindMemory(store, session.id, run, path, manualEntryIds
+    ? factId => {
+      const fact = store.getFact(factId);
+      if (!fact) return false;
+      const entries = store.factEntries(factId);
+      return entries.length ? entries.every(entryId => manualEntryIds.has(entryId)) : fact.turnId !== path.headTurnId;
+    } : undefined, dreaming?.skippable, names);
+  const sequence = memory.sequence;
+  // Historical run audits retain their read field; public trace calls no longer populate it.
+  const fetched: { address: string; input: unknown; content: string }[] = [];
+  let closed = false, committed: { runId: number; facts: Fact[]; diagnostics: NotingDiagnostic[] } | undefined;
+  let problems: string[] = [];
+  // Reads resolve any existing address (user ruling 2026-09-07: no visibility limits on reads);
+  // injection and Consolidation keep their scope rules elsewhere. Writes still bind sources to the run.
+  const facts = factValidator(store, { sessionId: session.id, noting: context.kind === "noting", frozenIds, sourceTurns, initialPath });
+  const validateFact = facts.validate;
   const held = context.kind === "noting" ? holdNoting(store, run, path, validateFact, {
     note: Object.keys(toolDefinitions.find(tool => tool.name === "note")!.parameters.properties as object),
     memory: Object.keys(toolDefinitions.find(tool => tool.name === "memory")!.parameters.properties as object),
   }, names) : undefined;
   const rejectedNativeCalls = new Set<string>();
   const note = (input: Record<string, unknown>): string => {
-    resolvedSources.clear(); hydratedSources.clear();
+    facts.reset();
     if (held) return held.note(input);
     if (context.kind === "dreaming") return `rejected: ${names.note} is not available to this knowledge worker`;
     if ("drop" in input || "slot" in input) {
@@ -367,7 +387,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
           const snapshot = store.pathSnapshot(path);
           const pending = new Set(store.pendingEntries(session.id, context.branch, path.headTurnId!, snapshot).map(entry => entry.id));
           if (frozenEntries.some(id => !pending.has(id))) throw new Error("frozen Noter entries are no longer pending on target path");
-          resolvedSources.clear(); hydratedSources.clear();
+          facts.reset();
           held.validate();
         } },
         responseForFacts: ids => JSON.stringify({ ...JSON.parse(run.response ?? "{}"),
