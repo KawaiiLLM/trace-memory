@@ -89,15 +89,19 @@ export function beginExecution(store: Store, task: LogicalTask): string {
 
 /** What a passed first task leaves for the second: the files live in the first task's run body, so a restarted or
  * borrowing executor finds them with this one indexed read. */
-export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; nextTask: string; runId: number; branch: string | null; entryIds: number[]; createdAt: string }
+export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; nextTask: string; runId: number; branch: string | null; entryIds: number[]; createdAt: string;
+  /** 144 stage 4, Dreamer rows only: which batches are applied and, after a failure, the revision id from which Noter changes count again. */
+  detail?: { curateRuns: number[]; doneCategories: string[]; waitFrom?: number } }
 export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"]): Handoff | null {
   const row = store.db.prepare("SELECT * FROM task_handoffs WHERE session_id = ? AND phase = ?").get(sessionId, phase);
   return row ? { sessionId, phase, nextTask: String(row.next_task), runId: Number(row.run_id), branch: row.branch === null ? null : String(row.branch),
-    entryIds: row.entry_ids === null ? [] : JSON.parse(String(row.entry_ids)) as number[], createdAt: String(row.created_at) } : null;
+    entryIds: row.entry_ids === null ? [] : JSON.parse(String(row.entry_ids)) as number[], createdAt: String(row.created_at),
+    ...(row.detail === null ? {} : { detail: JSON.parse(String(row.detail)) as NonNullable<Handoff["detail"]> }) } : null;
 }
 export function writeHandoff(store: Store, handoff: Omit<Handoff, "createdAt">): void {
-  store.db.prepare("INSERT OR REPLACE INTO task_handoffs(session_id,phase,next_task,run_id,branch,entry_ids,created_at) VALUES (?,?,?,?,?,?,?)")
-    .run(handoff.sessionId, handoff.phase, handoff.nextTask, handoff.runId, handoff.branch, JSON.stringify(handoff.entryIds), new Date().toISOString());
+  store.db.prepare("INSERT OR REPLACE INTO task_handoffs(session_id,phase,next_task,run_id,branch,entry_ids,created_at,detail) VALUES (?,?,?,?,?,?,?,?)")
+    .run(handoff.sessionId, handoff.phase, handoff.nextTask, handoff.runId, handoff.branch, JSON.stringify(handoff.entryIds), new Date().toISOString(),
+      handoff.detail ? JSON.stringify(handoff.detail) : null);
 }
 /** A publication that processed any entry of the hand-off's batch ends the hand-off: the rest of that batch can no longer be taken whole. */
 export function dropHandoffCovering(store: Store, sessionId: number, phase: Handoff["phase"], entryIds: readonly number[]): void {

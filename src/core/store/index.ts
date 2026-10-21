@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
-import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
@@ -15,7 +15,7 @@ import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecuti
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, dreamingDue, ALL_POOLS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize } from "./processing.ts";
-import { factAddresses, renderKnowledge, renderKnowledgeChange, withKnowledgeCost, withFactDates, tokens } from "../render/index.ts";
+import { factAddresses, knowledgeTitle, renderKnowledge, renderKnowledgeChange, withKnowledgeCost, withFactDates, tokens } from "../render/index.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import type {
   Actor,
@@ -1309,7 +1309,7 @@ export class Store {
           project_tokens INTEGER NOT NULL CHECK(project_tokens BETWEEN 0 AND 9007199254740991),
           session_tokens INTEGER NOT NULL CHECK(session_tokens BETWEEN 0 AND 9007199254740991)
         )`);
-        this.db.prepare("INSERT OR IGNORE INTO knowledge_budget_policy VALUES (1, ?, ?, ?)")
+        this.db.prepare("INSERT OR IGNORE INTO knowledge_budget_policy(id, global_tokens, project_tokens, session_tokens) VALUES (1, ?, ?, ?)")
           .run(DEFAULT_KNOWLEDGE_BUDGETS.global, DEFAULT_KNOWLEDGE_BUDGETS.project, DEFAULT_KNOWLEDGE_BUDGETS.session);
         this.knowledgeBudgets(); // Invalid stored arithmetic is a hard open failure, never a fallback.
       });
@@ -1339,6 +1339,7 @@ export class Store {
         return [...visible.values()].map(revision => ({ revisionId: revision.id,
           pool: placementOwner(this, { revision }, input.metadata) }));
       }, priorBudgetPolicy);
+      migrateStage4Schema144(this.db); // after 64d: its legacy path may still rewrite the pool budgets that seed `base_tokens`
       // 79 "Hot/cold split": one-time, idempotent rebuild that moves Raw payloads and run bodies into
       // tables of their own, run once at the explicit upgrade, last: `migrateKnowledgeLineage` above
       // still expects `origin_session_id`/`origin_entry_ids` on the pre-split `runs` shape and would
@@ -2808,6 +2809,8 @@ export class Store {
   private graphInputCache: SelectiveGraph | undefined;
   private graphResults = new WeakMap<GraphInput, GraphResults>();
   private graphVisibility = new WeakMap<GraphInput, Map<string, Set<number>>>();
+  /** 144: the path's live (non-archived) current versions, once per graph input and path like `graphVisibility`. */
+  private graphLive = new WeakMap<GraphInput, Map<string, KnowledgeRevision[]>>();
   commitGraphInput(seed?: readonly KnowledgeRevision[], cacheSessionId?: number): GraphInput {
     if (seed || cacheSessionId === undefined || this.db.isTransaction) return this.buildGraphInput(seed);
     this.db.exec("BEGIN");
@@ -4235,6 +4238,68 @@ export class Store {
   dreamingDue(path: KnowledgePath, dreamingTriggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS,
     sharedAllowanceTokens = DEFAULT_SHARED_ALLOWANCE_TOKENS): boolean {
     return !!this.dueProjection(path, dreamingTriggerTokens, sharedAllowanceTokens);
+  }
+
+  /** 144: the path's visible current versions without archives. Archived identities are dropped once per graph
+   * change, so a check never loops over history that grows after coverage. */
+  liveKnowledge(path: KnowledgePath, input = this.commitGraphInput(undefined, path.sessionId)): KnowledgeRevision[] {
+    const key = JSON.stringify([path.sessionId, path.branch, path.headTurnId]);
+    let views = this.graphLive.get(input);
+    if (!views) this.graphLive.set(input, views = new Map());
+    let live = views.get(key);
+    if (!live) views.set(key, live = this.commitGraph(path, undefined, undefined, input).current.filter(revision => revision.op !== "archive"));
+    return live;
+  }
+
+  /** Body tokens per version (immutable); the title is recomputed because a legacy untitled version's depends on the configured cap. */
+  private bodyTokens = new WeakMap<KnowledgeRevision, number>();
+
+  /** 144 stage 4: the tokens (title plus body, each item once) of live items that a Noter revision newer than `floor`
+   * changed since coverage (`knowledge_processed`). A covered ancestor ends only its own branch; an item counts when any
+   * unpruned branch reaches such a revision, whatever the parent order. Stops adding once `stopAt` is reached. */
+  noterChangedTokens(path: KnowledgePath, floor = 0, stopAt = Infinity): number {
+    const input = this.commitGraphInput(undefined, path.sessionId);
+    const revisions = input.metadata.revisions!, parents = input.parents;
+    const byPool = new Map<string, KnowledgeRevision[]>();
+    for (const revision of this.liveKnowledge(path, input)) if (revision.id > floor) {
+      const pool = placementOwner(this, { revision }, input.metadata);
+      const items = byPool.get(pool); if (items) items.push(revision); else byPool.set(pool, [revision]);
+    }
+    const covered = this.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?");
+    const uncoveredIn = this.db.prepare(`SELECT value FROM json_each(?)
+      WHERE NOT EXISTS (SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = value)`);
+    let total = 0;
+    for (const [pool, items] of byPool) {
+      const uncovered = new Set(uncoveredIn.all(JSON.stringify(items.map(item => item.id)), pool).map(row => Number(row.value)));
+      for (const item of items) {
+        if (!uncovered.has(item.id)) continue;
+        const stack = [item.id], seen = new Set<number>();
+        let counts = false;
+        while (stack.length && !counts) {
+          const id = stack.pop()!;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const revision = revisions.get(id)!;
+          if (id !== item.id && (id <= floor || covered.get(pool, id))) continue; // prunes this branch only
+          if (revision.actorRole === "noting") counts = true;
+          else stack.push(...parents.get(id) ?? []);
+        }
+        if (!counts) continue;
+        let body = this.bodyTokens.get(item);
+        if (body === undefined) this.bodyTokens.set(item, body = tokens(item.text));
+        if ((total += body + tokens(knowledgeTitle(item, this.writing.titleTokens))) >= stopAt) return total;
+      }
+    }
+    return total;
+  }
+
+  /** 144 stage 4 §2.4: a Dreamer run is due when a hand-off row asks for a retry or resume, or when the Noter-changed
+   * tokens since the hand-off's `waitFrom` (0 without one) reach the trigger. Named apart from the old overflow
+   * trigger `dreamingDue`, which stays until the scheduling switches over. */
+  dreamingDueByNoterChanges(path: KnowledgePath, triggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS): boolean {
+    const handoff = this.handoff(path.sessionId, "dreaming");
+    return !!handoff && handoff.detail?.waitFrom === undefined
+      || this.noterChangedTokens(path, handoff?.detail?.waitFrom ?? 0, triggerTokens) >= triggerTokens;
   }
 
   /** The session's pools when a run is due, else none. */

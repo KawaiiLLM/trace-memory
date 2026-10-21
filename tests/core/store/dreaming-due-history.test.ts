@@ -2,6 +2,7 @@ import { expect, test, vi } from "vitest";
 import { performance } from "node:perf_hooks";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { entry as seedEntry, knowledgeBatch, legacyFact } from "../../support/seed.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 
 const at = "2026-09-28T00:00:00Z";
 const median = (samples: number[]) => [...samples].sort((a, b) => a - b)[Math.floor(samples.length / 2)]!;
@@ -40,14 +41,18 @@ function measure(archived: number, currentProcessed: number) {
     processed(knowledgeBatch(store, path, Array.from({ length: currentProcessed }, (_, i) => item(`current ${i}`))).committed);
     knowledgeBatch(store, path, Array.from({ length: 5 }, (_, i) => item(`pending ${i}`)));
     const size = store.poolSizes(path).reduce((sum, value) => sum + value.tokens, 0);
-    memory.taskEligibility("dreaming", path);
-    const samples: number[] = [];
-    for (let i = 0; i < 40; i++) {
-      const start = performance.now();
-      memory.taskEligibility("dreaming", path);
-      samples.push(performance.now() - start);
-    }
-    return { size, due: median(samples.slice(5)) };
+    // `due` is the trigger in force; `changes` is Stage 4's (Noter revisions since coverage, 144), over the same fixture.
+    const time = (check: () => unknown) => {
+      check();
+      const samples: number[] = [];
+      for (let i = 0; i < 40; i++) {
+        const start = performance.now();
+        check();
+        samples.push(performance.now() - start);
+      }
+      return median(samples.slice(5));
+    };
+    return { size, due: time(() => memory.taskEligibility("dreaming", path)), changes: time(() => store.dreamingDueByNoterChanges(path)) };
   } finally { memory.close(); }
 }
 
@@ -65,6 +70,7 @@ test("104: the Dreamer's due check stays within the ruled bound as archived hist
   expect(Math.abs(long.size - short.size) / short.size).toBeLessThan(0.02);
   expect(short.size).toBeGreaterThan(25_000);
   withinRuledBound(short, long);
+  withinRuledBound({ due: short.changes }, { due: long.changes });
 }, 120_000);
 
 test("104: the Dreamer's due check stays within the ruled bound as archived history grows from 100 to 3,000 identities, with little current knowledge", () => {
@@ -73,5 +79,49 @@ test("104: the Dreamer's due check stays within the ruled bound as archived hist
   // Same current bodies; only their K addresses differ in length.
   expect(Math.abs(long.size - short.size) / short.size).toBeLessThan(0.02);
   expect(short.size).toBeLessThan(10_000);
+  withinRuledBound(short, long);
+  withinRuledBound({ due: short.changes }, { due: long.changes });
+}, 120_000);
+
+/** Stage 4 (144): one live item rewritten by the Noter `rewrites` times after its last coverage. The current version is
+ * a Noter revision, so the walk stops there however long the history behind it is. Depth stops short of the ticket's
+ * 3,000: the Store's lineage resolution (`effectiveRevisions`) recurses once per version of one identity and overflows
+ * the stack near 1,900, for every reader, so a longer chain cannot be built. */
+function measureRewrites(rewrites: number) {
+  const memory = TraceMemory(":memory:", vi.fn());
+  const store = memory.store;
+  try {
+    const project = store.createProject({ name: "rewrites", declaredBy: "mark" });
+    const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
+    const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: at });
+    const sourceEntry = seedEntry(store, session.id, turn.id, "evidence", "user", "evidence");
+    store.selectSourcePath(session.id, "main", [sourceEntry.id]);
+    const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+    const fact = legacyFact(store, path, [{ entry: sourceEntry, address: `T${turn.id}#user` }], "evidence", "decision");
+    const created = knowledgeBatch(store, path, [{ scope: "project", category: "constraint", supports: [fact.id], text: `rule ${"word ".repeat(120)}` }]).committed[0]!;
+    const run = store.recordRun({ kind: "dreaming", sessionId: session.id, branch: "main", outcome: "success", createdAt: at });
+    store.db.prepare("INSERT INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)").run(`project:${project.id}`, created.commit, run.id);
+    let base = created.commit;
+    for (let i = 0; i < rewrites; i++) {
+      const result = commitNoterKnowledge(store, { path, run: { sessionId: session.id, branch: "main", createdAt: at }, operations: [{ op: "update",
+        knowledgeId: created.knowledgeId, baseCommit: base, text: `rule ${i} ${"word ".repeat(120)}`, category: "constraint", scope: "project",
+        supports: [fact.id], topics: [], reason: "rewrite", createdAt: at }] });
+      if (!result.ok) throw new Error(result.problems.join("; "));
+      base = result.committed[0]!.commit;
+    }
+    store.dreamingDueByNoterChanges(path);
+    const samples: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      const start = performance.now();
+      store.dreamingDueByNoterChanges(path);
+      samples.push(performance.now() - start);
+    }
+    return { due: median(samples.slice(5)) };
+  } finally { memory.close(); }
+}
+
+test("144 stage 4: the change trigger stays within the ruled bound as one live item is rewritten by the Noter from 100 to 1,500 times after coverage", () => {
+  const short = measureRewrites(100), long = measureRewrites(1_500);
+  console.info(JSON.stringify({ fixture: "144 change trigger over Noter rewrites", short, long }));
   withinRuledBound(short, long);
 }, 120_000);
