@@ -600,24 +600,24 @@ export class CcImporter {
     this.projection = new CcProjection(config, binding, memory);
   }
 
-  /** One Noter batch is two tasks on one worker (ticket 144): the write task pins the worker it starts on, keyed by the
-   * batch's workspace directory, and the verify task of that batch takes it, so a configuration applied between the
-   * two reaches only later batches. A resumed verify has a new directory and takes the current worker, whose settings
-   * its fresh admission froze. shortcut: a write that passed but whose hand-off then failed leaves its entry until the
-   * importer closes; upgrade if such failures become common. */
-  private readonly batchRunners = new Map<string, RunAgent>();
+  /** One execution is one worker (stage 4 §1.2): the first dispatch of an execution stores the runner it ran on and later dispatches of
+   * that execution take it, so a configuration applied mid-run reaches only the next execution. A resumed run is a new execution and
+   * takes the then-current worker. The pin is released when a dispatch fails, is cancelled or times out (the execution ends there), and
+   * otherwise at the first later dispatch that finds the execution settled (a success, a no-work task, or a runner still running after
+   * its deadline); closing the importer drops the map. */
+  private readonly executionRunners = new Map<string, RunAgent>();
   private async dispatch(input: unknown) {
-    const { kind, task, workspace } = input as Partial<NotingAgentInput>;
-    const batch = kind === "noting" ? workspace?.dir : undefined;
-    const run = (batch !== undefined && task === "verify" ? this.batchRunners.get(batch) : undefined) ?? this.runAgent;
+    const { executionId } = input as { executionId?: string };
+    if (executionId !== undefined && this.executionRunners.size)
+      for (const id of this.memory.store.settledExecutions([...this.executionRunners.keys()])) this.executionRunners.delete(id);
+    const run = (executionId !== undefined ? this.executionRunners.get(executionId) : undefined) ?? this.runAgent;
     if (!run) return unavailableRunner();
-    let keep = false;
+    let result: Awaited<ReturnType<RunAgent>> | undefined;
     try {
-      const result = await run(input);
-      keep = task === "write" && result.outcome === "success";
+      result = await run(input);
       return result;
     } finally {
-      if (batch !== undefined) { if (keep) this.batchRunners.set(batch, run); else this.batchRunners.delete(batch); }
+      if (executionId !== undefined) { if (result?.outcome === "success") this.executionRunners.set(executionId, run); else this.executionRunners.delete(executionId); }
     }
   }
 

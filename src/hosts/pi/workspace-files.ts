@@ -4,23 +4,25 @@
 import { access, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createEditToolDefinition, createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { NotingAgentInput } from "../../core/api/index.ts";
+import type { DreamingAgentInput, NotingAgentInput } from "../../core/api/index.ts";
 
-type Workspace = NotingAgentInput["workspace"];
+type Workspace = NotingAgentInput["workspace"] | DreamingAgentInput["workspace"];
 
+/** The Noter's two files, or a Dreaming task's lists (stage 4): the same confinement either way. */
 export function workspaceFileTools(cwd: string, workspace: Workspace) {
-  const own = async (path: string): Promise<string> => {
-    if (path !== workspace.facts && path !== workspace.knowledge) throw new Error("Trace Memory: this task may use only its two workspace files");
+  const files = "facts" in workspace ? { read: [workspace.facts, workspace.knowledge], write: [workspace.facts, workspace.knowledge] } : workspace;
+  const own = async (path: string, allowed: readonly string[]): Promise<string> => {
+    if (!allowed.includes(path)) throw new Error("Trace Memory: this task may use only its workspace files");
     if (await realpath(dirname(path)) !== await realpath(workspace.dir)) throw new Error("Trace Memory: a workspace file must sit directly in the run's workspace");
     if (await lstat(path).then(info => info.isSymbolicLink(), () => false)) throw new Error("Trace Memory: a workspace file may not be a symbolic link");
     return path;
   };
   const operations = {
-    readFile: async (path: string) => readFile(await own(path)),
-    writeFile: async (path: string, content: string) => writeFile(await own(path), content),
-    access: async (path: string) => access(await own(path)),
+    readFile: async (path: string) => readFile(await own(path, files.read)),
+    writeFile: async (path: string, content: string) => writeFile(await own(path, files.write), content),
+    access: async (path: string) => access(await own(path, files.read)),
     // Pi's write tool makes the file's directory first; the run's directory exists, so that is the only one allowed.
     mkdir: async (dir: string) => { if (dir !== workspace.dir) throw new Error("Trace Memory: this task may not create directories"); await mkdir(dir, { recursive: true }); },
   };
-  return { definitions: [createWriteToolDefinition(cwd, { operations }), createEditToolDefinition(cwd, { operations })], paths: [workspace.facts, workspace.knowledge] };
+  return { definitions: [createWriteToolDefinition(cwd, { operations }), createEditToolDefinition(cwd, { operations })], paths: [...new Set([...files.read, ...files.write])] };
 }

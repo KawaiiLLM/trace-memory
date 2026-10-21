@@ -32,7 +32,6 @@ interface NativeCommon {
   tools: ToolDefinition[];
   /** Same frozen reader as this task's material; only trace:// execution is exposed. */
   read: ReturnType<typeof import("./memory-files.ts").memoryReadTool>;
-  reportToolRejection?(id: string, name: "note" | "memory", input: unknown, reason: string): void;
   /** The Noter's write and edit (ticket 144), already confined by the host to its two workspace files. */
   fileTools?: PiToolDefinition[];
   /** 0 = unlimited, as `maxToolRounds` has always meant. */
@@ -46,7 +45,9 @@ interface NativeCommon {
    * force-cancels at its cleanup deadline still audits the level it was really sent at. */
   onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: { requested?: ThinkingLevel; effective: ThinkingLevel } }): void;
   /** Dreamer's host check at a completed pass, with one same-child repair. */
+  /** `rounds` is the old protocol's argument; core's hook ignores it. */
   passEnd?(rounds: number): string | undefined;
+  /** LEGACY (old Dreamer protocol; part 4 deletes it with its tests): nothing calls it now. */
   reportRounds?(rounds: number): void;
   /** Pi's own retry policy (settings.json `retry`, read by the child's SettingsManager) scheduled a
    * backoff, and ended one. The host surfaces them; this module neither retries nor sleeps itself. */
@@ -113,7 +114,6 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   const nativeLog: string | undefined = manager.getSessionFile();
 
   const calls: { name: string; executed: boolean }[] = [];
-  const attempts = new Map<string, { name: "memory"; input: unknown; executed: boolean }>();
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
   // A fresh child registers bound memory tools plus restricted native Read. Tool EXECUTION allows
   // these tools only.
@@ -122,8 +122,6 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     constrainedSampling: tool.constrainedSampling,
     executionMode: "sequential" as const,
     async execute(_id: string, raw: unknown) {
-      const attempt = attempts.get(_id);
-      if (attempt) attempt.executed = true;
       const bound = task.tools.find(t => t.name === tool.name);
       const reading = tool.name === "read", file = task.fileTools?.find(t => t.name === tool.name);
       calls.push({ name: tool.name, executed: (reading || !!file || !!bound) && !exceeded });
@@ -209,15 +207,6 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     return inherited ? inherited(payload as never, model as never) : payload;
   };
   const unsubscribe = session.subscribe(event => {
-    if (task.reportToolRejection) {
-      if (event.type === "tool_execution_start" && event.toolName === "memory" && !attempts.has(event.toolCallId) && task.kind === "dreaming") // 127: only the Dreamer has a numbered write tool
-        attempts.set(event.toolCallId, { name: event.toolName, input: structuredClone(event.args), executed: false });
-      if (event.type === "tool_execution_end" && event.isError) {
-        const attempt = attempts.get(event.toolCallId);
-        if (attempt && !attempt.executed) task.reportToolRejection(event.toolCallId, attempt.name, attempt.input,
-          JSON.stringify(event.result));
-      }
-    }
     if (event.type === "auto_retry_start") {
       retries.push({ attempt: event.attempt, error: event.errorMessage });
       task.onProgress({ usage, retries });
@@ -247,7 +236,6 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
         void session.abort();
       }
     }
-    task.reportRounds?.(rounds);
     task.onProgress({ usage, retries });
   });
   const abort = () => void session.abort();
@@ -256,21 +244,20 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     task.signal?.throwIfAborted();
     await session.prompt(task.task, { expandPromptTemplates: false });
     await session.waitForIdle();
-    // A native prompt includes the whole tool loop and provider retries. Only now is this a pass
-    // end. The same child, counters and retry accounting survive the one system-generated repair.
-    if (task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted") {
-      // A truncated first pass is a failed pass: the Dreamer is still asked for its round count, but
-      // only a normally ended pass gets a follow-up, so the failure stays the run's outcome (125).
+    // A native prompt includes the whole tool loop and provider retries. Only now is this a pass end. The same child, counters
+    // and retry accounting survive the follow-ups core authorizes: the Noter's one repair, and for a Dreaming task as many
+    // passes as its stop hook returns a message for (stage 4 §1.1; core bounds the count).
+    for (let pass = 1; task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted"; pass++) {
+      // Only a normally ended pass gets a follow-up, so a truncated one stays the run's failure (125).
       const normal = terminal !== undefined && terminal.stopReason !== "length" && !terminal.errorMessage;
-      const followup = task.kind === "dreaming" || normal ? task.passEnd(rounds) : undefined;
-      if (followup && normal && (task.kind === "noting" || task.maxToolRounds === 0 || rounds < task.maxToolRounds)) {
-        // A new public prompt reapplies before_agent_start. An idle custom-message turn skips it,
-        // so Pi's next-turn refresh would replace the worker instructions with its base prompt.
-        // The feedback identifies itself as host-generated, not evidence, in this same child log.
-        await session.sendUserMessage(followup, { expandPromptTemplates: false });
-        await session.waitForIdle();
-        if (task.kind === "dreaming") task.passEnd(rounds);
-      }
+      // The Noter's one repair needs a normally ended pass; a Dreaming task is asked after every pass, truncated or not (125).
+      const followup = task.kind === "dreaming" || (pass === 1 && normal) ? task.passEnd(rounds) : undefined;
+      if (!(followup && normal && (task.kind === "dreaming" ? task.maxToolRounds === 0 || rounds < task.maxToolRounds : true))) break;
+      // A new public prompt reapplies before_agent_start. An idle custom-message turn skips it,
+      // so Pi's next-turn refresh would replace the worker instructions with its base prompt.
+      // The feedback identifies itself as host-generated, not evidence, in this same child log.
+      await session.sendUserMessage(followup, { expandPromptTemplates: false });
+      await session.waitForIdle();
     }
   } catch (error) {
     failure = String(error);

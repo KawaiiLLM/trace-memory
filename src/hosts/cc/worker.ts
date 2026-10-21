@@ -81,8 +81,6 @@ export class CcResponseOrigins {
   private readonly toolRoundIds = new Set<string>();
   private readonly origins = new Map<string, string>();
   private readonly claimed = new Set<string>();
-  private readonly pendingWrites = new Map<string, { name: "memory"; input: unknown }>();
-  private readonly rejectedWrites = new Set<string>();
   private readonly waiters = new Map<string, WaitingOrigin[]>();
   private failure: Error | null = null;
   private readonly onFailure: (error: Error) => void;
@@ -113,9 +111,6 @@ export class CcResponseOrigins {
       if (prior && prior !== responseId)
         throw this.fail(new Error(`CC tool use ${block.id} is ambiguous across assistant responses`));
       this.origins.set(block.id, responseId);
-      // 127: the Dreamer's memory calls are tracked so a native refusal reaches its numbered slot; the Noter writes files and has no write tool of core's.
-      if (this.task.kind === "dreaming" && block.name === ccWorkerToolNames.memory && !this.pendingWrites.has(block.id))
-        this.pendingWrites.set(block.id, { name: "memory", input: structuredClone(block.input) });
       for (const waiter of this.waiters.get(block.id) ?? []) {
         clearTimeout(waiter.timer); waiter.resolve(responseId);
       }
@@ -141,20 +136,8 @@ export class CcResponseOrigins {
     });
   }
 
-  /** Native argument/permission refusal can precede the MCP handler. Route it by tool-use ID,
-   * never by parsing the error prose. A missing result/dispatch cannot establish correction. */
-  rejected(id: string, reason: string): void {
-    const attempt = this.pendingWrites.get(id);
-    if (!attempt || this.claimed.has(id) || this.rejectedWrites.has(id) || this.task.kind !== "dreaming") return;
-    if (!this.task.reportToolRejection) throw this.fail(new Error("CC worker cannot report native tool rejection"));
-    this.task.reportToolRejection(id, attempt.name, attempt.input, reason);
-    this.rejectedWrites.add(id);
-  }
-
-  requireDispatchedWrites(): void {
-    for (const id of this.pendingWrites.keys()) if (!this.claimed.has(id) && !this.rejectedWrites.has(id))
-      throw this.fail(new Error(`CC worker write call ${id} has neither a handler dispatch nor a correlated refusal`));
-  }
+  /** LEGACY (old Dreamer protocol; part 4 deletes it with its test): the Dreamer no longer has a write tool to dispatch. */
+  requireDispatchedWrites(): void {}
 
   rounds(): number { return this.toolRoundIds.size; }
   error(): Error | null { return this.failure; }
@@ -344,7 +327,8 @@ export class CcAgentWorker {
   }
 
   async run(task: CcAgentTask, maxToolRounds: number): Promise<RunAgentResult> {
-    const settings = this.worker.phases[task.kind];
+    // Stage 4 §1.2: the classify task runs on its own triple; every other task on its phase's.
+    const settings = (task.kind === "dreaming" && task.task === "classify" ? this.worker.phases.classify : undefined) ?? this.worker.phases[task.kind];
     if (task.model !== undefined && task.model !== settings.model)
       throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
     if (task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
@@ -377,21 +361,25 @@ export class CcAgentWorker {
       permissionDecision: "allow" as const, permissionDecisionReason: reason } });
     // Ticket 144: the Noter's two workspace files, and nothing else, may be read, written and edited. A path is one only when it is
     // absolute and already normal, is exactly one of the two, is not a symbolic link, and sits directly in the run's directory.
-    const workspace = task.kind === "noting" ? task.workspace : undefined;
-    const workspaceFile = (file: unknown): { path: string } | { reason: string } | null => {
-      if (!workspace) return null;
-      if (typeof file !== "string" || !isAbsolute(file) || file !== resolve(file) || (file !== workspace.facts && file !== workspace.knowledge))
-        return { reason: "Trace Memory: this task may use only its two workspace files" };
+    // Stage 4: a Dreaming task has the same shape, with its own lists of readable and writable files.
+    // A task with no workspace (a fixture of the older shapes) reads trace:// only.
+    const workspace = task.workspace as typeof task.workspace | undefined;
+    const files = !workspace ? { read: [] as string[], write: [] as string[] }
+      : task.kind === "noting" ? { read: [task.workspace.facts, task.workspace.knowledge], write: [task.workspace.facts, task.workspace.knowledge] }
+      : { read: task.workspace.read, write: task.workspace.write };
+    const workspaceFile = (file: unknown, allowed: readonly string[]): { path: string } | { reason: string } => {
+      if (typeof file !== "string" || !isAbsolute(file) || file !== resolve(file) || !allowed.includes(file))
+        return { reason: `Trace Memory: this task may use only its ${task.kind === "noting" ? "two " : ""}workspace files` };
       try {
-        if (realpathSync(dirname(file)) !== realpathSync(workspace.dir)) return { reason: "Trace Memory: a workspace file must sit directly in the run's workspace" };
+        if (realpathSync(dirname(file)) !== realpathSync(workspace!.dir)) return { reason: "Trace Memory: a workspace file must sit directly in the run's workspace" };
         if (existsSync(file) && lstatSync(file).isSymbolicLink()) return { reason: "Trace Memory: a workspace file may not be a symbolic link" };
       } catch (error) { return { reason: error instanceof Error ? error.message : String(error) }; }
       return { path: file };
     };
     const onWrite = async (raw: unknown) => {
       const event = raw as { tool_input?: Record<string, unknown> };
-      const checked = workspaceFile(event?.tool_input?.file_path);
-      return checked && "path" in checked ? allow("workspace file") : deny(checked?.reason ?? "CC worker has no Write or Edit");
+      const checked = workspaceFile(event?.tool_input?.file_path, files.write);
+      return workspace && "path" in checked ? allow("workspace file") : deny(workspace ? (checked as { reason: string }).reason : "CC worker has no Write or Edit");
     };
     const onRead = async (raw: unknown) => {
       const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown>; cwd?: unknown };
@@ -399,9 +387,9 @@ export class CcAgentWorker {
       try {
         if (event.tool_name !== "Read" || typeof file !== "string") return deny(workspace ? "CC worker accepts only Read of trace:// and its workspace files" : "CC worker accepts only Read of trace://");
         // An absolute path that names a workspace file is read as it is; the rendering rules below do not apply to it.
-        if (workspace && (file === workspace.facts || file === workspace.knowledge)) {
-          const checked = workspaceFile(file);
-          return checked && "path" in checked ? allow("workspace file") : deny(checked!.reason);
+        if (files.read.includes(file)) {
+          const checked = workspaceFile(file, files.read);
+          return "path" in checked ? allow("workspace file") : deny(checked.reason);
         }
         const virtual = memoryPath(file) ?? resolvedMemoryPath(file, event.cwd);
         if (virtual !== null) {
@@ -448,7 +436,10 @@ export class CcAgentWorker {
         cacheRead: settled.cacheRead + tail.cacheRead, cacheWrite: settled.cacheWrite + tail.cacheWrite } : settled;
     };
     const progress = () => { const usage = observedUsage(); task.reportProgress?.({ retries: [...retries], ...(usage ? { usage } : {}) }); };
-    let passState: "first" | "repair-authorized" | "complete" = "first";
+    // Passes core has authorized so far: the first, then one more for each follow-up string its stop hook returned. The Noter's hook
+    // is asked after its first pass only; a Dreaming task's after every pass, and core bounds the count (stage 4 §1.1).
+    let authorized = 1;
+    let passState: "open" | "awaiting" | "complete" = "open";
     const toolsAllowed = () => passState !== "complete";
     return runWithCcNativeAbortOwner(controller.signal, error =>
       this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error.message }),
@@ -501,10 +492,6 @@ export class CcAgentWorker {
           nativeFailureOutput = assistantApiError(message) ?? nativeFailureOutput;
           origins.observe(message);
           progress();
-          if (task.kind === "dreaming") task.reportRounds(origins.rounds());
-        } else if (message.type === "user" && Array.isArray(message.message.content)) {
-          for (const block of message.message.content) if (block.type === "tool_result" && block.is_error)
-            origins.rejected(block.tool_use_id, JSON.stringify(block.content));
         } else if (message.type === "system" && (message as unknown as { subtype?: unknown }).subtype === "api_retry") {
           const retry = message as unknown as { attempt?: unknown; max_retries?: unknown; retry_delay_ms?: unknown; error?: unknown };
           if (!Number.isSafeInteger(retry.attempt) || typeof retry.error !== "string")
@@ -521,19 +508,20 @@ export class CcAgentWorker {
           progress();
           if (message.is_error || message.subtype !== "success")
             nativeFailureOutput ??= message.subtype === "success" ? message.result : message.errors.join("; ");
-          if (task.kind === "noting") task.signal?.throwIfAborted();
+          task.signal?.throwIfAborted();
           const pass = results.length;
-          if ((pass === 1 && passState !== "first") || (pass === 2 && passState !== "repair-authorized") || pass > 2)
-            throw new Error("CC worker emitted a completed pass without core authorization");
+          if (pass > authorized) throw new Error("CC worker emitted a completed pass without core authorization");
+          passState = "open";
           const succeeded = message.subtype === "success" && !message.is_error;
           output = !succeeded && nativeFailureOutput !== null ? nativeFailureOutput
             : message.subtype === "success" ? message.result : message.errors.join("; ");
           outcome = succeeded ? "success" : "failure";
           if (!succeeded) { passState = "complete"; input.close(); }
           else {
-            const repair = task.kind === "dreaming" ? task.passEnd(origins.rounds()) : pass === 1 ? task.passEnd() : undefined;
-            if (pass === 1 && typeof repair === "string" && repair.length > 0) {
-              passState = "repair-authorized";
+            const repair = task.kind === "dreaming" || pass === 1 ? task.passEnd() : undefined;
+            if (typeof repair === "string" && repair.length > 0) {
+              authorized++;
+              passState = "awaiting";
               input.push(userMessage(repair, message.session_id, true));
             } else {
               passState = "complete";
@@ -542,12 +530,11 @@ export class CcAgentWorker {
           }
         }
       }
-      if (passState === "repair-authorized")
-        throw new Error("CC worker ended before completing the core-requested review pass");
+      if (passState === "awaiting")
+        throw new Error("CC worker ended before completing the core-requested pass");
       if (initIdentity === null) throw new Error("CC worker ended without native init metadata");
       if (protocolError) throw protocolError;
       if (!results.length) throw new Error("CC worker ended without an SDK result message");
-      origins.requireDispatchedWrites();
       const usage = observedUsage();
       return { outcome, output, ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}),
         ...verifiedNativeLog(nativeLog, nativeSessionId, origins.rounds()),

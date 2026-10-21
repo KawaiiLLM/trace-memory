@@ -11,7 +11,7 @@ import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, mig
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
-import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
+import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, dreamingDue, ALL_POOLS, deriveKnowledgeBudgets, processedBlock, placementOwner, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets, type PendingKnowledgeVersion, type KnowledgePoolSize } from "./processing.ts";
@@ -1793,8 +1793,8 @@ export class Store {
       lastRunId: row.last_run_id === null ? null : Number(row.last_run_id), updatedAt: String(row.updated_at),
     }));
   }
-  settleExecution(id: string, outcome: ExecutionOutcome, runId: number, reason?: string) {
-    return settleExecution(this, id, outcome, runId, reason);
+  settleExecution(id: string, outcome: ExecutionOutcome, runId: number, reason?: string, failure?: TaskFailure) {
+    return settleExecution(this, id, outcome, runId, reason, undefined, failure);
   }
   /** Core-only terminal path; the capability never crosses the model/public settlement boundary. */
   settleDreamingConflict(run: RunInput, reason: string): void {
@@ -1846,13 +1846,16 @@ export class Store {
       expiresAt: Number(row.expires_at), borrowed: !!row.borrowed, reserved: !!row.reserved } : null;
   }
 
-  acquireClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed = false, eligible: () => boolean = () => true): TaskClaim | null {
+  /** A Dreamer admission passes `triggerTokens` (144 stage 4 §8.2): a due hand-off with no threshold work still gets the claim.
+   * Without it the claim is judged by the old pool-pending rule, which only tests and tools of the old protocol still reach
+   * (LEGACY: part 4 deletes it with them). `leaseMs` lets a Dreamer admission outlive its execution backstop (§1.3). */
+  acquireClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed = false, eligible: () => boolean = () => true,
+    triggerTokens?: number, leaseMs?: number): TaskClaim | null {
     if (phase !== "noting" && phase !== "dreaming") throw new Error(`Unsupported live phase: ${phase}`);
-    return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => {
-      const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId)
-        : this.knowledgePools(target).filter(pool => pool.pending.length > 0);
-      return pending.length > 0;
-    }, eligible));
+    return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => phase === "noting"
+      ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId).length > 0
+      : triggerTokens !== undefined ? this.dreamingDueByNoterChanges(target, triggerTokens)
+      : this.knowledgePools(target).some(pool => pool.pending.length > 0), eligible, leaseMs));
   }
 
   /** Called only by atomic Store operations. Pending discovery is private and synchronous, so
@@ -1891,12 +1894,9 @@ export class Store {
       .run(claim.sessionId, claim.phase, claim.token, claim.executorId).changes;
   }
 
-  invalidateExecutor(executorId: string, completingDreamerToken?: string): void {
-    // Cancellation closes tool bindings separately. Only the exact in-flight Dreamer token stays
-    // live for its processing transaction; this neither renews expiry nor preserves a replacement.
-    this.db.prepare(`UPDATE task_claims SET expires_at = 0 WHERE executor_id = ?
-      AND (? IS NULL OR phase != 'dreaming' OR token != ?)`)
-      .run(executorId, completingDreamerToken ?? null, completingDreamerToken ?? null);
+  /** Expires every claim of the executor (144 stage 4 §1.5: no terminal transaction needs a live token any more). */
+  invalidateExecutor(executorId: string): void {
+    this.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE executor_id = ?").run(executorId);
   }
 
   releaseExecutor(executorId: string): void {
@@ -3883,6 +3883,49 @@ export class Store {
     });
   }
 
+  /** 144 stage 4 §3.2: one Dreamer task pass in one transaction, fenced by the claim. The run (with its operations, if any) is
+   * recorded; `cover` versions become processed in their own pools (coverage, §2.1); `handoff` replaces the session's row
+   * (`null` deletes it); a pass resets the failure count. A refused claim throws before anything is written, so the hand-off
+   * moves only with a committed pass. */
+  commitTaskPass(input: { run: RunInput; path: KnowledgePath; operations?: readonly KnowledgeOperationInput[];
+    response?: (results: WorkspaceOperationResult[]) => string;
+    /** Both are decided once the run exists: the hand-off's curate runs include this run, the coverage includes what it wrote. */
+    cover?: (done: { runId: number; results: WorkspaceOperationResult[] }) => readonly number[];
+    handoff: (done: { runId: number; results: WorkspaceOperationResult[] }) => { nextTask: string; detail: NonNullable<Handoff["detail"]> } | null }): { runId: number; results: WorkspaceOperationResult[] } {
+    return this.transaction(() => {
+      const done = this.commitWorkspaceRun({ run: input.run, path: input.path, operations: input.operations ?? [], response: input.response });
+      const sessionId = input.run.sessionId!;
+      const cover = input.cover?.(done) ?? [];
+      const metadata = cover.length ? this.commitGraphInput(undefined, sessionId).metadata : undefined;
+      for (const id of cover) {
+        const revision = this.knowledgeRevision(id);
+        if (revision) this.db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)")
+          .run(placementOwner(this, { revision }, metadata), id, done.runId);
+      }
+      const handoff = input.handoff(done);
+      if (handoff) writeHandoff(this, { sessionId, phase: "dreaming", nextTask: handoff.nextTask, runId: done.runId,
+        branch: null, entryIds: [], detail: handoff.detail });
+      else this.db.prepare("DELETE FROM task_handoffs WHERE session_id = ? AND phase = 'dreaming'").run(sessionId);
+      this.db.prepare("UPDATE task_failures SET count = 0 WHERE session_id = ? AND phase = 'dreaming' AND pool = ?").run(sessionId, ALL_POOLS);
+      return done;
+    });
+  }
+
+  /** The admission of a due Dreamer run that was waiting for a threshold ends the wait (§3.3). */
+  clearDreamerWait(sessionId: number): void {
+    const handoff = this.handoff(sessionId, "dreaming");
+    if (handoff?.detail?.waitFrom === undefined) return;
+    const { waitFrom: _waitFrom, ...detail } = handoff.detail;
+    writeHandoff(this, { ...handoff, detail });
+  }
+
+  /** The ids among these whose execution has an outcome (the CC importer's pin release, §1.2). */
+  settledExecutions(ids: readonly string[]): Set<string> {
+    if (!ids.length) return new Set();
+    return new Set(this.db.prepare("SELECT id FROM task_executions WHERE outcome IS NOT NULL AND id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(ids)).map(row => String(row.id)));
+  }
+
   /** Only an applicable, scope-authorized tagged predecessor consumed by a later visible
    * descendant is a Noter concurrency conversion. Other invalid bases remain errors. */
   normalizeNotingOperation(op: KnowledgeOperationInput, path: KnowledgePath): KnowledgeOperationInput | null {
@@ -4249,6 +4292,30 @@ export class Store {
     let live = views.get(key);
     if (!live) views.set(key, live = this.commitGraph(path, undefined, undefined, input).current.filter(revision => revision.op !== "archive"));
     return live;
+  }
+
+  /** 144 stage 4 §4.1: the live items of the session's three pools (global, its project, itself), oldest change first, each with
+   * its address, whether its current version is covered (processed in its pool), the UTC dates of its supporting facts
+   * and its score (null until classified). */
+  curateItems(path: KnowledgePath): { value: KnowledgeWithRevision; address: string; pool: string; covered: boolean; dates?: string; score: number | null }[] {
+    const input = this.commitGraphInput(undefined, path.sessionId);
+    const projectId = this.getSession(path.sessionId)!.projectId;
+    const pools = new Set(["global", `project:${projectId}`, `session:${path.sessionId}`]);
+    const live = this.liveKnowledge(path, input).map(revision => ({ revision, pool: placementOwner(this, { revision }, input.metadata) }))
+      .filter(item => pools.has(item.pool)).sort((a, b) => a.revision.id - b.revision.id);
+    const knowledge = new Map(this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify([...new Set(live.map(item => item.revision.knowledgeId))])).map(row => [Number(row.id), toKnowledge(row)]));
+    const scores = new Map(this.db.prepare("SELECT id, score FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify([...knowledge.keys()])).map(row => [Number(row.id), row.score === null ? null : Number(row.score)]));
+    const covered = this.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?");
+    const day = (id: number) => { const time = input.metadata.facts.get(id)?.fact.createdAt; return time && !isNaN(Date.parse(time)) ? new Date(time).toISOString().slice(0, 10) : undefined; };
+    return live.map(({ revision, pool }) => {
+      const days = revision.supports.flatMap(id => day(id) ?? []).sort();
+      return { value: { knowledge: knowledge.get(revision.knowledgeId)!, revision }, pool,
+        address: `K${revision.knowledgeId}@v${this.versionOrdinal(revision.knowledgeId, revision.id)}`,
+        covered: !!covered.get(pool, revision.id), score: scores.get(revision.knowledgeId) ?? null,
+        ...(days.length ? { dates: days[0] === days.at(-1) ? days[0] : `${days[0]}..${days.at(-1)}` } : {}) };
+    });
   }
 
   /** Body tokens per version (immutable); the title is recomputed because a legacy untitled version's depends on the configured cap. */

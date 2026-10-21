@@ -316,6 +316,8 @@ export interface NotingRunOptions {
   executionId: string;
   /** The first task's run, when its hand-off is being resumed: only the second task runs, on that run's files. */
   resumeRunId?: number;
+  /** Registers the run's workspace with the cancellation fence (stage 4 §1.5): closing the task closes it. */
+  registerFence?(workspace: { close(): void }): void;
 }
 
 /** One Noter run is two independent runs of the same input (ticket 144). Task 1 writes the two workspace files; task 2 checks
@@ -344,6 +346,7 @@ export async function runNoting(
   const entryIds = entries.map(e => e.id);
   const scope: NotingScope = { sessionId, branch, range, entryIds };
   const workspace = new NotingWorkspace(store, scope, options.workspaceRoot ?? defaultWorkspaceRoot(), sessionId, options.executionId);
+  options.registerFence?.(workspace);
   let writeRunId = options.resumeRunId;
 
   /** Run one task. Returns the run's final result when it ends the whole run, and nothing when task 1 passed and task 2 follows. */
@@ -364,7 +367,7 @@ export async function runNoting(
       catch (error) { result = agentException(error); }
       // A direct facade close may dispose before the provider settles; never access that store.
       if (store.closed) return { outcome: "dropped" };
-      if (binding.cancelled && result.outcome === "success") result = { ...result, outcome: "cancelled", output: "Noter cancelled before terminal publication" };
+      if ((binding.cancelled || workspace.closed) && result.outcome === "success") result = { ...result, outcome: "cancelled", output: "Noter cancelled before terminal publication" };
       // The stop hook is the host's courtesy; this second check is what decides, so a host that never ran the first
       // still cannot pass bad files.
       const final = result.outcome === "success" ? workspace.check() : undefined;
@@ -396,7 +399,8 @@ export async function runNoting(
   };
 
   try {
-    workspace.open(options.resumeRunId === undefined ? undefined : resumedFiles(store, options.resumeRunId));
+    const seed = options.resumeRunId === undefined ? undefined : resumedFiles(store, options.resumeRunId);
+    workspace.open(seed ? { "facts.md": seed.facts, "knowledge.md": seed.knowledge } : {});
     if (options.resumeRunId === undefined) {
       const first = await runTask("write");
       if (first) return first;

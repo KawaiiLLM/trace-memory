@@ -217,3 +217,20 @@ test("`check` names the task and files, lists problems and every length, and wor
   expect(f.noter.stopMessages[0]).toMatch(/body \d+\/200 \(over\)/);
   expect(tokens("word ".repeat(300))).toBeGreaterThan(200);
 });
+
+// ---- A lost claim (stage 4 §3.4, ruling 2026-10-22) -------------------------------------------------------------------------
+
+test("a Noter run that loses its claim is one counted failure and publishes nothing; three in a row switch memory off", async () => {
+  const lose = (f: Fixture) => () => { f.memory.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'noting'").run(); };
+  const f = fixture([]);
+  for (let n = 1; n <= 3; n++) {
+    f.restart([{ noteInput: [fact()], memoryInput: [create()], verify: lose(f) }]);
+    const result = await f.run();
+    expect(result.outcome, `run ${n}`).toBe("failure");
+    expect(f.published(), `run ${n}`).toHaveLength(0);
+    expect(f.failures(), `run ${n}`).toBe(n);
+    const last = f.memory.store.db.prepare("SELECT outcome, reason FROM task_executions ORDER BY rowid DESC LIMIT 1").get()!;
+    expect(last).toMatchObject({ outcome: "failure", reason: "claim lost" });
+    expect(f.memory.store.enabled(f.session.id), `run ${n}`).toBe(n < 3);
+  }
+});

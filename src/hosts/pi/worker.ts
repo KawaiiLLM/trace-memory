@@ -61,8 +61,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       thinkingLevel: (task.subagentThinkingLevel ?? task.thinkingLevel) as ThinkingLevel | undefined,
       tools: binding.tools, read: binding.read, fileTools: binding.fileTools, maxToolRounds: binding.maxToolRounds,
       signal: task.signal,
-      ...(task.kind === "dreaming" ? { reportToolRejection: task.reportToolRejection } : {}),
-      passEnd: task.passEnd, ...(task.kind === "dreaming" ? { reportRounds: task.reportRounds } : {}),
+      passEnd: task.passEnd,
       onRequest: (body: unknown, contextTokens: number | undefined) => { binding.checkCapacity!(contextTokens); request = body; task.reportRequest(body); },
       onProgress: (state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: RunAgentResult["thinking"] }) => {
         if (state.thinking) thinking = state.thinking;

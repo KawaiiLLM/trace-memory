@@ -1,217 +1,254 @@
-import { loadPrompt } from "../prompts/load.ts";
-import { withRetrievalPolicy } from "../render/retrieval-policy.ts";
-import { readingGuide } from "../render/reading-guide.ts";
+// Dreaming as curate, verify and classify (ticket 144, stage 4). One run is one admission, one claim and one execution; it
+// runs from the hand-off's next task to the end, each task through `runAgent`. This module owns the run shape (§1), the
+// hand-off and resume (§3) and the curate task (§4). verify and classify are marked stubs for part 3.
+
 import { createHash } from "node:crypto";
-import type { Store, RunInput, TaskClaim } from "../store/index.ts";
-import { processedBlock } from "../store/processing.ts";
-import { budgetKnowledge, renderFact, renderFactGroups, renderKnowledgeBlock, tokens } from "../render/index.ts";
-import { dreamingToolDefinitions, pricedToolDefinitions, type bindTools } from "../api/tools.ts";
-import { canonicalToolNames, validateToolNames } from "../prompts/tool-names.ts";
+import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
+import { loadPrompt } from "../prompts/load.ts";
+import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
+import { readingGuide } from "../render/reading-guide.ts";
+import { withRetrievalPolicy } from "../render/retrieval-policy.ts";
+import { tokens } from "../render/index.ts";
+import { dreamingWorkspaceToolDefinitions, pricedToolDefinitions, type bindTools } from "../api/tools.ts";
+import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import type { NotingInput } from "../noting/index.ts";
-import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
-import type { TriggerOrigin } from "../model/index.ts";
-import { renderDreamingCheckReceipt, type DreamingCheckResult } from "./check-receipt.ts";
-import { renderDreamingReview } from "./review.ts";
+import { lengthLines } from "../noting/workspace.ts";
+import type { Handoff } from "../store/executions.ts";
+import type { KnowledgePath, RunInput, Store, TaskClaim } from "../store/index.ts";
+import { describeBlock } from "../workspace/index.ts";
+import { TaskWorkspace, defaultWorkspaceRoot } from "../workspace/run.ts";
+import { batchFileName, checkBatch, curatePrefix, type Category, type CurateItem } from "./curate.ts";
 
+export { freezeDreaming } from "./legacy.ts"; // LEGACY: tests and perf scripts of the old protocol; part 4 deletes it
+export type DreamingTask = "curate" | "verify" | "classify";
+export const DREAMING_TASKS: readonly DreamingTask[] = ["curate", "verify", "classify"];
 
-export type DreamingInput = Omit<NotingInput, "boundary">;
+/** The allowance for core's own work between two model calls (§1.3): the execution backstop is set this far past the last task deadline. */
+export const TASK_GAP_MS = 15_000;
+/** 104 F1: the claim lease outlives the execution backstop by this margin, so the terminal settlement still finds the claim. */
+export const CLAIM_LEASE_MARGIN_MS = 60_000;
+/** The one line that ends the first message of every task (§1.4): task, batch and files reach the model only through `check`. */
+const CHECK_FIRST = "Call {{tool.check}} first: it names your task and your files.";
+
+/** A Dreamer task's frozen model settings (§1.2); `thinking` is opaque to core. */
+export interface DreamingTaskConfig { model: string; thinking?: string; capacity?: { inputTokens: number } }
+export interface DreamingInput extends Omit<NotingInput, "boundary"> {
+  /** The classify task's own model, thinking level and capacity; absent, it follows the main triple. */
+  classify?: { model?: string; thinkingLevel?: string; capacity?: { inputTokens: number } };
+}
 export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
-  | { outcome: "success" | "failure" | "cancelled" | "conflict"; runId: number; problems: string[] });
+  | { outcome: "success" | "failure" | "cancelled"; runId: number; problems: string[];
+      /** A failure's task, its class (§3.3) and whether Magic Context's rule retries it. */
+      failure?: { task: DreamingTask; class: string; transient: boolean } });
 
-export interface DreamingAgentInput extends AgentControl {
-  kind: "dreaming"; sessionId: number; branch: string; model: string; mode: "subagent";
+/** What core builds for one Dreaming task call. */
+export interface DreamingTaskInput extends AgentControl {
+  kind: "dreaming"; task: DreamingTask; sessionId: number; branch: string; model: string; thinking?: string; mode: "subagent";
   prompt: string; promptHash: string; text: string;
-  material: { bound: string; processed: string; changed: string; facts: string };
-  admittedProcessedInputCap: number;
   tools: import("../api/tools.ts").ToolDefinition[];
+  /** The task's directory and the files its host-side tools may read and write; `roots` are repositories verify may read (part 3). */
+  workspace: { dir: string; read: string[]; write: string[]; roots: string[] };
+  /** The stop hook, called after every normally completed pass: a string authorizes one more pass, `undefined` ends the task. */
+  passEnd(rounds?: number): string | undefined;
   acknowledgeRequest(): void;
   reportRequest(request: unknown): void;
-  /** Called when a pass ends: the one end review on the first call, `undefined` after that. */
-  passEnd(rounds: number): string | undefined;
-  /** 127: a `memory` call the host refused before it reached core, recorded as the Noter's are. */
+  /** Absolute epoch ms; read by core's runner wrapper (§1.3). */
+  deadline: number;
+}
+/** LEGACY (old Dreamer protocol): these members are declared so the old protocol's tests still compile. Core sets none of them and no
+ * host reads them. Part 4 deletes the intersection with those tests. */
+export type DreamingAgentInput = DreamingTaskInput & {
+  material: { bound: string; processed: string; changed: string; facts: string };
+  admittedProcessedInputCap: number;
   reportToolRejection(id: string, name: "note" | "memory", input: unknown, reason: string): void;
   reportRounds(rounds: number): void;
+};
+
+export interface DreamingFrozen {
+  sessionId: number; branch: string; path: KnowledgePath; claim: TaskClaim; names: ToolNames;
+  prompt: string; promptHash: string; text: string;
+  models: { main: DreamingTaskConfig; classify: DreamingTaskConfig };
+  items: CurateItem[]; byCategory: Map<Category, CurateItem[]>;
+  /** The hand-off row read at admission: where this run resumes, and which curate batches are applied. */
+  handoff: Handoff | null;
 }
 
-/** 126: freeze all of the session's pools. Processing is scheduling state: references are the pools'
- * current revisions outside the selected prefix; Changed contains only that frozen prefix. */
-export function freezeDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, claim?: TaskClaim,
-  _origin: TriggerOrigin | null = store.triggerOrigin({ sessionId: input.sessionId, branch: input.branch,
-    headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId }, input.triggerEntryId)) {
-  if (!claim) throw new Error("Dreaming freeze requires its live claim");
-  const path = { sessionId: input.sessionId, branch: input.branch,
-    headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
-  return prepareDreaming(store, input, config, claim, path,
-    store.freezeKnowledgePool(path, claim, config.dreaming.triggerTokens, config.compaction.sharedAllowanceTokens));
-}
+export const remainingTasks = (next: string | undefined): number => DREAMING_TASKS.length - Math.max(0, DREAMING_TASKS.indexOf(next as DreamingTask));
+/** §1.3: every task may take `timeoutMs`; the backstop is the tasks left plus one gap per task and one more. */
+export const executionLimitMs = (remaining: number, timeoutMs: number) => remaining * timeoutMs + (remaining + 1) * TASK_GAP_MS;
 
-/** 104 F1: the claim lease outlives the configured wall-clock bound by this margin, so the terminal
- * settlement in `core/api/index.ts` still finds the claim current when a run times out — otherwise a
- * lease equal to the bound races the timeout and can lapse first, misfiling the failure as cancelled. */
-const CLAIM_LEASE_MARGIN_MS = 60_000;
-
-/** Facade admission and material assembly stay in one transaction. No prepared snapshot is accepted
- * from outside: Store discovers, claims and reserves before the private read-only assembler runs. */
-export function admitDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, executorId: string) {
-  return store.transaction(() => {
-    const path = { sessionId: input.sessionId, branch: input.branch,
-      headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
-    const admitted = store.admitKnowledgePool(path, executorId, input.borrowed, input.executorSessionId,
-      config.dreaming.triggerTokens, config.compaction.sharedAllowanceTokens,
-      config.dreaming.timeoutMs + CLAIM_LEASE_MARGIN_MS);
-    if (admitted.outcome !== "admitted") return admitted;
-    return { outcome: "admitted" as const, claim: admitted.claim,
-      frozen: prepareDreaming(store, input, config, admitted.claim, path, admitted) };
-  });
-}
-
-function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, claim: TaskClaim,
-  path: { sessionId: number; branch: string; headTurnId: number },
-  { pools, range }: ReturnType<Store["freezeKnowledgePool"]>) {
-  if (store.getSession(path.sessionId)!.host.startsWith("cc:") && !input.toolNames)
-    throw new Error("CC Dreamer launch requires exposed tool names");
+/** Material for the run, read inside the admission transaction. */
+export function prepareDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig, claim: TaskClaim,
+  path: KnowledgePath & { branch: string; headTurnId: number }): DreamingFrozen {
+  if (store.getSession(path.sessionId)!.host.startsWith("cc:") && !input.toolNames) throw new Error("CC Dreamer launch requires exposed tool names");
   if (input.nativeReadToolTokens !== undefined && (!Number.isSafeInteger(input.nativeReadToolTokens) || input.nativeReadToolTokens < 0))
     throw new Error("Invalid native Read token estimate: expected a nonnegative safe integer");
-  const frozenIds = new Set(range.eventIds);
-  const pending = pools.flatMap(pool => pool.pending).filter(value => frozenIds.has(value.revisionId))
-    .sort((left, right) => left.revisionId - right.revisionId);
-  const changed = ["Pending current knowledge:", ...pending.map(value => value.shown)].join("\n");
-  // 131: a run with pending items deliberates them first; the budget is only `check`'s verdict. A run with
-  // none (started by the three-pool total, 104) has no item to take up, so the material tells it to reduce.
-  const over = pending.length ? [] : pools.filter(pool => pool.tokens > pool.budget);
-  const noPendingOrder = !over.length ? "" : ` ${over.map(pool => `Pool ${pool.pool} is ${pool.tokens}/${pool.budget} tokens, over budget.`).join(" ")} This run has no pending items. Reduce the already-processed knowledge of ${over.length === 1 ? "that pool" : "each of these pools"} under the Over budget principle until it fits.`;
-  const rendered = new Map(pools.flatMap(pool => [...pool.rendered]));
-  const references = pools.flatMap(pool => pool.versions).filter(value => !frozenIds.has(value.revision.id));
-  const budgets = store.knowledgeBudgets();
-  const knowledgeCapacity = budgets.injection + config.compaction.sharedAllowanceTokens;
-  if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Dreamer Knowledge capacity must be a safe integer");
-  // Changed and current references share one Knowledge window, not two independent allowances.
-  const processedInputCap = knowledgeCapacity - tokens(changed) - 1;
-  const referenceTitle = "Current pool knowledge outside this range:\n";
-  if (processedInputCap < tokens(referenceTitle))
-    throw new Error("Dreaming capacity: pending Knowledge and required framing cannot fit the Knowledge window; left pending");
-  const renderReference = (value: (typeof references)[number]) => rendered.get(value.revision.id)!;
-  let old = processedBlock(references, renderReference);
-  if (tokens(`${referenceTitle}${old}`) > processedInputCap) {
-    const selected = budgetKnowledge(references, processedInputCap - tokens(referenceTitle),
-      renderReference, "Dreamer current reference input");
-    old = [renderKnowledgeBlock(selected.groups.filter(group => group.text)), ...selected.receipts].join("\n");
-  }
-  old = `${referenceTitle}${old}`;
-  if (tokens(old) > processedInputCap)
-    throw new Error(`Dreaming current reference input exceeds ${processedInputCap} tokens including framing`);
-  if (tokens(["Pending current knowledge:", ...pending.map(value => value.material)].join("\n")) > 10_000 || tokens([old, changed].join("\n\n")) > knowledgeCapacity)
-    throw new Error("Dreaming capacity: complete Knowledge rendering exceeds its pending slice or total Knowledge window; left pending");
-
-  const frozenValues = pools.flatMap(pool => pool.versions).filter(value => frozenIds.has(value.revision.id));
-  // 76: a frozen archive is not among a pool's versions (pool size/versions exclude archives); its own
-  // supports and the body it removed still need to reach D, exactly as any other frozen item's do.
-  const frozenArchives = pools.flatMap(pool => pool.archived).filter(value => frozenIds.has(value.revision.id));
-  const facts = [...new Set([...frozenValues, ...frozenArchives].flatMap(value => value.revision.supports))].sort((a, b) => a - b).map(id => {
-    const fact = store.getFact(id); if (!fact) throw new Error(`Missing direct support F${id}`); return fact;
-  });
-  const times = store.factTurnTimes(facts), snapshot = store.pathSnapshot(path);
-  const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
-  // 134: trim the oldest ids, retaining a whole newest-first selection in the existing display order.
-  const factText = (count: number) => ["Direct supporting facts:",
-    ...renderFactGroups(facts.slice(facts.length - count), fact => renderFact(fact, relations.get(fact.id) ?? []), times),
-    ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(0, facts.length - count).map(fact => `trace://F${fact.id}`).join(" ")}.`] : [])].join("\n");
-  let count = facts.length;
-  while (count && tokens(factText(count)) > 10_000) count--;
-  const direct = factText(count);
-  if (tokens(direct) > 10_000) throw new Error("Dreaming direct fact receipts exceed 10000");
-
-  const material = { bound: `Run wall-clock bound: ${config.dreaming.timeoutMs} ms. Wrap up before this deadline.${noPendingOrder}`,
-    processed: old, changed, facts: direct };
-  const text = [readingGuide(path.sessionId, names), ...Object.values(material)].join("\n\n");
+  const { text: knowledge, byCategory } = curatePrefix(store, path);
+  const text = [readingGuide(path.sessionId, names), knowledge, renderToolNames(CHECK_FIRST, names)].join("\n\n");
+  // PART 3: the prompt text of `dreaming.md` is still the old protocol's; part 3 rewrites it for files.
   const prompt = withRetrievalPolicy(loadPrompt("dreaming.md", names, config.writing), names);
-  if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
-      tokens(prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingToolDefinitions(), names))) +
-        (input.nativeReadToolTokens ?? 0) + tokens(text) > input.capacity.inputTokens))
-    throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
-  return { sessionId: path.sessionId, branch: path.branch, path, range, frozenIds: [...frozenIds],
-    eventIds: [...frozenIds], changed: { versions: [...frozenValues, ...frozenArchives] }, material, text,
-    profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const, claim,
-    prompt, names, promptHash: createHash("sha256").update(prompt).digest("hex"),
-    maxToolRounds: config.dreaming.maxToolRounds, admittedProcessedInputCap: processedInputCap };
+  const main: DreamingTaskConfig = { model: input.model ?? "session", thinking: input.subagentThinkingLevel ?? input.thinkingLevel, capacity: input.capacity };
+  const classify: DreamingTaskConfig = { model: input.classify?.model ?? main.model, thinking: input.classify?.thinkingLevel ?? main.thinking,
+    capacity: input.classify?.capacity ?? main.capacity };
+  if (main.capacity) {
+    const tools = tokens(JSON.stringify(pricedToolDefinitions(dreamingWorkspaceToolDefinitions, names))) + (input.nativeReadToolTokens ?? 0) + (input.nativeWriteToolTokens ?? 0);
+    if (!Number.isSafeInteger(main.capacity.inputTokens) || main.capacity.inputTokens < 0 || tokens(prompt) + tools + tokens(text) > main.capacity.inputTokens)
+      throw new Error("Dreaming capacity: the knowledge prefix and tools exceed the model input allowance; left pending");
+  }
+  return { sessionId: path.sessionId, branch: path.branch, path, claim, names, prompt, promptHash: createHash("sha256").update(prompt).digest("hex"),
+    text, models: { main, classify }, items: [...byCategory.values()].flat(), byCategory, handoff: store.handoff(path.sessionId, "dreaming") };
 }
 
-export async function runDreaming(store: Store, frozen: ReturnType<typeof freezeDreaming>, runAgent: RunAgent,
-  bind: (context: Parameters<typeof bindTools>[2], run: RunInput, dreaming?: Parameters<typeof bindTools>[4]) => ReturnType<typeof bindTools>): Promise<DreamingResult> {
-  const { sessionId, branch, path, range } = frozen;
-  let rounds = 0;
-  const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
-    promptHash: frozen.promptHash, rangeFrom: `${range.pool}#${range.id}`, rangeTo: `${range.pool}#${range.id}`, createdAt: new Date().toISOString() };
-  let binding!: ReturnType<typeof bindTools>;
-  const address = (commit: number) => {
-    const revision = store.knowledgeRevision(commit)!;
-    return `K${revision.knowledgeId}@v${store.versionOrdinal(revision.knowledgeId, commit)}`;
+export interface DreamingRunOptions {
+  workspaceRoot?: string; executionId: string;
+  /** Registers a workspace with the cancellation fence (§1.5): closing the task closes it. */
+  registerFence(workspace: { close(): void }): void;
+}
+type Bind = (context: Parameters<typeof bindTools>[2], run: RunInput, dreaming?: Parameters<typeof bindTools>[4], writer?: Parameters<typeof bindTools>[6]) => ReturnType<typeof bindTools>;
+type TaskOutcome = { ok: true; runId: number } | { ok: false; outcome: "failure" | "cancelled"; runId: number; problems: string[]; class: string; transient: boolean };
+
+/** Magic Context's `classifyFailure`: a provider, network, store or deadline error is transient; anything else is not. */
+const TRANSIENT = /abort|lease|timeout|timed out|econn|socket|network|rate.?limit|429|503|overloaded|sqlite_busy|database is locked/i;
+export function classifyFailure(output: unknown, failureClass?: string): { class: string; transient: boolean } {
+  if (failureClass === "timeout") return { class: "timeout", transient: true };
+  const message = String(output ?? "");
+  if (/sqlite_busy|database is locked/i.test(message)) return { class: "store error", transient: true };
+  if (/model.*not found|unknown model/i.test(message)) return { class: "model not found", transient: false };
+  if (TRANSIENT.test(message)) return { class: "provider error", transient: true };
+  return { class: "error", transient: false };
+}
+
+const CLAIM_LOST = /task claim is no longer current and unexpired/;
+
+export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent: RunAgent, config: TraceMemoryConfig, bind: Bind,
+  options: DreamingRunOptions): Promise<DreamingResult> {
+  const { sessionId, branch, path } = frozen;
+  const first = Math.max(0, DREAMING_TASKS.indexOf((frozen.handoff?.nextTask ?? "curate") as DreamingTask));
+  const detail = { curateRuns: [...(frozen.handoff?.detail?.curateRuns ?? [])], doneCategories: [...(frozen.handoff?.detail?.doneCategories ?? [])] };
+  const root = options.workspaceRoot ?? defaultWorkspaceRoot();
+  const template = (task: DreamingTask, model: string): RunInput => ({ kind: "dreaming", sessionId, branch, model, mode: "subagent",
+    promptHash: frozen.promptHash, createdAt: new Date().toISOString(), rangeFrom: `S${sessionId}/${task}`, rangeTo: `S${sessionId}/${task}` });
+  const context = { kind: "dreaming" as const, sessionId, branch, headTurnId: path.headTurnId, range: { from: `S${sessionId}`, to: `S${sessionId}` } };
+  let lastRunId = 0;
+
+  /** A task that does no model call: its run is recorded and the hand-off moves (§3.2 no-work run). */
+  const noWork = (task: DreamingTask, next: DreamingTask | null, cover?: () => number[]): TaskOutcome => {
+    const run = template(task, frozen.models.main.model);
+    const bound = bind(context, run, undefined, { check: () => "no work" });
+    bound.close(); // the run record only; it has no tools to run
+    const done = store.commitTaskPass({ run: { ...run, response: JSON.stringify({ task, passes: 0 }) }, path, cover,
+      handoff: () => next ? { nextTask: next, detail: { ...detail } } : null });
+    return { ok: true, runId: lastRunId = done.runId };
   };
-  // A frozen version is deliberated when this run skipped it or consumed it with its own operation.
-  const deliberated = (ownRevisionIds: readonly number[]) => new Set([...binding.memory.skippedCommits, ...ownRevisionIds.flatMap(id => {
-    const revision = store.knowledgeRevision(id);
-    return revision ? store.commitParents(revision).map(parent => parent.id) : [];
-  })].filter(id => frozen.frozenIds.includes(id)));
-  /** Success uses freeze-time pools plus own commits; later foreign successors need no deliberation. */
-  const check = (): DreamingCheckResult => {
-    const runId = store.dreamingRunId(run);
-    const own = runId === undefined ? [] : store.listCommitsByRun(runId), ownRevisionIds = own.map(revision => revision.id);
-    const excluded = new Set([...frozen.frozenIds, ...ownRevisionIds]);
-    const operationFailures = binding.problems;
-    const pools = store.knowledgePools(path), totals = store.dreamingPoolSizes(run, own);
-    const superseded = store.dreamingSupersededRevisions(run, path, frozen.frozenIds);
-    const done = deliberated(ownRevisionIds), open = frozen.frozenIds.filter(id => !done.has(id) && !superseded.has(id));
-    const acceptance = [...totals.filter(pool => pool.tokens > pool.budget).map(pool => `pool ${pool.pool} over budget: ${pool.tokens}/${pool.budget} tokens`),
-      ...open.length ? [`frozen versions not deliberated: ${open.map(address).join(", ")}`] : []];
-    return { frozenRevisionIds: frozen.frozenIds, ownRevisionIds,
-      pendingRevisionIds: pools.flatMap(pool => pool.pending.map(value => value.revisionId)).filter(id => !excluded.has(id)).sort((a, b) => a - b),
-      totals, operationFailures,
-      problems: [...operationFailures, ...acceptance] };
+
+  const runCurate = async (): Promise<TaskOutcome> => {
+    const batches = KNOWLEDGE_CATEGORIES.filter(category => frozen.byCategory.get(category)!.length && !detail.doneCategories.includes(category));
+    const written = (runIds: number[]) => runIds.flatMap(id => store.listCommitsByRun(id).map(revision => revision.id));
+    const coveredBy = (runIds: number[]) => runIds.flatMap(id => (JSON.parse(store.getRun(id)?.response ?? "{}").covers ?? []) as number[]);
+    if (!batches.length) return noWork("curate", "verify", () => [...coveredBy(detail.curateRuns), ...written(detail.curateRuns)]);
+
+    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, "curate").open();
+    options.registerFence(workspace);
+    const files = batches.map((category, i) => workspace.path(batchFileName(i, category)));
+    const started = Date.now(), deadline = started + config.dreaming.timeoutMs;
+    const run = template("curate", frozen.models.main.model);
+    let at = 0, repaired = false, problem: string | undefined, lost = false, lastBatchRun = 0;
+    const read = (): { name: string; text: string } => ({ name: batchFileName(at, batches[at]!), text: workspace.text(batchFileName(at, batches[at]!)) });
+    const report = (result = checkBatch(store, path, batches[at]!, read())) => [
+      `Task: curate (batch ${at + 1} of ${batches.length}, category ${batches[at]}). File: ${files[at]}`,
+      result.problems.length ? `Problems: ${result.problems.length}\n${result.problems.join("\n")}` : "Problems: none",
+      ...(result.lengths.length ? ["Lengths:", ...lengthLines(batchFileName(at, batches[at]!), result.lengths)] : [])].join("\n");
+    const binding = bind(context, run, undefined, { check: () => report() });
+    const stopChecks: { ok: boolean; problems: string[] }[] = [];
+
+    /** The stop hook: apply the batch when it passes and return the next one; one repair for a batch that fails (§4.5). */
+    const passEnd = (): string | undefined => {
+      if (workspace.closed || at >= batches.length) return undefined;
+      const category = batches[at]!, checked = checkBatch(store, path, category, read());
+      stopChecks.push({ ok: checked.ok, problems: checked.problems });
+      if (!checked.ok) {
+        if (!repaired) { repaired = true;
+          return `Your file does not pass the check. Correct every problem below, then stop. If it still fails, curate fails and this batch is not applied.\n\n${report(checked)}`; }
+        problem = `check failed twice: batch ${at + 1}/${batches.length} (${category})`;
+        return undefined;
+      }
+      const covers = frozen.byCategory.get(category)!.filter(item => !item.covered).map(item => item.value.revision.id);
+      const lastBatch = at === batches.length - 1;
+      let results: Parameters<NonNullable<Parameters<Store["commitTaskPass"]>[0]["response"]>>[0] = [];
+      try {
+        const done = store.commitTaskPass({ run: { ...run }, path, operations: checked.planned.map(entry => entry.make().operation!),
+          response: out => { results = out; return JSON.stringify({ task: "curate", category, file: files[at], covers,
+            blocks: checked.planned.map((entry, i) => ({ block: describeBlock(entry.block), line: entry.block.line, result: out[i] })) }); },
+          cover: lastBatch ? ({ runId, results: out }) => [...coveredBy(detail.curateRuns), ...covers, ...written(detail.curateRuns),
+            ...out.flatMap(result => result.ok ? result.committed.map(item => item.commit) : [])] : undefined,
+          handoff: ({ runId }) => ({ nextTask: lastBatch ? "verify" : "curate",
+            detail: { curateRuns: [...detail.curateRuns, runId], doneCategories: [...detail.doneCategories, category] } }) });
+        detail.curateRuns.push(done.runId); detail.doneCategories.push(category);
+        lastBatchRun = lastRunId = done.runId;
+      } catch (error) {
+        if (CLAIM_LOST.test(String(error))) lost = true;
+        problem = `batch ${at + 1}/${batches.length} could not be applied: ${error instanceof Error ? error.message : String(error)}`;
+        workspace.close();
+        return undefined;
+      }
+      const versions = results.flatMap(result => result.ok ? result.committed.map(item => `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`) : []);
+      const stale = results.flatMap(result => !result.ok ? [result.reason] : []);
+      const receipt = `Applied batch ${at + 1} of ${batches.length} (${category}). Versions written: ${versions.join(", ") || "none"}.`
+        + (stale.length ? ` Refused, left for the next run: ${stale.join("; ")}.` : "");
+      at++; repaired = false;
+      return at < batches.length ? `${receipt}\n\nNext: batch ${at + 1} of ${batches.length}, category ${batches[at]}. File: ${files[at]}. ${renderToolNames("Call {{tool.check}} to see its problems.", frozen.names)}` : undefined;
+    };
+
+    const input: DreamingTaskInput = { kind: "dreaming", task: "curate", sessionId, branch, model: frozen.models.main.model, thinking: frozen.models.main.thinking,
+      mode: "subagent", prompt: frozen.prompt, promptHash: frozen.promptHash, text: frozen.text, tools: binding.tools,
+      workspace: { dir: workspace.dir, read: files, write: files, roots: [] }, passEnd, deadline,
+      acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
+    let result: RunAgentResult;
+    try { result = await runAgent(input); } catch (error) { result = agentException(error); }
+    binding.close();
+    if (store.closed) return { ok: false, outcome: "cancelled", runId: 0, problems: ["store closed"], class: "cancelled", transient: false };
+    // A fence closed by a stop, memory off or executor exit while the model ignored it: its late pass applied nothing.
+    if (result.outcome === "success" && workspace.closed && !problem)
+      result = { ...result, outcome: "cancelled", output: "Dreamer cancelled before its pass ended" };
+    const success = result.outcome === "success" && !requestMissing(result) && !problem && at === batches.length;
+    const problems = problem ? [problem] : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
+      : requestMissing(result) ? ["runAgent must return the exact provider request"]
+      : at < batches.length ? [`ended before batch ${at + 1}/${batches.length}`] : [];
+    recordAttempt(run, result, { task: "curate", stopChecks, toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
+    if (success) {
+      // The conversation's request and usage ride on the last batch's run, which holds the same task's last pass.
+      const previous = JSON.parse(store.getRun(lastBatchRun)?.response ?? "{}");
+      store.updateRun(lastBatchRun, { ...run, response: JSON.stringify({ ...previous, ...JSON.parse(run.response!) }), outcome: "success" });
+      return { ok: true, runId: lastBatchRun };
+    }
+    const outcome = result.outcome === "cancelled" ? "cancelled" : "failure";
+    const classified = lost ? { class: "claim lost", transient: true } : problem?.startsWith("check failed twice") ? { class: "check failed twice", transient: false }
+      : result.outcome !== "success" ? classifyFailure(result.output, (result as { failureClass?: string }).failureClass)
+      : { class: `ended before batch ${at + 1}/${batches.length}`, transient: false };
+    return { ok: false, outcome, problems, ...classified, runId: store.recordRun({ ...run, outcome }).id };
   };
-  binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
-    range: { from: run.rangeFrom!, to: run.rangeTo! } }, run,
-    { path, check: () => renderDreamingCheckReceipt(check(), address), skippable: commit => !frozen.frozenIds.includes(commit)
-      ? "skip must name an exact frozen version from this run"
-      : binding.memory.skippedCommits.includes(commit) || binding.memory.allCommitted.some(item =>
-          store.commitParents(store.knowledgeRevision(item.commit)!).some(parent => parent.id === commit))
-        ? "version was already consumed by this run" : undefined });
-  let reviewed = false;
-  let result: RunAgentResult;
-  try {
-    result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt: frozen.prompt, promptHash: frozen.promptHash,
-      text: frozen.text, material: frozen.material, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
-      tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
-      reportToolRejection: binding.reportToolRejection,
-      passEnd: (used: number) => {
-        rounds = used;
-        if (reviewed) return undefined;
-        reviewed = true;
-        return renderDreamingReview(store, store.dreamingRunId(run), check().problems);
-      }, reportRounds: (used: number) => { rounds = used; } } satisfies DreamingAgentInput);
-  } catch (error) { result = agentException(error); }
-  binding.close();
-  if (store.closed) return { outcome: "dropped" };
-  const checked = check();
-  const problems = [...checked.problems, ...(result.outcome === "success" ? [] : [String(result.output ?? result.outcome)]),
-    ...(requestMissing(result) ? ["runAgent must return the exact provider request"] : [])];
-  const skippedRevisionIds = binding.memory.skippedCommits;
-  const deliberatedRevisionIds = [...deliberated(checked.ownRevisionIds)].sort((a, b) => a - b);
-  recordAttempt(run, result, { toolCalls: binding.sequence, fetched: binding.fetched, material: frozen.material,
-    profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
-    committed: binding.memory.allCommitted, skipped: binding.memory.skipped, check: checked, rounds,
-    deliberatedRevisionIds, deliberated: deliberatedRevisionIds.length, frozen: frozen.frozenIds.length, problems });
-  const runId = store.dreamingRunId(run)!;
-  let outcome: "success" | "failure" | "cancelled" = result.outcome === "cancelled" ? "cancelled"
-    : result.outcome === "success" && !requestMissing(result) && !checked.problems.length ? "success" : "failure";
-  try { store.completeKnowledgePoolRange(run, outcome, skippedRevisionIds); }
-  catch (error) {
-    outcome = "failure";
-    problems.push(`pool completion rejected: ${String(error)}`);
-    store.updateRun(runId, { ...run, outcome, response: JSON.stringify({ ...JSON.parse(run.response!), problems }) });
+
+  // PART 3 STUB: verify and classify run no model call and pass. Part 3 replaces these with the change file, the checks
+  // against facts and repositories, and the scoring passes of §5 and §6.
+  const stubs: Record<DreamingTask, () => Promise<TaskOutcome> | TaskOutcome> = {
+    curate: runCurate, verify: () => noWork("verify", "classify"), classify: () => noWork("classify", null) };
+
+  for (const task of DREAMING_TASKS.slice(first)) {
+    let outcome: TaskOutcome;
+    try { outcome = await stubs[task](); } catch (error) {
+      if (store.closed) return { outcome: "dropped" };
+      const lost = CLAIM_LOST.test(String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      const classified = lost ? { class: "claim lost", transient: true } : classifyFailure(message);
+      return { outcome: "failure", runId: store.recordRun({ ...template(task, frozen.models.main.model), outcome: "failure", response: JSON.stringify({ task, problems: [message] }) }).id,
+        problems: [message], failure: { task, class: classified.class, transient: classified.transient } };
+    }
+    if (!outcome.ok) return { outcome: outcome.outcome, runId: outcome.runId, problems: outcome.problems,
+      failure: { task, class: outcome.class, transient: outcome.transient } };
   }
-  return { outcome, runId, problems };
+  return { outcome: "success", runId: lastRunId, problems: [] };
 }

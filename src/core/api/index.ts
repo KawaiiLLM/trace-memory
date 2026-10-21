@@ -45,7 +45,7 @@ export { NOTING_CAPACITY, NOTING_MEMBERSHIP } from "../noting/index.ts";
 export { defaultWorkspaceRoot, sweepStaleWorkspaces } from "../noting/workspace.ts";
 import { Store, type PathPending, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
-import { admitDreaming, freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
+import { prepareDreaming, runDreaming, executionLimitMs, remainingTasks, CLAIM_LEASE_MARGIN_MS, TASK_GAP_MS, type DreamingFrozen, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
 
 
@@ -256,7 +256,8 @@ export interface RunAgentResult {
    * host's runtime actually ran at after clamping it to the worker model. Recorded side by side in
    * the run audit, so a clamp is visible instead of silent. */
   thinking?: { requested?: string; effective: string };
-
+  /** Core's own classification of a failure it produced (stage 4 §1.3): the task deadline is `"timeout"`. */
+  failureClass?: string;
 }
 
 /** A manual catchup's maxEntryId allows bounded batches inside its frozen backlog.
@@ -292,6 +293,9 @@ export interface TaskOptions {
   signal?: AbortSignal;
 }
 export interface AgentControl {
+  /** The execution this call belongs to (`task_executions.id`), stamped by core's runner wrapper on every call. A host keeps
+   * per-execution state (the CC importer's worker pin) under it. */
+  executionId?: string;
   /** The reader frozen by Core admission; hosts never substitute their current foreground path. */
   reader?: import("./files.ts").MemoryReader;
   signal?: AbortSignal;
@@ -440,16 +444,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     stopping ||= stop;
     cancellation++;
     const owned = [...tasks].map(({ sessionId, phase, executionId }) => ({ sessionId, phase, executionId }));
-    // Dreamer's terminal transaction records the frozen range and its committed outputs under the
-    // same live claim. Close its tools immediately, but keep that exact token until finalization;
-    // other phases and reservations still lose authority at once.
-    try { if (!store.closed) {
-      const completingDreamer = [...tasks].find(task => task.phase === "dreaming"
-        && store.getClaim(task.sessionId, task.phase)?.token === task.claimToken)?.claimToken;
-      if (stop) store.beginShutdown();
-      store.invalidateExecutor(executorId, completingDreamer);
-    } }
-    finally { for (const task of tasks) { task.close(); task.controller.abort(); } }
+    // Stage 4 §1.5: every task's fence closes first, then every claim of the executor expires, then the runs abort.
+    // No terminal transaction needs a live token any more, so the Dreamer keeps none.
+    try { for (const task of tasks) task.close(); }
+    finally {
+      try { if (!store.closed) { if (stop) store.beginShutdown(); store.invalidateExecutor(executorId); } }
+      finally { for (const task of tasks) task.controller.abort(); }
+    }
     return owned;
   };
   // Freeze database values first; the returned renderer runs outside the read transaction.
@@ -785,8 +786,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           window: store.knowledgeBudgets().injection + cfg.compaction.sharedAllowanceTokens } };
     } catch { return { state: "unavailable", pending: null, knowledge: null }; }
   };
-  const dreamingDue = (target: TaskTarget) =>
-    store.dreamingDue(target, cfg.dreaming.triggerTokens, cfg.compaction.sharedAllowanceTokens);
+  // Stage 4 §2.4: a Dreamer run is due on Noter-changed tokens (or a hand-off). The old budget trigger, `Store.dreamingDue`
+  // and its `dueProjection`, is unreachable from here; part 4 deletes it.
+  const dreamingDue = (target: TaskTarget) => store.dreamingDueByNoterChanges(target, cfg.dreaming.triggerTokens);
   // 29d: eligibility is the trigger threshold and nothing else. Phase slots, enrollment, the host's
   // readiness wait and claim checks are untouched.
   const taskEligibility = (phase: Phase, target: TaskTarget) => {
@@ -804,22 +806,25 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     let executionId: string;
     let resumeRunId: number | undefined;
     let origin: import("../model/index.ts").TriggerOrigin | null = null;
-    let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeDreaming> | null;
+    let frozen: ReturnType<typeof freezeNoting> | DreamingFrozen | null;
+    let executionLimit = 0;
     try { frozen = store.transaction(() => {
       // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
       // with claim acquisition, before loading a closed target's evidence or constructing material.
       if (input.borrowed && (!store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope) ||
           !store.borrowedTargetActive(target))) return null;
       if (phase === "dreaming") {
-        const admitted = admitDreaming(store, { ...input, ...target }, cfg, executorId);
-        empty = admitted.outcome === "empty";
-        if (admitted.outcome !== "admitted") return null;
-        claim = admitted.claim;
+        // 144 stage 4: one admission is one claim and one execution for the tasks left, whatever the budget of any pool.
+        if (!store.enabled(target.sessionId) || (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId))) return null;
+        if (!store.dreamingDueByNoterChanges(target, cfg.dreaming.triggerTokens)) { empty = true; return null; }
+        executionLimit = executionLimitMs(remainingTasks(store.handoff(target.sessionId, "dreaming")?.nextTask), cfg.dreaming.timeoutMs);
+        claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerTokens, executionLimit + CLAIM_LEASE_MARGIN_MS);
+        if (!claim) return null;
+        store.clearDreamerWait(target.sessionId); // this admission ends a wait for the threshold
         projectId = store.getSession(input.sessionId)!.projectId;
-        const frozen = admitted.frozen;
-        origin = frozen.range.origin;
-        // The range id is audit/binding authority, not logical task identity: 126 keys the Dreamer's
-        // logical task on its session alone, so every run of one session continues one failure streak.
+        origin = store.triggerOrigin(target, target.triggerEntryId);
+        const frozen = prepareDreaming(store, { ...input, ...target }, cfg, claim, target);
+        // 126 keys the Dreamer's logical task on its session alone, so every run of one session continues one failure streak.
         executionId = store.beginExecution({ sessionId: target.sessionId, phase, origin });
         return frozen;
       }
@@ -870,20 +875,25 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     let force!: (result?: RunAgentResult) => void;
     const progress: Partial<RunAgentResult> = {};
     const forced = new Promise<RunAgentResult>(resolve => { force = result => resolve(result ?? { ...progress, outcome: "cancelled", output: "executor cleanup deadline; provider completion and remaining usage unknown" }); });
-    const task = { sessionId: target.sessionId, phase, executionId: executionId!, claimToken: (claim as TaskClaim).token, controller, force, close: () => {} };
+    // 144 stage 4 §1.5: one fence. `task.close()` closes the current tool binding and every workspace of the task; each terminal
+    // path (stop, memory off, executor exit, host signal, task deadline, backstop, settlement) calls it before anything else.
+    const fences = new Set<{ close(): void }>();
+    let currentBinding: { close(): void } | undefined;
+    const task = { sessionId: target.sessionId, phase, executionId: executionId!, claimToken: (claim as TaskClaim).token, controller, force,
+      close: () => { currentBinding?.close(); for (const fence of fences) fence.close(); } };
     tasks.add(task);
+    const admittedAt = Date.now();
     // 28b (parent 28 amendment 3): the admitting operation's own cancellation, linked to this task's
     // controller in exactly the shape `cancelTasks` uses for the whole executor — close the binding
-    // first, release N/C ownership immediately, then abort the run. Dreamer retains its token for
-    // terminal processing, as executor-wide cancellation does. Token matching preserves other claims;
+    // first, release the claim immediately, then abort the run. Token matching preserves other claims;
     // finalization may safely release the old token again. `task.close` is read at abort time,
-    // never captured, so the binding this closes is whichever one `bind` installed. The listener is
+    // never captured, so the fence this closes covers whichever binding and workspace are current. The listener is
     // removed with the task below: a compaction that ends without cancelling leaves nothing attached
     // to its signal.
     const external = input.signal;
     const onExternalAbort = () => {
       task.close();
-      try { if (!store.closed && phase !== "dreaming") store.releaseClaim(claim!); }
+      try { if (!store.closed) store.releaseClaim(claim!); }
       catch { /* Finalization retries the same token and reports any remaining release failure. */ }
       finally { controller.abort(external!.reason); }
     };
@@ -896,19 +906,39 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       run.executionId = executionId!;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
       Object.assign(run, store.bindRunOrigin(run, origin));
-      if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
       const binding = bindTools(store, read, { ...context, ...(input.maxReadChars === undefined ? {} : { maxReadChars: input.maxReadChars }), spill },
         run, dreaming, frozen!.names, writer);
-      task.close = binding.close;
+      currentBinding = binding;
       return binding;
     };
+    // Stage 4 §1.3: the effective deadline of a call never passes the backstop minus one gap, so the latest task deadline
+    // always precedes the backstop and the backstop precedes lease expiry.
+    const backstopAt = admittedAt + executionLimit;
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
-      return Promise.race([runAgent({ ...raw as object,
+      const asked = (raw as { deadline?: number }).deadline;
+      const deadline = asked === undefined ? undefined : Math.min(asked, backstopAt - TASK_GAP_MS);
+      const late = (): RunAgentResult => ({ ...progress, outcome: "failure", failureClass: "timeout",
+        output: "task deadline exceeded; provider completion and remaining usage unknown" });
+      if (deadline !== undefined && Date.now() >= deadline) return Promise.resolve(late());
+      const taskController = deadline === undefined ? undefined : new AbortController();
+      let taskForce!: (result: RunAgentResult) => void;
+      const taskForced = new Promise<RunAgentResult>(resolve => { taskForce = resolve; });
+      // With a deadline the host sees an effective signal: execution cancellation still reaches every task, the deadline only this call.
+      const signal = taskController ? AbortSignal.any([controller.signal, taskController.signal]) : controller.signal;
+      const timer = deadline === undefined ? undefined : setTimeout(() => {
+        if (controller.signal.aborted) return;
+        // The same order as the execution timer: fence first, then the failure, then the abort (so an abort listener cannot turn it into a cancellation).
+        task.close();
+        taskForce(late());
+        taskController!.abort(new Error("task deadline exceeded"));
+      }, deadline - Date.now());
+      return Promise.race([runAgent({ ...raw as object, executionId: executionId!,
         reader: { sessionId: target.sessionId, branch: target.branch, headTurnId: target.headTurnId, projectId, toolNames: { ...frozen!.names } },
-        signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel,
+        signal, thinkingLevel: input.thinkingLevel,
+        subagentThinkingLevel: (raw as { thinking?: string }).thinking ?? input.subagentThinkingLevel,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); },
-        setSpill: (save: (text: string) => string) => { hostSpill = save; } }), forced]);
+        setSpill: (save: (text: string) => string) => { hostSpill = save; } }), forced, taskForced]).finally(() => clearTimeout(timer));
     };
     let result: NotingResult | DreamingResult | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined, timedOut = false;
@@ -916,20 +946,21 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // External cancellation owns its outcome even when the native worker ignores abort.
       if (controller.signal.aborted) return;
       timedOut = true;
-      const reason = new Error(`Dreaming wall-clock limit exceeded (${cfg.dreaming.timeoutMs} ms)`);
+      const reason = new Error(`Dreaming execution limit exceeded (${executionLimit} ms)`);
       // Fence model writes before aborting native work. The existing forced-result seam settles the
       // exact range and claim even when a native worker does not cooperate; Promise.race retains a
       // rejection handler on that worker, so a late failure is not unowned.
       task.close();
       // Resolve the terminal failure before abort listeners can synchronously return "cancelled".
-      force({ ...progress, outcome: "failure", output: `${reason.message}; provider completion and remaining usage unknown` });
+      force({ ...progress, outcome: "failure", failureClass: "timeout", output: `${reason.message}; provider completion and remaining usage unknown` });
       controller.abort(reason);
-    }, cfg.dreaming.timeoutMs);
+    }, executionLimit);
     try {
       result = phase === "noting"
         ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind,
-          { workspaceRoot: input.workspaceRoot, executionId: executionId!, resumeRunId })
-        : await runDreaming(store, frozen as ReturnType<typeof freezeDreaming>, agent, bind);
+          { workspaceRoot: input.workspaceRoot, executionId: executionId!, resumeRunId, registerFence: workspace => { fences.add(workspace); } })
+        : await runDreaming(store, frozen as DreamingFrozen, agent, cfg, bind,
+          { workspaceRoot: input.workspaceRoot, executionId: executionId!, registerFence: workspace => { fences.add(workspace); } });
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
       external?.removeEventListener("abort", onExternalAbort);
@@ -943,10 +974,15 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       try {
         if (!store.closed && result && result.outcome !== "empty" && result.outcome !== "dropped") {
           const terminal = result;
-          const settled = store.transaction(() => store.settleExecution(executionId!, terminal.outcome === "success" ? "success"
-            : (controller.signal.aborted && !timedOut) || !owned() || !store.enabled(target.sessionId) || terminal.outcome === "cancelled" ? "cancelled"
-            : terminal.outcome === "conflict" ? "conflict" : "failure",
-            terminal.runId, terminal.problems?.join("; ")));
+          // §3.4, in this order. Only user stop, memory off and executor exit are not failures; a lost claim is one, for both phases.
+          const lost = !owned();
+          const stopped = (controller.signal.aborted && !timedOut) || !store.enabled(target.sessionId) || terminal.outcome === "cancelled";
+          const outcome = terminal.outcome === "success" ? "success" : stopped ? "cancelled" : "failure";
+          const failure = phase === "dreaming" && "failure" in terminal ? terminal.failure : undefined;
+          const lostFailure = outcome === "failure" && lost && phase === "dreaming"
+            ? { task: failure?.task ?? "curate", class: "claim lost", transient: true } : failure;
+          const reason = lostFailure ? `${lostFailure.task}: ${lostFailure.class}` : outcome === "failure" && lost ? "claim lost" : terminal.problems?.join("; ");
+          const settled = store.transaction(() => store.settleExecution(executionId!, outcome, terminal.runId, reason, lostFailure));
           if (settled.automaticOff) {
             terminal.automaticOff = settled.automaticOff;
             // The off/fence transaction has committed before invoking any local abort listener.

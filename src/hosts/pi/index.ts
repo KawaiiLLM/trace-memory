@@ -154,7 +154,7 @@ export default function (pi: ExtensionAPI) {
       return path;
     });
     // The Noter writes its two workspace files with Pi's own write and edit, confined to exactly those paths (ticket 144).
-    const files = input.kind === "noting" ? workspaceFileTools(callContext.cwd, input.workspace) : undefined;
+    const files = workspaceFileTools(callContext.cwd, input.workspace);
     return runWorker(input, {
       model: model as unknown as WorkerModel | undefined, checkCapacity, tools, fileTools: files?.definitions as never,
       runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
@@ -362,7 +362,7 @@ export default function (pi: ExtensionAPI) {
       .reduce((sum, { name, description, parameters }) => sum + tokens(JSON.stringify({ name, description, parameters })), 0);
     const common = { ...target, model: selectedModel, thinkingLevel: inheritedThinking, subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
-      nativeReadToolTokens, ...(kind === "noting" ? { nativeWriteToolTokens, workspaceRoot: defaultWorkspaceRoot() } : {}),
+      nativeReadToolTokens, nativeWriteToolTokens, workspaceRoot: defaultWorkspaceRoot(),
       ...(options.boundary ? { boundary: options.boundary } : {}) };
     return (kind === "dreaming" ? memory.dream(common) : memory.noting(common))
       .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); return result; });

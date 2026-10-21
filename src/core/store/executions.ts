@@ -117,9 +117,14 @@ export function linkExecutionRun(store: Store, runId: number, input: RunInput): 
   store.db.prepare("INSERT INTO execution_runs VALUES (?,?)").run(runId, input.executionId);
 }
 
-/** Caller owns the terminal decision. Attempt refusal/rejection must never call this method.
+/** What a failed Dreamer task tells settlement (144 stage 4 §3.3): the task that failed and whether Magic Context's rule retries it. */
+export interface TaskFailure { task: string; transient: boolean }
+/** MC allows three retries of a transient failure per threshold (`MAX_TASK_RETRIES`); a permanent one waits at once. */
+export const MAX_TASK_RETRIES = 3;
+
+/** Caller owns the terminal decision.
  * Dreamer calls it alongside completeDreaming in the final-check transaction, not at a write. */
-export function settleExecution(store: Store, id: string, outcome: ExecutionOutcome, runId: number, reason = "", dreamingAuthority?: RunInput): { automaticOff?: string } {
+export function settleExecution(store: Store, id: string, outcome: ExecutionOutcome, runId: number, reason = "", dreamingAuthority?: RunInput, failure?: TaskFailure): { automaticOff?: string } {
   return store.transaction(() => {
     const row = store.db.prepare("SELECT * FROM task_executions WHERE id = ?").get(id);
     if (!row) throw new Error("Unknown execution");
@@ -133,8 +138,11 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
       if (!dreamingAuthority || store.dreamingRunId(dreamingAuthority) !== runId || dreamingAuthority.executionId !== id || run.outcome !== "conflict")
         throw new Error("Conflict settlement requires the core Dreamer termination authority");
     }
-    if (outcome === "success" && (run.outcome !== "success" || (row.phase === "dreaming" &&
-        !store.db.prepare("SELECT 1 FROM dreaming_ranges WHERE completed_run = ? AND closed_at IS NOT NULL").get(runId))))
+    // 144 stage 4 §3.2: a Dreamer run is complete when its last run is a classify pass (or the no-work classify run) and no
+    // hand-off remains for the session. LEGACY: a run closing an old-protocol range also completes (part 4 deletes that arm).
+    const dreamerDone = () => (JSON.parse(run!.response ?? "{}").task === "classify" && !store.handoff(Number(row.session_id), "dreaming"))
+      || !!store.db.prepare("SELECT 1 FROM dreaming_ranges WHERE completed_run = ? AND closed_at IS NOT NULL").get(runId);
+    if (outcome === "success" && (run.outcome !== "success" || (row.phase === "dreaming" && !dreamerDone())))
       throw new Error("Execution success requires established business completion");
     const now = new Date().toISOString();
     store.db.prepare("UPDATE task_executions SET outcome = ?, terminal_run = ?, reason = ?, updated_at = ? WHERE id = ?")
@@ -142,10 +150,20 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
     const key = [row.session_id!, row.phase!, row.head ?? null, row.pool ?? null] as const;
     const task = "session_id = ? AND phase = ? AND head IS ? AND pool IS ?";
     if (outcome === "cancelled" || outcome === "conflict") return {};
+    // 144 stage 4 §3.4: the counter and the hand-off belong to the latest execution admitted for this task key. A later
+    // row, still running or already finished, took the cycle over; this one writes only its own row.
+    if (store.db.prepare(`SELECT 1 FROM task_executions WHERE ${task} AND rowid > (SELECT rowid FROM task_executions WHERE id = ?)`).get(...key, id)) return {};
     const counted = store.db.prepare(`UPDATE task_failures SET count = CASE WHEN ? THEN 0 ELSE count + 1 END,
       last_reason = ?, last_run_id = ?, updated_at = ? WHERE ${task}`).run(Number(outcome === "success"), reason, runId, now, ...key);
     if (!counted.changes) store.db.prepare(`INSERT INTO task_failures(session_id,phase,head,pool,count,last_reason,last_run_id,updated_at)
       VALUES (?,?,?,?,?,?,?,?)`).run(...key, outcome === "success" ? 0 : 1, reason, runId, now);
+    if (row.phase === "dreaming") {
+      if (outcome === "failure") {
+        const retry = dreamerWaits(store, Number(row.session_id), runId, failure, row.pool === null ? null : String(row.pool));
+        store.db.prepare("UPDATE task_executions SET reason = ? WHERE id = ?").run(`${reason}, ${retry}`, id);
+      }
+      return {}; // 2026-10-22: D never switches memory off
+    }
     const count = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${task}`).get(...key)!.count);
     if (count !== 3 || !store.enabled(Number(row.session_id))) return {};
     store.setEnrollment(Number(row.session_id), false);
@@ -159,4 +177,22 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
       AND outcome = 'failure' ORDER BY updated_at DESC, rowid DESC LIMIT 3`).all(...key).reverse();
     return { automaticOff: `Trace Memory: S${row.session_id} ${row.phase} off after three failures (${runs.map(r => `R${r.terminal_run}`).join(", ")}); ${reason || "business completion failed"}. Use /trace on to resume.` };
   });
+}
+
+/** 144 stage 4 §3.3, Magic Context's rule. The failed task is kept as the hand-off's next task (the first failure creates the
+ * row), so the next due check resumes there. A transient failure counts toward `MAX_TASK_RETRIES` and is retried at every check; past
+ * the limit, and at once for a permanent failure, the hand-off waits for 10k tokens of Noter changes newer than `waitFrom`. */
+function dreamerWaits(store: Store, sessionId: number, runId: number, failure: TaskFailure | undefined, pool: string | null): string {
+  const transient = failure?.transient ?? false;
+  const handoff = store.handoff(sessionId, "dreaming");
+  const detail = handoff?.detail ?? { curateRuns: [], doneCategories: [] };
+  // Rows from before 126 keep the pool they were counted under; the key is the execution's own.
+  const key = "session_id = ? AND phase = 'dreaming' AND pool IS ?";
+  const count = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${key}`).get(sessionId, pool ?? null)?.count ?? 0);
+  const waits = !transient || count > MAX_TASK_RETRIES;
+  if (waits) store.db.prepare(`UPDATE task_failures SET count = 0 WHERE ${key}`).run(sessionId, pool ?? null);
+  writeHandoff(store, { sessionId, phase: "dreaming", nextTask: handoff?.nextTask ?? failure?.task ?? "curate", runId: handoff?.runId ?? runId,
+    branch: null, entryIds: [], detail: { ...detail,
+      ...(waits ? { waitFrom: Number(store.db.prepare("SELECT IFNULL(MAX(id), 0) AS id FROM knowledge_revisions").get()!.id) } : {}) } });
+  return waits ? "waits for threshold" : `retry ${count}/${MAX_TASK_RETRIES}`;
 }

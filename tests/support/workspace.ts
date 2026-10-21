@@ -1,12 +1,12 @@
-import { sourceSeededMemory, type TraceMemory } from "../source-fixture.ts";
+import { sourceSeededMemory, type RunAgent, type TraceMemory } from "../source-fixture.ts";
 import type { KnowledgePath } from "../../src/core/store/index.ts";
 import type { NotingScope } from "../../src/core/workspace/index.ts";
 import { fact, knowledge } from "./seed.ts";
 
 /** A session with two Turns (four source entries: user, assistant, user, assistant), the frozen Noting batch over
  * both, and builders for the facts and knowledge a workspace file may name. No agent runs in these tests. */
-export function workspaceBatch(options: { bodyTokens?: number } = {}) {
-  const memory: TraceMemory = sourceSeededMemory(":memory:", async () => { throw new Error("no agent runs in workspace tests"); });
+export function workspaceBatch(options: { bodyTokens?: number; agent?: RunAgent } = {}) {
+  const memory: TraceMemory = sourceSeededMemory(":memory:", options.agent ?? (async () => { throw new Error("no agent runs in workspace tests"); }));
   if (options.bodyTokens) memory.config.writing.bodyTokens = options.bodyTokens;
   const store = memory.store;
   const project = store.createProject({ name: "workspace", declaredBy: "mark" });

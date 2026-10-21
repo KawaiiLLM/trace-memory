@@ -61,6 +61,10 @@ const notingCheckDefinition: Omit<ToolDefinition, "execute"> = { name: "check", 
 /** The Noter's own tools; its native read, write and edit are the host's. */
 export const notingToolDefinitions: Omit<ToolDefinition, "execute">[] = [searchToolDefinition, notingCheckDefinition];
 
+/** The Dreamer's own tools (ticket 144 stage 4): `search`, and `check` on the task's workspace files. One list for every task of a run. */
+const dreamingCheckDefinition: Omit<ToolDefinition, "execute"> = { name: "check", description: "Names your task and your workspace files, and checks them with the check that runs when you stop: block format, allowed operations, base versions, one record per knowledge item, and the title and body limits. Returns your task and file paths, each problem with file and line, and the host-measured tokens of every title and body against its limit. Writes and publishes nothing.", parameters: object({}) };
+export const dreamingWorkspaceToolDefinitions: Omit<ToolDefinition, "execute">[] = [searchToolDefinition, dreamingCheckDefinition];
+
 export function renderToolDefinitions(definitions: readonly Omit<ToolDefinition, "execute">[], names: ToolNames) {
   const exposed = validateToolNames(names);
   return definitions.map(definition => ({ ...definition, description: renderToolNames(definition.description, exposed) }));
@@ -215,19 +219,19 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
   if (context.kind === "manual") {
     if (store.getTurn(context.currentTurnId)?.sessionId !== session.id) throw new Error("current turn must belong to the calling session");
-  } else if (context.kind === "noting") {
-    if (!noting) throw new Error("Noter tools require their workspace check");
-    frozenTurnIds(store, session.id, context.range); // a range that is not this session's ancestry is refused at binding
+  } else if (context.kind === "noting" || (context.kind === "dreaming" && !dreaming)) {
+    if (!noting) throw new Error("Noter and Dreamer workspace tools require their workspace check");
+    if (context.kind === "noting") frozenTurnIds(store, session.id, context.range); // a range that is not this session's ancestry is refused at binding
   }
   // The branch rides on the path so applicability is judged per source entry (review 2026-09-08 P1).
   const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId, branch: context.branch }
     : context.kind === "noting" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]), branch: context.branch }
-    : dreaming!.path;
+    : dreaming ? dreaming.path : { sessionId: session.id, headTurnId: context.headTurnId ?? null, branch: context.branch };
   const plain: RunInput = { kind: context.kind, sessionId: session.id, branch: context.branch,
     rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
     rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
   const run = metadata ?? store.bindRunOrigin(plain, store.triggerOrigin(path, context.triggerEntryId));
-  if (context.kind === "dreaming" && (!dreaming || !store.isDreamingRun(run))) throw new Error("Dreamer tools require an admitted trusted run binding");
+  if (context.kind === "dreaming" && dreaming && !store.isDreamingRun(run)) throw new Error("Dreamer tools require an admitted trusted run binding");
   // Source resolution, range checks and candidate applicability share one binding-time database/path
   // membership. Later tree movement and same-Turn entry ingestion cannot change any half of the run.
   const sourceTurns = store.pathTurns(path);
@@ -296,7 +300,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   // Exceptions outside memory's batch validator must also block Dreamer completion until
   // that tool is used legally; tool text is diagnostic, never a conflict classification.
   const toolProblems = new Map<string, string>();
-  const definitions = renderToolDefinitions(dreaming ? dreamingToolDefinitions() : context.kind === "noting" ? notingToolDefinitions : toolDefinitions, names);
+  const definitions = renderToolDefinitions(dreaming ? dreamingToolDefinitions() : context.kind === "noting" ? notingToolDefinitions
+    : context.kind === "dreaming" ? dreamingWorkspaceToolDefinitions : toolDefinitions, names);
   // 127: D commits each legal item at once; a refused one keeps its M slot (116).
   const dreamer = dreaming ? new Slots<object>(names,
     Object.keys(definitions.find(t => t.name === "memory")!.parameters.properties as object)) : undefined;
@@ -340,7 +345,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         ...(spill ? { spill } : {}) });
     }),
     ...(checkOf ? [definition("check", input => { if (Object.keys(input).length) throw new Error(`${names.check} expects {} only`); return checkOf.check(); })] : [definition("note", note)]),
-    ...(context.kind === "noting" ? [] : [definition("memory", input => dreamer ? dreamer.call(input, dream, () => {})
+    ...(context.kind === "noting" || (context.kind === "dreaming" && !dreaming) ? [] : [definition("memory", input => dreamer ? dreamer.call(input, dream, () => {})
       : Object.keys(input).length && ("slot" in input || "drop" in input || "operations" in input || "skipped" in input)
         ? `rejected: manual ${names.memory} expects one create/update/archive operation or {}`
         : JSON.stringify(memory.execute({ operations: Object.keys(input).length ? [input] : [], skipped: [] }, input)))]),

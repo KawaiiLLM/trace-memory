@@ -1,0 +1,267 @@
+// Ticket 144, stage 4: the Dreamer's run shape. One admission, the hand-off and resume, curate's batches and what a pass
+// leaves in the Store. A scripted model (tests/support/dreamer.ts) writes the files a host's model would.
+import { afterEach, expect, test } from "vitest";
+import { writeFileSync } from "node:fs";
+import type { RunAgent, TraceMemory } from "../../source-fixture.ts";
+import { scriptedDreamer, type DreamerScript } from "../../support/dreamer.ts";
+import { archive } from "../../support/seed.ts";
+import { tokens } from "../../../src/core/render/index.ts";
+import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
+import { block, workspaceBatch } from "../../support/workspace.ts";
+
+const memories: TraceMemory[] = [];
+afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
+
+function dreamerFixture(script: DreamerScript = {}) {
+  const dreamer = scriptedDreamer(script);
+  /** A test swaps in its own runner (one that waits, or ignores a stop) for the calls that follow. */
+  const runners: RunAgent[] = [];
+  const b = workspaceBatch({ agent: raw => (runners.shift() ?? dreamer.agent)(raw) });
+  memories.push(b.memory);
+  b.memory.config.dreaming.triggerTokens = 1;
+  const target = { sessionId: b.session.id, branch: "main", headTurnId: b.path.headTurnId!, model: "scripted" };
+  const dream = () => b.memory.dream(target);
+  return { ...b, dreamer, target, dream, next: (agent: RunAgent) => { runners.push(agent); } };
+}
+const archiveItem = (f: ReturnType<typeof dreamerFixture>, item: { knowledgeId: number; commit: number; supports: number[] }) =>
+  archive(f.store, f.path, item.knowledgeId, item.commit, item.supports, "invalid", "No longer holds, per the user's later correction, which replaces it");
+const covered = (f: { store: { db: { prepare(sql: string): { all(): Record<string, unknown>[] } } } }) =>
+  f.store.db.prepare("SELECT revision_id FROM knowledge_processed ORDER BY revision_id").all().map(row => Number(row.revision_id));
+
+test("a due run curates every category, passes the stub tasks, covers what it showed and leaves no hand-off", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Use pnpm everywhere", { category: "constraint" }), fact = f.item("Lockfile is committed", { category: "reference" });
+  const result = await f.dream();
+  expect(result).toMatchObject({ outcome: "success" });
+  expect(f.dreamer.inputs.map(input => input.task)).toEqual(["curate"]);
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+  expect(covered(f)).toEqual([rule.commit, fact.commit].sort((a, b) => a - b));
+  const execution = f.store.db.prepare("SELECT outcome FROM task_executions").all();
+  expect(execution).toEqual([{ outcome: "success" }]);
+  expect(await f.dream()).toMatchObject({ outcome: "empty" }); // nothing changed since: not due
+});
+
+// ---- Fixtures for the cases below -------------------------------------------------------------------------------------------
+
+const createBlock = (f: ReturnType<typeof dreamerFixture>, title: string, category = "constraint") =>
+  block("create", { title, category, scope: "project", topics: "", supports: `F${f.existingFact(`Support for ${title}`).id}`, reason: "new" }, `Body of ${title}`);
+const revisions = (f: ReturnType<typeof dreamerFixture>) => Number(f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions").get()!.n);
+const task = (f: ReturnType<typeof dreamerFixture>) => f.store.db.prepare("SELECT outcome, reason FROM task_executions ORDER BY rowid").all() as { outcome: string | null; reason: string | null }[];
+const count = (f: ReturnType<typeof dreamerFixture>) => Number(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")?.count ?? 0);
+/** The scripted conversation stopped at a gate the test opens, so a terminal path can happen while the model is "working". */
+function gated(f: ReturnType<typeof dreamerFixture>, write: (file: string) => void) {
+  let open!: () => void;
+  const gate = new Promise<void>(resolve => { open = resolve; });
+  const late: { message?: string | undefined; ran: boolean } = { ran: false };
+  const agent = async (raw: unknown) => {
+    const input = raw as import("../../source-fixture.ts").DreamingAgentInput;
+    input.reportRequest({ system: "s", messages: [], tools: [] });
+    const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
+    await gate;
+    write(/File: (\S+?\.md)/.exec(report)![1]!);
+    late.ran = true; late.message = input.passEnd();
+    return { outcome: "success" as const, output: "late", request: { system: "s", messages: [], tools: [] } };
+  };
+  return { agent, release: () => open(), late };
+}
+
+// ---- Cancellation fence (R4-2) ----------------------------------------------------------------------------------------------
+
+type Path = "stop" | "executor exit" | "memory off" | "lost claim" | "task deadline";
+for (const path of ["stop", "executor exit", "memory off", "lost claim", "task deadline"] as Path[]) {
+  test(`${path}: a model that ignores it and ends its pass later changes nothing and leaves the hand-off as it was`, async () => {
+    const f = dreamerFixture();
+    f.item("Existing rule", { category: "constraint" });
+    const before = revisions(f);
+    const late = createBlock(f, "Late rule");
+    const g = gated(f, file => writeFileSync(file, late));
+    f.next(g.agent);
+    if (path === "task deadline") f.memory.config.dreaming.timeoutMs = 5;
+    const running = f.dream();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    if (path === "stop") f.memory.cancelTasks();
+    else if (path === "executor exit") f.memory.cancelTasks(true);
+    else if (path === "memory off") f.store.setEnrollment(f.session.id, false);
+    else if (path === "lost claim") f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'dreaming'").run();
+    g.release();
+    const result = await running;
+    expect(g.late.ran).toBe(true);
+    expect(g.late.message).toBeUndefined();
+    expect(revisions(f)).toBe(before);
+    expect(covered(f)).toEqual([]);
+    expect(task(f)[0]!.outcome).toBe(path === "lost claim" || path === "task deadline" ? "failure" : "cancelled");
+    if (path !== "memory off") expect(result.outcome).toBe(path === "lost claim" || path === "task deadline" ? "failure" : "cancelled");
+  });
+}
+
+// ---- Hand-off, resume and the retry rule (§3) -------------------------------------------------------------------------------
+
+test("a batch applies at once; a failure in the next keeps it, and a later run resumes at the batch that failed", async () => {
+  const f = dreamerFixture({ curate: { reference: ["## bogus\n"] } });
+  f.item("Rule one", { category: "constraint" });
+  const ref = f.item("Ref one", { category: "reference" });
+  f.dreamer.script.curate!.constraint = createBlock(f, "Added rule", "constraint");
+  const failed = await f.dream();
+  expect(failed).toMatchObject({ outcome: "failure", failure: { task: "curate", class: "check failed twice", transient: false } });
+  const handoff = f.store.handoff(f.session.id, "dreaming")!;
+  expect(handoff.nextTask).toBe("curate");
+  expect(handoff.detail).toMatchObject({ doneCategories: ["constraint"], curateRuns: [expect.any(Number)] });
+  expect(covered(f)).toEqual([]); // coverage is written when curate passes, never before
+  expect(revisions(f)).toBeGreaterThan(2); // the applied batch stays
+  // It waits for a threshold (a permanent failure): nothing changed, so it is not due.
+  expect(await f.dream()).toMatchObject({ outcome: "empty" });
+  f.dreamer.script.curate!.reference = "## none\n";
+  f.item("A later Noter item", { category: "reference" });
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  const inputs = f.dreamer.inputs.slice(-1);
+  expect(inputs).toHaveLength(1);
+  expect(f.dreamer.reports.at(-1)).toContain("batch 1 of 1, category reference");
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+  expect(covered(f)).toContain(ref.commit);
+});
+
+test("a transient failure retries at every check for three more attempts, then waits; a permanent one waits at once; memory stays on", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  const fail = (output: string) => f.next(async () => ({ outcome: "failure", output }));
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    fail("429 rate limit");
+    expect(await f.dream(), `attempt ${attempt}`).toMatchObject({ outcome: "failure", failure: { class: "provider error", transient: true } });
+    const waitFrom = f.store.handoff(f.session.id, "dreaming")!.detail!.waitFrom;
+    if (attempt === 4) expect(waitFrom).toBeTypeOf("number"); else expect(waitFrom).toBeUndefined();
+  }
+  expect(count(f)).toBe(0);
+  expect(await f.dream()).toMatchObject({ outcome: "empty" }); // waiting for 10k tokens of newer Noter changes
+  expect(f.store.enabled(f.session.id)).toBe(true);
+  expect(task(f).map(row => row.reason)).toEqual(["curate: provider error, retry 1/3", "curate: provider error, retry 2/3", "curate: provider error, retry 3/3", "curate: provider error, waits for threshold"]);
+  f.item("Another Noter item");
+  fail("bad request");
+  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { class: "error", transient: false } });
+  expect(await f.dream()).toMatchObject({ outcome: "empty" });
+  f.item("Yet another Noter item");
+  expect(await f.dream()).toMatchObject({ outcome: "success" }); // the pass resets the count and ends the hand-off
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+  expect(count(f)).toBe(0);
+});
+
+test("the first failure persists the pointer: a retry runs even after the Noter changes are archived away", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Rule", { category: "constraint" });
+  f.next(async () => ({ outcome: "failure", output: "network error" }));
+  await f.dream();
+  archiveItem(f, rule);
+  expect(f.store.noterChangedTokens(f.path)).toBe(0);
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(f.dreamer.inputs).toHaveLength(0); // no category is left, so curate passes without a model call
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+});
+
+// ---- Settlement and late settlers (§3.4) ------------------------------------------------------------------------------------
+
+test("a lost claim is one counted failure: hand-off kept, nothing written; user stop, memory off and executor exit are not counted", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  const late = createBlock(f, "Late rule");
+  const g = gated(f, file => writeFileSync(file, late));
+  f.next(g.agent);
+  const before = revisions(f);
+  const running = f.dream();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'dreaming'").run();
+  g.release();
+  expect(await running).toMatchObject({ outcome: "failure" });
+  expect(revisions(f)).toBe(before);
+  expect(task(f)).toEqual([{ outcome: "failure", reason: "curate: claim lost, retry 1/3" }]);
+  expect(count(f)).toBe(1);
+  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate" });
+  // A stop is not a failure.
+  const stopping = gated(f, file => writeFileSync(file, "## none\n"));
+  f.next(stopping.agent);
+  const second = f.dream();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  f.memory.cancelTasks();
+  stopping.release();
+  await second;
+  expect(task(f).at(-1)!.outcome).toBe("cancelled");
+  expect(count(f)).toBe(1);
+});
+
+test("A loses its claim, B takes over and finishes first: A's late settlement writes only its own row", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  const late = createBlock(f, "Late rule");
+  const a = gated(f, file => writeFileSync(file, late));
+  f.next(a.agent);
+  const first = f.dream();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'dreaming'").run();
+  expect(await f.dream()).toMatchObject({ outcome: "success" }); // B: the default scripted Dreamer, to the end
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+  a.release();
+  expect(await first).toMatchObject({ outcome: "failure" });
+  expect(task(f).map(row => row.outcome)).toEqual(["failure", "success"]);
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull(); // B's finished cycle is not reopened
+  expect(count(f)).toBe(0);
+});
+
+// ---- Time limits (§1.3) -----------------------------------------------------------------------------------------------------
+
+test("a model that ignores its deadline fails as a timeout at its own deadline; a cooperative one sees the effective signal abort", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  f.memory.config.dreaming.timeoutMs = 30;
+  let aborted = false;
+  f.next(raw => new Promise(() => { void raw; })); // never settles and never looks at the signal
+  const stuck = await f.dream();
+  expect(stuck).toMatchObject({ outcome: "failure", failure: { task: "curate", class: "timeout", transient: true } });
+  expect(task(f)[0]).toEqual({ outcome: "failure", reason: "curate: timeout, retry 1/3" });
+  f.next(raw => new Promise(resolve => {
+    (raw as { signal: AbortSignal }).signal.addEventListener("abort", () => { aborted = true; resolve({ outcome: "cancelled", output: "stopped" }); });
+  }));
+  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { class: "timeout" } });
+  expect(aborted).toBe(true);
+  expect(task(f).at(-1)!.outcome).toBe("failure"); // the task deadline aborts the task, not the execution: not a cancellation
+});
+
+// ---- curate (§4) ------------------------------------------------------------------------------------------------------------
+
+test("a failing batch file gets one repair message and then applies; the receipt names the versions written", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  f.dreamer.script.curate!.constraint = ["## bogus\n", createBlock(f, "Fixed rule")];
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(f.dreamer.messages).toHaveLength(1);
+  expect(f.dreamer.messages[0]).toContain("does not pass the check");
+  expect(f.store.listKnowledgeRevisions().some(revision => revision.title === "Fixed rule")).toBe(true);
+});
+
+test("a batch touches only its own category: a base from another category is a check problem, a create may name any", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Rule", { category: "constraint" });
+  f.item("Reference", { category: "reference" });
+  const update = block(`update K${rule.knowledgeId}@v${rule.ordinal}`, { title: "Rule", reason: "tidy" }, "Rule, tidied");
+  f.dreamer.script.curate!.reference = [update, update]; // the reference batch names a constraint item
+  const result = await f.dream();
+  expect(result).toMatchObject({ outcome: "failure", failure: { class: "check failed twice" } });
+  expect(f.dreamer.messages.join("\n")).toContain("is in category constraint; this batch covers reference");
+  f.dreamer.script.curate!.reference = createBlock(f, "A new constraint from the reference batch", "constraint");
+  f.item("A later Noter item", { category: "reference" });
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+});
+
+test("the prefix shows unscored items whole and scored items whole by score while the cap holds, then titles only; it is deterministic", () => {
+  const f = dreamerFixture();
+  const low = f.item("Low scored rule with a long body ".repeat(20), { category: "constraint", title: "Low item" });
+  const high = f.item("High scored rule with a long body ".repeat(20), { category: "constraint", title: "High item" });
+  f.item("Unscored rule with a long body ".repeat(20), { category: "constraint", title: "New item" });
+  f.store.db.prepare("UPDATE knowledge SET score = ? WHERE id = ?").run(30, low.knowledgeId);
+  f.store.db.prepare("UPDATE knowledge SET score = ? WHERE id = ?").run(90, high.knowledgeId);
+  const items = f.store.curateItems(f.path);
+  const whole = tokens(curatePrefix(f.store, f.path, items, Infinity).text);
+  const text = curatePrefix(f.store, f.path, items, Math.floor(whole * 0.8)).text;
+  expect(text).toContain("Unscored rule with a long body");
+  expect(text).toContain("High scored rule with a long body");
+  expect(text).not.toContain("Low scored rule with a long body");
+  expect(text).toContain("Low item"); // its header line, with the address and title
+  expect(curatePrefix(f.store, f.path, items, Math.floor(whole * 0.8)).text).toBe(text);
+});

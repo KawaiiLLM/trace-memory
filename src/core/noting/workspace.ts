@@ -2,30 +2,14 @@
 // check both tasks and the stop hook run on them, and the messages that check produces. The directory is scratch;
 // the database holds what must survive (the first task's run body and the hand-off row).
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkWorkspace, type CheckResult, type Length, type NotingScope, type WorkspaceFile } from "../workspace/index.ts";
+import { TaskWorkspace, defaultWorkspaceRoot, sweepStaleWorkspaces, type StopCheck } from "../workspace/run.ts";
 import type { Store } from "../store/index.ts";
 
 export type NotingTask = "write" | "verify";
 export interface NotingFiles { facts: string; knowledge: string }
-
-/** Where a host that names no root has its workspaces. */
-export const defaultWorkspaceRoot = (): string => join(tmpdir(), "trace-memory-workspaces");
-
-const PREFIX = "noting-";
-/** The directory is far older than any claim lease (30 minutes) by then, so nothing live is removed. */
-const STALE_MS = 24 * 60 * 60 * 1000;
-/** Remove workspaces a crashed executor left behind. A workspace being swept is never one a live run uses. */
-export function sweepStaleWorkspaces(root: string, now = Date.now()): void {
-  if (!existsSync(root)) return;
-  for (const name of readdirSync(root)) {
-    if (!name.startsWith(PREFIX)) continue;
-    const path = join(root, name);
-    try { if (now - statSync(path).mtimeMs > STALE_MS) rmSync(path, { recursive: true, force: true }); } catch { /* another sweeper took it */ }
-  }
-}
+export { defaultWorkspaceRoot, sweepStaleWorkspaces, type StopCheck };
 
 const TASK_LINE: Record<NotingTask, string> = {
   write: "write (task 1 of 2: record the batch's facts, then its knowledge)",
@@ -37,7 +21,7 @@ const CONSEQUENCE: Record<NotingTask, string> = {
 };
 
 /** One line per block: `facts.md block 1 \`## fact f1\`: title 9/20, body 204/200 (over)`. */
-function lengthLines(file: string, lengths: readonly Length[]): string[] {
+export function lengthLines(file: string, lengths: readonly Length[]): string[] {
   const lines: string[] = [], seen = new Map<string, number>();
   for (const { block, field, count, limit } of lengths) {
     const part = `${field} ${count}/${limit}${count > limit ? " (over)" : ""}`;
@@ -48,35 +32,20 @@ function lengthLines(file: string, lengths: readonly Length[]): string[] {
   return lines;
 }
 
-export interface StopCheck { ok: boolean; problems: string[] }
-
-export class NotingWorkspace {
-  readonly dir: string;
+export class NotingWorkspace extends TaskWorkspace {
   readonly paths: NotingFiles;
   private readonly store: Store;
   private readonly scope: NotingScope;
-  readonly stopChecks: StopCheck[] = [];
 
   constructor(store: Store, scope: NotingScope, root: string, sessionId: number, executionId: string) {
+    super(root, "noting-", sessionId, executionId);
     this.store = store; this.scope = scope;
-    this.dir = join(root, `${PREFIX}S${sessionId}-${executionId.slice(0, 8)}`);
-    this.paths = { facts: join(this.dir, "facts.md"), knowledge: join(this.dir, "knowledge.md") };
+    this.paths = { facts: this.path("facts.md"), knowledge: this.path("knowledge.md") };
   }
-
-  /** Create the directory, with the files a resumed run starts from. A fresh write task starts with none. */
-  open(seed?: NotingFiles): this {
-    rmSync(this.dir, { recursive: true, force: true });
-    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    if (seed) { writeFileSync(this.paths.facts, seed.facts); writeFileSync(this.paths.knowledge, seed.knowledge); }
-    return this;
-  }
-
-  remove(): void { rmSync(this.dir, { recursive: true, force: true }); }
 
   /** The files as they are; a file the task never wrote reads as empty. */
   read(): NotingFiles & { files: { facts: WorkspaceFile; knowledge: WorkspaceFile } } {
-    const text = (path: string) => existsSync(path) ? readFileSync(path, "utf8") : "";
-    const facts = text(this.paths.facts), knowledge = text(this.paths.knowledge);
+    const facts = this.text("facts.md"), knowledge = this.text("knowledge.md");
     return { facts, knowledge, files: { facts: { name: "facts.md", text: facts }, knowledge: { name: "knowledge.md", text: knowledge } } };
   }
 
@@ -98,9 +67,8 @@ export class NotingWorkspace {
 
   /** The stop hook: nothing to say when the files pass; otherwise the one follow-up that lists what to correct. */
   passEnd(task: NotingTask): string | undefined {
-    const result = this.check();
-    this.stopChecks.push({ ok: result.ok, problems: result.problems });
-    if (result.ok) return undefined;
-    return `Your files do not pass the check. Correct every problem below, then stop. If they still fail, ${CONSEQUENCE[task]}.\n\n${this.report(task, result)}`;
+    let result: ReturnType<NotingWorkspace["check"]>;
+    return this.stop(() => (result = this.check()),
+      () => `Your files do not pass the check. Correct every problem below, then stop. If they still fail, ${CONSEQUENCE[task]}.\n\n${this.report(task, result)}`);
   }
 }

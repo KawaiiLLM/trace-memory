@@ -37,7 +37,8 @@ export interface ResolvedCcPhaseConfig {
 
 export interface ResolvedCcWorkerConfig extends Omit<CcWorkerConfig, "responseOriginTimeoutMs" | "contextWindows" | "claudeVersion"> {
   contextWindows: Readonly<Record<string, number>>;
-  phases: Readonly<Record<MemoryPhase, ResolvedCcPhaseConfig>>;
+  /** `classify` (stage 4 §1.2) is the Dreamer's scoring task; absent, it runs on the `dreaming` settings. */
+  phases: Readonly<Record<MemoryPhase, ResolvedCcPhaseConfig>> & { classify?: ResolvedCcPhaseConfig };
   responseOriginTimeoutMs: number;
 }
 
