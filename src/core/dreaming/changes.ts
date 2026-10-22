@@ -24,6 +24,9 @@ export function buildChanges(store: Store, path: KnowledgePath, curateRuns: read
     const response = JSON.parse(store.getRun(run)?.response ?? "{}") as { category?: string; proposed?: { block: string; operation: Operation }[] };
     for (const entry of response.proposed ?? []) proposals.push({ n: proposals.length + 1, run, category: response.category ?? "", ...entry });
   }
+  /** What the proposal writes as supports: its own, else the parents' (a Dreamer operation that cites none inherits them). */
+  const supportsOf = (operation: Operation, base: KnowledgeRevision): number[] => operation.supports.length ? operation.supports
+    : [...new Set([base, ...(operation.op === "merge" ? operation.absorb.map(item => store.getKnowledgeRevision(item.knowledgeId, item.baseCommit)!) : [])].flatMap(r => r.supports))];
   const live = new Map(store.liveKnowledge(path).map(revision => [revision.knowledgeId, revision]));
   const blocks = proposals.map(({ n, category, operation }) => {
     const target = targetOf(operation), base = store.getKnowledgeRevision(target.knowledgeId, target.baseCommit)!;
@@ -40,7 +43,7 @@ export function buildChanges(store: Store, path: KnowledgePath, curateRuns: read
     const lines = [...head, attribute("category", base.category, operation.category),
       ...changed("scope", base.scope, operation.scope), ...changed("topics", JSON.stringify(base.topics), JSON.stringify(operation.topics)),
       ...changed("title", knowledgeTitle(base, store.writing.titleTokens), operation.title),
-      attribute("supports", base.supports.map(f => `F${f}`).join(", "), operation.supports.map(f => `F${f}`).join(", ")), `reason: ${operation.reason}`,
+      attribute("supports", base.supports.map(f => `F${f}`).join(", "), supportsOf(operation, base).map(f => `F${f}`).join(", ")), `reason: ${operation.reason}`,
       "", "current text:", titled(base)];
     if (operation.op === "merge") for (const item of operation.absorb) {
       const revision = store.getKnowledgeRevision(item.knowledgeId, item.baseCommit)!;
