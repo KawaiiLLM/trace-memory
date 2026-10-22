@@ -7,7 +7,7 @@ import { contextComposition } from "./context-composition.ts";
 import { statusBody } from "./session-status.ts";
 import { showSessionPanel } from "./session-panel.ts";
 import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
-import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
+import { buildActions, buildSettingsChoices, dreamerFailureNotice, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 import { agentDirectory, classifySettingKey, configuration, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
@@ -1504,6 +1504,7 @@ export default function (pi: ExtensionAPI) {
     const notices: string[] = [];
     if (state.sessionId && !enabled()) for (const task of memory.store.taskFailures(state.sessionId).filter(t => t.count >= 3))
       notices.push(`Automatic off: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). Turn on to resume.`);
+    if (state.sessionId) notices.push(...dreamerFailureNotice(memory.store.dreamerFailure(state.sessionId)));
     if (lastCompaction) notices.push(`Compaction: ${lastCompaction}`);
     const catchup = catchupLine();
     if (catchup) notices.push(catchup);

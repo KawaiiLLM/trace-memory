@@ -1700,6 +1700,13 @@ export class Store {
       lastRunId: row.last_run_id === null ? null : Number(row.last_run_id), updatedAt: String(row.updated_at),
     }));
   }
+  /** The session's Dreamer failure that is still the latest verdict (a later success clears it): its terminal run, when, and
+   * `<task>: <class>, retry k/3 | waits for threshold` (stage 4 §3.3). Cancellations are not verdicts. */
+  dreamerFailure(sessionId: number): { runId: number; at: string; reason: string } | null {
+    const row = this.db.prepare(`SELECT outcome, reason, terminal_run, updated_at FROM task_executions
+      WHERE session_id = ? AND phase = 'dreaming' AND outcome IN ('failure', 'success') ORDER BY rowid DESC LIMIT 1`).get(sessionId);
+    return row?.outcome === "failure" ? { runId: Number(row.terminal_run), at: String(row.updated_at), reason: String(row.reason ?? "") } : null;
+  }
   settleExecution(id: string, outcome: ExecutionOutcome, runId: number, reason?: string, failure?: TaskFailure) {
     return settleExecution(this, id, outcome, runId, reason, failure);
   }

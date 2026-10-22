@@ -560,7 +560,9 @@ completion. Bars cap at 100%; numbers and percentages do not:
 - **Consolidation:** applicable unconsolidated facts, including group framing and
   relations, through the same renderer and threshold calculation as eligibility.
 - **Dreaming:** one row (144 stage 4): the tokens of knowledge the Noter changed since the last covered Dreamer pass against
-  `dreaming.triggerTokens`. The bar does not imply that the database-wide seat is available.
+  `dreaming.triggerTokens`. The bar does not imply that the database-wide seat is available. The notice area also shows the
+  Dreamer's latest failure while no later run has succeeded: `Dreamer failed: <task>: <class>, retry k/3 | waits for threshold (R<run>, <UTC time>)`.
+  A Dreamer failure never switches memory off, so this notice does not depend on the automatic-off state.
 
 Thresholds come from the live core configuration. Off retains stored measurements;
 no memory identity and unavailable reads are shown separately from zero. Opening

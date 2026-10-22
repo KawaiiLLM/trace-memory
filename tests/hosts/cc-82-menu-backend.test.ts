@@ -119,6 +119,36 @@ test("runs uses the requested count beyond 20 with no silent limit", async () =>
   } finally { store.close(); }
 });
 
+test("the menu's notice area shows the Dreamer's latest failure with its task, class, retry state and time; memory stays on (2026-10-22)", async () => {
+  const f = setup();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.session,
+    transcript_path: join(f.dir, "native.jsonl"), source: "startup" }, null);
+  const store = new Store(f.config.dbPath);
+  const project = store.createProject({ name: "test-project", declaredBy: "mark" });
+  const core = store.createSession({ host: `cc:${f.session}`, projectId: project.id,
+    startedAt: "2026-01-01T00:00:00.000Z", firstReplyAt: "2026-01-01T00:00:00.000Z", enrollmentChoice: true });
+  const binding = readBinding(f.config, f.session)!;
+  writeFileSync(bindingPath(f.config, f.session), `${JSON.stringify({ ...binding, projectId: project.id, coreSessionId: core.id })}\n`);
+  try {
+    const dreamer = (id: string, outcome: string, reason: string, at: string) => {
+      const run = Number(store.db.prepare("INSERT INTO runs (kind, session_id, outcome, created_at) VALUES ('dreaming', ?, ?, ?)").run(core.id, outcome, at).lastInsertRowid);
+      store.db.prepare("INSERT INTO task_executions(id,session_id,phase,pool,outcome,terminal_run,reason,updated_at) VALUES (?,?,?,?,?,?,?,?)")
+        .run(id, core.id, "dreaming", "all", outcome, run, reason, at);
+      return run;
+    };
+    expect(readCcMenu(f.config, f.session, f.config).menu.notices).toEqual([]);
+    const failed = dreamer("e1", "failure", "verify: provider error, retry 2/3", "2026-10-22T09:30:00.000Z");
+    expect(readCcMenu(f.config, f.session, f.config).menu.notices).toEqual([`Dreamer failed: verify: provider error, retry 2/3 (R${failed}, 2026-10-22 09:30 UTC)`]);
+    dreamer("e2", "cancelled", "stopped", "2026-10-22T09:40:00.000Z"); // a stop is not a verdict
+    expect(readCcMenu(f.config, f.session, f.config).menu.notices).toHaveLength(1);
+    const waiting = dreamer("e3", "failure", "curate: check failed twice, waits for threshold", "2026-10-22T10:00:00.000Z");
+    expect(readCcMenu(f.config, f.session, f.config).menu.notices).toEqual([`Dreamer failed: curate: check failed twice, waits for threshold (R${waiting}, 2026-10-22 10:00 UTC)`]);
+    expect(readCcMenu(f.config, f.session, f.config).menu.header.enabled).toBe(true);
+    dreamer("e4", "success", "", "2026-10-22T11:00:00.000Z"); // a later success clears it
+    expect(readCcMenu(f.config, f.session, f.config).menu.notices).toEqual([]);
+  } finally { store.close(); }
+});
+
 test("a session reopened after /clear keeps its menu, runs and settings (63: the parent lineage continues)", async () => {
   const f = setup(), transcriptPath = join(f.dir, "native.jsonl"), child = "cc82-child";
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.session,

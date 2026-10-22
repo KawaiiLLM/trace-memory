@@ -1,6 +1,6 @@
 import { TraceMemory, knowledgeStateKey } from "../../core/api/index.ts";
 import { Store } from "../../core/store/index.ts";
-import type { SettingsInput, TraceMenuInput } from "../trace-menu.ts";
+import { dreamerFailureNotice, type SettingsInput, type TraceMenuInput } from "../trace-menu.ts";
 
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { ccResultText, ccHumanUser } from "./transcript.ts";
@@ -102,6 +102,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     if (binding.lastCompactionNotice) notices.push(binding.lastCompactionNotice);
     if (session && !enabled) for (const task of store.taskFailures(session.id).filter(value => value.count >= 3))
       notices.push(`Automatic off: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). Turn on to resume.`);
+    if (session) notices.push(...dreamerFailureNotice(store.dreamerFailure(session.id)));
     if (!effective) notices.push("Running executor configuration unavailable");
     else if (active.closedSessionScope !== config.closedSessionScope || workers.some(w => w.sources))
       notices.push("Saved file settings differ from running executor");

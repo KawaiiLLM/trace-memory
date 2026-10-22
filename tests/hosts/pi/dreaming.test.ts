@@ -75,6 +75,20 @@ test("classify has its own model and thinking, frozen at admission; absent, it f
   }
 });
 
+test("the /trace notice area shows the Dreamer's latest failure while memory stays on", async () => {
+  const { h, store } = await seeded();
+  const measure = vi.spyOn(AgentSession.prototype, "getContextUsage").mockReturnValue({ tokens: 200_000, contextWindow: 200_000, percent: 100 });
+  try {
+    await h.turn(); await h.drain();
+    h.ctx.hasUI = true;
+    h.answers.push(undefined); await h.commands.get("trace").handler("", h.ctx);
+    const failure = store.dreamerFailure(1)!;
+    expect(failure.reason).toMatch(/^curate: /);
+    expect(h.dialogs.at(-1)!.title).toContain(`Dreamer failed: ${failure.reason} (R${failure.runId}, ${failure.at.slice(0, 16).replace("T", " ")} UTC)`);
+    expect(store.enabled(1)).toBe(true);
+  } finally { measure.mockRestore(); await h.dispose(); }
+});
+
 test("entry ingestion starts a fresh Dreamer on its own model and thinking and records the entry that triggered it", async () => {
   const { h, store, item, pool } = await seeded({ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high", compaction: { enabled: true } });
   try {

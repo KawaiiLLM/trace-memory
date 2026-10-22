@@ -166,6 +166,11 @@ export function buildHeader(input: HeaderInput): string {
   return `Trace Memory · ${input.session} · ${input.project} · ${state}${suffix}`;
 }
 
+/** The Dreamer's latest failure for the notice area (stage 4 §3.3): task, class, retries used or the wait for the next threshold, and when. A Dreamer failure never switches memory off, so this is not gated on that. */
+export function dreamerFailureNotice(failure: { runId: number; at: string; reason: string } | null): string[] {
+  return failure ? [`Dreamer failed: ${failure.reason || "unknown reason"} (R${failure.runId}, ${failure.at.slice(0, 16).replace("T", " ")} UTC)`] : [];
+}
+
 export interface MenuActionsInput { enabled: boolean }
 export type MenuAction = "Turn on" | "Turn off" | "Catch up" | "Stop" | "Project…" | "Runs…" | "Settings…";
 export function buildActions(input: MenuActionsInput): MenuAction[] {
