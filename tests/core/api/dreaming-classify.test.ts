@@ -4,6 +4,7 @@ import { afterEach, expect, test } from "vitest";
 import type { TraceMemory } from "../../source-fixture.ts";
 import { dreamerFixture as makeFixture, type DreamerFixture, type DreamerScript } from "../../support/dreamer.ts";
 import { updateKnowledge } from "../../support/seed.ts";
+import { block } from "../../support/workspace.ts";
 import { classifyAnchors, classifySet, CLASSIFY_ANCHORS } from "../../../src/core/dreaming/classify.ts";
 
 const memories: TraceMemory[] = [];
@@ -104,4 +105,18 @@ test("a resumed run with only classify left fails at the task's own deadline whe
   const rows = f.store.db.prepare("SELECT outcome, reason FROM task_executions ORDER BY rowid").all() as { outcome: string; reason: string }[];
   expect(rows.at(-1)).toMatchObject({ outcome: "failure", reason: expect.stringContaining("classify: timeout") });
   expect(f.store.db.prepare("SELECT COUNT(*) AS n FROM task_claims WHERE phase = 'dreaming'").get()).toEqual({ n: 0 }); // settled and released
+});
+
+test("an empty frozen set passes through a no-work run: above 100 items, all scored, and curate archived the cycle's only change", async () => {
+  const f = dreamerFixture();
+  manyItems(f, 101);
+  await f.dream(); // scores all 101
+  const fresh = f.item("A new rule", { category: "reference", title: "New rule" });
+  f.dreamer.script.curate!.reference = block(`archive ${fresh.ref}`, { kind: "invalid", reason: "does not meet admission" },
+    "The facts show this only records an implementation step, which fails admission; no other item replaces it.");
+  f.dreamer.inputs.length = 0;
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(f.dreamer.inputs.map(input => input.task)).toEqual(["curate", "verify"]); // curate changed something, so verify runs; classify has no model call
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+  expect(f.store.db.prepare("SELECT outcome FROM task_executions ORDER BY rowid DESC LIMIT 1").get()).toEqual({ outcome: "success" });
 });

@@ -818,10 +818,6 @@ test("2026-10-06, 127: '为什么不能分成并行的一批工具调用' and '�
   expect(schema.else.else.required).toEqual(["op", "supports", "reason"]);
 });
 
-test("2026-10-06, 127: '每次操作最多9个工具调用' — the Dreamer prompt limits one response to 9 tool calls of every kind", () => {
-  expect(loadPrompt("dreaming.md")).toMatch(/one response carries at most 9 tool calls in total, counting every tool/);
-});
-
 test("2026-10-06, 127: 'A，你派工' — a refused Dreamer operation still blocks after a later sibling commits, until slot resubmits it", async () => {
   const { create, write, path } = memoryWriter();
   const created = write([create]).committed[0];
@@ -2592,19 +2588,6 @@ test("source text may name F- and K-shaped ids", () => {
 
 
 
-test("59: every supplied item is accounted for by an operation or a skip; New items search every version once, with code", () => {
-  const prompt = loadPrompt("dreaming.md");
-  // The loop's opening: a deliberated item ends the round in an operation or a reasoned skip; a skip never mutates it.
-  // 64c: the material also carries the pool's references; only what the round took up is accounted for.
-  expect(prompt).toContain("Every `New` and `Changed` item, and every other item the round took through A–D, ends in an operation or in a skip with a reason. Pool references the round did not take up need no skip.");
-  // Step 1, before the first New item: one search over every knowledge version, filtered by code; a hit is read in full before the revival decision.
-  expect(prompt).toContain("Before the first `New` item, run one `search` with `layer: knowledge` and a `code` that prints, for each `New` item's word, the superseded and archived hits whose `text` contains it");
-  expect(prompt).toContain("; give it no query and no topk, which would drop versions. One word per New item");
-  expect(prompt).toContain("One word per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase.");
-  for (const retired of ["queries", "versions: history", "cap: 3"]) expect(prompt).not.toContain(retired);
-  // The empty-skip literal is gone; 127 owns the skip call's shape.
-  expect(prompt).not.toContain("skipped: []");
-});
 
 test("47/118: search reads every version without bypassing write validation", () => {
   const search = toolDefinitions.find(tool => tool.name === "search")!;

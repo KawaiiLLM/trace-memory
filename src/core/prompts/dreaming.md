@@ -1,4 +1,4 @@
-# Dreaming (curate and verify)
+# Dreamer — curate and verify
 
 ## Role
 

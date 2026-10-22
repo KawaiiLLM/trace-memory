@@ -16,10 +16,10 @@ test("the standalone CC bundle expands shared blocks but renders exposed names a
     writeFileSync(entry, `export { loadPrompt } from ${JSON.stringify(fileURLToPath(new URL("../../src/core/prompts/load.ts", import.meta.url)))};\n`);
     await build({ entryPoints: [entry], outfile, bundle: true, platform: "node", format: "esm", plugins: [promptLoader] });
     const { loadPrompt: bundled } = await import(pathToFileURL(outfile).href);
-    for (const file of ["noting.md", "dreaming.md"] as const) {
+    for (const file of ["noting.md", "dreaming.md", "classifying.md"] as const) {
       for (const names of [ccWorkerToolNames, ccPluginToolNames]) {
         expect(bundled(file, names)).toBe(loadPrompt(file, names));
-        expect(bundled(file, names)).toContain(file === "noting.md" ? names.check : names.memory);
+        expect(bundled(file, names)).toContain(names.check);
         expect(bundled(file, names)).not.toContain("{{tool.");
         expect(bundled(file, names)).not.toContain("<!-- include:");
       }
