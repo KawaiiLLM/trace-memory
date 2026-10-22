@@ -94,7 +94,7 @@ export function dreamerFixture(memories: TraceMemory[], script: DreamerScript = 
   const cycleTo = async (operation: CurateOperation) => {
     for (let guard = 0; b.store.nextCurateOperation(b.project.id) !== operation; guard++) {
       if (guard > CURATE_ROTATION.length) throw new Error(`cycleTo(${operation}) did not converge`);
-      noterWrittenItem(b.memory, b.path, b.existingFact(`Cycle fact ${guard}`).id);
+      noterWrittenItem(b.memory, b.path as never, b.existingFact(`Cycle fact ${guard}`).id);
       const result = await dream();
       if (result.outcome !== "success") throw new Error(`cycleTo: a cycle ended ${result.outcome}`);
     }
@@ -195,6 +195,9 @@ export function coverKnowledge(store: Store, path: KnowledgePath, revisionIds: r
     .run(placementOwner(store, { revision: store.knowledgeRevision(id)! }), id, run.id);
   return run.id;
 }
+
+/** The operation a curate file of one operation names, from its first block's heading (for a test helper that takes the file's text only). */
+export const operationOfText = (text: string): CurateOperation => /^## (update|merge|split|archive)\b/m.exec(text)?.[1] as CurateOperation ?? "update";
 
 /** The proposals a curate run kept (stage 5 §4.2), compiled from curate blocks the way the batch check does: one entry per block, in change order. */
 export function proposalsOf(memory: { store: Store }, path: KnowledgePath, ...entries: [CurateOperation, string][]): Proposal[] {

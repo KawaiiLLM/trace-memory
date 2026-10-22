@@ -8,6 +8,7 @@ import { fact as seedFact, legacyKnowledge, receiptCommit } from "../../support/
 import { tokens } from "../../../src/core/render/index.ts";
 import { writeFileSync } from "node:fs";
 import { factsFile, knowledgeFile, submit, verifyUnchanged, type Files } from "../../support/noter.ts";
+import { operationOfText } from "../../support/dreamer.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>, triggerEntryId: number;
 afterEach(() => memory?.close());
@@ -175,7 +176,7 @@ test("the Dreamer's curate operations are refused for length and title, each in 
   const base = b.item("Use pnpm", { title: "Package manager" });
   const long = legacyKnowledge(b.store, b.path, { text: sized(300, "Legacy rule. "), category: "constraint", scope: "project", supports: [base.supports[0]!] });
   const longRef = `K${long.knowledgeId}@v1`;
-  const problems = (text: string) => checkWorkspace(b.store, { kind: "curate", sessionId: b.session.id, file: { name: "curate.md", text } }).problems.join("\n");
+  const problems = (text: string) => checkWorkspace(b.store, { kind: "curate", operation: operationOfText(text), sessionId: b.session.id, file: { name: "curate.md", text } }).problems.join("\n");
   const child = (fields: Record<string, string>, text: string) => `\n### child\n${Object.entries({ category: "constraint", scope: "project", topics: "", supports: `F${base.supports[0]}`, reason: "split", ...fields }).map(([key, value]) => `${key}: ${value}`).join("\n")}\n\n${text}\n`;
   expect(problems(block(`update ${base.ref}`, { reason: "Grow" }, sized(201)))).toContain("over the 200-token limit");
   expect(problems(block(`update ${base.ref}`, { title: sized(21), reason: "Retitle" }, "Use pnpm"))).toContain("title: 21 tokens, over the 20-token limit");

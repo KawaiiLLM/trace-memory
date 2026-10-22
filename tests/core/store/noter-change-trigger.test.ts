@@ -24,7 +24,7 @@ function setup() {
   };
   const weight = (commit: number) => { const r = b.store.knowledgeRevision(commit)!; return tokens(knowledgeTitle(r, b.store.writing.titleTokens)) + tokens(r.text); };
   const merge = (primary: { ref: string }, absorbed: { ref: string }) => {
-    const result = applyWorkspace(b.store, { kind: "curate", sessionId: b.session.id, path: b.path,
+    const result = applyWorkspace(b.store, { kind: "curate", operation: "merge", sessionId: b.session.id, path: b.path,
       file: { name: "curate.md", text: block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same rule" }, "Merged rule body.") } });
     if (!result.ok) throw new Error(result.problems.join("\n"));
     return b.store.liveKnowledge(b.path).find(r => r.op === "merge")!;
@@ -52,7 +52,7 @@ describe("what counts", () => {
     expect(s.changed()).toBe(s.weight(edited.commit)); // the manual update is current; the walk reaches the Noter create
     s.cover(noted.commit);
     expect(s.changed()).toBe(0); // the covered ancestor ends the branch
-    const dreamed = applyWorkspace(s.b.store, { kind: "curate", sessionId: s.b.session.id, path: s.b.path,
+    const dreamed = applyWorkspace(s.b.store, { kind: "curate", operation: "update", sessionId: s.b.session.id, path: s.b.path,
       file: { name: "curate.md", text: block(`update ${manual.ref}`, { reason: "tidy" }, "Manual rule, tidied.") } });
     expect(dreamed.ok).toBe(true);
     expect(s.changed()).toBe(0);
