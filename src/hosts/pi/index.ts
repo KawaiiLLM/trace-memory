@@ -944,6 +944,7 @@ export default function (pi: ExtensionAPI) {
         const outcome = (result as { outcome?: string }).outcome;
         completed = outcome !== undefined && outcome !== "empty" && outcome !== "dropped";
         checkpoint = outcome === "success";
+        if (c.outcome) { checkpoint = false; return; } // The drain already ended (Q18, a Dreaming failure): a late run settles itself, never the drain.
         if (c.stopped) { c.outcome = "stopped"; checkpoint = false; return; }
         const permanent = (result as { permanent?: string }).permanent;
         if (outcome === "dropped" && permanent) { c.outcome = "failed"; c.diagnostic = permanent; checkpoint = false; return; }
@@ -957,7 +958,7 @@ export default function (pi: ExtensionAPI) {
           c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
           checkpoint = false;
         }
-      }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
+      }, error => { if (!c.outcome) { c.outcome = "failed"; c.diagnostic = String(error); } context.ui.notify(String(error), "error"); });
       trackSlot(phase, slot, handled, context, () => {
         c.active.delete(phase); showSpend(context);
         if (catchup !== c) return; // A late completion owns no checkpoint in a replacement drain.

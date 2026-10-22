@@ -2,7 +2,7 @@
 // `manual: true`. Like `/trace catchup` it answers at once; the refusal or the outcome arrives through the status line and a notification.
 import { expect, test, vi } from "vitest";
 import { host, reply, dreamerFiles, notingFact, type Reply } from "./test-host.ts";
-import { knowledge } from "../../support/seed.ts";
+import { fact, knowledge } from "../../support/seed.ts";
 
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const dreaming = (c: { systemPrompt?: string }) => c.systemPrompt?.startsWith("# Dreamer") || c.systemPrompt?.startsWith("# Classifying");
@@ -10,9 +10,10 @@ const settle = async (h: ReturnType<typeof host>) => { for (let i = 0; i < 30; i
 const fail = (message: string): Reply => ({ ...reply(""), stopReason: "error", errorMessage: message });
 /** A Noter-written constraint over F1: only Noter changes make a Dreamer due; the trigger is set out of reach below. */
 function seed(h: ReturnType<typeof host>) {
-  const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
-  expect(tools.find(t => t.name === "note")!.execute({ title: "Keep conclusion", sources: "[T1#E1] Keep this conclusion." })).toContain("ok: F1");
-  knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "session", "constraint", [1], "Rule " + "word ".repeat(120), { operation: { title: "Fixture title" } });
+  const path = h.memory.store.knowledgePath(1, "main", 1);
+  const source = h.memory.store.sourcePath(1, "main", 1).map(entry => h.memory.store.getSourceEntry(entry.id)!).find(entry => entry.turnId === 1 && entry.entryOrdinal === 1)!;
+  fact(h.memory, path, "Keep conclusion", [{ entry: source, text: "Keep this conclusion." }]);
+  knowledge(h.memory.store, path, "session", "constraint", [1], "Rule " + "word ".repeat(120), { operation: { title: "Fixture title" } });
 }
 const dreamExecutions = (h: ReturnType<typeof host>) => h.memory.store.db.prepare(
   "SELECT outcome FROM task_executions WHERE session_id = 1 AND phase = 'dreaming' ORDER BY rowid").all().map(row => row.outcome);
@@ -97,5 +98,32 @@ test("a manual dream that fails during an active drain ends the drain", async ()
     await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: failed");
     releaseN(); await settle(h);
     expect(dreamExecutions(h)).toEqual(["failure"]);
+  } finally { releaseN(); await h.dispose(); }
+}, 30000);
+
+const catchupLine = (h: ReturnType<typeof host>) => h.notices.at(-1)!.match(/Catchup: .*/)?.[0];
+
+// A Noter run still in flight when a Dreaming failure ended the drain settles its own execution and slot, but not the drain (Q18).
+test.each(["fails", "is cancelled"] as const)("a manual dream fails first, then the drain's Noter %s: the drain keeps Dreaming's diagnostic", async late => {
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  let releaseN = () => {};
+  const heldN = new Promise<void>(resolve => { releaseN = resolve; });
+  let nCalls = 0;
+  try {
+    await h.turn(); seed(h); await h.turn();
+    h.provider(async c => {
+      if (dreaming(c)) return fail("manual D terminal failure");
+      if (++nCalls === 1) { if (late === "fails") { await heldN; return fail("late N failure"); } return new Promise<Reply>(() => {}); }
+      return notingFact(c);
+    });
+    await command(h, "catchup"); await vi.waitFor(() => expect(nCalls).toBe(1));
+    await command(h, "dream"); await vi.waitFor(() => expect(dreamExecutions(h)).toEqual(["failure"]));
+    await command(h, ""); const ended = catchupLine(h); expect(ended).toMatch(/Catchup: failed — .*manual D terminal failure/);
+    if (late === "fails") releaseN(); else await command(h, "stop");
+    await settle(h);
+    await command(h, ""); expect(catchupLine(h)).toBe(ended); // same outcome and diagnostic, not "stopped" or the Noter's
+    expect(h.memory.store.db.prepare("SELECT outcome FROM task_executions WHERE session_id = 1 AND phase = 'noting'").all().map(r => r.outcome))
+      .toEqual([late === "fails" ? "failure" : "cancelled"]); // the late run settled its own execution and no retry started
+    expect(h.memory.store.getClaim(1, "noting")).toBeNull(); // its slot is released
   } finally { releaseN(); await h.dispose(); }
 }, 30000);

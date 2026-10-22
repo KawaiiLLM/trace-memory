@@ -208,3 +208,18 @@ test("146 Q18 (d): a D failure for another session does not end the drain", asyn
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: "running", phase: "noting" });
   n.release();
 });
+
+// A Noter run in flight when a Dreaming failure ended the drain settles itself and rewrites nothing of the drain (CC's `owned()` fence).
+test.each(["failure", "cancelled"] as const)("146 Q18: a late N %s after the drain's D failure keeps the D diagnostic and does not retry", async outcome => {
+  const f = fixture(), n = hold();
+  f.entries.push(1);
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "noting" && f.entries.length > 0 }));
+  f.memory.noting.mockImplementation(async () => { await n.gate; return { outcome, problems: ["late N"] }; });
+  f.memory.dream.mockImplementation(async () => ({ outcome: "failure", problems: ["boom"] }));
+  f.scheduler.startCatchup(projection); await tick();
+  f.scheduler.beginDream(); f.scheduler.startDream(projection, f.scheduler.catchupTicket()); for (let i = 0; i < 5; i++) await tick();
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "failed", diagnostic: "boom" });
+  n.release(); for (let i = 0; i < 5; i++) await tick();
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "failed", diagnostic: "boom" });
+  expect(f.memory.noting).toHaveBeenCalledTimes(1);
+});

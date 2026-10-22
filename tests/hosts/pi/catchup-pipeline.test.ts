@@ -325,3 +325,29 @@ test("146 Q18: a D failure that carries automaticOff stops the drain", async () 
     expect(h.notices.some(text => text.includes("dreaming off after three failures"))).toBe(true);
   } finally { await h.dispose(); }
 }, 30000);
+
+// 146 Q18 (d): an old-path D still running when the path switches is not cancelled by the switch (the new path is another core
+// session), and it can fail after the new path's drain started. Its target differs from the drain's, so the failure must leave the drain.
+test("146 Q18 (d): the old path's D fails late after a path switch: the new path's drain keeps running", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  let releaseD = () => {}, releaseN = () => {};
+  const heldD = new Promise<void>(resolve => { releaseD = resolve; }), heldN = new Promise<void>(resolve => { releaseN = resolve; });
+  let dreams = 0, nCalls = 0;
+  try {
+    await h.turn(); seed(h);
+    h.provider(async c => {
+      if (dreaming(c)) { dreams++; await heldD; return fail("old-path D terminal failure"); }
+      if (++nCalls === 1) await heldN;
+      return notingFact(c);
+    }, { ignoreAbort: true });
+    await command(h, "dream"); await vi.waitFor(() => expect(dreams).toBe(1)); // the old path's D is held
+    h.entries.length = 0; h.allEntries.length = 0; h.ctx.sessionManager.getSessionId = () => "forked-session";
+    await h.emit("session_tree");
+    await h.turn();
+    await command(h, "catchup"); await vi.waitFor(() => expect(nCalls).toBe(1)); // the new path's drain runs its Noter
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: running noting");
+    releaseD(); await vi.waitFor(() => expect(dreamExecutions(h)).toEqual(["failure"])); // session 1's D failed
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: running noting"); // the drain on session 2 is untouched
+    releaseN(); await settle(h);
+  } finally { releaseD(); releaseN(); await h.dispose(); }
+}, 30000);
