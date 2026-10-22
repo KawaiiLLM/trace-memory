@@ -157,7 +157,7 @@ function seedKnowledge(f: ReturnType<typeof fixture>, scope: "session" | "projec
     const other = new Store(f.file);
     try {
       const result = commitNoterKnowledge(other, { path: f.path, run: { sessionId: f.session.id, createdAt: "later" },
-        operations: [archive ? { op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fid], reason: "retired", createdAt: "later" }
+        operations: [archive ? { op: "archive", kind: "invalid", text: "Retired; nothing replaces it.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fid], reason: "retired", createdAt: "later" }
           : { op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content, text: "Concurrent rule" }] });
       if (!result.ok) throw new Error(result.problems.join("; "));
     } finally { other.close(); }
@@ -181,7 +181,10 @@ for (const when of ["write", "verify"] as const)
     const created = current.find(item => item.knowledge.id !== seed.base.knowledgeId)!;
     expect(created.revision.text).toContain(seed.tag);
     expect(created.revision.supports).toHaveLength(2);
-    expect(f.memory.store.pendingVersions(`session:${f.session.id}`, f.path).some(item => item.revisionId === created.revision.id)).toBe(true);
+    // The Noter's converted create is uncovered Noter work: it counts toward the Dreamer's trigger.
+    expect(created.revision.actorRole).toBe("noting");
+    expect(f.memory.store.curateItems(f.path).find(item => item.value.revision.id === created.revision.id)).toMatchObject({ covered: false });
+    expect(f.memory.store.noterChangedItems(f.path)).toBeGreaterThanOrEqual(1);
     if (!("runId" in result)) throw new Error("missing run");
     const audit = JSON.parse(f.memory.store.getRun(result.runId!)!.response!);
     expect(audit.knowledgeOperations[0].requested.op).toBe("update");

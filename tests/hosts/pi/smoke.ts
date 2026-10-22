@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
-import { host, notingFact, reply } from "./test-host.ts";
+import { host, notingFact, reply, dreamerFiles } from "./test-host.ts";
+import { block } from "../../support/workspace.ts";
 import { legacyFacts, knowledgeBatch } from "../../support/seed.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
 import { TuiAltScreen, getKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
@@ -86,9 +87,8 @@ try {
         seen.push(...plain); component.handleInput?.("\x1b[6~");
       }
       assert.ok(seen.join(" ").includes("Pending / trigger"));
-      // 104: Dreaming shows the session's summed pending weight and its knowledge total, one bar each.
-      for (const label of ["pending", "knowledge"])
-        assert.ok(new RegExp(`${label}\\s+░░░░░░░░░░`).test(seen.join(" ")), `missing empty ${label} bar`);
+      // Dreaming shows the Noter-changed tokens against its trigger, one bar.
+      assert.ok(/pending\s+░░░░░░░░░░/.test(seen.join(" ")), "missing empty pending bar");
       assert.ok(seen.join(" ").includes("⛶") && !seen.join(" ").includes("not task completion or worker"));
       assert.ok(!seen.join(" ").includes("Memory ~0"));
       assert.ok(!seen.join(" ").includes("Pi rebuilt text estimate"));
@@ -128,20 +128,17 @@ try {
     text: "Remember the choice", createdAt: "smoke",
   }]);
   const created = knowledgeBatch(store, store.knowledgePath(1, "main", 1), [{
-    author: "smoke", text: "Remember the choice ".repeat(2000), category: "constraint", scope: "project",
+    author: "smoke", title: "Smoke rule", text: "Remember the choice ".repeat(2000), category: "constraint", scope: "project",
     supports: [facts.facts[0]!.id], topics: [], reason: "initial", createdAt: "smoke",
-  }], { kind: "manual", createdAt: "smoke" });
+  }], { kind: "noting", createdAt: "smoke" }); // Noter-written: only Noter changes make the Dreamer due
   const item = created.committed[0]!;
   const pool = `project:${store.getSession(1)!.projectId}`;
-  dreamer.memory.setKnowledgeBudget("project", store.pendingPoolWeight(pool, store.knowledgePath(1, "main")) * 2);
-  let replies = 0;
+  const heading = `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`;
   dreamer.provider(async conversation => {
-    assert.ok(conversation.systemPrompt?.startsWith("# Dreamer"));
-    assert.ok(!conversation.tools?.some(t => t.name === "note"));
-    if (replies++) return reply("Retired the supplied rule; history preserved.");
-    const version = `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`;
-    assert.ok(String(conversation.messages[0]!.content).includes(version), "the frozen complete body supplies its exact mutation tag");
-    return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: { op: "archive", kind: "budget", id: version, supports: [], reason: "Deliberate active-memory retirement; history preserved" } }] };
+    assert.ok(/^# (Dreamer|Classifying)/.test(conversation.systemPrompt ?? ""));
+    assert.ok(!conversation.tools?.some(t => t.name === "note" || t.name === "memory"));
+    return dreamerFiles(conversation, { curate: block(`archive ${heading}`, { kind: "inadmissible", reason: "Deliberate active-memory retirement" },
+      "The user withdrew this rule and nothing replaces it; the grounds are in the cited fact.") }) ?? reply("Done");
   });
   await dreamer.turn(); await dreamer.drain();
   const compacted = await dreamer.emit("session_before_compact", { preparation: { tokensBefore: 100000 } });
@@ -150,18 +147,16 @@ try {
   assert.equal(composition.bodyHash.length, 64);
   assert.ok(composition.raw > 0, "installed compaction carries assembly-time Raw estimates");
   const runs = store.listRuns(1).filter(run => run.kind === "dreaming");
-  assert.equal(runs.length, 1);
-  assert.equal(runs[0]!.outcome, "success");
+  assert.deepEqual(runs.map(run => [JSON.parse(run.response!).task, run.outcome]), [["curate", "success"], ["verify", "success"], ["classify", "success"]]);
   assert.equal(runs[0]!.mode, "subagent");
   const archive = store.listCommitsByRun(runs[0]!.id)[0]!;
   assert.equal(archive.actorRole, "dreaming");
   assert.deepEqual(store.listFactsByRun(runs[0]!.id), []);
   assert.deepEqual(archive.supports, [facts.facts[0]!.id]);
-  // R1FINAL records the Dreamer's own output, not its superseded input. This protects the output
-  // from immediate reprocessing while the current-lineage projection makes the parent ineligible.
+  // A passed curate covers what its batch showed and what it wrote, so neither counts toward the next run.
   assert.deepEqual(store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
-    .map(row => Number(row.revision_id)), [archive.id]);
-  assert.deepEqual(store.pendingVersions(pool, store.knowledgePath(1, "main")), []);
+    .map(row => Number(row.revision_id)), [item.commit, archive.id]);
+  assert.equal(store.noterChangedItems(store.knowledgePath(1, "main")), 0);
   // Exact archive reads preserve the inherited direct support and parent provenance.
   assert.ok(memoryFiles(dreamer.memory, { sessionId: 1, branch: "main", headTurnId: store.knowledgePath(1, "main").headTurnId }).read(`trace://K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, archive.id)}`).content.includes(`F${facts.facts[0]!.id}`));
   assert.ok(dreamer.notices.some(n => n.includes("compaction preparing")));
@@ -173,7 +168,7 @@ try {
   await dreamer.commands.get("trace").handler("", dreamer.ctx);
   assert.ok(dreamer.notices.at(-1)!.includes("Compaction: bounded entry views"));
   assert.equal(dreamer.requests.length, requestsAfterRecovery, "reading the persisted recovery warning starts no worker");
-  console.log("Dreamer smoke passed: per-entry native child, trusted archive, skip/own processing, persisted custom carrier and read-only status.");
+  console.log("Dreamer smoke passed: per-entry native child, curate archive, coverage, persisted custom carrier and read-only status.");
 } finally { await dreamer.dispose(); }
 
 // 22b: the long-history regression, on the same entry the case above used — the installed one under

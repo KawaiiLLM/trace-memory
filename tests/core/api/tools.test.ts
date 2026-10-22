@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { hydrate, sourceSeededMemory, toolRejected, type NotingAgentInput, type RunAgent, type ToolContext } from "../../source-fixture.ts";
-import { dreamingToolDefinitions, toolDefinitions } from "../../../src/core/api/tools.ts";
+import { toolDefinitions } from "../../../src/core/api/tools.ts";
 import { factSources } from "../../support/seed.ts";
 import { submit, verifyUnchanged } from "../../support/noter.ts";
 
@@ -70,13 +70,12 @@ test("116: the public manual schemas distinguish full items from empty calls, an
     else: { if: { properties: { op: { const: "update" } } }, else: { required: ["text", "category", "scope", "topics"] } } });
   expect(rules[3]).toMatchObject({ if: { properties: { op: { const: "update" } } }, else: { not: { required: ["edits"] } } });
   expect((knowledge.properties as Record<string, unknown>).skipped).toBeUndefined();
-  expect((knowledge.properties as any).kind.enum).toEqual(["budget", "invalid", "inadmissible"]);
+  expect((knowledge.properties as any).kind.enum).toEqual(["invalid", "inadmissible"]);
 });
 
 // 135: Pi and Claude Code validate a call against the advertised schema before it reaches Core, so this
 // is the contract of `edits` itself. It runs Pi's own validator over both variants, not Core's checks.
 test("135: the advertised memory schema accepts exactly one body form per update and edits only on update", () => {
-  const dreamer = dreamingToolDefinitions().find(t => t.name === "memory")!;
   const noter = toolDefinitions.find(t => t.name === "memory")!;
   const valid = (tool: typeof noter, args: Record<string, unknown>) => {
     try { validateToolArguments(tool as never, { type: "toolCall", id: "call", name: tool.name, arguments: args as never }); return true; }
@@ -86,7 +85,7 @@ test("135: the advertised memory schema accepts exactly one body form per update
   const update = { ...base, op: "update", id: "K1#abcd" };
   const full = { text: "Use pnpm", category: "reference", scope: "project", topics: [] };
   const edits = [{ old: "npm", new: "pnpm" }];
-  const archive = { ...base, op: "archive", id: "K1#abcd", kind: "budget" };
+  const archive = { ...base, op: "archive", id: "K1#abcd", kind: "invalid", text: "No longer holds; nothing replaces it." };
   const accepted: Array<[string, Record<string, unknown>]> = [
     ["complete text with its metadata", { ...update, ...full }],
     ["one edit, metadata inherited", { ...update, edits }],
@@ -106,38 +105,8 @@ test("135: the advertised memory schema accepts exactly one body form per update
   const noterOnly: Array<[string, Record<string, unknown>]> = [
     ["edits on a create", { ...base, op: "create", title: "Fixture title", ...full, edits }],
   ];
-  // A split's own fields are its primary part (an update of the item), plus complete, titled children (2026-10-22).
-  const children = [1, 2].map(() => ({ title: "Part", text: "Part", category: "open", topics: [] }));
-  const split = { ...base, op: "split", id: "K1#abcd", ...full, children };
-  const dreamerOnly: Array<[string, Record<string, unknown>]> = [
-    ["edits on a merge", { ...base, op: "merge", id: "K1#abcd", absorb: ["K2#efgh"], ...full, edits }],
-    ["a split with text and edits together", { ...split, edits }],
-    ["a split without its primary part", { ...base, op: "split", id: "K1#abcd", children }],
-  ];
-  for (const [name, tool, extra] of [["Noter and manual", noter, noterOnly], ["Dreamer", dreamer, dreamerOnly]] as const) {
-    for (const [what, args] of accepted) expect(valid(tool, args), `${name} accepts ${what}`).toBe(true);
-    for (const [what, args] of [...rejected, ...extra]) expect(valid(tool, args), `${name} rejects ${what}`).toBe(false);
-  }
-  expect(valid(dreamer, split), "Dreamer accepts a split with its primary part").toBe(true);
-  expect(valid(dreamer, { ...base, op: "split", id: "K1#abcd", edits, children }), "Dreamer accepts a split whose primary part is edits").toBe(true);
-});
-
-test("127: the Dreamer's memory schema is one operation, one skip or one scalar drop, with no root combinator", () => {
-  const schema = dreamingToolDefinitions().find(t => t.name === "memory")!.parameters as Record<string, any>;
-  for (const key of ["anyOf", "oneOf", "allOf"]) expect(schema).not.toHaveProperty(key);
-  expect(schema.additionalProperties).toBe(false);
-  expect(schema.required).toEqual([]);
-  expect(schema.properties).not.toHaveProperty("operations");
-  expect(schema.properties).not.toHaveProperty("skipped");
-  expect(schema).toMatchObject({ if: { required: ["drop"] }, then: { maxProperties: 1 },
-    else: { if: { required: ["skip"] }, then: { required: ["skip", "because"] }, else: { required: ["op", "supports", "reason"] } } });
-  expect(schema.properties.op.enum).toEqual(["update", "merge", "split", "archive"]);
-  expect(schema.properties.skip.pattern).toBe("^K[1-9][0-9]*@v[1-9][0-9]*$");
-  expect(schema.properties.children).toMatchObject({ type: "array", minItems: 1 });
-  expect(schema.properties.children).not.toHaveProperty("maxItems");
-  // A skip carries no operation field, and an operation carries no because.
-  expect(schema.else.then.not.anyOf).toContainEqual({ required: ["op"] });
-  expect(schema.else.else.not).toEqual({ required: ["because"] });
+  for (const [what, args] of accepted) expect(valid(noter, args), `Noter and manual accept ${what}`).toBe(true);
+  for (const [what, args] of [...rejected, ...noterOnly]) expect(valid(noter, args), `Noter and manual reject ${what}`).toBe(false);
 });
 
 test("manual input and result are audited; facts enter the branch without advancing Noting", () => {
@@ -163,7 +132,7 @@ test("116: manual memory commits one operation at a time and rejects Noter-only 
   expect(knowledge.execute(create)).toContain('"committed"');
   expect(JSON.parse(memory.store.listRuns(1).at(-1)!.request!)).toEqual(create);
   expect(memory.store.getKnowledgeRevision(1, 1)?.text).toBe("rule");
-  const archive = { op: "archive", id: `K1#${memory.store.versionTag(1, 1)}`, kind: "budget", supports: ["F1"], reason: "superseded" };
+  const archive = { op: "archive", id: `K1#${memory.store.versionTag(1, 1)}`, kind: "invalid", text: "Superseded; nothing replaces it.", supports: ["F1"], reason: "superseded" };
   expect(knowledge.execute(archive)).toContain('"committed"');
   expect(JSON.parse(memory.store.listRuns(1).at(-1)!.request!)).toEqual(archive);
   expect(memory.store.getKnowledgeRevision(1, 2)?.op).toBe("archive");
@@ -266,7 +235,7 @@ test("reads return every knowledge item while injection still applies the scope 
   // Injection keeps the scope rule: another session's session knowledge and another project's project knowledge stay out.
   for (const id of [6, 8, 9]) expect(memory.inject(1)).not.toContain(`[K${id}@`);
   memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "later" }, operations: [
-    { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 3, baseCommit: 3, supports: [1], createdAt: "later" },
+    { op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 3, baseCommit: 3, supports: [1], createdAt: "later" },
   ] });
   expect(memory.trace("K3@v1")).toContain("owner 1 scope session");
   expect(memory.trace("K3", { versions: "history" })).toContain("archive");
@@ -309,6 +278,5 @@ test("144: the memory tool archives with kind inadmissible, and the kind require
   expect(memory.store.getKnowledgeRevision(1, 2)).toBeNull();
   expect(knowledge.execute({ ...archive, text: "A running log of one session, not an understanding; nothing replaces it." })).toContain('"committed"');
   expect(memory.store.getKnowledgeRevision(1, 2)).toMatchObject({ op: "archive", archiveKind: "inadmissible" });
-  for (const writer of [toolDefinitions.find(t => t.name === "memory")!, dreamingToolDefinitions().find(t => t.name === "memory")!])
-    expect(writer.description).toContain("inadmissible");
+  expect(toolDefinitions.find(t => t.name === "memory")!.description).toContain("inadmissible");
 });

@@ -123,7 +123,7 @@ test("visibility includes global, own project and own session only, excluding in
   const outside = knowledge(foreign.id, noting(foreign.id, turn(foreign.id).id).facts[0]!.id), global = knowledge(foreign.id, f.id, "goal", "global");
   const archived = knowledge(s.id, f.id, "reference");
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "manual", createdAt: time },
-    operations: [{ op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived, baseCommit: archived, supports: [f.id], createdAt: time }] });
+    operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived, baseCommit: archived, supports: [f.id], createdAt: time }] });
   for (const block of [memory.inject(s.id), compacted(memory.compact(s.id))]) {
     expect(block).toContain(`[K${own}#${memory.store.versionTag(own, own)}]`); expect(block).toContain(`[K${global}#${memory.store.versionTag(global, global)}]`);
     for (const id of [other, outside, archived]) expect(block).not.toContain(`[K${id}#`);

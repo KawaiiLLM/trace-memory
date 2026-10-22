@@ -17,7 +17,9 @@ import { join } from "node:path";
 import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
 import { TraceMemory, noVisibility, renderEntry, toolDefinitions, tokens, type EntryProfile, type SourceEntry } from "../../src/core/api/index.ts";
 import { freezeNoting } from "../../src/core/noting/index.ts";
-import { freezeDreaming } from "../../src/core/dreaming/index.ts";
+import { prepareDreaming } from "../../src/core/dreaming/index.ts";
+import { coverKnowledge } from "../support/dreamer.ts";
+import { knowledgeBatch } from "../support/seed.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { host } from "../hosts/pi/test-host.ts";
 
@@ -366,8 +368,7 @@ function dreamingScenarios(size: string): Sample[] {
     const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: time }, facts: [{ turnId: target.headTurnId, text: "synthetic evidence", category: "decision", actor: "user", source: [`T${target.headTurnId}#user`], createdAt: time }] });
     if (!noted.ok) throw new Error(noted.problems.join());
     const current: { knowledgeId: number; commit: number }[] = [];
-    const pool = `project:${project.id}`;
-    const content = (i: number) => ({ text: `small conclusion ${i % 10}, revision ${i}`, topics: [],
+    const content = (i: number) => ({ title: `Perf item ${i % 10}`, text: `small conclusion ${i % 10}, revision ${i}`, topics: [],
       category: "mechanism" as const, scope: "project" as const, supports: [noted.facts[0]!.id], reason: "perf", createdAt: time });
     const create = (i: number) => {
       const result = store.commitConsolidationRun({ path: target,
@@ -377,29 +378,21 @@ function dreamingScenarios(size: string): Sample[] {
       return result.committed[0]!;
     };
     for (let i = 0; i < 10; i++) current.push(create(i));
-    const seedClaim = store.acquireClaim(target, "dreaming", "perf-seed");
-    if (!seedClaim) throw new Error("seed claim unavailable");
-    const seedRange = store.retainKnowledgePoolRange(target, seedClaim);
-    const seedExecution = store.beginExecution({ sessionId: target.sessionId, phase: "dreaming", origin: seedRange.origin });
-    const seedRun = store.bindDreamingRun({ kind: "dreaming", sessionId: target.sessionId, branch: target.branch,
-      dreamingRangeId: seedRange.id, executionId: seedExecution, claim: seedClaim, createdAt: time });
+    // The maintained history goes through the commit a Dreamer pass uses; ten Noter-written versions are the new work.
     store.transaction(() => {
       for (let i = 10; i < revisions; i++) {
         const base = current[i % 10]!;
-        const result = store.commitConsolidationRun({ path: target, run: seedRun,
+        const done = store.commitWorkspaceRun({ run: { kind: "dreaming", sessionId: target.sessionId, branch: target.branch, createdAt: time }, path: target,
           operations: [{ op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content(i) }] });
-        if (!result.ok) throw new Error(result.problems.join());
+        const result = done.results[0]!;
+        if (!result.ok) throw new Error(result.reason);
         current[i % 10] = result.committed[0]!;
       }
     });
-    store.completeKnowledgePoolRange(seedRun, "success");
-    store.settleExecution(seedExecution, "success", store.dreamingRunId(seedRun)!);
-    store.releaseClaim(seedClaim);
-    // Ten genuinely new versions supply pending work beside the ten maintained reference bodies.
-    for (let i = revisions; i < revisions + 10; i++) create(i);
-    const weight = store.pendingPoolWeight(pool, target);
-    memory.setKnowledgeBudget("project", weight * 2);
-    const claim = store.acquireClaim(target, "dreaming", "perf");
+    coverKnowledge(store, target, current.map(item => item.commit));
+    for (let i = revisions; i < revisions + 10; i++) knowledgeBatch(store, target, [content(i)]);
+    memory.config.dreaming.triggerTokens = 1;
+    const claim = store.acquireClaim(target, "dreaming", "perf", false, () => true, 1);
     if (!claim) throw new Error("measurement claim unavailable");
     const counter = countGraphResolutions();
     let eligibilityGraphs: number;
@@ -411,24 +404,16 @@ function dreamingScenarios(size: string): Sample[] {
       measure("Dreaming eligibility", () => memory.taskEligibility("dreaming", target), `${note}; ${eligibilityGraphs} graph resolutions`),
       measure("Dreamer admission/material (rollback each sample)", () => {
         try { store.transaction(() => {
-          const frozen = freezeDreaming(store, target, memory.config, claim);
-          if (tokens(frozen.material.processed) > frozen.admittedProcessedInputCap
-              || tokens(frozen.material.changed) > store.knowledgeBudgets().project || tokens(frozen.material.facts) > 10000)
-            throw new Error("Dreamer material exceeded a hard input window");
+          const frozen = prepareDreaming(store, { ...target, model: "perf" } as never, memory.config, claim, target);
+          if (tokens(frozen.text) <= 0) throw new Error("Dreamer prefix is empty");
           throw rollback;
         }); } catch (error) { if (error !== rollback) throw error; }
-      }, `${note}; current pool selection and full body/fact rendering`),
+      }, `${note}; the pool prefix, every category`),
+      measure("Dreaming coverage (rollback each sample)", () => {
+        try { store.transaction(() => { coverKnowledge(store, target, current.map(item => item.commit)); throw rollback; }); }
+        catch (error) { if (error !== rollback) throw error; }
+      }, note),
     ];
-    const frozen = freezeDreaming(store, target, memory.config, claim);
-    const executionId = store.beginExecution({ sessionId: target.sessionId, phase: "dreaming", origin: frozen.range.origin });
-    const run = store.bindDreamingRun({ kind: "dreaming", sessionId: target.sessionId, branch: target.branch,
-      dreamingRangeId: frozen.range.id, executionId, claim, createdAt: time });
-    samples.push(measure("Dreaming completion (rollback each sample)", () => {
-      try { store.transaction(() => { store.completeKnowledgePoolRange(run, "success"); throw rollback; }); }
-      catch (error) { if (error !== rollback) throw error; }
-    }, note));
-    store.completeKnowledgePoolRange(run, "success");
-    store.settleExecution(executionId, "success", store.dreamingRunId(run)!);
     store.releaseClaim(claim);
     samples.push(measure("Dreaming placement A→B→A", () => {
       store.declareProject(target.sessionId, other.name, "mark");

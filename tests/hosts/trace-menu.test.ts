@@ -60,11 +60,9 @@ test("pending: Noting/Dreaming rows with compact ratios and whole-number percent
   const { pending } = buildTraceMenu(TRACE_MENU_FIXTURE);
   expect(pending.noting).toEqual({ label: "Noting", tokens: 3_200, trigger: 10_000, ratio: 0.32, percent: "32%", amount: "3.2k / 10k" });
   expect(pending).not.toHaveProperty("consolidation");
-  // 104: the session's summed pending weight against the trigger, and its knowledge total against
-  // the injection base plus the shared allowance.
+  // 144 stage 4 §2.3, §7.6: one row, the Noter-changed tokens against the trigger; the pool-vs-window row is gone.
   expect(pending.dreaming).toEqual([
-    { label: "pending", tokens: 1_819, trigger: 5_000, ratio: 0.3638, percent: "36%", amount: "1.8k / 5k" },
-    { label: "knowledge", tokens: 17_300, trigger: 30_000, ratio: 17_300 / 30_000, percent: "58%", amount: "17.3k / 30k" },
+    { label: "pending", tokens: 1_819, trigger: 10_000, ratio: 0.1819, percent: "18%", amount: "1.8k / 10k" },
   ]);
 });
 

@@ -464,7 +464,7 @@ test("initial and on/project supplement carriers share assembly measurement; ret
     const saved = JSON.stringify(retained.sm.getEntries());
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: 1, branch: "main" });
     const write = tools.find(t => t.name === "memory")!;
-    const edit = (id = "K2@v1") => JSON.parse(write.execute({ op: "archive", kind: "budget", id, supports: ["F1"], reason: "integration mutation" }));
+    const edit = (id = "K2@v1") => JSON.parse(write.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id, supports: ["F1"], reason: "integration mutation" }));
     // History is not a tagged write base; reading creates no authority ledger.
     expect(edit().results[0]).toContain("supply an exact K#tag");
     const read = async (path: string) => (await h.tools.get("read").execute("read-memory", { path }, undefined, undefined, h.ctx)).content[0].text as string;

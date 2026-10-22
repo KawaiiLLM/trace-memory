@@ -71,7 +71,7 @@ describe("what counts", () => {
     const s = setup();
     const item = s.noterItem("Rule");
     expect(s.changed()).toBeGreaterThan(0);
-    archive(s.b.store, s.b.path, item.knowledgeId, item.commit, s.support(), "budget");
+    archive(s.b.store, s.b.path, item.knowledgeId, item.commit, s.support(), "invalid");
     expect(s.changed()).toBe(0);
   });
 
@@ -130,8 +130,8 @@ describe("the due rule", () => {
     const s = setup();
     const item = s.noterItem("Rule");
     const need = s.weight(item.commit);
-    expect(s.b.store.dreamingDueByNoterChanges(s.b.path, need)).toBe(true);
-    expect(s.b.store.dreamingDueByNoterChanges(s.b.path, need + 1)).toBe(false);
+    expect(s.b.store.dreamingDue(s.b.path, need)).toBe(true);
+    expect(s.b.store.dreamingDue(s.b.path, need + 1)).toBe(false);
   });
 
   test("a hand-off without waitFrom is due at once; with waitFrom only newer Noter changes count", () => {
@@ -140,13 +140,13 @@ describe("the due rule", () => {
     const need = s.weight(item.commit);
     const handoff = (detail: { curateRuns: number[]; doneCategories: string[]; waitFrom?: number }) => 
       writeHandoff(s.b.store, { sessionId: s.b.session.id, phase: "dreaming", nextTask: "curate", runId: s.run.id, branch: null, entryIds: [], detail });
-    expect(s.b.store.dreamingDueByNoterChanges(s.b.path, need + 1)).toBe(false);
+    expect(s.b.store.dreamingDue(s.b.path, need + 1)).toBe(false);
     handoff({ curateRuns: [], doneCategories: [] });
     expect(s.b.store.handoff(s.b.session.id, "dreaming")!.detail).toEqual({ curateRuns: [], doneCategories: [] });
-    expect(s.b.store.dreamingDueByNoterChanges(s.b.path, need + 1)).toBe(true); // retry or resume at this check
+    expect(s.b.store.dreamingDue(s.b.path, need + 1)).toBe(true); // retry or resume at this check
     handoff({ curateRuns: [], doneCategories: [], waitFrom: item.commit });
-    expect(s.b.store.dreamingDueByNoterChanges(s.b.path, need)).toBe(false); // the old change is behind waitFrom
+    expect(s.b.store.dreamingDue(s.b.path, need)).toBe(false); // the old change is behind waitFrom
     const newer = s.noterItem("A newer rule");
-    expect(s.b.store.dreamingDueByNoterChanges(s.b.path, s.weight(newer.commit))).toBe(true);
+    expect(s.b.store.dreamingDue(s.b.path, s.weight(newer.commit))).toBe(true);
   });
 });

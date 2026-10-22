@@ -4,7 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
 import { submit, verifyUnchanged } from "../../support/noter.ts";
-import { tokens } from "../../../src/core/render/index.ts";
+import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { applyWorkspace } from "../../../src/core/workspace/index.ts";
 import { block } from "../../support/workspace.ts";
 let memory: ReturnType<typeof sourceSeededMemory>, triggerEntryId: number;
@@ -29,6 +29,11 @@ function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>, repl
 const success = (): RunAgentResult => ({ outcome: "success", output: "Done", request: { last: true } });
 const integrate = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
 const read = (id: number, version = 1) => readHandle(path => memoryFiles(memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(path).content, `K${id}@v${version}`);
+/** What a live item costs in the pool, rendered independently of the receipt: its tagged form without the cost annotation. */
+const liveTokens = (knowledgeId: number) => {
+  const item = memory.store.curateItems(dreamPath()).find(entry => entry.value.knowledge.id === knowledgeId)!;
+  return tokens(renderKnowledge(item.value, `K${knowledgeId}#${memory.store.versionTag(knowledgeId, item.value.revision.id)}`, false, memory.store.writing));
+};
 const dreamPath = () => ({ sessionId: 1, branch: "main", headTurnId: 1, triggerEntryId });
 /** A curate file applied as a Dreamer's batch would be: the Dreamer's writes are files, checked and applied by core. */
 const curate = (text: string) => {
@@ -118,7 +123,6 @@ test("135: a manual exact update applies sequential edits and deletion, inherits
   const original = "Use pnpm; retain the lockfile. Legacy clause.";
   const created = JSON.parse(write.execute({ ...create, text: original, topics: ["lockfiles", "package-tools"] }));
   const base = read(1);
-  const beforePool = memory.store.knowledgePools(dreamPath()).find(pool => pool.pool === "project:1")!.tokens;
   const result = JSON.parse(write.execute({ op: "update", id: base, supports: ["F1"], reason: "Clarify the invocation and remove an obsolete clause",
     edits: [{ old: "pnpm", new: "bun" }, { old: "bun", new: "corepack pnpm" }, { old: "Legacy clause.", new: "" }] }));
   expect(result.committed).toMatchObject([{ op: "update", knowledgeId: 1, version: expect.stringMatching(/^K1#[a-z]{4,}$/) }]);
@@ -127,8 +131,7 @@ test("135: a manual exact update applies sequential edits and deletion, inherits
     topics: ["lockfiles", "package-tools"], supports: [1], reason: "Clarify the invocation and remove an obsolete clause" });
   expect(receiptCommit(memory.store, result.committed[0])).toBe(revision.id);
   expect(result.tokens.before).toEqual(created.tokens.after);
-  const afterPool = memory.store.knowledgePools(dreamPath()).find(pool => pool.pool === "project:1")!.tokens;
-  expect(Math.abs((result.tokens.after[0] - result.tokens.before[0]) - (afterPool - beforePool))).toBeLessThanOrEqual(1);
+  expect(result.tokens.after).toEqual([liveTokens(1)]);
   expect(result).not.toHaveProperty("text");
   expect(result.committed[0]).not.toHaveProperty("text");
   expect(result.committed[0].version).not.toBe(base);
@@ -227,11 +230,11 @@ test("134: committed manual receipts report pool item cost and the cost removed 
   const created = JSON.parse(write.execute(create));
   expect(created.tokens.before).toEqual([]);
   expect(created.tokens.after[0]).toBeGreaterThan(tokens(create.text));
-  const archived = JSON.parse(write.execute({ op: "archive", kind: "budget", id: read(1),
+  const archived = JSON.parse(write.execute({ op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: read(1),
     supports: ["F1"], reason: "No longer needed in the pool" }));
   expect(archived.tokens.before).toEqual(created.tokens.after);
   expect(archived.tokens.after).toEqual([0]);
-  expect(memory.store.knowledgePools(dreamPath()).find(pool => pool.pool === "project:1")!.tokens).toBe(0);
+  expect(memory.store.curateItems(dreamPath())).toEqual([]);
 });
 
 test("116: manual memory rejects malformed operations independently of valid commits", () => {
@@ -259,7 +262,7 @@ test("135: manual memory accepts create/update/archive but rejects merge and spl
     { ...create, op: "merge", id: updated.committed[0].version, absorb: [read(2)] },
     { op: "split", id: updated.committed[0].version, supports: ["F1"], reason: "split", children: [] },
   ]) expect(write.execute(operation)).toContain("belongs to the Dreamer");
-  expect(JSON.parse(write.execute({ op: "archive", kind: "budget", reason: "Retired by the user.", id: updated.committed[0].version, supports: ["F1"] })).committed).toHaveLength(1);
+  expect(JSON.parse(write.execute({ op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", reason: "Retired by the user.", id: updated.committed[0].version, supports: ["F1"] })).committed).toHaveLength(1);
 });
 
 test("N terminal success-audit failure rolls back facts, knowledge and Raw progress", async () => {
@@ -329,7 +332,7 @@ test("21a 2026-09-08: merge and archive of a curate file carry their supports an
 test("21a 2026-09-08: an omitted, wrongly typed or empty reason or supports rejects the whole batch", () => {
   const write = setup(async () => success());
   expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
-  const archive = { op: "archive", kind: "budget", id: read(1), supports: ["F1"], reason: "The user withdrew the rule." };
+  const archive = { op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: read(1), supports: ["F1"], reason: "The user withdrew the rule." };
   const drop = (operation: Record<string, unknown>, key: string) => { const copy = { ...operation }; delete copy[key]; return copy; };
   for (const bad of [drop(create, "reason"), drop(create, "supports"), { ...create, reason: "" }, { ...create, reason: "  \n " },
     { ...create, reason: 7 }, { ...create, reason: ["F1"] }, { ...create, supports: [] }, { ...create, supports: "F1" },
@@ -344,7 +347,7 @@ test("21a/116: removed because is rejected and cannot satisfy a required N memor
   setup(async input => {
     const write = input.tools.find(tool => tool.name === "memory")!;
     for (const bad of [{ ...create, because: ["F1"] }, { ...create, because: [] }, { ...create, because: "prompted by the user" },
-      { op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", because: ["F1"] }]) {
+      { op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", because: ["F1"] }]) {
       const result = JSON.parse(write.execute(bad));
       expect(result.results[0]).toContain("because: removed field");
       expect(result.results[0]).toContain('supply "reason"');
@@ -395,12 +398,12 @@ test("21b 2026-09-08: labels are trimmed, deduplicated and code-point ordered, a
   const drop = (operation: Record<string, unknown>, key: string) => { const copy = { ...operation }; delete copy[key]; return copy; };
   for (const bad of [drop(create, "topics"), { ...create, topics: "auth" }, { ...create, topics: null }, { ...create, topics: {} },
     { ...create, topics: ["auth", 7] }, { ...create, topics: [""] }, { ...create, topics: ["auth", "   "] }, { ...create, topics: [["auth"]] },
-    { op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", topics: ["auth"] }]) {
+    { op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", topics: ["auth"] }]) {
     expect(write.execute(bad)).toContain("rejected:");
     expect(memory.store.getKnowledge(2)).toBeNull();
     expect(memory.store.currentCommit(1)[0]?.op).toBe("create");
   }
-  expect(JSON.parse(write.execute({ op: "archive", kind: "budget", id: "K1", supports: ["F1"], reason: "Retired.", topics: ["auth"] })).results[0])
+  expect(JSON.parse(write.execute({ op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: "K1", supports: ["F1"], reason: "Retired.", topics: ["auth"] })).results[0])
     .toContain("topics: inapplicable field");
 });
 

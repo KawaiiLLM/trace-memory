@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { TraceMemory } from "../../src/core/api/index.ts";
 import { knowledgeBatch, legacyFacts } from "../support/seed.ts";
+import { commitDreamerOps } from "../support/dreamer.ts";
 import { databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
 
 const dirs: string[] = [];
@@ -102,16 +103,10 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
     const producer = f.run(0, epoch, { pauseSnapshot: true });
     await until(`${producer.control}.snapshot`);
     const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    const claim = memory.store.acquireClaim(path, "dreaming", "snapshot-fixture")!;
-    const range = memory.store.retainKnowledgePoolRange(path, claim);
-    const run = memory.store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", projectId: project.id,
-      claim, dreamingRangeId: range.id, executionId: memory.store.beginExecution({ sessionId: session.id,
-        phase: "dreaming", origin: range.origin }), createdAt: "later" });
-    const changed = memory.store.commitConsolidationRun({ path, run,
-      operations: [{ ...content, op: "update", knowledgeId: created.committed[0]!.knowledgeId, baseCommit: oldIds[0]!,
-        text: "NEW concurrent rule" }] });
-    if (!changed.ok) throw new Error(changed.problems.join(";"));
-    const newId = changed.committed[0]!.commit;
+    // A concurrent Dreamer pass rewrites the first rule while the renderer holds its snapshot.
+    const changed = commitDreamerOps(memory, path,
+      [{ ...content, op: "update", knowledgeId: created.committed[0]!.knowledgeId, baseCommit: oldIds[0]!, text: "NEW concurrent rule" }]);
+    const newId = changed[0]!.commit;
     // A real eligible waiter starts while the renderer still holds its original read snapshot.
     const waiter = f.run(23, epoch + 54_999);
     await until(`${waiter.control}.checked`);

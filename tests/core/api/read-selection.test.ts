@@ -158,7 +158,7 @@ test("135/92: complete collections expose tags, metadata and history references 
   expect(historyText).toContain("K1@v1");
   expect(historyText).toContain("reason: Reason old body");
   const write = tools.find(tool => tool.name === "memory")!;
-  const archive = (id: string) => write.execute({ op: "archive", kind: "budget", id,
+  const archive = (id: string) => write.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id,
     supports: [`F${who.factId}`], reason: "Retire" });
   expect(archive(oldTag)).toContain("base is not the latest effective applicable revision");
   expect(JSON.parse(archive(currentTag)).committed).toHaveLength(1);

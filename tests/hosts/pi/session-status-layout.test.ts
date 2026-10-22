@@ -299,7 +299,7 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     const item = knowledge(store, store.knowledgePath(1, "main", 1), "project", "constraint",
       [evidence.id], "Remember the choice", { operation: { title: "Fixture title" } }); // Noter-written: it makes the Dreamer due (2026-10-22)
     const pool = `project:${store.getSession(1)!.projectId}`;
-    const pendingTokens = store.pendingVersions(pool, store.knowledgePath(1))[0]!.tokens;
+    const pendingTokens = store.noterChangedTokens(store.knowledgePath(1));
     h.provider(async conversation => {
       expect(conversation.systemPrompt).toMatch(/^# (Dreamer|Classifying)/);
       return dreamerFiles(conversation) ?? reply("Done");
@@ -321,8 +321,8 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     await new Promise(resolve => setImmediate(resolve));
     const viewed = [...s.frame()];
     for (let i = 0; i < 10; i++) { s.key("\x1b[6~"); viewed.push(...s.frame()); }
-    // 104: the Dreamer's pending row carries the session's summed pending weight against the trigger.
-    expect(viewed.join(" ")).toMatch(new RegExp(`pending\\s+.*${pendingTokens} / 1`));
+    // 2026-10-22: the Dreamer's pending row carries the Noter-changed tokens against the trigger.
+    expect(viewed.join(" ")).toMatch(new RegExp(`pending\\s+.*${pendingTokens} /\\s+1`));
     s.key("\x1b"); await command; await h.drain();
     expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries);
     expect(h.requests).toHaveLength(requests); expect(h.statuses.get("trace-memory")).toBe(footer);
@@ -386,7 +386,7 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     const toolLabel = `Tools ${(toolTokens / 1000).toFixed(1).replace(/\.0$/, "")}k (${(100 * toolTokens / total).toFixed(1)}%)`;
     const conversationLabel = `Conversation 12 (${(1200 / total).toFixed(1)}%)`;
     for (const phrase of ["Trace Memory · S1 · pi:pi-test · On", "███████░░░ 74% 37 / 50",
-      "pending ░░░░░░░░░░", "knowledge ░░░░░░░░░░",
+      "pending ░░░░░░░░░░",
       "Estimated usage by category", toolLabel, conversationLabel, "Free 955.5k (95.5% of window)"])
       expect(squashed).toContain(phrase.replace(/\s+/g, ""));
     expect(seen).not.toContain("Difference");
@@ -422,7 +422,7 @@ test.each([20, 40, 79, 80, 100, 160])("long project and actual recovery remain r
       s.key("\x1b[6~");
     }
     const text = seen.join(" ").replace(/\s+/g, " ");
-    for (const phrase of ["Automatic off:", "Turn on to resume.", "pending", "knowledge", "END"])
+    for (const phrase of ["Automatic off:", "Turn on to resume.", "pending", "END"])
       expect(text).toContain(phrase);
     expect(text).toContain("long-projec");
     expect(text.replace(/\s+/g, "")).toContain("PROVIDER-END");

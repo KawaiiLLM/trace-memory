@@ -60,7 +60,7 @@ test("92 Pi registered tool rejects old fields and writes entry roles through th
   const injection = h.memory.injection({ sessionId: 1, branch: "main", headTurnId: 1 });
   const tag = injection.text.match(new RegExp(`K${identity.knowledgeId}#[a-z]{4,}`))![0];
   // The registered adapter never traces or registers this injected version before archive.
-  const archived = await write.execute("archive", { op: "archive", kind: "budget", id: tag, supports: [`F${result.factIds[0]}`], reason: "replaced" }, undefined, undefined, h.ctx);
+  const archived = await write.execute("archive", { op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag, supports: [`F${result.factIds[0]}`], reason: "replaced" }, undefined, undefined, h.ctx);
   expect(JSON.parse(archived.content[0].text).committed[0].version).toBe(`K${identity.knowledgeId}@v2`);
 });
 
@@ -813,7 +813,7 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
     const current = h.memory.store.currentCommit(1, path)[0]!;
     // The Dreamer is due on a Noter-written item (2026-10-22); its curate batch rewrites the base item for this branch.
     noterWrittenItem(h.memory, path, factId);
-    expect(h.memory.store.dreamingDueByNoterChanges(path, 1)).toBe(true);
+    expect(h.memory.store.dreamingDue(path, 1)).toBe(true);
     expect(h.memory.store.getClaim(1, "dreaming")).toBeNull();
     const rewrite = block(`update K1@v${h.memory.store.versionOrdinal(1, current.id)}`, { supports: `F${factId}`, reason: `Update from ${path.branch}.` }, text);
     h.provider(async conversation => {

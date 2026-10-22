@@ -129,7 +129,7 @@ test("135/92: exact edits inherit legacy metadata without rewriting history, sea
       text: "legacy mechanism updated needle", category: "mechanism", scope: "session", topics: [],
     });
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, commit)).toMatchObject({ text: "legacy mechanism needle", category: "mechanism" });
-    const archived = JSON.parse(write.execute({ op: "archive", kind: "budget", id: updated.committed[0].version, supports: [`F${factId}`], reason: "Legacy item retired" }));
+    const archived = JSON.parse(write.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: updated.committed[0].version, supports: [`F${factId}`], reason: "Legacy item retired" }));
     expect(archived.committed).toHaveLength(1);
     expect(f.memory.store.getKnowledgeRevision(knowledgeId, receiptCommit(f.memory.store, archived.committed[0]))!.category).toBe("mechanism");
   } finally { f.memory.close(); }
@@ -154,7 +154,7 @@ test("92: CC adapter writes against the borrowed target and renders legacy categ
     expect(searched.content[0]!.text).toContain(`[K${knowledgeId}@v1] [understanding/session]`);
     const injected = f.memory.injection({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id });
     const tag = injected.text.match(new RegExp(`K${knowledgeId}#[a-z]{4,}`))![0];
-    const archived = await adapter.call("memory", { op: "archive", kind: "budget", id: tag, supports: [`F${id}`], reason: "retired" }, meta);
+    const archived = await adapter.call("memory", { op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag, supports: [`F${id}`], reason: "retired" }, meta);
     expect(archived.isError).toBeUndefined();
     expect(JSON.parse(archived.content[0]!.text).committed[0].version).toBe(`K${knowledgeId}@v2`);
     const historical = memoryFiles(f.memory, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id }).read(`trace://K${knowledgeId}@v1`).content;

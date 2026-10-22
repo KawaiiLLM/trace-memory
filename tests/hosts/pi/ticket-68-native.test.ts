@@ -18,32 +18,31 @@ const nativeTask = (f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<N
 test("68: native Dreamer with an unlimited round count completes more than fifty tool rounds", async () => {
   const f = await fixture({ "noting.triggerTokens": 1e9 });
   try {
-    const passes: number[] = [];
-    let writes = 0;
+    let passEnds = 0, writes = 0;
     f.script(body => toolResults(body) < 55 ? call(`read-${toolResults(body)}`, "search", {}) : say("Finished."));
     const result = await runNative(nativeTask(f, {
       tools: [{ name: "search", description: "Read synthetic material", parameters: { type: "object", properties: {} }, execute: () => { writes++; return "synthetic material"; } }],
-      passEnd: rounds => { passes.push(rounds); return undefined; },
+      passEnd: () => { passEnds++; return undefined; },
     }));
     expect(result.outcome).toBe("success");
     expect(writes).toBe(55);
     expect(result.calls).toHaveLength(55);
-    expect(passes).toEqual([55]);
+    expect(passEnds).toBe(1); // one stop check, after the 55 rounds
   } finally { await f.dispose(); }
 });
 
 test("Noter gets one fixed review at the exact tool-round cap; the second normal pass cannot open a third", async () => {
   const f = await fixture({ "noting.triggerTokens": 1e9 });
   try {
-    const reviews: number[] = [], requests: unknown[] = [];
+    let reviews = 0; const requests: unknown[] = [];
     let responses = 0;
     f.script(() => ++responses === 1 ? call("first", "search", {}) : say(responses === 2 ? "First pass done" : "Review done"));
     const result = await runNative(nativeTask(f, { kind: "noting", maxToolRounds: 1,
-      passEnd: rounds => { reviews.push(rounds); return "Your files do not pass the check"; },
+      passEnd: () => { reviews++; return "Your files do not pass the check"; },
       onRequest: body => { requests.push(body); } }));
     expect(result.outcome).toBe("success");
-    expect(result.output, `requests=${requests.length} reviews=${reviews.join(",")}`).toBe("Review done");
-    expect(reviews).toEqual([1]);
+    expect(result.output, `requests=${requests.length} reviews=${reviews}`).toBe("Review done");
+    expect(reviews).toBe(1);
     expect(requests).toHaveLength(3);
     expect(JSON.stringify(requests.at(-1))).toContain("Your files do not pass the check");
   } finally { await f.dispose(); }
@@ -52,13 +51,13 @@ test("Noter gets one fixed review at the exact tool-round cap; the second normal
 test("Noter never sends its end review after a provider error or cancellation", async () => {
   const f = await fixture({ "noting.triggerTokens": 1e9 });
   try {
-    const reviews: number[] = [];
+    let reviews = 0;
     f.script(() => broken());
-    const task = nativeTask(f, { kind: "noting", passEnd: rounds => { reviews.push(rounds); return "review"; } });
+    const task = nativeTask(f, { kind: "noting", passEnd: () => { reviews++; return "review"; } });
     expect((await runNative(task)).outcome).toBe("failure");
     const controller = new AbortController(); controller.abort();
     expect((await runNative({ ...task, signal: controller.signal })).outcome).toBe("cancelled");
-    expect(reviews).toEqual([]);
+    expect(reviews).toBe(0);
   } finally { await f.dispose(); }
 });
 

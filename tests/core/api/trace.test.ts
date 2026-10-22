@@ -65,7 +65,7 @@ test("merge and archive keep exact historical bodies while the current archive s
   expect(read(`K${absorbed}`)).toContain(`merged_into: K${survivor}@v${memory.store.versionOrdinal(survivor, merged.commit)} (from K${absorbed}@v${memory.store.versionOrdinal(absorbed, 2)})`);
   expect(read(`K${absorbed}@v1`)).toContain(`children: K${survivor}@v${memory.store.versionOrdinal(survivor, merged.commit)}`);
   expect(read(`K${absorbed}@v1`)).not.toContain("later survivor");
-  const archived = (await consolidation({ op: "archive", kind: "budget", reason: "Retired", knowledgeId: survivor,
+  const archived = (await consolidation({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", reason: "Retired", knowledgeId: survivor,
     baseCommit: later.commit, supports: [4], createdAt: time }))[0]!;
   expect(read(`K${survivor}`)).not.toContain(`[K${survivor}@v${memory.store.versionOrdinal(survivor, archived.commit)}]`);
   expect(read(`K${survivor}`)).not.toContain("later survivor");

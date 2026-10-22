@@ -162,7 +162,7 @@ test("the declared hit types match the fields real hits carry, layer by layer: n
   const f = corpus();
   const old = knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], "declared widget");
   knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], "declared widget too");
-  archive(memory.store, f.path, old.knowledgeId, old.commit, [f.widgetFact.id], "budget");
+  archive(memory.store, f.path, old.knowledgeId, old.commit, [f.widgetFact.id], "invalid");
   const declared = declaredFields(SEARCH_HIT_TYPES);
   expect(Object.keys(declared)).toEqual(["Knowledge", "Fact", "Raw"]);
   // 136 ruling (SPEC3): a knowledge version belongs to no single Turn, so only facts and Raw carry session and turn.

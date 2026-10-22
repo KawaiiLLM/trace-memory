@@ -3831,10 +3831,9 @@ export class Store {
   }
 
   private archiveProblem(op: Extract<KnowledgeOperationInput, { op: "archive" }>): string | null {
-    if (!["budget", "invalid", "inadmissible"].includes(op.kind)) return "archive kind must be budget, invalid or inadmissible";
-    if (op.kind !== "budget" && !substantiveArchiveStatement(op.text))
-      return `${op.kind} archive requires a substantive statement of grounds and evidence`;
-    if (op.kind === "budget" && op.text !== undefined) return "budget archive cannot replace the parent body";
+    // `budget` is retired (2026-10-22): legacy rows keep the kind, a new archive cannot be written with it.
+    if (!["invalid", "inadmissible"].includes(op.kind)) return "archive kind must be invalid or inadmissible";
+    if (!substantiveArchiveStatement(op.text)) return `${op.kind} archive requires a substantive statement of grounds and evidence`;
     return null;
   }
 

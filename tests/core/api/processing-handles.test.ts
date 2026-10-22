@@ -37,7 +37,7 @@ test("92: previews carry no tag; a valid tag works across bindings without a rea
   const preview = a.tools.find(tool => tool.name === "search")!.execute({ query: "body", layer: "knowledge" });
   expect(preview).toContain("K1@v1");
   expect(preview).not.toContain(a.tag(1));
-  const archive = (id: string) => a.write([{ op: "archive", kind: "budget", id, supports: ["F1"], reason: "Retire tagged item" }], a.m.tools(a.context));
+  const archive = (id: string) => a.write([{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id, supports: ["F1"], reason: "Retire tagged item" }], a.m.tools(a.context));
   expect(archive("K1")).toContain("supply an exact K#tag");
   expect(archive("K1#unknown")).toContain("knowledge version does not exist");
   expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");
@@ -69,7 +69,7 @@ test("92 supersedes named-read grants: copied Raw tags do not prove reading, but
   a.m.selectEntries(1, "main", a.m.store.listSourceEntries(1, a.t.id).map(entry => entry.id));
   const fresh = a.m.tools(a.context);
   expect(memoryFiles(a.m, a.path).read(`trace://raw/S${a.path.sessionId}/T${a.t.id}`).content).toContain(a.tag(1));
-  const archive = (id: string) => a.write([{ op: "archive", kind: "budget", id, supports: ["F1"], reason: "Retire exact tagged version" }], fresh);
+  const archive = (id: string) => a.write([{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id, supports: ["F1"], reason: "Retire exact tagged version" }], fresh);
   expect(archive("K1#unknown")).toContain("knowledge version does not exist");
   expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");
   expect(archive(a.tag(1))).toContain("committed");

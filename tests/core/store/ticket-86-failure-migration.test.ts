@@ -3,8 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Store, type TaskTarget } from "../../../src/core/store/index.ts";
-import { tokens } from "../../../src/core/render/index.ts";
+import { Store } from "../../../src/core/store/index.ts";
 import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 
 const directories: string[] = [];
@@ -21,10 +20,20 @@ function legacyExecution(store: Store, sessionId: number, head: number): string 
   return id;
 }
 
-function reserve(store: Store, path: TaskTarget, executor: string) {
-  const claim = store.acquireClaim(path, "dreaming", executor);
-  if (!claim) throw new Error("fixture Dreamer claim is unavailable");
-  return { claim, range: store.retainKnowledgePoolRange(path, claim) };
+/** A pre-Stage-4 Dreamer range with its run and execution, as the retired freeze-and-complete left them (the current API writes none). */
+function legacyRange(store: Store, sessionId: number, headTurnId: number, events: number[], outcome: "success" | "failure", claim: string): number {
+  const range = Number(store.db.prepare(`INSERT INTO dreaming_ranges (session_id,branch,head_turn_id,anchor,pool,claim_token,pending_revisions)
+    VALUES (?,'main',?,?,?,?,?)`).run(sessionId, headTurnId, events[0] ?? null, ALL_POOLS, claim, JSON.stringify(events)).lastInsertRowid);
+  for (const event of events) store.db.prepare("INSERT INTO dreaming_range_events VALUES (?,?)").run(range, event);
+  const execution = legacyExecution(store, sessionId, range);
+  const run = store.recordRun({ kind: "dreaming", sessionId, branch: "main", executionId: execution, outcome, createdAt: "now" });
+  store.db.prepare("UPDATE dreaming_ranges SET completed_run = ?, closed_at = 'now' WHERE id = ?").run(run.id, range);
+  store.db.prepare("INSERT INTO dreaming_run_ranges VALUES (?,?)").run(run.id, range);
+  store.db.prepare("UPDATE task_executions SET outcome = ?, terminal_run = ?, reason = ? WHERE id = ?")
+    .run(outcome, run.id, outcome === "failure" ? "legacy failure of first revision" : null, execution);
+  store.db.prepare("INSERT INTO task_failures(session_id,phase,head,pool,count,last_reason,last_run_id,updated_at) VALUES (?,'dreaming',?,NULL,?,?,?,'legacy')")
+    .run(sessionId, range, outcome === "failure" ? 1 : 0, outcome === "failure" ? "legacy failure of first revision" : null, run.id);
+  return range;
 }
 
 function legacyDatabase() {
@@ -47,30 +56,12 @@ function legacyDatabase() {
       operations: [1, 2].map(index => ({ op: "create" as const, title: "Fixture title", handle: `$${index}`, author: "fixture", text: `rule ${index} ` + "word ".repeat(40),
         category: "constraint" as const, scope: "project" as const, supports: [fact.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" })) });
     if (!created.ok) throw new Error(created.problems.join("; "));
-    const [first, second] = created.committed, pool = `project:${project.id}`;
-    const oldest = store.pendingVersions(pool, path)[0]!;
-    const budget = tokens(`Pending current knowledge:\n${oldest.material}`);
-    store.setKnowledgeBudget("project", budget); // One complete item fits even under the old hard cap.
-    const abandoned = reserve(store, path, "abandoned");
-    store.releaseClaim(abandoned.claim);
-    const failed = reserve(store, path, "legacy-failure");
-    expect(failed.range.id).toBe(second!.commit);
-    expect(failed.range.anchor).toBe(first!.commit);
-    expect(failed.range.eventIds).toEqual([first!.commit, second!.commit]);
-    const oldExecution = legacyExecution(store, session.id, failed.range.id);
-    const oldRun = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", createdAt: "now",
-      executionId: oldExecution, dreamingRangeId: failed.range.id, claim: failed.claim });
-    store.completeKnowledgePoolRange(oldRun, "failure");
-    store.settleExecution(oldExecution, "failure", store.dreamingRunId(oldRun)!, "legacy failure of first revision");
-    store.releaseClaim(failed.claim);
-    const processed = reserve(store, path, "legacy-success");
-    const successExecution = legacyExecution(store, session.id, processed.range.id);
-    const successRun = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main", createdAt: "now",
-      executionId: successExecution, dreamingRangeId: processed.range.id, claim: processed.claim });
-    // Historical run explicitly skipped only the first frozen item; the second is untouched.
-    store.completeKnowledgePoolRange(successRun, "success", [first!.commit]);
-    store.settleExecution(successExecution, "success", store.dreamingRunId(successRun)!);
-    store.releaseClaim(processed.claim);
+    const [first, second] = created.committed;
+    const budget = 5_000;
+    store.setKnowledgeBudget("project", budget);
+    // One failed and one successful historical Dreamer range over the two items; the success skipped only the first.
+    legacyRange(store, session.id, turn.id, [first!.commit, second!.commit], "failure", "legacy-failure");
+    legacyRange(store, session.id, turn.id, [first!.commit, second!.commit], "success", "legacy-success");
     const executionId = store.beginExecution({ sessionId: session.id, phase: "noting", head: entry.id });
     const run = store.recordRun({ kind: "noting", sessionId: session.id, executionId, outcome: "failure", createdAt: "now" });
     store.settleExecution(executionId, "failure", run.id, "preserved noting failure");

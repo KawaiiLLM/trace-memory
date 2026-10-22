@@ -140,7 +140,7 @@ test("92: only five new knowledge categories write through Store; old revisions 
   } finally { f.store.close(); }
 });
 
-test("99 budget archive preserves inherited legacy category, body, scope and topics without allowing new legacy categories", () => {
+test("99 an archive of a legacy-category item inherits its category, scope and topics without allowing new legacy categories", () => {
   for (const legacy of ["mechanism", "term", "dispute"] as const) {
     const f = fixture();
     try {
@@ -152,13 +152,13 @@ test("99 budget archive preserves inherited legacy category, body, scope and top
           category: legacy, scope: "session", supports: [f.facts[0]!], reason: "old category", topics: [], createdAt: "now" }] });
       expect(invalidUpdate.ok).toBe(false);
       const archive = f.store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
-        operations: [{ op: "archive", kind: "budget", knowledgeId: base.knowledge_id, baseCommit: base.id,
+        operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledge_id, baseCommit: base.id,
           supports: [f.facts[0]!], reason: "Retire legacy item", createdAt: "now" }] });
       if (!archive.ok) throw new Error(archive.problems.join("; "));
       const parent = f.store.getKnowledgeRevision(base.knowledge_id, base.id)!;
       const child = f.store.getKnowledgeRevision(base.knowledge_id, archive.committed[0]!.commit)!;
       expect(parent.category).toBe(legacy);
-      expect(child).toMatchObject({ op: "archive", archiveKind: "budget", text: parent.text,
+      expect(child).toMatchObject({ op: "archive", archiveKind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.",
         category: parent.category, scope: parent.scope, topics: parent.topics });
       const rejected = f.store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
         operations: [{ op: "create", title: "Fixture title", handle: "$old", author: "manual", text: "invalid", category: legacy,

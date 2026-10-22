@@ -11,7 +11,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { host as createHost, reply, notingFact, noteHeld, type Reply } from "./test-host.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
-import { noterWrittenItem } from "../../support/dreamer.ts";
+import { coverKnowledge, noterWrittenItem } from "../../support/dreamer.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
@@ -37,15 +37,14 @@ const footer = (h: Host) => {
   return { status, role: parsed[1], glyph: parsed[2]!, entries: parsed[3]!, facts: parsed[4]!,
     changedKnowledge: parsed[5]!, knowledge: parsed[6]!, cost: parsed[7]! };
 };
-/** Independently enumerate the same selected units; exact processed state is checked per version only
- * in this test oracle, while production uses one bounded lookup. */
+/** Independently enumerate the same selected units; the changed count is read from the Store's own Noter-change count
+ * (stage 4 §8.2: the items the Noter changed since the last Dreamer run), which production reads once per refresh. */
 const enumerated = (h: Host, branch = "main") => {
   const head = h.memory.store.knowledgePath(1, branch).headTurnId!;
   const knowledge = h.memory.store.currentKnowledge(h.memory.store.knowledgePath(1, branch, head));
-  const processed = h.memory.store.processedCurrentVersions(knowledge);
   return { entries: String(h.memory.pendingEntries(1, branch, head).length),
     facts: String(h.memory.store.listBranchFacts(1, branch, head).length),
-    changedKnowledge: String(knowledge.length - processed.size), knowledge: String(knowledge.length),
+    changedKnowledge: String(h.memory.store.noterChangedItems(h.memory.store.knowledgePath(1, branch, head))), knowledge: String(knowledge.length),
     cost: h.memory.spendSince(midnight()).cost.toFixed(2) };
 };
 /** An existing refresh point, not a new one: `agent_end` is the boundary at which this turn's
@@ -62,17 +61,9 @@ function facts(h: Host, count = 3) {
     Array.from({ length: count }, (_, i) => ({ sources: [{ entry: source, address: `T1#E${source.entryOrdinal}` }],
       category: "observation" as const, actor: "user" as const, text: `footer fact ${i}`, createdAt: time }))).facts;
 }
-function processPool(h: Host, createdAt = time, response?: string) {
-  const store = h.memory.store, current = store.knowledgePath(1, "main");
-  const path = { sessionId: 1, branch: "main", headTurnId: current.headTurnId! };
-  const claim = store.acquireClaim(path, "dreaming", "footer-test");
-  if (!claim) throw new Error("dreaming claim unavailable");
-  const range = store.retainKnowledgePoolRange(path, claim);
-  const executionId = store.beginExecution({ sessionId: 1, phase: "dreaming", origin: range.origin });
-  const run = store.bindDreamingRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
-    executionId, claim, createdAt, response });
-  store.completeKnowledgePoolRange(run, "success");
-  store.releaseClaim(claim);
+/** A Dreamer run that ended without covering anything (a synthetic run that committed no output). */
+function dreamerRunWithoutCoverage(h: Host, createdAt = time, response?: string) {
+  h.memory.store.recordRun({ kind: "dreaming", sessionId: 1, branch: "main", createdAt, outcome: "success", response });
 }
 /** Local midnight as the UTC instant the footer compares `runs.created_at` against (51). */
 const midnight = (now = new Date()) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
@@ -94,22 +85,30 @@ test("footer reports pending Raw, applicable facts, changed Knowledge, and histo
   expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "0", knowledge: "0", cost: "0.00" }); // committed facts are immediately eligible
   expect(footer(h)).toMatchObject(enumerated(h));
 
-  // Knowledge cites a fact without hiding the fact.
+  // A manual write is Knowledge but not a Noter change: the footer's changed count (2026-10-22 trigger) leaves it out.
   knowledge(h.memory.store, h.memory.store.knowledgePath(1, "main", 1), "session", "constraint",
     [written[0]!.id], "Use pnpm, never npm", { run: { kind: "manual", createdAt: time } });
   await refresh(h);
-  expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "1", knowledge: "1", cost: "0.00" });
-  processPool(h);
+  expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "0", knowledge: "1", cost: "0.00" });
+  // A Noter write is counted until a Dreamer pass covers it.
+  const written2 = knowledge(h.memory.store, h.memory.store.knowledgePath(1, "main", 1), "session", "constraint",
+    [written[1]!.id], "Use pnpm, never npm, in CI too", { operation: { title: "CI package manager" } });
+  await refresh(h);
+  expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "1", knowledge: "2", cost: "0.00" });
+  dreamerRunWithoutCoverage(h);
   await refresh(h);
   // R1FINAL does not falsely protect an untouched input when a synthetic run commits no output.
-  expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "1", knowledge: "1", cost: "0.00" });
+  expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "1", knowledge: "2", cost: "0.00" });
+  coverKnowledge(h.memory.store, h.memory.store.knowledgePath(1, "main"), [written2.commit]);
+  await refresh(h);
+  expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "0", knowledge: "2", cost: "0.00" });
 
   // N's Raw progress is independent of D's Knowledge processing and historical fact rows.
   const noted = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: time },
     facts: [], entryIds: h.memory.store.sourcePath(1, "main", 1).map(e => e.id) });
   expect(noted.ok).toBe(true);
   await refresh(h);
-  expect(footer(h)).toMatchObject({ entries: "0", facts: "3", changedKnowledge: "1", knowledge: "1", cost: "0.00" });
+  expect(footer(h)).toMatchObject({ entries: "0", facts: "3", changedKnowledge: "0", knowledge: "2", cost: "0.00" });
   expect(footer(h)).toMatchObject(enumerated(h));
 
   // 51: the footer's cost is today's spend across the whole database — another session's run made
@@ -125,18 +124,15 @@ test("footer reports pending Raw, applicable facts, changed Knowledge, and histo
     response: JSON.stringify({ usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.33 } } }) });
   await refresh(h);
   expect(footer(h)).toMatchObject({ ...enumerated(h), cost: "10.57" });
-  expect(h.memory.spend(1)).toMatchObject({ cost: 0.70, costs: { noting: 0.37, consolidation: 0.33, dreaming: 0, manual: 0 }, runs: { noting: 4, consolidation: 1 } });
+  expect(h.memory.spend(1)).toMatchObject({ cost: 0.70, costs: { noting: 0.37, consolidation: 0.33, dreaming: 0, manual: 0 }, runs: { noting: 5, consolidation: 1 } }); // the Noter-written item is a fifth noting run
   expect(h.memory.spend(borrowed.id).cost).toBe(9.99);
-  // Current session carries the composition; headless `/trace` prints the same body. Create real
-  // pending work, then finish it through the current pool facade with observed Dreamer usage.
-  knowledge(h.memory.store, h.memory.store.knowledgePath(1, "main", 1), "session", "constraint",
-    [written[0]!.id], "priced Dreamer item", { run: { kind: "manual", createdAt: today }, operation: { createdAt: today } });
-  processPool(h, today,
+  // Current session carries the composition; headless `/trace` prints the same body. A Dreamer run with observed usage.
+  dreamerRunWithoutCoverage(h, today,
     JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } } }));
   await h.commands.get("trace")!.handler("", h.ctx);
   const panel = h.notices.at(-1)!;
   expect(panel).toContain("Spend   session $1.20");
-  expect(panel).toMatch(/Noting 4 runs \$0\.37 · Consolidation 1 run \$0\.33/);
+  expect(panel).toMatch(/Noting 5 runs \$0\.37 · Consolidation 1 run \$0\.33/);
   expect(panel).toMatch(/Dreaming \d+ runs \$0\.50/);
   expect(panel).toContain("today   $11.07");
   expect(h.requests).toEqual([]); // nothing here called a model
@@ -221,7 +217,7 @@ test("24a: the counts follow the selected branch, so a sibling entry of the same
   fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha withdrawn",
     [{ entry: h.memory.store.getSourceEntry(source(4).id)!, text: "Pi agent reports alpha withdrawn" }]);
   const handle = readHandle(address => memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(address).content, "K1");
-  expect(write("main").find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." })).not.toContain("rejected:");
+  expect(write("main").find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "invalid", text: "The rule was withdrawn on this path: F2 records that the Pi agent reported alpha withdrawn, and nothing replaces it.", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." })).not.toContain("rejected:");
   await refresh(h);
   const onMain = footer(h);
   expect(onMain).toMatchObject({ ...enumerated(h), facts: "2", knowledge: "0" }); // archived here
@@ -274,7 +270,7 @@ test("24a: off is the compact line, imports nothing and calls no model; enabled 
   expect(Number(footer(h).entries)).toBeGreaterThan(Number(enabled.entries));
 });
 
-test("an enabled refresh uses one path snapshot and one bounded processed-version lookup without Raw, rendering or run audit work", async () => {
+test("an enabled refresh uses one path snapshot and one bounded Noter-change lookup without Raw, rendering or run audit work", async () => {
   const h = host(quiet);
   await h.turn();
   const written = facts(h, 6);
@@ -283,7 +279,7 @@ test("an enabled refresh uses one path snapshot and one bounded processed-versio
       text: `current ${i}`, author: "test", topics: [], reason: "test", createdAt: time })),
     { kind: "manual", createdAt: time });
   const reads = countSourceReads(), builds = countPathBuilds(), bodies = countRunBodies();
-  const rendered = vi.spyOn(rendering, "renderKnowledge"), processed = vi.spyOn(Store.prototype, "processedCurrentVersions");
+  const rendered = vi.spyOn(rendering, "renderKnowledge"), changed = vi.spyOn(Store.prototype, "noterChangedItems");
   const snapshot = vi.spyOn(h.memory.store, "pathSnapshot");
   try {
     reads.reset(); builds.reset(); bodies.reset();
@@ -293,10 +289,9 @@ test("an enabled refresh uses one path snapshot and one bounded processed-versio
     expect(builds.builds()).toBe(0); // cached ancestry, no full path walk
     expect(bodies.chars()).toBe(0);
     expect(rendered).not.toHaveBeenCalled();
-    expect(processed).toHaveBeenCalledTimes(1);
-    expect(processed.mock.calls[0]![0]).toHaveLength(6);
+    expect(changed).toHaveBeenCalledTimes(1);
   } finally {
-    reads.restore(); builds.restore(); bodies.restore(); rendered.mockRestore(); processed.mockRestore(); snapshot.mockRestore();
+    reads.restore(); builds.restore(); bodies.restore(); rendered.mockRestore(); changed.mockRestore(); snapshot.mockRestore();
   }
   expect(footer(h)).toMatchObject(enumerated(h));
 });
@@ -331,7 +326,7 @@ test("24a/51: concurrent N and D indicator prefers N; off and no-theme fallback"
     [{ entry: h.memory.store.getSourceEntry(source.id)!, text: "User chose pnpm" }]);
   const priorRequests = h.requests.length;
   const due = noterWrittenItem(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1);
-  expect(h.memory.store.dreamingDueByNoterChanges({ sessionId: 1, branch: "main", headTurnId: 1 }, 1)).toBe(true);
+  expect(h.memory.store.dreamingDue({ sessionId: 1, branch: "main", headTurnId: 1 }, 1)).toBe(true);
 
   // Both phases hold their own real wire requests; D must not be a stand-in for retired C.
   h.provider(async () => new Promise<Reply>(() => {}));

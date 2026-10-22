@@ -181,7 +181,7 @@ test("a fact backlink groups citing history under visible current identity, incl
   const id = create.committed[0].knowledgeId;
   const firstCommit = m.store.resolveVersionOrdinal(id, 1);
   const tag = m.store.versionTag(id, firstCommit);
-  const archive = JSON.parse(memory.execute({ op: "archive", kind: "budget", id: `K${id}#${tag}`,
+  const archive = JSON.parse(memory.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: `K${id}#${tag}`,
     reason: "reconsidered", supports: ["F2"] }));
   expect(archive.committed).toHaveLength(1);
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id });

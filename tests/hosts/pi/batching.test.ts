@@ -135,7 +135,7 @@ test("D admits a due Noter-written item on an entry without consuming pending Ra
       [{ entry: user, text: "User chose pnpm" }]);
     const path = { sessionId: 1, branch: "main", headTurnId: 1 };
     const trigger = noterWrittenItem(h.memory, path, 1);
-    expect(h.memory.store.dreamingDueByNoterChanges(path, 1)).toBe(true);
+    expect(h.memory.store.dreamingDue(path, 1)).toBe(true);
     let curateInput = "";
     h.provider(async c => { curateInput ||= String(c.messages[0]!.content); return dreamerFiles(c) ?? reply("Done."); });
     await h.prompt("new main turn"); await h.answer("new completed entry"); await h.drain();

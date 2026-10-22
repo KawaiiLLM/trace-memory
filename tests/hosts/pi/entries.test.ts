@@ -448,7 +448,7 @@ test("64b/21a: an archive follows its support owner's foreground without changin
     tools = write("main");
     expect(tools.find(t => t.name === "note")!.execute({ title: "Alpha withdrawn", sources: "[T1#E4] Pi agent withdrew alpha on this path." })).not.toContain("rejected:");
     const base = readHandle(address => memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(address).content, "K1");
-    expect(tools.find(t => t.name === "memory")!.execute({ op: "archive", kind: "budget", id: base, supports: ["F2"], reason: "The user withdrew the rule on this path." })).not.toContain("rejected:");
+    expect(tools.find(t => t.name === "memory")!.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: base, supports: ["F2"], reason: "The user withdrew the rule on this path." })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(branch).not.toBe("main");
@@ -458,7 +458,7 @@ test("64b/21a: an archive follows its support owner's foreground without changin
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).toContain("ALPHA_IS_THE_RULE");
     expect(h.memory.store.currentCommit(1, { sessionId: 1, headTurnId: 1, branch }).map(r => r.op)).toEqual(["create"]);
     expect(h.memory.store.currentCommit(1, { sessionId: 1, headTurnId: 1, branch: "main" }).map(r => r.op)).toEqual(["create"]);
-    expect(h.memory.store.knowledgeRevision(2)).toMatchObject({ op: "archive", archiveKind: "budget", supports: [2] });
+    expect(h.memory.store.knowledgeRevision(2)).toMatchObject({ op: "archive", archiveKind: "invalid", supports: [2] });
   } finally { await h.dispose(); }
 });
 

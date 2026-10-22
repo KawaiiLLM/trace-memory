@@ -45,9 +45,9 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
   expect(files.read(`trace://K${secondId}@v1`).content).toContain(secondVersion);
   expect(files.read(`trace://K${knowledgeId}@v1`).content).not.toContain(secondVersion);
   expect(() => memory.store.resolveVersionTag(knowledgeId, tag.slice(0, 3))).toThrow();
-  expect(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#xxxx`, reason: "bad", supports: [`F${fact}`] })).toContain("rejected:");
+  expect(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: `K${knowledgeId}#xxxx`, reason: "bad", supports: [`F${fact}`] })).toContain("rejected:");
   const otherConnection = open();
-  const archived = JSON.parse(otherConnection.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#${tag}`, reason: "retired", supports: [`F${fact}`] }));
+  const archived = JSON.parse(otherConnection.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: `K${knowledgeId}#${tag}`, reason: "retired", supports: [`F${fact}`] }));
   expect(archived.committed).toHaveLength(1);
   expect(archived.committed[0]).not.toHaveProperty("commit");
   const next = memory.store.resolveVersionOrdinal(knowledgeId, Number(archived.committed[0].version.split("@v")[1]));
@@ -143,7 +143,7 @@ test("92/03+04: concurrent N writers serialize version metadata and convert a st
     expect(new Set(before.filter(row => row.knowledge_id === initial.knowledgeId).map(row => row.tag)).size).toBe(2);
     const failed = memory.store.commitConsolidationRun({ run, operations: [
       { op: "create", title: "Fixture title", handle: "$rollback", author: "test", ...content },
-      { op: "archive", kind: "budget", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, supports: [fact], reason: "stale after insert", createdAt: "now" },
+      { op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, supports: [fact], reason: "stale after insert", createdAt: "now" },
     ] });
     expect(failed.ok).toBe(false);
     expect(metadata()).toEqual(before);
@@ -181,7 +181,7 @@ test("92/03: an existing collision stays stable; only the later version extends,
   // Force a real unique-index collision; don't monkeypatch the production tag generator.
   memory.store.db.prepare("UPDATE knowledge_version_tags SET tag = ? WHERE knowledge_id = ? AND commit_id = ?")
     .run(occupiedTag, knowledgeId, commit);
-  const result = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${knowledgeId}#${occupiedTag}`, reason: "archive", supports: [`F${fact}`] }));
+  const result = JSON.parse(memory.tools(context).find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: `K${knowledgeId}#${occupiedTag}`, reason: "archive", supports: [`F${fact}`] }));
   const later = memory.store.resolveVersionOrdinal(knowledgeId, Number(result.committed[0].version.split("@v")[1]));
   expect(memory.store.versionTag(knowledgeId, commit)).toBe(occupiedTag);
   expect(memory.store.versionTag(knowledgeId, later)).toBe(sequence.padStart(55, "a").slice(0, 5));

@@ -161,7 +161,7 @@ test("92: successful N checks but does not run D below its ordinary threshold", 
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1e9 });
   try {
     await h.turn(); h.provider(async c => extract(c));
-    const eligibility = vi.spyOn(Store.prototype, "dreamingDueByNoterChanges");
+    const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
     await command(h, "catchup"); await settle(h);
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(2); // one batch: write and verify
     expect(h.memory.store.currentKnowledge()).toHaveLength(1);
@@ -186,7 +186,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
     expect(tools.find(t => t.name === "note")!.execute({ title: "Foreign rule", sources: `[T${turn.id}#E1] Foreign rule` })).toContain("ok:");
     const fact = store.listSessionFacts(foreign.id)[0]!;
     knowledge(store, { sessionId: foreign.id, branch: "main", headTurnId: turn.id }, "session", "constraint", [fact.id], "Foreign rule", { operation: { title: "Fixture title" } });
-    const claim = store.acquireClaim({ sessionId: foreign.id, branch: "main", headTurnId: turn.id }, "dreaming", "foreign-executor")!;
+    const claim = store.acquireClaim({ sessionId: foreign.id, branch: "main", headTurnId: turn.id }, "dreaming", "foreign-executor", false, () => true, 1)!;
     expect(claim).not.toBeNull();
     h.provider(async c => { if (!dreaming(c)) return notingFact(c); dreams++; return retain(c); });
     await command(h, "catchup"); await settle(h);
@@ -203,7 +203,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
 for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries the frozen entry successfully" : "turns memory off after three failures"} without an intervening D check`, async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1e9 });
   try {
-    await h.turn(); const eligibility = vi.spyOn(Store.prototype, "dreamingDueByNoterChanges");
+    await h.turn(); const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
     let attempts = 0; const checks: number[] = [];
     h.provider(async c => {
       if (dreaming(c)) throw new Error("Unexpected D admission");

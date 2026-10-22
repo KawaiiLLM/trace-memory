@@ -76,7 +76,7 @@ test.each([
   const oldClaim = memory.store.getClaim(own, phase)!;
   const otherClaim = memory.store.getClaim(other, phase)!;
   const otherPhase = "dreaming";
-  const phaseClaim = memory.store.acquireClaim(target, otherPhase, memory.executorId)!;
+  const phaseClaim = memory.store.acquireClaim(target, otherPhase, memory.executorId, false, () => true, 0)!; // trigger 0: the test needs the claim held, not a due Dreamer
   expect(phaseClaim).not.toBeNull();
   expect(oldClaim).toBeTruthy();
   expect(otherClaim).toBeTruthy();

@@ -23,14 +23,15 @@ function fixture(path = ":memory:", prepare?: (store: Store, target: KnowledgePa
   const item = seedKnowledge(store, selected, "project", content.category, content.supports, content.text);
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
   prepare?.(store, target, content.supports);
-  const claim = store.acquireClaim(target, "dreaming", "test")!;
-  const range = store.retainKnowledgePoolRange(target, claim);
-  const run: RunInput = { kind: "dreaming", sessionId: session.id, branch: "main", claim, dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", origin: range.origin }), createdAt: "now" };
-  const archive = { op: "archive" as const, kind: "budget" as const, knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [], reason: "Retire lower-priority active memory; history retained", createdAt: "now" };
-  return { store, content, item, target, run, archive };
+  // The run of a Dreamer pass, as `commitTaskPass` records it; the claim fence has its own test below.
+  const run: RunInput = { kind: "dreaming", sessionId: session.id, branch: "main", createdAt: "now" };
+  const archive = { op: "archive" as const, kind: "invalid" as const, text: "Retired: the user withdrew this rule and nothing replaces it; the grounds are in the cited fact.", knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [], reason: "Retire lower-priority active memory; history retained", createdAt: "now" };
+  /** One Dreamer pass's operations: each commits or is refused on its own. */
+  const pass = (operations: Parameters<Store["commitWorkspaceRun"]>[0]["operations"], as: RunInput = run) => store.commitWorkspaceRun({ run: as, path: target, operations });
+  return { store, content, item, target, run, archive, pass };
 }
 
-test("64b: writer branch visibility rejects a live session base atomically while visible bases remain writable", () => {
+test("64b: writer branch visibility refuses a live session base while visible bases remain writable", () => {
   const setup = (writerBranch: "left" | "right") => {
     const store = new Store(":memory:"); stores.push(store);
     const project = store.createProject({ name: `writer-${writerBranch}`, declaredBy: "mark" });
@@ -59,11 +60,8 @@ test("64b: writer branch visibility rejects a live session base atomically while
     store.setCurrentPath(session.id, "right", right.id, "native-right");
     const target = { sessionId: session.id, branch: writerBranch, headTurnId: writerBranch === "left" ? left.id : right.id,
       triggerEntryId: writerBranch === "left" ? leftEntry.id : rightEntry.id };
-    const claim = store.acquireClaim(target, "dreaming", `writer-${writerBranch}`)!;
-    const range = store.retainKnowledgePoolRange(target, claim);
-    const raw: RunInput = { kind: "dreaming", sessionId: session.id, branch: writerBranch, claim, dreamingRangeId: range.id,
-      executionId: store.beginExecution({ sessionId: session.id, phase: "dreaming", origin: range.origin }), createdAt: "now" };
-    return { store, session, target, run: store.bindDreamingRun(raw), sessionBase, projectBase, globalBase, writerFact };
+    const run: RunInput = { kind: "dreaming", sessionId: session.id, branch: writerBranch, createdAt: "now" };
+    return { store, session, target, run, sessionBase, projectBase, globalBase, writerFact };
   };
   const operation = (base: { knowledgeId: number; commit: number }, factId: number, text: string) => ({ op: "update" as const,
     knowledgeId: base.knowledgeId, baseCommit: base.commit, text, category: "constraint" as const, scope: text.startsWith("session") ? "session" as const : "project" as const,
@@ -75,44 +73,45 @@ test("64b: writer branch visibility rejects a live session base atomically while
   expect(wrong.store.baseProblem(wrong.projectBase.knowledgeId, wrong.projectBase.commit, wrong.target)).toBeNull();
   expect(wrong.store.baseProblem(wrong.globalBase.knowledgeId, wrong.globalBase.commit, wrong.target)).toBeNull();
   const before = wrong.store.listKnowledgeRevisions();
-  const rejected = wrong.store.commitConsolidationRun({ run: wrong.run, path: wrong.target, operations: [
-    operation(wrong.projectBase, wrong.writerFact.id, "project would otherwise commit"),
+  // Each operation of a pass commits or is refused on its own (stage 4): the invisible base is refused and writes nothing.
+  const refused = wrong.store.commitWorkspaceRun({ run: wrong.run, path: wrong.target, operations: [
     operation(wrong.sessionBase, wrong.writerFact.id, "session invisible on right"),
   ] });
-  expect(rejected.ok).toBe(false);
+  expect(refused.results.map(result => result.ok)).toEqual([false]);
   expect(wrong.store.listKnowledgeRevisions()).toEqual(before);
 
   const correct = setup("left");
-  const accepted = correct.store.commitConsolidationRun({ run: correct.run, path: correct.target, operations: [
+  const accepted = correct.store.commitWorkspaceRun({ run: correct.run, path: correct.target, operations: [
     operation(correct.projectBase, correct.writerFact.id, "project visible on left"),
   ] });
-  expect(accepted.ok).toBe(true);
-  if (accepted.ok) expect(accepted.committed).toHaveLength(1);
+  expect(accepted.results.map(result => result.ok)).toEqual([true]);
+  expect(accepted.results[0]).toMatchObject({ ok: true, committed: [expect.anything()] });
 });
 
-test("64b: only a trusted Dreamer may submit empty supports, which inherit the exact parent supports", () => {
+test("64b: only a Dreamer pass may submit empty supports, which inherit the exact parent supports", () => {
   const f = fixture();
+  // The manual path, and a Dreamer run self-described to it, grant no such authority.
+  expect(f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, path: f.target, operations: [f.archive] }).ok).toBe(false);
   expect(f.store.commitConsolidationRun({ run: f.run, path: f.target, operations: [f.archive] }).ok).toBe(false);
-  const bound = f.store.bindDreamingRun(f.run);
-  const accepted = f.store.commitConsolidationRun({ run: bound, path: f.target, operations: [f.archive] });
+  const done = f.pass([f.archive]);
+  const accepted = done.results[0]!;
   expect(accepted.ok).toBe(true);
   if (!accepted.ok) return;
   const revision = f.store.knowledgeRevision(accepted.committed[0]!.commit)!;
   expect(revision.actorRole).toBe("dreaming");
   expect(revision.parentId).toBe(f.item.commit);
   expect(revision.supports).toEqual(f.content.supports);
-  expect(f.store.listFactsByRun(f.store.dreamingRunId(bound)!)).toEqual([]);
+  expect(f.store.listFactsByRun(done.runId)).toEqual([]);
   expect(f.store.currentKnowledge(f.target)).toEqual([]);
   expect(f.store.db.prepare("SELECT 1 FROM knowledge_processed WHERE revision_id = ?").get(revision.id)).toBeUndefined();
 });
 
 test.each(["update", "archive"] as const)("64b: empty-support %s materializes the parent's supports", op => {
   const f = fixture();
-  const run = f.store.bindDreamingRun(f.run);
   const operation = op === "archive" ? f.archive : { op, knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit,
     text: "maintained rule", category: "constraint" as const, scope: "project" as const, supports: [],
     topics: [], reason: "Maintenance rewrite.", createdAt: "now" };
-  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [operation] });
+  const result = f.pass([operation]).results[0]!;
   expect(result.ok).toBe(true);
   if (result.ok) expect(f.store.knowledgeRevision(result.committed[0]!.commit)?.supports).toEqual(f.content.supports);
 });
@@ -131,11 +130,10 @@ test.each(["update", "archive"] as const)("inherited cross-project supports do n
     store.db.prepare("UPDATE sessions SET project_id = ? WHERE id = ?")
       .run(store.createProject({ name: "moved", declaredBy: "mark" }).id, sibling.id);
   });
-  const run = f.store.bindDreamingRun(f.run);
   const operation = op === "archive" ? { ...f.archive, knowledgeId: item.knowledgeId, baseCommit: item.commit }
     : { op, knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "maintained rule", category: "constraint" as const,
       scope: "project" as const, supports: [], topics: [], reason: "Maintenance rewrite.", createdAt: "now" };
-  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [operation] });
+  const result = f.pass([operation]).results[0]!;
   expect(result.ok, JSON.stringify(result)).toBe(true);
   if (result.ok) expect(f.store.knowledgeRevision(result.committed[0]!.commit)).toMatchObject({ op, supports: [citedId] });
 });
@@ -149,29 +147,27 @@ test("64b: empty-support merge unions both exact parents and split copies its ex
     secondFactId = secondFact.id;
     second = seedKnowledge(store, target, "project", "constraint", [secondFact.id], "second rule");
   });
-  const run = merged.store.bindDreamingRun(merged.run);
-  const merge = merged.store.commitConsolidationRun({ run, path: merged.target, operations: [{ op: "merge",
+  const merge = merged.pass([{ op: "merge",
     intoKnowledgeId: merged.item.knowledgeId, intoBaseCommit: merged.item.commit,
     absorb: [{ knowledgeId: second.knowledgeId, baseCommit: second.commit }],
     text: "merged rules", category: "constraint", scope: "project", supports: [], topics: [], reason: "Merge redundancy.", createdAt: "now",
-  }] });
+  }]).results[0]!;
   expect(merge.ok).toBe(true);
   if (merge.ok) expect(merged.store.knowledgeRevision(merge.committed[0]!.commit)?.supports)
     .toEqual([merged.content.supports[0], secondFactId]);
 
   const split = fixture();
-  const splitRun = split.store.bindDreamingRun(split.run);
-  const result = split.store.commitConsolidationRun({ run: splitRun, path: split.target, operations: [{ op: "split",
+  const result = split.pass([{ op: "split",
     knowledgeId: split.item.knowledgeId, baseCommit: split.item.commit, text: "primary claim", category: "constraint", scope: "project", topics: [],
     supports: [], reason: "Separate claims.", createdAt: "now",
     children: [{ title: "Fixture child", text: "first", category: "constraint", topics: [] }, { title: "Fixture child", text: "second", category: "constraint", topics: [] }],
-  }] });
+  }]).results[0]!;
   expect(result.ok).toBe(true);
   if (result.ok) expect(result.committed.map(value => split.store.knowledgeRevision(value.commit)!.supports))
     .toEqual([split.content.supports, split.content.supports, split.content.supports]);
 });
 
-test("64b: explicit evidence is not augmented and invalid evidence rolls back the whole batch", () => {
+test("64b: explicit evidence is not augmented and an operation with invalid evidence is refused without a write", () => {
   const f = fixture();
   const evidence = legacyFact(f.store, f.target,
     [{ entry: f.store.getSourceEntry(f.target.triggerEntryId!)!, address: `T${f.target.headTurnId}#user` }], "replacement evidence", "decision");
@@ -179,40 +175,36 @@ test("64b: explicit evidence is not augmented and invalid evidence rolls back th
     op: "create", title: "Fixture title", handle: "$2", author: "test", ...f.content, text: "another rule",
   }] });
   if (!another.ok) throw Error(another.problems.join());
-  const run = f.store.bindDreamingRun(f.run);
   const before = f.store.listKnowledgeRevisions();
-  const invalid = f.store.commitConsolidationRun({ run, path: f.target, operations: [
+  // A pass is not atomic (stage 4: each operation commits or is refused on its own): the refused one writes nothing and does not stop the other.
+  const done = f.pass([
+    { op: "archive", kind: "invalid", text: f.archive.text, knowledgeId: another.committed[0]!.knowledgeId, baseCommit: another.committed[0]!.commit,
+      supports: [999_999], reason: "Invalid evidence.", createdAt: "now" },
     { op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, text: "evidence rewrite", category: "constraint", scope: "project",
       supports: [evidence.id], topics: [], reason: "Apply evidence.", createdAt: "now" },
-    { op: "archive", kind: "budget", knowledgeId: another.committed[0]!.knowledgeId, baseCommit: another.committed[0]!.commit,
-      supports: [999_999], reason: "Invalid evidence.", createdAt: "now" },
-  ] });
-  expect(invalid.ok).toBe(false);
-  expect(f.store.listKnowledgeRevisions()).toEqual(before);
-  const accepted = f.store.commitConsolidationRun({ run, path: f.target, operations: [{ op: "update",
-    knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, text: "evidence rewrite", category: "constraint", scope: "project",
-    supports: [evidence.id], topics: [], reason: "Apply evidence.", createdAt: "now",
-  }] });
-  expect(accepted.ok).toBe(true);
+  ]);
+  expect(done.results.map(result => result.ok)).toEqual([false, true]);
+  expect(f.store.listKnowledgeRevisions()).toHaveLength(before.length + 1);
+  expect(f.store.currentCommit(another.committed[0]!.knowledgeId, f.target)[0]!.id).toBe(another.committed[0]!.commit);
+  const accepted = done.results[1]!;
   if (accepted.ok) expect(f.store.knowledgeRevision(accepted.committed[0]!.commit)?.supports).toEqual([evidence.id]);
 });
 
-test("64b: empty legacy parent support remains empty and Dreamer admission needs no trigger entry", () => {
+test("64b: empty legacy parent support remains empty", () => {
   const f = fixture();
   f.store.db.prepare("UPDATE knowledge_revisions SET supports = '[]' WHERE id = ?").run(f.item.commit);
-  f.store.db.prepare("UPDATE dreaming_ranges SET origin_session_id = NULL, origin_entry_ids = NULL WHERE id = ?").run(f.run.dreamingRangeId!);
-  const run = f.store.bindDreamingRun(f.run);
-  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [f.archive] });
+  const done = f.pass([f.archive]);
+  const result = done.results[0]!;
   expect(result.ok).toBe(true);
   if (result.ok) expect(f.store.knowledgeRevision(result.committed[0]!.commit)?.supports).toEqual([]);
-  expect(f.store.listFactsByRun(f.store.dreamingRunId(run)!)).toEqual([]);
+  expect(f.store.listFactsByRun(done.runId)).toEqual([]);
 });
 
-test("32d: trusted authority never grants empty-support create or a mixed partial batch", () => {
+test("32d: a Dreamer pass never grants an empty-support create", () => {
   const f = fixture();
-  const run = f.store.bindDreamingRun(f.run);
-  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [f.archive, { op: "create", title: "Fixture title", handle: "$1", author: "test", ...f.content, supports: [] }] });
-  expect(result.ok).toBe(false);
+  const done = f.pass([{ op: "create", title: "Fixture title", handle: "$1", author: "test", ...f.content, supports: [] }]);
+  expect(done.results[0]).toMatchObject({ ok: false });
+  expect(f.store.listKnowledgeRevisions()).toHaveLength(1);
   expect(f.store.currentCommit(f.item.knowledgeId, f.target)[0]!.id).toBe(f.item.commit);
 });
 
@@ -243,7 +235,7 @@ test("32d: simultaneous processes migrate the actor column under one short schem
 
 test.each(["manual", "noting", "consolidation", "dreaming"] as const)("32d: %s self-description grants no empty-support archive authority", kind => {
   const f = fixture();
-  const result = f.store.commitConsolidationRun({ run: { kind, sessionId: f.target.sessionId, createdAt: "now", dreamingAuthority: {} }, path: f.target, operations: [f.archive] });
+  const result = f.store.commitConsolidationRun({ run: { kind, sessionId: f.target.sessionId, createdAt: "now" }, path: f.target, operations: [f.archive] });
   expect(result.ok).toBe(false);
   expect(f.store.currentCommit(f.item.knowledgeId, f.target)[0]!.id).toBe(f.item.commit);
 });
@@ -256,9 +248,8 @@ test("64b: inherited archive provenance and direct-support applicability survive
     nativeId: "sibling", role: "user", text: "sibling", raw: "sibling", calls: [] });
   f.store.selectSourcePath(f.target.sessionId, "sibling", [siblingEntry.id]);
   const siblingPath = { ...f.target, branch: "sibling", headTurnId: sibling.id };
-  const bound = f.store.bindDreamingRun(f.run);
-  const result = f.store.commitConsolidationRun({ run: bound, path: f.target, operations: [f.archive] });
-  if (!result.ok) throw Error(result.problems.join());
+  const result = f.pass([f.archive]).results[0]!;
+  if (!result.ok) throw Error(result.reason);
   const commit = result.committed[0]!.commit;
   const parent = f.store.knowledgeRevision(f.item.commit)!;
   const inherited = f.store.knowledgeRevision(commit)!;
@@ -280,52 +271,14 @@ test("64b: inherited archive provenance and direct-support applicability survive
   expect(memory.search("rule", "knowledge")).toContain("(archived)");
 });
 
-// 143 supersedes writing foreign knowledge created after freeze; expired claims still fence writes.
-test("an expired Dreamer claim cannot write frozen knowledge", () => {
-  const expired = fixture(), expiredRun = expired.store.bindDreamingRun(expired.run);
-  const before = expired.store.listKnowledgeRevisions();
-  expired.store.releaseClaim(expired.run.claim!);
-  expect(expired.store.commitConsolidationRun({ run: expiredRun, path: expired.target, operations: [expired.archive] }).ok).toBe(false);
-  expect(expired.store.listKnowledgeRevisions()).toEqual(before);
-});
-
-
-test("32d: create plus merge is not a split; rejection has zero batch side effects", () => {
-  let item!: { knowledgeId: number; commit: number };
-  const f = fixture(":memory:", (store, target, supports) => {
-    item = seedKnowledge(store, target, "project", "constraint", supports, "second rule");
-  });
-  // Both parents are current; this is an operation-type violation, not a stale-base rejection.
-  const run = f.store.bindDreamingRun(f.run);
-  const before = { revisions: f.store.listKnowledgeRevisions(), range: f.store.dreamingRange(f.run.dreamingRangeId!), links: f.store.listKnowledgeLinks(f.item.knowledgeId) };
-  const merge = { op: "merge" as const, intoKnowledgeId: f.item.knowledgeId, intoBaseCommit: f.item.commit, absorb: [{ knowledgeId: item.knowledgeId, baseCommit: item.commit }], ...f.content };
-  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [{ op: "create", title: "Fixture title", handle: "$split", author: "test", ...f.content }, merge] });
-  expect(result.ok).toBe(false);
-  expect(f.store.listKnowledgeRevisions()).toEqual(before.revisions);
-  expect(f.store.dreamingRange(f.run.dreamingRangeId!)).toEqual(before.range);
-  expect(f.store.listKnowledgeLinks(f.item.knowledgeId)).toEqual(before.links);
-  expect(f.store.commitConsolidationRun({ run, path: f.target, operations: [merge] }).ok).toBe(true);
-});
-
-
-test.each(["update", "archive"] as const)("34a: create plus authorized family %s cannot impersonate an explicit split", op => {
-  const f = fixture(), run = f.store.bindDreamingRun(f.run);
-  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [
-    { op: "create", title: "Fixture title", handle: "$split", author: "test", ...f.content },
-    op === "archive" ? { ...f.archive, supports: [] } : { ...f.content, op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit },
-  ] });
-  expect(result.ok).toBe(false);
-  expect(f.store.listKnowledgeRevisions()).toHaveLength(1);
-});
-
-test("32d: an outside-family update cannot decorate create into a split", () => {
-  const f = fixture(), run = f.store.bindDreamingRun(f.run);
-  const outside = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$2", author: "test", ...f.content }] });
-  if (!outside.ok) throw Error(outside.problems.join());
-  const item = outside.committed[0]!, before = f.store.listKnowledgeRevisions();
-  expect(f.store.commitConsolidationRun({ run, path: f.target, operations: [
-    { op: "create", title: "Fixture title", handle: "$split", author: "test", ...f.content },
-    { op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, ...f.content },
-  ] }).ok).toBe(false);
+// 143's frozen scope is gone; the claim fence is not: a pass whose claim has lapsed or been released writes nothing.
+test("an expired Dreamer claim cannot write", () => {
+  const f = fixture(), claim = { sessionId: f.target.sessionId, phase: "dreaming" as const, executorId: "test", token: "live", expiresAt: Date.now() + 60_000, borrowed: false, reserved: false };
+  f.store.db.prepare("INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, 'dreaming', 'test', 'live', ?, 0, 0)")
+    .run(claim.sessionId, claim.expiresAt);
+  const run = { ...f.run, claim };
+  const before = f.store.listKnowledgeRevisions();
+  f.store.releaseClaim(claim);
+  expect(() => f.pass([f.archive], run)).toThrow(/claim/);
   expect(f.store.listKnowledgeRevisions()).toEqual(before);
 });

@@ -5,6 +5,7 @@ import { sourceSeededMemory, compacted } from "../../source-fixture.ts";
 import { fact as seedFact, knowledge as seedKnowledge, legacyKnowledge } from "../../support/seed.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
 import { knowledgeTitle, tokens } from "../../../src/core/render/index.ts";
+import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>;
 afterEach(() => memory?.close());
@@ -43,15 +44,14 @@ test("a legacy version shows its body's leading characters, cut to the title lim
   expect(memory.store.getKnowledgeRevision(legacy.knowledgeId, legacy.commit)!.title).toBeNull();
 });
 
-test("injection, the compaction block, the knowledge view, an exact read and the Dreamer's material put the title on the header line", () => {
+test("injection, the compaction block, the knowledge view, an exact read and the Dreamer's curate view put the title on the header line", () => {
   const { path, session, withTitle, legacy, limit } = setup();
   const legacyTitle = knowledgeTitle(memory.store.getKnowledgeRevision(legacy.knowledgeId, legacy.commit)!, limit);
   const views: Record<string, string> = {
     injection: memory.inject(session.id),
     compaction: compacted(memory.compact(session.id, "main", path.headTurnId)),
     knowledge: memoryFiles(memory, path).read(`trace://knowledge/S${session.id}`).content,
-    dreamer: memory.store.pendingVersions(`project:${memory.store.getSession(session.id)!.projectId}`, path)
-      .map(value => value.material).join("\n"),
+    dreamer: curatePrefix(memory.store, path).text,
   };
   for (const [name, view] of Object.entries(views)) {
     const [head, body] = header(view, withTitle.knowledgeId);

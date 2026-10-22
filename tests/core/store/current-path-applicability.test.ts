@@ -226,7 +226,7 @@ test("64b validity pilot: later applicable commit wins independent of restore or
   const base = create(store, aMain, rootFact.id, "global", "base body");
   const archived = store.commitConsolidationRun({ path: aMain,
     run: { kind: "manual", sessionId: a.id, branch: "main", createdAt: at },
-    operations: [{ op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit,
+    operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit,
       supports: [archiveFact.id], reason: "Archive on A child.", createdAt: at }] });
   if (!archived.ok) throw new Error(archived.problems.join("; "));
   const archiveCommit = archived.committed[0]!.commit;
@@ -353,7 +353,7 @@ test("64b validity pilot: competing same-base Store writes commit once and stale
       run: { kind: "manual", sessionId: owner.id, branch: "main", createdAt: at }, operations: [
         ...(includeCreate ? [{ op: "create" as const, title: "Fixture title", handle: "$partial", author: "test", text: "must roll back",
           category: "constraint" as const, scope: "session" as const, supports: [fact.id], topics: [], reason: "Atomic probe.", createdAt: at }] : []),
-        { op: "archive" as const, kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fact.id], reason, createdAt: at },
+        { op: "archive" as const, kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fact.id], reason, createdAt: at },
       ] });
     const winner = attempt(first, "Winner.");
     expect(winner.ok).toBe(true);

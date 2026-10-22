@@ -7,10 +7,9 @@ import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 const at = "2026-09-28T00:00:00Z";
 const median = (samples: number[]) => [...samples].sort((a, b) => a - b)[Math.floor(samples.length / 2)]!;
 
-/** The Dreamer's due check over the same current knowledge beside `archived` processed archived
- * identities. `currentProcessed` sizes the current pool: 240 items give the overflow window (about
- * 35k tokens, where the check repeats at every opportunity); 40 give little current knowledge
- * (about 6.5k), the ticket's second ruled scenario. */
+/** The Dreamer's due check (the Noter-changed trigger, 144 stage 4) over the same current knowledge beside `archived` processed
+ * archived identities. `currentProcessed` sizes the current pool: 240 items (about 35k tokens, where the check repeats at every
+ * opportunity) or 40 (about 6.5k), the ticket's two ruled scenarios. */
 function measure(archived: number, currentProcessed: number) {
   const memory = TraceMemory(":memory:", vi.fn());
   const store = memory.store;
@@ -33,15 +32,14 @@ function measure(archived: number, currentProcessed: number) {
     for (let from = 0; from < archived; from += 500) {
       const made = knowledgeBatch(store, path, Array.from({ length: Math.min(500, archived - from) }, (_, i) => item(`old ${from + i}`))).committed;
       const archives = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, createdAt: at },
-        operations: made.map(value => ({ op: "archive" as const, kind: "budget" as const, knowledgeId: value.knowledgeId, baseCommit: value.commit,
+        operations: made.map(value => ({ op: "archive" as const, kind: "invalid" as const, text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: value.knowledgeId, baseCommit: value.commit,
           supports: [fact.id], reason: "retired", createdAt: at })) });
       if (!archives.ok) throw new Error(archives.problems.join("; "));
       processed([...made, ...archives.committed]);
     }
     processed(knowledgeBatch(store, path, Array.from({ length: currentProcessed }, (_, i) => item(`current ${i}`))).committed);
     knowledgeBatch(store, path, Array.from({ length: 5 }, (_, i) => item(`pending ${i}`)));
-    const size = store.poolSizes(path).reduce((sum, value) => sum + value.tokens, 0);
-    // `due` is the trigger in force; `changes` is Stage 4's (Noter revisions since coverage, 144), over the same fixture.
+    // `due` goes through the scheduler's eligibility; `changes` is the Store's rule directly.
     const time = (check: () => unknown) => {
       check();
       const samples: number[] = [];
@@ -52,7 +50,7 @@ function measure(archived: number, currentProcessed: number) {
       }
       return median(samples.slice(5));
     };
-    return { size, due: time(() => memory.taskEligibility("dreaming", path)), changes: time(() => store.dreamingDueByNoterChanges(path)) };
+    return { due: time(() => memory.taskEligibility("dreaming", path)), changes: time(() => store.dreamingDue(path)) };
   } finally { memory.close(); }
 }
 
@@ -66,9 +64,6 @@ function withinRuledBound(short: { due: number }, long: { due: number }) {
 test("104: the Dreamer's due check stays within the ruled bound as archived history grows from 100 to 3,000 identities, at overflow scale", () => {
   const short = measure(100, 240), long = measure(3_000, 240);
   console.info(JSON.stringify({ fixture: "104 due check over archived history (overflow scale)", short, long }));
-  // Same current bodies; only their K addresses differ in length.
-  expect(Math.abs(long.size - short.size) / short.size).toBeLessThan(0.02);
-  expect(short.size).toBeGreaterThan(25_000);
   withinRuledBound(short, long);
   withinRuledBound({ due: short.changes }, { due: long.changes });
 }, 120_000);
@@ -76,9 +71,6 @@ test("104: the Dreamer's due check stays within the ruled bound as archived hist
 test("104: the Dreamer's due check stays within the ruled bound as archived history grows from 100 to 3,000 identities, with little current knowledge", () => {
   const short = measure(100, 40), long = measure(3_000, 40);
   console.info(JSON.stringify({ fixture: "104 due check over archived history (little current knowledge)", short, long }));
-  // Same current bodies; only their K addresses differ in length.
-  expect(Math.abs(long.size - short.size) / short.size).toBeLessThan(0.02);
-  expect(short.size).toBeLessThan(10_000);
   withinRuledBound(short, long);
   withinRuledBound({ due: short.changes }, { due: long.changes });
 }, 120_000);
@@ -109,11 +101,11 @@ function measureRewrites(rewrites: number) {
       if (!result.ok) throw new Error(result.problems.join("; "));
       base = result.committed[0]!.commit;
     }
-    store.dreamingDueByNoterChanges(path);
+    store.dreamingDue(path);
     const samples: number[] = [];
     for (let i = 0; i < 40; i++) {
       const start = performance.now();
-      store.dreamingDueByNoterChanges(path);
+      store.dreamingDue(path);
       samples.push(performance.now() - start);
     }
     return { due: median(samples.slice(5)) };

@@ -117,7 +117,7 @@ test("an update inherits its base's title; a base without one asks for it; an ar
   expect(JSON.parse(write.execute({ ...update, id: tag(legacy.knowledgeId), title: "Old rule", edits: [{ old: "Legacy", new: "Old" }] })).committed).toHaveLength(1);
   // Archiving a legacy version keeps it untitled.
   const second = legacyKnowledge(memory.store, path, { text: "Another legacy rule", category: "constraint", scope: "project", supports: [1] });
-  const gone = JSON.parse(write.execute({ op: "archive", kind: "budget", id: tag(second.knowledgeId), supports: ["F1"], reason: "Retire" }));
+  const gone = JSON.parse(write.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag(second.knowledgeId), supports: ["F1"], reason: "Retire" }));
   expect(memory.store.getKnowledgeRevision(second.knowledgeId, receiptCommit(memory.store, gone.committed[0]))!.title).toBeNull();
 });
 

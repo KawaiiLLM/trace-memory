@@ -6,6 +6,7 @@ import { host } from "./test-host.ts";
 import { fixture, worker, submitted, say, noterTurn, noteBatch } from "./native-fixture.ts";
 import { countRunBodies } from "../../perf/fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 
 test("24a review: a footer refresh with session-scoped knowledge reads no run audit body", async () => {
   const h = host({ "noting.triggerTokens": 1e9 });
@@ -16,12 +17,13 @@ test("24a review: a footer refresh with session-scoped knowledge reads no run au
     const noted = legacyFacts(store, { kind: "noting", sessionId: 1, branch: "main", createdAt: "t" },
       [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], category: "observation", actor: "user",
         text: "evidence", createdAt: "t" }]);
-    // The originating manual run carries a megabyte of request audit: scope resolution must not read it.
-    const integrated = h.memory.store.commitConsolidationRun({ path: { sessionId: 1, branch: "main", headTurnId: 1 },
-      run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "t", request: "Q".repeat(1_000_000),
+    // The originating Noter run carries a megabyte of request audit: scope resolution must not read it. (The footer counts Noter changes, 2026-10-22.)
+    const integrated = commitNoterKnowledge(h.memory.store, { path: { sessionId: 1, branch: "main", headTurnId: 1 },
+      run: { sessionId: 1, branch: "main", createdAt: "t", request: "Q".repeat(1_000_000),
         response: JSON.stringify({ usage: { input: 10, output: 2, cost: { total: 0.01 } } }) },
       operations: [{ op: "create", title: "Fixture title", handle: "k", text: "A scoped conclusion", category: "understanding", scope: "session",
         supports: [noted.facts[0]!.id], reason: "evidence", topics: [], author: "fake", createdAt: "t" }] });
+
     if (!integrated.ok) throw new Error(integrated.problems.join("; "));
     const bodies = countRunBodies();
     try {

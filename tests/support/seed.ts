@@ -164,18 +164,19 @@ export function updateKnowledge(store: Store, path: KnowledgePath, knowledgeId: 
   return result.committed[0]!;
 }
 
-/** One manual archive of an exact base (99): `budget` keeps the parent's body, `invalid` states why. */
+/** One manual archive of an exact base: its body states why (`invalid`, or `inadmissible`). The `budget` kind is retired (2026-10-22); `legacyArchive`
+ * writes the shape old rows have. */
 export function archive(store: Store, path: KnowledgePath, knowledgeId: number, baseCommit: number, supports: number[],
-  kind: "budget" | "invalid", text?: string): number {
+  kind: "invalid" | "inadmissible" = "invalid", text = "Withdrawn: the user retired this and nothing replaces it, per the cited fact."): number {
   const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    operations: [{ op: "archive", kind, knowledgeId, baseCommit, supports, reason: "fixture archive", createdAt: at, ...(text ? { text } : {}) }] });
+    operations: [{ op: "archive", kind, knowledgeId, baseCommit, supports, reason: "fixture archive", createdAt: at, text }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!.commit;
 }
 
 /** An archive written before 99, as production keeps it (91): an empty body and no kind. */
 export function legacyArchive(store: Store, path: KnowledgePath, knowledgeId: number, baseCommit: number, supports: number[]): number {
-  const commit = archive(store, path, knowledgeId, baseCommit, supports, "budget");
+  const commit = archive(store, path, knowledgeId, baseCommit, supports);
   store.db.prepare("UPDATE knowledge_revisions SET text = '', archive_kind = NULL WHERE id = ?").run(commit);
   return commit;
 }

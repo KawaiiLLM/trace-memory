@@ -219,7 +219,7 @@ test("92 archive notices remain eligible even with complete current-change evide
   const f = fixture();
   const parent = f.create("retire me", [f.facts[0]!.id]);
   const archive = f.memory.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time },
-    operations: [{ op: "archive", kind: "budget", knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: f.facts.map(fact => fact.id),
+    operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: f.facts.map(fact => fact.id),
       reason: "withdraw", createdAt: time }] });
   if (!archive.ok) throw new Error(archive.problems.join());
   const visibleParent = { knowledgeCommitIds: new Set([parent.commit]) };
@@ -235,7 +235,7 @@ test("34c a retained state-only receipt consumes allowance without granting body
   const f = fixture();
   const parent = f.create("retired", [f.facts[0]!.id]);
   const archive = f.memory.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time },
-    operations: [{ op: "archive", kind: "budget", knowledgeId: parent.knowledgeId, baseCommit: parent.commit,
+    operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: parent.knowledgeId, baseCommit: parent.commit,
       supports: [f.facts[0]!.id], reason: "retire", createdAt: time }] });
   if (!archive.ok) throw new Error(archive.problems.join());
   f.create("remaining candidate ".repeat(6_000), [f.facts[1]!.id]);
@@ -250,7 +250,7 @@ test("34c state transitions are whole deterministic prefix items and only select
   const parents = [f.create("retire first ".repeat(4_000), [f.facts[0]!.id]), f.create("retire second ".repeat(4_000), [f.facts[1]!.id]), f.create("retire third ".repeat(4_000), [f.facts[0]!.id])];
   const archives = parents.map((parent, index) => {
     const result = f.memory.store.commitConsolidationRun({ path: f.target,
-      run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ op: "archive", kind: "budget",
+      run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.",
         knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: [f.facts[index % 2]!.id], reason: `retire ${index}`, createdAt: time }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
     return result.committed[0]!;
@@ -294,7 +294,7 @@ test("34c state-prefix budgeting shares exact framing with bodies without acknow
   const f = fixture();
   const parent = f.create("retire visible parent ".repeat(6_000), [f.facts[0]!.id]);
   const archive = f.memory.store.commitConsolidationRun({ path: f.target,
-    run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ op: "archive", kind: "budget",
+    run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.",
       knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: [f.facts[0]!.id], reason: "retire", createdAt: time }] });
   if (!archive.ok) throw new Error(archive.problems.join("; "));
   const body = f.create("deliver this complete body", [f.facts[1]!.id]);

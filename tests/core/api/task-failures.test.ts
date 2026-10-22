@@ -52,7 +52,7 @@ test("32c: borrowed failures continue across executors, disable only the target 
     supports: [fact.facts[0]!.id], reason: "evidence", topics: [], createdAt: "now",
   }] });
   if (!knowledge.ok) throw Error(knowledge.problems.join("; "));
-  const claim = second.store.acquireClaim(target, "dreaming", "another-process")!;
+  const claim = second.store.acquireClaim(target, "dreaming", "another-process", false, () => true, 0)!; // trigger 0: this test needs the claim held, not a due Dreamer
   expect(claim).not.toBeNull();
   const result = await note(first, target, options);
   expect(result.automaticOff).toContain(`S${target.sessionId} noting`);

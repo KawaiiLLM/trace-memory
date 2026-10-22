@@ -18,9 +18,9 @@ async function seeded(options: { rawTokens?: number } = {}) {
     [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], actor: "user", category: "decision",
       text: "Keep this rule", createdAt: "seed" }]).facts[0]!;
   const created = knowledge(store, store.knowledgePath(1, "main", 1), "project", "constraint", [evidence.id],
-    "rule ".repeat(6000), { run: { kind: "manual", createdAt: "seed" }, operation: { createdAt: "seed" } });
+    "rule ".repeat(6000), { operation: { createdAt: "seed", title: "Fixture title" } }); // Noter-written: only Noter changes make the Dreamer due
   const pool = `project:${store.getSession(1)!.projectId}`;
-  const pending = store.pendingVersions(pool, store.knowledgePath(1))[0]!.tokens;
+  const pending = store.noterChangedTokens(store.knowledgePath(1)); // the item's weight toward the Dreamer trigger
   h.memory.setKnowledgeBudget("project", pending * 2);
   return { h, store, pool, revisionId: created.commit };
 }

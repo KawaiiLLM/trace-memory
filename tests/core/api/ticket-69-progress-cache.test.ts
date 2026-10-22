@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
+import { coverKnowledge } from "../../support/dreamer.ts";
 import { Store } from "../../../src/core/store/index.ts";
 
 const time = "2026-09-09T00:00:00Z";
@@ -68,7 +69,7 @@ test("ticket 69: the cache invalidates on a commit made through a second Store c
   } finally { memory.close(); observer.close(); }
 });
 
-test("ticket 69: the cache invalidates on N knowledge publication and D settlement through another connection", () => {
+test("ticket 69: the cache invalidates on N knowledge publication and Dreamer coverage through another connection", () => {
   const { memory, sessionId, turnId, entryId } = seeded();
   const store = new Store(dbPath);
   try {
@@ -84,14 +85,9 @@ test("ticket 69: the cache invalidates on N knowledge publication and D settleme
     const afterConsolidation = memory.progress(sessionId, "main", turnId);
     expect(afterConsolidation).toMatchObject({ facts: 1, knowledge: 1, changedKnowledge: 1 });
     expect(store.consolidationBatch(sessionId, "main", turnId)).toHaveLength(1);
-    // A Dreamer commit against this pool, run through the ordinary claim/range/execution pipeline.
+    // A Dreamer pass that covered the item (coverage is what a passed curate leaves, stage 4 §2.1).
     const path = { sessionId, branch: "main", headTurnId: turnId };
-    const claim = store.acquireClaim(path, "dreaming", "ticket-69-test")!;
-    const range = store.retainKnowledgePoolRange(path, claim);
-    const executionId = store.beginExecution({ sessionId, phase: "dreaming", origin: range.origin });
-    const run = store.bindDreamingRun({ kind: "dreaming", sessionId, branch: "main", dreamingRangeId: range.id, executionId, claim, createdAt: time });
-    store.completeKnowledgePoolRange(run, "success", range.eventIds); // reviewed, no operation needed
-    store.releaseClaim(claim);
+    coverKnowledge(store, path, consolidated.committed.map(item => item.commit));
     const afterDreaming = memory.progress(sessionId, "main", turnId);
     expect(afterDreaming).toMatchObject({ facts: 1, knowledge: 1, changedKnowledge: 0 });
   } finally { store.close(); memory.close(); }

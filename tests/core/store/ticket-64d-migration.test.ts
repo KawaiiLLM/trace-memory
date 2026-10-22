@@ -3,7 +3,6 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
 import { Store } from "../../../src/core/store/index.ts";
 import { entry, legacyFacts } from "../../support/seed.ts";
 
@@ -189,7 +188,7 @@ test("64d rejects malformed merge ancestry and rolls back backfill and policy to
   unchanged.close();
 });
 
-test("64d seeds and dry-run measures exact active lineage cursors without pooling siblings", () => {
+test("64d seeds exact active lineage cursors without pooling siblings", () => {
   const fixture = legacyFixture(false, true);
   const store = new Store(fixture.path);
   expect(fixture.splitInvisibleRevision).toBeTypeOf("number");
@@ -197,16 +196,6 @@ test("64d seeds and dry-run measures exact active lineage cursors without poolin
   expect(store.db.prepare("SELECT 1 FROM knowledge_processed WHERE revision_id=?").get(fixture.leftVisibleRevision!)).toBeDefined();
   expect(store.migration64d.seeded).toEqual({ global: 0, project: 0, session: 1 });
   store.close();
-
-  const output = execFileSync(process.execPath, ["scripts/dry-run-64d-migration.ts", fixture.path],
-    { cwd: join(import.meta.dirname, "../../.."), encoding: "utf8" });
-  const report = JSON.parse(output) as { measurements: { lineage: string | null; mode: string;
-    pools: { pool: string; current: number }[] }[] };
-  const left = report.measurements.find(value => value.lineage === "left")!;
-  const right = report.measurements.find(value => value.lineage === "right")!;
-  expect(left.mode).toBe("cursor"); expect(right.mode).toBe("cursor");
-  expect(left.pools.find(pool => pool.pool.startsWith("session:"))?.current).toBe(1);
-  expect(right.pools.find(pool => pool.pool.startsWith("session:"))?.current).toBe(0);
 });
 
 test("64d rebuilds a real pre-64c range, preserves links, and closes unfinished audit without a run", () => {

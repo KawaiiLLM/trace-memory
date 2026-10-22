@@ -528,7 +528,7 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   expect(unchanged.text).toBe("");
   expect(unchanged.knowledgeCommitIds).toEqual([]);
   files.read(`trace://${tag(1, current)}`);
-  await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "archive", kind: "budget", id: tag(1, current),
+  await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag(1, current),
     reason: "Withdrawn by the user.", supports: ["F1"] }, tag(1, current));
   setKnowledgeCapacity(memory, 5_000);
   const squeezed = delivery([current]);

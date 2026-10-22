@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
+import { writeHandoff } from "../../../src/core/store/executions.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
@@ -575,7 +576,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       topics: [], createdAt: consolidationAt }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const item = created.committed[0]!;
-    const archive = { op: "archive" as const, kind: "budget" as const, knowledgeId: item.knowledgeId, baseCommit: item.commit,
+    const archive = { op: "archive" as const, kind: "invalid" as const, text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: item.knowledgeId, baseCommit: item.commit,
       supports: [factId], reason: "retire rule", createdAt: consolidationAt };
     // N owns create and archive; terminal publication commits both atomically.
     const accepted = commitNoterKnowledge(store, { run: { sessionId: s.id, createdAt: consolidationAt },
@@ -584,7 +585,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) return;
     expect(accepted.committed.map(op => op.op)).toEqual(["create", "archive"]);
-    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "archive", archiveKind: "budget", actorRole: "noting" });
+    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "archive", archiveKind: "invalid", actorRole: "noting" });
 
     // A batch mixing a legal op with one forbidden to N (merge) rolls back whole.
     const before = store.listKnowledgeRevisions();
@@ -658,7 +659,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const id = r.committed[0]!.knowledgeId;
     const archive = store.commitConsolidationRun({
       run: { kind: "manual", sessionId: s.id, createdAt: consolidationAt },
-      operations: [{ op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: id, baseCommit: 1, supports: [999998], createdAt: consolidationAt }],
+      operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: id, baseCommit: 1, supports: [999998], createdAt: consolidationAt }],
     });
     expect(archive.ok).toBe(false);
     expect(store.currentCommit(id)[0]?.op).toBe("create");
@@ -735,6 +736,9 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     }] });
     if (!knowledge.ok) throw Error(knowledge.problems.join("; "));
     store.closeSession(s.id);
+    // A Dreamer is due on a hand-off row (stage 4 §2.4); the manual item above is not a Noter change.
+    writeHandoff(store, { sessionId: s.id, phase: "dreaming", nextTask: "curate", branch: null, entryIds: [], detail: { curateRuns: [], doneCategories: [] },
+      runId: store.recordRun({ kind: "dreaming", sessionId: s.id, branch: "main", createdAt: consolidationAt, outcome: "success" }).id });
     const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
     const clock = Date.now();
     const workers = ["process-a", "process-b"].map(executor => spawn(process.execPath, ["--input-type=module", "-e", `
@@ -757,19 +761,18 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       await Promise.all(exits);
       expect(store.getSession(s.id)!.closedAt).not.toBeNull();
       const dreamClaim = claims.find(claim => claim.phase === "dreaming")!;
-      const range = store.retainKnowledgePoolRange(target, dreamClaim);
-      const dreamRun = store.bindDreamingRun({ kind: "dreaming", sessionId: s.id, branch: "main", claim: dreamClaim,
-        dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: s.id, phase: "dreaming" }), createdAt: consolidationAt });
+      expect(dreamClaim).toBeDefined();
       const time = vi.spyOn(Date, "now").mockReturnValue(clock + 30 * 60_000);
       try {
         for (const stale of claims) {
           const replacement = store.acquireClaim(target, stale.phase, "replacement-process", stale.phase === "noting")!;
           expect(replacement).not.toBeNull(); expect(replacement.token).not.toBe(stale.token);
           const run = { kind: stale.phase, sessionId: s.id, branch: "main", claim: stale, createdAt: consolidationAt };
-          const rejected = stale.phase === "noting" ? store.commitNotingRun({ run, facts: [], entryIds: [entry.id] })
-            : store.commitConsolidationRun({ path: target, run: dreamRun, operations: [] });
-          expect(rejected.ok).toBe(false);
-          if (!rejected.ok) expect(rejected.problems.join(" ")).toMatch(/claim|range/i);
+          if (stale.phase === "noting") {
+            const rejected = store.commitNotingRun({ run, facts: [], entryIds: [entry.id] });
+            expect(rejected.ok).toBe(false);
+            if (!rejected.ok) expect(rejected.problems.join(" ")).toMatch(/claim|range/i);
+          } else expect(() => store.commitTaskPass({ run, path: target, handoff: () => null })).toThrow(/claim/i);
           expect(store.releaseClaim(stale)).toBe(false);
           expect(store.getClaim(s.id, stale.phase)!.token).toBe(replacement.token);
           expect(store.releaseClaim(replacement)).toBe(true);

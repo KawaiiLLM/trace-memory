@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
 import { Store, type TaskTarget } from "../../../src/core/store/index.ts";
-import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 import { entry as seedEntry, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
@@ -143,7 +142,7 @@ test("86: explicit redeclaration checks backlog even after the session was previ
 test.each(["noting", "dreaming"] as const)("86: %s live claim blocks declaration", phase => {
   const f = base(true); fact(f);
   if (phase === "dreaming") knowledge(f);
-  const held = f.store.acquireClaim(f.path, phase, "worker");
+  const held = dreamClaim(f.store, f.path, "worker", phase);
   expect(held).not.toBeNull();
   expect(() => f.store.declareProject(f.session.id, `claim-${phase}`, "mark", { path: f.path, atTrigger: () => false }))
     .toThrow(new RegExp(`${phase} has a live claim`));
@@ -160,27 +159,29 @@ test.each(["source", "target", "unrelated"] as const)("86: a %s project peer's l
   const peerSource = seedEntry(f.store, peerSession.id, peerTurn.id, `peer-${peerTurn.id}`, "user", "peer evidence");
   const peerPath = { sessionId: peerSession.id, branch: "main", headTurnId: peerTurn.id };
   const peerItem = knowledge({ ...f, own: peerProject, session: peerSession, turn: peerTurn, source: peerSource, path: peerPath });
-  const held = f.store.acquireClaim(peerPath, "dreaming", "peer-executor")!;
+  const held = dreamClaim(f.store, peerPath, "peer-executor")!;
   expect(held).not.toBeNull();
-  const range = f.store.retainKnowledgePoolRange(peerPath, held);
-  const run = f.store.bindDreamingRun({ kind: "dreaming", sessionId: peerSession.id, branch: "main", projectId: peerProject.id,
-    claim: held, dreamingRangeId: range.id, executionId: f.store.beginExecution({ sessionId: peerSession.id, phase: "dreaming", origin: range.origin }), createdAt: "now" });
+  const run = { kind: "dreaming" as const, sessionId: peerSession.id, branch: "main", projectId: peerProject.id,
+    claim: held, executionId: f.store.beginExecution({ sessionId: peerSession.id, phase: "dreaming", origin: f.store.triggerOrigin(peerPath) }), createdAt: "now" };
   const move = () => f.memory.declareProject(f.session.id, destination.name, "mark", f.path);
   expect(move()).toContain(destination.name);
   expect(f.store.getSession(f.session.id)!.projectId).toBe(destination.id);
   expect(f.store.getClaim(peerSession.id, "dreaming")).toEqual(held);
-  expect(f.store.dreamingRange(range.id)!.pool).toBe(ALL_POOLS);
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
   const before = f.store.listKnowledgeRevisions().length;
-  const commit = f.store.commitConsolidationRun({ path: peerPath, run, operations: [{ op: "update", knowledgeId: peerItem.knowledgeId,
+  const commit = () => f.store.commitWorkspaceRun({ path: peerPath, run, operations: [{ op: "update", knowledgeId: peerItem.knowledgeId,
     baseCommit: peerItem.commit, text: "Peer maintenance after another session moved", category: "constraint", scope: "project",
     topics: [], supports: [], reason: "Peer's exact running task", createdAt: "now" }] });
   if (relation === "source") {
-    expect(commit.ok).toBe(false); // Its frozen project no longer matches; the peer sees its own failure.
-    if (!commit.ok) expect(commit.problems.join(" ")).toMatch(/target project changed after admission/);
-  } else expect(commit.ok).toBe(true); // Destination/unrelated project runs remain valid.
-  expect(f.store.listKnowledgeRevisions()).toHaveLength(before + Number(commit.ok));
+    // Its frozen project no longer matches; the peer sees its own failure.
+    expect(commit).toThrow(/target project changed after admission/);
+  } else expect(commit().results).toMatchObject([{ ok: true }]); // Destination/unrelated project runs remain valid.
+  expect(f.store.listKnowledgeRevisions()).toHaveLength(before + Number(relation !== "source"));
 });
+
+/** A Dreamer claim for a target that is due (a Noter-written item, trigger of one token): admission is judged by the 2026-10-22 trigger. */
+const dreamClaim = (store: Store, target: TaskTarget, executorId: string, phase: "noting" | "dreaming" = "dreaming") =>
+  store.acquireClaim(target, phase, executorId, false, () => true, 1);
 
 function claimFixture() {
   const store = new Store(":memory:");
@@ -192,10 +193,7 @@ function claimFixture() {
     const noted = legacyFacts(store, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
       sources: [{ entry: source, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "evidence", createdAt: "now",
     }]);
-    const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
-      { op: "create", title: "Fixture title", handle: "$1", author: "test", text: `pending ${name}`, category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
-    ] });
-    if (!result.ok) throw new Error(result.problems.join("; "));
+    seedKnowledge(store, { sessionId: session.id, branch: "main", headTurnId: turn.id }, "project", "constraint", [noted.facts[0]!.id], `pending ${name}`);
     return { sessionId: session.id, branch: "main", headTurnId: turn.id };
   };
   const a = make("A");
@@ -204,22 +202,22 @@ function claimFixture() {
 
 test("49: one database Dreamer claim spans projects while release and expiry preserve normal takeover", () => {
   const f = claimFixture(); storesForClaims.push(f.store);
-  const first = f.store.acquireClaim(f.a, "dreaming", "executor-a");
+  const first = dreamClaim(f.store, f.a, "executor-a");
   expect(first).not.toBeNull();
-  expect(f.store.acquireClaim(f.same, "dreaming", "same-project-executor")).toBeNull();
-  expect(f.store.acquireClaim(f.b, "dreaming", "executor-b")).toBeNull();
+  expect(dreamClaim(f.store, f.same, "same-project-executor")).toBeNull();
+  expect(dreamClaim(f.store, f.b, "executor-b")).toBeNull();
   expect(f.store.releaseClaim(first!)).toBe(true);
-  const peer = f.store.acquireClaim(f.b, "dreaming", "executor-b");
+  const peer = dreamClaim(f.store, f.b, "executor-b");
   expect(peer).not.toBeNull();
   f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE session_id = ? AND phase = 'dreaming'").run(f.b.sessionId);
-  expect(f.store.acquireClaim(f.a, "dreaming", "executor-a")).not.toBeNull();
+  expect(dreamClaim(f.store, f.a, "executor-a")).not.toBeNull();
 });
 
 test("49: reopening an expired Dreamer target cannot reserve the seat owned by another session", () => {
   const f = claimFixture(); storesForClaims.push(f.store);
-  const old = f.store.acquireClaim(f.a, "dreaming", "old-a")!;
+  const old = dreamClaim(f.store, f.a, "old-a")!;
   f.store.invalidateExecutor("old-a");
-  const live = f.store.acquireClaim(f.same, "dreaming", "live-peer")!;
+  const live = dreamClaim(f.store, f.same, "live-peer")!;
 
   f.store.reopenSession(f.a.sessionId, "reopened-a");
 
@@ -231,17 +229,17 @@ test("49: reopening an expired Dreamer target cannot reserve the seat owned by a
   expect(f.store.db.prepare("SELECT count(*) AS count FROM task_claims WHERE phase = 'dreaming' AND expires_at > ?").get(Date.now())!.count).toBe(1);
 
   expect(f.store.releaseClaim(live)).toBe(true);
-  expect(f.store.acquireClaim(f.b, "dreaming", "third-executor")).not.toBeNull();
+  expect(dreamClaim(f.store, f.b, "third-executor")).not.toBeNull();
 });
 
 test("49: reserved Dreamer takeover keeps its token and blocks peers; Noting remains independent", () => {
   const f = claimFixture(); storesForClaims.push(f.store);
-  const old = f.store.acquireClaim(f.a, "dreaming", "old-executor")!;
+  const old = dreamClaim(f.store, f.a, "old-executor")!;
   f.store.reopenSession(f.a.sessionId, "new-executor");
   const reserved = f.store.getClaim(f.a.sessionId, "dreaming")!;
   expect(reserved).toMatchObject({ executorId: "new-executor", reserved: true });
-  expect(f.store.acquireClaim(f.b, "dreaming", "peer")).toBeNull();
-  const takeover = f.store.acquireClaim(f.a, "dreaming", "new-executor")!;
+  expect(dreamClaim(f.store, f.b, "peer")).toBeNull();
+  const takeover = dreamClaim(f.store, f.a, "new-executor")!;
   expect(takeover.token).toBe(reserved.token);
   expect(takeover.token).not.toBe(old.token);
 

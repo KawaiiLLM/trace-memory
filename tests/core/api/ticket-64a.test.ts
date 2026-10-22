@@ -77,7 +77,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       text: "beta.5 is current", category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Version bumped.", createdAt: time }]);
     expect(updated.ok).toBe(true);
     if (!updated.ok) return;
-    const archived = publishN(f.session.id, [{ op: "archive", kind: "budget", knowledgeId: baseCommit.knowledgeId, baseCommit: updated.committed[0]!.commit,
+    const archived = publishN(f.session.id, [{ op: "archive", kind: "invalid", text: "Retired; no longer holds and nothing replaces it.", knowledgeId: baseCommit.knowledgeId, baseCommit: updated.committed[0]!.commit,
       supports: [f.fact2], reason: "Retired.", createdAt: time }]);
     expect(archived.ok).toBe(true);
 
@@ -302,187 +302,24 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
   });
 
   describe("archives", () => {
-    test("an N archive is pending with the weight of the removed body, and pool size excludes it", () => {
+    test("an N archive removes the item from the live set", () => {
       const f = fixture(() => {});
       const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$a", author: "noting", text: "removable body",
         category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
       if (!created0.ok) throw new Error(created0.problems.join("; "));
       const first = created0.committed[0]!;
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
-      const pool = `project:${f.session.projectId}`;
-      const beforeSize = memory.store.knowledgePools(path).find(p => p.pool === pool)!.tokens;
-      const archived = publishN(f.session.id, [{ op: "archive", kind: "budget", knowledgeId: first.knowledgeId, baseCommit: first.commit,
+      expect(memory.store.curateItems(path).map(item => item.value.knowledge.id)).toEqual([first.knowledgeId]);
+      const archived = publishN(f.session.id, [{ op: "archive", kind: "invalid", text: "No longer holds; nothing replaces it.", knowledgeId: first.knowledgeId, baseCommit: first.commit,
         supports: [f.fact2], reason: "No longer holds.", createdAt: time }]);
       if (!archived.ok) throw new Error(archived.problems.join("; "));
-      const pools = memory.store.knowledgePools(path);
-      const projectPool = pools.find(p => p.pool === pool)!;
       // Pool size (the injected material) excludes the archive entirely.
-      expect(projectPool.tokens).toBe(0);
-      expect(projectPool.versions).toHaveLength(0);
-      const pending = memory.store.pendingVersions(pool, path);
-      expect(pending).toHaveLength(1);
-      expect(pending[0]!.revisionId).toBe(archived.committed[0]!.commit);
-      expect(pending[0]!.tokens).toBeGreaterThan(0);
-      expect(pending[0]!.tokens).toBeLessThanOrEqual(beforeSize);
+      expect(memory.store.curateItems(path)).toEqual([]);
+      expect(memory.store.currentKnowledge(path)).toHaveLength(0);
     });
-
-    test("case A: N creates then archives before D ever processes it shows the archived body whole, with no diff", () => {
-      const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$a", author: "noting", text: "case A body",
-        category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
-      if (!created0.ok) throw new Error(created0.problems.join("; "));
-      const first = created0.committed[0]!;
-      const archived = publishN(f.session.id, [{ op: "archive", kind: "budget", knowledgeId: first.knowledgeId, baseCommit: first.commit,
-        supports: [f.fact2], reason: "Never confirmed.", createdAt: time }]);
-      if (!archived.ok) throw new Error(archived.problems.join("; "));
-      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
-      const pool = `project:${f.session.projectId}`;
-      const pending = memory.store.pendingVersions(pool, path)[0]!;
-      expect(pending.material).toContain("case A body");
-      expect(pending.material).not.toContain("{+");
-      expect(pending.material).not.toContain("[-");
-    });
-
-    test("case B: D confirmed A, N changed A to B, then archived B: shows B whole with the diff A -> B", () => {
-      const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$b", author: "noting", text: "state A",
-        category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
-      if (!created0.ok) throw new Error(created0.problems.join("; "));
-      const stateA = created0.committed[0]!;
-      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
-      const pool = `project:${f.session.projectId}`;
-      // D confirms state A (the baseline this case needs) without a full admitted run.
-      markProcessed(memory, pool, stateA.commit);
-      const updated = publishN(f.session.id, [{ op: "update", knowledgeId: stateA.knowledgeId, baseCommit: stateA.commit, text: "state B",
-        category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "Changed.", createdAt: time }]);
-      if (!updated.ok) throw new Error(updated.problems.join("; "));
-      const stateB = updated.committed[0]!;
-      const archived = publishN(f.session.id, [{ op: "archive", kind: "budget", knowledgeId: stateB.knowledgeId, baseCommit: stateB.commit,
-        supports: [f.fact3], reason: "Retired.", createdAt: time }]);
-      if (!archived.ok) throw new Error(archived.problems.join("; "));
-      const pending = memory.store.pendingVersions(pool, path)[0]!;
-      expect(pending.revisionId).toBe(archived.committed[0]!.commit);
-      expect(pending.material).toContain("state B");
-      expect(pending.material).toContain("[-A-]");
-      expect(pending.material).toContain("{+B+}");
-      // 134: the item's pool cost is the one size annotation; the Noter's body/1000 form never joins it.
-      expect(pending.material.match(/\(\d+ tokens\)/g)).toHaveLength(1);
-      expect(pending.material).not.toContain("/1000 tokens");
-      expect(pending.material).not.toContain("0 tokens;");
-      // 76 review: the archive's own supports (its evidence for archiving, distinct from state B's own
-      // supports already inside the archived body) are shown explicitly, labelled as such.
-      expect(pending.material).toContain(`archive evidence: F${f.fact3}`);
-      // Weight is the archived body's own size, not the diff.
-      expect(pending.tokens).toBeGreaterThan(0);
-    });
-
-
   });
 
-  describe("diff material and weight", () => {
-    test("two consecutive N updates show one cumulative diff against the last-processed baseline", () => {
-      const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$c", author: "noting", text: "alpha beta gamma delta",
-        category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
-      if (!created0.ok) throw new Error(created0.problems.join("; "));
-      const v1 = created0.committed[0]!;
-      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
-      const pool = `project:${f.session.projectId}`;
-      markProcessed(memory, pool, v1.commit); // D confirmed K@5.
-      const v2Run = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "alpha zeta gamma delta",
-        category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "First edit.", createdAt: time }]);
-      if (!v2Run.ok) throw new Error(v2Run.problems.join("; "));
-      const v2 = v2Run.committed[0]!;
-      const v3Run = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v2.commit, text: "alpha zeta gamma epsilon",
-        category: "reference", scope: "project", topics: [], supports: [f.fact3], reason: "Second edit.", createdAt: time }]);
-      if (!v3Run.ok) throw new Error(v3Run.problems.join("; "));
-      const v3 = v3Run.committed[0]!;
-      const pending = memory.store.pendingVersions(pool, path);
-      // Only the latest current version (v3) is pending; v2 was superseded and never got its own record.
-      expect(pending.map(p => p.revisionId)).toEqual([v3.commit]);
-      expect(pending[0]!.material).toContain(`from ${history(v1)}`);
-      expect(pending[0]!.material).toContain("gamma"); // the shared tail survives the cumulative diff
-      expect(pending[0]!.material).toContain("[-beta-]");
-      expect(pending[0]!.material).toContain("{+epsilon+}");
-      // 134: the paired sentence lines, against v1 (v2's intermediate "zeta"-only state is not the baseline).
-      expect(pending[0]!.material).toContain("- alpha [-beta-] gamma [-delta-]");
-      expect(pending[0]!.material).toContain("+ alpha {+zeta+} gamma {+epsilon+}");
-    });
-
-    test("no processed ancestor: an update is shown whole as New, exactly as a create is", () => {
-      const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$n", author: "noting", text: "v1",
-        category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
-      if (!created0.ok) throw new Error(created0.problems.join("; "));
-      const v1 = created0.committed[0]!;
-      const updated = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "v2",
-        category: "reference", scope: "project", topics: [], supports: [f.fact2], reason: "Edit.", createdAt: time }]);
-      if (!updated.ok) throw new Error(updated.problems.join("; "));
-      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
-      const pool = `project:${f.session.projectId}`;
-      const pending = memory.store.pendingVersions(pool, path)[0]!;
-      expect(pending.material.startsWith(`New ${history(updated.committed[0]!)}:`)).toBe(true);
-      expect(pending.material).toContain("v2");
-      expect(pending.tokens).toBeGreaterThan(3); // the whole rendered item, not a small diff
-    });
-
-    test("a Changed item shows the current revision's full topics and supports beside the diff, not only what changed", () => {
-      const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$t", author: "noting", text: "use red tiles",
-        category: "reference", scope: "project", topics: ["ui", "theme"], supports: [f.fact], reason: "Initial.", createdAt: time }]);
-      if (!created0.ok) throw new Error(created0.problems.join("; "));
-      const v1 = created0.committed[0]!;
-      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
-      const pool = `project:${f.session.projectId}`;
-      markProcessed(memory, pool, v1.commit);
-      // The topics and supports are untouched by this edit, so the diff's own added/removed lines say
-      // nothing about them (76 review repro: a fresh D that only saw the diff wiped the real topics).
-      const updated = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "use blue tiles",
-        category: "reference", scope: "project", topics: ["ui", "theme"], supports: [f.fact], reason: "Color only.", createdAt: time }]);
-      if (!updated.ok) throw new Error(updated.problems.join("; "));
-      const material = memory.store.pendingVersions(pool, path)[0]!.material;
-      expect(material).not.toContain("topics added"); // no change, so the delta line is absent entirely
-      expect(material).toContain(`current topics: ${JSON.stringify(["ui", "theme"])}`);
-      expect(material).toContain(`current supports: F${f.fact}`);
-    });
-
-    test("metadata-only change (a scope change with unchanged body) weighs its change: more than zero, far less than the item", () => {
-      const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$m", author: "noting", text: "same body throughout, unchanged and reasonably sized so its whole render dwarfs one field's diff",
-        category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
-      if (!created0.ok) throw new Error(created0.problems.join("; "));
-      const v1 = created0.committed[0]!;
-      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
-      const pool = `project:${f.session.projectId}`;
-      markProcessed(memory, pool, v1.commit);
-      const rendered = memory.store.knowledgeRevision(v1.commit)!;
-      const updated = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: rendered.text,
-        category: rendered.category, scope: "global", topics: rendered.topics, supports: [f.fact2], reason: "Scope only.", createdAt: time }]);
-      if (!updated.ok) throw new Error(updated.problems.join("; "));
-      // Global has no processing baseline (this identity only ever lived in the project pool there), so
-      // it weighs whole there; the project pool, whose baseline IS in this pool, weighs only the change.
-      const projectPending = memory.store.pendingVersions(pool, path);
-      expect(projectPending).toHaveLength(0); // the identity left the project pool entirely
-      const globalPending = memory.store.pendingVersions("global", path)[0]!;
-      expect(globalPending.tokens).toBeGreaterThan(0);
-    });
-
-    test("without a baseline in this pool: a project item changed to global weighs the whole item there", () => {
-      const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$s", author: "noting", text: "scoped body",
-        category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
-      if (!created0.ok) throw new Error(created0.problems.join("; "));
-      const v1 = created0.committed[0]!;
-      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
-      const pool = `project:${f.session.projectId}`;
-      markProcessed(memory, pool, v1.commit);
-      const updated = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit, text: "scoped body",
-        category: "reference", scope: "global", topics: [], supports: [f.fact2], reason: "Now global.", createdAt: time }]);
-      if (!updated.ok) throw new Error(updated.problems.join("; "));
-      const globalPending = memory.store.pendingVersions("global", path)[0]!;
-      expect(globalPending.material.startsWith(`New ${history(updated.committed[0]!)}:`)).toBe(true);
-    });
-
+  describe("diff rendering", () => {
     test("the version address never counts: two revisions differing only in K@commit find no change", () => {
       memory = sourceSeededMemory(":memory:", async () => ({ outcome: "success", output: "unused", request: {} }));
       const project = memory.store.createProject({ name: "addr", declaredBy: "mark" });
@@ -508,30 +345,6 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       expect(change.addedTokens).toBe(0);
       expect(change.removedTokens).toBe(0);
     });
-
-    test("create is full size; update is the changed tokens; archive is the removed body", () => {
-      const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$w", author: "noting", text: "a body long enough that its whole size clearly exceeds one small edit's weight",
-        category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
-      if (!created0.ok) throw new Error(created0.problems.join("; "));
-      const v1 = created0.committed[0]!;
-      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
-      const pool = `project:${f.session.projectId}`;
-      const createWeight = memory.store.pendingVersions(pool, path)[0]!.tokens;
-      markProcessed(memory, pool, v1.commit);
-      const edited = publishN(f.session.id, [{ op: "update", knowledgeId: v1.knowledgeId, baseCommit: v1.commit,
-        text: "a body long enough that its whole size clearly exceeds one small change's weight", category: "reference", scope: "project",
-        topics: [], supports: [f.fact2], reason: "One-word edit.", createdAt: time }]);
-      if (!edited.ok) throw new Error(edited.problems.join("; "));
-      const updateWeight = memory.store.pendingVersions(pool, path)[0]!.tokens;
-      expect(updateWeight).toBeGreaterThan(0);
-      expect(updateWeight).toBeLessThan(createWeight); // a one-word edit barely moves the trigger
-      const archived = publishN(f.session.id, [{ op: "archive", kind: "budget", knowledgeId: v1.knowledgeId, baseCommit: edited.committed[0]!.commit,
-        supports: [f.fact3], reason: "Retired.", createdAt: time }]);
-      if (!archived.ok) throw new Error(archived.problems.join("; "));
-      const archiveWeight = memory.store.pendingVersions(pool, path)[0]!.tokens;
-      expect(archiveWeight).toBeGreaterThan(updateWeight); // the whole removed body, not a diff
-    });
   });
 
   test("manual memory shares the N schema and commits create, update and archive immediately", () => {
@@ -543,7 +356,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     const tag = readHandle(address => memoryFiles(memory, { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id }).read(address).content, "K1");
     const updated = JSON.parse(memoryTool.execute({ ...created(f.fact, "changed"), op: "update", id: tag }));
     expect(updated.committed).toHaveLength(1);
-    expect(memoryTool.execute({ op: "archive", kind: "budget", id: updated.committed[0].version, supports: [`F${f.fact}`], reason: "Retired." })).toContain('"committed"');
+    expect(memoryTool.execute({ op: "archive", kind: "invalid", text: "Retired; no longer holds and nothing replaces it.", id: updated.committed[0].version, supports: [`F${f.fact}`], reason: "Retired." })).toContain('"committed"');
   });
 
   test("prompt and material contain no second-round cues", async () => {
@@ -572,13 +385,3 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     );
   });
 });
-
-/** Test-only shortcut: directly records a processing row for `revisionId` in `pool`, standing in for
- * a full admitted Dreamer run that confirmed it (what these tests need is the baseline it leaves
- * behind, not the run machinery that produces it — that machinery is exercised elsewhere in this file
- * through `AdmittedDreamerScenarios`). */
-function markProcessed(memory: ReturnType<typeof sourceSeededMemory>, pool: string, revisionId: number) {
-  const runId = memory.store.recordRun({ kind: "dreaming", sessionId: null, createdAt: time, outcome: "success" }).id;
-  (memory.store.db as { prepare(sql: string): { run(...args: unknown[]): unknown } }).prepare(
-    "INSERT OR IGNORE INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)").run(pool, revisionId, runId);
-}

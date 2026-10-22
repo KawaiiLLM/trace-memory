@@ -7,7 +7,7 @@ const menu = {
     header: { session: "S1", project: "example", enabled: true },
     context: { model: "Claude Code" },
     pending: { noting: { tokens: 0, trigger: 10000 },
-      dreaming: { pending: { tokens: 0, trigger: 5000 }, knowledge: { tokens: 0, trigger: 1000 } } },
+      dreaming: { pending: { tokens: 0, trigger: 10000 } } },
     spend: { session: 0, noting: { runs: 0, cost: 0 }, consolidation: { runs: 0, cost: 0 }, dreaming: { runs: 0, cost: 0 }, today: 0 },
     notices: [], actions: { enabled: true },
   },

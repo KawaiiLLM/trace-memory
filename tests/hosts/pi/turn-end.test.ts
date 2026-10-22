@@ -224,7 +224,7 @@ test("installed Pi SDK settles a cancelled turn once and checks again on the nex
 
 test("Raw entry ends reuse a not-due Dreaming result; restore re-arms the next entry", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
-  const due = vi.spyOn(Store.prototype, "dreamingDueByNoterChanges");
+  const due = vi.spyOn(Store.prototype, "dreamingDue");
   try {
     await h.turn();
     const initial = due.mock.calls.length;

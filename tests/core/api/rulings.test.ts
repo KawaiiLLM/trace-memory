@@ -542,7 +542,7 @@ function memoryWriter() {
   return { s, t, path, tools, write, create };
 }
 
-test("2026-09-28, 99: archive kind is required; budget retains parent while invalidation records grounds", () => {
+test("2026-09-28, 99: archive kind is required and invalidation records grounds; 2026-10-22: the budget kind is retired", () => {
   const { s, path, tools, write, create } = memoryWriter();
   const budgetBase = write([create]).committed[0];
   const invalidBase = write([{ ...create, text: "Old unique guidance" }]).committed[0];
@@ -550,20 +550,17 @@ test("2026-09-28, 99: archive kind is required; budget retains parent while inva
   const budgetTag = tagged(budgetId, commitOf(budgetBase));
   const invalidTag = tagged(invalidId, commitOf(invalidBase));
   const attempted = (id: string, extra: Record<string, unknown>) => write([{ op: "archive", id, supports: ["F1"], reason: "archival decision", ...extra }]);
-  expect(attempted(budgetTag, {}).results[0]).toContain("archive kind must be budget, invalid or inadmissible");
+  expect(attempted(budgetTag, {}).results[0]).toContain("archive kind must be invalid or inadmissible");
+  expect(attempted(budgetTag, { kind: "budget" }).results[0]).toContain("archive kind must be invalid or inadmissible"); // no new budget archive can be written
   expect(attempted(invalidTag, { kind: "invalid", text: "obsolete" }).results[0]).toContain("substantive statement");
   expect(attempted(invalidTag, { kind: "invalid", text: "The rule no longer holds: the user corrected its basis; another rule replaces it." }).committed).toHaveLength(1);
-  expect(attempted(budgetTag, { kind: "budget" }).committed).toHaveLength(1);
-  const invalid = memory.store.currentCommit(invalidId, path)[0]!, budget = memory.store.currentCommit(budgetId, path)[0]!;
+  const invalid = memory.store.currentCommit(invalidId, path)[0]!;
   expect(invalid).toMatchObject({ op: "archive", archiveKind: "invalid", category: "constraint", scope: "project", topics: [] });
   expect(invalid.text).toContain("no longer holds");
-  expect(budget).toMatchObject({ op: "archive", archiveKind: "budget", text: create.text,
-    category: "constraint", scope: "project", topics: [] });
-  expect(memory.store.currentKnowledge(path)).toEqual([]);
+  expect(memory.store.currentKnowledge(path).map(item => item.knowledge.id)).toEqual([budgetId]); // the refused archive left its item current
   expect(memory.inject(s.id)).not.toContain("Old unique guidance");
   const files = memoryFiles(memory, path), search = tools.find(tool => tool.name === "search")!;
   expect(files.read(`trace://${history(invalidId, invalid.id)}`).content).toContain("status: archive (invalid)");
-  expect(files.read(`trace://${history(budgetId, budget.id)}`).content).toContain("status: archive (budget)");
   // 136: every version is searched. The old body is found through the superseded parent; the archive is marked.
   expect(search.execute({ query: "Old unique guidance", layer: "knowledge" })).toContain(`[K${invalidId}@v1] (superseded)`);
   expect(search.execute({ query: "no longer holds", layer: "knowledge" })).toContain(`[K${invalidId}@v2] (archived)`);

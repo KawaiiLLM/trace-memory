@@ -33,7 +33,7 @@ function dueItem(h: ReturnType<typeof host>) {
   expect(JSON.parse(receipt).factIds).toHaveLength(1);
   const path = { sessionId: 1, branch: "main", headTurnId: 1 };
   const item = knowledge(h.memory.store, path, "project", "reference", [1], "The user chose pnpm", { operation: { title: "Package choice" } });
-  expect(h.memory.store.dreamingDueByNoterChanges(path, 1)).toBe(true);
+  expect(h.memory.store.dreamingDue(path, 1)).toBe(true);
   return item;
 }
 const isDreamer = (c: { systemPrompt?: string }) => !!c.systemPrompt && (c.systemPrompt.startsWith("# Dreamer") || c.systemPrompt.startsWith("# Classifying"));

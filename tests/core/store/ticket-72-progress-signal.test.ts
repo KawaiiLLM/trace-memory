@@ -12,6 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Store } from "../../../src/core/store/index.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { declarationContext } from "../project-declaration-context.ts";
+import { coverKnowledge } from "../../support/dreamer.ts";
 
 const time = "2026-09-23T00:00:00Z";
 const stores: Store[] = [], dirs: string[] = [];
@@ -47,7 +48,7 @@ test("72: a knowledge-budget edit changes the signal", () => {
   expect(store.progressSignal(sessionId)).not.toBe(before);
 });
 
-test("85: settling a Dreaming range changes the signal through processing records, not pool state", () => {
+test("144: coverage written by a passed Dreamer pass changes the signal", () => {
   const store = open();
   const { sessionId, turnId, entry } = seeded(store);
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId, branch: "main", createdAt: time },
@@ -58,15 +59,8 @@ test("85: settling a Dreaming range changes the signal through processing record
       scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "evidence", createdAt: time }] });
   if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
   const path = { sessionId, branch: "main", headTurnId: turnId };
-  const claim = store.acquireClaim(path, "dreaming", "ticket-72-test")!;
-  const range = store.retainKnowledgePoolRange(path, claim);
-  // Shrink the budget after the range froze; range settlement still writes processing records.
-  store.setKnowledgeBudget("session", 1);
-  const executionId = store.beginExecution({ sessionId, phase: "dreaming", origin: range.origin });
-  const run = store.bindDreamingRun({ kind: "dreaming", sessionId, branch: "main", dreamingRangeId: range.id, executionId, claim, createdAt: time });
   const before = store.progressSignal(sessionId);
-  store.completeKnowledgePoolRange(run, "success", range.eventIds); // skip records, no pool-state write
-  store.releaseClaim(claim);
+  coverKnowledge(store, path, consolidated.committed.map(item => item.commit)); // the processing record a passed curate writes
   expect(store.progressSignal(sessionId)).not.toBe(before);
 });
 

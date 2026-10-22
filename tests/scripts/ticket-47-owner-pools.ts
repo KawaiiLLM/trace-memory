@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { Store, type KnowledgePath, type KnowledgeWithRevision } from "../../src/core/store/index.ts";
-import { placementOwner, processedBlock } from "../../src/core/store/processing.ts";
-import { tokens } from "../../src/core/render/index.ts";
+import { placementOwner } from "../../src/core/store/processing.ts";
+import { renderKnowledge, renderKnowledgeBlock, tokens, wholeKnowledge } from "../../src/core/render/index.ts";
 
 function argument(name: string): string | undefined {
   const prefix = `--${name}=`;
@@ -40,7 +40,7 @@ try {
     if (path.headTurnId === null) throw new Error(`S${sessionId}/${branch} has no selected head`);
     const measured = (values: Iterable<KnowledgeWithRevision>) => {
       const items = [...values];
-      return { versions: items.length, tokens: tokens(processedBlock(items)) };
+      return { versions: items.length, tokens: tokens(renderKnowledgeBlock(wholeKnowledge(items, value => renderKnowledge(value)).groups)) };
     };
     const owners = ["global", `project:${store.getSession(sessionId)!.projectId}`, `session:${sessionId}`];
     const active = store.currentKnowledge(path);
@@ -50,17 +50,16 @@ try {
       source: resolvedSource,
       workingCopy: workingPath,
       path,
-      pools: store.poolSizes(path),
-      pending: Object.fromEntries(owners.map(owner => [owner, store.pendingVersions(owner, path).length])),
+      // Stage 4: the Dreamer is due by the Noter-changed tokens since the last coverage, not by pool sizes.
+      noterChanged: { items: store.noterChangedItems(path), tokens: store.noterChangedTokens(path) },
       due: store.dreamingDue(path),
       activePath: {
         owners: Object.fromEntries(owners.map(owner => [owner, measured(activePools.get(owner)!.values())])),
         applicable: measured(active),
       },
       activeApplicableVersions: active.length,
-      handledCurrentVersions: store.processedCurrentVersions(active).size,
       ownerCheck: Object.fromEntries(active.map(value => [value.revision.id, placementOwner(store, value)])),
-      note: "Current owner pools include every visible non-archived current version. Pending uses per-pool/version processing records; handling does not change validity. This replaces the old processed-only path/union comparison.",
+      note: "Current owner pools include every visible non-archived current version. Coverage is per-pool/version processing records; it does not change validity. This replaces the old processed-only path/union comparison.",
     };
     console.log(JSON.stringify(report, null, 2));
   } finally {

@@ -95,7 +95,7 @@ test("34c/92 archive state has a persisted body-free receipt without a write tag
   const { h, support } = await seeded();
   try {
     const archived = h.memory.store.commitConsolidationRun({ path: { sessionId: 1, branch: "main", headTurnId: 1 },
-      run: { kind: "manual", sessionId: 1, branch: "main", createdAt: time }, operations: [{ op: "archive", kind: "budget", knowledgeId: 1,
+      run: { kind: "manual", sessionId: 1, branch: "main", createdAt: time }, operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: 1,
         baseCommit: 1, supports: [support], reason: "withdraw", createdAt: time }] });
     if (!archived.ok) throw new Error(archived.problems.join());
     const notice = await served(h, "archive notice");

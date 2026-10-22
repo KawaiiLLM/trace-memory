@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 import { declarationContext } from "../project-declaration-context.ts";
+import { coverKnowledge } from "../../support/dreamer.ts";
 
 const time = "2026-09-24T00:00:00Z";
 const stores: Store[] = [], dirs: string[] = [];
@@ -42,7 +43,7 @@ function seeded(store: Store) {
 
 const revisionsQuery = (sql: unknown) => /SELECT \* FROM knowledge_revisions ORDER BY id/.test(String(sql));
 
-test.each(["consolidation", "budget", "cursor-back", "branch-switch", "path-rewrite", "project-merge", "processing", "pool-state"] as const)(
+test.each(["consolidation", "budget", "cursor-back", "branch-switch", "path-rewrite", "project-merge", "coverage"] as const)(
   "88: %s updates the reader projection without a second cold build", kind => {
     const dir = mkdtempSync(join(tmpdir(), "trace-memory-80-input-")); dirs.push(dir);
     const file = join(dir, "trace.db"), writer = new Store(file); stores.push(writer);
@@ -68,15 +69,7 @@ test.each(["consolidation", "budget", "cursor-back", "branch-switch", "path-rewr
     else if (kind === "project-merge") {
       const other = writer.createProject({ name: "destination", declaredBy: "mark" });
       mutate = () => writer.mergeProject(project.id, other.id);
-    } else {
-      const claim = writer.acquireClaim(path, "dreaming", "memo-input-test")!;
-      const range = writer.retainKnowledgePoolRange(path, claim);
-      if (kind === "pool-state") writer.setKnowledgeBudget("session", 1);
-      const executionId = writer.beginExecution({ sessionId, phase: "dreaming", origin: range.origin });
-      const run = writer.bindDreamingRun({ kind: "dreaming", sessionId, branch: "main", dreamingRangeId: range.id,
-        executionId, claim, createdAt: time });
-      mutate = () => { writer.completeKnowledgePoolRange(run, "success", range.eventIds); writer.releaseClaim(claim); };
-    }
+    } else mutate = () => { coverKnowledge(writer, path, created.committed.map(item => item.commit)); }; // coverage, as a passed curate writes it
     const reader = new Store(file); stores.push(reader);
     const original = reader.db.prepare.bind(reader.db); let builds = 0;
     reader.db.prepare = ((sql: string) => { if (revisionsQuery(sql)) builds++; return original(sql); }) as typeof reader.db.prepare;
@@ -95,9 +88,9 @@ test("a repeated read with nothing changed hits the memo: the base revisions que
   const spy = (() => { const calls: unknown[] = []; const original = store.db.prepare.bind(store.db);
     store.db.prepare = ((sql: string) => { if (revisionsQuery(sql)) calls.push(sql); return original(sql); }) as typeof store.db.prepare;
     return calls; })();
-  store.knowledgePools(path);
+  store.currentKnowledge(path);
   expect(spy.length).toBe(1);
-  store.knowledgePools(path); // nothing changed since
+  store.currentKnowledge(path); // nothing changed since
   expect(spy.length).toBe(1); // still one: the second call hit the memo
 });
 
@@ -134,12 +127,12 @@ test("writers always rebuild: base validation of an archive sees its own transac
       category: "constraint", scope: "session", supports: [factId], topics: [], reason: "evidence", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const base = created.committed[0]!;
-  store.knowledgePools(path); // warms the memo
+  store.currentKnowledge(path); // warms the memo
   const calls: unknown[] = []; const original = store.db.prepare.bind(store.db);
   store.db.prepare = ((sql: string) => { if (revisionsQuery(sql)) calls.push(sql); return original(sql); }) as typeof store.db.prepare;
   // "archive" has a base to validate, so `applyKnowledgeOperation`'s `writerInput` is not skipped.
   const archived = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [factId], reason: "no longer needed", createdAt: time }] });
+    operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [factId], reason: "no longer needed", createdAt: time }] });
   store.db.prepare = original;
   expect(archived.ok).toBe(true);
   // Base validation rebuilds fresh — `applyKnowledgeOperation`'s `writerInput` never names a session.
@@ -150,23 +143,23 @@ test("a pure Raw append reuses the memo, and every consumer's answer is unchange
   const store = open();
   const { sessionId, turnId, entry } = seeded(store);
   const path = { sessionId, branch: "main", headTurnId: turnId };
-  const before = store.knowledgePools(path);
+  const before = store.currentKnowledge(path);
   const signalBefore = store.progressSignal(sessionId);
   const entry2 = store.appendSourceEntry({ sessionId, turnId, nativeLineage: "n", nativeId: "u2", role: "toolResult", text: "", raw: "r2",
     calls: [{ ordinal: 1, name: "tool", callId: "c1", status: "ok" }] });
   store.publishSourcePath(sessionId, "main", [entry.id, entry2.id], turnId, "lineage-a"); // ordinary extension, same head/branch
   expect(store.progressSignal(sessionId)).toBe(signalBefore); // ordinary extension, same head/branch
-  const after = store.knowledgePools(path);
-  expect(after.map(p => p.versions.map(v => v.revision.id))).toEqual(before.map(p => p.versions.map(v => v.revision.id)));
+  const after = store.currentKnowledge(path);
+  expect(after.map(v => v.revision.id)).toEqual(before.map(v => v.revision.id));
 });
 
 test("a cold due check against a large backlog renders only up to the crossing entry (early stop preserved through the memo change)", () => {
   const store = open();
   const { sessionId, turnId } = seeded(store);
   // The graph memo change (item 2) is orthogonal to item 1's early-stop rule; sanity-checked here that
-  // knowledgePools itself does not force any Raw rendering at all.
+  // currentKnowledge itself does not force any Raw rendering at all.
   const path = { sessionId, branch: "main", headTurnId: turnId };
-  expect(() => store.knowledgePools(path)).not.toThrow();
+  expect(() => store.currentKnowledge(path)).not.toThrow();
 });
 
 test("80: a fact (through a second connection) invalidates the graph memo", () => {
@@ -180,7 +173,7 @@ test("80: a fact (through a second connection) invalidates the graph memo", () =
   stores.push(reader);
   const path = { sessionId: ctx.sessionId, branch: "main", headTurnId: ctx.turnId };
   const signalBefore = reader.progressSignal(ctx.sessionId);
-  reader.knowledgePools(path); // warm the reader's memo
+  reader.currentKnowledge(path); // warm the reader's memo
   const entry2 = writer.appendSourceEntry({ sessionId: ctx.sessionId, turnId: ctx.turnId, nativeLineage: "n", nativeId: "u2",
     role: "toolResult", text: "", raw: "r2", calls: [{ ordinal: 1, name: "tool", callId: "c1", status: "ok" }] });
   writer.publishSourcePath(ctx.sessionId, "main", [ctx.entry.id, entry2.id], ctx.turnId, "lineage-a");
@@ -201,14 +194,14 @@ test("80: a revision (through a second connection) invalidates the graph memo, a
   const reader = new Store(dbPath);
   stores.push(reader);
   const path = { sessionId: ctx.sessionId, branch: "main", headTurnId: ctx.turnId };
-  const before = reader.knowledgePools(path);
-  expect(before.flatMap(p => p.versions)).toHaveLength(0);
+  const before = reader.currentKnowledge(path);
+  expect(before).toHaveLength(0);
   const created = writer.commitConsolidationRun({ path, run: { kind: "manual", sessionId: ctx.sessionId, branch: "main", createdAt: time },
     operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "a durable rule that is long enough to carry weight",
       category: "constraint", scope: "session", supports: [ctx.factId], topics: [], reason: "evidence", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
-  const after = reader.knowledgePools(path);
-  expect(after.flatMap(p => p.versions)).toHaveLength(1); // the reader's memo rebuilt and now sees it
+  const after = reader.currentKnowledge(path);
+  expect(after).toHaveLength(1); // the reader's memo rebuilt and now sees it
 });
 
 test("80: cross-connection project reassignment (Pi's scenario) invalidates the memo, footer knowledge count and answer alike", () => {
@@ -244,12 +237,11 @@ test("80: cross-connection project reassignment (Pi's scenario) invalidates the 
   const before = reader.currentKnowledge(aPath); // A sees B's shared-project knowledge
   expect(before.map(v => v.revision.id)).toEqual([shared.committed[0]!.commit]);
   const signalBefore = reader.progressSignal(a.id);
-  reader.knowledgePools(aPath); // warms A's own memo too
+  reader.currentKnowledge(aPath); // warms A's own memo too
 
   writer.declareProject(b.id, "elsewhere", "mark", declarationContext(writer, bPath)); // B moves through the writer connection
   expect(reader.progressSignal(a.id)).not.toBe(signalBefore); // ruling B: A's signal follows another session's reassignment
   const afterKnowledge = reader.currentKnowledge(aPath);
   expect(afterKnowledge).toEqual([]); // the reused footer/knowledge answer no longer shows B's knowledge
-  const afterPools = reader.knowledgePools(aPath);
-  expect(afterPools.flatMap(p => p.versions)).toEqual([]); // the memoized graph followed too
+  expect(reader.currentKnowledge(aPath)).toEqual([]); // the memoized graph followed too
 });

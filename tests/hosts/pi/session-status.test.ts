@@ -197,7 +197,7 @@ test("reopening replaces unavailable SDK capacity with the current valid estimat
   expect(h.requests).toEqual([]);
 });
 
-test("repeated Dreaming pool reads show identical pending data without DB writes or grants", async () => {
+test("repeated Dreaming status reads show identical pending data without DB writes or grants", async () => {
   const h = setup({ "noting.triggerTokens": 999999 });
   await h.turn();
   const store = h.memory.store;
@@ -207,12 +207,12 @@ test("repeated Dreaming pool reads show identical pending data without DB writes
     [{ sources: [{ entry: user, address: `T${turn.id}#E${user.entryOrdinal}` }], category: "decision", actor: "user",
       text: "rule", createdAt: "now" }]).facts[0]!;
   knowledge(store, store.knowledgePath(1, "main", turn.id), "project", "constraint", [evidence.id],
-    "knowledge", { run: { kind: "manual", createdAt: "now" } });
+    "knowledge", { operation: { title: "Fixture title" } }); // Noter-written: it is what the Dreamer's pending row counts
   h.memory.setKnowledgeBudget("project", 2468);
   const before = changes(h), entries = structuredClone(h.entries);
   const first = await open(h);
-  // 104: the knowledge row's window is the edited base (4k + 2,468 + 1k) plus the 10k shared allowance.
-  expect(first).toContain("/ 17.5k"); expect(first).not.toMatch(/^\s*Consolidation\s/m);
+  // 144 stage 4 §7.6: the Dreaming row is the Noter-changed tokens against the trigger; no pool-vs-window row is shown.
+  expect(first).toMatch(/pending\s+.*\/\s+10k/); expect(first).not.toMatch(/^\s*knowledge\s+[█░]/m); expect(first).not.toMatch(/^\s*Consolidation\s/m);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
   expect(await open(h)).toBe(first);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);

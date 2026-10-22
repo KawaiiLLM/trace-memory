@@ -120,7 +120,7 @@ test("126: a session's per-pool Dreamer streaks become one at their largest coun
     expect(store.db.prepare("SELECT * FROM task_executions ORDER BY rowid").all()).toEqual(f.executions);
     expect(store.db.prepare("SELECT * FROM dreaming_ranges ORDER BY rowid").all()).toEqual(f.ranges);
     expect(store.listRuns(f.first)).toEqual(f.runs);
-    expect(store.dreamingRange(Number(f.ranges[1]!.id))).toMatchObject({ pool: "global", claimToken: "open-token" });
+    expect(store.db.prepare("SELECT pool, claim_token FROM dreaming_ranges WHERE id = ?").get(Number(f.ranges[1]!.id))).toMatchObject({ pool: "global", claim_token: "open-token" });
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     store.close(); store = new Store(f.file);
     expect(streak(store, f.first)[0]).toMatchObject({ pool: ALL_POOLS, count: 2 });

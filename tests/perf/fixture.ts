@@ -190,22 +190,15 @@ export function generate(dbPath: string, options: FixtureOptions = {}): Fixture 
         if (i === 1) { secondKnowledge = committed.committed[0]!.knowledgeId; secondCommit = committed.committed[0]!.commit; }
       }
       if (firstCommit && secondCommit) {
-        // Merge has D-only authority even while C remains live. Do not silently ignore a refused seed.
-        const claim = store.acquireClaim(path, "dreaming", "perf-fixture");
-        if (!claim) throw new Error("performance fixture could not acquire its Dreamer claim");
-        const range = store.retainKnowledgePoolRange(path, claim);
-        const executionId = store.beginExecution({ sessionId, phase: "dreaming", origin: range.origin });
-        const run = store.bindDreamingRun({ kind: "dreaming", sessionId, branch, claim, dreamingRangeId: range.id,
-          executionId, createdAt: "2026-01-01T02:10:00Z" });
-        try {
-          const merged = store.commitConsolidationRun({ path, run, operations: [{ op: "merge", intoKnowledgeId: firstKnowledge, intoBaseCommit: firstCommit,
-            absorb: [{ knowledgeId: secondKnowledge, baseCommit: secondCommit }], text: "merged perf knowledge", category: "understanding",
+        // Merge has D-only authority even while C remains live: it goes through the commit a Dreamer pass uses. A refused seed is not ignored.
+        const done = store.commitWorkspaceRun({ run: { kind: "dreaming", sessionId, branch, createdAt: "2026-01-01T02:10:00Z" }, path,
+          operations: [{ op: "merge", intoKnowledgeId: firstKnowledge, intoBaseCommit: firstCommit,
+            absorb: [{ knowledgeId: secondKnowledge, baseCommit: secondCommit }], title: "Merged perf knowledge", text: "merged perf knowledge", category: "understanding",
             scope: "session", supports: cite(0), reason: "perf fixture merge", topics: ["merge"], createdAt: "2026-01-01T02:10:00Z" }] });
-          if (!merged.ok) throw new Error(merged.problems.join("; "));
-          knowledgeCount += merged.committed.length;
-          store.completeKnowledgePoolRange(run, "success");
-          store.settleExecution(executionId, "success", store.dreamingRunId(run)!);
-        } finally { store.releaseClaim(claim); }
+        for (const result of done.results) {
+          if (!result.ok) throw new Error(result.reason);
+          knowledgeCount += result.committed.length;
+        }
       }
 
       return { turnCount, entryCount, rawChars, headTurnId, siblingHeadTurnId, heavyTurnId,

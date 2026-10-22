@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import type { RunInput } from "../../../src/core/store/index.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 
 const at = "2026-09-20T13:00:00Z";
 let open: ReturnType<typeof sourceSeededMemory> | undefined;
@@ -47,9 +48,10 @@ function retainedFixture() {
       { turnId: f.left.id, category: "decision", actor: "user", text: "left-only obligation", source: [`T${f.left.id}#E${leftEntry.entryOrdinal}`], entryIds: [leftEntry.id], createdAt: at },
     ] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const create = (text: string, support: number) => store.commitConsolidationRun({
+  // Noter-written: only the Noter's changes make a Dreamer due (2026-10-22 trigger).
+  const create = (text: string, support: number) => commitNoterKnowledge(store, {
     path: { sessionId: f.session.id, branch: "left", headTurnId: f.left.id },
-    run: { kind: "manual", sessionId: f.session.id, branch: "left", createdAt: at }, operations: [{ op: "create", title: "Fixture title", handle: `$${text}`,
+    run: { sessionId: f.session.id, branch: "left", createdAt: at }, operations: [{ op: "create", title: "Fixture title", handle: `$${text}`,
       author: "test", text, category: "constraint", scope: "project", supports: [support], topics: [], reason: "fixture", createdAt: at }],
   });
   const stable = create("stable", noted.facts[0]!.id);
@@ -74,32 +76,32 @@ function retainedFixture() {
   const target = { sessionId: f.session.id, branch: "left", headTurnId: f.left.id, triggerEntryId: rootEntry.id };
   store.setCurrentPath(f.session.id, "left", f.left.id, "test-lineage");
   store.setCurrentPath(foreign.id, "child", foreignChild.id, "test-lineage");
-  const claim = store.acquireClaim(target, "dreaming", "64b-policy")!;
-  const range = store.retainKnowledgePoolRange(target, claim);
-  expect(range.eventIds).toEqual([stable.committed[0]!.commit, unrelated.committed[0]!.commit]);
-  const run: RunInput = store.bindDreamingRun({ kind: "dreaming", sessionId: f.session.id, branch: "left", claim,
-    dreamingRangeId: range.id, executionId: store.beginExecution({ sessionId: f.session.id, phase: "dreaming", origin: range.origin }), createdAt: at });
-  return { ...f, store, target, range, claim, run, stable: stable.committed[0]!, unrelated: unrelated.committed[0]!,
+  const claim = store.acquireClaim(target, "dreaming", "64b-policy", false, () => true, 1)!;
+  const run: RunInput = { kind: "dreaming", sessionId: f.session.id, branch: "left", claim,
+    executionId: store.beginExecution({ sessionId: f.session.id, phase: "dreaming", origin: store.triggerOrigin(target) }), createdAt: at };
+  return { ...f, store, target, claim, run, stable: stable.committed[0]!, unrelated: unrelated.committed[0]!,
     foreign, foreignRoot };
 }
 
 test("64b: stale guidance follows split descendants instead of reporting the old identity has no tip", () => {
   const f = retainedFixture();
-  const split = f.store.commitConsolidationRun({ run: f.run, path: f.target, operations: [{ op: "split",
+  const split = f.store.commitWorkspaceRun({ run: f.run, path: f.target, operations: [{ op: "split",
     knowledgeId: f.stable.knowledgeId, baseCommit: f.stable.commit, text: "stable, primary part", category: "constraint", scope: "project", topics: [],
     supports: [], reason: "split", createdAt: at,
     children: [
       { title: "Fixture child", text: "stable A", category: "constraint", topics: [] },
       { title: "Fixture child", text: "stable B", category: "constraint", topics: [] },
     ] }] });
-  expect(split.ok).toBe(true);
-  if (!split.ok) return;
+  const applied = split.results[0]!;
+  expect(applied.ok).toBe(true);
+  if (!applied.ok) return;
   const before = f.store.listKnowledgeRevisions().length;
-  const stale = f.store.commitConsolidationRun({ run: f.run, path: f.target, operations: [{ op: "archive", kind: "budget",
-    knowledgeId: f.stable.knowledgeId, baseCommit: f.stable.commit, supports: [], reason: "stale", createdAt: at }] });
+  const stale = f.store.commitWorkspaceRun({ run: f.run, path: f.target, operations: [{ op: "archive", kind: "invalid", text: "Stale archive, with its grounds in the cited evidence.",
+    knowledgeId: f.stable.knowledgeId, baseCommit: f.stable.commit, supports: [], reason: "stale", createdAt: at }] }).results[0]!;
   expect(stale.ok).toBe(false);
-  const problem = stale.ok ? "" : stale.problems.join("; ");
-  for (const child of split.committed) expect(problem).toContain(`K${child.knowledgeId}@${child.commit}`);
+  const problem = stale.ok ? "" : stale.reason;
+  // A workspace refusal names versions by their ordinal (K<id>@v<n>).
+  for (const child of applied.committed) expect(problem).toContain(`K${child.knowledgeId}@v${f.store.versionOrdinal(child.knowledgeId, child.commit)}`);
   expect(f.store.listKnowledgeRevisions()).toHaveLength(before);
 });
 
@@ -109,22 +111,19 @@ test("64b: write legality ignores an unrelated rewound retained obligation but k
   const update = (baseCommit: number, text: string) => ({ op: "update" as const, knowledgeId: f.stable.knowledgeId, baseCommit,
     text, category: "constraint" as const, scope: "project" as const, supports: [] as number[], topics: [], reason: text, createdAt: at });
 
-  const accepted = f.store.commitConsolidationRun({ run: f.run, path: f.target, operations: [update(f.stable.commit, "maintained")] });
+  const accepted = f.store.commitWorkspaceRun({ run: f.run, path: f.target, operations: [update(f.stable.commit, "maintained")] }).results[0]!;
   expect(accepted.ok).toBe(true);
   if (!accepted.ok) return;
-  // The frozen range is terminal bookkeeping, not a validity condition on unrelated current writes.
-  expect(() => f.store.validateDreamingRun(f.run, f.target)).not.toThrow();
 
   const beforeStale = f.store.listKnowledgeRevisions().length;
-  const stale = f.store.commitConsolidationRun({ run: f.run, path: f.target, operations: [update(f.stable.commit, "stale")] });
+  const stale = f.store.commitWorkspaceRun({ run: f.run, path: f.target, operations: [update(f.stable.commit, "stale")] }).results[0]!;
   expect(stale.ok).toBe(false);
-  expect(stale.ok ? "" : stale.problems.join("; ")).toContain(`base is not the latest effective applicable revision; current: K${f.stable.knowledgeId}@${accepted.committed[0]!.commit}`);
+  expect(stale.ok ? "" : stale.reason).toContain(`base is not the latest effective applicable revision; current: K${f.stable.knowledgeId}@v${f.store.versionOrdinal(f.stable.knowledgeId, accepted.committed[0]!.commit)}`);
   expect(f.store.listKnowledgeRevisions()).toHaveLength(beforeStale);
 
   f.store.releaseClaim(f.claim);
   const beforeExpired = f.store.listKnowledgeRevisions().length;
-  const expired = f.store.commitConsolidationRun({ run: f.run, path: f.target, operations: [update(accepted.committed[0]!.commit, "expired")] });
-  expect(expired.ok).toBe(false);
-  expect(expired.ok ? "" : expired.problems.join("; ")).toContain("claim is no longer current and unexpired");
+  expect(() => f.store.commitWorkspaceRun({ run: f.run, path: f.target, operations: [update(accepted.committed[0]!.commit, "expired")] }))
+    .toThrow("claim is no longer current and unexpired");
   expect(f.store.listKnowledgeRevisions()).toHaveLength(beforeExpired);
 });

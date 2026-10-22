@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
-
+import { commitDreamerOps, coverKnowledge } from "../../support/dreamer.ts";
 const at = "2026-09-25T00:00:00Z";
 
 test("88: neutral writes do not revisit existing knowledge revisions", () => {
@@ -63,16 +63,10 @@ test("88: neutral writes do not revisit existing knowledge revisions", () => {
     const historical = store.recordRun({ kind: "consolidation", sessionId: session.id, branch: "main", createdAt: at, outcome: "success" });
     store.markConsolidated(fact.id, historical.id, project.id);
     assertNeutral("C processing mark");
-    const claim = store.acquireClaim(path, "dreaming", "88-neutral")!;
-    const range = store.retainKnowledgePoolRange(path, claim);
-    const executionId = store.beginExecution({ sessionId: session.id, phase: "dreaming", origin: range.origin });
-    const dream = store.bindDreamingRun({ kind: "dreaming", sessionId: session.id, branch: "main",
-      dreamingRangeId: range.id, executionId, claim, createdAt: at });
-    store.completeKnowledgePoolRange(dream, "success", range.eventIds);
-    store.releaseClaim(claim);
-    // Claim/range setup performs fresh writer validation; measure the committed reader only.
+    coverKnowledge(store, path, [revisionId]); // a passed curate's coverage
+    // The run write performs fresh writer validation; measure the committed reader only.
     oldRevisionReads = components = examinedRevisions = examinedFacts = 0;
-    assertNeutral("D processing mark");
+    assertNeutral("D coverage mark");
     store.setKnowledgeBudget("session", 1500);
     assertNeutral("budget edit");
     monitored.graphComponent = originalComponent;
@@ -234,7 +228,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     writer.setCurrentPath(a.session.id, "main", a.second.id, "one"); check();
     const updated = writer.commitConsolidationRun({ path: paths[0]!,
       run: { kind: "manual", sessionId: a.session.id, branch: "main", createdAt: at },
-      operations: [{ op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.commit,
+      operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit,
         supports: [a.facts[1]!.id], reason: "new evidence", createdAt: at }] });
     if (!updated.ok) throw Error(updated.problems.join("; "));
     const archiveRefresh = measureRefresh(a.session.id);
@@ -287,21 +281,15 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     const unrelated = create(b, b.facts[0]!.id, "global");
     check();
     const target = { ...paths[0]!, branch: "main", headTurnId: a.second.id, triggerEntryId: a.entries[1]!.id };
-    const claim = writer.acquireClaim(target, "dreaming", "88-linked")!;
-    const range = writer.retainKnowledgePoolRange(target, claim);
-    const run = writer.bindDreamingRun({ kind: "dreaming", sessionId: a.session.id, branch: "main", claim,
-      dreamingRangeId: range.id, executionId: writer.beginExecution({ sessionId: a.session.id, phase: "dreaming",
-        origin: range.origin }), createdAt: at });
     const commitComponents: Set<number>[][] = [];
     const maintain = (operation: Parameters<typeof writer.commitConsolidationRun>[0]["operations"][number]) => {
-      const result = writer.commitConsolidationRun({ path: target, run, operations: [operation] });
-      if (!result.ok) throw Error(result.problems.join("; "));
+      const committed = commitDreamerOps({ store: writer }, target, [operation]); // one Dreamer pass's commit
       const tracked = reader as unknown as { graphComponent: (input: unknown, ids: Set<number>) => unknown };
       const original = tracked.graphComponent, inspected: Set<number>[] = [];
       tracked.graphComponent = (input, ids) => { inspected.push(new Set(ids)); return original.call(reader, input, ids); };
       try { check(); } finally { tracked.graphComponent = original; }
       commitComponents.push(inspected);
-      return result.committed;
+      return committed;
     };
     const merged = maintain({ op: "merge", intoKnowledgeId: members[0]!.knowledgeId,
       intoBaseCommit: members[0]!.commit, absorb: [{ knowledgeId: members[1]!.knowledgeId, baseCommit: members[1]!.commit }],
@@ -352,8 +340,6 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     expect(ownerA).toBe(6); // A's two cited facts plus grounding by the two affected components
     expect(ownerB).toBe(0);
     check();
-    writer.completeKnowledgePoolRange(run, "cancelled");
-    writer.releaseClaim(claim);
     // Seeded mixed *operation* schedule (not just random cursor values). Each cycle shuffles
     // legal operations, then selects live bases from the independent authoritative graph.
     const operations = ["create", "update", "archive", "merge", "split", "rewind", "revisit",
@@ -372,20 +358,8 @@ test("88: every external commit, foreground move and rollback agrees with a fres
         const active = () => writer.commitGraph(paths[0]!, undefined, undefined, writer.commitGraphInput())
           .current.filter(r => r.scope === "global" && r.op !== "archive");
         const runOp = (operation: Parameters<typeof writer.commitConsolidationRun>[0]["operations"][number]) => {
-          // Each independent maintenance probe freezes after the preceding external writes.
-          const held = writer.acquireClaim(target, "dreaming", "88-random")!;
-          const frozen = writer.retainKnowledgePoolRange(target, held);
-          const admitted = writer.bindDreamingRun({ kind: "dreaming", sessionId: a.session.id, branch: "main", claim: held,
-            dreamingRangeId: frozen.id, executionId: writer.beginExecution({ sessionId: a.session.id, phase: "dreaming",
-              origin: frozen.origin }), createdAt: at });
-          try {
-            const result = writer.commitConsolidationRun({ path: target, run: admitted, operations: [operation] });
-            if (!result.ok) throw Error(`${op} step ${sequence}: ${result.problems.join("; ")}`);
-            return result.committed;
-          } finally {
-            writer.completeKnowledgePoolRange(admitted, "cancelled");
-            writer.releaseClaim(held);
-          }
+          try { return commitDreamerOps({ store: writer }, target, [operation]); }
+          catch (error) { throw Error(`${op} step ${sequence}: ${error instanceof Error ? error.message : String(error)}`); }
         };
         switch (op) {
           case "create": create(a, a.facts[0]!.id, "global"); break;
@@ -397,7 +371,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
           }
           case "archive": {
             const base = active().at(random() % active().length)!;
-            runOp({ op: "archive", kind: "budget", knowledgeId: base.knowledgeId, baseCommit: base.id,
+            runOp({ op: "archive", kind: "invalid", knowledgeId: base.knowledgeId, baseCommit: base.id, text: `Withdrawn in this fixture at step ${sequence}; the cited fact records the withdrawal and nothing replaces it.`,
               supports: [a.facts[0]!.id], reason: "random archive", createdAt: at });
             break;
           }

@@ -62,10 +62,10 @@ test("92/118: all-branch history owns stable ordinals, current selection follows
     expect(all).not.toMatch(/K\d+@\d+/);
     expect(read(paths[2]!, `K${id}`)).toContain(`[K${id}#${store.versionTag(id, second.commit)}]`);
     expect(store.versionOrdinal(id, first.commit)).toBe(2);
-    const archive = write(paths[2]!, [{ op: "archive", kind: "budget", knowledgeId: id, baseCommit: second.commit, supports: [facts[2]!], reason: "retired", createdAt: "now" }]);
+    const archive = write(paths[2]!, [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: id, baseCommit: second.commit, supports: [facts[2]!], reason: "retired", createdAt: "now" }]);
     const archivedHistory = read(paths[2]!, `K${id}`, "history");
     expect(archivedHistory.split("\n").find(line => line.startsWith(`  K${id}@v4 `)))
-      .toContain("archive kind: budget");
+      .toContain("archive kind: invalid");
     expect(memory.injection(paths[2]!).knowledgeCommitIds).toEqual([]);
     expect(store.versionOrdinal(id, archive.commit)).toBe(4);
 
@@ -75,7 +75,7 @@ test("92/118: all-branch history owns stable ordinals, current selection follows
     const tools = memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: foreignTurn.id });
     const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "Outside evidence", sources: `[T${foreignTurn.id}#E1] Outside evidence` })).factIds[0];
     expect(memoryFiles(memory, { sessionId: foreign.id, branch: "main", headTurnId: foreignTurn.id }).read(`trace://K${id}@v2`).content).toContain("Left body");
-    const rejected = tools.find(t => t.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" });
+    const rejected = tools.find(t => t.name === "memory")!.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" });
     expect(rejected).toContain("rejected:");
     expect(rejected).not.toContain("expects one create/archive operation");
     expect(rejected).not.toMatch(/K\d+@\d+/);

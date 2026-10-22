@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { sourceSeededMemory , hydrate } from "../../source-fixture.ts";
 import { renderEntry, tokens } from "../../../src/core/render/index.ts";
-import { legacyFacts } from "../../support/seed.ts";
+import { knowledge, legacyFacts } from "../../support/seed.ts";
 
 test("N pending token projection shares joined entries with exact trigger eligibility", () => {
   const agent = vi.fn();
@@ -52,17 +52,15 @@ test("Dreaming projection follows the selected head and current project, not dat
       const noted = legacyFacts(s, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
         sources: [{ entry: user, address: `T${turn.id}#user` }], category: "decision", actor: "user", text, createdAt: "now",
       }]);
-      const written = s.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
-        { op: "create", title: "Fixture title", handle: "$1", author: "test", text, category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
-      ] });
-      if (!written.ok) throw Error(written.problems.join());
+      // Noter-written: only Noter changes count toward the Dreamer's trigger (2026-10-22).
+      knowledge(s, { sessionId: session.id, branch: "main", headTurnId: turn.id }, "project", "constraint", [noted.facts[0]!.id], text, { operation: { title: "Fixture title" } });
       return { sessionId: session.id, branch: "main", headTurnId: turn.id };
     };
     const targetA = create(a.id, "small"), targetB = create(b.id, "large ".repeat(200));
     const session = s.createSession({ host: "test", projectId: a.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const turn = s.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "reader", startedAt: "now" });
     const reader = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    // All fixture knowledge is project-scoped; only the project pool carries pending material.
+    // All fixture knowledge is project-scoped Noter output; the count follows the project the reader is in.
     const projectTokens = (target: typeof targetA) => memory.dreamingPending(target).pending!.tokens;
     const small = projectTokens(targetA), large = projectTokens(targetB);
     expect(large).toBeGreaterThan(small);
