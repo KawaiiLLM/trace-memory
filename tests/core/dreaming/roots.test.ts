@@ -73,14 +73,15 @@ test.skipIf(!rg)("the Grep exclusion hides secret files, secret directories and 
 });
 
 test.skipIf(!rg)("a Grep rooted above a protected directory that is a symbolic link does not search its target", () => {
-  // The root's name holds characters a glob reads specially; the exclusion must still name the target literally.
-  const home = tmp(), root = join(tmp(), "we[ir]d,{dir}"); vi.stubEnv("HOME", home);
+  // The root's and the targets' names hold characters a glob reads specially, a backslash among them; the exclusion must still name
+  // each target literally.
+  const home = tmp(), root = join(tmp(), "we[ir]d,{dir}"), memory = "mem\\[o]{r,y}", agent = "ag*e?n\\t"; vi.stubEnv("HOME", home);
   try {
-    mkdirSync(join(root, "memory"), { recursive: true }); mkdirSync(join(root, "agent")); mkdirSync(join(home, ".pi"));
-    for (const file of ["memory/trace.db", "agent/auth.json", "notes.md"]) writeFileSync(join(root, file), "NEEDLE");
-    symlinkSync(join(root, "memory"), join(home, ".trace-memory")); symlinkSync(join(root, "agent"), join(home, ".pi", "agent"));
+    mkdirSync(join(root, memory), { recursive: true }); mkdirSync(join(root, agent)); mkdirSync(join(home, ".pi"));
+    for (const file of [`${memory}/trace.db`, `${agent}/auth.json`, "notes.md"]) writeFileSync(join(root, file), "NEEDLE");
+    symlinkSync(join(root, memory), join(home, ".trace-memory")); symlinkSync(join(root, agent), join(home, ".pi", "agent"));
     const { glob } = confineSearch({ path: root }, [root], "grep");
     for (const cwd of [tmpdir(), "/", root]) expect(grepFiles(root, glob!, cwd), cwd).toEqual(["notes.md"]);
-    expect(grepFiles(root, SECRET_GLOB), "without the targets the symbolic links leak").toEqual(["agent/auth.json", "memory/trace.db", "notes.md"]);
+    expect(grepFiles(root, SECRET_GLOB), "without the targets the symbolic links leak").toEqual([`${agent}/auth.json`, `${memory}/trace.db`, "notes.md"]);
   } finally { vi.unstubAllEnvs(); }
 });

@@ -35,8 +35,10 @@ function protectedTrees(): string[] {
     for (const tree of DENIED_TREES) { const named = join(home, ...tree.split("/")); trees.add(named); trees.add(real(named)); }
   return [...trees];
 }
-/** A path as a glob that matches itself: the characters a glob reads specially become one-character classes. */
-const literalGlob = (path: string) => path.replace(/[*?[\]{},]/g, character => (character === "]" ? "[]]" : `[${character}]`));
+/** A path as a glob that matches itself: the characters a glob reads specially become one-character classes, and a backslash, which
+ * escapes in a glob, is escaped. */
+const literalGlob = (path: string) => path.replace(/[*?[\]{},\\]/g, character =>
+  character === "]" ? "[]]" : character === "\\" ? "\\\\" : `[${character}]`);
 /** The same list as a ripgrep exclusion, for a Grep call (a hook can only allow or rewrite a call, never filter its output). `below` adds
  * directories to skip, as paths below the searched one. ripgrep matches a glob against the path relative to its own working directory
  * when that holds the searched path, else the absolute path, and a host's working directory is not known here; a leading `**` plus slash matches in both,
