@@ -234,14 +234,15 @@ export function buildSettingsBudgets(input: SettingsBudgetsInput): SettingsBudge
   };
 }
 
-export interface WorkerRowInput { phase: "Noter" | "Dreamer"; model: string; thinking: string; source?: string; sources?: { model?: string; thinking?: string } }
+/** `Classifier` is the Dreamer's scoring task, a settings group of its own (stage 4 §1.2), not a phase. */
+export interface WorkerRowInput { phase: "Noter" | "Dreamer" | "Classifier"; model: string; thinking: string; source?: string; sources?: { model?: string; thinking?: string } }
 export interface WorkerRow { phase: string; model: string; thinking: string; source?: string; sources?: WorkerRowInput["sources"] }
 export interface SettingsWorkers { rows: WorkerRow[] }
 export function buildSettingsWorkers(input: WorkerRowInput[]): SettingsWorkers {
   return { rows: input.map(w => ({ ...w })) };
 }
 
-export type SettingsRowId = "budget.global" | "budget.project" | "budget.session" | "noting.model" | "noting.thinking" | "dreaming.model" | "dreaming.thinking" | "closedSessionScope";
+export type SettingsRowId = "budget.global" | "budget.project" | "budget.session" | "noting.model" | "noting.thinking" | "dreaming.model" | "dreaming.thinking" | "classify.model" | "classify.thinking" | "closedSessionScope";
 export interface SettingsChoice { id: SettingsRowId; label: string }
 /** Stable row identifiers and labels: adapters implement edits, not menu copy or ordering. */
 export function buildSettingsChoices(input: SettingsInput): SettingsChoice[] {
@@ -250,7 +251,7 @@ export function buildSettingsChoices(input: SettingsInput): SettingsChoice[] {
     id: `budget.${scope}` as SettingsRowId, label: `${budgetRows[i]!.label} Knowledge budget: ${budgetRows[i]!.value}`,
   }));
   const workers: SettingsChoice[] = input.workers.flatMap(w => {
-    const phase = w.phase === "Noter" ? "noting" : "dreaming";
+    const phase = ({ Noter: "noting", Dreamer: "dreaming", Classifier: "classify" } as const)[w.phase];
     return ([{ id: `${phase}.model` as SettingsRowId, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
       { id: `${phase}.thinking` as SettingsRowId, label: `${w.phase} thinking: ${w.thinking}`, source: w.sources?.thinking }]).map(row => ({ id: row.id, label: `${row.label}${row.source ? ` (${row.source})` : ""}` }));
   });

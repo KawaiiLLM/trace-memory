@@ -8,7 +8,7 @@ import { statusBody } from "./session-status.ts";
 import { showSessionPanel } from "./session-panel.ts";
 import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
 import { buildActions, buildSettingsChoices, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
-import { agentDirectory, configuration, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
+import { agentDirectory, classifySettingKey, configuration, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
 import { workspaceFileTools } from "./workspace-files.ts";
@@ -257,10 +257,11 @@ export default function (pi: ExtensionAPI) {
   const deliveryPart = (block: { knowledgeCommitIds: number[]; knowledgeStates?: { fromCommit: number; toCommits: number[] }[]; knowledgeTokens?: number; text: string }) =>
     ({ knowledgeCommitIds: block.knowledgeCommitIds, knowledgeStates: (block.knowledgeStates ?? []).map(knowledgeStateKey),
       knowledgeTokens: block.knowledgeTokens ?? tokens(block.text) });
-  const modelName = (kind: WorkerPhase) => {
-    const configured = flat[PHASE_SETTING_KEYS[kind].model];
+  const modelNameOf = (key: string) => {
+    const configured = flat[key];
     return String(configured && configured !== "session" ? configured : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
   };
+  const modelName = (kind: WorkerPhase) => modelNameOf(PHASE_SETTING_KEYS[kind].model);
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
   // The plugin's own model spend as a footer status item (Pi's setStatus, the shape ponytail uses);
   // background runs never enter Pi's session totals, which only count entries of the session file.
@@ -337,23 +338,29 @@ export default function (pi: ExtensionAPI) {
     // 26d: `subagentThinkingLevel` is what the child of this task thinks at: this phase's configured
     // preference, or the same inherited level when it is `inherit` or unset. Read here, at admission,
     // so a preference saved afterwards does not reach this run's later rounds.
-    const selectedModel = modelName(kind);
-    const configuredThinking = flat[PHASE_SETTING_KEYS[kind].thinking];
     const inheritedThinking = pi.getThinkingLevel();
-    const subagentThinking = configuredThinking && configuredThinking !== "inherit" ? String(configuredThinking) : inheritedThinking;
-    const [provider, ...id] = selectedModel.split("/");
-    const model = selectedModel === "session" || selectedModel === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
-    const phase = kind === "noting" ? "Noting" : "Dreaming";
-    // 27a: the allowance is the window minus the fixed headroom, so an invalid window and one that
-    // cannot even hold the headroom fail here, before anything is sent. `model.maxTokens` is read
-    // nowhere any more: it changes neither the allowance nor this verdict.
-    if (!model || !Number.isFinite(model.contextWindow) || model.contextWindow - CONTEXT_HEADROOM <= 0) {
-      const permanent = `${phase} capacity: unavailable model context window (it must exceed the ${CONTEXT_HEADROOM}-token headroom); left pending`;
-      context.ui.notify(permanent, "error");
-      // A configuration error, not a transient wait: a manual catchup must fail on it, never retry (review 2026-09-08).
-      return Promise.resolve({ outcome: "dropped", permanent } as const);
-    }
-    const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM };
+    // The model, the thinking level and the input allowance of one task, frozen here (stage 4 §1.2). A model Pi cannot
+    // resolve, or whose window cannot hold the headroom, fails here, before anything is sent.
+    const resolveTriple = (label: string, selectedModel: string, thinkingKey: string) => {
+      const configuredThinking = flat[thinkingKey];
+      const subagentThinking = configuredThinking && configuredThinking !== "inherit" ? String(configuredThinking) : inheritedThinking;
+      const [provider, ...id] = selectedModel.split("/");
+      const model = selectedModel === "session" || selectedModel === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
+      // 27a: the allowance is the window minus the fixed headroom. `model.maxTokens` is read nowhere.
+      if (!model || !Number.isFinite(model.contextWindow) || model.contextWindow - CONTEXT_HEADROOM <= 0) {
+        const permanent = `${label} capacity: unavailable model context window (it must exceed the ${CONTEXT_HEADROOM}-token headroom); left pending`;
+        context.ui.notify(permanent, "error");
+        // A configuration error, not a transient wait: a manual catchup must fail on it, never retry (review 2026-09-08).
+        return { permanent } as const;
+      }
+      return { selectedModel, subagentThinking, capacity: { inputTokens: model.contextWindow - CONTEXT_HEADROOM } } as const;
+    };
+    const main = resolveTriple(kind === "noting" ? "Noting" : "Dreaming", modelName(kind), PHASE_SETTING_KEYS[kind].thinking);
+    if ("permanent" in main) return Promise.resolve({ outcome: "dropped", permanent: main.permanent } as const);
+    const classifyTriple = kind === "dreaming"
+      ? resolveTriple("Classify", modelNameOf(classifySettingKey(flat, "model")), classifySettingKey(flat, "thinking")) : undefined;
+    if (classifyTriple && "permanent" in classifyTriple) return Promise.resolve({ outcome: "dropped", permanent: classifyTriple.permanent } as const);
+    const { selectedModel, subagentThinking, capacity } = main;
     // Fresh Pi children expose the native Read definition via memoryReadTool. Price that same
     // description and schema beside Core's memory tools.
     const { name, description, parameters } = createReadToolDefinition(context.cwd);
@@ -364,6 +371,7 @@ export default function (pi: ExtensionAPI) {
       ...(kind === "dreaming" ? [createGrepToolDefinition(context.cwd), createFindToolDefinition(context.cwd)] : [])]
       .reduce((sum, { name, description, parameters }) => sum + tokens(JSON.stringify({ name, description, parameters })), 0);
     const common = { ...target, model: selectedModel, thinkingLevel: inheritedThinking, subagentThinkingLevel: subagentThinking,
+      ...(classifyTriple ? { classify: { model: classifyTriple.selectedModel, thinkingLevel: classifyTriple.subagentThinking, capacity: classifyTriple.capacity } } : {}),
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
       nativeReadToolTokens, nativeWriteToolTokens, workspaceRoot: defaultWorkspaceRoot(),
       ...(options.boundary ? { boundary: options.boundary } : {}) };
@@ -1404,7 +1412,7 @@ export default function (pi: ExtensionAPI) {
     saveGlobal(p, choice === follow ? "session" : choice);
   };
   const settingsInput = (): SettingsInput => {
-    const worker = (phase: "Noter" | "Dreamer", key: "noting" | "dreaming") => {
+    const worker = (phase: "Noter" | "Dreamer" | "Classifier", key: "noting" | "dreaming" | "classify") => {
       const pref = (kind: Preference["kind"]) => preferences.find(p => p.phase === key && p.kind === kind);
       const model = pref("model")!, thinking = pref("thinking")!;
       const effective = (p: Preference) => shownValue(preferenceValue(flat, p));
@@ -1413,7 +1421,7 @@ export default function (pi: ExtensionAPI) {
         sources: { model: source(model), thinking: source(thinking) } };
     };
     return { database: dbPath, budgets: { ...memory.knowledgeBudgets(), sharedAllowanceTokens: memory.config.compaction.sharedAllowanceTokens },
-      workers: [worker("Noter", "noting"), worker("Dreamer", "dreaming")],
+      workers: [worker("Noter", "noting"), worker("Dreamer", "dreaming"), worker("Classifier", "classify")],
       closedSessionScope: memory.config.closedSessionScope,
       closedSessionSource: sources.closedSessionScope && sources.closedSessionScope !== "Global"
         ? `${sources.closedSessionScope} setting — this edit will not take effect` : undefined };

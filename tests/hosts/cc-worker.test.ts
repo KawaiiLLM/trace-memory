@@ -44,7 +44,7 @@ function workerConfig(directory: string, claudeExecutable = "/opt/homebrew/bin/c
   return resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "claude-sonnet-4-5", notingThinking: "medium",
     "dreaming.model": "claude-sonnet-4-5", "dreaming.thinking": "medium",
-    worker: { claudeExecutable, contextWindows: { "claude-sonnet-4-5": 200_000 },
+    worker: { claudeExecutable, contextWindows: { "claude-sonnet-4-5": 200_000, sonnet: 200_000 },
       cwd: directory, responseOriginTimeoutMs: 20 } });
 }
 
@@ -337,7 +337,7 @@ test("worker passes only native retry count, records native events, and preserve
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const base = workerConfig(directory, executable);
   const config = resolveCcHostConfig({ ...base, retry: { maxRetries: 3 }, worker: {
-    claudeExecutable: executable, contextWindows: { "claude-sonnet-4-5": 200_000 }, cwd: directory,
+    claudeExecutable: executable, contextWindows: { "claude-sonnet-4-5": 200_000, sonnet: 200_000 }, cwd: directory,
   } } as any);
   let environment: NodeJS.ProcessEnv | undefined;
   const fakeQuery = ((request: { options: Record<string, any> }) => {
@@ -373,7 +373,7 @@ test("worker passes only native retry count, records native events, and preserve
 test("106: a run on any Claude Code version succeeds and journals the version it started", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-version-")); dirs.push(directory);
   const config = resolveCcHostConfig({ ...workerConfig(directory), worker: { claudeExecutable: "/missing/claude",
-    claudeVersion: "0.0.1-retired", contextWindows: { "claude-sonnet-4-5": 200_000 }, cwd: directory } } as any);
+    claudeVersion: "0.0.1-retired", contextWindows: { "claude-sonnet-4-5": 200_000, sonnet: 200_000 }, cwd: directory } } as any);
   const fakeQuery = (() => {
     const stream = (async function* () {
       yield { type: "system", subtype: "init", session_id: "version-child", claude_code_version: TEST_CC_VERSION, cwd: directory,

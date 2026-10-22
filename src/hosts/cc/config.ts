@@ -37,8 +37,8 @@ export interface ResolvedCcPhaseConfig {
 
 export interface ResolvedCcWorkerConfig extends Omit<CcWorkerConfig, "responseOriginTimeoutMs" | "contextWindows" | "claudeVersion"> {
   contextWindows: Readonly<Record<string, number>>;
-  /** `classify` (stage 4 §1.2) is the Dreamer's scoring task; absent, it runs on the `dreaming` settings. */
-  phases: Readonly<Record<MemoryPhase, ResolvedCcPhaseConfig>> & { classify?: ResolvedCcPhaseConfig };
+  /** `classify` (stage 4 §1.2) is the Dreamer's scoring task, with its own model and thinking, never the Dreamer's. */
+  phases: Readonly<Record<MemoryPhase, ResolvedCcPhaseConfig>> & { classify: ResolvedCcPhaseConfig };
   responseOriginTimeoutMs: number;
 }
 
@@ -50,7 +50,7 @@ export interface CcHostConfig {
   notingThinking?: string;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
-  /** Optional: the Dreamer's classify task; absent, it runs on the `dreaming` settings. */
+  /** Optional: the Dreamer's classify task; absent, `sonnet` and the Noter's thinking (ruling 2026-10-21 「评级任务用sonnet」). */
   "dreaming.classifyModel"?: string;
   "dreaming.classifyThinking"?: string;
   "noting.triggerTokens"?: number;
@@ -119,10 +119,14 @@ function retry(input: CcRetryConfig | undefined): CcRetryConfig | undefined {
   return { maxRetries: input.maxRetries };
 }
 
+/** classify's model when its key is absent: Sonnet, whatever the Dreamer runs on. */
+export const CC_CLASSIFY_DEFAULT_MODEL = "sonnet";
+
 function phaseFields(input: CcHostConfig, phase: MemoryPhase | "classify"): { model: string; thinking: CcEffort } {
   const keys = phase === "classify" ? CLASSIFY_SETTING_KEYS : PHASE_SETTING_KEYS[phase];
-  const model = input[keys.model as keyof CcHostConfig];
-  const thinking = input[keys.thinking as keyof CcHostConfig];
+  // classify never borrows the Dreamer's keys: an absent model is Sonnet, an absent thinking level is the Noter's (also Sonnet's).
+  const model = input[keys.model as keyof CcHostConfig] ?? (phase === "classify" ? CC_CLASSIFY_DEFAULT_MODEL : undefined);
+  const thinking = input[keys.thinking as keyof CcHostConfig] ?? (phase === "classify" ? input.notingThinking : undefined);
   if (typeof model !== "string" || !model.trim())
     throw new Error(`Invalid CC ${keys.model}: an explicit non-empty model id is required when worker is configured`);
   if (model === "session") throw new Error(`Invalid CC ${keys.model}: session inheritance is unavailable in the CC worker`);
@@ -163,7 +167,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       throw new Error("Invalid CC worker.cwd: expected an absolute path");
     if (!value.contextWindows || typeof value.contextWindows !== "object" || Array.isArray(value.contextWindows))
       throw new Error("Invalid CC worker.contextWindows: expected model-to-capacity object");
-    const phases = Object.fromEntries([...MEMORY_PHASES, ...(input["dreaming.classifyModel"] !== undefined || input["dreaming.classifyThinking"] !== undefined ? ["classify" as const] : [])].map(phase => {
+    const phases = Object.fromEntries([...MEMORY_PHASES, "classify" as const].map(phase => {
       const selected = phaseFields(input, phase);
       if (!Object.hasOwn(value.contextWindows, selected.model))
         throw new Error(`Invalid CC worker.contextWindows: no capacity for selected ${phase} model ${selected.model}`);

@@ -49,7 +49,7 @@ async function heldBatch() {
     notingModel: "claude-sonnet-5", notingThinking: "high", consolidationModel: "claude-sonnet-5",
     consolidationThinking: "high", "dreaming.model": "claude-sonnet-5", "dreaming.thinking": "high",
     worker: { claudeExecutable: "/usr/bin/false", cwd: dir,
-      contextWindows: { "claude-sonnet-5": 200_000 } } };
+      contextWindows: { "claude-sonnet-5": 200_000, sonnet: 200_000 } } };
   writeFileSync(path, `${JSON.stringify(base, null, 2)}\n`);
   const config = resolveCcHostConfig(base);
   const records = [

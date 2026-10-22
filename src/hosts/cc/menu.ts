@@ -79,8 +79,8 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     const spend = session ? memory.spend(session.id) : null;
     const budgets = memory.knowledgeBudgets();
     const active = effective ?? config;
-    const workers: SettingsInput["workers"] = (["noting", "dreaming"] as const).map((phase, index) => {
-      const name = (["Noter", "Dreamer"] as const)[index]!;
+    const workers: SettingsInput["workers"] = (["noting", "dreaming", "classify"] as const).map((phase, index) => {
+      const name = (["Noter", "Dreamer", "Classifier"] as const)[index]!;
       const current = effective?.worker?.phases[phase];
       const saved = config.worker?.phases[phase];
       const sources = !effective ? { model: "effective configuration unavailable", thinking: "effective configuration unavailable" }

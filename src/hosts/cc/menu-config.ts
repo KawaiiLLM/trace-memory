@@ -10,6 +10,7 @@ export interface SettingOutcome { saved: boolean; applied: boolean; diagnostic?:
 const PHASE_KEYS: Partial<Record<CcSettingId, keyof CcHostConfig>> = {
   "noting.model": "notingModel", "noting.thinking": "notingThinking",
   "dreaming.model": "dreaming.model", "dreaming.thinking": "dreaming.thinking",
+  "classify.model": "dreaming.classifyModel", "classify.thinking": "dreaming.classifyThinking",
   closedSessionScope: "closedSessionScope",
 };
 

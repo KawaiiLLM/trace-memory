@@ -12,7 +12,7 @@ const worker = resolveCcHostConfig({ dbPath: "/unused/material.db", stateDir: "/
   notingModel: "synthetic", notingThinking: "medium",
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
   // The worker's directory holds the Noter's workspaces, so it must exist.
-  worker: { cwd: mkdtempSync(join(tmpdir(), "material-")), claudeExecutable: "/never-invoke-claude", contextWindows: { synthetic: 200_000 } } }).worker;
+  worker: { cwd: mkdtempSync(join(tmpdir(), "material-")), claudeExecutable: "/never-invoke-claude", contextWindows: { synthetic: 200_000, sonnet: 200_000 } } }).worker;
 
 for (const cancel of [false, true]) {
   test(`ticket92material CC actual scheduler/core admission ${cancel ? "cancels without processing" : "drains exact multi-batch Raw"}`, async () => {

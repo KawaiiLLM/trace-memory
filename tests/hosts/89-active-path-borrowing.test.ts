@@ -78,7 +78,7 @@ test("89: Pi borrows only active paths and consumes reactivated backlog at the n
 const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-89.db", stateDir: "/tmp/unused-89",
   notingModel: "synthetic", notingThinking: "medium",
   "dreaming.model": "synthetic", "dreaming.thinking": "medium",
-  worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 } } }).worker;
+  worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000, sonnet: 200_000 } } }).worker;
 
 test("89: CC borrows only active paths and consumes reactivated backlog at the next ordinary opportunity", async () => {
   const inputs: NotingAgentInput[] = [];

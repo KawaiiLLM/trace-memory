@@ -326,7 +326,7 @@ export class CcAgentWorker {
 
   async run(task: CcAgentTask, maxToolRounds: number): Promise<RunAgentResult> {
     // Stage 4 §1.2: the classify task runs on its own triple; every other task on its phase's.
-    const settings = (task.kind === "dreaming" && task.task === "classify" ? this.worker.phases.classify : undefined) ?? this.worker.phases[task.kind];
+    const settings = this.worker.phases[task.kind === "dreaming" && task.task === "classify" ? "classify" : task.kind];
     if (task.model !== undefined && task.model !== settings.model)
       throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
     if (task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)

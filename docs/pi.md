@@ -121,7 +121,8 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
 - `dreaming.model` and `dreaming.thinking` use the same model/thinking Settings selectors,
-  defaults and precedence as the other phases. Dreamer has no new settings page.
+  defaults and precedence as the other phases. Dreamer has no new settings page. The classify task has its own
+  `dreaming.classifyModel` and `dreaming.classifyThinking` rows in the same Settings; admission resolves both triples and freezes them for the run.
   `dreaming.maxToolRounds` is fixed at 0 (unlimited). The shared `dreaming.timeoutMs` default is
   1,800,000 milliseconds, applied to each of the Dreamer's three tasks (curate, verify, classify). Expiry fails the
   task, fences its workspace and releases its claim. Provider retries do not reset the deadline. After a pass the host asks
@@ -589,6 +590,8 @@ path (the Noter has no execution-mode preference: it runs fresh only, 2026-10-22
 | Noter thinking | inherit / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `notingThinking` | `inherit` |
 | Dreamer model | Follow foreground / an available `provider/model-id` | `dreaming.model` | `session` |
 | Dreamer thinking | inherit / one of Pi's levels | `dreaming.thinking` | `inherit` |
+| Classifier model | Follow foreground / an available `provider/model-id` | `dreaming.classifyModel` | the Dreamer's model (PENDING Q2: whether Pi's Dreamer tasks follow the main agent's model) |
+| Classifier thinking | inherit / one of Pi's levels | `dreaming.classifyThinking` | the Dreamer's thinking (PENDING Q2) |
 | Closed-session scope | off / project / global | `closedSessionScope` | `project` |
 
 **The thinking entries (26d/32d)** choose the level this phase's runs think at;

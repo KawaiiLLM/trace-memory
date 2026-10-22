@@ -87,9 +87,23 @@ test("CC resolves one immutable execution setting per phase from the four flat P
   expect(config.worker?.phases).toEqual({
     noting: { model: "sonnet", thinking: "high", capacity: { inputTokens: 190_000 } },
     dreaming: { model: "opus", thinking: "xhigh", capacity: { inputTokens: 290_000 } },
+    // 2026-10-21 「评级任务用sonnet」: absent keys give Sonnet at the Noter's thinking, never the Dreamer's.
+    classify: { model: "sonnet", thinking: "high", capacity: { inputTokens: 190_000 } },
   });
   expect(config).toMatchObject({ notingModel: "sonnet", notingThinking: "high",
     "dreaming.model": "opus", "dreaming.thinking": "xhigh" });
+});
+
+test("classify defaults to Sonnet at the Noter's thinking whatever the Dreamer runs on, and a model without a thinking key takes that default (2026-10-21)", () => {
+  const f = fixture(), base = executableConfig(f.home); // Dreamer: opus, xhigh
+  expect(resolveCcHostConfig(base).worker?.phases.classify).toMatchObject({ model: "sonnet", thinking: "high" });
+  const named = resolveCcHostConfig({ ...base, "dreaming.classifyModel": "opus" }).worker?.phases.classify;
+  expect(named).toMatchObject({ model: "opus", thinking: "high" }); // model only: the default thinking
+  expect(resolveCcHostConfig({ ...base, "dreaming.classifyThinking": "low" }).worker?.phases.classify).toMatchObject({ model: "sonnet", thinking: "low" });
+  expect(() => resolveCcHostConfig({ ...base, "dreaming.classifyThinking": "inherit" })).toThrow("dreaming.classifyThinking");
+  const without = { ...base, worker: { ...base.worker!, contextWindows: { opus: 300_000, sonnet: 200_000 } } };
+  delete (without.worker.contextWindows as Record<string, number>).sonnet;
+  expect(() => resolveCcHostConfig({ ...without, notingModel: "opus" })).toThrow(/no capacity.*classify model sonnet/);
 });
 
 test("106: a retired worker.claudeVersion in an installed file is accepted and ignored, whatever its value", () => {

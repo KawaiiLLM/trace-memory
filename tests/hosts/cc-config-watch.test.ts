@@ -45,7 +45,7 @@ const base = (dir: string) => ({ dbPath: join(dir, "memory.sqlite"), stateDir: j
   baseline: "2025-01-01T00:00:00.000Z", pollIntervalMs: 100_000, finalSyncTimeoutMs: 100, finalSyncStablePolls: 1,
   "noting.triggerTokens": 1, notingModel: "claude-sonnet-5", notingThinking: "high",
   "dreaming.model": "claude-sonnet-5", "dreaming.thinking": "high",
-  worker: { claudeExecutable: "/usr/bin/false", cwd: dir, contextWindows: { "claude-sonnet-5": 200_000 } } });
+  worker: { claudeExecutable: "/usr/bin/false", cwd: dir, contextWindows: { "claude-sonnet-5": 200_000, sonnet: 200_000 } } });
 const transcriptOf = (dir: string, name: string) => {
   const path = join(dir, `${name}.jsonl`);
   const records = [

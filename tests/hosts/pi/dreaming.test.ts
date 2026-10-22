@@ -55,6 +55,26 @@ test("Dreamer pre-request capacity failure names its own phase and retains its w
   } finally { measure.mockRestore(); await h.dispose(); }
 });
 
+test("classify has its own model and thinking, frozen at admission; absent, it follows the Dreamer (PENDING Q2)", async () => {
+  for (const [config, expected] of [
+    [{ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high", "dreaming.classifyModel": "fake/test-mini", "dreaming.classifyThinking": "low" },
+      { curate: "fake/test-thinking", classify: "fake/test-mini", classifyThinking: "low" }],
+    [{ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high" }, // PENDING Q2: Pi's classify follows the Dreamer's model
+      { curate: "fake/test-thinking", classify: "fake/test-thinking", classifyThinking: "high" }],
+  ] as const) {
+    const { h, store } = await seeded(config);
+    try {
+      h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
+      await h.turn(); await h.drain();
+      const runs = dreamingRuns(store).map(r => ({ response: JSON.parse(r.response ?? "{}"), model: r.model }));
+      expect(runs.find(r => r.response.task === "curate")?.model).toBe(expected.curate);
+      const classify = runs.find(r => r.response.task === "classify");
+      expect(classify?.model).toBe(expected.classify);
+      expect(classify?.response.thinking.requested).toBe(expected.classifyThinking);
+    } finally { await h.dispose(); }
+  }
+});
+
 test("entry ingestion starts a fresh Dreamer on its own model and thinking and records the entry that triggered it", async () => {
   const { h, store, item, pool } = await seeded({ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high", compaction: { enabled: true } });
   try {

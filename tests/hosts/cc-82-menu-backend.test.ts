@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { editedCcConfig, saveCcConfig } from "../../src/hosts/cc/menu-config.ts";
 import { readCcMenu } from "../../src/hosts/cc/menu.ts";
+import { buildSettingsChoices } from "../../src/hosts/trace-menu.ts";
 import { bindingPath, readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { executorSettings, executorSnapshot, startControlServer } from "../../src/hosts/cc/control.ts";
 import { TraceMemory } from "../../src/core/api/index.ts";
@@ -23,12 +24,29 @@ const setup = () => {
     contextWindows: { "claude-sonnet-5": 200_000, "claude-opus-5-5": 250_000 } };
   const input = { dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), worker,
     notingModel: "claude-sonnet-5", notingThinking: "high", consolidationModel: "claude-sonnet-5",
-    consolidationThinking: "high", "dreaming.model": "claude-opus-5-5", "dreaming.thinking": "high", closedSessionScope: "project" as const };
-  const text = ` {\n  "dbPath": ${JSON.stringify(input.dbPath)},\n  "stateDir": ${JSON.stringify(input.stateDir)},\n  "custom": { "unrelated": [1, 2] },\n  "worker": {\n    "claudeExecutable": "/usr/bin/false",\n    "claudeVersion": "2.1.280",\n    "cwd": ${JSON.stringify(dir)},\n    "contextWindows": {\n      "claude-sonnet-5": 200000,\n      "claude-opus-5-5": 250000\n    }\n  },\n  "notingModel": "claude-sonnet-5",\n  "notingThinking": "high",\n  "consolidationModel": "claude-sonnet-5",\n  "consolidationThinking": "high",\n  "dreaming.model": "claude-opus-5-5",\n  "dreaming.thinking": "high",\n  "closedSessionScope": "project"\n}\n`;
+    consolidationThinking: "high", "dreaming.model": "claude-opus-5-5", "dreaming.thinking": "high", "dreaming.classifyModel": "claude-sonnet-5", closedSessionScope: "project" as const };
+  const text = ` {\n  "dbPath": ${JSON.stringify(input.dbPath)},\n  "stateDir": ${JSON.stringify(input.stateDir)},\n  "custom": { "unrelated": [1, 2] },\n  "worker": {\n    "claudeExecutable": "/usr/bin/false",\n    "claudeVersion": "2.1.280",\n    "cwd": ${JSON.stringify(dir)},\n    "contextWindows": {\n      "claude-sonnet-5": 200000,\n      "claude-opus-5-5": 250000\n    }\n  },\n  "notingModel": "claude-sonnet-5",\n  "notingThinking": "high",\n  "consolidationModel": "claude-sonnet-5",\n  "consolidationThinking": "high",\n  "dreaming.model": "claude-opus-5-5",\n  "dreaming.thinking": "high",\n  "dreaming.classifyModel": "claude-sonnet-5",\n  "closedSessionScope": "project"\n}\n`;
   writeFileSync(path, text);
   const config = resolveCcHostConfig(input);
   return { dir, path, session, text, config };
 };
+
+test("the classify rows show and save the two classify keys on the existing settings route", async () => {
+  const f = setup();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.session,
+    transcript_path: join(f.dir, "native.jsonl"), source: "startup" }, null);
+  const menu = readCcMenu(f.config, f.session, f.config);
+  expect(menu.settings.workers.map(w => w.phase)).toEqual(["Noter", "Dreamer", "Classifier"]);
+  expect(menu.settings.workers[2]).toMatchObject({ model: "claude-sonnet-5", thinking: "high" });
+  expect(buildSettingsChoices(menu.settings).map(row => row.id)).toEqual(expect.arrayContaining(["classify.model", "classify.thinking"]));
+  const model = editedCcConfig(f.text, "classify.model", "claude-opus-5-5");
+  expect(JSON.parse(model)["dreaming.classifyModel"]).toBe("claude-opus-5-5");
+  const thinking = editedCcConfig(model, "classify.thinking", "low");
+  const resolved = resolveCcHostConfig(JSON.parse(thinking)).worker!.phases;
+  expect(resolved.classify).toMatchObject({ model: "claude-opus-5-5", thinking: "low" });
+  expect(resolved.dreaming).toMatchObject({ model: "claude-opus-5-5", thinking: "high" }); // the Dreamer's rows are untouched
+  expect(() => editedCcConfig(f.text, "classify.thinking", "inherit")).toThrow("thinking must be");
+});
 
  test("settings edit preserves unrelated formatting and enforces model capacity and CC-only choices", () => {
   const f = setup();

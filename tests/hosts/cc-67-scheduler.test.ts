@@ -6,7 +6,7 @@ import { ccWorkerToolNames } from "../../src/hosts/cc/tool-names.ts";
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-67.db", stateDir: "/tmp/unused-67",
   notingModel: "synthetic", notingThinking: "medium", "dreaming.model": "synthetic", "dreaming.thinking": "medium",
-  worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 } } }).worker;
+  worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000, sonnet: 200_000 } } }).worker;
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
   selectedEntryIds: [1, 2], selectedCount: 2, selectedTailId: 2,
   selectedAppendedEntryIds: [], appendedEntryIds: [], problems: [], snapshot: {} as never };

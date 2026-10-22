@@ -188,7 +188,7 @@ test("2026-10-17, 141: entry ends retry failed automatic work; completion schedu
   const turn = fresh.store.appendTurn({ sessionId: owner.id, kind: "turn", startedAt: time, userPrompt: "pending" });
   const worker = resolveCcHostConfig({ dbPath: join(directory, "unused.sqlite"), stateDir: directory,
     notingModel: "synthetic", notingThinking: "medium", "dreaming.model": "synthetic", "dreaming.thinking": "medium",
-    worker: { cwd: directory, claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 } } }).worker;
+    worker: { cwd: directory, claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000, sonnet: 200_000 } } }).worker;
   const scheduler = new CcTaskScheduler(fresh, worker, () => {});
   const selected: number[] = [];
   try {
@@ -230,7 +230,7 @@ test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry th
   const worker = resolveCcHostConfig({ dbPath: join(directory, "unused.sqlite"), stateDir: directory,
     notingModel: "synthetic", notingThinking: "medium",
     "dreaming.model": "synthetic", "dreaming.thinking": "medium",
-    worker: { cwd: directory, claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000 } } }).worker;
+    worker: { cwd: directory, claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000, sonnet: 200_000 } } }).worker;
   const scheduler = new CcTaskScheduler(retryMemory, worker, () => {});
   try {
     scheduler.startCatchup({ state: "ready", coreSessionId: session.id, branch: "main", headTurnId: turn.id,
