@@ -2727,33 +2727,46 @@ export class Store {
     return this.graphAncestors(id, children);
   }
 
-  /** Committed read projections only. Writer transactions always use their own fresh graph. */
+  /** Committed read projections only. A read inside a transaction never publishes into it (see `commitGraphInput`). */
   private graphInputCache: SelectiveGraph | undefined;
   private graphResults = new WeakMap<GraphInput, GraphResults>();
   private graphVisibility = new WeakMap<GraphInput, Map<string, Set<number>>>();
   /** 144: the path's live (non-archived) current versions, once per graph input and path like `graphVisibility`. */
   private graphLive = new WeakMap<GraphInput, Map<string, KnowledgeRevision[]>>();
   commitGraphInput(seed?: readonly KnowledgeRevision[], cacheSessionId?: number): GraphInput {
-    if (seed || cacheSessionId === undefined || this.db.isTransaction) return this.buildGraphInput(seed);
+    if (seed || cacheSessionId === undefined) return this.buildGraphInput(seed);
+    if (this.db.isTransaction) {
+      // A writer must see its own transaction, and nothing built from it may be published: it can still roll back.
+      // advanceGraph clones before it applies the transaction's view, so advancing from the committed graph meets both
+      // without the cold rebuild (seconds on the live database, inside the write lock). Cold, build fresh.
+      if (!this.graphInputCache) return this.buildGraphInput();
+      const next = this.advanceGraph(this.graphInputCache);
+      // Reads fill path memos per input (graphVisibility, graphLive); an unchanged graph gets a private input so they stay off the committed one.
+      return this.projectedInput(next.input === this.graphInputCache.input
+        ? { ...next, input: { ...next.input }, visibility: new Map(next.visibility) } : next);
+    }
     this.db.exec("BEGIN");
     try {
       const next = this.advanceGraph(this.graphInputCache);
       this.db.exec("COMMIT");
       this.graphInputCache = next;
-      if (this.graphResults.has(next.input)) return next.input;
-      this.graphVisibility.set(next.input, next.visibility);
-      const applicable: KnowledgeRevision[] = [], effective = new Set<number>(), resolved: KnowledgeRevision[] = [];
-      for (const part of next.results.values()) {
-        applicable.push(...part.applicable); resolved.push(...part.resolved);
-        for (const id of part.effective) effective.add(id);
-      }
-      applicable.sort((a, b) => a.id - b.id); resolved.sort((a, b) => a.id - b.id);
-      this.graphResults.set(next.input, { applicable, applicableIds: new Set(applicable.map(r => r.id)), effective, resolved });
-      return next.input;
+      return this.projectedInput(next);
     } catch (error) {
       if (this.db.isTransaction) this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+  private projectedInput(next: SelectiveGraph): GraphInput {
+    if (this.graphResults.has(next.input)) return next.input;
+    this.graphVisibility.set(next.input, next.visibility);
+    const applicable: KnowledgeRevision[] = [], effective = new Set<number>(), resolved: KnowledgeRevision[] = [];
+    for (const part of next.results.values()) {
+      applicable.push(...part.applicable); resolved.push(...part.resolved);
+      for (const id of part.effective) effective.add(id);
+    }
+    applicable.sort((a, b) => a.id - b.id); resolved.sort((a, b) => a.id - b.id);
+    this.graphResults.set(next.input, { applicable, applicableIds: new Set(applicable.map(r => r.id)), effective, resolved });
+    return next.input;
   }
   private graphComponent(input: GraphInput, ids: Set<number>): GraphResults {
     const revisions = [...ids].map(id => input.metadata.revisions!.get(id)!).sort((a, b) => a.id - b.id);

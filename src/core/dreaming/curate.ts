@@ -37,7 +37,9 @@ export function curatePrefix(store: Store, path: KnowledgePath, items: readonly 
 /** §2.2: the groups of a run. Largest category first, each category whole into the first group that has room for it by item count and by
  * token cost; a category that does not fit an empty group is cut into consecutive chunks. Deterministic, not optimal. `room` is the input
  * allowance left for a group's items (Infinity without one). An item that fits no empty group alone refuses the formation. */
-export function formGroups(items: readonly CurateItem[], cost: (item: CurateItem) => number, room = Infinity): { groups: CurateItem[][] } | { refusal: string } {
+export function formGroups(items: readonly CurateItem[], price: (item: CurateItem) => number, room = Infinity): { groups: CurateItem[][] } | { refusal: string } {
+  // Priced once each: the chunking below re-totals growing chunks, which re-rendered every item thousands of times.
+  const prices = new Map(items.map(item => [item, price(item)] as const)), cost = (item: CurateItem) => prices.get(item)!;
   const byCategory = new Map<Category, CurateItem[]>();
   for (const item of [...items].sort((a, b) => a.value.revision.id - b.value.revision.id)) { const list = byCategory.get(groupOf(item)); if (list) list.push(item); else byCategory.set(groupOf(item), [item]); }
   const total = (list: readonly CurateItem[]) => list.reduce((sum, item) => sum + cost(item), 0);

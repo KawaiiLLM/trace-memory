@@ -1,7 +1,8 @@
 // Ticket 80 item 2 "The knowledge graph input, reused while nothing it depends on changed": memoizes
 // `commitGraphInput()`'s cold (unseeded) build per Store. Ticket 88 replaces the broad signal
 // invalidation with incremental knowledge selection. Pins: cache reuse via one `db.prepare` statement,
-// neutral writes never rebuilding the cold input through a second connection, writers always rebuilding,
+// neutral writes never rebuilding the cold input through a second connection, writers reading their own
+// transaction (a base validation builds fresh; a session read advances a private copy of the memo),
 // and the cross-connection
 // project-reassignment regression (also pinned for 72's footer/arming at the signal level in
 // tests/core/store/ticket-72-progress-signal.test.ts).
@@ -118,7 +119,7 @@ test("80: readers with the same signal share one global graph without sharing vi
   expect(builds).toBe(1);
 });
 
-test("writers always rebuild: base validation of an archive sees its own transaction's state, never the memo", () => {
+test("a writer's base validation of an archive sees its own transaction's state, never the memo", () => {
   const store = open();
   const { sessionId, turnId, factId } = seeded(store);
   const path = { sessionId, branch: "main", headTurnId: turnId };
@@ -137,6 +138,35 @@ test("writers always rebuild: base validation of an archive sees its own transac
   expect(archived.ok).toBe(true);
   // Base validation rebuilds fresh — `applyKnowledgeOperation`'s `writerInput` never names a session.
   expect(calls.length).toBeGreaterThanOrEqual(1);
+});
+
+test("a session read inside a transaction advances from the warm memo: it sees the transaction's writes, and a rollback publishes nothing", () => {
+  const store = open();
+  const { sessionId, turnId, factId } = seeded(store);
+  const path = { sessionId, branch: "main", headTurnId: turnId };
+  expect(store.currentKnowledge(path)).toEqual([]); // warms the memo
+  let builds = 0; const original = store.db.prepare.bind(store.db);
+  store.db.prepare = ((sql: string) => { if (revisionsQuery(sql)) builds++; return original(sql); }) as typeof store.db.prepare;
+  const text = "a rule written inside the transaction that later rolls back";
+  let inside: string[] = [], insideBuilds = -1;
+  try {
+    expect(() => store.transaction(() => {
+      const created = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId, branch: "main", createdAt: time },
+        operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text, category: "constraint", scope: "session",
+          supports: [factId], topics: [], reason: "evidence", createdAt: time }] });
+      if (!created.ok) throw new Error(created.problems.join("; "));
+      builds = 0;
+      inside = store.currentKnowledge(path).map(value => value.revision.text);
+      insideBuilds = builds;
+      throw new Error("roll back");
+    })).toThrow("roll back");
+    builds = 0;
+    expect(store.currentKnowledge(path)).toEqual([]);
+    expect(builds).toBe(0);
+  } finally { store.db.prepare = original; }
+  expect(inside).toEqual([text]);
+  // A cold rebuild here held the write lock for seconds on the live database (a Dreamer's admission, 2026-10-23).
+  expect(insideBuilds).toBe(0);
 });
 
 test("a pure Raw append reuses the memo, and every consumer's answer is unchanged", () => {
