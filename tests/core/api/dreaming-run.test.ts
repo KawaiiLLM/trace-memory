@@ -11,6 +11,7 @@ import { tokens } from "../../../src/core/render/index.ts";
 import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
 import { TASK_GAP_MS, executionLimitMs, remainingTasks } from "../../../src/core/dreaming/index.ts";
 import { block } from "../../support/workspace.ts";
+import { REQUEST } from "../../support/noter.ts";
 
 const memories: TraceMemory[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -365,4 +366,238 @@ test("a Noter version written after the prefix was frozen is not covered by the 
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(covered(f)).not.toContain(late!.commit);
   expect(f.store.noterChangedTokens(f.path)).toBeGreaterThan(0);
+});
+
+// ---- The rotation (stage 5 §3): one operation per run, update → merge → split → archive -----------------------------------------
+
+type Fixture = ReturnType<typeof dreamerFixture>;
+const due = (f: Fixture) => f.store.nextCurateOperation(f.project.id);
+/** A second session of the same project, with its own path; `dream()` runs the shared scripted Dreamer for it. */
+function secondSession(f: Fixture) {
+  const session = f.store.createSession({ host: "offline", projectId: f.project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+  const turn = f.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "second", startedAt: "now" });
+  const entry = f.memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "second", role: "user", text: "second", raw: "second", calls: [] });
+  f.memory.selectEntries(session.id, "main", [entry.id]);
+  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, model: "scripted" };
+  return { session, target, dream: () => f.memory.dream(target) };
+}
+/** Every Dreamer run body that ended a run, oldest first. */
+const finishes = (f: Fixture) => (f.store.db.prepare("SELECT r.id AS id, b.response AS response FROM runs r JOIN run_bodies b ON b.run_id = r.id WHERE r.kind = 'dreaming' ORDER BY r.id").all() as { id: number; response: string }[])
+  .flatMap(row => { const finished = JSON.parse(row.response ?? "{}").finished; return finished ? [{ run: row.id, ...finished as { operation: string; advanced: boolean } }] : []; });
+const taskHeaders = (f: Fixture) => f.dreamer.reports.filter(report => report.startsWith("Task: curate")).map(report => /Task: curate (\w+)/.exec(report)![1]!);
+const execution = (f: Fixture) => f.store.db.prepare("SELECT outcome, reason FROM task_executions ORDER BY rowid").all() as { outcome: string | null; reason: string | null }[];
+/** A classify model that scores every item in its pass, meets the stop hook, then does `after` with the pass number (1-based) before it returns. */
+const classifyThen = (after: (input: import("../../source-fixture.ts").DreamingAgentInput, pass: number) => Promise<Partial<import("../../source-fixture.ts").RunAgentResult> | void> | Partial<import("../../source-fixture.ts").RunAgentResult> | void, failBefore?: number) =>
+  async (input: import("../../source-fixture.ts").DreamingAgentInput) => {
+    input.reportRequest(REQUEST);
+    const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
+    if (Number(/pass (\d+)/.exec(report)?.[1] ?? 1) === failBefore) return { outcome: "failure", output: "429 rate limit", request: REQUEST } as import("../../source-fixture.ts").RunAgentResult; // fails before its stop: nothing committed
+    const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => match[1]!);
+    writeFileSync(/File: (\S+?\.md)/.exec(report)![1]!, ids.map(id => `K${id} 50`).join("\n") + "\n");
+    input.passEnd();
+    const pass = Number(/pass (\d+)/.exec(report)?.[1] ?? 1);
+    return { outcome: "success", output: "Done.", request: REQUEST, usage: { tokens: 12 }, ...(await after(input, pass) ?? {}) } as import("../../source-fixture.ts").RunAgentResult;
+  };
+
+test("a curate file holds the run's one operation: a block of another operation, and any create, are refused", async () => {
+  const f = dreamerFixture();
+  const a = f.item("Rule A", { category: "constraint" }), b = f.item("Rule B", { category: "constraint" });
+  const merge = block(`merge ${a.ref}`, { absorb: b.ref, reason: "same" }, "Merged.");
+  f.dreamer.script.curate!.constraint = [merge, merge];
+  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { class: "check failed twice" } });
+  expect(f.dreamer.messages[0]).toContain("`## merge` is not allowed in a curate file; allowed: `update`");
+  const g = dreamerFixture();
+  const c = g.item("Rule C", { category: "constraint" });
+  const create = block("create", { title: "New", category: "constraint", scope: "project", topics: "", supports: `F${c.supports[0]}`, reason: "new" }, "A new rule.");
+  g.dreamer.script.curate!.constraint = [create, create];
+  expect(await g.dream()).toMatchObject({ outcome: "failure" });
+  expect(g.dreamer.messages[0]).toContain("`## create` is not allowed in a curate file");
+});
+
+test("the first run is update; each finished run advances the project to the next operation, and a lap returns to update", async () => {
+  const f = dreamerFixture();
+  expect(due(f)).toBe("update");
+  f.item("Rule", { category: "constraint" });
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(due(f)).toBe("merge");
+  expect(finishes(f)).toMatchObject([{ operation: "update", advanced: true }]);
+  await f.cycleTo("update"); // merge, split, archive: a whole lap
+  expect(finishes(f).map(finished => finished.operation)).toEqual(["update", "merge", "split", "archive"]);
+  expect(taskHeaders(f)).toEqual(["update", "merge", "split", "archive"]);
+});
+
+test("a run with nothing to curate or score finishes and advances through its no-work tasks", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Rule", { category: "constraint" });
+  f.next(async () => ({ outcome: "failure", output: "network error" }));
+  await f.dream();
+  archiveItem(f, rule);
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(f.dreamer.inputs).toHaveLength(0); // curate, verify and classify were all no-work runs
+  expect(finishes(f)).toMatchObject([{ operation: "update", advanced: true }]);
+  expect(due(f)).toBe("merge");
+});
+
+for (const failing of ["curate", "verify", "classify"] as const) {
+  test(`a ${failing} failure does not advance: a second session of the project runs the same operation, and the failed run resumes it`, async () => {
+    const f = dreamerFixture();
+    const rule = f.item("Rule", { category: "constraint" });
+    if (failing !== "classify") f.dreamer.script.curate!.constraint = failing === "curate" ? ["## bogus\n", "## bogus\n"] : block(`update ${rule.ref}`, { reason: "tidy" }, "Rule, tidied");
+    if (failing === "verify") f.dreamer.script.verify = ["## bogus\n", "## bogus\n"];
+    if (failing === "classify") f.dreamer.script.instead = { classify: () => ({ outcome: "failure", output: "bad request" }) as never };
+    expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { task: failing, operation: "update" } });
+    expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: failing, detail: { operation: "update" } });
+    expect(due(f)).toBe("update");
+    // The second session has a real trigger: a Noter-written item the project has not covered.
+    const other = secondSession(f);
+    f.dreamer.script.curate = {}; f.dreamer.script.verify = undefined; f.dreamer.script.instead = {};
+    f.dreamer.reports.length = 0;
+    f.item("A later Noter item", { category: "reference" });
+    expect(await other.dream()).toMatchObject({ outcome: "success" });
+    expect(taskHeaders(f)[0]).toBe("update"); // the same operation: nothing advanced
+    expect(finishes(f)).toMatchObject([{ operation: "update", advanced: true }]);
+    expect(due(f)).toBe("merge");
+    // The failed session resumes its own operation, update, though the project is on merge now; it finishes without moving the rotation (Q13).
+    f.dreamer.reports.length = 0;
+    f.item("Another Noter item", { category: "reference" });
+    expect(await f.dream()).toMatchObject({ outcome: "success" });
+    expect(f.dreamer.reports.find(report => report.startsWith("Task: curate")) ?? f.dreamer.reports[0]).toMatch(failing === "curate" ? /curate update/ : /./);
+    expect(finishes(f).at(-1)).toMatchObject({ operation: "update", advanced: false });
+    expect(due(f)).toBe("merge");
+  });
+}
+
+test("a finished run whose operation is not the one due does not move the rotation; finishing first, or after a whole lap, does [Q13]", async () => {
+  // A (update) fails at verify and keeps its hand-off; B runs update and merge; A resumes update: the next run is split, not merge.
+  const f = dreamerFixture();
+  const rule = f.item("Rule", { category: "constraint" });
+  f.dreamer.script.curate!.constraint = block(`update ${rule.ref}`, { reason: "tidy" }, "Rule, tidied");
+  f.dreamer.script.verify = ["## bogus\n", "## bogus\n"];
+  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { task: "verify" } });
+  f.dreamer.script.curate = {}; f.dreamer.script.verify = undefined;
+  const b = secondSession(f);
+  f.item("B item 1", { category: "reference" });
+  expect(await b.dream()).toMatchObject({ outcome: "success" }); // update, finished
+  f.item("B item 2", { category: "reference" });
+  expect(await b.dream()).toMatchObject({ outcome: "success" }); // merge, finished
+  expect(due(f)).toBe("split");
+  f.item("A fresh Noter item", { category: "reference" }); // B covered what it saw; A is due again by new Noter changes
+  expect(await f.dream()).toMatchObject({ outcome: "success" }); // A resumes verify of its update
+  expect(finishes(f).map(finished => [finished.operation, finished.advanced])).toEqual([["update", true], ["merge", true], ["update", false]]);
+  expect(due(f)).toBe("split");
+  // Finishing first (nothing advanced meanwhile) advances.
+  const g = dreamerFixture();
+  const r = g.item("Rule", { category: "constraint" });
+  g.dreamer.script.curate!.constraint = block(`update ${r.ref}`, { reason: "tidy" }, "Rule, tidied");
+  g.dreamer.script.verify = ["## bogus\n", "## bogus\n"];
+  await g.dream();
+  g.dreamer.script.verify = undefined;
+  g.item("Later", { category: "reference" });
+  expect(await g.dream()).toMatchObject({ outcome: "success" });
+  expect(finishes(g)).toMatchObject([{ operation: "update", advanced: true }]);
+  expect(due(g)).toBe("merge");
+});
+
+test("wrap-around is compared by operation name: after the others go once round, a resumed update that finishes advances", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Rule", { category: "constraint" });
+  f.dreamer.script.curate!.constraint = block(`update ${rule.ref}`, { reason: "tidy" }, "Rule, tidied");
+  f.dreamer.script.verify = ["## bogus\n", "## bogus\n"];
+  await f.dream();
+  f.dreamer.script.curate = {}; f.dreamer.script.verify = undefined;
+  const b = secondSession(f);
+  for (const lap of ["update", "merge", "split", "archive"]) {
+    f.item(`B item ${lap}`, { category: "reference" });
+    expect(await b.dream()).toMatchObject({ outcome: "success" });
+  }
+  expect(due(f)).toBe("update");
+  f.item("A fresh Noter item", { category: "reference" });
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(finishes(f).at(-1)).toMatchObject({ operation: "update", advanced: true });
+  expect(due(f)).toBe("merge");
+});
+
+test("the rotation is kept per project: another project starts at update", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  await f.dream();
+  expect(due(f)).toBe("merge");
+  expect(f.store.nextCurateOperation(f.store.createProject({ name: "other", declaredBy: "mark" }).id)).toBe("update");
+});
+
+test("the finish is committed with the last pass: before any settlement the rotation has advanced and no hand-off remains; a non-final pass writes none", async () => {
+  const f = dreamerFixture();
+  for (let i = 0; i < 105; i++) f.item(`Rule number ${i}`, { category: "reference", title: `Rule ${i}` }); // 105 unscored items: two classify passes
+  const seen: { pass: number; handoff: unknown; due: string; outcome: unknown; finished: boolean }[] = [];
+  f.dreamer.script.instead = { classify: classifyThen((input, pass) => {
+    const run = f.store.db.prepare("SELECT b.response AS response FROM runs r JOIN run_bodies b ON b.run_id = r.id WHERE r.kind = 'dreaming' ORDER BY r.id DESC LIMIT 1").get()!;
+    seen.push({ pass, handoff: f.store.handoff(f.session.id, "dreaming")?.nextTask ?? null, due: due(f), outcome: execution(f).at(-1)!.outcome, finished: JSON.parse(String(run.response)).finished !== undefined });
+    void input;
+  }) };
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(seen).toEqual([
+    { pass: 1, handoff: "classify", due: "update", outcome: null, finished: false }, // not final: no finish, the rotation has not moved
+    { pass: 2, handoff: null, due: "merge", outcome: null, finished: true }]); // final: finished and advanced, the execution not yet settled
+});
+
+test("two sessions: while the first holds the Dreamer seat after a non-final pass the second is dropped; once it fails and releases it, the second runs the same operation", async () => {
+  const f = dreamerFixture();
+  for (let i = 0; i < 105; i++) f.item(`Rule number ${i}`, { category: "reference", title: `Rule ${i}` });
+  const b = secondSession(f);
+  let duringSeat: unknown;
+  f.dreamer.script.instead = { classify: classifyThen(async (_input, pass) => {
+    if (pass === 1) { f.item("Item for the second session", { category: "constraint" }); duringSeat = (await b.dream()).outcome; }
+  }, 2) };
+  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { task: "classify", operation: "update" } });
+  expect(duringSeat).toBe("dropped"); // assertion (1)
+  expect(due(f)).toBe("update"); // nothing advanced
+  f.dreamer.script.instead = {}; f.dreamer.reports.length = 0;
+  f.item("A real trigger for the second session", { category: "constraint" });
+  expect(await b.dream()).toMatchObject({ outcome: "success" });
+  expect(taskHeaders(f)[0]).toBe("update"); // assertion (2)
+});
+
+test("a lost lease at the final pass commits no finish, and the next run repeats the operation", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  f.dreamer.script.instead = { classify: async input => {
+    input.reportRequest(REQUEST);
+    const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
+    const ids = [...(/Items: (.*)/.exec(report)![1]!).matchAll(/K(\d+)/g)].map(match => match[1]!);
+    writeFileSync(/File: (\S+?\.md)/.exec(report)![1]!, ids.map(id => `K${id} 50`).join("\n") + "\n");
+    f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'dreaming'").run(); // the lease lapses before the final commit
+    input.passEnd();
+    return { outcome: "success", output: "Done.", request: REQUEST } as never;
+  } };
+  expect(await f.dream()).toMatchObject({ outcome: "failure" });
+  expect(finishes(f)).toEqual([]);
+  expect(due(f)).toBe("update");
+  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "classify", detail: { operation: "update" } });
+});
+
+test.each(["failure", "cancelled", "claim lost"] as const)("a final commit, then a host %s: the run is complete, no hand-off or retry is recreated, and the rotation advanced once", async how => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  f.dreamer.script.instead = { classify: classifyThen(input => {
+    if (how === "cancelled") { f.memory.cancelTasks(); return { outcome: "cancelled", output: "stopped after the commit" }; }
+    if (how === "claim lost") f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'dreaming'").run();
+    else return { outcome: "failure", output: "provider stopped after the final commit" };
+    void input;
+  }) };
+  await f.dream();
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+  // A failure is recorded as the audit of a complete run; a cancel keeps its outcome; a lapse after the commit settles as the success the run was.
+  const [row] = execution(f);
+  expect(row!.outcome).toBe(how === "failure" ? "failure" : how === "cancelled" ? "cancelled" : "success");
+  if (how === "failure") expect(row!.reason).toContain("run already finished");
+  expect(count(f)).toBe(0);
+  expect(finishes(f)).toMatchObject([{ operation: "update", advanced: true }]);
+  expect(due(f)).toBe("merge"); // advanced exactly once
+  // A second session with a real trigger runs the successor operation.
+  const other = secondSession(f);
+  f.dreamer.script.instead = {}; f.dreamer.reports.length = 0;
+  f.item("A real trigger", { category: "constraint" });
+  expect(await other.dream()).toMatchObject({ outcome: "success" });
+  expect(taskHeaders(f)[0]).toBe("merge");
+  expect(finishes(f).map(finished => finished.operation)).toEqual(["update", "merge"]);
 });
