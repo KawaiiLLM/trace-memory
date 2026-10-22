@@ -3,7 +3,6 @@ import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import type { KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
-import { renderKnowledgeChange } from "../../../src/core/render/index.ts";
 import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, memoryFiles, validateConfig, type NotingAgentInput } from "../../source-fixture.ts";
 import { curateNow } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
@@ -316,34 +315,6 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       // Pool size (the injected material) excludes the archive entirely.
       expect(memory.store.curateItems(path)).toEqual([]);
       expect(memory.store.currentKnowledge(path)).toHaveLength(0);
-    });
-  });
-
-  describe("diff rendering", () => {
-    test("the version address never counts: two revisions differing only in K@commit find no change", () => {
-      memory = sourceSeededMemory(":memory:", async () => ({ outcome: "success", output: "unused", request: {} }));
-      const project = memory.store.createProject({ name: "addr", declaredBy: "mark" });
-      const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
-      const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "seed", startedAt: time });
-      const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
-        entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(e => e.id),
-        facts: [{ turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
-      if (!noted.ok) throw new Error(noted.problems.join("; "));
-      const fact = noted.facts[0]!.id;
-      const c1 = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
-        operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "consolidation", text: "identical text", category: "reference", scope: "project",
-          topics: [], supports: [fact], reason: "Initial.", createdAt: time }] });
-      if (!c1.ok) throw new Error(c1.problems.join("; "));
-      const v1 = memory.store.knowledgeRevision(c1.committed[0]!.commit)!;
-      const c2 = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
-        operations: [{ op: "update", knowledgeId: c1.committed[0]!.knowledgeId, baseCommit: c1.committed[0]!.commit, text: "identical text",
-          category: "reference", scope: "project", topics: [], supports: [fact], reason: "No real change.", createdAt: time }] });
-      if (!c2.ok) throw new Error(c2.problems.join("; "));
-      const v2 = memory.store.knowledgeRevision(c2.committed[0]!.commit)!;
-      expect(v1.id).not.toBe(v2.id); // the K@commit address differs
-      const change = renderKnowledgeChange(c1.committed[0]!.knowledgeId, v1, v2);
-      expect(change.addedTokens).toBe(0);
-      expect(change.removedTokens).toBe(0);
     });
   });
 

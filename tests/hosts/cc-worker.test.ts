@@ -192,7 +192,7 @@ test("fresh CC Read uses Core's frozen reader, denies other files, and re-render
     return stream;
   }) as any;
   const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
-    reportRounds: vi.fn(), passEnd: vi.fn(() => undefined), reader: { sessionId: session.id, branch: "main",
+    passEnd: vi.fn(() => undefined), reader: { sessionId: session.id, branch: "main",
       headTurnId: turn.id, projectId: project.id } } as unknown as CcAgentTask;
   expect((await new CcAgentWorker(config, { query: fakeQuery }).run(task, 0)).outcome).toBe("success");
   expect(observed).toBe(true);
@@ -254,7 +254,7 @@ test.each(["noting", "dreaming"] as const)("136 review SPEC4: a fresh %s worker'
     stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
     return stream;
   }) as any;
-  const task = { kind, text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(), reportRounds: vi.fn(),
+  const task = { kind, text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
     passEnd: vi.fn(() => kind === "noting" ? "Review this run once." : undefined), setSpill: (save: (text: string) => string) => { spill = save; },
     reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
   expect((await new NativeCcAgentWorker(config, { query: kind === "noting" ? withNoterReview(fakeQuery, task) : fakeQuery }).run(task, 0)).outcome).toBe("success");
@@ -485,7 +485,7 @@ test("Dreamer retains assistant usage received after the last completed result w
     return stream;
   }) as any;
   const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
-    reportRounds: vi.fn(), passEnd: vi.fn(() => "repair") } as unknown as CcAgentTask;
+    passEnd: vi.fn(() => "repair") } as unknown as CcAgentTask;
   expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 0)).toMatchObject({
     outcome: "failure", output: "repair stream failed before result",
     usage: { input: 17, output: 7, cacheRead: 3, cacheWrite: 3, cost: { total: 0.1 } },
@@ -548,7 +548,7 @@ test("simultaneous phase workers keep model and thinking selection isolated", as
   const worker = new CcAgentWorker(config, { query: fakeQuery });
   const task = (kind: "noting" | "dreaming", model: string, thinking: string) => ({ kind, model,
     subagentThinkingLevel: thinking, text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
-    ...(kind === "dreaming" ? { reportRounds: vi.fn(), passEnd: vi.fn(() => undefined) } : {}) }) as unknown as CcAgentTask;
+    ...(kind === "dreaming" ? { passEnd: vi.fn(() => undefined) } : {}) }) as unknown as CcAgentTask;
   const results = await Promise.all([
     worker.run(task("noting", "sonnet", "low"), 0),
     worker.run(task("dreaming", "opus-d", "max"), 0),
@@ -604,7 +604,7 @@ test("Dreamer uses one streaming child for one repair, accepts stable repeated i
     return stream;
   }) as any;
   const task = { kind: "dreaming", text: "frozen material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
-    reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
+    passEnd } as unknown as CcAgentTask;
   const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 50);
   expect(result).toMatchObject({ outcome: "success", output: "final",
     usage: { input: 24, output: 16, cacheRead: 11, cacheWrite: 7, cost: { total: 0.25 } } });
@@ -628,7 +628,7 @@ test.each(["noting", "dreaming"] as const)("117: CC %s result respects its origi
     return stream;
   }) as any;
   const task = { kind, text: "material", prompt: "instructions", tools: [], signal: controller.signal,
-    acknowledgeRequest: vi.fn(), reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
+    acknowledgeRequest: vi.fn(), passEnd } as unknown as CcAgentTask;
   const result = await new CcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0);
   // 2026-10-22 cancellation fence: a Dreamer task that meets its stop is cancelled like a Noter task, and no pass end follows.
   expect(result.outcome).toBe("cancelled");
@@ -654,7 +654,7 @@ test("Dreamer rejects an unsolicited second pass and does not call passEnd twice
     return stream;
   }) as any;
   const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
-    reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
+    passEnd } as unknown as CcAgentTask;
   await expect(new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 50))
     .resolves.toMatchObject({ outcome: "failure", output: expect.stringContaining("after its authorized final pass") });
   expect(passEnd).toHaveBeenCalledTimes(1);
@@ -678,7 +678,7 @@ test("Dreamer fails when a requested repair pass never completes", async () => {
     return stream;
   }) as any;
   const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
-    reportRounds: vi.fn(), passEnd: vi.fn(() => "repair") } as unknown as CcAgentTask;
+    passEnd: vi.fn(() => "repair") } as unknown as CcAgentTask;
   await expect(new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 50))
     .resolves.toMatchObject({ outcome: "failure", output: expect.stringContaining("before completing") });
 });
@@ -701,7 +701,7 @@ test("Dreamer does not issue a repair after a failed native pass", async () => {
     return stream;
   }) as any;
   const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
-    reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
+    passEnd } as unknown as CcAgentTask;
   expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 50))
     .toMatchObject({ outcome: "failure", output: "provider failed" });
   expect(passEnd).not.toHaveBeenCalled();
@@ -727,7 +727,7 @@ test("Dreamer rejects a repeated init from a different native child", async () =
     return stream;
   }) as any;
   const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
-    reportRounds: vi.fn(), passEnd: vi.fn(() => "repair") } as unknown as CcAgentTask;
+    passEnd: vi.fn(() => "repair") } as unknown as CcAgentTask;
   expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 50))
     .toMatchObject({ outcome: "failure", output: expect.stringContaining("different native session") });
 });
@@ -1200,7 +1200,7 @@ test("a Dreamer repair pass records one native path, and that file holds both pa
     JSON.stringify({ type: "user", sessionId, message: { role: "user", content: [{ type: "text", text: "repair receipt" }] } }),
   ].join("\n") + "\n");
   const task = { kind: "dreaming", text: "frozen material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
-    reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
+    passEnd } as unknown as CcAgentTask;
   const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery, environment }).run(task, 50);
   expect(result).toMatchObject({ outcome: "success", output: "final" });
   expect(result.nativeLog).toBe(expectedPath);

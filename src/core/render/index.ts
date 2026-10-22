@@ -728,43 +728,6 @@ export function sentenceDiff(before: string, after: string): SentenceDiff {
   return { text: lines.join("\n"), added, removed };
 }
 
-/** What the Dreamer sees for a change with a processing baseline in this pool: a complete sentence
- * diff, plus any change of category, scope, topics or supports (76 "What D sees", 134).
- * Weight is the tokens of every inserted and deleted segment across all of those — never
- * zero for a real change, far less than the whole item for a metadata-only one (76 ruling "(a)"); the
- * `K@commit` address itself is never part of the comparison. */
-export function renderKnowledgeChange(knowledgeId: number, baseline: KnowledgeRevision, current: KnowledgeRevision,
-  address = `K${knowledgeId}@${current.id}`, poolTokens?: number,
-  limits: WritingLimits = DEFAULT_WRITING_LIMITS): { text: string; addedTokens: number; removedTokens: number } {
-  const body = sentenceDiff(baseline.text, current.text);
-  const categoryChanged = knowledgeCategoryGroup(baseline.category) !== knowledgeCategoryGroup(current.category), scopeChanged = baseline.scope !== current.scope;
-  const supportsAdded = current.supports.filter(id => !baseline.supports.includes(id));
-  const supportsRemoved = baseline.supports.filter(id => !current.supports.includes(id));
-  const topicsAdded = current.topics.filter(t => !baseline.topics.includes(t));
-  const topicsRemoved = baseline.topics.filter(t => !current.topics.includes(t));
-  const supportLabel = current.supportSemantics === "change" ? "change supports" : "supports";
-  const lines = [
-    `[${address}] [${knowledgeCategoryGroup(current.category)}/${current.scope}]${poolTokens === undefined ? "" : ` (${poolTokens} tokens)`} ${knowledgeTitle(current, limits.titleTokens)}\n${body.text}`,
-    ...(baseline.title !== current.title ? [`  title: ${baseline.title ?? "(none)"} -> ${current.title ?? "(none)"}`] : []),
-    `  ${supportLabel} added: ${factAddresses(supportsAdded)} removed: ${factAddresses(supportsRemoved)}`,
-    ...(categoryChanged ? [`  category: ${knowledgeCategoryGroup(baseline.category)} -> ${knowledgeCategoryGroup(current.category)}`] : []),
-    ...(scopeChanged ? [`  scope: ${baseline.scope} -> ${current.scope}`] : []),
-    ...(topicsAdded.length || topicsRemoved.length ? [`  topics added: ${topicsAdded.join(", ") || "none"} removed: ${topicsRemoved.join(", ") || "none"}`] : []),
-    // 76 review: the diff above shows only what changed, so an unchanged full list (e.g. topics that
-    // were never touched) never appears in it. Show the current revision's complete topics and
-    // supports beside the diff, so a fresh D always sees what it would carry forward on a skip and
-    // what it must repeat on an update — never counted in the weight below, which stays the diff alone.
-    `  current supports: ${factAddresses(current.supports)}`,
-    `  current topics: ${JSON.stringify(current.topics)}`,
-  ];
-  const titleChanged = baseline.title !== current.title;
-  const added = [body.added, titleChanged ? current.title ?? "" : "", categoryChanged ? current.category : "", scopeChanged ? current.scope : "",
-    supportsAdded.length ? factAddresses(supportsAdded) : "", topicsAdded.join(" ")].filter(Boolean).join(" ");
-  const removed = [body.removed, titleChanged ? baseline.title ?? "" : "", categoryChanged ? baseline.category : "", scopeChanged ? baseline.scope : "",
-    supportsRemoved.length ? factAddresses(supportsRemoved) : "", topicsRemoved.join(" ")].filter(Boolean).join(" ");
-  return { text: lines.join("\n"), addedTokens: tokens(added), removedTokens: tokens(removed) };
-}
-
 export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity,
   fields?: ReadonlySet<string>, address: (revision: KnowledgeRevision) => string = r => `K${r.knowledgeId}@${r.id}`,
   rangeAddress = `${address(a)}..${address(b)}`, withHistory = true): string {

@@ -15,7 +15,7 @@ import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecuti
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
-import { factAddresses, knowledgeTitle, renderKnowledge, renderKnowledgeChange, withKnowledgeCost, withFactDates, tokens } from "../render/index.ts";
+import { knowledgeTitle, tokens } from "../render/index.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import type {
   Actor,
