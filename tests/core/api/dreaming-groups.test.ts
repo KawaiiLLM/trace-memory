@@ -310,3 +310,87 @@ test("deadline isolation (146 §3.3): one group's call passes its deadline while
   const kept = groupsOf(f);
   expect(kept.some(group => group.verifyRun !== undefined)).toBe(true); // the other group went on to verify and applied
 }, 30_000);
+
+test("spill routing (146 §3.3): two groups' oversized search outputs are each saved through their own call", async () => {
+  const { f } = twoGroups();
+  const saved: Record<string, string[]> = { a: [], b: [] }, answers: Record<string, string> = {};
+  let ready = 0;
+  const both = new Promise<void>(resolve => { (globalThis as { __spillReady?: () => void }).__spillReady = () => { if (++ready === 2) resolve(); }; });
+  const runner = (name: "a" | "b") => async (raw: unknown): Promise<RunAgentResult> => {
+    const input = raw as DreamingAgentInput;
+    input.setSpill!(text => { saved[name]!.push(text); return `/spill/${name}`; });
+    (globalThis as unknown as { __spillReady: () => void }).__spillReady();
+    await both; // both calls have registered before either searches
+    answers[name] = await input.tools.find(tool => tool.name === "search")!.execute({ layer: "knowledge", code: `text('${name.toUpperCase()}' + 'word '.repeat(60000))` });
+    input.acknowledgeRequest();
+    return { outcome: "failure", output: "stopped", request: REQUEST };
+  };
+  f.next(runner("a")); f.next(runner("b"));
+  await f.dream();
+  expect(answers.a).toContain("[Full output: /spill/a]"); expect(answers.b).toContain("[Full output: /spill/b]");
+  expect(saved.a).toHaveLength(1); expect(saved.b).toHaveLength(1);
+  expect(saved.a![0]!.startsWith("Aword")).toBe(true); expect(saved.b![0]!.startsWith("Bword")).toBe(true);
+});
+
+test("a claim lost while one group fails joins the failure list: the reason names the failed groups, none is replaced by a bare `claim lost`", async () => {
+  const { f, constraint } = twoGroups();
+  let open!: () => void;
+  const gate = new Promise<void>(resolve => { open = resolve; });
+  f.dreamer.script.curate = { reference: ["## bogus\n", "## bogus\n"] }; // group 2 fails its check twice
+  f.next(async raw => { // group 1's conversation waits, the claim lapses, then its file is written late
+    const input = raw as DreamingAgentInput;
+    input.reportRequest(REQUEST);
+    const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
+    await gate;
+    writeFileSync(listedBatches(report)[0]!.file, update({ ref: ref(f, constraint[0]!) }, "late"));
+    input.passEnd();
+    return { outcome: "success", output: "late", request: REQUEST } as RunAgentResult;
+  });
+  const running = f.dream();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'dreaming'").run();
+  open();
+  expect(await running).toMatchObject({ outcome: "failure" });
+  expect(execution(f)).toEqual([{ outcome: "failure", reason: expect.stringMatching(/^curate g1: claim lost; curate g2: check failed twice$/) }]);
+  expect(count(f)).toBe(1);
+});
+
+test("2026-10-22, 146: acting across groups [Y9] — group 1's verify updates an item of group 2; while group 2 fails that item still counts in the other session, and once group 2 passes it counts 0", async () => {
+  const { f, pathB, reference } = twoGroups();
+  const x = reference[0]!;
+  f.dreamer.script.curate = { constraint: update({ ref: ref(f, x) }, "X, updated from group 1"), reference: ["## bogus\n", "## bogus\n"] }; // X sits in group 2's failing batch 1
+  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { groups: [{ group: 2 }] } });
+  expect(textOf(f, x.knowledgeId)).toBe("X, updated from group 1"); // group 1's verify applied it
+  expect(covered(f)).not.toContain(x.commit); // group 2's pass has not covered the version it showed
+  expect(f.store.noterOperations(pathB)).toBe(50); // group 1's 60 count 0; all 50 of group 2 count, X through its Noter ancestor
+  f.dreamer.script.curate = {};
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(covered(f)).toContain(f.store.currentCommit(x.knowledgeId, f.path)[0]!.id); // group 2's resumed pass covers the version it showed now
+  expect(f.store.noterOperations(pathB)).toBe(0); // the walk from X's live version prunes there
+});
+
+test("frozen membership: between the failure and the resume an item of group 2 is archived and a new Noter item appears; the resumed group omits the first and the second belongs to no group", async () => {
+  const { f, reference } = twoGroups();
+  f.dreamer.script.curate = { reference: ["## bogus\n", "## bogus\n"] };
+  await f.dream();
+  const archived = reference[1]!; // in batch 1 of group 2: it is shown again on the resume
+  const { archive } = await import("../../support/seed.ts");
+  archive(f.store, f.path, archived.knowledgeId, archived.commit, f.store.knowledgeRevision(archived.commit)!.supports, "invalid", "No longer holds, per the user's later correction, which replaces it");
+  const fresh = noterWrittenItem(f.memory, f.path as never, f.existingFact("late").id, "project", "reference");
+  f.dreamer.script.curate = {}; f.dreamer.inputs.length = 0;
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  const curate = f.dreamer.inputs.filter(input => input.task === "curate");
+  expect(curate).toHaveLength(1); // group 2 only; group 1 had passed
+  expect(curate[0]!.text).not.toContain(`K${archived.knowledgeId}@`);
+  expect(curate[0]!.text).not.toContain(`K${fresh.knowledgeId}@`);
+});
+
+test("two groups act on one item in one run: exactly one update applies, the other is refused as stale, and both groups are covered", async () => {
+  const { f, constraint } = twoGroups();
+  const b = constraint[0]!;
+  f.dreamer.script.curate = { constraint: update({ ref: ref(f, b) }, "from group 1"), reference: update({ ref: ref(f, b) }, "from group 2") };
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(f.store.listKnowledgeRevisions(b.knowledgeId)).toHaveLength(2); // the create and exactly one update
+  expect(["from group 1", "from group 2"]).toContain(textOf(f, b.knowledgeId));
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+});

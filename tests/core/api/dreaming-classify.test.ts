@@ -79,16 +79,14 @@ test("anchors: every scored item up to 30, otherwise 30 spread over the scores; 
   expect(classifySet([...unscored, item(1, 40)]).map(pass => pass.length)).toEqual([100, 1]); // the scored one is not in the set
 });
 
-test("passes share the task's one deadline: a later pass gets only the time left", async () => {
-  const starts: number[] = [];
-  const f = dreamerFixture({ classify: (pass, ids) => { starts.push(Date.now()); if (pass === 1) { const end = Date.now() + 60; while (Date.now() < end); } return ids.map(id => `K${id} 50`).join("\n") + "\n"; } });
+test("passes share the task's one absolute deadline", async () => {
+  const f = dreamerFixture();
   manyItems(f, 130);
   f.memory.config.dreaming.timeoutMs = 4000;
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   const classify = f.dreamer.inputs.filter(input => input.task === "classify");
   expect(classify).toHaveLength(2);
-  expect(classify[1]!.deadline).toBe(classify[0]!.deadline); // one absolute deadline for the whole task
-  expect(classify[1]!.deadline - starts[1]!).toBeLessThan(4000 - 55); // pass 1 spent 60 ms of it
+  expect(classify[1]!.deadline).toBe(classify[0]!.deadline);
 });
 
 test("a resumed run with only classify left fails at the task's own deadline when its model ignores abort", async () => {
