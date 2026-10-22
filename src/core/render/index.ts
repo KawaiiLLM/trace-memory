@@ -8,8 +8,8 @@ import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 // Ticket 82: the token estimator lives in its own leaf module (no `../store` import) so it can be
 // bundled without the database — see `tokens.ts`'s own header comment. Re-exported here unchanged so
 // every existing `from ".../render/index.ts"` import of these three names keeps working.
-import { tokens, tokensJoined, JoinedTokens } from "./tokens.ts";
-export { tokens, tokensJoined, JoinedTokens };
+import { tokens, tokensJoined, JoinedTokens, words, wordLimit, leadingWords } from "./tokens.ts";
+export { tokens, tokensJoined, JoinedTokens, words, wordLimit, leadingWords };
 
 export interface TurnOptions { full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean; includeThinking?: boolean; rawTurn?: boolean }
 export interface Rendered { content: string; receipts: string[] }
@@ -554,19 +554,17 @@ export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap =
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
 
 /** The title a knowledge version shows (ticket 144): its own, or for a legacy untitled version the
- * leading characters of its body, flattened to one line and cut to `titleTokens`. */
-export function knowledgeTitle(r: Pick<KnowledgeRevision, "title" | "text">, titleTokens: number): string {
-  if (r.title !== null) return r.title;
-  const characters = Array.from(r.text.replace(/\s+/g, " ").trim());
-  return characters.slice(0, fit(count => characters.slice(0, count).join(""), characters.length, titleTokens)).join("");
+ * leading characters of its body, flattened to one line and cut to the title target in 字/词 (145). */
+export function knowledgeTitle(r: Pick<KnowledgeRevision, "title" | "text">, titleWords: number): string {
+  return r.title ?? leadingWords(r.text.replace(/\s+/g, " ").trim(), titleWords);
 }
 
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`, showSize = false,
   limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  const size = showSize ? ` (${tokens(r.text)}/${limits.bodyTokens} tokens)` : "";
+  const size = showSize ? ` (${words(r.text)}/${limits.bodyWords} 字/词)` : "";
   const tags = `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size}`;
-  return `${tags} ${knowledgeTitle(r, limits.titleTokens)}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  return `${tags} ${knowledgeTitle(r, limits.titleWords)}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 /** Canonical headings contain an address and category/scope; price without re-rendering metadata. */
@@ -621,10 +619,10 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
     const whole = [renderKnowledge(value, shown(value.revision), false, limits),
       ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
       `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
-    const prefix = `[${shown(value.revision)}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] ${knowledgeTitle(value.revision, limits.titleTokens)}\n`;
+    const prefix = `[${shown(value.revision)}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] ${knowledgeTitle(value.revision, limits.titleWords)}\n`;
     return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
   }
-  const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "", title = knowledgeTitle(r, limits.titleTokens);
+  const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "", title = knowledgeTitle(r, limits.titleWords);
   const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${title}\n`;
   const suffix = [
     ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields.has("topics") ? topicList(r.topics) : ""}`] : []),
@@ -872,7 +870,7 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
 /** One title-only line (144 §7.4): the same header as a body line, marked, with the title in place of the body. */
 export function renderKnowledgeTitle({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`,
   limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
-  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] (title only) ${knowledgeTitle(r, limits.titleTokens)}`;
+  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] (title only) ${knowledgeTitle(r, limits.titleWords)}`;
 }
 
 export interface SelectedKnowledge extends BudgetedKnowledge {

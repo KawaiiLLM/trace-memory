@@ -7,7 +7,7 @@ const memories: ReturnType<typeof TraceMemory>[] = [];
 export const closeInjectionFixtures = (): void => { for (const memory of memories.splice(0)) memory.close(); };
 
 export function injectionFixture() {
-  const memory = TraceMemory(":memory:", async () => { throw new Error("offline"); }, { writing: { bodyTokens: 1_000_000 } });
+  const memory = TraceMemory(":memory:", async () => { throw new Error("offline"); }, { writing: { bodyWords: 1_000_000 } });
   memories.push(memory);
   const project = memory.store.createProject({ name: "order", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });

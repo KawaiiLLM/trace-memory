@@ -274,9 +274,10 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
   };
 }
 
-/** Per-item length caps in `tokens()` units, applied to every writer's title and body (ticket 144). */
-export interface WritingLimits { titleTokens: number; bodyTokens: number }
-export const DEFAULT_WRITING_LIMITS: WritingLimits = { titleTokens: 20, bodyTokens: 200 };
+/** Per-item length targets in 字/词 (`words()`), told to every writer for its title and body. A check refuses only
+ * beyond `wordLimit(target)`, the target plus 10% (ticket 145, superseding the token caps of 144). */
+export interface WritingLimits { titleWords: number; bodyWords: number }
+export const DEFAULT_WRITING_LIMITS: WritingLimits = { titleWords: 20, bodyWords: 200 };
 
 // ---- Memory tool input ----
 export interface MemoryOperation {

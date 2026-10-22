@@ -58,8 +58,8 @@ describe("noting-facts", () => {
     const result = noterFacts(b, factText(b));
     expect(result).toMatchObject({ ok: true, problems: [] });
     expect(result.lengths).toEqual([
-      { block: "block 1 `## fact f1`", field: "title", count: expect.any(Number), limit: 20 },
-      { block: "block 1 `## fact f1`", field: "body", count: expect.any(Number), limit: 200 },
+      { block: "block 1 `## fact f1`", field: "title", count: expect.any(Number), target: 20, limit: 22 },
+      { block: "block 1 `## fact f1`", field: "body", count: expect.any(Number), target: 200, limit: 220 },
     ]);
     expect(result.lengths[1]!.count).toBeGreaterThan(result.lengths[0]!.count);
   });
@@ -81,12 +81,12 @@ describe("noting-facts", () => {
     expect(joined(wrongRole)).toContain("invalid source");
   });
 
-  test("an over-limit title and an over-limit body are refused with field, count and limit; the counts are still reported", () => {
-    const b = batch({ bodyTokens: 5 });
-    const long = noterFacts(b, block("fact f1", { title: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo" },
+  test("a title and a body beyond the limit are refused with field, count and limit; the counts are still reported", () => {
+    const b = batch({ bodyWords: 5 });
+    const long = noterFacts(b, block("fact f1", { title: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree" },
       b.source(0, "User asked to use pnpm for every package in the workspace today")));
-    expect(joined(long)).toMatch(/title: \d+ tokens, over the 20-token limit/);
-    expect(joined(long)).toMatch(/sources: \d+ tokens, over the 5-token limit \(segments counted one by one\)/);
+    expect(joined(long)).toMatch(/title: \d+ 字\/词, over the limit of 22 \(target 20\)/);
+    expect(joined(long)).toMatch(/sources: \d+ 字\/词, over the limit of 6 \(target 5\) \(segments counted one by one\)/);
     expect(long.lengths.map(item => [item.field, item.count > item.limit])).toEqual([["title", true], ["body", true]]);
   });
 
@@ -137,14 +137,14 @@ describe("noting-knowledge", () => {
   });
 
   test("required fields, an update's supports, over-limit title and body are refused with their counts", () => {
-    const b = batch({ bodyTokens: 4 });
+    const b = batch({ bodyWords: 4 });
     expect(joined(noterKnowledge(b, block("create", { title: "t" }, "Body.")))).toContain("missing required field `category`");
     const item = b.item("Short");
     expect(joined(noterKnowledge(b, block(`update ${item.ref}`, { reason: "r" }, "Short.")))).toContain("supports");
-    const long = noterKnowledge(b, block("create", { ...create, title: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo" },
+    const long = noterKnowledge(b, block("create", { ...create, title: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree" },
       "one two three four five six seven eight"));
-    expect(joined(long)).toMatch(/title: \d+ tokens, over the 20-token limit/);
-    expect(joined(long)).toMatch(/text: \d+ tokens, over the 4-token limit/);
+    expect(joined(long)).toMatch(/title: \d+ 字\/词, over the limit of 22 \(target 20\)/);
+    expect(joined(long)).toMatch(/text: \d+ 字\/词, over the limit of 5 \(target 4\)/);
     expect(long.lengths.every(item => item.count > item.limit)).toBe(true);
   });
 
@@ -334,12 +334,12 @@ describe("verify's verdict file", () => {
   });
 
   test("an over-cap edit is refused with its count and limit, and the counts are still reported", () => {
-    const b = batch({ bodyTokens: 4 });
+    const b = batch({ bodyWords: 4 });
     const item = b.item("one two three four five six seven eight"); // seeded before the caps, as production rows are
     const changes = proposals(b, ["update", block(`update ${item.ref}`, { title: "Short rule", reason: "shorten" }, "Short.")]);
     const result = verdicts(b, block(`edit 1 update ${item.ref}`, { evidence: `trace://F${item.supports[0]}` }, "one two three four five six seven eight"), changes);
-    expect(joined(result)).toMatch(/text: 8 tokens, over the 4-token limit/);
-    expect(result.lengths).toContainEqual({ block: "block 1 `## edit 1 update " + item.ref + "`", field: "body", count: 8, limit: 4 });
+    expect(joined(result)).toMatch(/text: 8 字\/词, over the limit of 5 \(target 4\)/);
+    expect(result.lengths).toContainEqual({ block: "block 1 `## edit 1 update " + item.ref + "`", field: "body", count: 8, target: 4, limit: 5 });
   });
 });
 

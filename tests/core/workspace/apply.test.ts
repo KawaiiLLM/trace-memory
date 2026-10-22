@@ -193,22 +193,24 @@ describe("the caps in force at apply", () => {
   // so the old "revert over the caps" and "verify archives" apply tests are deleted; an edited operation applies at verify's pass
   // (`dreaming-verify.test.ts`). What stays is the cap contract itself, now one function `plan`'s lengths and apply's refusal share.
   test("a title, a body, an archive explanation and each split child are counted against the caps now in force", () => {
-    const b = workspaceBatch({ bodyTokens: 4 });
+    const b = workspaceBatch({ bodyWords: 4 });
     opened.push(b);
     const operation = (kind: CurateOperation, text: string) => plan(b.store, { kind: "curate", operation: kind, sessionId: b.session.id, path: b.path, file: file(text, "curate.md") }).knowledge[0]!.make().operation!;
-    const item = b.item("one two");
-    const small = operation("update", block(`update ${item.ref}`, { reason: "r" }, "one two"));
+    const item = b.item("one two three");
+    const small = operation("update", block(`update ${item.ref}`, { reason: "r" }, "one two three"));
     expect(overCaps(b.store, small)).toEqual([]);
-    b.store.writing.bodyTokens = 1;
-    expect(overCaps(b.store, small)).toEqual(["body: 2 tokens, over the 1-token limit"]);
+    b.store.writing.bodyWords = 2; // target 2, limit 3: three words are within the tolerance
+    expect(overCaps(b.store, small)).toEqual([]);
+    b.store.writing.bodyWords = 1; // limit 2
+    expect(overCaps(b.store, small)).toEqual(["body: 3 字/词, over the limit of 2 (target 1)"]);
     const archived = operation("archive", block(`archive ${item.ref}`, { kind: "invalid", reason: "r" }, "The user withdrew it; nothing replaces it."));
-    expect(overCaps(b.store, archived)[0]).toMatch(/^body: \d+ tokens, over the 1-token limit$/);
-    const child = `\n### child\ntitle: Child\ncategory: reference\nscope: project\ntopics:\nsupports: ${support(item)}\nreason: split\n\nTwo words.\n`;
-    b.store.writing.bodyTokens = 4;
+    expect(overCaps(b.store, archived)[0]).toMatch(/^body: \d+ 字\/词, over the limit of 2 \(target 1\)$/);
+    const child = `\n### child\ntitle: Child\ncategory: reference\nscope: project\ntopics:\nsupports: ${support(item)}\nreason: split\n\nThree little words.\n`;
+    b.store.writing.bodyWords = 4;
     const split = operation("split", block(`split ${item.ref}`, { reason: "two" }, "one") + child);
     expect(overCaps(b.store, split)).toEqual([]);
-    b.store.writing.bodyTokens = 1;
-    expect(overCaps(b.store, split)).toEqual(["child 1 body: 3 tokens, over the 1-token limit"]);
+    b.store.writing.bodyWords = 1;
+    expect(overCaps(b.store, split)).toEqual(["child 1 body: 3 字/词, over the limit of 2 (target 1)"]);
   });
 });
 

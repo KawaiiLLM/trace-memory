@@ -7,7 +7,7 @@ import { factSources } from "../../support/seed.ts";
 import { submit, verifyUnchanged } from "../../support/noter.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { DatabaseSync } from "node:sqlite";
-import { renderFact, tokens } from "../../../src/core/render/index.ts";
+import { renderFact, tokens, words } from "../../../src/core/render/index.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => cleanup.splice(0).reverse().forEach(fn => fn()));
@@ -74,7 +74,7 @@ test("N rejects an assembled body above the cap, and a manual note does too (144
   const x = setup(task => {
     const note = task.tools.find((t: any) => t.name === "note")!;
     const address = `T${x.turn.id}#E1`;
-    expect(note.execute(f([{ address, text: "word ".repeat(300) }]))).toContain("sources: 300 tokens, over the 200-token limit");
+    expect(note.execute(f([{ address, text: "word ".repeat(300) }]))).toContain("sources: 300 字/词, over the limit of 220 (target 200)");
     first = note.execute({ slot: "$1", ...f([{ address, text: "valid" }]) });
     expect(first).toContain("held: $1");
     expect(note.execute({ slot: "$1", ...f([{ address, text: "changed" }, { address: `${address}@user`, text: "duplicate" }]) })).toContain("rejected:");
@@ -83,8 +83,8 @@ test("N rejects an assembled body above the cap, and a manual note does too (144
   expect((await x.memory.noting(x.path)).outcome).not.toBe("success");
   expect(x.memory.store.listSessionFacts(x.session.id)).toEqual([]);
   const big = "word ".repeat(300);
-  expect(tokens(big)).toBeGreaterThan(200);
-  expect(x.note.execute(f([{ address: `T${x.turn.id}#E1`, text: big }]))).toContain("over the 200-token limit");
+  expect(words(big)).toBeGreaterThan(220);
+  expect(x.note.execute(f([{ address: `T${x.turn.id}#E1`, text: big }]))).toContain("over the limit of 220 (target 200)");
 });
 
 test("93 columns rollback with schema transaction after an actual later budget failure", () => {

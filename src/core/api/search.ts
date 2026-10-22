@@ -96,7 +96,7 @@ export function searchFacade(store: Store) {
         // 101: a legacy archive written before 99 has no body of its own; its parent's stands in.
         const text = r.op === "archive" && !r.text ? selection.byCommit.get(r.parentId ?? -1)?.text ?? "" : r.text;
         const group = knowledgeCategoryGroup(r.category), version = ordinals.get(r.id)!;
-        const title = knowledgeTitle({ title: r.title, text }, store.writing.titleTokens);
+        const title = knowledgeTitle({ title: r.title, text }, store.writing.titleWords);
         yield { item: { layer: "knowledge", address: `trace://K${r.knowledgeId}@v${version}`, time: r.createdAt, text, title,
             id: r.knowledgeId, version, status, archiveKind: r.archiveKind ?? null, category: group, scope: r.scope, topics: r.topics,
             supports: r.supports, reason: r.reason },

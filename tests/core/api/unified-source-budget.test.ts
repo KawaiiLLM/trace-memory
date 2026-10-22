@@ -7,7 +7,7 @@ import { block } from "../../support/workspace.ts";
 
 const time = "2026-09-01T00:00:00Z";
 function setup(agent: RunAgent = async () => { throw Error("offline only"); }) {
-  const m = TraceMemory(":memory:", agent, { writing: { bodyTokens: 1_000_000 } }, undefined, piSourceBlocks);
+  const m = TraceMemory(":memory:", agent, { writing: { bodyWords: 1_000_000 } }, undefined, piSourceBlocks);
   const projectId = m.store.createProject({ name: 'alpha"beta', declaredBy: "mark" }).id;
   const sessionId = m.store.createSession({ host: "pi:source-budget", projectId, startedAt: time, firstReplyAt: time, enrollmentChoice: true }).id;
   const turn = m.store.appendTurn({ sessionId, kind: "turn", startedAt: time });

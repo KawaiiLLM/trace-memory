@@ -3,7 +3,7 @@ import { sourceSeededMemory, memoryFiles } from "./source-fixture.ts";
 import { readHandle } from "./read-handle-fixture.ts";
 
 for (const long of [false, true]) test(`92: fixture reads the complete tagged body without translating legacy addresses (long=${long})`, () => {
-  const memory = sourceSeededMemory(":memory:", async () => { throw Error("offline fixture"); }, { writing: { bodyTokens: 1_000_000 } });
+  const memory = sourceSeededMemory(":memory:", async () => { throw Error("offline fixture"); }, { writing: { bodyWords: 1_000_000 } });
   try {
     const project = memory.store.createProject({ name: "handle", declaredBy: "mark" });
     const session = memory.store.createSession({ projectId: project.id, host: "pi:fixture", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });

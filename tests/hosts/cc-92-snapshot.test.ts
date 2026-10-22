@@ -96,7 +96,7 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
     const content = { author: "fixture", topics: [], reason: "fixture", supports: [evidence.id],
       createdAt: "now", category: "constraint" as const, scope: "global" as const };
     const created = knowledgeBatch(memory.store, memory.store.knowledgePath(session.id, "main", turn.id),
-      Array.from({ length: 24 }, (_, n) => ({ ...content, text: `Original rule ${n}: ${"x".repeat(6000)}` })),
+      Array.from({ length: 24 }, (_, n) => ({ ...content, text: `Original rule ${n}: ${"x ".repeat(3000).trim()}` })),
       { kind: "manual", createdAt: "now" });
     scoreAll(memory.store); // the Knowledge base carries scored items
     memory.store.db.exec("UPDATE knowledge_base_policy SET base_tokens=100000");

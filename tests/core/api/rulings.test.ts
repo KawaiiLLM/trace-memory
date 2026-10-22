@@ -28,7 +28,7 @@ import { dreamerFixture as makeDreamerFixture, noterWrittenItem, operationOfText
 import { buildPendingSection } from "../../../src/hosts/trace-menu.ts";
 import { checkVerify } from "../../../src/core/dreaming/changes.ts";
 import { curatePrefix, CURATE_ROTATION } from "../../../src/core/dreaming/curate.ts";
-import { tokens as renderTokens } from "../../../src/core/render/index.ts";
+import { tokens as renderTokens, words, wordLimit } from "../../../src/core/render/index.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { budgetArchive, receiptCommit, scoreAll } from "../../support/seed.ts";
 import { block as workspaceBlock, workspaceBatch } from "../../support/workspace.ts";
@@ -90,7 +90,7 @@ beforeEach(() => {
     return ok([]); };
   agent = fallback;
   // Items here are sized in thousands of tokens, as items written before the caps (ticket 144) are; the caps are lifted for this file, and its own cap ruling restores them.
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), agent, { writing: { bodyTokens: 1_000_000 } });
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), agent, { writing: { bodyWords: 1_000_000 } });
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
@@ -398,7 +398,7 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
 
 /** Knowledge to lead the block with: one manually written fact, consolidated by hand into K1. */
 /** Fresh N alone shows each body's token count after the category tag; everything else in the block is the shared layout. */
-const withSize = (block: string) => block.replace("[constraint/project] Fixture title", `[constraint/project] (${tokens("The project uses pnpm")}/${memory.config.writing.bodyTokens} tokens) Fixture title`);
+const withSize = (block: string) => block.replace("[constraint/project] Fixture title", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} 字/词) Fixture title`);
 function seededKnowledge(sessionId: number, turnId: number) {
   const tools = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId });
   const entry = hydrate(memory.store.listSourceEntries(sessionId, turnId), memory.store).find(value => value.role === "user")!;
@@ -669,34 +669,62 @@ test("2026-09-07: supports replaces, history keeps the old set", () => {
   expect(runs.at(-1)!.id).toBe(memory.store.getKnowledgeRevision(1, commit)!.runId);
 });
 
-// 144 supersedes 86's 1,000-token cap on N and D writes and 135's unlimited manual writes.
+// 144 supersedes 86's 1,000-token cap on N and D writes and 135's unlimited manual writes; 145 (2026-10-22) changes the unit
+// of the 20 + 200 caps from tokens to 字/词 and keeps the rest of this ruling: one standard, updates capped.
 test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要维护两套标准' — one title and body limit for the manual tools and the Dreamer's files, set in configuration, with updates of old items inside it", () => {
-  expect(DEFAULT_CONFIG.writing).toEqual({ titleTokens: 20, bodyTokens: 200 });
-  memory.config.writing.bodyTokens = DEFAULT_CONFIG.writing.bodyTokens; // this file lifts the body cap for its large fixtures
+  expect(DEFAULT_CONFIG.writing).toEqual({ titleWords: 20, bodyWords: 200 });
+  memory.config.writing.bodyWords = DEFAULT_CONFIG.writing.bodyWords; // this file lifts the body cap for its large fixtures
   const { create, write, path, tools } = memoryWriter();
   const note = tools.find(tool => tool.name === "note")!;
   const long = "word ".repeat(300).trim(), oldTitle = "word ".repeat(30).trim();
   // Manual writes obey the limits the Noter's and Dreamer's do.
-  expect(note.execute({ title: oldTitle, sources: `[T${path.headTurnId}#E1] evidence` })).toContain("over the 20-token limit");
-  expect(note.execute({ title: "Long evidence", sources: `[T${path.headTurnId}#E1] ${long}` })).toContain("over the 200-token limit");
-  expect(write([{ ...create, text: long }]).results[0]).toContain("over the 200-token limit");
-  expect(write([{ ...create, title: oldTitle }]).results[0]).toContain("over the 20-token limit");
+  expect(note.execute({ title: oldTitle, sources: `[T${path.headTurnId}#E1] evidence` })).toContain("over the limit of 22 (target 20)");
+  expect(note.execute({ title: "Long evidence", sources: `[T${path.headTurnId}#E1] ${long}` })).toContain("over the limit of 220 (target 200)");
+  expect(write([{ ...create, text: long }]).results[0]).toContain("over the limit of 220 (target 200)");
+  expect(write([{ ...create, title: oldTitle }]).results[0]).toContain("over the limit of 22 (target 20)");
   const created = write([create]).committed[0];
   // An update of an existing item is held to the same limit: an old body that stays long is refused.
-  memory.config.writing.bodyTokens = 1_000_000;
+  memory.config.writing.bodyWords = 1_000_000;
   const old = write([{ ...create, text: long }]).committed[0];
-  memory.config.writing.bodyTokens = DEFAULT_CONFIG.writing.bodyTokens;
+  memory.config.writing.bodyWords = DEFAULT_CONFIG.writing.bodyWords;
   const update = (item: { knowledgeId: number; version: string }, body: object) => ({ op: "update", id: tagged(item.knowledgeId, commitOf(item)), title: "Old rule",
     supports: ["F1"], reason: "Touch an old item", ...body });
-  expect(write([update(old, { edits: [{ old: "word", new: "rule" }] })]).results[0]).toContain("over the 200-token limit");
+  expect(write([update(old, { edits: [{ old: "word", new: "rule" }] })]).results[0]).toContain("over the limit of 220 (target 200)");
   expect(write([update(old, { text: "Use pnpm", category: "constraint", scope: "project", topics: [] })]).committed).toHaveLength(1);
   // The Dreamer's curate file is checked by the same limits.
   const refused = checkWorkspace(memory.store, { kind: "curate", operation: "update", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, commitOf(created))}`, { reason: "Touch an old item" }, long) } });
-  expect(refused.problems.join("\n")).toContain("over the 200-token limit");
+  expect(refused.problems.join("\n")).toContain("over the limit of 220 (target 200)");
   // The limits are configuration, not constants.
-  memory.config.writing.bodyTokens = 1_000;
+  memory.config.writing.bodyWords = 1_000;
   expect(write([{ ...create, text: long }]).results[0]).toBe("ok");
+});
+
+// 145 supersedes the unit of 144's 20 + 200 caps (tokens) and the 10-21 wording "20 + 200 token" above; option A of the dispatcher's three.
+test("2026-10-22, 145: '原则上要求不超过200 字/词，但实际check不超过250 token就不再警告，标题同理' (option A) — the prompts state 200 and 20 字/词, and every check counts 字/词 and refuses only above 220 and 22", () => {
+  expect(DEFAULT_CONFIG.writing).toEqual({ titleWords: 20, bodyWords: 200 });
+  memory.config.writing.bodyWords = DEFAULT_CONFIG.writing.bodyWords; // this file lifts the body cap for its large fixtures
+  const { create, write, path, tools } = memoryWriter();
+  const note = tools.find(tool => tool.name === "note")!, text = (n: number) => "word ".repeat(n).trim(), turn = path.headTurnId;
+  // The unit: a CJK character is 1, a run of letters and digits is 1 (an internal . - / keeps it whole), punctuation and spaces are 0.
+  expect(words("修改 src/core/x.ts 的 parseFoo 函数")).toBe(7);
+  // A body of 215 and a title of 22 pass; 221 and 23 are refused. The count is the same for the manual tools, the Noter's and the Dreamer's.
+  expect(write([{ ...create, text: text(215), title: text(22) }]).results[0]).toBe("ok");
+  expect(write([{ ...create, text: text(221) }]).results[0]).toContain("text: 221 字/词, over the limit of 220 (target 200)");
+  expect(write([{ ...create, title: text(23) }]).results[0]).toContain("title: 23 字/词, over the limit of 22 (target 20)");
+  expect(note.execute({ title: text(22), sources: `[T${turn}#E1] ${text(215)}` })).toContain("ok: F");
+  expect(note.execute({ title: "Long evidence", sources: `[T${turn}#E1] ${text(221)}` })).toContain("sources: 221 字/词, over the limit of 220 (target 200)");
+  // The limit is the target plus 10%, rounded up: 4 allows 5 and 5 allows 6.
+  expect([20, 200, 4, 5, 1].map(wordLimit)).toEqual([22, 220, 5, 6, 2]);
+  // The prompts state the target and the unit and never the tolerance.
+  for (const file of ["noting.md", "dreaming.md"] as const) {
+    const prompt = loadPrompt(file, canonicalToolNames);
+    expect(prompt).toContain("a title of a fact or knowledge is at most 20 字/词 and a body at most 200 字/词");
+    expect(prompt).not.toMatch(/\b220\b|\b22 字|tolerance|10 ?%/);
+  }
+  // The token caps' settings are removed, not read as word counts.
+  for (const key of ["titleTokens", "bodyTokens"])
+    expect(() => api.validateConfig({ writing: { [key]: 200 } } as never)).toThrow(`Removed setting writing.${key}: use writing.${key.replace("Tokens", "Words")}`);
 });
 
 // A merge that omits its title inherits it from the primary it names, whichever of the two is older; an untitled
@@ -2015,7 +2043,7 @@ test("2026-10-22: `check` is callable at any time and returns the task, the prob
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   expect(reports[0]).toContain("Task: verify");
   expect(reports[0]).toContain("Problems: none");
-  expect(reports[0]).toMatch(/facts\.md block 1 `## fact f1`: title \d+\/20, body \d+\/200/);
+  expect(reports[0]).toMatch(/facts\.md block 1 `## fact f1`: title \d+\/20 字\/词 \(limit 22\), body \d+\/200 字\/词 \(limit 220\)/);
 });
 
 /** 26 amendment 2 (26c design §1, defect D3): one shared prefix and two children — a fact on the
@@ -2532,7 +2560,7 @@ test("61: sentences are short, paragraphs are not walls, and no internal referen
     expect(longest, `${file}: sentences over 35 words`).toEqual([]);
     expect(lengths.reduce((a, b) => a + b, 0) / lengths.length, `${file}: mean sentence length`).toBeLessThanOrEqual(18);
     for (const pattern of banned) expect(prompt.match(pattern), `${file}: ${pattern}`).toBeNull();
-    expect(prompt).not.toMatch(/[一-鿿]/);
+    expect(prompt.replaceAll("字/词", "")).not.toMatch(/[一-鿿]/); // English prompts; the one exception is the length unit the model is told in the maintainer's words (145)
   }
 });
 

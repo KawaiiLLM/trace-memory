@@ -87,7 +87,7 @@ test("exact entry and exact knowledge retain more than 100 lines without Core pa
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: first.id });
   expect(files.read(`trace://raw/S${session.id}/T${first.id}#E${entry.entryOrdinal}`).content).toContain("LINE_124");
   expect(note.execute({ title: "Knowledge source", sources: factSources([{ address: `T${first.id}#E1`, text: "A source" }]) })).toContain("ok: F1");
-  m.config.writing.bodyTokens = 10_000; // 125 lines is a body written before the caps could be
+  m.config.writing.bodyWords = 10_000; // 125 lines is a body written before the caps could be
   const write = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: first.id }).find(tool => tool.name === "memory")!;
   const created = JSON.parse(write.execute({ op: "create", title: "Fixture title", text: lines, category: "reference", scope: "project", topics: [], supports: ["F1"], reason: "Test whole body" }));
   expect(files.read(`trace://K${created.committed[0].knowledgeId}`).content).toContain("LINE_124");

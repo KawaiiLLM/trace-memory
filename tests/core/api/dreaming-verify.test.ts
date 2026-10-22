@@ -272,12 +272,12 @@ test("the caps in force at apply: a confirmed proposal over the lowered cap is r
   proposeUpdate(f, rule, "Rule one has a rather long tidied wording that is over the lowered cap");
   f.dreamer.script.verify = ["## bogus\n", "## bogus\n"];
   expect(await f.dream()).toMatchObject({ outcome: "failure" });
-  f.memory.config.writing.bodyTokens = 5; // the caps are lowered while verify is waiting to be resumed
+  f.memory.config.writing.bodyWords = 5; // the caps are lowered while verify is waiting to be resumed
   f.dreamer.script.verify = "## confirm 1\n";
   f.item("A later Noter item", { category: "reference" });
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(textOf(f, rule.knowledgeId)).toBe("Rule one"); // refused, left for the next run
-  expect(verifyRun(f).verdicts[0].result).toMatchObject({ ok: false, reason: expect.stringContaining("over the 5-token limit") });
+  expect(verifyRun(f).verdicts[0].result).toMatchObject({ ok: false, reason: expect.stringContaining("over the limit of 6 (target 5)") });
 });
 
 test("a seeded misattribution in a proposed update is edited and a proposed archive of a valid ruling is reverted", async () => {

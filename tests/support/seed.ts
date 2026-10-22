@@ -45,7 +45,7 @@ export function facts(memory: TraceMemory, path: KnowledgePath, items: readonly 
   const tool = memory.tools({ kind: "manual", sessionId: path.sessionId, branch: path.branch,
     currentTurnId: path.headTurnId }).find(tool => tool.name === "note")!;
   const limits = { ...memory.config.writing };
-  Object.assign(memory.config.writing, { titleTokens: Infinity, bodyTokens: Infinity });
+  Object.assign(memory.config.writing, { titleWords: Infinity, bodyWords: Infinity });
   try { return seedFacts(memory, tool, items); } finally { Object.assign(memory.config.writing, limits); }
 }
 
@@ -106,7 +106,7 @@ export function legacyFact(store: Store, path: KnowledgePath, sources: readonly 
 }
 
 /** The title a legacy item would have shown: its body's leading characters. Fixtures that need a title and do not care which use it. */
-export const fixtureTitle = (text: string): string => knowledgeTitle({ title: null, text }, DEFAULT_WRITING_LIMITS.titleTokens);
+export const fixtureTitle = (text: string): string => knowledgeTitle({ title: null, text }, DEFAULT_WRITING_LIMITS.titleWords);
 
 type KnowledgeSeed = { scope: "global" | "project" | "session"; category: KnowledgeCategory; supports: number[];
   title?: string; text: string; topics?: string[]; createdAt?: string; author?: string; reason?: string };

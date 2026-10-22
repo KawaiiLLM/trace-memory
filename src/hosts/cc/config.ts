@@ -61,9 +61,9 @@ export interface CcHostConfig {
   "compaction.userTurns"?: number;
   "compaction.titleTurns"?: number;
   "compaction.userEntryTokens"?: number;
-  /** Per-item caps on every fact and knowledge title and body (144). */
-  "writing.titleTokens"?: number;
-  "writing.bodyTokens"?: number;
+  /** Per-item length targets of every fact and knowledge title and body, in 字/词 (145). */
+  "writing.titleWords"?: number;
+  "writing.bodyWords"?: number;
   /** Installation baseline. Unknown or malformed values keep provisional enrollment disabled. */
   baseline?: string;
   /** Omitted preserves Claude Code's native default. No adapter retry policy is added. */
@@ -140,9 +140,10 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("CC configuration is required");
   const retired = retireConsolidationSettings(input);
   input = retired.values;
-  // Ruling 2026-10-22: the Noter runs fresh only; one temporary allowance replaces the Knowledge-only shared allowance.
-  // A leftover key of either fails the load with core's removed-setting message.
-  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds"])
+  // Ruling 2026-10-22: the Noter runs fresh only; one temporary allowance replaces the Knowledge-only shared allowance;
+  // the length caps are counted in 字/词 (ticket 145).
+  // A leftover key of any of them fails the load with core's removed-setting message.
+  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds", "writing.titleTokens", "writing.bodyTokens"])
     if (Object.hasOwn(input, key)) canonicalFlatConfig({ [key]: true });
   const dbPath = input.dbPath === undefined ? join(homedir(), ".trace-memory", "trace.db") : input.dbPath;
   if (typeof dbPath !== "string" || !dbPath.trim()) throw new Error("CC dbPath must be a non-empty absolute path when specified");
@@ -196,8 +197,8 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       ...(input["compaction.userEntryTokens"] === undefined ? {} : { userEntryTokens: input["compaction.userEntryTokens"] }),
     },
     writing: {
-      ...(input["writing.titleTokens"] === undefined ? {} : { titleTokens: input["writing.titleTokens"] }),
-      ...(input["writing.bodyTokens"] === undefined ? {} : { bodyTokens: input["writing.bodyTokens"] }),
+      ...(input["writing.titleWords"] === undefined ? {} : { titleWords: input["writing.titleWords"] }),
+      ...(input["writing.bodyWords"] === undefined ? {} : { bodyWords: input["writing.bodyWords"] }),
     },
   } as ConfigOverride);
   return {

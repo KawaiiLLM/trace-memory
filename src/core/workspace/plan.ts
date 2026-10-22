@@ -5,10 +5,10 @@
 // what the file format itself introduces.
 
 import { factValidator, frozenTurnIds, notingSources } from "../api/tools.ts";
-import { prepareMemory } from "../knowledge-write/prepare.ts";
+import { prepareMemory, overLimit } from "../knowledge-write/prepare.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement, validateNotingFact, KNOWLEDGE_CATEGORIES, type KnowledgeRevision } from "../model/index.ts";
 import { parseKnowledgeAddress, parseTurnAddress } from "../model/address.ts";
-import { tokens } from "../render/index.ts";
+import { words, wordLimit } from "../render/index.ts";
 import type { FactCommitInput, KnowledgeOperationInput, KnowledgePath, RunInput, Store } from "../store/index.ts";
 import type { CurateOperation } from "../store/executions.ts";
 import { describeBlock, parseBlocks, parseScores, problem, type Block, type Section, type WorkspaceFile } from "./parse.ts";
@@ -26,8 +26,9 @@ export type WorkspaceTask =
   | { kind: "curate"; operation: CurateOperation; sessionId: number; path?: KnowledgePath; file: WorkspaceFile }
   | { kind: "classify"; items: readonly number[]; file: WorkspaceFile };
 
-/** The host-measured length of one title or body, whether or not it is over its limit. */
-export interface Length { block: string; field: "title" | "body"; count: number; limit: number }
+/** The host-measured length of one title or body in 字/词, whether or not it is over its limit; the limit is the target plus 10% (145). */
+export interface Length { block: string; field: "title" | "body"; count: number; target: number; limit: number }
+const measured = (block: string, field: Length["field"], count: number, target: number): Length => ({ block, field, count, target, limit: wordLimit(target) });
 
 export interface CheckResult { ok: boolean; problems: string[]; lengths: Length[] }
 
@@ -152,9 +153,9 @@ function planFacts(store: Store, task: Extract<WorkspaceTask, { kind: "noting-fa
     }
     const raw = { title, sources: block.body, ...(relations.support.length ? { support: relations.support } : {}), ...(relations.negate.length ? { negate: relations.negate } : {}) };
     const syntax: string[] = [], shape = validateNotingFact("fact", raw, syntax);
-    out.lengths.push({ block: where, field: "title", count: tokens(title), limit: store.writing.titleTokens });
+    out.lengths.push(measured(where, "title", words(title), store.writing.titleWords));
     if (shape && !syntax.length)
-      out.lengths.push({ block: where, field: "body", count: shape.sources.reduce((sum, source) => sum + tokens(source.text), 0), limit: store.writing.bodyTokens });
+      out.lengths.push(measured(where, "body", shape.sources.reduce((sum, source) => sum + words(source.text), 0), store.writing.bodyWords));
     if (!block.fields.has("title")) continue; // already reported as missing
     try { out.facts.push({ block, label: block.target, fact: validator.validate(raw, block.index, n => n < (position.get(block.target) ?? 0)) }); }
     // A relation target is reported under the label the file wrote, not the `$n` handle it stands for.
@@ -203,8 +204,8 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       } catch { add(fmt(at, `${ref} does not exist`)); return null; }
     };
     const lengths = (section: Section, label: string) => {
-      if (value(section, "title") !== undefined) out.lengths.push({ block: label, field: "title", count: tokens(value(section, "title")!), limit: store.writing.titleTokens });
-      if (section.body) out.lengths.push({ block: label, field: "body", count: tokens(section.body), limit: store.writing.bodyTokens });
+      if (value(section, "title") !== undefined) out.lengths.push(measured(label, "title", words(value(section, "title")!), store.writing.titleWords));
+      if (section.body) out.lengths.push(measured(label, "body", words(section.body), store.writing.bodyWords));
     };
     const body = (section: Section, label: string, what = "the complete body") => {
       if (!section.body) add(problem(file, section.line, label, `missing ${what} after the blank line`));
@@ -304,7 +305,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       lengths(block, where);
       if (!block.body) add(fmt(block.line, "missing the archive explanation after the blank line"));
       else if (!substantiveArchiveStatement(block.body)) add(fmt(block.line, "the archive explanation must state the grounds and the evidence, not a bare status"));
-      else if (tokens(block.body) > store.writing.bodyTokens) add(fmt(block.line, `body: ${tokens(block.body)} tokens, over the ${store.writing.bodyTokens}-token limit`));
+      else if (words(block.body) > wordLimit(store.writing.bodyWords)) add(fmt(block.line, overLimit("body", words(block.body), store.writing.bodyWords)));
       const kind = value(block, "kind");
       if (kind !== undefined && !ARCHIVE_KINDS.includes(kind as never))
         add(fmt(line("kind"), `kind must be ${ARCHIVE_KINDS.join(" | ")}, got \`${kind}\`${kind === "merged" ? `; ${USE_MERGE}` : ""}`));
@@ -360,14 +361,14 @@ export function traceProblem(store: Store, address: string): string | null {
   return null;
 }
 
-/** 144 stage 5 §4.5: the caps in force now against one compiled operation (title and body of what it writes, an archive's explanation,
- * each split child). `plan` reports the same counts as `Length`; apply refuses an operation over them, per operation. */
+/** 144 stage 5 §4.5: the limits in force now against one compiled operation (title and body of what it writes, an archive's explanation,
+ * each split child), in 字/词 (145). `plan` reports the same counts as `Length`; apply refuses an operation over them, per operation. */
 export function overCaps(store: Store, operation: KnowledgeOperationInput): string[] {
-  const { titleTokens, bodyTokens } = store.writing;
+  const { titleWords, bodyWords } = store.writing;
   const out: string[] = [];
-  const check = (what: string, text: string | undefined, limit: number) => { const count = tokens(text ?? ""); if (count > limit) out.push(`${what}: ${count} tokens, over the ${limit}-token limit`); };
-  if (operation.op !== "archive") { check("title", operation.title, titleTokens); check("body", operation.text, bodyTokens); }
-  else check("body", operation.text, bodyTokens);
-  if (operation.op === "split") operation.children.forEach((child, i) => { check(`child ${i + 1} title`, child.title, titleTokens); check(`child ${i + 1} body`, child.text, bodyTokens); });
+  const check = (what: string, text: string | undefined, target: number) => { const count = words(text ?? ""); if (count > wordLimit(target)) out.push(overLimit(what, count, target)); };
+  if (operation.op !== "archive") { check("title", operation.title, titleWords); check("body", operation.text, bodyWords); }
+  else check("body", operation.text, bodyWords);
+  if (operation.op === "split") operation.children.forEach((child, i) => { check(`child ${i + 1} title`, child.title, titleWords); check(`child ${i + 1} body`, child.text, bodyWords); });
   return out;
 }

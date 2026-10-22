@@ -189,6 +189,13 @@ test("144: a cc.config.json that still carries the shared allowance fails to loa
     .toThrow(/Removed setting compaction\.sharedAllowanceTokens: one temporary allowance, compaction\.temporaryTokens/);
 });
 
+test("145: a cc.config.json that still carries a token cap fails to load and names its 字/词 replacement", () => {
+  for (const key of ["titleTokens", "bodyTokens"])
+    expect(() => resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", [`writing.${key}`]: 200 } as never))
+      .toThrow(`Removed setting writing.${key}: use writing.${key.replace("Tokens", "Words")}`);
+  expect(resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", "writing.bodyWords": 150 }).coreConfig.writing).toEqual({ titleWords: 20, bodyWords: 150 });
+});
+
 test("144: a cc.config.json that still carries dreaming.maxToolRounds fails to load, as in core and Pi", () => {
   for (const value of [0, 1])
     expect(() => resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", "dreaming.maxToolRounds": value } as never))

@@ -18,7 +18,7 @@ const targetOf = (operation: Operation) => operation.op === "merge" ? { knowledg
 export function buildChanges(store: Store, path: KnowledgePath, curateRuns: readonly number[]): Changes {
   const version = (r: { knowledgeId: number; id: number }) => `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`;
   const at = (knowledgeId: number, commit: number) => `K${knowledgeId}@v${store.versionOrdinal(knowledgeId, commit)}`;
-  const titled = (r: KnowledgeRevision) => `${knowledgeTitle(r, store.writing.titleTokens)}\n${r.text}`;
+  const titled = (r: KnowledgeRevision) => `${knowledgeTitle(r, store.writing.titleWords)}\n${r.text}`;
   const proposals: Proposal[] = [];
   for (const run of curateRuns) {
     const response = JSON.parse(store.getRun(run)?.response ?? "{}") as { category?: string; proposed?: { block: string; operation: Operation }[] };
@@ -51,14 +51,14 @@ export function buildChanges(store: Store, path: KnowledgePath, curateRuns: read
     const changed = (name: string, from: string, to: string | undefined) => to !== undefined && to !== from ? [`${name}: ${from} -> ${to}`] : [];
     const lines = [...head, attribute("category", base.category, operation.category),
       ...changed("scope", base.scope, operation.scope), ...changed("topics", JSON.stringify(base.topics), JSON.stringify(operation.topics)),
-      ...changed("title", knowledgeTitle(base, store.writing.titleTokens), operation.title),
+      ...changed("title", knowledgeTitle(base, store.writing.titleWords), operation.title),
       attribute("supports", base.supports.map(f => `F${f}`).join(", "), supportsOf(operation, base).map(f => `F${f}`).join(", ")), `reason: ${operation.reason}`,
       "", ...currentText(target, base, "current text")];
     if (operation.op === "merge") for (const item of operation.absorb) {
       const revision = store.getKnowledgeRevision(item.knowledgeId, item.baseCommit)!;
       lines.push("", ...currentText(item, revision, `absorbed ${version(revision)} (archived into the primary if confirmed)`));
     }
-    lines.push("", "proposed:", `${operation.title ?? knowledgeTitle(base, store.writing.titleTokens)}\n${operation.text ?? ""}`);
+    lines.push("", "proposed:", `${operation.title ?? knowledgeTitle(base, store.writing.titleWords)}\n${operation.text ?? ""}`);
     // A child is written with its own category, topics, scope and supports, else the operation's (supports resolved as the store does).
     if (operation.op === "split") operation.children.forEach((child, i) => lines.push("", `proposed child ${i + 1}:`, `category: ${child.category}`,
       `scope: ${child.scope ?? operation.scope}`, `topics: ${JSON.stringify(child.topics)}`,

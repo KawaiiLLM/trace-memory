@@ -15,7 +15,7 @@ const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { while (memories.length) memories.pop()!.close(); });
 
 function fixture(config: Record<string, unknown> = {}) {
-  const memory = TraceMemory(":memory:", async () => { throw new Error("offline only"); }, { writing: { bodyTokens: 1_000_000 }, ...config });
+  const memory = TraceMemory(":memory:", async () => { throw new Error("offline only"); }, { writing: { bodyWords: 1_000_000 }, ...config });
   memories.push(memory);
   // These tests pin the Knowledge base's arithmetic; titles and unscored items in the temporary allowance have their own tests.
   if (!("compaction" in config)) memory.config.compaction.temporaryTokens = 0;

@@ -13,7 +13,7 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 test("92/03: a tagged exact base works without trace, unknown tags fail, revisions retain ordinal across reopen", () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-92-tags-")); dirs.push(dir);
   const file = join(dir, "memory.sqlite");
-  const open = () => sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "not invoked" }), { writing: { bodyTokens: 1_000_000 } });
+  const open = () => sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "not invoked" }), { writing: { bodyWords: 1_000_000 } });
   const memory = open();
   const project = memory.store.createProject({ name: "tag-test", declaredBy: "mark" });
   const session = memory.store.createSession({ projectId: project.id, host: "pi:test", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
@@ -63,7 +63,7 @@ test("92/03: a tagged exact base works without trace, unknown tags fail, revisio
 });
 
 test("118: exact knowledge reads carry a complete tagged body; search previews remain tagless", () => {
-  const memory = sourceSeededMemory(":memory:", async () => ({ outcome: "failure" as const, output: "unused" }), { writing: { bodyTokens: 1_000_000 } });
+  const memory = sourceSeededMemory(":memory:", async () => ({ outcome: "failure" as const, output: "unused" }), { writing: { bodyWords: 1_000_000 } });
   try {
     const project = memory.store.createProject({ name: "paged-project", declaredBy: "mark" });
     const session = memory.store.createSession({ projectId: project.id, host: "pi:paging", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
@@ -89,7 +89,7 @@ test("118: exact knowledge reads carry a complete tagged body; search previews r
 test("92/03+04: concurrent N writers serialize version metadata and convert a stale update; failed manual batches roll back", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-92-tag-writers-")); dirs.push(dir);
   const file = join(dir, "memory.sqlite");
-  const memory = sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "unused" }), { writing: { bodyTokens: 1_000_000 } });
+  const memory = sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "unused" }), { writing: { bodyWords: 1_000_000 } });
   const workers: Worker[] = [];
   try {
     const project = memory.store.createProject({ name: "writers", declaredBy: "mark" });
@@ -162,7 +162,7 @@ test("92/03+04: concurrent N writers serialize version metadata and convert a st
 test("92/03: an existing collision stays stable; only the later version extends, and no reopen repairs missing metadata", () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-92-tags-collision-")); dirs.push(dir);
   const file = join(dir, "memory.sqlite");
-  const open = () => sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "not invoked" }), { writing: { bodyTokens: 1_000_000 } });
+  const open = () => sourceSeededMemory(file, async () => ({ outcome: "failure" as const, output: "not invoked" }), { writing: { bodyWords: 1_000_000 } });
   const memory = open();
   const project = memory.store.createProject({ name: "collision", declaredBy: "mark" });
   const session = memory.store.createSession({ projectId: project.id, host: "pi:test", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });

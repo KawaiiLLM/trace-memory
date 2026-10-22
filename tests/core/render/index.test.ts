@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { tokens } from "../../../src/core/render/index.ts";
+import { tokens, words, wordLimit, leadingWords } from "../../../src/core/render/index.ts";
 
 /**
  * The estimator carries no tokenizer, so it is pinned against recorded truth instead: each sample's
@@ -77,4 +77,18 @@ test("long whitespace can no longer defeat token budgets", () => {
 test("the estimate counts characters, never UTF-16 code units", () => {
   expect(tokens("😀".repeat(4))).toBeLessThan(tokens("a".repeat(8)) + 8);
   expect(tokens("𝕏".repeat(10))).toBe(tokens("𝕏".repeat(10)));
+});
+
+test("length caps count 字/词: a CJK character is 1, a run of letters and digits is 1 (a path or identifier stays whole), punctuation and spaces are 0", () => {
+  expect(words("")).toBe(0);
+  expect(words("修改 src/core/x.ts 的 parseFoo 函数")).toBe(2 + 1 + 1 + 1 + 2);
+  expect(words("Use pnpm, never npm.")).toBe(4);
+  expect(words("snake_case v1.2.3 well-known a - b")).toBe(5);
+  expect(words("、。「」…!? ,;")).toBe(0);
+  expect(words("日本語のテキスト サーバー 한국어")).toBe(3 + 5 + 4 + 3);
+  expect(words("Café déjà vu 2026")).toBe(4);
+  expect([20, 200, 5].map(wordLimit)).toEqual([22, 220, 6]); // integer arithmetic: 200 * 1.1 is 220.00000000000003 in floats
+  expect(leadingWords("one two, three four", 3)).toBe("one two, three");
+  expect(leadingWords("one two.", 2)).toBe("one two.");
+  expect(leadingWords("一二三四五", 2)).toBe("一二");
 });

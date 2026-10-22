@@ -121,10 +121,10 @@ test("the configured title and body limits are rendered into the prompt and into
   const first = turn();
   const target = { sessionId, branch: "main", headTurnId: first.id };
   const defaults = freezeNoting(memory.store, { ...target }, memory.config);
-  expect(defaults.prompt).toContain("a title of a fact or knowledge is at most 20 tokens and a body at most 200 tokens");
-  Object.assign(memory.config.writing, { titleTokens: 13, bodyTokens: 321 });
+  expect(defaults.prompt).toContain("a title of a fact or knowledge is at most 20 字/词 and a body at most 200 字/词");
+  Object.assign(memory.config.writing, { titleWords: 13, bodyWords: 321 });
   const fresh = freezeNoting(memory.store, { ...target }, memory.config);
-  expect(fresh.prompt).toContain("a title of a fact or knowledge is at most 13 tokens and a body at most 321 tokens");
+  expect(fresh.prompt).toContain("a title of a fact or knowledge is at most 13 字/词 and a body at most 321 字/词");
   expect(fresh.prompt).not.toContain("{{limit.");
   expect(fresh.promptHash).not.toBe(defaults.promptHash);
 });

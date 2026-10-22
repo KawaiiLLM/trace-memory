@@ -20,7 +20,7 @@ function seeded(config: Record<string, unknown> = {}) {
       submitEmpty(input);
     }
     return { outcome: "success" as const, output: "", request: { probe: true } }; };
-  const m = sourceSeededMemory(":memory:", fallback, { writing: { bodyTokens: 1_000_000 }, ...config });
+  const m = sourceSeededMemory(":memory:", fallback, { writing: { bodyWords: 1_000_000 }, ...config });
   const p = m.store.createProject({ name: "review", declaredBy: "mark" });
   const s = m.store.createSession({ host: "review", startedAt: "2026-09-08", firstReplyAt: "2026-09-08", projectId: p.id, enrollmentChoice: true });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });

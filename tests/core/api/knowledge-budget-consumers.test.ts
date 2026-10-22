@@ -12,7 +12,7 @@ function fixture(runAgent?: Parameters<typeof TraceMemory>[1]) {
   const memory = TraceMemory(":memory:", async raw => {
     captured.push(raw as DreamingAgentInput);
     return runAgent ? runAgent(raw) : { outcome: "failure", output: "capture only", request: {} };
-  }, { writing: { bodyTokens: 1_000_000 } });
+  }, { writing: { bodyWords: 1_000_000 } });
   memories.push(memory);
   const project = memory.store.createProject({ name: "budgets", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });

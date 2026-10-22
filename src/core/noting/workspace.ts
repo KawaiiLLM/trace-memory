@@ -37,11 +37,11 @@ const CONSEQUENCE: Record<NotingTask, string> = {
   verify: "this task fails and task 1's files are kept for a later retry",
 };
 
-/** One line per block: `facts.md block 1 \`## fact f1\`: title 9/20, body 204/200 (over)`. */
+/** One line per block: `facts.md block 1 \`## fact f1\`: title 9/20 字/词 (limit 22), body 224/200 字/词 (limit 220, over)`. */
 export function lengthLines(file: string, lengths: readonly Length[]): string[] {
   const lines: string[] = [], seen = new Map<string, number>();
-  for (const { block, field, count, limit } of lengths) {
-    const part = `${field} ${count}/${limit}${count > limit ? " (over)" : ""}`;
+  for (const { block, field, count, target, limit } of lengths) {
+    const part = `${field} ${count}/${target} 字/词 (limit ${limit}${count > limit ? ", over" : ""})`;
     const at = seen.get(block);
     if (at === undefined) { seen.set(block, lines.length); lines.push(`${file} ${block}: ${part}`); }
     else lines[at] += `, ${part}`;

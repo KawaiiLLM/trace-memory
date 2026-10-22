@@ -25,7 +25,7 @@ function setup(second = false, initialText = "body A") {
   };
   // The initial item may be oversized, as an item written before the caps (ticket 144) can be; the caps are lifted for the seed only.
   const limits = { ...m.config.writing };
-  m.config.writing.bodyTokens = 1_000_000;
+  m.config.writing.bodyWords = 1_000_000;
   expect(write([{ op: "create", title: "Fixture title", ...content }])).not.toContain("rejected:");
   if (second) expect(write([{ op: "create", title: "Fixture title", ...content, text: "second" }])).not.toContain("rejected:");
   Object.assign(m.config.writing, limits);

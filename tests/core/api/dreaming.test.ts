@@ -77,10 +77,10 @@ test("136 review SPEC4: a Dreamer's over-long search output is saved where its h
 test("the Dreamer's audited prompt carries the configured title and body limits", async () => {
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
-  Object.assign(f.memory.config.writing, { titleTokens: 13, bodyTokens: 321 });
+  Object.assign(f.memory.config.writing, { titleWords: 13, bodyWords: 321 });
   expect((await f.dream()).outcome).toBe("success");
   const prompt = f.dreamer.inputs[0]!.prompt;
-  expect(prompt).toContain("a title of a fact or knowledge is at most 13 tokens and a body at most 321 tokens");
+  expect(prompt).toContain("a title of a fact or knowledge is at most 13 字/词 and a body at most 321 字/词");
   expect(prompt).not.toContain("{{limit.");
 });
 

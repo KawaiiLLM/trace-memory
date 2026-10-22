@@ -1,15 +1,15 @@
 import { isKnowledgeCategory, substantiveArchiveStatement, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
 import { type KnowledgeOperationInput, type RunInput, type Store, type KnowledgePath } from "../store/index.ts";
-import { tokens } from "../render/index.ts";
+import { words, wordLimit } from "../render/index.ts";
 import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
 export type ConsolidationDiagnostic = { kind: "unsupported_numbers"; knowledge: string; numbers: string[] };
 
 /** An archive of these kinds keeps its explanation as the new version's body. */
 const explained = (kind: unknown): boolean => kind === "invalid" || kind === "inadmissible";
-/** A field over its cap, as the refusal states it: the field, its count and the limit (ticket 144). */
-export const overLimit = (field: string, count: number, limit: number): string =>
-  `${field}: ${count} tokens, over the ${limit}-token limit`;
+/** A field over its limit, as the refusal states it: the field, its count in 字/词, the limit and the target (ticket 145). */
+export const overLimit = (field: string, count: number, target: number): string =>
+  `${field}: ${count} 字/词, over the limit of ${wordLimit(target)} (target ${target})`;
 const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 
 /** Validate the complete batch before writes, including every merge participant. */
@@ -78,7 +78,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const checkTitle = (title: unknown) => {
       const field = "title";
       if (typeof title !== "string" || !title.trim() || /[\r\n\u2028\u2029]/.test(title)) errors.push(`${field}: expected a nonempty single-line string`);
-      else if (tokens(title) > limits.titleTokens) errors.push(overLimit(field, tokens(title), limits.titleTokens));
+      else if (words(title) > wordLimit(limits.titleWords)) errors.push(overLimit(field, words(title), limits.titleWords));
     };
     const target = (address: unknown) => {
       const match = typeof address === "string" ? /^K([1-9]\d*)#([a-z]{4,})$/.exec(address) : null;
@@ -145,7 +145,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     }
     // Caps apply to the body as written: an edited update's result.
     const body = op === "archive" ? (explained(value.kind) ? value.text : undefined) : text;
-    if (typeof body === "string" && tokens(body) > limits.bodyTokens) errors.push(overLimit("text", tokens(body), limits.bodyTokens));
+    if (typeof body === "string" && words(body) > wordLimit(limits.bodyWords)) errors.push(overLimit("text", words(body), limits.bodyWords));
     const content = { title: title!, text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !emptySupports), reason: value.reason!,
       topics, createdAt: run.createdAt };
     const scope = op === "archive" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : contentScope;

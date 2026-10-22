@@ -22,7 +22,7 @@ function setup() {
       { kind: "manual", createdAt: "now" }).committed[0]!;
     return { ...committed, ref: `K${committed.knowledgeId}@v${b.store.versionOrdinal(committed.knowledgeId, committed.commit)}` };
   };
-  const weight = (commit: number) => { const r = b.store.knowledgeRevision(commit)!; return tokens(knowledgeTitle(r, b.store.writing.titleTokens)) + tokens(r.text); };
+  const weight = (commit: number) => { const r = b.store.knowledgeRevision(commit)!; return tokens(knowledgeTitle(r, b.store.writing.titleWords)) + tokens(r.text); };
   const merge = (primary: { ref: string }, absorbed: { ref: string }) => {
     const result = applyWorkspace(b.store, { kind: "curate", operation: "merge", sessionId: b.session.id, path: b.path,
       file: { name: "curate.md", text: block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same rule" }, "Merged rule body.") } });

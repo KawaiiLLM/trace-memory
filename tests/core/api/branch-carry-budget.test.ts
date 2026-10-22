@@ -7,7 +7,7 @@ import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { ccWorkerToolNames } from "../../../src/hosts/cc/tool-names.ts";
 
 function fixture(texts: string[], normalized = false) {
-  const memory = TraceMemory(":memory:", async () => { throw new Error("No provider expected"); }, { writing: { bodyTokens: 1_000_000 } }, undefined, normalized ? piSourceBlocks : undefined);
+  const memory = TraceMemory(":memory:", async () => { throw new Error("No provider expected"); }, { writing: { bodyWords: 1_000_000 } }, undefined, normalized ? piSourceBlocks : undefined);
   const project = memory.store.createProject({ name: "carry", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "pi:carry", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: texts[0] ?? "", assistantText: "reply", startedAt: "now" });

@@ -1,10 +1,10 @@
 // Where a knowledge version's title appears: on the header line after the id and category tags, with the body on
-// the following lines. A legacy version has none and shows its body's leading characters, cut to the title limit.
+// the following lines. A legacy version has none and shows its body's leading characters, cut to the title target in 字/词 (145).
 import { afterEach, expect, test } from "vitest";
 import { sourceSeededMemory, compacted } from "../../source-fixture.ts";
 import { fact as seedFact, knowledge as seedKnowledge, legacyKnowledge } from "../../support/seed.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
-import { knowledgeTitle, tokens } from "../../../src/core/render/index.ts";
+import { knowledgeTitle, words } from "../../../src/core/render/index.ts";
 import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -24,7 +24,7 @@ function setup() {
   seedFact(memory, path, "Use pnpm", [{ entry: memory.store.getSourceEntry(entries[0]!.id)!, text: "Use pnpm" }]);
   const withTitle = seedKnowledge(memory.store, path, "project", "constraint", [1], titledBody, { operation: { title: titled } });
   const legacy = legacyKnowledge(memory.store, path, { text: legacyBody, category: "reference", scope: "project", supports: [1] });
-  return { path, session, withTitle, legacy, limit: memory.config.writing.titleTokens };
+  return { path, session, withTitle, legacy, limit: memory.config.writing.titleWords };
 }
 
 /** The header line of the item `K<id>` in a view, and the line after it. */
@@ -34,14 +34,17 @@ function header(view: string, id: number): [string, string] {
   return [lines[at]!, lines[at + 1]!];
 }
 
-test("a legacy version shows its body's leading characters, cut to the title limit, as its title", () => {
+test("a legacy version shows its body's leading characters, cut to the title target in 字/词, as its title", () => {
   const { legacy, limit } = setup();
   const title = knowledgeTitle(memory.store.getKnowledgeRevision(legacy.knowledgeId, legacy.commit)!, limit);
   expect(legacyBody.startsWith(title)).toBe(true);
-  expect(tokens(title)).toBeLessThanOrEqual(limit);
+  expect(words(title)).toBe(limit); // the target, not the limit a check allows
   expect(title.length).toBeLessThan(legacyBody.length);
-  expect(tokens(legacyBody.slice(0, title.length + 8))).toBeGreaterThan(limit); // it is the longest prefix that fits
+  expect(words(legacyBody.slice(0, legacyBody.indexOf(" ", title.length + 1)))).toBe(limit + 1); // it is the longest prefix that fits
   expect(memory.store.getKnowledgeRevision(legacy.knowledgeId, legacy.commit)!.title).toBeNull();
+  // A body with no more units than the target is its own title, trailing punctuation included; CJK counts per character.
+  expect(knowledgeTitle({ title: null, text: "Use pnpm, never npm." }, limit)).toBe("Use pnpm, never npm.");
+  expect(knowledgeTitle({ title: null, text: "项目一律使用 pnpm 管理依赖，禁止使用 npm 安装任何包，锁文件必须提交到仓库。" }, 10)).toBe("项目一律使用 pnpm 管理依");
 });
 
 test("injection, the compaction block, the knowledge view, an exact read and the Dreamer's curate view put the title on the header line", () => {

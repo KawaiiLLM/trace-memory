@@ -4093,7 +4093,7 @@ export class Store {
         let body = this.bodyTokens.get(item);
         if (body === undefined) this.bodyTokens.set(item, body = tokens(item.text));
         counted++;
-        if ((total += body + tokens(knowledgeTitle(item, this.writing.titleTokens))) >= stopAt) return { tokens: total, items: counted };
+        if ((total += body + tokens(knowledgeTitle(item, this.writing.titleWords))) >= stopAt) return { tokens: total, items: counted };
       }
     }
     return { tokens: total, items: counted };

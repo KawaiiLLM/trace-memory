@@ -21,7 +21,7 @@ async function fixture(nativePrefix = "mcp__traceMemory__") {
   const transcriptPath = join(directory, "native.jsonl"), nativeSessionId = "cc-tools-session";
   const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
     baseline: "2025-01-01T00:00:00.000Z", pollIntervalMs: 5, writeSourceTimeoutMs: 50,
-    "writing.bodyTokens": 1_000_000 }); // some fixtures here write bodies longer than the caps (ticket 144)
+    "writing.bodyWords": 1_000_000 }); // some fixtures here write bodies longer than the caps (ticket 144)
   const records: any[] = [
     { uuid: "user", parentUuid: null, type: "user", timestamp: "2026-01-01T00:00:00.000Z", promptId: "p1", promptSource: "typed",
       message: { role: "user", content: "run a write" } },

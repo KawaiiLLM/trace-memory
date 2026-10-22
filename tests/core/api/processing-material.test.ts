@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { sourceSeededMemory, memoryFiles, type NotingAgentInput } from "../../source-fixture.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
-import { tokens } from "../../../src/core/render/index.ts";
+import { tokens, words } from "../../../src/core/render/index.ts";
 import { scoreAll } from "../../support/seed.ts";
 import { knowledgeFile, submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
@@ -12,7 +12,7 @@ function fixture(agent?: (input: NotingAgentInput) => Promise<void>) {
     if (input.task === "verify") return verifyUnchanged(input, { request: {} });
     if (agent) await agent(input); else submitEmpty(input);
     return { outcome: "success", output: "done", request: {} };
-  }, { writing: { bodyTokens: 1_000_000 } }); // the oversized body below stands for an item written before the caps (ticket 144)
+  }, { writing: { bodyWords: 1_000_000 } }); // the oversized body below stands for an item written before the caps (ticket 144)
   const p = memory.store.createProject({ name: "A", declaredBy: "mark" });
   const s = memory.store.createSession({ host: "test", enrollmentChoice: true, projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const turn = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use this rule", startedAt: "now" });
@@ -82,7 +82,7 @@ test("92: omitted knowledge stays fully readable while N has a distinct create i
   } finally { f.memory.close(); }
 });
 
-test("N material shows each knowledge body's cap-check token count; injection does not", () => {
+test("N material shows each knowledge body's cap-check 字/词 count; injection does not", () => {
   const f = fixture();
   try {
     const body = "Short rule. ".repeat(40);
@@ -90,7 +90,7 @@ test("N material shows each knowledge body's cap-check token count; injection do
     scoreAll(f.memory.store);
     setKnowledgeCapacity(f.memory, 20_000);
     const material = f.freeze().prepared!.text;
-    expect(material).toContain(`[constraint/project] (${tokens(body)}/${f.memory.config.writing.bodyTokens} tokens) Fixture title\n${body}`);
+    expect(material).toContain(`[constraint/project] (${words(body)}/${f.memory.config.writing.bodyWords} 字/词) Fixture title\n${body}`);
     expect(material).not.toMatch(/\(\d+ tokens\)/); // 134: the Dreamer's pool-cost form never joins it for the same item
     expect(f.memory.injection(f.target).text).not.toContain("tokens) ");
   } finally { f.memory.close(); }
