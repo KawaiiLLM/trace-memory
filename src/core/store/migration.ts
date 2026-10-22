@@ -88,7 +88,7 @@ export function migrateStage4Schema144(db: DatabaseSync): void {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     return true;
   };
-  add("knowledge", "score", "INTEGER CHECK (score IS NULL OR score BETWEEN 1 AND 100)");
+  add("knowledge", "score", "INTEGER CHECK (score IS NULL OR score BETWEEN 0 AND 100)"); // classify writes 1-100; 0 is only the deployment step's revived budget archives
   add("knowledge", "scored_commit", "INTEGER REFERENCES knowledge_revisions(id)");
   add("knowledge", "scored_run", "INTEGER REFERENCES runs(id)");
   add("task_handoffs", "detail", "TEXT");
