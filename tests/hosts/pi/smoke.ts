@@ -137,8 +137,8 @@ try {
   dreamer.provider(async conversation => {
     assert.ok(/^# (Dreamer|Classifying)/.test(conversation.systemPrompt ?? ""));
     assert.ok(!conversation.tools?.some(t => t.name === "note" || t.name === "memory"));
-    return dreamerFiles(conversation, { curate: block(`archive ${heading}`, { kind: "inadmissible", reason: "Deliberate active-memory retirement" },
-      "The user withdrew this rule and nothing replaces it; the grounds are in the cited fact.") }) ?? reply("Done");
+    // The first run of a project performs the rotation's first operation, update; verify confirms it and its pass applies it.
+    return dreamerFiles(conversation, { curate: block(`update ${heading}`, { reason: "Smoke tidy" }, "Remember the choice, tidied.") }) ?? reply("Done");
   });
   await dreamer.turn(); await dreamer.drain();
   const compacted = await dreamer.emit("session_before_compact", { preparation: { tokensBefore: 100000 } });
@@ -149,11 +149,12 @@ try {
   const runs = store.listRuns(1).filter(run => run.kind === "dreaming");
   assert.deepEqual(runs.map(run => [JSON.parse(run.response!).task, run.outcome]), [["curate", "success"], ["verify", "success"], ["classify", "success"]]);
   assert.equal(runs[0]!.mode, "subagent");
-  const archive = store.listCommitsByRun(runs[0]!.id)[0]!;
+  assert.deepEqual(store.listCommitsByRun(runs[0]!.id), []); // curate applies nothing: its batch is a kept proposal
+  const archive = store.listCommitsByRun(runs[1]!.id)[0]!; // verify's pass applied the confirmed update
   assert.equal(archive.actorRole, "dreaming");
   assert.deepEqual(store.listFactsByRun(runs[0]!.id), []);
   assert.deepEqual(archive.supports, [facts.facts[0]!.id]);
-  // A passed curate covers what its batch showed and what it wrote, so neither counts toward the next run.
+  // A passed verify covers what curate's batch showed and what it wrote, so neither counts toward the next run.
   assert.deepEqual(store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
     .map(row => Number(row.revision_id)), [item.commit, archive.id]);
   assert.equal(store.noterChangedItems(store.knowledgePath(1, "main")), 0);
@@ -168,7 +169,7 @@ try {
   await dreamer.commands.get("trace").handler("", dreamer.ctx);
   assert.ok(dreamer.notices.at(-1)!.includes("Compaction: bounded entry views"));
   assert.equal(dreamer.requests.length, requestsAfterRecovery, "reading the persisted recovery warning starts no worker");
-  console.log("Dreamer smoke passed: per-entry native child, curate archive, coverage, persisted custom carrier and read-only status.");
+  console.log("Dreamer smoke passed: per-entry native child, curate update kept, verify applied, coverage, persisted custom carrier and read-only status.");
 } finally { await dreamer.dispose(); }
 
 // 22b: the long-history regression, on the same entry the case above used — the installed one under
