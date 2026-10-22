@@ -452,3 +452,23 @@ test("a frozen group that no longer fits fails the run as a capacity refusal on 
   expect(JSON.stringify(f.store.handoff(f.session.id, "dreaming")!.detail)).toBe(before);
   expect(count(f)).toBe(2);
 });
+
+test("takeover timing: E1 has a failed group and a second still running, its claim lapses, E2 is admitted and finishes, then E1 settles — E1's row keeps its full reason and E2's hand-off and streak are untouched", async () => {
+  const { f } = twoGroups();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.next(async () => ({ outcome: "failure", output: "429 rate limit" })); // group 1 fails at once
+  f.next(async raw => { (raw as DreamingAgentInput).reportRequest(REQUEST); await gate; return { outcome: "success", output: "late", request: REQUEST } as RunAgentResult; }); // group 2 waits
+  const first = f.dream();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'dreaming'").run();
+  expect(await f.dream()).toMatchObject({ outcome: "success" }); // E2 is admitted for the same session and runs to the end
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+  release();
+  expect(await first).toMatchObject({ outcome: "failure" });
+  const rows = execution(f);
+  expect(rows.map(row => row.outcome)).toEqual(["failure", "success"]);
+  expect(rows[0]!.reason).toBe("curate g1: provider error; curate g2: ended before batch 1/3 was kept; claim lost");
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull(); // E1's late settlement rewrote nothing shared
+  expect(count(f)).toBe(0);
+});
