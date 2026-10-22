@@ -1,72 +1,46 @@
 import { expect, test, vi } from "vitest";
-import { TraceMemory, memoryFiles, type DreamingAgentInput } from "../../../src/core/api/index.ts";
-import { runNative } from "../../../src/hosts/pi/native.ts";
-import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
-import { call, fixture, say } from "./native-fixture.ts";
+import { host, reply, dreamerFiles, type Reply } from "./test-host.ts";
+import { knowledge } from "../../support/seed.ts";
+import { block } from "../../support/workspace.ts";
 
 test("68: shared deadline fences a real Pi worker, releases its claim and permits the next run", async () => {
-  const f = await fixture({ "noting.triggerTokens": 1e9 });
-  let release!: () => void, entered!: () => void;
-  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1, "dreaming.timeoutMs": 300 });
+  let release!: () => void, signal: AbortSignal | undefined;
   const gate = new Promise<void>(resolve => { release = resolve; });
-  let requests = 0, frozen = "";
-  // 104: the next run succeeds only by deliberating its frozen item, so it skips it before finishing.
-  f.script(async () => {
-    if (++requests === 1) { entered(); await gate; return say("Finished."); }
-    return requests === 2 ? call("skip", "memory", { skip: frozen, because: "Reviewed unchanged" })
-      : say("Finished.");
-  });
-  const nativeWork: Promise<unknown>[] = [];
-  let task!: DreamingAgentInput;
-  const memory = TraceMemory(":memory:", async input => {
-    task = input as DreamingAgentInput;
-    if (!task.reader) throw new Error("Pi worker fixture requires the Core-frozen reader");
-    const files = memoryFiles(memory, task.reader);
-    task.acknowledgeRequest();
-    const work = runNative({ kind: "dreaming", runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir,
-      model: f.model as never, systemPrompt: task.prompt, task: task.text,
-      tools: task.tools, read: memoryReadTool(f.h.dir, path => files.read(path), { memoryOnly: true }),
-      maxToolRounds: 0, signal: task.signal,
-      onRequest: () => {}, onProgress: () => {},
-      passEnd: task.passEnd, reportRounds: task.reportRounds });
-    nativeWork.push(work);
-    const result = await work;
-    return { ...result, request: { fixture: "real Pi runtime, mocked provider" } };
-  }, { dreaming: { triggerTokens: 1, timeoutMs: 1000 } });
   try {
-    const store = memory.store;
-    const project = store.createProject({ name: "deadline", declaredBy: "mark" });
-    const session = store.createSession({ host: "deadline", enrollmentChoice: true, projectId: project.id, startedAt: "now", firstReplyAt: "now" });
-    const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
-    const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "deadline", nativeId: "root", role: "user", text: "evidence", raw: "{}", calls: [] });
-    memory.selectEntries(session.id, "main", [entry.id]);
-    const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{ turnId: turn.id, entryIds: [entry.id], category: "decision", actor: "user", text: "A rule", source: [`T${turn.id}#E1`], createdAt: "now" }] });
-    if (!facts.ok) throw new Error(facts.problems.join("; "));
-    const made = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", text: "A durable rule", category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
-    if (!made.ok) throw new Error(made.problems.join("; "));
-    const item = made.committed[0]!;
-    frozen = `K${item.knowledgeId}@v1`;
-    const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const running = memory.dream(target);
-    await ready;
-    await vi.advanceTimersByTimeAsync(1000);
-    const result = await running;
-    expect(result.outcome).toBe("failure");
-    expect("problems" in result && result.problems?.join(" ")).toContain("1000 ms");
-    expect(task.signal?.aborted).toBe(true);
-    expect(store.getClaim(session.id, "dreaming")).toBeNull();
-    expect(store.openDreamingRange(session.id, "main")).toBeNull();
-    const lateWrite = task.tools.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: `K${item.knowledgeId}@${item.commit}`, supports: [], reason: "too late" });
-    expect(lateWrite).toBe("rejected: run has finished");
-    expect(store.pendingVersions(`project:${project.id}`, target)).toHaveLength(1);
-    vi.useRealTimers();
-    release();
-    await Promise.all(nativeWork);
-    expect((await memory.dream(target)).outcome).toBe("success");
-    expect(store.getClaim(session.id, "dreaming")).toBeNull();
-    expect(store.enabled(session.id)).toBe(true);
-  } finally {
-    vi.useRealTimers(); release(); await Promise.allSettled(nativeWork); memory.close(); await f.dispose();
-  }
+    await h.emit("session_start"); await h.turn();
+    const store = h.memory.store, path = { sessionId: 1, branch: "main", headTurnId: 1 };
+    const user = store.sourcePath(1, "main", 1).find(value => store.getSourceEntry(value.id)?.role === "user")!;
+    const note = h.memory.tools({ kind: "manual", ...path, currentTurnId: 1 }).find(tool => tool.name === "note")!;
+    expect(JSON.parse(note.execute({ title: "A rule", sources: `[T1#E${user.entryOrdinal}] A rule` })).factIds).toHaveLength(1);
+    // A Noter-written item makes the Dreamer due (2026-10-22).
+    const item = knowledge(store, path, "project", "constraint", [1], "A durable rule", { operation: { title: "Fixture title" } });
+    const revisions = () => store.listKnowledgeRevisions().length, before = revisions();
+    let hung = false;
+    // The model checks, then its next request hangs past the deadline and answers late with a valid batch.
+    h.provider(async (c, abort): Promise<Reply> => {
+      if (!hung && c.messages.some(m => m.role === "toolResult")) {
+        hung = true; signal = abort; await gate;
+        const file = /File: (\S+?\.md)/.exec(JSON.stringify(c.messages))![1]!;
+        return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "late", name: "write", arguments: {
+          path: file, content: block(`update K${item.knowledgeId}@v1`, { reason: "too late" }, "A durable rule, too late") } as never }] };
+      }
+      return dreamerFiles(c) ?? reply("Done");
+    }, { autoStop: false, ignoreAbort: true });
+    await h.turn();
+    await vi.waitFor(() => expect(store.listRuns(1).filter(run => run.kind === "dreaming").at(-1)?.outcome).toBe("failure"), { timeout: 4000 });
+    const failed = store.listRuns(1).filter(run => run.kind === "dreaming").at(-1)!;
+    expect(JSON.parse(failed.response!).problems.join(" ")).toMatch(/timeout|deadline|300 ms/i);
+    expect(signal?.aborted).toBe(true);
+    expect(store.getClaim(1, "dreaming")).toBeNull();
+    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "curate" }); // the next run starts again at curate
+    release(); await h.drain();
+    expect(revisions()).toBe(before); // the late write changed nothing
+    // The next run is admitted and completes.
+    h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
+    await h.turn(); await h.drain();
+    expect(store.listRuns(1).filter(run => run.kind === "dreaming").map(run => run.outcome).slice(-3)).toEqual(["success", "success", "success"]);
+    expect(store.getClaim(1, "dreaming")).toBeNull();
+    expect(store.enabled(1)).toBe(true);
+  } finally { release(); await h.dispose(); }
 });
