@@ -37,7 +37,7 @@ test.each([
   const held = new Promise<void>(resolve => { release = resolve; });
   const f = makeDreamerFixture(memories);
   const item = f.item("project rule", { category: "constraint" }), original = f.store.getKnowledgeRevision(item.knowledgeId, item.commit)!.text;
-  f.item("reference", { category: "reference" }); // a second batch, so that the committed case is still inside curate when it is cancelled
+  const reference = f.item("reference", { category: "reference" }); // a second batch, so that the committed case is still inside curate when it is cancelled
   f.next(async raw => {
     task = raw as DreamingAgentInput; task.acknowledgeRequest();
     if (committed) await writeCurateBatch(task, block(`update ${item.ref}`, { reason: "maintain" }, "maintained rule"));
@@ -55,15 +55,14 @@ test.each([
     expect(f.store.getClaim(f.session.id, "dreaming")).toEqual({ ...claim, expiresAt: 0 });
     const before = revisions(f);
     // The model keeps working: its late file is never applied.
-    writeFileSync(task.workspace.write[committed ? 1 : 0]!, block("create", { title: "Late rule", category: "reference", scope: "project", topics: "",
-      supports: `F${lateSupport}`, reason: "late forbidden write" }, "Late rule body"));
+    writeFileSync(task.workspace.write[committed ? 1 : 0]!, block(`update ${committed ? reference.ref : item.ref}`, { supports: `F${lateSupport}`, reason: "late forbidden write" }, "Late rule body"));
     expect(task.passEnd()).toBeUndefined();
     expect(revisions(f)).toBe(before);
     release();
     expect((await running).outcome).toBe("cancelled");
     expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
     expect(covered(f)).toEqual([]); // curate did not pass: nothing is covered, whatever a batch wrote
-    expect(f.store.currentCommit(item.knowledgeId, f.path)[0]!.text).toBe(committed ? "maintained rule" : original);
+    expect(f.store.currentCommit(item.knowledgeId, f.path)[0]!.text).toBe(original); // a kept batch is a proposal: nothing was applied, whatever the model wrote
     expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(!stopping && !disabled);
     expect(f.store.enabled(f.session.id)).toBe(!disabled);
     expect(f.store.taskFailures(f.session.id).every(failure => failure.count === 0)).toBe(true);
@@ -72,6 +71,7 @@ test.each([
 
 test("64c a merge names its primary: the older identity continues, both parents are the merge's parents, the absorbed item is no longer current", async () => {
   const f = makeDreamerFixture(memories);
+  await f.cycleTo("merge");
   const older = f.item("original earlier conclusion", { category: "constraint" }), newer = f.item("最新主张：条件与例外原样保留。", { category: "constraint", title: "最新主张" });
   const explicit = "Deliberately rewritten merge";
   f.dreamer.script.curate!.constraint = block(`merge ${older.ref}`, { absorb: newer.ref, topics: "merged", reason: "same conclusion" }, explicit);

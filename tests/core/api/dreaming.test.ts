@@ -38,14 +38,16 @@ test("native Read token estimate counts in Dreamer capacity before dispatch", as
   if (!base) throw new Error("missing baseline Dreamer dispatch");
   const nativeReadToolTokens = 402;
   const definitions = pricedToolDefinitions(dreamingWorkspaceToolDefinitions, canonicalToolNames);
-  const price = tokens(base.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(base.text);
+  // The largest task prompt the run can send (curate's or verify's, delivered with `check`) is priced with the first message (stage 5 §0).
+  const taskPrompt = Math.max(...(["curate", "verify"] as const).map(task => tokens(loadPrompt(`tasks/${task}-update.md`, canonicalToolNames, f.memory.config.writing))));
+  const price = tokens(base.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(base.text) + taskPrompt;
   const bounded = { ...f.target, nativeReadToolTokens, capacity: { inputTokens: price - 1 } };
   const runs = f.store.listRuns(f.session.id).length;
   f.next(() => { throw new Error("over-cap dispatch"); });
   await expect(f.memory.dream(bounded)).rejects.toThrow(/Dreaming capacity/);
   expect(f.store.listRuns(f.session.id)).toHaveLength(runs);
   f.next(async raw => { const input = raw as DreamingAgentInput;
-    expect(tokens(input.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(input.text)).toBe(price);
+    expect(tokens(input.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(input.text) + taskPrompt).toBe(price);
     return stop(input); });
   await f.memory.dream({ ...bounded, capacity: { inputTokens: price } });
   expect(f.store.listRuns(f.session.id)).toHaveLength(runs + 1);
@@ -202,13 +204,13 @@ test("64c cancellation before the first batch covers nothing and leaves the work
   expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
 });
 
-for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D ${mode} after an applied batch keeps its revision, covers nothing and releases the claim`, async () => {
+for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D ${mode} after a kept batch keeps its proposal, applies nothing, covers nothing and releases the claim`, async () => {
   const f = dreamerFixture();
   const rule = f.item("Rule", { category: "constraint" });
   f.item("Reference", { category: "reference" });
   f.next(async raw => {
     await writeBatch(raw as DreamingAgentInput, update(rule, "Rule, moved by the batch"));
-    expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Rule, moved by the batch");
+    expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Rule"); // a kept batch is a proposal, not a version
     if (mode === "throw" || mode === "abort") {
       const error = new Error("provider stopped after the batch");
       if (mode === "abort") error.name = "AbortError";
@@ -217,14 +219,13 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D 
     return { outcome: mode, output: "provider stopped after the batch", request: REQUEST };
   });
   expect((await f.dream()).outcome).toBe(mode === "cancelled" || mode === "abort" ? "cancelled" : "failure");
-  expect(f.store.listKnowledgeRevisions(rule.knowledgeId)).toHaveLength(2);
-  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Rule, moved by the batch");
-  expect(covered(f)).toEqual([]); // coverage is written when curate passes, never before
-  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate", detail: { doneCategories: ["constraint"] } });
+  expect(f.store.listKnowledgeRevisions(rule.knowledgeId)).toHaveLength(1);
+  expect(covered(f)).toEqual([]); // coverage is written when verify passes, never before
+  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate", detail: { doneCategories: ["constraint"], operation: "update" } }); // the kept batch survives
   expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
 });
 
-test("64c a fault in the final transaction of curate rolls back its batch and its coverage together, and keeps the exact audit", async () => {
+test("64c a fault in the final transaction of verify rolls back its applied operations and its coverage together, and keeps the exact audit", async () => {
   const f = dreamerFixture();
   const rule = f.item("terminal rollback base", { category: "constraint" });
   f.dreamer.script.curate!.constraint = update(rule, "committed before the terminal fault");
