@@ -119,3 +119,12 @@ export function curateWrite(memory: { store: Store }, path: KnowledgePath, opera
     return { knowledgeId: Number(id), commit: store.resolveVersionOrdinal(Number(id), Number(ordinal)) };
   });
 }
+
+/** The same, for a test whose operation needs a field the file format does not carry (an archive with its own supports on one branch):
+ * the store operations go straight through `commitWorkspaceRun`, the commit a pass uses. Throws when one is refused. */
+export function commitDreamerOps(memory: { store: Store }, path: KnowledgePath, operations: readonly Operation[]): { knowledgeId: number; commit: number }[] {
+  const done = memory.store.commitWorkspaceRun({ run: { kind: "dreaming", sessionId: path.sessionId, branch: path.branch ?? null, createdAt: new Date().toISOString() }, path, operations });
+  const refused = done.results.flatMap(result => result.ok ? [] : [result.reason]);
+  if (refused.length) throw new Error(refused.join("\n"));
+  return done.results.flatMap(result => result.ok ? result.committed.map(item => ({ knowledgeId: item.knowledgeId, commit: item.commit })) : []);
+}
