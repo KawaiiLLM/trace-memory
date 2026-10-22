@@ -91,11 +91,10 @@ For example, either settings file can contain:
 
 `compaction.factsTokens` and `compaction.rawTokens` retain their independent 10,000-token bases.
 The database-owned Knowledge base is the safe-integer sum of Global, Project and Session budgets,
-defaulting to 4,000, 15,000 and 1,000. `compaction.sharedAllowanceTokens` adds 10,000 for Knowledge
-only; it is not derived from phase triggers.
-
-Ticket 133 adds `compaction.temporaryTokens` (10,000), filled newest-first in order:
-pending Raw overflow, then human user words within `compaction.userTurns` (100) and uncovered fact
+defaulting to 4,000, 15,000 and 1,000. The one temporary allowance, `compaction.temporaryTokens` (10,000; ticket 144), is not derived from phase triggers
+(`compaction.sharedAllowanceTokens` is a removed setting). Knowledge fills its base in score order; the allowance is
+filled in order: pending Raw overflow, then unscored Knowledge (newest first), then titles of scored Knowledge that missed the
+base, then human user words within `compaction.userTurns` (100) and uncovered fact
 titles within `compaction.titleTurns` (100), filled together turn by turn, newest first (each turn's
 user entries, then its titles), so both reach the same depth; the first item that does not fit stops
 both. Both reaches include the anchor and count path turns; unused room never reaches older turns.
@@ -105,8 +104,8 @@ Full facts do not borrow, and none of the bases lends to another.
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
 from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a named load error.
 `dreaming.triggerTokens` is configurable: its default is 10,000, compared with the tokens of knowledge the
-Noter created or changed since the last covered Dreamer pass (144 stage 4). Foreground publication may use the Knowledge base plus
-the shared allowance. Database budget edits accept exact
+Noter created or changed since the last covered Dreamer pass (144 stage 4). Foreground publication may use the Knowledge base and what the context's
+temporary allowance has left. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
 connections to that database. The budgets size injection and compaction only: they trigger no Dreamer run and decide none's success.
 Running requests keep their frozen admitted capacities; later admissions use the current policy. Actual
@@ -204,7 +203,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   identities for archive/supersede/merge/split notices. Notice visibility is separate and never grants
   a replacement body. The publication contains no Fact, Raw, pool-scheduling metadata,
   command-generation metadata or omission-only block. Retained applicable Knowledge bodies and notices
-  consume the Knowledge base plus the shared allowance, 30,000 tokens at the default policy. Missing state
+  consume the Knowledge base (20,000 tokens at the default policy); what the context's temporary allowance has charged limits the unscored items and titles. Missing state
   transitions fit as a deterministic whole-item prefix before complete new bodies; only selected
   transition receipts persist. Knowledge keeps category groups and chronological display inside each
   group. The common header says items are grouped by category, position does not compare items across categories, and a newer same-object item within a category stands
@@ -283,7 +282,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   token budget. The menu never offers it: the menu edits mode/model preferences and closed-session scope only,
   and the advanced keys live in the settings files.
 - `consolidation.knowledgeTokens` is **removed** (ticket 45). Consolidator Knowledge uses the bound
-  database's Knowledge base plus shared allowance, frozen at task admission. Any configuration layer
+  database's Knowledge base, frozen at task admission. Any configuration layer
   that supplies the old key fails by name and directs the user to the three database Knowledge budgets
   in Settings; the value is never reinterpreted or ignored.
 - `consolidation.subagentModeDefault` is **removed** (ticket 25 amendment 2). A saved value of either polarity fails the load with
@@ -634,7 +633,7 @@ global default through its own settings load; there is no cross-process watcher.
 Editing a preference starts no worker and starts nothing else. The same Settings
 screen separately edits the bound database's Global, Project and Session Knowledge budgets. Those
 values are database policy, not Pi global preferences, and saves never copy them into `settings.json`.
-The screen shows the Knowledge base, shared allowance and their maximum Knowledge input separately.
+The screen shows the Knowledge base, the temporary allowance and their maximum Knowledge input separately.
 
 All configuration layers validate before use, including masked values. Unknown or
 removed keys fail by name. Counts and token limits require positive safe integers;
@@ -689,10 +688,10 @@ Successful allocations are repriced before publication; cancellation still publi
 | No material candidates | Nothing to supply or omit; guide or tasks alone are not material | Delegate without a custom delivery |
 | `{native: true, reason}` | Unexpected host-caught error, including a live-task lookup failure | Delegate to Pi's native compaction |
 
-The default envelope is 60,000 tokens: Knowledge 20,000, full facts 10,000, Raw 10,000,
-Knowledge-only shared allowance 10,000 and separate temporary allowance 10,000.
-Pending Raw has first claim on the temporary allowance; earlier user words and fact titles
-fill only its remainder. Each emitted section's headings, groups and receipts are charged.
+The default envelope is 50,000 tokens: Knowledge 20,000, full facts 10,000, Raw 10,000
+and the one temporary allowance 10,000.
+Pending Raw has first claim on the temporary allowance; unscored Knowledge, knowledge titles, earlier user words and fact titles
+fill only its remainder, in that order. Each emitted section's headings, groups and receipts are charged.
 
 Inside `<episodic>` the order is fact titles, full facts, earlier user messages, Raw, running tasks.
 The optional pi-subagents service at `Symbol.for("@gotgenes/pi-subagents:service")` supplies

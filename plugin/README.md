@@ -23,8 +23,7 @@ Core phase bounds use optional top-level keys in the same file:
 | `noting.triggerTokens` | 10,000 | Noter trigger checked at every main-session entry end; catchup still drains below it |
 | `dreaming.triggerTokens` | 10,000 | Dreamer trigger: tokens of knowledge the Noter created or changed since the last covered Dreamer pass |
 | `dreaming.timeoutMs` | 1,800,000 | Wall-clock bound of each Dreamer task (curate, verify, classify); no tool-round ceiling |
-| `compaction.sharedAllowanceTokens` | 10,000 | Allowance lent to Knowledge only |
-| `compaction.temporaryTokens` | 10,000 | Separate allowance: pending Raw, then user words and titles together, turn by turn |
+| `compaction.temporaryTokens` | 10,000 | The one temporary allowance of a context: pending Raw, then unscored Knowledge and knowledge titles, then user words and fact titles together, turn by turn |
 | `compaction.userTurns` | 100 | User-word reach including the anchor, counted along its path |
 | `compaction.titleTurns` | 100 | Fact-title reach including the anchor, counted along its path |
 | `compaction.userEntryTokens` | 300 | Middle-cut cap for each earlier human user entry |
@@ -38,8 +37,8 @@ curates the knowledge (merge, split, archive, rewrite), verifies its own changes
 and classifies items by importance (1 to 100); a task with nothing to do makes no model call.
 
 Compaction retains the existing 10k Raw and 10k full-fact windows. The temporary allowance
-adds missing user words and uncovered fact titles without borrowing Knowledge's allowance
-or filling beyond the configured reaches. Noter uses the same rules at its batch endpoint,
+carries unscored Knowledge and knowledge titles, missing user words and uncovered fact titles
+without filling beyond the configured reaches. Noter uses the same rules at its batch endpoint,
 and reduces optional temporary material before full historical facts during capacity negotiation.
 The episodic order is titles, full facts, user words, Raw, running tasks.
 

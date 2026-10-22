@@ -140,8 +140,9 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("CC configuration is required");
   const retired = retireConsolidationSettings(input);
   input = retired.values;
-  // Ruling 2026-10-22: the Noter runs fresh only. A leftover fork key fails the load with core's removed-setting message.
-  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault"])
+  // Ruling 2026-10-22: the Noter runs fresh only; one temporary allowance replaces the Knowledge-only shared allowance.
+  // A leftover key of either fails the load with core's removed-setting message.
+  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens"])
     if (Object.hasOwn(input, key)) canonicalFlatConfig({ [key]: true });
   const dbPath = input.dbPath === undefined ? join(homedir(), ".trace-memory", "trace.db") : input.dbPath;
   if (typeof dbPath !== "string" || !dbPath.trim()) throw new Error("CC dbPath must be a non-empty absolute path when specified");

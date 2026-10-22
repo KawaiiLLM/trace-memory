@@ -183,3 +183,8 @@ test.each(["temporaryTokens", "userTurns", "titleTurns", "userEntryTokens"] as c
       expect(() => resolveCcHostConfig({ ...f.input, dbPath: f.dbPath, [`compaction.${key}`]: value }))
         .toThrow(`Invalid compaction.${key}: expected a positive safe integer`);
   });
+
+test("144: a cc.config.json that still carries the shared allowance fails to load and names its replacement", () => {
+  expect(() => resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", "compaction.sharedAllowanceTokens": 10_000 } as never))
+    .toThrow(/Removed setting compaction\.sharedAllowanceTokens: one temporary allowance, compaction\.temporaryTokens/);
+});

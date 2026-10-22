@@ -335,3 +335,11 @@ test("24b: editing a setting starts no worker", async () => {
   expect(h.requests).toEqual([]);
   expect(h.conversations).toEqual([]);
 });
+
+test("144: the Knowledge-only shared allowance is a removed setting on Pi's flat layers and its nested config", () => {
+  const key = "compaction.sharedAllowanceTokens";
+  expect(() => parseLayer({ [key]: 10_000 })).toThrow(/Removed setting compaction\.sharedAllowanceTokens: one temporary allowance, compaction\.temporaryTokens/);
+  expect(() => validateConfig({ compaction: { sharedAllowanceTokens: 10_000 } } as never)).toThrow(/Removed setting compaction\.sharedAllowanceTokens/);
+  const h = setup();
+  expect(() => configuration(h.dir, JSON.stringify({ [key]: 10_000 }), join(h.dir, "agent"))).toThrow(/Removed setting compaction\.sharedAllowanceTokens/);
+});
