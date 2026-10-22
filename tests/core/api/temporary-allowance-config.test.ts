@@ -8,7 +8,7 @@ test("the temporary allowance defaults to 10,000 and is a plain configuration va
   expect(DEFAULT_CONFIG.compaction.temporaryTokens).toBe(10_000);
   expect(validateConfig({}).compaction.temporaryTokens).toBe(10_000);
   expect(validateConfig({ compaction: { temporaryTokens: 42 } }).compaction.temporaryTokens).toBe(42);
-  expect(validateConfig({ noting: { triggerTokens: 999_999 }, dreaming: { triggerTokens: 999_999 } }).compaction.temporaryTokens).toBe(10_000);
+  expect(validateConfig({ noting: { triggerTokens: 999_999 }, dreaming: { triggerOperations: 999_999 } }).compaction.temporaryTokens).toBe(10_000);
 });
 
 test("the Knowledge-only shared allowance is a removed setting that names its replacement", () => {

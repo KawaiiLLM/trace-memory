@@ -364,7 +364,7 @@ test("34c a split item's old version is shown as its primary part; budgeting kee
 });
 
 test("92 split notice names only the visible results and never mislabels a partially hidden split as a merge", async () => {
-  const f = fixture({ dreaming: { triggerTokens: 1 } });
+  const f = fixture({ dreaming: { triggerOperations: 1 } });
   const parent = f.create("compound parent", [f.facts[0]!.id]);
   const split = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, text: "Primary part.", category: "constraint", scope: "project", topics: [],
     supports: [], reason: "separate", children: [

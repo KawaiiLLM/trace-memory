@@ -127,7 +127,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
 // Retired C's rendered-fact trigger has no replacement: N writes knowledge with facts.
 // D's independent due predicate is the Noter-changed knowledge since the last curate, not a count or size of old facts.
 test("D admits a due Noter-written item on an entry without consuming pending Raw", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerOperations": 1 });
   try {
     await h.turn();
     const user = h.memory.store.getSourceEntry(h.memory.store.sourcePath(1, "main", 1)[0]!.id)!;

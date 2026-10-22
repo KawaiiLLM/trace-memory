@@ -161,7 +161,7 @@ test("borrowed N publishes both layers to its target without a special executor 
 });
 
 test("an owned Dreamer run shows its Noter-written item and keeps its global seat separate from borrowed N", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerOperations": 1 });
   try {
     await h.turn();
     const due = dueItem(h);
@@ -232,7 +232,7 @@ test("reopening a closed target replaces borrowed N token and prevents stale pub
 });
 
 test("one shutdown deadline fences borrowed N and owned D even when both providers hang", async () => {
-  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerOperations": 1 });
   try {
     await h.turn();
     const due = dueItem(h);

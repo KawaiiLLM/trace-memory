@@ -4,7 +4,7 @@ import { knowledge } from "../../support/seed.ts";
 import { block } from "../../support/workspace.ts";
 
 test("68: shared deadline fences a real Pi worker, releases its claim and permits the next run", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1, "dreaming.timeoutMs": 300 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1, "dreaming.timeoutMs": 300 });
   let release!: () => void, signal: AbortSignal | undefined;
   const gate = new Promise<void>(resolve => { release = resolve; });
   try {

@@ -1,6 +1,6 @@
 import { TraceMemory, knowledgeStateKey } from "../../core/api/index.ts";
 import { Store } from "../../core/store/index.ts";
-import { dreamerFailureNotice, type SettingsInput, type TraceMenuInput } from "../trace-menu.ts";
+import { dreamerFailureNotice, dreamingPendingInput, type SettingsInput, type TraceMenuInput } from "../trace-menu.ts";
 
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { ccResultText, ccHumanUser } from "./transcript.ts";
@@ -113,7 +113,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       header: { session: session ? `S${session.id}` : "unbound", project: project?.name ?? "unavailable", enabled,
         explicit: binding.enrollment.choice !== null },
       context: { model: "Claude Code" },
-      pending: { noting: pending("noting"), dreaming: { pending: dreaming.pending ?? { tokens: null, trigger: null },
+      pending: { noting: pending("noting"), dreaming: { pending: dreamingPendingInput(dreaming.pending, null),
         ...(session ? { next: store.nextCurateOperation(session.projectId) } : {}) } },
       spend: { session: spend?.cost ?? 0, sessionUnknown: spend?.unknown ?? 0,
         noting: { runs: spend?.runs.noting ?? 0, cost: spend?.costs.noting ?? 0 },

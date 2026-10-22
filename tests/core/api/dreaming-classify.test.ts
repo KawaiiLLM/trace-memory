@@ -100,7 +100,7 @@ test("a resumed run with only classify left fails at the task's own deadline whe
   f.memory.config.dreaming.timeoutMs = 40;
   f.dreamer.script.instead = { classify: () => new Promise(() => {}) }; // never settles and never looks at the signal
   const started = Date.now();
-  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { task: "classify", class: "timeout", transient: true } });
+  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { task: "classify", class: "timeout" } });
   expect(Date.now() - started).toBeLessThan(2000); // its own deadline, not the execution backstop (timeout plus two gaps)
   const rows = f.store.db.prepare("SELECT outcome, reason FROM task_executions ORDER BY rowid").all() as { outcome: string; reason: string }[];
   expect(rows.at(-1)).toMatchObject({ outcome: "failure", reason: expect.stringContaining("classify: timeout") });

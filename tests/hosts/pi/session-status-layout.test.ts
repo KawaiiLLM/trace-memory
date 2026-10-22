@@ -288,7 +288,7 @@ test("actual TUI command opens custom panel, reflow never scans, and Escape writ
 });
 
 test("Current session is inert with eligible native Dreamer work; the next turn still executes it", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000, "dreaming.triggerOperations": 1 });
   try {
     await h.turn();
     const store = h.memory.store;
@@ -299,7 +299,7 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     const item = knowledge(store, store.knowledgePath(1, "main", 1), "project", "constraint",
       [evidence.id], "Remember the choice", { operation: { title: "Fixture title" } }); // Noter-written: it makes the Dreamer due (2026-10-22)
     const pool = `project:${store.getSession(1)!.projectId}`;
-    const pendingTokens = store.noterChangedTokens(store.knowledgePath(1));
+    const pendingOperations = store.noterOperations(store.knowledgePath(1));
     h.provider(async conversation => {
       expect(conversation.systemPrompt).toMatch(/^# (Dreamer|Classifying)/);
       return dreamerFiles(conversation) ?? reply("Done");
@@ -321,8 +321,8 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     await new Promise(resolve => setImmediate(resolve));
     const viewed = [...s.frame()];
     for (let i = 0; i < 10; i++) { s.key("\x1b[6~"); viewed.push(...s.frame()); }
-    // 2026-10-22: the Dreamer's pending row carries the Noter-changed tokens against the trigger.
-    expect(viewed.join(" ")).toMatch(new RegExp(`pending\\s+.*${pendingTokens} /\\s+1`));
+    // 2026-10-22: the Dreamer's pending row carries the Noter operations against the trigger.
+    expect(viewed.join(" ")).toMatch(new RegExp(`pending\\s+.*${pendingOperations} /\\s+1`));
     s.key("\x1b"); await command; await h.drain();
     expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries);
     expect(h.requests).toHaveLength(requests); expect(h.statuses.get("trace-memory")).toBe(footer);

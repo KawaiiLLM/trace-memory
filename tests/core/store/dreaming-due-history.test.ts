@@ -1,7 +1,9 @@
 import { expect, test, vi } from "vitest";
 import { performance } from "node:perf_hooks";
 import { TraceMemory } from "../../../src/core/api/index.ts";
-import { entry as seedEntry, knowledgeBatch, legacyFact } from "../../support/seed.ts";
+import { applyWorkspace } from "../../../src/core/workspace/index.ts";
+import { block } from "../../support/workspace.ts";
+import { entry as seedEntry, knowledgeBatch, legacyFact, updateKnowledge } from "../../support/seed.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 
 const at = "2026-09-28T00:00:00Z";
@@ -115,5 +117,55 @@ function measureRewrites(rewrites: number) {
 test("144 stage 4: the change trigger stays within the ruled bound as one live item is rewritten by the Noter from 100 to 1,500 times after coverage", () => {
   const short = measureRewrites(100), long = measureRewrites(1_500);
   console.info(JSON.stringify({ fixture: "144 change trigger over Noter rewrites", short, long }));
+  withinRuledBound(short, long);
+}, 120_000);
+
+/** 146 §1.2: the walk visits every unpruned ancestor, not only the ones that count. One uncovered Noter create followed by `manual`
+ * hand-written updates counts 1 and visits manual + 1 revisions; the count is never cut short by a visit budget. */
+function measureLowHitChain(manual: number, children = 0) {
+  const memory = TraceMemory(":memory:", vi.fn());
+  const store = memory.store;
+  try {
+    const project = store.createProject({ name: "chain", declaredBy: "mark" });
+    const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
+    const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: at });
+    const sourceEntry = seedEntry(store, session.id, turn.id, "evidence", "user", "evidence");
+    store.selectSourcePath(session.id, "main", [sourceEntry.id]);
+    const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+    const fact = legacyFact(store, path, [{ entry: sourceEntry, address: `T${turn.id}#user` }], "evidence", "decision");
+    const created = knowledgeBatch(store, path, [{ scope: "project", category: "constraint", supports: [fact.id], text: `rule ${"word ".repeat(120)}` }]).committed[0]!;
+    let base = created.commit;
+    for (let i = 0; i < manual; i++) base = updateKnowledge(store, path, created.knowledgeId, base, `rule ${i} ${"word ".repeat(120)}`, [fact.id]).commit;
+    // Shared ancestors: a split makes `children` more live items that all reach the same uncovered chain.
+    if (children) {
+      const ref = `K${created.knowledgeId}@v${store.versionOrdinal(created.knowledgeId, base)}`;
+      const child = `\n### child\ntitle: Child rule\ncategory: reference\nscope: project\ntopics: split\nsupports: F${fact.id}\nreason: split out\n\nA child.\n`;
+      const split = applyWorkspace(store, { kind: "curate", operation: "split", sessionId: session.id, path,
+        file: { name: "curate.md", text: block(`split ${ref}`, { reason: "many topics" }, "Rule, first part.") + child.repeat(children) } });
+      if (!split.ok) throw new Error(split.problems.join("\n"));
+      expect(store.liveKnowledge(path).length).toBe(children + 1);
+    }
+    expect(store.noterOperations(path)).toBe(1);
+    expect(store.noterOperations(path, 1)).toBe(1);
+    store.dreamingDue(path);
+    const samples: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      const start = performance.now();
+      store.dreamingDue(path);
+      samples.push(performance.now() - start);
+    }
+    return { due: median(samples.slice(5)) };
+  } finally { memory.close(); }
+}
+
+test("146: the operation count stays within the ruled bound over one Noter create behind 100 to 1,500 hand-written updates, and is never truncated", () => {
+  const short = measureLowHitChain(100), long = measureLowHitChain(1_500);
+  console.info(JSON.stringify({ fixture: "146 operation count over a low-hit chain", short, long }));
+  withinRuledBound(short, long);
+}, 120_000);
+
+test("146: the operation count stays within the ruled bound when 8 live items share one long uncovered chain", () => {
+  const short = measureLowHitChain(100, 7), long = measureLowHitChain(1_500, 7);
+  console.info(JSON.stringify({ fixture: "146 operation count over shared ancestors", short, long }));
   withinRuledBound(short, long);
 }, 120_000);

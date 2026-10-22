@@ -14,7 +14,7 @@ export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, Pendin
 import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome, CURATE_ROTATION, type CurateOperation } from "./executions.ts";
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
-import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
+import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_OPERATIONS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
 import { knowledgeTitle, tokens } from "../render/index.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import type {
@@ -1774,11 +1774,11 @@ export class Store {
   /** A Dreamer admission is due by `dreamingDue` (144 stage 4 §8.2): a due hand-off with no threshold work still gets the claim.
    * `leaseMs` lets it outlive its execution backstop (§1.3). */
   acquireClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed = false, eligible: () => boolean = () => true,
-    triggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS, leaseMs?: number): TaskClaim | null {
+    triggerOperations = DEFAULT_DREAMING_TRIGGER_OPERATIONS, leaseMs?: number): TaskClaim | null {
     if (phase !== "noting" && phase !== "dreaming") throw new Error(`Unsupported live phase: ${phase}`);
     return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => phase === "noting"
       ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId).length > 0
-      : this.dreamingDue(target, triggerTokens), eligible, leaseMs));
+      : this.dreamingDue(target, triggerOperations), eligible, leaseMs));
   }
 
   /** Called only by atomic Store operations. Pending discovery is private and synchronous, so
@@ -3823,13 +3823,14 @@ export class Store {
         branch: null, entryIds: [], detail: handoff.detail });
       else {
         this.db.prepare("DELETE FROM task_handoffs WHERE session_id = ? AND phase = 'dreaming'").run(sessionId);
+        // 146 Q16: only a finished run resets the failure streak, as the Noter's does at its success; a kept batch or an applied group does not.
+        this.db.prepare("UPDATE task_failures SET count = 0 WHERE session_id = ? AND phase = 'dreaming' AND pool = ?").run(sessionId, ALL_POOLS);
         if (input.finish) {
           const advanced = input.finish.operation === this.nextCurateOperation(this.getSession(sessionId)!.projectId);
           const body = JSON.parse(String(this.db.prepare("SELECT response FROM run_bodies WHERE run_id = ?").get(done.runId)?.response ?? "{}"));
           this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify({ ...body, finished: { operation: input.finish.operation, advanced } }), done.runId);
         }
       }
-      this.db.prepare("UPDATE task_failures SET count = 0 WHERE session_id = ? AND phase = 'dreaming' AND pool = ?").run(sessionId, ALL_POOLS);
       return done;
     });
   }
@@ -3842,14 +3843,6 @@ export class Store {
       WHERE s.project_id = ? AND r.kind = 'dreaming' AND json_extract(b.response, '$.finished.advanced') = 1 ORDER BY r.id DESC LIMIT 1`).get(projectId);
     const at = CURATE_ROTATION.indexOf(row?.operation as CurateOperation);
     return CURATE_ROTATION[(at + 1) % CURATE_ROTATION.length]!;
-  }
-
-  /** The admission of a due Dreamer run that was waiting for a threshold ends the wait (§3.3). */
-  clearDreamerWait(sessionId: number): void {
-    const handoff = this.handoff(sessionId, "dreaming");
-    if (handoff?.detail?.waitFrom === undefined) return;
-    const { waitFrom: _waitFrom, ...detail } = handoff.detail;
-    writeHandoff(this, { ...handoff, detail });
   }
 
   /** The ids among these whose execution has an outcome (the CC importer's pin release, §1.2). */
@@ -4047,64 +4040,50 @@ export class Store {
     });
   }
 
-  /** Body tokens per version (immutable); the title is recomputed because a legacy untitled version's depends on the configured cap. */
-  private bodyTokens = new WeakMap<KnowledgeRevision, number>();
-
-  /** 144 stage 4: the tokens (title plus body, each item once) of live items that a Noter revision newer than `floor`
-   * changed since coverage (`knowledge_processed`). A covered ancestor ends only its own branch; an item counts when any
-   * unpruned branch reaches such a revision, whatever the parent order. Stops adding once `stopAt` is reached. */
-  noterChangedTokens(path: KnowledgePath, floor = 0, stopAt = Infinity): number {
-    return this.noterChanged(path, floor, stopAt).tokens;
-  }
-
-  /** How many live items `noterChangedTokens` counts: the footer's "Noter-changed items since the last D". */
-  noterChangedItems(path: KnowledgePath): number {
-    return this.noterChanged(path).items;
-  }
-
-  private noterChanged(path: KnowledgePath, floor = 0, stopAt = Infinity): { tokens: number; items: number } {
+  /** 146 §1.2: how many Noter knowledge operations (a `create` or `update` revision of actor `noting`) are not yet covered
+   * (`knowledge_processed`) on the chains of the path's live items, each revision once whichever item it reaches. A covered
+   * ancestor ends only its own branch; the walk goes on past a Noter revision, so a second update of one item counts again.
+   * Stops adding once `stopAt` is reached; the walk itself is never cut short, so the count is exact below `stopAt`. */
+  noterOperations(path: KnowledgePath, stopAt = Infinity): number {
     const input = this.commitGraphInput(undefined, path.sessionId);
     const revisions = input.metadata.revisions!, parents = input.parents;
     const byPool = new Map<string, KnowledgeRevision[]>();
-    for (const revision of this.liveKnowledge(path, input)) if (revision.id > floor) {
+    for (const revision of this.liveKnowledge(path, input)) {
       const pool = placementOwner(this, { revision }, input.metadata);
       const items = byPool.get(pool); if (items) items.push(revision); else byPool.set(pool, [revision]);
     }
     const covered = this.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?");
     const uncoveredIn = this.db.prepare(`SELECT value FROM json_each(?)
       WHERE NOT EXISTS (SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = value)`);
-    let total = 0, counted = 0;
+    const counted = new Set<number>();
     for (const [pool, items] of byPool) {
       const uncovered = new Set(uncoveredIn.all(JSON.stringify(items.map(item => item.id)), pool).map(row => Number(row.value)));
+      // One `seen` set per pool: pruning depends only on the revision and its coverage in the pool, not on the item the walk started
+      // from, so items that share an ancestor chain (split children, merged items) walk it once.
+      const seen = new Set<number>();
       for (const item of items) {
         if (!uncovered.has(item.id)) continue;
-        const stack = [item.id], seen = new Set<number>();
-        let counts = false;
-        while (stack.length && !counts) {
+        const stack = [item.id];
+        while (stack.length) {
           const id = stack.pop()!;
           if (seen.has(id)) continue;
           seen.add(id);
+          if (id !== item.id && covered.get(pool, id)) continue; // prunes this branch only
           const revision = revisions.get(id)!;
-          if (id !== item.id && (id <= floor || covered.get(pool, id))) continue; // prunes this branch only
-          if (revision.actorRole === "noting") counts = true;
-          else stack.push(...parents.get(id) ?? []);
+          if (revision.actorRole === "noting" && (revision.op === "create" || revision.op === "update")) {
+            counted.add(id);
+            if (counted.size >= stopAt) return counted.size;
+          }
+          stack.push(...parents.get(id) ?? []);
         }
-        if (!counts) continue;
-        let body = this.bodyTokens.get(item);
-        if (body === undefined) this.bodyTokens.set(item, body = tokens(item.text));
-        counted++;
-        if ((total += body + tokens(knowledgeTitle(item, this.writing.titleWords))) >= stopAt) return { tokens: total, items: counted };
       }
     }
-    return { tokens: total, items: counted };
+    return counted.size;
   }
 
-  /** 144 stage 4 §2.4: a Dreamer run is due when a hand-off row asks for a retry or resume, or when the Noter-changed
-   * tokens since the hand-off's `waitFrom` (0 without one) reach the trigger. */
-  dreamingDue(path: KnowledgePath, triggerTokens = DEFAULT_DREAMING_TRIGGER_TOKENS): boolean {
-    const handoff = this.handoff(path.sessionId, "dreaming");
-    return !!handoff && handoff.detail?.waitFrom === undefined
-      || this.noterChangedTokens(path, handoff?.detail?.waitFrom ?? 0, triggerTokens) >= triggerTokens;
+  /** 146 §1.1: a Dreamer run is due when a hand-off row asks for a retry or resume, or when the uncovered Noter operations reach the trigger. */
+  dreamingDue(path: KnowledgePath, triggerOperations = DEFAULT_DREAMING_TRIGGER_OPERATIONS): boolean {
+    return !!this.handoff(path.sessionId, "dreaming") || this.noterOperations(path, triggerOperations) >= triggerOperations;
   }
 
   listTurns(sessionId: number): Turn[] {

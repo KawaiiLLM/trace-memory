@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, type TraceMemory } from "../../source-fixture.ts";
-import { dreamerFixture as makeDreamerFixture, scriptedDreamer, type DreamerScript } from "../../support/dreamer.ts";
+import { dreamerFixture as makeDreamerFixture, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
 import { archive, knowledge, legacyKnowledge, updateKnowledge } from "../../support/seed.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
@@ -36,13 +36,13 @@ test("a due run curates every category, scores the items, covers what it showed 
 });
 
 test("the trigger in the configuration is the one the due check and the admission use, whenever it is read", async () => {
-  // Part 4c saw `dreaming.triggerTokens: 1` read back as 10000 on a host test's observer; the instance that schedules and admits reads its own.
+  // Part 4c saw `dreaming.triggerOperations: 1` read back as 10000 on a host test's observer; the instance that schedules and admits reads its own.
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
-  f.memory.config.dreaming.triggerTokens = Number.MAX_SAFE_INTEGER;
+  f.memory.config.dreaming.triggerOperations = Number.MAX_SAFE_INTEGER;
   expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: false });
   expect(await f.dream()).toMatchObject({ outcome: "empty" });
-  f.memory.config.dreaming.triggerTokens = 1;
+  f.memory.config.dreaming.triggerOperations = 1;
   expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
   expect(await f.dream()).toMatchObject({ outcome: "success" });
 });
@@ -112,17 +112,15 @@ test("a batch is kept, not applied; a failure in the next keeps it, and a later 
   f.dreamer.script.curate!.constraint = updateBlock(rule, "Rule one, tidied");
   const before = revisions(f);
   const failed = await f.dream();
-  expect(failed).toMatchObject({ outcome: "failure", failure: { task: "curate", class: "check failed twice", transient: false, operation: "update" } });
+  expect(failed).toMatchObject({ outcome: "failure", failure: { task: "curate", class: "check failed twice", operation: "update" } });
   const handoff = f.store.handoff(f.session.id, "dreaming")!;
   expect(handoff.nextTask).toBe("curate");
   expect(handoff.detail).toMatchObject({ doneCategories: ["constraint"], curateRuns: [expect.any(Number)], operation: "update" });
   expect(covered(f)).toEqual([]); // coverage is written when verify passes, never before
   expect(revisions(f)).toBe(before); // the kept batch is not applied
   expect(keptBatches(f)).toBe(1);
-  // It waits for a threshold (a permanent failure): nothing changed, so it is not due.
-  expect(await f.dream()).toMatchObject({ outcome: "empty" });
+  // 146: the hand-off makes the next check due; the resume needs no new Noter operation.
   f.dreamer.script.curate!.reference = "## none\n";
-  f.item("A later Noter item", { category: "reference" });
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.slice(-3).map(input => input.task)).toEqual(["curate", "verify", "classify"]);
   expect(f.dreamer.reports.at(-3)).toContain("batch 1 of 1, category reference");
@@ -131,26 +129,23 @@ test("a batch is kept, not applied; a failure in the next keeps it, and a later 
   expect(f.store.currentKnowledge(f.path).find(value => value.knowledge.id === rule.knowledgeId)!.revision.text).toBe("Rule one, tidied"); // applied at verify's pass
 });
 
-test("a transient failure retries at every check for three more attempts, then waits; a permanent one waits at once; memory stays on", async () => {
+test.each([["429 rate limit", "provider error"], ["bad request", "error"], ["gpt-9 model not found", "model not found"]])(
+  "a failed run (%s) is retried at the next check whatever its class: no wait for a threshold, the Noter-operation count is not reset, and the reason carries the class only", async (output, label) => {
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
-  const fail = (output: string) => f.next(async () => ({ outcome: "failure", output }));
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    fail("429 rate limit");
-    expect(await f.dream(), `attempt ${attempt}`).toMatchObject({ outcome: "failure", failure: { class: "provider error", transient: true } });
-    const waitFrom = f.store.handoff(f.session.id, "dreaming")!.detail!.waitFrom;
-    if (attempt === 4) expect(waitFrom).toBeTypeOf("number"); else expect(waitFrom).toBeUndefined();
+  const operations = f.store.noterOperations(f.path);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    f.next(async () => ({ outcome: "failure", output }));
+    expect(await f.dream(), `attempt ${attempt}`).toMatchObject({ outcome: "failure", failure: { class: label } });
+    expect(f.store.handoff(f.session.id, "dreaming")!.detail).not.toHaveProperty("waitFrom");
+    f.memory.config.dreaming.triggerOperations = Number.MAX_SAFE_INTEGER; // only the hand-off makes the next check due
+    expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
+    f.memory.config.dreaming.triggerOperations = 1;
+    expect(f.store.noterOperations(f.path)).toBe(operations);
   }
-  expect(count(f)).toBe(0);
-  expect(await f.dream()).toMatchObject({ outcome: "empty" }); // waiting for 10k tokens of newer Noter changes
-  expect(f.store.enabled(f.session.id)).toBe(true);
-  expect(task(f).map(row => row.reason)).toEqual(["curate: provider error, retry 1/3", "curate: provider error, retry 2/3", "curate: provider error, retry 3/3", "curate: provider error, waits for threshold"]);
-  f.item("Another Noter item");
-  fail("bad request");
-  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { class: "error", transient: false } });
-  expect(await f.dream()).toMatchObject({ outcome: "empty" });
-  f.item("Yet another Noter item");
-  expect(await f.dream()).toMatchObject({ outcome: "success" }); // the pass resets the count and ends the hand-off
+  expect(task(f).map(row => row.reason)).toEqual([`curate: ${label}`, `curate: ${label}`]);
+  expect(count(f)).toBe(2);
+  expect(await f.dream()).toMatchObject({ outcome: "success" }); // the third check resumes and finishes
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
   expect(count(f)).toBe(0);
 });
@@ -162,7 +157,7 @@ test("the first failure persists the pointer: a retry runs even after the Noter 
   await f.dream();
   expect(f.store.handoff(f.session.id, "dreaming")!.detail).toMatchObject({ operation: "update" }); // the first-failure row names the operation
   archiveItem(f, rule);
-  expect(f.store.noterChangedTokens(f.path)).toBe(0);
+  expect(f.store.noterOperations(f.path)).toBe(0);
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs).toHaveLength(0); // no category is left, so curate passes without a model call
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
@@ -183,7 +178,7 @@ test("a lost claim is one counted failure: hand-off kept, nothing written; user 
   g.release();
   expect(await running).toMatchObject({ outcome: "failure" });
   expect(revisions(f)).toBe(before);
-  expect(task(f)).toEqual([{ outcome: "failure", reason: "curate: claim lost, retry 1/3" }]);
+  expect(task(f)).toEqual([{ outcome: "failure", reason: "curate: claim lost" }]);
   expect(count(f)).toBe(1);
   expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate" });
   // A stop is not a failure.
@@ -225,8 +220,8 @@ test("a model that ignores its deadline fails as a timeout at its own deadline; 
   let aborted = false;
   f.next(raw => new Promise(() => { void raw; })); // never settles and never looks at the signal
   const stuck = await f.dream();
-  expect(stuck).toMatchObject({ outcome: "failure", failure: { task: "curate", class: "timeout", transient: true } });
-  expect(task(f)[0]).toEqual({ outcome: "failure", reason: "curate: timeout, retry 1/3" });
+  expect(stuck).toMatchObject({ outcome: "failure", failure: { task: "curate", class: "timeout" } });
+  expect(task(f)[0]).toEqual({ outcome: "failure", reason: "curate: timeout" });
   f.next(raw => new Promise(resolve => {
     (raw as { signal: AbortSignal }).signal.addEventListener("abort", () => { aborted = true; resolve({ outcome: "cancelled", output: "stopped" }); });
   }));
@@ -291,7 +286,7 @@ test("after a restart the hand-off resumes at the first category not done, and t
     // A new executor on the same database: nothing of the first run lives anywhere but the Store.
     const dreamer = scriptedDreamer();
     const memory = sourceSeededMemory(file, dreamer.agent); memories.push(memory);
-    memory.config.dreaming.triggerTokens = 1;
+    memory.config.dreaming.triggerOperations = 1;
     expect(memory.store.handoff(sessionId, "dreaming")).toMatchObject({ nextTask: "curate", detail: { doneCategories: ["constraint"] } });
     // The permanent failure waits for newer Noter changes; one arrives.
     const path = { sessionId, branch, headTurnId };
@@ -365,7 +360,7 @@ test("a Noter version written after the prefix was frozen is not covered by the 
   f.next(async raw => { late = f.item("Written by the Noter mid-run", { category: "reference" }); return f.dreamer.agent(raw); });
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(covered(f)).not.toContain(late!.commit);
-  expect(f.store.noterChangedTokens(f.path)).toBeGreaterThan(0);
+  expect(f.store.noterOperations(f.path)).toBeGreaterThan(0);
 });
 
 // ---- The rotation (stage 5 §3): one operation per run, update → merge → split → archive -----------------------------------------
@@ -600,4 +595,71 @@ test.each(["failure", "cancelled", "claim lost"] as const)("2026-10-22, 144: a f
   expect(await other.dream()).toMatchObject({ outcome: "success" });
   expect(taskHeaders(f)[0]).toBe("merge");
   expect(finishes(f).map(finished => finished.operation)).toEqual(["update", "merge"]);
+});
+
+// ---- The failure streak (146, Q16): the Noter's rules applied to the Dreamer -------------------------------------------------
+
+/** Two failed runs: the streak stands at 2 and a hand-off waits. */
+async function failTwice(f: ReturnType<typeof dreamerFixture>) {
+  for (let i = 0; i < 2; i++) { f.next(async () => ({ outcome: "failure", output: "bad request" })); await f.dream(); }
+  expect(count(f)).toBe(2);
+  expect(f.store.enabled(f.session.id)).toBe(true);
+}
+
+test("146 Q16: from a streak of 2, a kept batch does not reset it; the failure that follows is the third and switches memory off", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" }); f.item("Ref", { category: "reference" });
+  await failTwice(f);
+  let streakAfterBatch = -1;
+  f.next(async raw => { // curate keeps its first batch, then the model fails on the next
+    const input = raw as import("../../source-fixture.ts").DreamingAgentInput;
+    input.reportRequest(REQUEST);
+    await writeCurateBatch(input, "## none\n");
+    streakAfterBatch = count(f);
+    return { outcome: "failure", output: "bad request" } as never;
+  });
+  const result = await f.dream();
+  expect(streakAfterBatch).toBe(2); // a kept batch resets nothing
+  expect(result).toMatchObject({ outcome: "failure", automaticOff: expect.stringMatching(/dreaming off after three failures \(R\d+, R\d+, R\d+\)/) });
+  expect(count(f)).toBe(3);
+  expect(f.store.enabled(f.session.id)).toBe(false);
+  expect(f.store.handoff(f.session.id, "dreaming")).not.toBeNull(); // the hand-off stays for the resume after /trace on
+});
+
+test("146 Q16: from a streak of 2, the commit that finishes the run resets it; a failure after that commit neither counts nor restores it", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  await failTwice(f);
+  f.dreamer.script.instead = { classify: classifyThen(() => ({ outcome: "failure", output: "provider stopped after the final commit" })) };
+  expect(await f.dream()).toMatchObject({ outcome: "failure" });
+  expect(execution(f).at(-1)!.reason).toContain("run already finished");
+  expect(count(f)).toBe(0); // the finishing commit reset the streak; the late failure added nothing
+  expect(f.store.enabled(f.session.id)).toBe(true);
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+});
+
+test("146: a lost claim counts toward the streak; a user stop does not; a success resets it", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  await failTwice(f);
+  const stopping = gated(f, file => writeFileSync(file, "## none\n"));
+  f.next(stopping.agent);
+  const stopped = f.dream();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  f.memory.cancelTasks();
+  stopping.release();
+  await stopped;
+  expect(count(f)).toBe(2); // not counted
+  expect(f.store.enabled(f.session.id)).toBe(true);
+  const lost = gated(f, file => writeFileSync(file, "## none\n"));
+  f.next(lost.agent);
+  const running = f.dream();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'dreaming'").run();
+  lost.release();
+  expect(await running).toMatchObject({ outcome: "failure", automaticOff: expect.stringContaining("dreaming off after three failures") });
+  expect(count(f)).toBe(3);
+  f.store.setEnrollment(f.session.id, true); // /trace on clears the streaks; the hand-off resumes
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(count(f)).toBe(0);
 });

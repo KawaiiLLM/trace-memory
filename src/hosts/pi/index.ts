@@ -7,7 +7,7 @@ import { contextComposition } from "./context-composition.ts";
 import { statusBody } from "./session-status.ts";
 import { showSessionPanel } from "./session-panel.ts";
 import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
-import { buildActions, buildSettingsChoices, dreamerFailureNotice, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
+import { buildActions, buildSettingsChoices, dreamerFailureNotice, dreamingPendingInput, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
 import { agentDirectory, classifySettingKey, configuration, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
@@ -1524,7 +1524,7 @@ export default function (pi: ExtensionAPI) {
           ...(["Conversation", "Other"] as const).map(name => ({ name, tokens: composition.amounts[name] })),
         ], complete: composition.complete },
       pending: { noting: { tokens: noting.tokens, trigger: noting.trigger, ...(noting.state === "known" && noting.atLeast ? { atLeast: true, entries: noting.entries } : {}) },
-        dreaming: { pending: dreaming.pending ?? { tokens: null, trigger: memory.config.dreaming.triggerTokens },
+        dreaming: { pending: dreamingPendingInput(dreaming.pending, memory.config.dreaming.triggerOperations),
           ...(state.sessionId ? { next: memory.store.nextCurateOperation(memory.store.getSession(state.sessionId)!.projectId) } : {}) } },
       spend: { session: totals?.cost ?? 0, sessionUnknown: totals?.unknown ?? 0,
         noting: { runs: totals?.runs.noting ?? 0, cost: totals?.costs.noting ?? 0 },

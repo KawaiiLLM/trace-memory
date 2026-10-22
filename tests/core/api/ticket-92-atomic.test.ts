@@ -24,7 +24,7 @@ function fixture(script: Script, dream?: (task: DreamingAgentInput) => Promise<P
     if (task.kind === "noting") return noter.agent(task);
     task.reportRequest(REQUEST);
     return { outcome: "success", output: "done", request: REQUEST, ...(await dream?.(task)) };
-  }, { dreaming: { triggerTokens: 1 } });
+  }, { dreaming: { triggerOperations: 1 } });
   cleanup.push(() => memory.close());
   const project = memory.store.createProject({ name: "atomic", declaredBy: "mark" });
   const session = memory.store.createSession({ projectId: project.id, host: "pi:atomic", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
@@ -184,7 +184,7 @@ for (const when of ["write", "verify"] as const)
     // The Noter's converted create is uncovered Noter work: it counts toward the Dreamer's trigger.
     expect(created.revision.actorRole).toBe("noting");
     expect(f.memory.store.curateItems(f.path).find(item => item.value.revision.id === created.revision.id)).toMatchObject({ covered: false });
-    expect(f.memory.store.noterChangedItems(f.path)).toBeGreaterThanOrEqual(1);
+    expect(f.memory.store.noterOperations(f.path)).toBeGreaterThanOrEqual(1);
     if (!("runId" in result)) throw new Error("missing run");
     const audit = JSON.parse(f.memory.store.getRun(result.runId!)!.response!);
     expect(audit.knowledgeOperations[0].requested.op).toBe("update");

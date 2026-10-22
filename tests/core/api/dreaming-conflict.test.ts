@@ -14,7 +14,7 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "dreamer-seat-")); dirs.push(dir);
   const f = makeDreamerFixture(memories, {}, join(dir, "memory.sqlite"));
   const item = f.item("rule");
-  const other = sourceSeededMemory(join(dir, "memory.sqlite"), async () => { throw new Error("occupied seat must prevent provider launch"); }, { dreaming: { triggerTokens: 1 } });
+  const other = sourceSeededMemory(join(dir, "memory.sqlite"), async () => { throw new Error("occupied seat must prevent provider launch"); }, { dreaming: { triggerOperations: 1 } });
   memories.push(other);
   const otherSession = other.store.createSession({ host: "offline", projectId: f.project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const otherTurn = other.store.appendTurn({ sessionId: otherSession.id, kind: "turn", userPrompt: "other", startedAt: "now" });

@@ -13,7 +13,7 @@ const call = (id: string, name: string, args: unknown): Reply => ({ ...reply("")
 const isDreamer = (systemPrompt: string | undefined) => !!systemPrompt && (systemPrompt.startsWith("# Dreamer") || systemPrompt.startsWith("# Classifying"));
 /** A session with one Noter-written constraint: only Noter changes make a Dreamer due (stage 4, 2026-10-22). */
 async function seeded(config: Record<string, unknown> = {}, text = "Keep the user constraint") {
-  const h = host({ "noting.triggerTokens": 1000000, "dreaming.triggerTokens": 1, ...config });
+  const h = host({ "noting.triggerTokens": 1000000, "dreaming.triggerOperations": 1, ...config });
   await h.emit("session_start"); await h.turn();
   const store = h.memory.store;
   const user = store.sourcePath(1, "main", 1).find(value => store.getSourceEntry(value.id)?.role === "user")!;
@@ -51,7 +51,7 @@ test("Dreamer pre-request capacity failure names its own phase and retains its w
     expect(processedIn(store, pool, item.commit)).toBe(false);
     expect(store.getClaim(1, "dreaming")).toBeNull();
     expect(store.handoff(1, "dreaming")).not.toBeNull(); // the work is kept for the next trigger
-    expect(store.taskFailures(1)).toMatchObject([{ phase: "dreaming", count: 0 }]); // a Dreamer failure is not counted; memory stays on (2026-10-22)
+    expect(store.taskFailures(1)).toMatchObject([{ phase: "dreaming", count: 1 }]); // 146: one failure is counted, and one leaves memory on
     expect(store.enabled(1)).toBe(true);
   } finally { measure.mockRestore(); await h.dispose(); }
 });
@@ -236,15 +236,15 @@ test("64c native host: provider overflow in the next task keeps the kept batch, 
 // 144 stage 4 part 4d. Loose ends found in part 4c, each at the boundary where it occurred.
 test("the trigger a host is configured with is the one its Dreamer is due by: a Noter change below it starts no run, the same change at a lower trigger does", async () => {
   // `h.memory` is an observer built with the default core config; it does not carry the host's `dreaming.*` options (reading
-  // `h.memory.config.dreaming.triggerTokens` right after setup gives 10000). The extension's own instance does, so the effect is observed on runs.
-  const quiet = await seeded({ "dreaming.triggerTokens": 10_000 });
+  // `h.memory.config.dreaming.triggerOperations` right after setup gives 10000). The extension's own instance does, so the effect is observed on runs.
+  const quiet = await seeded({ "dreaming.triggerOperations": 10_000 });
   try {
     quiet.h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
     await quiet.h.turn(); await quiet.h.drain();
     expect(dreamingRuns(quiet.store)).toEqual([]);
     expect(quiet.h.requests).toEqual([]);
   } finally { await quiet.h.dispose(); }
-  const eager = await seeded({ "dreaming.triggerTokens": 1 });
+  const eager = await seeded({ "dreaming.triggerOperations": 1 });
   try {
     eager.h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
     await eager.h.turn(); await eager.h.drain();

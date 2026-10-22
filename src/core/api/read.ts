@@ -620,7 +620,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * the ancestry check itself, since a newer cached head is never an ancestor of an older requested one. */
   const progressCache = new Map<string, { signal: string; headTurnId: number; facts: number; knowledge: number; changedKnowledge: number }>();
   /** Footer progress for one selected path. `knowledge` is the current visible set;
-   * `changedKnowledge` counts the items the Noter changed since the last Dreamer run (144 stage 4 §2.3, §8.2). */
+   * `changedKnowledge` counts the Noter operations since the last Dreamer run (146 §1.4): the footer's "Noter ops since the last D", exact (no trigger beside it to stop at). */
   const progress = (sessionId: number, branch = "main", headTurnId?: number | null) => {
     session(sessionId);
     const path = store.knowledgePath(sessionId, branch, headTurnId);
@@ -643,7 +643,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     snapshot = prepare();
     const facts = store.listBranchFacts(sessionId, branch, path.headTurnId, snapshot);
     const knowledge = store.currentKnowledge(path, {}, snapshot);
-    const changedKnowledge = store.noterChangedItems(path);
+    const changedKnowledge = store.noterOperations(path);
     if (path.headTurnId != null) progressCache.set(key, { signal, headTurnId: path.headTurnId, facts: facts.length, knowledge: knowledge.length, changedKnowledge });
     else progressCache.delete(key);
     return { entries, facts: facts.length, knowledge: knowledge.length, changedKnowledge };

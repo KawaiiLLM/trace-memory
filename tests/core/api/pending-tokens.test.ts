@@ -45,7 +45,7 @@ test("Dreaming projection follows the selected head and current project, not dat
   const memory = sourceSeededMemory(":memory:", vi.fn());
   try {
     const s = memory.store, a = s.createProject({ name: "A", declaredBy: "mark" }), b = s.createProject({ name: "B", declaredBy: "mark" });
-    const create = (projectId: number, text: string) => {
+    const create = (projectId: number, text: string, items = 1) => {
       const session = s.createSession({ host: "test", projectId, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
       const turn = s.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: text, startedAt: "now" });
       const user = hydrate(s.listSourceEntries(session.id, turn.id), s).find(entry => entry.role === "user")!;
@@ -53,17 +53,17 @@ test("Dreaming projection follows the selected head and current project, not dat
         sources: [{ entry: user, address: `T${turn.id}#user` }], category: "decision", actor: "user", text, createdAt: "now",
       }]);
       // Noter-written: only Noter changes count toward the Dreamer's trigger (2026-10-22).
-      knowledge(s, { sessionId: session.id, branch: "main", headTurnId: turn.id }, "project", "constraint", [noted.facts[0]!.id], text, { operation: { title: "Fixture title" } });
+      for (let i = 0; i < items; i++) knowledge(s, { sessionId: session.id, branch: "main", headTurnId: turn.id }, "project", "constraint", [noted.facts[0]!.id], `${text} ${i}`, { operation: { title: `Fixture title ${i}` } });
       return { sessionId: session.id, branch: "main", headTurnId: turn.id };
     };
-    const targetA = create(a.id, "small"), targetB = create(b.id, "large ".repeat(200));
+    const targetA = create(a.id, "small"), targetB = create(b.id, "large", 3);
     const session = s.createSession({ host: "test", projectId: a.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
     const turn = s.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "reader", startedAt: "now" });
     const reader = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     // All fixture knowledge is project-scoped Noter output; the count follows the project the reader is in.
-    const projectTokens = (target: typeof targetA) => memory.dreamingPending(target).pending!.tokens;
+    const projectTokens = (target: typeof targetA) => memory.dreamingPending(target).pending!.operations;
     const small = projectTokens(targetA), large = projectTokens(targetB);
-    expect(large).toBeGreaterThan(small);
+    expect([small, large]).toEqual([1, 3]); // one Noter operation per item
     expect(projectTokens(reader)).toBe(small);
     memory.declareProject(session.id, "B", "mark", reader);
     expect(projectTokens(reader)).toBe(large);

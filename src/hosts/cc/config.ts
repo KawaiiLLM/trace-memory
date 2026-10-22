@@ -54,7 +54,7 @@ export interface CcHostConfig {
   "dreaming.classifyModel"?: string;
   "dreaming.classifyThinking"?: string;
   "noting.triggerTokens"?: number;
-  "dreaming.triggerTokens"?: number;
+  "dreaming.triggerOperations"?: number;
   "dreaming.timeoutMs"?: number;
   /** The one temporary allowance of a context (144 stage 4 §7.3). */
   "compaction.temporaryTokens"?: number;
@@ -141,9 +141,9 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   const retired = retireConsolidationSettings(input);
   input = retired.values;
   // Ruling 2026-10-22: the Noter runs fresh only; one temporary allowance replaces the Knowledge-only shared allowance;
-  // the length caps are counted in units (ticket 145).
+  // the length caps are counted in units (ticket 145); Dreaming is due by Noter operations (ticket 146).
   // A leftover key of any of them fails the load with core's removed-setting message.
-  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds", "writing.titleTokens", "writing.bodyTokens"])
+  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds", "writing.titleTokens", "writing.bodyTokens", "dreaming.triggerTokens"])
     if (Object.hasOwn(input, key)) canonicalFlatConfig({ [key]: true });
   const dbPath = input.dbPath === undefined ? join(homedir(), ".trace-memory", "trace.db") : input.dbPath;
   if (typeof dbPath !== "string" || !dbPath.trim()) throw new Error("CC dbPath must be a non-empty absolute path when specified");
@@ -186,8 +186,8 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   const coreConfig = validateConfig({
     closedSessionScope,
     ...(input["noting.triggerTokens"] === undefined ? {} : { noting: { triggerTokens: input["noting.triggerTokens"] } }),
-    ...(input["dreaming.triggerTokens"] === undefined && input["dreaming.timeoutMs"] === undefined ? {} : { dreaming: {
-      ...(input["dreaming.triggerTokens"] === undefined ? {} : { triggerTokens: input["dreaming.triggerTokens"] }),
+    ...(input["dreaming.triggerOperations"] === undefined && input["dreaming.timeoutMs"] === undefined ? {} : { dreaming: {
+      ...(input["dreaming.triggerOperations"] === undefined ? {} : { triggerOperations: input["dreaming.triggerOperations"] }),
       ...(input["dreaming.timeoutMs"] === undefined ? {} : { timeoutMs: input["dreaming.timeoutMs"] }),
     } }),
     compaction: {

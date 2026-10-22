@@ -93,8 +93,8 @@ export function beginExecution(store: Store, task: LogicalTask): string {
 /** What a passed first task leaves for the second: the files live in the first task's run body, so a restarted or
  * borrowing executor finds them with this one indexed read. */
 export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; nextTask: string; runId: number; branch: string | null; entryIds: number[]; createdAt: string;
-  /** 144 stage 4, Dreamer rows only: which batches are applied and, after a failure, the revision id from which Noter changes count again. */
-  detail?: { curateRuns: number[]; doneCategories: string[]; waitFrom?: number; operation?: CurateOperation } }
+  /** 144 stage 4, Dreamer rows only: which batches are applied, and the operation a resumed run repeats. */
+  detail?: { curateRuns: number[]; doneCategories: string[]; operation?: CurateOperation } }
 export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"]): Handoff | null {
   const row = store.db.prepare("SELECT * FROM task_handoffs WHERE session_id = ? AND phase = ?").get(sessionId, phase);
   return row ? { sessionId, phase, nextTask: String(row.next_task), runId: Number(row.run_id), branch: row.branch === null ? null : String(row.branch),
@@ -120,10 +120,8 @@ export function linkExecutionRun(store: Store, runId: number, input: RunInput): 
   store.db.prepare("INSERT INTO execution_runs VALUES (?,?)").run(runId, input.executionId);
 }
 
-/** What a failed Dreamer task tells settlement (144 stage 4 §3.3): the task that failed and whether Magic Context's rule retries it. */
-export interface TaskFailure { task: string; transient: boolean; operation?: CurateOperation }
-/** MC allows three retries of a transient failure per threshold (`MAX_TASK_RETRIES`); a permanent one waits at once. */
-export const MAX_TASK_RETRIES = 3;
+/** What a failed Dreamer task tells settlement: the task that failed, and the operation a resumed run repeats. */
+export interface TaskFailure { task: string; operation?: CurateOperation }
 
 /** Caller owns the terminal decision.
  * Dreamer calls it alongside completeDreaming in the final-check transaction, not at a write. */
@@ -162,13 +160,8 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
       last_reason = ?, last_run_id = ?, updated_at = ? WHERE ${task}`).run(Number(outcome === "success"), reason, runId, now, ...key);
     if (!counted.changes) store.db.prepare(`INSERT INTO task_failures(session_id,phase,head,pool,count,last_reason,last_run_id,updated_at)
       VALUES (?,?,?,?,?,?,?,?)`).run(...key, outcome === "success" ? 0 : 1, reason, runId, now);
-    if (row.phase === "dreaming") {
-      if (outcome === "failure") {
-        const retry = dreamerWaits(store, Number(row.session_id), runId, failure, row.pool === null ? null : String(row.pool));
-        store.db.prepare("UPDATE task_executions SET reason = ? WHERE id = ?").run(`${reason}, ${retry}`, id);
-      }
-      return {}; // 2026-10-22: D never switches memory off
-    }
+    if (row.phase === "dreaming" && outcome === "failure") keepDreamerRetry(store, Number(row.session_id), runId, failure);
+    // 146 (maintainer, 2026-10-22): the Dreamer's streak works like the Noter's; the third consecutive failure switches memory off.
     const count = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${task}`).get(...key)!.count);
     if (count !== 3 || !store.enabled(Number(row.session_id))) return {};
     store.setEnrollment(Number(row.session_id), false);
@@ -179,20 +172,11 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
   });
 }
 
-/** 144 stage 4 §3.3, Magic Context's rule. The failed task is kept as the hand-off's next task (the first failure creates the
- * row), so the next due check resumes there. A transient failure counts toward `MAX_TASK_RETRIES` and is retried at every check; past
- * the limit, and at once for a permanent failure, the hand-off waits for 10k tokens of Noter changes newer than `waitFrom`. */
-function dreamerWaits(store: Store, sessionId: number, runId: number, failure: TaskFailure | undefined, pool: string | null): string {
-  const transient = failure?.transient ?? false;
+/** 146 §7: a failed Dreamer run leaves a hand-off whose next task is the one it stopped at (the first failure of a run that kept nothing creates
+ * the row). Dreaming is due while a hand-off exists, so the next entry-end check resumes there: no wait for a threshold, and the Noter-operation
+ * count and the failure streak are not touched here. */
+function keepDreamerRetry(store: Store, sessionId: number, runId: number, failure: TaskFailure | undefined): void {
   const handoff = store.handoff(sessionId, "dreaming");
   const detail = { ...(handoff?.detail ?? { curateRuns: [], doneCategories: [] }), ...(handoff?.detail?.operation || !failure?.operation ? {} : { operation: failure.operation }) };
-  // Rows from before 126 keep the pool they were counted under; the key is the execution's own.
-  const key = "session_id = ? AND phase = 'dreaming' AND pool IS ?";
-  const count = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${key}`).get(sessionId, pool ?? null)?.count ?? 0);
-  const waits = !transient || count > MAX_TASK_RETRIES;
-  if (waits) store.db.prepare(`UPDATE task_failures SET count = 0 WHERE ${key}`).run(sessionId, pool ?? null);
-  writeHandoff(store, { sessionId, phase: "dreaming", nextTask: handoff?.nextTask ?? failure?.task ?? "curate", runId: handoff?.runId ?? runId,
-    branch: null, entryIds: [], detail: { ...detail,
-      ...(waits ? { waitFrom: Number(store.db.prepare("SELECT IFNULL(MAX(id), 0) AS id FROM knowledge_revisions").get()!.id) } : {}) } });
-  return waits ? "waits for threshold" : `retry ${count}/${MAX_TASK_RETRIES}`;
+  writeHandoff(store, { sessionId, phase: "dreaming", nextTask: handoff?.nextTask ?? failure?.task ?? "curate", runId: handoff?.runId ?? runId, branch: null, entryIds: [], detail });
 }

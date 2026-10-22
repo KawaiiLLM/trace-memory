@@ -782,7 +782,7 @@ test("a Noter provider failure after holding both tools publishes nothing and re
 });
 
 test("64b/16b: Pi tree switch drives injection and prompt delivery", async () => {
-  const h = host({ "dreaming.triggerTokens": 1 });
+  const h = host({ "dreaming.triggerOperations": 1 });
   await h.turn();
   const state = () => h.entries.filter(e => e.type === "custom").at(-1)!.data as { branch: string; head: number };
   const target = () => {

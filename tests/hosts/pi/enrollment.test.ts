@@ -307,7 +307,7 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
 });
 
 test.each([true, false])("92: disable during D rejects late %s mutation and preserves the existing revision", async submit => {
-  const h = setup({ "dreaming.triggerTokens": 1 }); await h.turn();
+  const h = setup({ "dreaming.triggerOperations": 1 }); await h.turn();
   expect(seedFact(h, "Pending knowledge").id).toBe(1);
   // A Noter-written item makes the Dreamer due (2026-10-22).
   knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "session", "constraint", [1], "Retain rule", { operation: { title: "Fixture title" } });

@@ -108,20 +108,27 @@ export function buildContextSection(input: ContextSectionInput): ContextSection 
 
 // ---- Pending / trigger --------------------------------------------------------------------------
 
-/** `atLeast`: counting stopped at the trigger; `entries` is then the exact pending entry count. */
-export interface PendingInput { tokens: number | null; trigger: number | null; atLeast?: boolean; entries?: number }
+/** `atLeast`: counting stopped at the trigger; `entries` is then the exact pending entry count. `tokens` is the figure in the row's
+ * unit: compact tokens, or Noter operations for the Dreaming row (`unit: "operations"`, 146). */
+export interface PendingInput { tokens: number | null; trigger: number | null; atLeast?: boolean; entries?: number; unit?: "operations" }
 export interface PendingRow { label: string; tokens: number | null; trigger: number | null; ratio: number | null; percent: string; amount: string }
 const pendingRow = (label: string, value: PendingInput): PendingRow => {
   if (value.tokens === null || value.trigger === null) return { label, tokens: null, trigger: null, ratio: null, percent: "?", amount: "?" };
   const ratio = value.trigger === 0 ? (value.tokens === 0 ? 0 : 1) : Math.min(1, value.tokens / value.trigger);
-  const trigger = formatCompactTokens(value.trigger);
-  const amount = value.atLeast
-    ? `≥${trigger} / ${trigger} (${(value.entries ?? 0).toLocaleString("en-US")} ${value.entries === 1 ? "entry" : "entries"})`
+  const operations = value.unit === "operations";
+  const trigger = operations ? String(value.trigger) : formatCompactTokens(value.trigger);
+  const amount = operations ? `${value.atLeast ? "≥" : ""}${value.tokens} / ${trigger} Noter ops`
+    : value.atLeast ? `≥${trigger} / ${trigger} (${(value.entries ?? 0).toLocaleString("en-US")} ${value.entries === 1 ? "entry" : "entries"})`
     : `${formatCompactTokens(value.tokens)} / ${trigger}`;
   return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio), amount };
 };
 
-/** Dreaming's one condition (144 stage 4 §2.3): the tokens of knowledge the Noter changed since the last run, against the trigger.
+/** Dreaming's pending row input from `TraceMemory.dreamingPending` (146 §1.4); `trigger` fills the row when the count is unavailable. */
+export const dreamingPendingInput = (pending: { operations: number; trigger: number; atLeast?: boolean } | null, trigger: number | null): PendingInput =>
+  pending ? { tokens: pending.operations, trigger: pending.trigger, unit: "operations", ...(pending.atLeast ? { atLeast: true } : {}) }
+    : { tokens: null, trigger, unit: "operations" };
+
+/** Dreaming's one condition (146 §1): the Noter knowledge operations not yet covered by a Dreamer run, against the trigger.
  * `next`: the curate operation the project's next run performs (stage 5 §3.2, `Store.nextCurateOperation`); absent without a session. */
 export interface PendingSectionInput {
   noting: PendingInput;
@@ -170,7 +177,7 @@ export function buildHeader(input: HeaderInput): string {
   return `Trace Memory · ${input.session} · ${input.project} · ${state}${suffix}`;
 }
 
-/** The Dreamer's latest failure for the notice area (stage 4 §3.3): task, class, retries used or the wait for the next threshold, and when. A Dreamer failure never switches memory off, so this is not gated on that. */
+/** The Dreamer's latest failure for the notice area (stage 4 §3.3): task, class, retries used or the wait for the next threshold, and when. Three failures in a row switch memory off (the Noter's rule), so the notice of the failure that did is not gated on that. */
 export function dreamerFailureNotice(failure: { runId: number; at: string; reason: string } | null): string[] {
   return failure ? [`Dreamer failed: ${failure.reason || "unknown reason"} (R${failure.runId}, ${failure.at.slice(0, 16).replace("T", " ")} UTC)`] : [];
 }

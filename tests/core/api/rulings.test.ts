@@ -26,6 +26,7 @@ import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
 import { dreamerFixture as makeDreamerFixture, noterWrittenItem, operationOfText, proposalsOf, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
 import { buildPendingSection } from "../../../src/hosts/trace-menu.ts";
+import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { checkVerify } from "../../../src/core/dreaming/changes.ts";
 import { curatePrefix, CURATE_ROTATION } from "../../../src/core/dreaming/curate.ts";
 import { tokens as renderTokens, words, wordLimit } from "../../../src/core/render/index.ts";
@@ -2206,7 +2207,7 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
     submissions.push(input.tools.find(tool => tool.name === "check")!.execute({}));
     return ok([]);
   });
-  memory.config.dreaming.triggerTokens = 1;
+  memory.config.dreaming.triggerOperations = 1;
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const fact = JSON.parse(memory.tools({ kind: "manual", ...target, currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute({ title: "Independent evidence", sources: `[T${t.id}#E1] D's independent evidence` })).factIds[0] as number;
@@ -2445,7 +2446,7 @@ test("2026-10-22: a Dreamer run of another session in the same project covers th
   const noteA = (scope: "global" | "project" | "session") => noterWrittenItem(f.memory, f.path as never, f.existingFact(`A ${scope} fact`).id, scope);
   const projectA = noteA("project"), globalA = noteA("global"), sessionA = noteA("session");
   noterWrittenItem(f.memory, pathB as never, factB.id); // B's own trigger
-  expect(f.store.noterChangedItems(f.path)).toBe(4); // A's three and B's project item, which A sees too
+  expect(f.store.noterOperations(f.path)).toBe(4); // A's three and B's project item, which A sees too
   let late!: { commit: number };
   f.next(async raw => { late = noteA("project"); return f.dreamer.agent(raw); }); // A's Noter writes while B's run is under way
   expect(await f.memory.dream({ ...pathB, model: "scripted" })).toMatchObject({ outcome: "success" });
@@ -2453,7 +2454,7 @@ test("2026-10-22: a Dreamer run of another session in the same project covers th
   expect(covered).toEqual(expect.arrayContaining([projectA.commit, globalA.commit]));
   expect(covered).not.toContain(sessionA.commit);
   expect(covered).not.toContain(late.commit);
-  expect(f.store.noterChangedItems(f.path)).toBe(2); // A's session item and the one written mid-run
+  expect(f.store.noterOperations(f.path)).toBe(2); // A's session item and the one written mid-run
 });
 
 // Maintainer, 2026-10-22, at the deployment start: 「1. 部署时将未归档的现行知识视为无评分的最高级，因预算被归档的视为0分并取消归档，等下次整理时统一重评分。
@@ -2474,7 +2475,7 @@ test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live item
     old.store.db.prepare("UPDATE knowledge_revisions SET text = '', archive_kind = NULL WHERE id = ?")
       .run(seedArchive(old.store, old.path, plain.knowledgeId, plain.commit, plain.supports));
     seedArchive(old.store, old.path, invalid.knowledgeId, invalid.commit, invalid.supports, "invalid");
-    expect(old.store.noterChangedItems(old.path)).toBeGreaterThan(100);
+    expect(old.store.noterOperations(old.path)).toBeGreaterThan(100);
     old.memory.close();
     const raw = new DatabaseSync(file); // what production has: no score columns, no titles, no coverage, data step not yet run
     for (const column of ["score", "scored_commit", "scored_run"]) raw.exec(`ALTER TABLE knowledge DROP COLUMN ${column}`);
@@ -2483,7 +2484,7 @@ test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live item
 
     const memory = sourceSeededMemory(file, f.dreamer.agent);
     dreamers.push(memory);
-    memory.config.dreaming.triggerTokens = 1;
+    memory.config.dreaming.triggerOperations = 1;
     const store = memory.store;
     const state = (id: number) => store.db.prepare("SELECT score, scored_commit, (SELECT op FROM knowledge_revisions WHERE knowledge_id = k.id ORDER BY id DESC LIMIT 1) AS op FROM knowledge k WHERE id = ?").get(id);
     const live = (store.db.prepare("SELECT id FROM knowledge WHERE id NOT IN (?, ?, ?)").all(budget.knowledgeId, plain.knowledgeId, invalid.knowledgeId) as { id: number }[]).map(row => row.id);
@@ -2496,7 +2497,7 @@ test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live item
       archive_kind: null, supports: JSON.stringify(budget.supports) });
     expect(store.db.prepare("SELECT kind FROM runs WHERE id = ?").get(Number(revived.run_id))).toEqual({ kind: "manual" });
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed").get()).toEqual(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions WHERE actor_role = 'noting'").get()); // every Noter change, not the revival
-    expect(store.noterChangedItems(old.path)).toBe(0);
+    expect(store.noterOperations(old.path)).toBe(0);
     expect(store.dreamingDue(old.path, 1)).toBe(false);
 
     const snapshot = () => ["knowledge", "knowledge_revisions", "knowledge_processed", "runs"].map(table => store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
@@ -2841,33 +2842,33 @@ const dreamerFixture = (script: DreamerScript = {}) => makeDreamerFixture(dreame
 const taskNames = (f: ReturnType<typeof dreamerFixture>) => f.dreamer.inputs.map(input => input.task);
 const executionReasons = (f: ReturnType<typeof dreamerFixture>) => (f.store.db.prepare("SELECT reason FROM task_executions ORDER BY rowid").all() as { reason: string }[]).map(row => row.reason);
 
-test("2026-10-22, 144: 'D的触发阈值可以看N变更过的知识 的token总数（不是diff）' — the Dreamer is due when the knowledge the Noter changed since its last pass weighs 10,000, each item once at its current title and body; a manual write does not count", () => {
-  expect(DEFAULT_CONFIG.dreaming.triggerTokens).toBe(10_000);
+test("2026-10-22, 146: 「N更新或新建一次知识算一次，同条多次各算；默认30次触发」 — Dreaming is due at the 30th Noter operation and not the 29th; a second update of one item counts again; a manual write does not", () => {
+  expect(DEFAULT_CONFIG.dreaming.triggerOperations).toBe(30);
+  // The token trigger is removed by name, not read as a count.
+  expect(() => api.validateConfig({ dreaming: { triggerTokens: 10_000 } } as never)).toThrow("Removed setting dreaming.triggerTokens: Dreaming is due by Noter operations: use dreaming.triggerOperations");
   const f = dreamerFixture();
-  // Expected weights come from the texts written here (title plus body, each item once), not from the store's own count.
-  const weight = (title: string, body: string) => tokens(title) + tokens(body);
-  const total = () => f.store.noterChangedTokens(f.path);
-  knowledgeBatch(f.store, f.path, [{ scope: "project", category: "constraint", supports: [f.existingFact("Manual support").id], title: "Manual rule", text: "A hand-written rule that is long enough to weigh something" }],
+  f.memory.config.dreaming.triggerOperations = 30;
+  const count = () => f.store.noterOperations(f.path), due = () => f.memory.taskEligibility("dreaming", f.target).due;
+  knowledgeBatch(f.store, f.path, [{ scope: "project", category: "constraint", supports: [f.existingFact("Manual support").id], title: "Manual rule", text: "A hand-written rule" }],
     { kind: "manual", createdAt: "now" });
-  expect(total()).toBe(0); // a manual write does not count
-  const first = { title: "Use pnpm", body: "Install dependencies with pnpm, never npm, in every repository the team owns." };
-  const second = { title: "Commit the lockfile", body: "The lockfile is committed, and CI refuses a build that would change it." };
-  const rule = f.item(first.body, { title: first.title });
-  expect(total()).toBe(weight(first.title, first.body));
-  f.item(second.body, { title: second.title });
-  expect(total()).toBe(weight(first.title, first.body) + weight(second.title, second.body));
-  expect(f.store.noterChangedItems(f.path)).toBe(2);
-  // A later edit of the first item replaces its weight with the new body's: counted once, and not as a diff.
-  const longer = `${first.body} Releases are cut from a clean checkout, and the version is read from the tag, never typed by hand.`;
-  updateKnowledge(f.store, f.path, rule.knowledgeId, rule.commit, longer, rule.supports);
-  const expected = weight(first.title, longer) + weight(second.title, second.body);
-  expect(total()).toBe(expected);
-  expect(f.store.noterChangedItems(f.path)).toBe(2);
-  // The boundary: due exactly when the total reaches the trigger.
-  f.memory.config.dreaming.triggerTokens = expected + 1;
-  expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: false });
-  f.memory.config.dreaming.triggerTokens = expected;
-  expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
+  expect(count()).toBe(0); // a manual write does not count
+  const first = f.item("Use pnpm everywhere", { title: "Use pnpm" });
+  for (let i = 1; i < 28; i++) f.item(`Rule number ${i}`, { title: `Rule ${i}` }); // 28 creates
+  const noterUpdate = (base: { knowledgeId: number; commit: number }, text: string) => {
+    const result = commitNoterKnowledge(f.store, { path: f.path, run: { sessionId: f.session.id, branch: "main", createdAt: "now" }, operations: [{ op: "update",
+      knowledgeId: base.knowledgeId, baseCommit: base.commit, text, category: "constraint", scope: "project", supports: first.supports, topics: [], reason: "update", createdAt: "now" }] });
+    if (!result.ok) throw new Error(result.problems.join("\n"));
+    return result.committed[0]!;
+  };
+  const edited = noterUpdate(first, "Use pnpm everywhere, in every repository");
+  expect(count()).toBe(29);
+  expect(due()).toBe(false); // the 29th operation
+  updateKnowledge(f.store, f.path, first.knowledgeId, edited.commit, "Use pnpm everywhere, by hand", first.supports);
+  expect(count()).toBe(29); // the manual update adds none
+  expect(due()).toBe(false);
+  noterUpdate({ knowledgeId: first.knowledgeId, commit: f.store.currentCommit(first.knowledgeId, f.path)[0]!.id }, "Use pnpm everywhere, again");
+  expect(count()).toBe(30); // the same item, updated a second time by the Noter, counts again
+  expect(due()).toBe(true); // the 30th operation
 });
 
 test("2026-10-21, 144: '整理 → 核查 → 评级；先不轮换' — one run does curate, then verify, then classify, each category in turn within that one run", async () => {
@@ -2882,33 +2883,44 @@ test("2026-10-21, 144: '整理 → 核查 → 评级；先不轮换' — one run
   expect(Number(covered)).toBeGreaterThanOrEqual(2); // no rotation: both categories were covered by this run
 });
 
-test("2026-10-22, 144: '如果下一个任务失败，上一个任务的输出仍然保留，等待下次触发接续失败的任务' and 「重试沿用MC」 — curate's output stays, a transient failure retries three more times, then the task waits for the next 10k of Noter changes and resumes there", async () => {
+test("2026-10-22, 146: 「重试等下一个检查点，不清空计数，连续失败自动关闭trace，不要等下一个阈值」 — a failed run is retried at the next check with no new Noter operation, no threshold and no wait, the operation count is not reset, and curate's output stays as a proposal until verify passes", async () => {
   const f = dreamerFixture();
   const rule = f.item("Use pnpm everywhere", { category: "constraint" });
   f.dreamer.script.curate!.constraint = workspaceBlock(`update ${rule.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
   f.dreamer.script.instead = { verify: () => ({ outcome: "failure", output: "429 rate limit" }) as never };
-  for (let attempt = 1; attempt <= 4; attempt++) expect(await f.dream(), `attempt ${attempt}`).toMatchObject({ outcome: "failure", failure: { task: "verify", transient: true } });
-  expect(executionReasons(f)).toEqual(["verify: provider error, retry 1/3", "verify: provider error, retry 2/3", "verify: provider error, retry 3/3", "verify: provider error, waits for threshold"]);
-  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere"); // curate's output is kept as a proposal, not yet published (2026-10-22: 核查通过后才发生)
+  const operations = f.store.noterOperations(f.path);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    expect(await f.dream(), `attempt ${attempt}`).toMatchObject({ outcome: "failure", failure: { task: "verify", class: "provider error" } });
+    f.memory.config.dreaming.triggerOperations = Number.MAX_SAFE_INTEGER; // no threshold is reached: only the hand-off makes the next check due
+    expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
+    f.memory.config.dreaming.triggerOperations = 1;
+    expect(f.store.noterOperations(f.path)).toBe(operations); // a failure resets no count
+    expect(f.store.handoff(f.session.id, "dreaming")!.detail).not.toHaveProperty("waitFrom");
+  }
+  expect(executionReasons(f)).toEqual(["verify: provider error", "verify: provider error"]); // the class label stays; no retry or wait suffix
+  expect(f.store.enabled(f.session.id)).toBe(true); // two failures in a row leave memory on
+  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere"); // curate's output is kept as a proposal, not yet published
   expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "verify", detail: { curateRuns: [expect.any(Number)] } });
-  expect(await f.dream()).toMatchObject({ outcome: "empty" }); // waiting: nothing newer
-  f.item("A later Noter item", { category: "reference" });
   delete f.dreamer.script.instead;
-  expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(taskNames(f).filter(task => task === "curate")).toHaveLength(1); // the resume continued at verify; curate did not run again
+  expect(await f.dream()).toMatchObject({ outcome: "success" }); // the next check resumes at verify; no new Noter operation was needed
+  expect(taskNames(f).filter(task => task === "curate")).toHaveLength(1); // curate did not run again
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
   expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere, tidied"); // published once the resumed verify passed
 });
 
-test("2026-10-21, 144: 「就参考MC的做法」 (failure handling) replaces 2026-10-05 「仍然遵守失败三次关掉，不需要例外」 for the Dreamer — a Dreamer failure never switches memory off", async () => {
+test("2026-10-22, 146: 「连续失败自动关闭trace」 supersedes 2026-10-21 「就参考MC的做法」 (failure handling) — the third consecutive Dreamer failure switches memory off like the Noter's, the first two do not, and the Dreamer's streak is its own row", async () => {
   const f = dreamerFixture();
-  for (let cycle = 1; cycle <= 4; cycle++) {
-    f.item(`Rule ${cycle}`, { category: "constraint" });
-    f.next(async () => ({ outcome: "failure", output: "bad request" })); // a permanent failure: one attempt, then it waits
-    expect(await f.dream(), `failure ${cycle}`).toMatchObject({ outcome: "failure", failure: { transient: false } });
-    expect(f.store.enabled(f.session.id)).toBe(true);
+  f.item("Rule", { category: "constraint" });
+  const results = [];
+  for (let failure = 1; failure <= 3; failure++) {
+    f.next(async () => ({ outcome: "failure", output: "bad request" }));
+    results.push(await f.dream());
+    expect(f.store.enabled(f.session.id), `after failure ${failure}`).toBe(failure < 3);
   }
-  expect(f.store.db.prepare("SELECT COUNT(*) AS n FROM task_executions WHERE outcome = 'failure'").get()!.n).toBe(4); // more than the old three
+  expect(results.slice(0, 2).every(result => !("automaticOff" in result))).toBe(true);
+  expect(results[2]).toMatchObject({ outcome: "failure", automaticOff: expect.stringMatching(/^Trace Memory: S\d+ dreaming off after three failures \(R\d+, R\d+, R\d+\); curate: error\. Use \/trace on to resume\.$/) });
+  expect(f.store.taskFailures(f.session.id).map(row => [row.phase, row.count])).toEqual([["dreaming", 3]]); // the Noter's row is separate
+  expect(f.store.handoff(f.session.id, "dreaming")).not.toBeNull(); // the hand-off stays; /trace on resumes it
 });
 
 test("2026-10-21, 144: '超过 100 条后按 MC 的方法做，只评变更过的部分、按每批 100 条分批，并附加 30 条已评过的作为参照' — up to 100 items, one pass; beyond, passes of 100, and a later run scores only what changed beside 30 scored anchors", async () => {

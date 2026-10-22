@@ -127,7 +127,7 @@ test("a verify file that fails twice applies nothing and keeps curate's proposal
   const rule = f.item("Rule one", { category: "constraint" });
   proposeUpdate(f, rule, "Rule one, tidied");
   f.dreamer.script.verify = ["## bogus\n", "## bogus\n"];
-  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { task: "verify", class: "check failed twice", transient: false } });
+  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { task: "verify", class: "check failed twice" } });
   expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "verify", detail: { operation: "update", curateRuns: [expect.any(Number)] } });
   expect(textOf(f, rule.knowledgeId)).toBe("Rule one"); // nothing was applied
   let changes = "";

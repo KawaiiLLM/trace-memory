@@ -99,7 +99,7 @@ test("92: N auto-off fences a running D: its late pass changes nothing, its clai
       resolve({ outcome: "cancelled", output: "aborted", request });
     }, { once: true }));
   };
-  m.config.dreaming.triggerTokens = 1;
+  m.config.dreaming.triggerOperations = 1;
   const before = revisions();
   const held = m.dream({ ...target, model: "fake" });
   expect((await note(m, target)).automaticOff).toBeTruthy();

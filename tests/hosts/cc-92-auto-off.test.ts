@@ -18,7 +18,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     if (task.kind === "dreaming") { dCalls++; return executeDream(task); }
     nCalls++;
     return { outcome: "failure", output: "intentional Noter failure", request };
-  }, { dreaming: { triggerTokens: 1 } });
+  }, { dreaming: { triggerOperations: 1 } });
   const worker = resolveCcHostConfig({ stateDir: "/tmp/unused-92-auto-off", notingModel: "synthetic", notingThinking: "high",
     "dreaming.model": "synthetic", "dreaming.thinking": "high",
     worker: { cwd: "/tmp", claudeExecutable: "/missing/unused-claude", contextWindows: { synthetic: 200_000, sonnet: 200_000 } } }).worker;

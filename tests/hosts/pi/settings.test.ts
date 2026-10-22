@@ -125,6 +125,14 @@ test("2026-10-22: the Noter has model and thinking rows only, and a saved fork k
   expect(globalFile(h)["trace-memory"]).toBeUndefined();
 });
 
+test("146: a saved dreaming.triggerTokens is refused by name in every Pi layer", async () => {
+  const h = setup();
+  const key = "dreaming.triggerTokens";
+  expect(() => parseLayer({ [key]: 10_000 })).toThrow(`Removed setting ${key}: Dreaming is due by Noter operations: use dreaming.triggerOperations`);
+  expect(() => writeGlobal(globalPath(h), key, 10_000 as never)).toThrow(`Removed setting ${key}`);
+  expect(() => configuration(h.dir, JSON.stringify({ [key]: 10_000 }), join(h.dir, "agent"))).toThrow(`Removed setting ${key}`);
+});
+
 test("32d: Dreamer preferences reuse Settings with no mode or advanced page", async () => {
   const h = setup();
   seed(h, { "render.entryTokens": 222 });
@@ -136,8 +144,8 @@ test("32d: Dreamer preferences reuse Settings with no mode or advanced page", as
   expect(() => parseLayer({ "dreaming.forkModeDefault": true })).toThrow(/Unknown setting/);
   expect(() => parseLayer({ "dreaming.thinking": "unknown" })).toThrow(/dreaming.thinking/);
   expect(() => parseLayer({ "dreaming.maxToolRounds": 0 })).toThrow(/Removed setting dreaming\.maxToolRounds/); // 144: a leftover key fails the load by name
-  expect(parseLayer({ "dreaming.triggerTokens": 6000, "dreaming.timeoutMs": 120000 }).dreaming)
-    .toMatchObject({ triggerTokens: 6000, timeoutMs: 120000 });
+  expect(parseLayer({ "dreaming.triggerOperations": 6000, "dreaming.timeoutMs": 120000 }).dreaming)
+    .toMatchObject({ triggerOperations: 6000, timeoutMs: 120000 });
   expect(parseLayer({}).dreaming).toMatchObject({ timeoutMs: 1_800_000 }); // 103: default rises to thirty minutes
   expect(h.requests).toEqual([]);
 });

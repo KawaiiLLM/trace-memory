@@ -49,8 +49,8 @@ export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
   | { outcome: "success" | "failure" | "cancelled"; runId: number; problems: string[];
-      /** A failure's task, its class (§3.3), whether Magic Context's rule retries it, and the operation a resumed run repeats. */
-      failure?: { task: DreamingTask; class: string; transient: boolean; operation: CurateOperation } });
+      /** A failure's task, its class label (what failed, shown in the reason and the /trace notice; it decides nothing about the retry), and the operation a resumed run repeats. */
+      failure?: { task: DreamingTask; class: string; operation: CurateOperation } });
 
 /** What core builds for one Dreaming task call. */
 export interface DreamingAgentInput extends AgentControl {
@@ -120,17 +120,17 @@ export interface DreamingRunOptions {
   registerFence(workspace: { close(): void }): void;
 }
 type Bind = (context: Parameters<typeof bindTools>[2], run: RunInput, writer?: Parameters<typeof bindTools>[5]) => ReturnType<typeof bindTools>;
-type TaskOutcome = { ok: true; runId: number } | { ok: false; outcome: "failure" | "cancelled"; runId: number; problems: string[]; class: string; transient: boolean };
+type TaskOutcome = { ok: true; runId: number } | { ok: false; outcome: "failure" | "cancelled"; runId: number; problems: string[]; class: string };
 
-/** Magic Context's `classifyFailure`: a provider, network, store or deadline error is transient; anything else is not. */
-const TRANSIENT = /abort|lease|timeout|timed out|econn|socket|network|rate.?limit|429|503|overloaded|sqlite_busy|database is locked/i;
-export function classifyFailure(output: unknown, failureClass?: string): { class: string; transient: boolean } {
-  if (failureClass === "timeout") return { class: "timeout", transient: true };
+/** The class label of a failure: a provider, network, store or deadline error, or a plain error. It is only named in the reason and the notice. */
+const PROVIDER_ERROR = /abort|lease|timeout|timed out|econn|socket|network|rate.?limit|429|503|overloaded|sqlite_busy|database is locked/i;
+export function classifyFailure(output: unknown, failureClass?: string): { class: string } {
+  if (failureClass === "timeout") return { class: "timeout" };
   const message = String(output ?? "");
-  if (/sqlite_busy|database is locked/i.test(message)) return { class: "store error", transient: true };
-  if (/model.*not found|unknown model/i.test(message)) return { class: "model not found", transient: false };
-  if (TRANSIENT.test(message)) return { class: "provider error", transient: true };
-  return { class: "error", transient: false };
+  if (/sqlite_busy|database is locked/i.test(message)) return { class: "store error" };
+  if (/model.*not found|unknown model/i.test(message)) return { class: "model not found" };
+  if (PROVIDER_ERROR.test(message)) return { class: "provider error" };
+  return { class: "error" };
 }
 
 const CLAIM_LOST = /task claim is no longer current and unexpired/;
@@ -226,7 +226,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     let result: RunAgentResult;
     try { result = await runAgent(input); } catch (error) { result = agentException(error); }
     binding.close();
-    if (store.closed) return { ok: false, outcome: "cancelled", runId: 0, problems: ["store closed"], class: "cancelled", transient: false };
+    if (store.closed) return { ok: false, outcome: "cancelled", runId: 0, problems: ["store closed"], class: "cancelled" };
     // A fence closed by a stop, memory off or executor exit while the model ignored it: its late pass kept nothing.
     if (result.outcome === "success" && workspace.closed && !problem)
       result = { ...result, outcome: "cancelled", output: "Dreamer cancelled before its pass ended" };
@@ -242,9 +242,9 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       return { ok: true, runId: lastBatchRun };
     }
     const outcome = result.outcome === "cancelled" ? "cancelled" : "failure";
-    const classified = lost ? { class: "claim lost", transient: true } : problem?.startsWith("check failed twice") ? { class: "check failed twice", transient: false }
+    const classified = lost ? { class: "claim lost" } : problem?.startsWith("check failed twice") ? { class: "check failed twice" }
       : result.outcome !== "success" ? classifyFailure(result.output, (result as { failureClass?: string }).failureClass)
-      : { class: `ended before batch ${at + 1}/${batches.length}`, transient: false };
+      : { class: `ended before batch ${at + 1}/${batches.length}` };
     return { ok: false, outcome, problems, ...classified, runId: store.recordRun({ ...run, outcome }).id };
   };
 
@@ -286,7 +286,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     let result: RunAgentResult;
     try { result = await runAgent(input); } catch (error) { result = agentException(error); }
     binding.close();
-    if (store.closed) return { ok: false, outcome: "cancelled", runId: 0, problems: ["store closed"], class: "cancelled", transient: false };
+    if (store.closed) return { ok: false, outcome: "cancelled", runId: 0, problems: ["store closed"], class: "cancelled" };
     if (result.outcome === "success" && spec.workspace.closed && !problem)
       result = { ...result, outcome: "cancelled", output: "Dreamer cancelled before its pass ended" };
     const success = result.outcome === "success" && !requestMissing(result) && !problem && appliedRun !== 0;
@@ -299,9 +299,9 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       return { ok: true, runId: appliedRun };
     }
     const outcome = result.outcome === "cancelled" ? "cancelled" : "failure";
-    const classified = lost ? { class: "claim lost", transient: true } : problem?.startsWith("check failed twice") ? { class: "check failed twice", transient: false }
+    const classified = lost ? { class: "claim lost" } : problem?.startsWith("check failed twice") ? { class: "check failed twice" }
       : result.outcome !== "success" ? classifyFailure(result.output, (result as { failureClass?: string }).failureClass)
-      : { class: `ended before ${spec.label} was applied`, transient: false };
+      : { class: `ended before ${spec.label} was applied` };
     return { ok: false, outcome, problems, ...classified, runId: store.recordRun({ ...run, outcome }).id };
   };
   const written = (results: { ok: boolean; committed?: { commit: number }[] }[]): Cover[] => results.flatMap(result => result.ok ? result.committed!.map(item => ({ id: item.commit })) : []);
@@ -383,12 +383,12 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       if (store.closed) return { outcome: "dropped" };
       const lost = CLAIM_LOST.test(String(error));
       const message = error instanceof Error ? error.message : String(error);
-      const classified = lost ? { class: "claim lost", transient: true } : classifyFailure(message);
+      const classified = lost ? { class: "claim lost" } : classifyFailure(message);
       return { outcome: "failure", runId: store.recordRun({ ...template(task, frozen.models.main.model), outcome: "failure", response: JSON.stringify({ task, problems: [message] }) }).id,
-        problems: [message], failure: { task, class: classified.class, transient: classified.transient, operation } };
+        problems: [message], failure: { task, class: classified.class, operation } };
     }
     if (!outcome.ok) return { outcome: outcome.outcome, runId: outcome.runId, problems: outcome.problems,
-      failure: { task, class: outcome.class, transient: outcome.transient, operation } };
+      failure: { task, class: outcome.class, operation } };
   }
   return { outcome: "success", runId: lastRunId, problems: [] };
 }

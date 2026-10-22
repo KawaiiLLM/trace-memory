@@ -137,7 +137,7 @@ test("86: moved current revision becomes uncovered and counts as a Noter change,
     .map(row => Number(row.revision_id))).toEqual([original.commit]);
   expect(uncovered(store, author.path, pool)).toEqual([current.commit]);
   // The moved current version is the Noter's, so it counts toward the next Dreamer run; the original stays covered and does not.
-  expect(store.noterChangedItems(author.path)).toBe(1);
+  expect(store.noterOperations(author.path)).toBe(1);
 });
 
 // 64c/126, spec 2.1: coverage records the pool a version had when the run's input was frozen, so a version that a sibling's

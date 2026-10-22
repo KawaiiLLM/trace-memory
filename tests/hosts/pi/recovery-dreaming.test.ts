@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { host } from "./test-host.ts";
+import { tokens } from "../../../src/core/render/index.ts";
 import { knowledge, legacyFacts } from "../../support/seed.ts";
 
 const compact = (h: ReturnType<typeof host>, signal?: AbortSignal) =>
@@ -7,7 +8,7 @@ const compact = (h: ReturnType<typeof host>, signal?: AbortSignal) =>
 
 async function seeded(options: { rawTokens?: number } = {}) {
   const h = host({ "noting.triggerTokens": 10_000, "consolidation.triggerTokens": 5_000,
-    "dreaming.triggerTokens": 5_000, "compaction.factsTokens": 10_000, "compaction.rawTokens": options.rawTokens ?? 10_000 });
+    "dreaming.triggerOperations": 1, "compaction.factsTokens": 10_000, "compaction.rawTokens": options.rawTokens ?? 10_000 });
   if (options.rawTokens !== undefined) {
     await h.prompt("oversized required raw " + "word ".repeat(12_000));
     await h.answer(); await h.emit("agent_end"); await h.drain();
@@ -20,7 +21,7 @@ async function seeded(options: { rawTokens?: number } = {}) {
   const created = knowledge(store, store.knowledgePath(1, "main", 1), "project", "constraint", [evidence.id],
     "rule ".repeat(6000), { operation: { createdAt: "seed", title: "Fixture title" } }); // Noter-written: only Noter changes make the Dreamer due
   const pool = `project:${store.getSession(1)!.projectId}`;
-  const pending = store.noterChangedTokens(store.knowledgePath(1)); // the item's weight toward the Dreamer trigger
+  const pending = tokens("rule ".repeat(6000)); // the item's weight in the knowledge window
   h.memory.setKnowledgeBase(pending * 2);
   return { h, store, pool, revisionId: created.commit };
 }
@@ -31,7 +32,7 @@ test("64c: due changed knowledge fits the knowledge window without compaction Dr
   try {
     const path = store.knowledgePath(1, "main");
     if (path.headTurnId === null) throw new Error("fixture requires a current Turn");
-    expect(store.dreamingDue(path, 5_000)).toBe(true);
+    expect(store.dreamingDue(path, 1)).toBe(true);
     const result = await compact(h);
     expect(result.compaction.summary).toContain("rule");
     expect(h.requests).toEqual([]);

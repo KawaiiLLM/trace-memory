@@ -50,8 +50,8 @@ try {
       source: resolvedSource,
       workingCopy: workingPath,
       path,
-      // Stage 4: the Dreamer is due by the Noter-changed tokens since the last coverage, not by pool sizes.
-      noterChanged: { items: store.noterChangedItems(path), tokens: store.noterChangedTokens(path) },
+      // Stage 4: the Dreamer is due by the Noter operations since the last coverage, not by pool sizes.
+      noterOperations: store.noterOperations(path),
       due: store.dreamingDue(path),
       activePath: {
         owners: Object.fromEntries(owners.map(owner => [owner, measured(activePools.get(owner)!.values())])),

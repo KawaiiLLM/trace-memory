@@ -44,7 +44,7 @@ const enumerated = (h: Host, branch = "main") => {
   const knowledge = h.memory.store.currentKnowledge(h.memory.store.knowledgePath(1, branch, head));
   return { entries: String(h.memory.pendingEntries(1, branch, head).length),
     facts: String(h.memory.store.listBranchFacts(1, branch, head).length),
-    changedKnowledge: String(h.memory.store.noterChangedItems(h.memory.store.knowledgePath(1, branch, head))), knowledge: String(knowledge.length),
+    changedKnowledge: String(h.memory.store.noterOperations(h.memory.store.knowledgePath(1, branch, head))), knowledge: String(knowledge.length),
     cost: h.memory.spendSince(midnight()).cost.toFixed(2) };
 };
 /** An existing refresh point, not a new one: `agent_end` is the boundary at which this turn's
@@ -139,7 +139,7 @@ test("footer reports pending Raw, applicable facts, changed Knowledge, and histo
 });
 
 test("24a/92: N stays pending through staging, only normal termination moves queues, and failure after staging advances nothing", async () => {
-  const h = host({ "noting.triggerTokens": 30, "dreaming.triggerTokens": 1_000_000_000 });
+  const h = host({ "noting.triggerTokens": 30, "dreaming.triggerOperations": 1_000_000_000 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
@@ -179,7 +179,7 @@ test("24a/92: N stays pending through staging, only normal termination moves que
 });
 
 test("24a: a cancelled batch advances nothing, and another connection's commits appear at the next refresh", async () => {
-  const h = host({ "noting.triggerTokens": 30, "dreaming.triggerTokens": 1_000_000_000 });
+  const h = host({ "noting.triggerTokens": 30, "dreaming.triggerOperations": 1_000_000_000 });
   h.provider(async () => new Promise(() => {}), { ignoreAbort: false }); // never answers
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
   const running = footer(h);
@@ -279,7 +279,7 @@ test("an enabled refresh uses one path snapshot and one bounded Noter-change loo
       text: `current ${i}`, author: "test", topics: [], reason: "test", createdAt: time })),
     { kind: "manual", createdAt: time });
   const reads = countSourceReads(), builds = countPathBuilds(), bodies = countRunBodies();
-  const rendered = vi.spyOn(rendering, "renderKnowledge"), changed = vi.spyOn(Store.prototype, "noterChangedItems");
+  const rendered = vi.spyOn(rendering, "renderKnowledge"), changed = vi.spyOn(Store.prototype, "noterOperations");
   const snapshot = vi.spyOn(h.memory.store, "pathSnapshot");
   try {
     reads.reset(); builds.reset(); bodies.reset();
@@ -318,7 +318,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
 });
 
 test("24a/51: concurrent N and D indicator prefers N; off and no-theme fallback", async () => {
-  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerOperations": 1 });
   await h.turn();
   expect(footer(h)).toMatchObject({ glyph: "○", role: "dim" });
   const source = h.memory.store.sourcePath(1, "main", 1).find(value => value.entryOrdinal === 1)!;

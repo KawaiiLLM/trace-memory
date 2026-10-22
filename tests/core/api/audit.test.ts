@@ -15,7 +15,7 @@ test("noting keeps the request the host reported when the failed result carries 
   memory = sourceSeededMemory(":memory:", async raw => {
     (raw as NotingAgentInput).reportRequest({ captured: true });
     return { outcome: "failure", output: "offline failure", request: null };
-  }, { dreaming: { triggerTokens: 1 } });
+  }, { dreaming: { triggerOperations: 1 } });
   const projectId = memory.store.createProject({ name: "audit", declaredBy: "mark" }).id;
   const sessionId = memory.store.createSession({ projectId, host: "fake", enrollmentChoice: true, startedAt: time, firstReplyAt: time }).id;
   const turn = memory.store.appendTurn({ sessionId, kind: "turn", userPrompt: "source", assistantText: "answer", startedAt: time });

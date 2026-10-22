@@ -32,8 +32,8 @@ test("opens a store at the given path and applies default config", () => {
 
 test("a partial config overrides only the sections given, keeping the rest default", () => {
   const dir2 = mkdtempSync(join(tmpdir(), "trace-memory-api-"));
-  const other = sourceSeededMemory(join(dir2, "t.sqlite"), neverCalledRunAgent, { dreaming: { triggerTokens: 10 } });
-  expect(other.config.dreaming).toEqual({ ...DEFAULT_CONFIG.dreaming, triggerTokens: 10 });
+  const other = sourceSeededMemory(join(dir2, "t.sqlite"), neverCalledRunAgent, { dreaming: { triggerOperations: 10 } });
+  expect(other.config.dreaming).toEqual({ ...DEFAULT_CONFIG.dreaming, triggerOperations: 10 });
   expect(other.config.render).toEqual(DEFAULT_CONFIG.render);
   expect(other.config.noting).toEqual(DEFAULT_CONFIG.noting);
   other.close();

@@ -36,7 +36,7 @@ const dreamExecutions = (h: ReturnType<typeof host>) => h.memory.store.db.prepar
   "SELECT outcome FROM task_executions WHERE session_id = 1 AND phase = 'dreaming' ORDER BY rowid").all().map(row => row.outcome);
 
 for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fences the held D" : "successful checkpoints drain due knowledge"}; no C seat`, async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   let dreams = 0;
@@ -73,7 +73,7 @@ for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fenc
 }, 30000);
 
 test("92: catchup waits for ordinary N; its successful joint publication checkpoints D", async () => {
-  const h = host({ "noting.triggerTokens": 1000, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1000, "dreaming.triggerOperations": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
@@ -90,7 +90,7 @@ test("92: catchup waits for ordinary N; its successful joint publication checkpo
 });
 
 for (const success of [true, false]) test(`92: ordinary D ${success ? "success settles" : "failure does not resume"} a zero-Raw catchup wait`, async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   let dreams = 0;
@@ -115,7 +115,7 @@ for (const success of [true, false]) test(`92: ordinary D ${success ? "success s
 });
 
 test("86: a kept Dreamer batch survives a later terminal failure, with no extra eligibility check", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   let waiting = false;
@@ -156,7 +156,7 @@ test("92: repeated catchup while N is running reports without launching a duplic
 });
 
 test("92: successful N checks but does not run D below its ordinary threshold", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
   try {
     await h.turn(); h.provider(async c => extract(c));
     const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
@@ -170,7 +170,7 @@ test("92: successful N checks but does not run D below its ordinary threshold", 
 });
 
 for (const recover of [false, true]) test(`92: foreign global D claim discards admission; ${recover ? "repeated idle catchup" : "new entry"} retries, release alone does not`, async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
   let dreams = 0;
   try {
     await h.turn(); seed(h); const store = h.memory.store;
@@ -199,7 +199,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
 });
 
 for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries the frozen entry successfully" : "turns memory off after three failures"} without an intervening D check`, async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
   try {
     await h.turn(); const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
     let attempts = 0; const checks: number[] = [];
@@ -229,7 +229,7 @@ for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries 
 }, 30000);
 
 test.each(["stop", "path", "off", "shutdown"] as const)("86: Pi %s fences catchup retry despite a late D error reply", async action => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   let dreams = 0, replied = false;

@@ -22,7 +22,7 @@ export { deliveredView, knowledgeStateKey, noVisibility } from "./visible.ts";
 export type { KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
-import { DEFAULT_DREAMING_TRIGGER_TOKENS } from "../store/processing.ts";
+import { DEFAULT_DREAMING_TRIGGER_OPERATIONS } from "../store/processing.ts";
 
 import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
@@ -73,8 +73,8 @@ export interface TraceMemoryConfig {
   };
   /** Bounded fresh-subagent maintenance. */
   dreaming: {
-    /** The session's pending weight, summed across its pools, that makes a Dreamer run due (104). */
-    triggerTokens: number;
+    /** Noter knowledge operations (creates and updates) not yet covered by a Dreamer pass that make a run due (146). */
+    triggerOperations: number;
     /** Cooperative wall-clock deadline shared by every host. */
     timeoutMs: number;
   };
@@ -108,7 +108,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     triggerTokens: 10_000,
     maxToolRounds: 0,
   },
-  dreaming: { triggerTokens: DEFAULT_DREAMING_TRIGGER_TOKENS, timeoutMs: 1_800_000 },
+  dreaming: { triggerOperations: DEFAULT_DREAMING_TRIGGER_OPERATIONS, timeoutMs: 1_800_000 },
   writing: { ...DEFAULT_WRITING_LIMITS },
   compaction: {
     factsTokens: 10_000,
@@ -178,6 +178,8 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   // Ticket 145: the caps are counted in units, so an old token count is not read as a word count.
   "writing.titleTokens": "use writing.titleWords (the title target in units, default 20; the check allows 10% more)",
   "writing.bodyTokens": "use writing.bodyWords (the body target in units, default 200; the check allows 10% more)",
+  // Ticket 146: Dreaming is due by Noter operations; tokens and operations are different units, so no value is translated.
+  "dreaming.triggerTokens": "Dreaming is due by Noter operations: use dreaming.triggerOperations (default 30); remove this key",
 };
 const removedSetting = (key: string) => new Error(`Removed setting ${key}: ${REMOVED_SETTINGS[key]}`);
 
@@ -330,10 +332,10 @@ export interface TraceMemory {
   pendingTokens(phase: "noting", target?: TaskTarget, upToTrigger?: boolean):
     | { tokens: number; trigger: number; state: "known"; atLeast?: true; entries?: number }
     | { tokens: null; trigger: number | null; state: "no session" | "unavailable" };
-  /** Same read-only contract as `pendingTokens`, for the Dreamer's one trigger (144 stage 4 §2.3): the tokens of knowledge the
-   * Noter changed since the last Dreamer run, counting up to the trigger. */
+  /** Same read-only contract as `pendingTokens`, for the Dreamer's one trigger (146 §1.4): the Noter knowledge operations not yet
+   * covered by a Dreamer run, counting up to the trigger (`atLeast` once it is reached). */
   dreamingPending(target?: TaskTarget):
-    | { state: "known"; pending: { tokens: number; trigger: number } }
+    | { state: "known"; pending: { operations: number; trigger: number; atLeast?: true } }
     | { state: "no session" | "unavailable"; pending: null };
   /** Terminal worker settlement, including Dreamer's future worker: persist first, then abort
    * locally owned target tasks on automatic off. Attempt refusal is not terminal settlement. */
@@ -774,17 +776,17 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
     } catch { return { tokens: null, trigger, state: "unavailable" }; }
   };
-  // Stage 4 §2.3: the Noter-changed tokens since the last D (or since a failed run's wait began), toward the trigger.
+  // 146 §1.4: the Noter operations not yet covered by a Dreamer pass, toward the trigger.
   const dreamingPending: TraceMemory["dreamingPending"] = target => {
     if (!target) return { state: "no session", pending: null };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { state: "unavailable", pending: null };
-      const trigger = cfg.dreaming.triggerTokens;
-      return { state: "known", pending: { tokens: store.noterChangedTokens(target, store.handoff(target.sessionId, "dreaming")?.detail?.waitFrom ?? 0, trigger), trigger } };
+      const trigger = cfg.dreaming.triggerOperations, operations = store.noterOperations(target, trigger);
+      return { state: "known", pending: { operations, trigger, ...(operations >= trigger ? { atLeast: true } : {}) } };
     } catch { return { state: "unavailable", pending: null }; }
   };
-  // Stage 4 §2.4: a Dreamer run is due on Noter-changed tokens (or a hand-off).
-  const dreamingDue = (target: TaskTarget) => store.dreamingDue(target, cfg.dreaming.triggerTokens);
+  // 146 §1.1: a Dreamer run is due on Noter operations (or a hand-off).
+  const dreamingDue = (target: TaskTarget) => store.dreamingDue(target, cfg.dreaming.triggerOperations);
   // 29d: eligibility is the trigger threshold and nothing else. Phase slots, enrollment, the host's
   // readiness wait and claim checks are untouched.
   const taskEligibility = (phase: Phase, target: TaskTarget) => {
@@ -814,9 +816,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         if (!store.enabled(target.sessionId) || (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId))) return null;
         if (!dreamingDue(target)) { empty = true; return null; }
         executionLimit = executionLimitMs(remainingTasks(store.handoff(target.sessionId, "dreaming")?.nextTask), cfg.dreaming.timeoutMs);
-        claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerTokens, executionLimit + CLAIM_LEASE_MARGIN_MS);
+        claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerOperations, executionLimit + CLAIM_LEASE_MARGIN_MS);
         if (!claim) return null;
-        store.clearDreamerWait(target.sessionId); // this admission ends a wait for the threshold
         projectId = store.getSession(input.sessionId)!.projectId;
         origin = store.triggerOrigin(target, target.triggerEntryId);
         const frozen = prepareDreaming(store, { ...input, ...target }, cfg, claim, target);
@@ -970,13 +971,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       try {
         if (!store.closed && result && result.outcome !== "empty" && result.outcome !== "dropped") {
           const terminal = result;
-          // §3.4, in this order. Only user stop, memory off and executor exit are not failures; a lost claim is one, for both phases.
+          // §3.4, in this order. Only user stop, memory off and executor exit are not failures; a lost claim is one, for both phases (146: and it counts toward the streak of both).
           const lost = !owned();
           const stopped = (controller.signal.aborted && !timedOut) || !store.enabled(target.sessionId) || terminal.outcome === "cancelled";
           const outcome = terminal.outcome === "success" ? "success" : stopped ? "cancelled" : "failure";
           const failure = phase === "dreaming" && "failure" in terminal ? terminal.failure : undefined;
           const lostFailure = outcome === "failure" && lost && phase === "dreaming"
-            ? { task: failure?.task ?? "curate", class: "claim lost", transient: true, ...(failure?.operation ? { operation: failure.operation } : {}) } : failure;
+            ? { task: failure?.task ?? "curate", class: "claim lost", ...(failure?.operation ? { operation: failure.operation } : {}) } : failure;
           const reason = lostFailure ? `${lostFailure.task}: ${lostFailure.class}` : outcome === "failure" && lost ? "claim lost" : terminal.problems?.join("; ");
           const settled = store.transaction(() => store.settleExecution(executionId!, outcome, terminal.runId, reason, lostFailure));
           if (settled.automaticOff) {

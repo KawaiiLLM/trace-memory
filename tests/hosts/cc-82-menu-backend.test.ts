@@ -137,18 +137,18 @@ test("the menu's notice area carries the Dreamer's latest failure (task, class, 
       return run;
     };
     const notices = () => readCcMenu(f.config, f.session, f.config).menu.notices;
-    // The fields the notice carries: task, class, retry state, run and time. Their wording is the view's one snapshot, in trace-menu.test.ts.
+    // The fields the notice carries: task, class, run and time. Their wording is the view's one snapshot, in trace-menu.test.ts.
     const shows = (fields: string[]) => { const [notice, ...rest] = notices(); expect(rest).toEqual([]); for (const field of fields) expect(notice, field).toContain(field); };
     expect(notices()).toEqual([]);
-    const failed = dreamer("e1", "failure", "verify: provider error, retry 2/3", "2026-10-22T09:30:00.000Z");
-    shows(["verify", "provider error", "retry 2/3", `R${failed}`, "2026-10-22 09:30"]);
+    const failed = dreamer("e1", "failure", "verify: provider error", "2026-10-22T09:30:00.000Z");
+    shows(["verify", "provider error", `R${failed}`, "2026-10-22 09:30"]);
     dreamer("e2", "cancelled", "stopped", "2026-10-22T09:40:00.000Z"); // a cancellation is not a verdict: the failure stays
     shows([`R${failed}`]);
-    const waiting = dreamer("e3", "failure", "curate: check failed twice, waits for threshold", "2026-10-22T10:00:00.000Z");
-    shows(["curate", "check failed twice", "waits for threshold", `R${waiting}`, "2026-10-22 10:00"]);
-    expect(readCcMenu(f.config, f.session, f.config).menu.header.enabled).toBe(true); // a Dreamer failure never switches memory off
+    const second = dreamer("e3", "failure", "curate: check failed twice", "2026-10-22T10:00:00.000Z");
+    shows(["curate", "check failed twice", `R${second}`, "2026-10-22 10:00"]);
+    expect(readCcMenu(f.config, f.session, f.config).menu.header.enabled).toBe(true); // the notice does not turn the header off: the switch-off belongs to settlement, which these rows bypass
     store.setEnrollment(core.id, false); // and the notice does not depend on memory being on
-    shows([`R${waiting}`]);
+    shows([`R${second}`]);
     store.setEnrollment(core.id, true);
     dreamer("e4", "success", "", "2026-10-22T11:00:00.000Z"); // a later success clears it
     expect(notices()).toEqual([]);

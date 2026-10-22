@@ -9,7 +9,7 @@ test.each(["automatic", "catchup"] as const)("%s releases a rejected slot once a
   const factory = vi.spyOn(api, "TraceMemory").mockImplementation((...args) => {
     const memory = create(...args); facades.push(memory); return memory;
   });
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1,
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1,
     "compaction.rawTokens": 1 });
   factory.mockRestore();
   const runtime = facades[0]!;
