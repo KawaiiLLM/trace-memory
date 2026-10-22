@@ -289,11 +289,27 @@ export class CcCoordinator {
           })();
           return starting;
         },
+        dream: async () => {
+          const scheduler = this.scheduler;
+          if (!scheduler) return { state: "failed", diagnostic: "CC executor scheduler is unavailable" };
+          const active = scheduler.activeDream();
+          if (active) return active;
+          const ticket = scheduler.catchupTicket(), starting = scheduler.beginDream();
+          void (async () => {
+            try {
+              const projection = await this.requestReconcile("manual dream");
+              if (projection) scheduler.startDream(projection, ticket);
+              else scheduler.failDream("authoritative transcript reconciliation is unavailable");
+            } catch (error) { scheduler.failDream(error instanceof Error ? error.message : String(error)); }
+          })();
+          return starting;
+        },
         turnEnd: (turnId, reason, signal) => this.turnEnd(turnId, reason, signal),
         beforeCancel: () => { this.scheduler?.stopCatchup(); },
         holdImport: () => this.holdImport(),
         effectiveConfig: () => this.appliedConfig,
         catchupSnapshot: () => this.scheduler?.catchupSnapshot() ?? null,
+        dreamSnapshot: () => this.scheduler?.dreamSnapshot() ?? null,
         applyConfig: next => this.applyConfig(next),
       }).then(control => { this.control = control; });
       this.watchTranscript(binding);
@@ -532,12 +548,12 @@ export class CcCoordinator {
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
         // Catchup freezes its own boundary; function checkpoints keep their own turn-end path.
         if (!final && result) {
-          this.scheduler?.reconcile(result, reason !== "manual catchup" &&
+          this.scheduler?.reconcile(result, !reason.startsWith("manual ") &&
             reason !== "function turn end", epoch);
           // Only a process with no confirmed live function module uses transcript termination.
           // Initial/restored history checks own work above, but does not drive turn-end borrowing.
           const binding = readBinding(this.config, this.nativeSessionId);
-          if (reason !== "function turn end" && reason !== "manual catchup" && this.startupComplete &&
+          if (reason !== "function turn end" && !reason.startsWith("manual ") && this.startupComplete &&
               !(binding && activeFunctionHook(binding)) && result.terminal && (result.terminal.stopReason === "end_turn" || result.terminal.isApiErrorMessage === true ||
                 result.terminal.interruptedMessageId !== undefined) &&
               (result.selectedAppendedEntryIds.includes(result.terminal.entryId) || result.terminal.fresh === true) &&

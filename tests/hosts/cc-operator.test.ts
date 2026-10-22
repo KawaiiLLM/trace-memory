@@ -24,7 +24,7 @@ function fixture(label: string) {
 const hook = (nativeSessionId: string, transcriptPath: string) => ({ hook_event_name: "SessionStart" as const,
   session_id: nativeSessionId, transcript_path: transcriptPath, source: "startup" as const });
 
-test.each(["catchup", "stop"])("CLI rejects trailing arguments for %s", async command => {
+test.each(["catchup", "dream", "stop"])("CLI rejects trailing arguments for %s", async command => {
   const f = fixture(`args-${command}`), configPath = join(f.directory, "cc.config.json");
   writeFileSync(configPath, JSON.stringify({ dbPath: f.config.dbPath, stateDir: f.config.stateDir,
     baseline: "2025-01-01T00:00:00.000Z" }));

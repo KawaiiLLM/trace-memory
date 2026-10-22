@@ -61,7 +61,7 @@ test("R4 successful ordinary D completion launches the still-due drain phase and
   expect(f.memory.dream).toHaveBeenCalledTimes(2); expect(f.scheduler.catchupStatus().state).toBe("completed");
 });
 
-test("R4 non-success ordinary D completion does not launch the drain", async () => {
+test("R4 non-success ordinary D completion does not launch the drain; since 146 it ends the drain", async () => {
   const f = fixture(); let release = () => {};
   f.memory.dream.mockImplementation(async () => { await new Promise<void>(resolve => { release = resolve; }); return { outcome: "failure", problems: ["boom"] }; });
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" }));
@@ -70,21 +70,7 @@ test("R4 non-success ordinary D completion does not launch the drain", async () 
   expect(f.scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase: "dreaming" });
   release(); await tick(); await tick();
   expect(f.memory.dream).toHaveBeenCalledTimes(1);
-  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase: "dreaming" });
-});
-
-test("86: D retries after reported partial writes without another eligibility check", async () => {
-  const f = fixture(), writes: string[] = [], checks: string[] = []; let attempt = 0;
-  f.memory.taskEligibility.mockImplementation(phase => { checks.push(phase); return { due: phase === "dreaming" && attempt < 2 }; });
-  f.memory.dream.mockImplementation(async () => {
-    attempt++;
-    if (attempt === 1) { writes.push("committed revision 1"); return { outcome: "failure", problems: ["time bound after write"] }; }
-    expect(writes).toEqual(["committed revision 1"]); expect(checks).toEqual(["dreaming"]);
-    writes.push("committed revision 2"); return { outcome: "success" };
-  });
-  f.scheduler.startCatchup(projection); await settle(f);
-  expect(attempt).toBe(2); expect(writes).toEqual(["committed revision 1", "committed revision 2"]);
-  expect(checks).toEqual(["dreaming", "dreaming", "dreaming"]); // admission, success checkpoint, completion
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "failed", diagnostic: "boom" }); // 146 Q18: Dreaming retries at the next check, not in a drain
 });
 
 test("86: failed ordinary D with partial writes does not checkpoint D", async () => {
@@ -99,7 +85,7 @@ test("86: failed ordinary D with partial writes does not checkpoint D", async ()
   expect(signal).toBe("partial-write");
 });
 
-test("86: stop before Dreamer deadline failure settles fences its retry", async () => {
+test("86: stop before Dreamer deadline failure settles leaves the drain stopped with one D call", async () => {
   const f = fixture(); let release = () => {};
   f.memory.dream.mockImplementation(async () => { await new Promise<void>(resolve => { release = resolve; });
     return { outcome: "failure", problems: ["Dreamer exceeded wall-clock limit"] }; });
@@ -140,26 +126,85 @@ test("R4 ordinary completion settles zero-Raw wait when it clears all due work w
   expect(f.memory.dream).toHaveBeenCalledTimes(1); expect(f.scheduler.catchupStatus().state).toBe("completed");
 });
 
-test("86: three failures of one logical D task turn memory off without failure checkpoints", async () => {
-  const f = fixture(); f.d(1); const checks: string[] = [];
-  f.memory.taskEligibility.mockImplementation(phase => { checks.push(phase); return { due: phase === "dreaming" }; });
-  f.memory.dream.mockImplementation(async () => { f.starts.push("D"); return { outcome: "failure", problems: ["terminal"],
-    ...(f.starts.length === 3 ? { automaticOff: "off after three failures" } : {}) }; });
-  f.scheduler.startCatchup(projection);
-  for (let i = 0; i < 15 && f.scheduler.catchupStatus().state !== "stopped"; i++) await tick();
-  expect(f.starts).toEqual(["D", "D", "D"]); expect(checks).toEqual(["dreaming"]);
+test("146 Q18: a D failure that carries automaticOff stops the drain with the diagnostic", async () => {
+  const f = fixture(); f.d(1);
+  f.memory.dream.mockImplementation(async () => ({ outcome: "failure", problems: ["terminal"], automaticOff: "off after three failures" }));
+  f.scheduler.startCatchup(projection); for (let i = 0; i < 10; i++) await tick();
+  expect(f.memory.dream).toHaveBeenCalledTimes(1);
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: "stopped", diagnostic: "terminal" });
 });
 
-test.each(["noting", "dreaming"] as const)("86: %s retries before another eligibility check, then succeeds", async phase => {
+test("86: noting retries before another eligibility check, then succeeds", async () => {
   const f = fixture(), trace: string[] = []; let attempt = 0;
-  if (phase === "noting") f.entries.push(1);
-  f.memory.taskEligibility.mockImplementation(candidate => { trace.push(`check:${candidate}`); return { due: candidate === phase && attempt < 2 }; });
-  const execute = async () => { trace.push(`run:${phase}`); const outcome = ++attempt === 1 ? "failure" : "success";
-    if (outcome === "success" && phase === "noting") f.entries.shift(); return { outcome }; };
-  if (phase === "noting") f.memory.noting.mockImplementation(execute); else f.memory.dream.mockImplementation(execute);
+  f.entries.push(1);
+  f.memory.taskEligibility.mockImplementation(candidate => { trace.push(`check:${candidate}`); return { due: candidate === "noting" && attempt < 2 }; });
+  f.memory.noting.mockImplementation(async () => { trace.push("run:noting"); const outcome = ++attempt === 1 ? "failure" : "success";
+    if (outcome === "success") f.entries.shift(); return { outcome }; });
   f.scheduler.startCatchup(projection); await settle(f);
-  const first = trace.indexOf(`run:${phase}`);
-  expect(trace.slice(first, first + 2)).toEqual([`run:${phase}`, `run:${phase}`]);
+  const first = trace.indexOf("run:noting");
+  expect(trace.slice(first, first + 2)).toEqual(["run:noting", "run:noting"]);
   expect(f.scheduler.catchupStatus().state).toBe("completed");
+});
+
+// ---- 146 Q18: a Dreaming failure while a drain is active ends the drain, whoever started the run; the retry is the next entry-end check ----
+
+const hold = () => { let release = () => {}; const gate = new Promise<void>(resolve => { release = resolve; }); return { gate, release: () => release() }; };
+
+test("146 Q18 (a): an ordinary D fails, then a late N succeeds: D was called once, the drain failed, and the next entry-end check starts D once", async () => {
+  const f = fixture(), d = hold(), n = hold(); let dFails = true;
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" || f.entries.length > 0 }));
+  f.memory.dream.mockImplementation(async () => { if (!dFails) return { outcome: "success" }; await d.gate; return { outcome: "failure", problems: ["boom"] }; });
+  f.memory.noting.mockImplementation(async () => { await n.gate; f.entries.shift(); return { outcome: "success" }; });
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick(); // ordinary D, held
+  f.entries.push(1);
+  f.scheduler.startCatchup(projection); await tick(); // the drain starts N and skips the busy D
+  expect(f.memory.dream).toHaveBeenCalledTimes(1);
+  d.release(); await tick(); await tick();
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "failed", diagnostic: "boom" });
+  n.release(); for (let i = 0; i < 5; i++) await tick();
+  expect(f.memory.dream).toHaveBeenCalledTimes(1); // the late N success drove nothing
+  dFails = false;
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick(); await tick();
+  expect(f.memory.dream).toHaveBeenCalledTimes(2);
+});
+
+test("146 Q18 (b): the drain's own D fails: one call, the drain ends, and the next entry-end check starts the retry once", async () => {
+  const f = fixture(); let fail = true;
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" }));
+  f.memory.dream.mockImplementation(async () => fail ? { outcome: "failure", problems: ["boom"] } : { outcome: "success" });
+  f.scheduler.startCatchup(projection); for (let i = 0; i < 10; i++) await tick();
+  expect(f.memory.dream).toHaveBeenCalledTimes(1);
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "failed", diagnostic: "boom" });
+  fail = false;
+  f.scheduler.turnEnd(projection, f.scheduler.catchupTicket()); await tick(); await tick();
+  expect(f.memory.dream).toHaveBeenCalledTimes(2);
+});
+
+test("146 Q18 (c): a manual dream that fails during a drain ends the drain; a late N success drives nothing", async () => {
+  const f = fixture(), n = hold();
+  f.entries.push(1);
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "noting" && f.entries.length > 0 }));
+  f.memory.noting.mockImplementation(async () => { await n.gate; f.entries.shift(); return { outcome: "success" }; });
+  f.memory.dream.mockImplementation(async () => ({ outcome: "failure", problems: ["boom"] }));
+  f.scheduler.startCatchup(projection); await tick();
+  expect(f.scheduler.catchupStatus().state).toBe("running");
+  f.scheduler.beginDream(); f.scheduler.startDream(projection, f.scheduler.catchupTicket()); for (let i = 0; i < 5; i++) await tick();
+  expect(f.memory.dream).toHaveBeenCalledTimes(1);
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "failed", diagnostic: "boom" });
+  n.release(); for (let i = 0; i < 5; i++) await tick();
+  expect(f.memory.dream).toHaveBeenCalledTimes(1);
+});
+
+test("146 Q18 (d): a D failure for another session does not end the drain", async () => {
+  const f = fixture(), n = hold(); let dDue = false;
+  f.entries.push(1);
+  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" ? dDue : f.entries.length > 0 }));
+  f.memory.noting.mockImplementation(async () => { await n.gate; f.entries.shift(); return { outcome: "success" }; });
+  f.memory.dream.mockImplementation(async () => ({ outcome: "failure", problems: ["other session"] }));
+  f.scheduler.startCatchup(projection); await tick();
+  dDue = true;
+  f.scheduler.turnEnd({ ...projection, coreSessionId: 2 }, f.scheduler.catchupTicket()); for (let i = 0; i < 5; i++) await tick();
+  expect(f.memory.dream).toHaveBeenCalledTimes(1);
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "running", phase: "noting" });
+  n.release();
 });

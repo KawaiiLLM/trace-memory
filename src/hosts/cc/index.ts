@@ -173,7 +173,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
   if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" &&
       command !== "hook-compact" && command !== "hook-capable" && command !== "hook-turn" && command !== "cli" && command !== "fs") || configFlag !== "--config" || !configPath)
-    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|materialize ...");
+    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|dream|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|materialize ...");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config, undefined, configPath); return; }
   if (command === "hook-capable" || command === "hook-turn") {
@@ -261,7 +261,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
     try { effective = await executorSnapshot(config, nativeSessionId); }
     catch { /* The menu remains navigable; its worker values are explicitly unavailable. */ }
     const current = rest[1] === "--snapshot" ? JSON.parse(await readStdin()) as CcContextSnapshot : undefined;
-    const data = readCcMenu(config, nativeSessionId, effective?.config, 10, effective?.catchup, current);
+    const data = readCcMenu(config, nativeSessionId, effective?.config, 10, effective?.catchup, current, effective?.dream);
     process.stdout.write(`${JSON.stringify(data)}\n`);
     return;
   }
@@ -301,7 +301,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
   }
   if (verb !== "project" && rest.length) throw new Error(`CC operator command ${verb} accepts no arguments`);
   const result = verb === "project" ? await declareCcProject(config, nativeSessionId, rest.join(" "))
-    : verb === "on" || verb === "off" || verb === "stop" || verb === "catchup" ? await operateCcSession(config, nativeSessionId, verb)
+    : verb === "on" || verb === "off" || verb === "stop" || verb === "catchup" || verb === "dream" ? await operateCcSession(config, nativeSessionId, verb)
     : (() => { throw new Error(`unknown CC operator command ${verb}`); })();
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
