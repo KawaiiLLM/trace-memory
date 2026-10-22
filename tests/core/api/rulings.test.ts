@@ -2579,7 +2579,8 @@ const executionReasons = (f: ReturnType<typeof dreamerFixture>) => (f.store.db.p
 test("2026-10-22, 144: 'D的触发阈值可以看N变更过的知识 的token总数（不是diff）' — the Dreamer is due when the knowledge the Noter changed since its last pass weighs 10,000, each item once at its current title and body; a manual write does not count", () => {
   expect(DEFAULT_CONFIG.dreaming.triggerTokens).toBe(10_000);
   const f = dreamerFixture();
-  const manual = knowledgeBatch(f.store, f.path, [{ scope: "project", category: "constraint", supports: [f.existingFact("Manual support").id], title: "Manual rule", text: "A hand-written rule" }],
+  const manualSupport = f.existingFact("Manual support");
+  const manual = knowledgeBatch(f.store, f.path, [{ scope: "project", category: "constraint", supports: [manualSupport.id], title: "Manual rule", text: "A hand-written rule" }],
     { kind: "manual", createdAt: "now" });
   expect(manual.committed).toHaveLength(1);
   const rule = f.item("A Noter rule");
@@ -2663,6 +2664,45 @@ test("2026-10-22, 144: '所有交付都是文件，包括评级任务，这样�
   }
   const score = f.store.db.prepare("SELECT score FROM knowledge WHERE id = ?").get(rule.knowledgeId)!.score;
   expect(score).toBe(77); // classify's scores came from its file
+});
+
+test("2026-10-21, 144: '归档这个机制会取消' — a run whose pools are far over the old pool budgets completes, and nothing is archived for budget", async () => {
+  const f = dreamerFixture();
+  const rules = Array.from({ length: 12 }, (_, i) => f.item(`Rule number ${i} says to keep the lockfile committed`, { category: "reference", title: `Rule ${i}` }));
+  f.store.db.exec("UPDATE knowledge_budget_policy SET global_tokens = 1, project_tokens = 1, session_tokens = 1"); // every pool is over its old budget
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions WHERE op = 'archive' OR archive_kind IS NOT NULL").get()!.n).toBe(0);
+  expect(f.store.currentKnowledge(f.path).map(value => value.knowledge.id).sort()).toEqual(rules.map(rule => rule.knowledgeId).sort()); // all still current
+});
+
+test("2026-10-22, 144: '只需要核实整理阶段的修改，N对知识的修改不用再次核实' — verify's change file lists this run's curate changes only, and verify cannot write a Noter's or a manual version", async () => {
+  let changes = "";
+  const f = dreamerFixture();
+  const tidied = f.item("Use pnpm everywhere", { category: "constraint", title: "Use pnpm" }), noter = f.item("Releases are tagged by hand", { category: "constraint", title: "Tag releases" });
+  const manualSupport = f.existingFact("Manual support");
+  const manual = knowledgeBatch(f.store, f.path, [{ scope: "project", category: "constraint", supports: [manualSupport.id], title: "Manual rule", text: "A hand-written rule" }],
+    { kind: "manual", createdAt: "now" }).committed[0]!;
+  const manualRef = `K${manual.knowledgeId}@v${f.store.versionOrdinal(manual.knowledgeId, manual.commit)}`;
+  f.dreamer.script.curate!.constraint = workspaceBlock(`update ${tidied.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
+  let attempt = 0;
+  f.dreamer.script.verify = report => {
+    changes ||= readFileSync(/Change file: (\S+)/.exec(report)![1]!, "utf8");
+    if (attempt++) return "## none\n";
+    const evidence = (item: { supports: number[] }) => `trace://F${item.supports[0]}`;
+    return workspaceBlock(`update ${noter.ref}`, { reason: "verify one more", evidence: evidence(noter) }, "Tags are made by hand")
+      + workspaceBlock(`update ${manualRef}`, { reason: "verify one more", evidence: evidence({ supports: [manualSupport.id] }) }, "A hand-written rule, reworded");
+  };
+  const outcome = await f.dream();
+  expect(outcome, JSON.stringify(outcome)).toMatchObject({ outcome: "success" });
+  expect(changes).toContain(`update K${tidied.knowledgeId}`);
+  expect(changes).not.toContain(`K${noter.knowledgeId}`);
+  expect(changes).not.toContain(`K${manual.knowledgeId}`);
+  const refusal = f.dreamer.messages[0]!; // the first verify file failed its check, naming both versions it had no authority over
+  expect(refusal).toMatch(new RegExp(`update K${noter.knowledgeId}@v1.: K${noter.knowledgeId} was not changed by curate`));
+  expect(refusal).toMatch(new RegExp(`update K${manual.knowledgeId}@v1.: K${manual.knowledgeId} was not changed by curate`));
+  const text = (id: number) => f.store.currentKnowledge(f.path).find(value => value.knowledge.id === id)!.revision.text;
+  expect(text(noter.knowledgeId)).toBe("Releases are tagged by hand");
+  expect(text(manual.knowledgeId)).toBe("A hand-written rule");
 });
 
 // ---- 144 stage 4 part 5: injection by score and the one temporary allowance ----
