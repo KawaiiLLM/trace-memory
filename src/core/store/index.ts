@@ -1678,15 +1678,25 @@ export class Store {
     // the old one. The high-water mark itself only ever grows (MAX(itself, new head)), so 57 branches
     // and routine tree switches never turn into a "bump every later write forever" cursor: only a
     // write that is genuinely a move back (by id) or a branch change bumps.
+    // 147: a head above the mark is new, but its ancestry can still re-enter superseded Turns: a rewind and the
+    // first Turn after it published together, or a move back followed by a new Turn under the abandoned line.
+    // The new head extends the current one only when its Turns above the mark sit directly on it; otherwise it bumps.
+    const cursor = this.db.prepare(`SELECT branch, head_turn_id, hwm_head_turn_id FROM session_lineage_cursors
+      WHERE session_id = ? AND lineage = ?`).get(sessionId, lineage) as { branch: string; head_turn_id: number; hwm_head_turn_id: number } | undefined;
+    const landing = (mark: number) => this.db.prepare(`WITH RECURSIVE up(id, parent) AS (SELECT id, parent_turn_id FROM turns WHERE id = ?
+        UNION ALL SELECT t.id, t.parent_turn_id FROM turns t JOIN up ON t.id = up.parent WHERE up.id > ?)
+      SELECT id FROM up WHERE id <= ? LIMIT 1`).get(headTurnId, mark, mark) as { id: number } | undefined;
+    const reenters = !!cursor && cursor.branch === branch && headTurnId > cursor.hwm_head_turn_id &&
+      Number(landing(cursor.hwm_head_turn_id)?.id ?? 0) !== Number(cursor.head_turn_id);
     this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id, version, hwm_head_turn_id)
         VALUES (?, ?, ?, ?, (SELECT IFNULL(MAX(version), 0) + 1 FROM session_lineage_cursors), ?)
       ON CONFLICT (session_id, lineage) DO UPDATE SET
         version = CASE WHEN branch != excluded.branch OR
-          (excluded.head_turn_id != head_turn_id AND excluded.head_turn_id <= hwm_head_turn_id)
+          (excluded.head_turn_id != head_turn_id AND (excluded.head_turn_id <= hwm_head_turn_id OR ?))
           THEN (SELECT MAX(version) + 1 FROM session_lineage_cursors) ELSE version END,
         branch = excluded.branch, head_turn_id = excluded.head_turn_id,
         hwm_head_turn_id = MAX(hwm_head_turn_id, excluded.head_turn_id)`)
-      .run(sessionId, lineage, branch, headTurnId, headTurnId);
+      .run(sessionId, lineage, branch, headTurnId, headTurnId, reenters ? 1 : 0);
   }
 
   enrollment(sessionId: number): Enrollment {

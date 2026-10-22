@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { coverKnowledge } from "../../support/dreamer.ts";
+import { entry, knowledgeBatch, legacyFact } from "../../support/seed.ts";
 
 const time = "2026-09-24T00:00:00Z";
 const stores: Store[] = [], dirs: string[] = [];
@@ -151,10 +152,7 @@ test("a session read inside a transaction advances from the warm memo: it sees t
   let inside: string[] = [], insideBuilds = -1;
   try {
     expect(() => store.transaction(() => {
-      const created = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId, branch: "main", createdAt: time },
-        operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text, category: "constraint", scope: "session",
-          supports: [factId], topics: [], reason: "evidence", createdAt: time }] });
-      if (!created.ok) throw new Error(created.problems.join("; "));
+      knowledgeBatch(store, path, [{ scope: "session", category: "constraint", supports: [factId], text }], { kind: "manual", createdAt: time });
       builds = 0;
       inside = store.currentKnowledge(path).map(value => value.revision.text);
       insideBuilds = builds;
@@ -167,6 +165,32 @@ test("a session read inside a transaction advances from the warm memo: it sees t
   expect(inside).toEqual([text]);
   // A cold rebuild here held the write lock for seconds on the live database (a Dreamer's admission, 2026-10-23).
   expect(insideBuilds).toBe(0);
+});
+
+test("a new head whose ancestry re-enters a superseded Turn invalidates the memo, committed and inside a transaction", () => {
+  const dir = mkdtempSync(join(tmpdir(), "trace-memory-147-reentry-")); dirs.push(dir);
+  const file = join(dir, "trace.db"), store = new Store(file); stores.push(store);
+  const { sessionId, turnId: first, entry: firstEntry } = seeded(store);
+  const second = store.appendTurn({ sessionId, parentTurnId: first, kind: "turn", userPrompt: "second", startedAt: time }).id;
+  const secondEntry = entry(store, sessionId, second, "u-second", "user");
+  store.publishSourcePath(sessionId, "main", [firstEntry.id, secondEntry.id], second, "lineage-a");
+  const atSecond = { sessionId, branch: "main", headTurnId: second };
+  const evidence = legacyFact(store, atSecond, [{ entry: secondEntry, address: `T${second}#E1` }], "a fact on the second Turn");
+  knowledgeBatch(store, atSecond, [{ scope: "session", category: "constraint", supports: [evidence.id], text: "a rule grounded on the second Turn" }],
+    { kind: "manual", createdAt: time });
+  store.setCurrentPath(sessionId, "main", first, "lineage-a"); // a move back drops the second Turn
+  expect(store.currentKnowledge({ sessionId, branch: "main", headTurnId: first })).toEqual([]); // warms the memo
+  // The next head is above the high-water mark, yet its parent is the superseded second Turn: a rewind and the
+  // first Turn after it can reach the store in one publish.
+  const third = store.appendTurn({ sessionId, parentTurnId: second, kind: "turn", userPrompt: "third", startedAt: time }).id;
+  const thirdEntry = entry(store, sessionId, third, "u-third", "user");
+  store.publishSourcePath(sessionId, "main", [firstEntry.id, secondEntry.id, thirdEntry.id], third, "lineage-a");
+  const atThird = { sessionId, branch: "main", headTurnId: third };
+  const fresh = new Store(file); stores.push(fresh);
+  const expected = fresh.currentKnowledge(atThird).map(value => value.revision.id);
+  expect(expected).toHaveLength(1);
+  expect(store.transaction(() => store.currentKnowledge(atThird).map(value => value.revision.id))).toEqual(expected);
+  expect(store.currentKnowledge(atThird).map(value => value.revision.id)).toEqual(expected);
 });
 
 test("a pure Raw append reuses the memo, and every consumer's answer is unchanged", () => {
