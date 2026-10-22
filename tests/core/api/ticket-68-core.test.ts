@@ -10,7 +10,7 @@ function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, tim
   const f = makeDreamerFixture(opened);
   f.memory.config.dreaming.timeoutMs = timeoutMs;
   f.item("A rule", { category: "constraint" });
-  f.next(agent);
+  f.next(raw => agent(raw as DreamingAgentInput));
   return f;
 }
 const revisions = (f: ReturnType<typeof setup>) => f.store.listKnowledgeRevisions().length;

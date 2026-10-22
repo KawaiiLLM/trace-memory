@@ -109,7 +109,7 @@ export function curateWrite(memory: { store: Store }, path: KnowledgePath, opera
     if (op.op === "archive") return block(`archive ${ref(op.knowledgeId, op.baseCommit)}`, { kind: op.kind === "inadmissible" ? "inadmissible" : "invalid", reason: op.reason },
       op.text ?? "The user withdrew this and nothing replaces it; the grounds are in the cited evidence.");
     if (op.op === "create") return block("create", { title: op.title ?? "Fixture title", ...shared(op) }, op.text);
-    throw new Error(`curateWrite: unsupported operation ${op.op}`);
+    throw new Error(`curateWrite: unsupported operation ${(op as { op: string }).op}`);
   });
   const result = curateNow(memory, path, blocks.join("\n"));
   const refused = result.blocks.filter(entry => entry.status !== "applied");

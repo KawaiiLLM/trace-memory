@@ -16,7 +16,7 @@ async function consolidation(...operations: Operation[]) {
     if (!result.ok) throw new Error(result.problems.join(", "));
     return result.committed;
   }
-  return curateWrite(memory, { sessionId, branch: "main", headTurnId, triggerEntryId }, operations); // the Dreamer's pass
+  return curateWrite(memory, { sessionId, branch: "main", headTurnId }, operations); // the Dreamer's pass
 }
 async function create(text = "use red tiles now") {
   return (await consolidation({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission", handle: "$e1", author: "test", text,
