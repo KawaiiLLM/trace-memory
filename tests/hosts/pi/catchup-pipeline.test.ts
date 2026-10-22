@@ -1,12 +1,12 @@
 import { expect, test, vi } from "vitest";
 import type { JsonObject } from "@earendil-works/pi-ai";
-import { host, reply, notingFact, noterReply, dreamerReply, type Reply } from "./test-host.ts";
+import { host, reply, notingFact, noterReply, dreamerFiles, type Reply } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { readHandle } from "../../read-handle-fixture.ts";
-import { memoryFiles } from "../../../src/core/api/index.ts";
+import { knowledge } from "../../support/seed.ts";
+import { block } from "../../support/workspace.ts";
 
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
-const dreaming = (c: { systemPrompt?: string }) => c.systemPrompt?.startsWith("# Dreamer");
+const dreaming = (c: { systemPrompt?: string }) => c.systemPrompt?.startsWith("# Dreamer") || c.systemPrompt?.startsWith("# Classifying");
 const settle = async (h: ReturnType<typeof host>) => { for (let i = 0; i < 30; i++) await h.drain(); };
 const call = (name: string, args: object): Reply => ({ ...reply(""), stopReason: "toolUse", content: [
   { type: "toolCall", id: `${name}-1`, name, arguments: args as JsonObject },
@@ -23,25 +23,17 @@ function extract(c: Parameters<typeof notingFact>[0], scope: "global" | "session
   expect(JSON.stringify(results)).not.toContain("rejected:");
   return notingFact(c, `## create\ntitle: Fixture title\ncategory: constraint\nscope: ${scope}\ntopics: \nsupports: f1\nreason: Supported conclusion\n\nRule ${"word ".repeat(120)}\n`);
 }
-function retain(c: Parameters<typeof notingFact>[0]): Reply {
-  const results = c.messages.filter(m => m.role === "toolResult");
-  if (results.length) {
-    expect(results.length, JSON.stringify(c.messages)).toBe(1);
-    expect(JSON.stringify(results)).not.toContain("rejected:");
-    return reply("Done");
-  }
-  const material = String(c.messages[0]!.content);
-  const handles = [...material.matchAll(/^New (K\d+@v\d+):/gm)].map(match => match[1]!);
-  expect(handles.length).toBeGreaterThan(0);
-  return dreamerReply("memory", { skipped: handles.map(knowledge => ({ knowledge, because: "Reviewed unchanged" })) });
-}
+/** The Dreamer's side of a run: check, write the file it names (nothing to change), stop. */
+const retain = (c: Parameters<typeof dreamerFiles>[0]): Reply => dreamerFiles(c) ?? reply("Done");
+/** A Noter-written constraint over F1: only Noter changes make a Dreamer due (2026-10-22). */
 function seed(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   expect(tools.find(t => t.name === "note")!.execute({ title: "Keep conclusion", sources: "[T1#E1] Keep this conclusion." })).toContain("ok: F1");
-  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [],
-    reason: "Seed pending revision", text: "Rule " + "word ".repeat(120), category: "constraint", scope: "session", supports: ["F1"] })).not.toContain("rejected:");
+  knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "session", "constraint", [1], "Rule " + "word ".repeat(120), { operation: { title: "Fixture title" } });
   return h.memory.store.listKnowledgeRevisions().at(-1)!;
 }
+const dreamExecutions = (h: ReturnType<typeof host>) => h.memory.store.db.prepare(
+  "SELECT outcome FROM task_executions WHERE session_id = 1 AND phase = 'dreaming' ORDER BY rowid").all().map(row => row.outcome);
 
 for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fences the held D" : "successful checkpoints drain due knowledge"}; no C seat`, async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
@@ -70,10 +62,10 @@ for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fenc
       expect(dreams).toBe(1);
       await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: stopped");
     } else {
-      const completed = h.memory.store.listRuns(1).filter(r => r.kind === "dreaming" && r.outcome === "success");
-      // 126: a run covers every pool; the checkpoints leave nothing pending in any of them.
-      expect(completed.length).toBeGreaterThan(0);
-      expect(h.memory.store.knowledgePools(h.memory.store.knowledgePath(1, "main")).flatMap(pool => pool.pending)).toEqual([]);
+      expect(dreamExecutions(h).length).toBeGreaterThan(0);
+      expect(dreamExecutions(h).every(outcome => outcome === "success")).toBe(true);
+      // The checkpoints leave no Noter change uncovered: a Dreamer is not due.
+      expect(h.memory.taskEligibility("dreaming", { sessionId: 1, branch: "main", headTurnId: h.memory.store.listTurns(1).at(-1)!.id }).due).toBe(false);
       await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
       const count = dreams; await settle(h); expect(dreams).toBe(count);
     }
@@ -92,7 +84,7 @@ test("92: catchup waits for ordinary N; its successful joint publication checkpo
     await command(h, "catchup"); expect(h.notices.at(-1)).toContain("waiting for noting");
     release(); await settle(h);
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(2); // one batch: write and verify
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming" && r.outcome === "success")).toHaveLength(1);
+    expect(dreamExecutions(h)).toEqual(["success"]);
     await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { release(); await h.dispose(); }
 });
@@ -117,30 +109,24 @@ for (const success of [true, false]) test(`92: ordinary D ${success ? "success s
     if (!cleared.ok) throw new Error(cleared.problems.join("; "));
     await command(h, "catchup"); expect(h.notices.at(-1)).toContain("waiting for dreaming");
     release(); await settle(h);
-    expect(dreams).toBe(1);
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual([success ? "success" : "failure"]);
+    expect(dreamExecutions(h)).toEqual([success ? "success" : "failure"]);
     await command(h, ""); expect(h.notices.at(-1)).toContain(success ? "Catchup: completed" : "waiting for dreaming");
   } finally { release(); await h.dispose(); }
 });
 
-test("86: ordinary D partial write survives terminal failure without a completion check", async () => {
+test("86: an applied Dreamer batch survives a later terminal failure, with no extra eligibility check", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
-  let submitted = false, waiting = false;
+  let waiting = false;
   try {
     await h.turn(); const initial = seed(h), store = h.memory.store;
-    const initialHandle = readHandle(address => memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(address).content, `K${initial.knowledgeId}`);
     const eligible = vi.spyOn(h.memory, "taskEligibility");
     h.provider(async c => {
       if (!dreaming(c)) return notingFact(c);
-      if (!submitted) {
-        submitted = true;
-        return call("memory", { op: "update", id: initialHandle,
-          text: "Maintained rule " + "word ".repeat(120), category: "constraint", scope: "session", supports: [], topics: [], reason: "Update before failure" });
-      }
-      waiting = true; await held;
-      return { ...reply(""), stopReason: "error", errorMessage: "terminal D failure after commit" };
+      if (c.messages.length === 1 && c.systemPrompt?.startsWith("# Dreamer") && store.listKnowledgeRevisions().length === 2) { waiting = true; await held; // verify's first request
+        return { ...reply(""), stopReason: "error", errorMessage: "terminal D failure after commit" }; }
+      return dreamerFiles(c, { curate: block(`update K${initial.knowledgeId}@v1`, { reason: "Update before failure" }, "Maintained rule " + "word ".repeat(120)) }) ?? reply("Done");
     }, { autoStop: false });
     await h.turn(); await vi.waitFor(() => expect(waiting).toBe(true));
     expect(store.listKnowledgeRevisions()).toHaveLength(2);
@@ -150,7 +136,7 @@ test("86: ordinary D partial write survives terminal failure without a completio
     release(); await settle(h);
     expect(store.listKnowledgeRevisions()).toHaveLength(2);
     expect(store.listKnowledgeRevisions().at(-1)!.id).toBe(revised.id);
-    expect(store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["failure"]);
+    expect(store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success", "failure"]); // curate applied, verify failed
     expect(eligible.mock.calls.length).toBe(before);
     eligible.mockRestore();
   } finally { release(); await h.dispose(); }
@@ -175,7 +161,7 @@ test("92: successful N checks but does not run D below its ordinary threshold", 
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1e9 });
   try {
     await h.turn(); h.provider(async c => extract(c));
-    const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
+    const eligibility = vi.spyOn(Store.prototype, "dreamingDueByNoterChanges");
     await command(h, "catchup"); await settle(h);
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(2); // one batch: write and verify
     expect(h.memory.store.currentKnowledge()).toHaveLength(1);
@@ -199,8 +185,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
     const tools = h.memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: turn.id });
     expect(tools.find(t => t.name === "note")!.execute({ title: "Foreign rule", sources: `[T${turn.id}#E1] Foreign rule` })).toContain("ok:");
     const fact = store.listSessionFacts(foreign.id)[0]!;
-    expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Foreign rule", category: "constraint",
-      scope: "session", supports: [`F${fact.id}`], topics: [], reason: "Foreign pending pool" })).not.toContain("rejected:");
+    knowledge(store, { sessionId: foreign.id, branch: "main", headTurnId: turn.id }, "session", "constraint", [fact.id], "Foreign rule", { operation: { title: "Fixture title" } });
     const claim = store.acquireClaim({ sessionId: foreign.id, branch: "main", headTurnId: turn.id }, "dreaming", "foreign-executor")!;
     expect(claim).not.toBeNull();
     h.provider(async c => { if (!dreaming(c)) return notingFact(c); dreams++; return retain(c); });
@@ -210,7 +195,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
     expect(store.releaseClaim(claim)).toBe(true);
     await settle(h); expect(dreams).toBe(0);
     if (recover) await command(h, "catchup"); else await h.turn();
-    await settle(h); expect(dreams).toBe(1);
+    await settle(h); expect(dreams).toBeGreaterThan(0); expect(dreamExecutions(h)).toEqual(["success"]);
     await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
 });
@@ -218,7 +203,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
 for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries the frozen entry successfully" : "turns memory off after three failures"} without an intervening D check`, async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1e9 });
   try {
-    await h.turn(); const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
+    await h.turn(); const eligibility = vi.spyOn(Store.prototype, "dreamingDueByNoterChanges");
     let attempts = 0; const checks: number[] = [];
     h.provider(async c => {
       if (dreaming(c)) throw new Error("Unexpected D admission");
@@ -245,27 +230,6 @@ for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries 
   } finally { await h.dispose(); }
 }, 30000);
 
-test("86: D retries the same pending revision and three business failures turn memory off", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
-  let dreams = 0;
-  try {
-    await h.turn(); seed(h);
-    h.provider(async c => {
-      if (!dreaming(c)) return notingFact(c);
-      if (++dreams > 3) throw new Error("Dreamer retried beyond automatic off");
-      return { ...reply(""), stopReason: "error", errorMessage: "fixture D failure" };
-    });
-    await command(h, "catchup"); await settle(h);
-    const executions = h.memory.store.db.prepare("SELECT head, outcome FROM task_executions WHERE phase = 'dreaming' ORDER BY rowid").all();
-    expect(dreams).toBe(3);
-    expect(new Set(executions.map(r => r.head)).size).toBe(1);
-    expect(executions.map(r => r.outcome)).toEqual(["failure", "failure", "failure"]);
-    expect(h.memory.store.db.prepare("SELECT head, count FROM task_failures WHERE phase = 'dreaming'").all()).toEqual([{ head: executions[0]!.head, count: 3 }]);
-    expect(h.memory.store.enabled(1)).toBe(false);
-    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: stopped");
-  } finally { await command(h, "stop"); await h.dispose(); }
-}, 30000);
-
 test.each(["stop", "path", "off", "shutdown"] as const)("86: Pi %s fences catchup retry despite a late D error reply", async action => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
   let release = () => {};
@@ -289,51 +253,6 @@ test.each(["stop", "path", "off", "shutdown"] as const)("86: Pi %s fences catchu
     expect(replied).toBe(true); expect(dreams).toBe(1);
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["cancelled"]);
   } finally { release(); await h.dispose(); }
-}, 30000);
-
-test("92: three downstream D failures disable memory and fence the in-flight N batch", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
-  let release!: () => void, releaseThirdDream!: () => void, noterHeld = false, dreams = 0;
-  const held = new Promise<void>(resolve => { release = resolve; });
-  const thirdDreamHeld = new Promise<void>(resolve => { releaseThirdDream = resolve; });
-  try {
-    backlog(h); await h.emit("session_start"); seed(h);
-    const store = h.memory.store, head = store.listTurns(1).at(-1)!.id;
-    const pending = h.memory.pendingEntries(1, "main", head).map(entry => entry.id);
-    const facts = store.listSessionFacts(1);
-    h.provider(async c => {
-      if (!dreaming(c)) { noterHeld = true; await held; return notingFact(c); }
-      if (++dreams > 3) throw new Error("D retried beyond automatic off");
-      if (dreams === 3) await thirdDreamHeld;
-      return { ...reply(""), stopReason: "error", errorMessage: "downstream failure while N is held" };
-    }, { ignoreAbort: true });
-    await command(h, "catchup");
-    await vi.waitFor(() => { expect(noterHeld).toBe(true); expect(dreams).toBe(3); });
-    const dreamOutcomes = () => store.db.prepare(
-      "SELECT outcome FROM task_executions WHERE session_id = 1 AND phase = 'dreaming' ORDER BY rowid",
-    ).all().map(row => row.outcome);
-    // Admission creates a provisional failure run. It is not a terminal business failure:
-    // releasing N on the third such row used to race D's automatic-off settlement.
-    expect(store.listRuns(1).filter(run => run.kind === "dreaming" && run.outcome === "failure")).toHaveLength(3);
-    expect(dreamOutcomes()).toEqual(["failure", "failure", null]);
-    expect(store.enabled(1)).toBe(true);
-    expect(store.listSessionFacts(1)).toEqual(facts);
-    releaseThirdDream();
-    await vi.waitFor(() => expect(dreamOutcomes()).toEqual(["failure", "failure", "failure"]));
-    expect(store.enabled(1)).toBe(false);
-    expect(store.listSessionFacts(1)).toEqual(facts);
-    release(); await settle(h);
-    expect(dreams).toBe(3);
-    expect(store.enabled(1)).toBe(false);
-    expect(store.listSessionFacts(1)).toEqual(facts);
-    expect(h.memory.pendingEntries(1, "main", head).map(entry => entry.id)).toEqual(pending);
-    expect(store.listRuns(1).filter(run => run.kind === "noting").map(run => run.outcome)).toEqual(["cancelled"]);
-    expect(h.notices.some(notice => notice.includes("off after three failures"))).toBe(true);
-    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: stopped");
-    const requests = h.requests.length;
-    await settle(h); await h.emit("session_tree"); await settle(h);
-    expect(h.requests).toHaveLength(requests);
-  } finally { releaseThirdDream(); release(); await h.dispose(); }
 }, 30000);
 
 test("67: entries persisted after catchup freezes do not extend Noting's boundary", async () => {

@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
-import { host, reply, dreamerReply, type Reply } from "./test-host.ts";
-
-const memoryCall = (batch: Parameters<typeof dreamerReply>[1]): Reply => dreamerReply("maintenance", batch);
+import { host, reply, dreamerFiles, type Reply } from "./test-host.ts";
+import { knowledgeBatch } from "../../support/seed.ts";
+import { block } from "../../support/workspace.ts";
 
 // Real Pi extension/AgentSession with the existing local provider wire; no remote API.
 test("92/07: Pi catchup third N failure cancels D, retaining its exact claim only through settlement", async () => {
@@ -18,61 +18,62 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     expect(factResult).not.toContain("rejected:");
     const noted = JSON.parse(factResult);
     expect(noted.factIds).toHaveLength(1);
-    const written = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [1, 2, 3].map(n => ({
-      op: "create", title: "Fixture title", handle: `$${n}`, author: "fixture", text: `Rule ${n}`, category: "constraint", scope: "session", supports: [noted.factIds[0]], topics: [], reason: "evidence", createdAt: "now",
-    })) });
-    if (!written.ok) throw Error(written.problems.join("; "));
+    // Noter-written items make the Dreamer due (2026-10-22).
+    const written = knowledgeBatch(store, target, [1, 2, 3].map(n => ({ scope: "session" as const, category: "constraint" as const, supports: [noted.factIds[0]], text: `Rule ${n}`, title: "Fixture title" })));
     const [changed, skipped, untouched] = written.committed;
     const entries = f.memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id);
     const dreamReady = new Promise<void>(resolve => { ready = resolve; });
-    let nCalls = 0, dCalls = 0, own = 0, abortChecked = false;
+    let nCalls = 0, abortChecked = false, claim: ReturnType<typeof store.getClaim> = null, revisionsAtAbort = 0;
+    const revisions = () => store.listKnowledgeRevisions().length;
+    const rewrite = block(`update K${changed!.knowledgeId}@v1`, { reason: "maintenance" }, "Rule 1 maintained");
+    const late = (conversation: { messages: unknown[] }): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "late", name: "write", arguments: {
+      path: /Your file: (\S+?\.md)/.exec(JSON.stringify(conversation.messages))![1]!,
+      content: block(`update K${changed!.knowledgeId}@v2`, { reason: "late forbidden write", evidence: `trace://F${noted.factIds[0]}` }, "Late rewrite") } as never }] });
     f.provider(async (conversation, signal): Promise<Reply> => {
       if (conversation.systemPrompt?.startsWith("# Noting")) {
         await dreamReady; nCalls++;
         return { ...reply(""), stopReason: "error", errorMessage: "intentional Noter failure" };
       }
-      expect(conversation.systemPrompt).toContain("# Dreamer");
-      dCalls++;
-      if (dCalls === 1) return memoryCall({ operations: [{ op: "update", id: `K${changed!.knowledgeId}#${store.versionTag(changed!.knowledgeId, changed!.commit)}`,
-        text: "Rule 1 maintained", category: "constraint", scope: "session", topics: [], supports: [], reason: "maintenance" }],
-        skipped: [{ knowledge: `K${skipped!.knowledgeId}@v1`, because: "checked unchanged" }] });
-      if (dCalls !== 2) throw Error(`Unexpected Dreamer provider round ${dCalls}`);
-      const result = conversation.messages.filter(message => message.role === "toolResult").at(-1)!;
-      expect(JSON.stringify(result)).not.toContain("rejected:");
-      own = store.currentCommit(changed!.knowledgeId, target)[0]!.id;
-      expect(own).not.toBe(changed!.commit);
-      const claim = store.getClaim(session.id, "dreaming")!;
-      const rangeId = store.openDreamingRange(session.id, "main")!.id;
+      expect(conversation.systemPrompt).toMatch(/^# (Dreamer|Classifying)/);
+      const verifying = /Task: verify/.test(JSON.stringify(conversation.messages));
+      if (!verifying) return dreamerFiles(conversation, { curate: rewrite }) ?? reply("Done");
+      // Verify has its first request answered with check; the next one is held in flight until memory goes off.
+      if (conversation.messages.length < 3) return dreamerFiles(conversation)!;
+      claim = store.getClaim(session.id, "dreaming");
       if (!signal) throw Error("Dreamer provider request has no cancellation signal");
       ready();
       return new Promise<Reply>(resolve => signal.addEventListener("abort", () => {
         expect(nCalls).toBe(3);
         expect(store.enabled(session.id)).toBe(false);
-        expect(store.getClaim(session.id, "dreaming")).toEqual(claim);
-        expect(store.openDreamingRange(session.id, "main")!.id).toBe(rangeId);
+        // The same claim row stays until settlement; switching memory off only expires its lease.
+        expect(store.getClaim(session.id, "dreaming")).toEqual({ ...claim, expiresAt: 0 });
         expect(tools.find(tool => tool.name === "note")!.execute({})).toContain("Disabled");
+        revisionsAtAbort = revisions();
         abortChecked = true;
-        // Deliberately return a late write after abort; native cancellation must not dispatch it.
-        resolve(memoryCall({ operations: [{ op: "archive", kind: "budget", id: `K${untouched!.knowledgeId}#${store.versionTag(untouched!.knowledgeId, untouched!.commit)}`,
-          supports: [], reason: "late forbidden write" }], skipped: [] }));
+        // Deliberately return a late verify write after abort; native cancellation must not dispatch it.
+        resolve(late(conversation));
       }, { once: true }));
     }, { autoStop: false, ignoreAbort: true });
     await f.commands.get("trace")!.handler("catchup", f.ctx);
     await vi.waitFor(() => expect(store.enabled(session.id), f.notices.join("\n")).toBe(false));
     await vi.waitFor(() => expect(store.getClaim(session.id, "dreaming")).toBeNull());
     expect(abortChecked).toBe(true);
-    expect(nCalls).toBe(3); expect(dCalls).toBe(2);
-    expect(store.openDreamingRange(session.id, "main")).toBeNull();
+    expect(nCalls).toBe(3);
+    // Curate's batch was applied before the stop and stays; the late verify write after the abort changes nothing.
+    expect(revisions()).toBe(revisionsAtAbort);
+    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1 maintained");
+    expect(store.currentCommit(untouched!.knowledgeId, target)[0]!.id).toBe(untouched!.commit);
     const processed = store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool=? ORDER BY revision_id")
       .all(`session:${session.id}`).map(row => Number(row.revision_id));
-    expect(processed).toEqual([skipped!.commit, own].sort((a, b) => a - b));
-    expect(store.pendingVersions(`session:${session.id}`, target).map(item => item.revisionId)).toEqual([untouched!.commit]);
-    expect(store.currentCommit(untouched!.knowledgeId, target)[0]!.id).toBe(untouched!.commit);
+    const own = store.currentCommit(changed!.knowledgeId, target)[0]!.id;
+    expect(own).not.toBe(changed!.commit);
+    expect(processed).toEqual([changed!.commit, skipped!.commit, untouched!.commit, own].sort((a, b) => a - b)); // curate passed: it covered what its batch showed and wrote
     expect(f.memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id)).toEqual(entries);
     expect(store.taskFailures(session.id).filter(item => item.phase === "dreaming")).toEqual([]);
     expect(store.listRuns(session.id).filter(run => run.kind === "dreaming").at(-1)?.outcome).toBe("cancelled");
     expect(f.notices.some(message => message.includes("off after three failures"))).toBe(true);
+    const settled = f.requests.length;
     await f.emit("agent_settled"); await f.drain();
-    expect(nCalls).toBe(3); expect(dCalls).toBe(2);
+    expect(nCalls).toBe(3); expect(f.requests).toHaveLength(settled);
   } finally { ready?.(); await f.dispose(); }
 });

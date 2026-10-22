@@ -5,9 +5,10 @@ import { memoryFiles, canonicalToolNames } from "../../../src/core/api/index.ts"
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { knowledgeFile } from "../../support/noter.ts";
-import { host as createHost, reply, notingFact, NOTER_BATCH_REQUESTS, holdFirstRequest, noteHeld, usage, dreamerReply, type Reply } from "./test-host.ts";
+import { host as createHost, reply, notingFact, NOTER_BATCH_REQUESTS, holdFirstRequest, noteHeld, usage, dreamerFiles, type Reply } from "./test-host.ts";
 import { compacted, seedSourceEntry } from "../../source-fixture.ts";
-import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { noterWrittenItem } from "../../support/dreamer.ts";
+import { block } from "../../support/workspace.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 
 const disposers: (() => Promise<void>)[] = [];
@@ -780,7 +781,7 @@ test("a Noter provider failure after holding both tools publishes nothing and re
 });
 
 test("64b/16b: Pi tree switch drives injection and prompt delivery", async () => {
-  const h = host({ "dreaming.triggerTokens": 5_000 });
+  const h = host({ "dreaming.triggerTokens": 1 });
   await h.turn();
   const state = () => h.entries.filter(e => e.type === "custom").at(-1)!.data as { branch: string; head: number };
   const target = () => {
@@ -810,22 +811,14 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   const update = async (text: string, factId: number, sequence: number) => {
     const path = target(); h.memory.store.setCurrentPath(1, path.branch, path.headTurnId, "pi-test");
     const current = h.memory.store.currentCommit(1, path)[0]!;
-    const trigger = createDreamerTrigger(h.memory, path, factId, sequence);
-    const reader = (address: string) => memoryFiles(h.memory, path).read(address).content;
-    const baseAddress = readHandle(reader, "K1"), triggerAddress = readHandle(reader, `K${trigger.knowledgeId}`);
-    expect(h.memory.taskEligibility("dreaming", path)).toEqual({ due: true });
+    // The Dreamer is due on a Noter-written item (2026-10-22); its curate batch rewrites the base item for this branch.
+    noterWrittenItem(h.memory, path, factId);
+    expect(h.memory.store.dreamingDueByNoterChanges(path, 1)).toBe(true);
     expect(h.memory.store.getClaim(1, "dreaming")).toBeNull();
-    let round = 0;
+    const rewrite = block(`update K1@v${h.memory.store.versionOrdinal(1, current.id)}`, { supports: `F${factId}`, reason: `Update from ${path.branch}.` }, text);
     h.provider(async conversation => {
-      expect(conversation.systemPrompt).toMatch(/^# Dreamer/);
-      if (round++ === 0) return { ...reply(""), stopReason: "toolUse", content: [
-        { type: "toolCall", id: `read-base-${sequence}`, name: "read", arguments: { path: `trace://${baseAddress}` } },
-        { type: "toolCall", id: `read-trigger-${sequence}`, name: "read", arguments: { path: `trace://${triggerAddress}` } },
-      ] };
-      if (round === 2) return dreamerReply(`write-${sequence}`, {
-        operations: [{ op: "update", id: baseAddress, text, category: "constraint", scope: "project", topics: [], supports: [`F${factId}`], reason: `Update from ${path.branch}.` },
-          { op: "archive", kind: "budget", id: triggerAddress, supports: [], reason: "Retire explicit host trigger." }] });
-      return reply("Done.");
+      expect(conversation.systemPrompt).toMatch(/^# (Dreamer|Classifying)/);
+      return dreamerFiles(conversation, { curate: rewrite }) ?? reply("Done.");
     });
     await h.turn();
     const run = h.memory.store.listRuns(1).filter(item => item.kind === "dreaming").at(-1)!;

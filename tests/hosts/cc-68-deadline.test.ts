@@ -11,6 +11,7 @@ import { ccWorkerToolNames, CC_WORKER_SERVER_NAME } from "../../src/hosts/cc/too
 import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { TEST_CC_VERSION } from "../support/cc-version.ts";
+import { knowledgeBatch } from "../support/seed.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -32,11 +33,8 @@ function seed(memory: ReturnType<typeof TraceMemory>) {
     source: [`T${turn.id}#E1`], createdAt: "now",
   }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{
-    op: "create", title: "Fixture title", handle: "$deadline", author: "fixture", text: "timed knowledge", category: "constraint", scope: "project",
-    supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now",
-  }] });
-  if (!created.ok) throw new Error(created.problems.join("; "));
+  // A Noter-written item makes the Dreamer due (2026-10-22).
+  knowledgeBatch(store, { sessionId: session.id, branch: "main", headTurnId: turn.id }, [{ scope: "project", category: "constraint", supports: [noted.facts[0]!.id], text: "timed knowledge", title: "Fixture title" }]);
   return { session, target: { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id } };
 }
 
@@ -79,21 +77,28 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
         await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
         client = new Client({ name: "deadline-test", version: "1" }); await client.connect(clientTransport);
         const listed = await client.listTools();
-        expect(request.options.tools).toEqual(["Read"]);
-        expect(request.options.allowedTools).toEqual(["Read", ...listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`)]);
-        expect(new Set(request.options.allowedTools)).toEqual(new Set(["Read", ccWorkerToolNames.search, ccWorkerToolNames.memory, ccWorkerToolNames.check]));
+        // The Dreamer's native tools are Read, Write, Edit, Grep and Glob; its own core tools are search and check.
+        expect(request.options.tools).toEqual(["Read", "Write", "Edit", "Grep", "Glob"]);
+        expect(request.options.allowedTools).toEqual(["Read", "Write", "Edit", "Grep", "Glob", ...listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`)]);
+        expect(new Set(listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`))).toEqual(new Set([ccWorkerToolNames.search, ccWorkerToolNames.check]));
         expect(request.options.systemPrompt).toBe(withRetrievalPolicy(loadPrompt("dreaming.md", ccWorkerToolNames), ccWorkerToolNames));
         expect(listed.tools.find(tool => tool.name === "check")?.description).not.toContain("{{tool.");
         yield init(directory, request.options.allowedTools, "timed-child");
-        yield { type: "assistant", session_id: "timed-child", message: { id: "tool-round", content: [{
-          type: "tool_use", id: "late-memory", name: "memory", input: { skip: "K1@v1", because: "late" },
+        // The model checks, then its next work outlives the deadline.
+        yield { type: "assistant", session_id: "timed-child", message: { id: "check-round", content: [{
+          type: "tool_use", id: "check-1", name: ccWorkerToolNames.check, input: {},
+        }], usage: { input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
+        const checked = await client.callTool({ name: "check", arguments: {}, _meta: { "claudecode/toolUseId": "check-1" } });
+        expect((checked.content as { text: string }[])[0]!.text).toMatch(/Task: curate/);
+        yield { type: "assistant", session_id: "timed-child", message: { id: "late-round", content: [{
+          type: "tool_use", id: "late-check", name: ccWorkerToolNames.check, input: {},
         }], usage: { input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
         releaseStarted();
         const signal = request.options.abortController.signal as AbortSignal;
         await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
         try {
-          const late = await client.callTool({ name: "memory", arguments: { skip: "K1@v1", because: "late" },
-            _meta: { "claudecode/toolUseId": "late-memory" } });
+          const late = await client.callTool({ name: "check", arguments: {},
+            _meta: { "claudecode/toolUseId": "late-check" } });
           lateText = (late.content as { type: string; text: string }[])[0]?.text ?? "";
         } catch (error) {
           lateRejected = true; lateText = error instanceof Error ? error.message : String(error);
@@ -122,8 +127,9 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
     await started;
     await vi.advanceTimersByTimeAsync(1000);
     const result = await running;
-    // 104: the timed-out run also left its frozen item undeliberated; the deadline stays among its problems.
-    expect(result).toMatchObject({ outcome: "failure", problems: expect.arrayContaining([expect.stringContaining("Dreaming wall-clock limit exceeded (1000 ms)")]) });
+    // The task fails as a timeout at its own deadline; its work is kept for the next run (2026-10-22 failure ruling).
+    expect(result).toMatchObject({ outcome: "failure", failure: { task: "curate", class: "timeout" } });
+    expect(memory.store.handoff(session.id, "dreaming")).toMatchObject({ nextTask: "curate" });
     expect(memory.store.getClaim(session.id, "dreaming")).toBeNull();
     await lateFinished;
     expect(lateRejected).toBe(true);

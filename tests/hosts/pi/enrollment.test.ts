@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { host, reply, notingFact } from "./test-host.ts";
 import { TraceMemory, DEFAULT_CONFIG } from "../../../src/core/api/index.ts";
 import { compacted , hydrate } from "../../source-fixture.ts";
-import { fact } from "../../support/seed.ts";
+import { fact, knowledge } from "../../support/seed.ts";
+import { block } from "../../support/workspace.ts";
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); hosts.push(h); return h; };
 afterEach(async () => { for (const h of hosts.splice(0)) await h.dispose(); });
@@ -304,20 +305,23 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
   expect(() => h.memory.selectEntries(1, "main", [])).toThrow("/trace on");
 });
 
-test.each([true, false])("92: disable during D rejects late %s mutation and preserves the pending revision", async submit => {
+test.each([true, false])("92: disable during D rejects late %s mutation and preserves the existing revision", async submit => {
   const h = setup({ "dreaming.triggerTokens": 1 }); await h.turn();
-  const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   expect(seedFact(h, "Pending knowledge").id).toBe(1);
-  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Retain rule", category: "constraint",
-    scope: "session", topics: [], supports: ["F1"], reason: "Seed pending D revision" })).not.toContain("rejected:");
+  // A Noter-written item makes the Dreamer due (2026-10-22).
+  knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "session", "constraint", [1], "Retain rule", { operation: { title: "Fixture title" } });
   const original = h.memory.store.listKnowledgeRevisions()[0]!;
-  let release!: (value: ReturnType<typeof reply>) => void;
-  h.provider(async () => new Promise(resolve => { release = resolve; }));
-  await h.prompt("next main turn"); await h.answer("D opportunity"); await h.drain(); expect(h.requests).toHaveLength(1);
+  let release!: () => void, requests = 0;
+  const toolCall = (name: string, args: object) => ({ ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: name, name, arguments: args as never }] });
+  // The model calls `check`, then holds; the late reply writes a batch file (or says nothing) after the memory is off.
+  h.provider(async c => {
+    if (++requests === 1) return toolCall("check", {});
+    const file = /File: (\S+?\.md)/.exec(JSON.stringify(c.messages))![1]!;
+    return new Promise(resolve => { release = () => resolve(submit ? toolCall("write", { path: file, content: block(`update K${original.knowledgeId}@v1`, { reason: "Late mutation" }, "Late body") }) : reply("No mutation")); });
+  });
+  await h.prompt("next main turn"); await h.answer("D opportunity"); await h.drain(); expect(h.requests).toHaveLength(2);
   await command(h, "off"); h.provider(async () => reply("Stopped"));
-  release(submit ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
-    op: "archive", kind: "budget", id: `K${original.knowledgeId}#${h.memory.store.versionTag(original.knowledgeId, original.id)}`, supports: [], reason: "Late mutation",
-  } }] } : reply("No mutation"));
+  release();
   await h.drain();
   expect(h.memory.store.listKnowledgeRevisions()).toEqual([original]);
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["cancelled"]);

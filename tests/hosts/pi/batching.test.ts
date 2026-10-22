@@ -3,9 +3,9 @@ import { TraceMemory, renderEntry, tokens, toolDefinitions, DEFAULT_CONFIG, type
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { conversationOf, host, NOTER_BATCH_REQUESTS, reply, usage } from "./test-host.ts";
+import { conversationOf, dreamerFiles, host, NOTER_BATCH_REQUESTS, reply, usage } from "./test-host.ts";
 import { submit, verifyUnchanged } from "../../support/noter.ts";
-import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { noterWrittenItem } from "../../support/dreamer.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { hydrate } from "../../source-fixture.ts";
 import { fact as seedFact, facts as seedFacts } from "../../support/seed.ts";
@@ -125,27 +125,22 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
 });
 
 // Retired C's rendered-fact trigger has no replacement: N writes knowledge with facts.
-// D's independent due predicate is pending Knowledge, not a count or size of old facts.
-test("D admits a real pending Knowledge pool on an entry without consuming pending Raw", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerTokens": 5_000 });
+// D's independent due predicate is the Noter-changed knowledge since the last curate, not a count or size of old facts.
+test("D admits a due Noter-written item on an entry without consuming pending Raw", async () => {
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerTokens": 1 });
   try {
     await h.turn();
     const user = h.memory.store.getSourceEntry(h.memory.store.sourcePath(1, "main", 1)[0]!.id)!;
     seedFact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Package manager choice",
       [{ entry: user, text: "User chose pnpm" }]);
     const path = { sessionId: 1, branch: "main", headTurnId: 1 };
-    const trigger = createDreamerTrigger(h.memory, path, 1, 1);
-    expect(h.memory.taskEligibility("dreaming", path).due).toBe(true);
-    h.provider(async c => {
-      if (c.messages.some(m => m.role === "toolResult")) return reply("Done.");
-      const frozen = String(c.messages[0]!.content);
-      const version = frozen.match(/New (K\d+@v\d+)/)?.[1];
-      if (!version || version !== `K${trigger.knowledgeId}@v1`) throw new Error(`unexpected frozen D range: ${frozen.slice(0, 400)}`);
-      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
-        arguments: { skip: version, because: "Reviewed; retain" } }] };
-    });
+    const trigger = noterWrittenItem(h.memory, path, 1);
+    expect(h.memory.store.dreamingDueByNoterChanges(path, 1)).toBe(true);
+    let curateInput = "";
+    h.provider(async c => { curateInput ||= String(c.messages[0]!.content); return dreamerFiles(c) ?? reply("Done."); });
     await h.prompt("new main turn"); await h.answer("new completed entry"); await h.drain();
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success"]);
+    expect(curateInput).toContain(`K${trigger.knowledgeId}`);
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success", "success", "success"]); // curate, verify, classify
     expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
   } finally { await h.dispose(); }
 });

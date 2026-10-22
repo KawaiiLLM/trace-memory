@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { ExtensionSelectorComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Text, TuiAltScreen, TuiMainScreen, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { SessionPanel, showSessionPanel } from "../../../src/hosts/pi/session-panel.ts";
-import { host, reply } from "./test-host.ts";
+import { host, reply, dreamerFiles } from "./test-host.ts";
 import { knowledge, legacyFacts } from "../../support/seed.ts";
 import { compositionMap, contextMap, statusBody } from "../../../src/hosts/pi/session-status.ts";
 import type { ContextComposition } from "../../../src/hosts/pi/context-composition.ts";
@@ -297,15 +297,12 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
       [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], category: "decision", actor: "user",
         text: "Remember the choice", createdAt: "test" }]).facts[0]!;
     const item = knowledge(store, store.knowledgePath(1, "main", 1), "project", "constraint",
-      [evidence.id], "Remember the choice", { run: { kind: "manual", createdAt: "test" } });
+      [evidence.id], "Remember the choice", { operation: { title: "Fixture title" } }); // Noter-written: it makes the Dreamer due (2026-10-22)
     const pool = `project:${store.getSession(1)!.projectId}`;
     const pendingTokens = store.pendingVersions(pool, store.knowledgePath(1))[0]!.tokens;
-    h.memory.setKnowledgeBudget("project", pendingTokens * 2);
     h.provider(async conversation => {
-      expect(conversation.systemPrompt).toMatch(/^# Dreamer/);
-      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: {
-        op: "archive", kind: "budget", id: `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`, supports: [], reason: "Retire active memory; preserve history",
-      } }] };
+      expect(conversation.systemPrompt).toMatch(/^# (Dreamer|Classifying)/);
+      return dreamerFiles(conversation) ?? reply("Done");
     });
     h.ctx.mode = "tui"; h.ctx.hasUI = true;
     const s = screenHarness(40, 24); h.ctx.ui.custom = s.ctx.ui.custom;
@@ -332,12 +329,11 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     h.ctx.hasUI = false;
     await h.turn(); await h.drain();
     const runs = store.listRuns(1).filter(run => run.kind === "dreaming");
-    expect(runs).toHaveLength(1); expect(runs[0]!.outcome).toBe("success"); expect(runs[0]!.mode).toBe("subagent");
+    expect(runs.map(run => run.outcome)).toEqual(["success", "success", "success"]); // curate, verify, classify
+    expect(runs.every(run => run.mode === "subagent")).toBe(true);
     expect(h.requests.length).toBeGreaterThan(requests);
-    const archive = store.listCommitsByRun(runs[0]!.id)[0]!;
     expect(store.listFactsByRun(runs[0]!.id)).toEqual([]);
-    expect(archive.supports).toEqual(store.knowledgeRevision(archive.parentId!)!.supports);
-    expect(store.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?").get(pool, archive.id)).toBeTruthy();
+    expect(store.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?").get(pool, item.commit)).toBeTruthy(); // curate covered what it showed
   } finally { await h.dispose(); }
 });
 

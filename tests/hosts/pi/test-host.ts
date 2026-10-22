@@ -141,7 +141,7 @@ export function noterReply(conversation: Conversation, plan: { facts?: string; k
 /** The scripted Dreamer's side of a run (ticket 144 stage 4), as a model behaves on the wire: call `check`, write the file the latest
  * message names (`## none` for curate and verify, every item 50 for the scorer), stop; a follow-up that names the next batch's file
  * is answered the same way. Returns undefined when the model has nothing left to say. */
-export function dreamerFiles(conversation: Conversation): Reply | undefined {
+export function dreamerFiles(conversation: Conversation, plan: { curate?: string; verify?: string } = {}): Reply | undefined {
   const call = (calls: { id: string; name: string; arguments: JsonObject }[]): Reply => ({ ...reply(""), stopReason: "toolUse",
     content: calls.map(value => ({ type: "toolCall" as const, ...value })) });
   const mentions = conversation.messages.flatMap(m => m.role === "assistant" ? [] : [partsText((m as { content: unknown }).content)]).filter(text => /(?:Your file|File): \S+\.md/.test(text));
@@ -152,7 +152,8 @@ export function dreamerFiles(conversation: Conversation): Reply | undefined {
     .filter(part => part.type === "toolCall" && part.name === "write").map(part => part.arguments?.path));
   if (written.includes(file)) return undefined;
   const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
-  return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n" : "## none\n" } }]);
+  return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n"
+    : (/^Task: verify/m.test(report) ? plan.verify : /^Task: curate/m.test(report) ? plan.curate : undefined) ?? "## none\n" } }]);
 }
 /** The requests one scripted Noter batch makes: the write task (check, the two files, stop) and the verify task (check, stop). */
 export const NOTER_BATCH_REQUESTS = 5;

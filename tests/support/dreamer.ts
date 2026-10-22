@@ -6,6 +6,7 @@ import { REQUEST } from "./noter.ts";
 import { block, workspaceBatch } from "./workspace.ts";
 import { applyWorkspace } from "../../src/core/workspace/index.ts";
 import type { KnowledgePath, Store } from "../../src/core/store/index.ts";
+import { knowledge as seedKnowledge } from "./seed.ts";
 
 /** A scripted Dreamer (ticket 144, stage 4): the stand-in for the model behind `runAgent` in tests that run the real Dreaming
  * tasks. Like a host, it calls `check`, writes the file `check` names, meets the stop hook after every pass and follows the next
@@ -136,4 +137,11 @@ export function commitDreamerOps(memory: { store: Store }, path: KnowledgePath, 
   const refused = done.results.flatMap(result => result.ok ? [] : [result.reason]);
   if (refused.length) throw new Error(refused.join("\n"));
   return done.results.flatMap(result => result.ok ? result.committed.map(item => ({ knowledgeId: item.knowledgeId, commit: item.commit })) : []);
+}
+
+/** A small Noter-written item over `factId`: only Noter changes make a Dreamer due (stage 4, 2026-10-22). A host test pairs it with
+ * `dreaming.triggerTokens: 1`. Replaces the retired budget-crossing fixture `createDreamerTrigger`. */
+export function noterWrittenItem(memory: TraceMemory, path: { sessionId: number; branch: string; headTurnId: number }, factId: number,
+  scope: "global" | "project" | "session" = "project", category: "constraint" | "reference" = "constraint") {
+  return seedKnowledge(memory.store, path, scope, category, [factId], `Fixture trigger item ${factId}`, { operation: { title: `Trigger item ${factId}` } });
 }

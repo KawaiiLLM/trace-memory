@@ -18,17 +18,16 @@ const nativeTask = (f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<N
 test("68: native Dreamer with an unlimited round count completes more than fifty tool rounds", async () => {
   const f = await fixture({ "noting.triggerTokens": 1e9 });
   try {
-    const observed: number[] = [], passes: number[] = [];
+    const passes: number[] = [];
     let writes = 0;
     f.script(body => toolResults(body) < 55 ? call(`read-${toolResults(body)}`, "search", {}) : say("Finished."));
     const result = await runNative(nativeTask(f, {
       tools: [{ name: "search", description: "Read synthetic material", parameters: { type: "object", properties: {} }, execute: () => { writes++; return "synthetic material"; } }],
-      reportRounds: rounds => observed.push(rounds), passEnd: rounds => { passes.push(rounds); return undefined; },
+      passEnd: rounds => { passes.push(rounds); return undefined; },
     }));
     expect(result.outcome).toBe("success");
     expect(writes).toBe(55);
     expect(result.calls).toHaveLength(55);
-    expect(observed.at(-1)).toBe(55);
     expect(passes).toEqual([55]);
   } finally { await f.dispose(); }
 });

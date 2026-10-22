@@ -11,7 +11,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { host as createHost, reply, notingFact, noteHeld, type Reply } from "./test-host.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
-import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { noterWrittenItem } from "../../support/dreamer.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
@@ -323,15 +323,15 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
 });
 
 test("24a/51: concurrent N and D indicator prefers N; off and no-theme fallback", async () => {
-  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerTokens": 5_000 });
+  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerTokens": 1 });
   await h.turn();
   expect(footer(h)).toMatchObject({ glyph: "○", role: "dim" });
   const source = h.memory.store.sourcePath(1, "main", 1).find(value => value.entryOrdinal === 1)!;
   fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Package manager choice",
     [{ entry: h.memory.store.getSourceEntry(source.id)!, text: "User chose pnpm" }]);
   const priorRequests = h.requests.length;
-  const due = createDreamerTrigger(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1, 1);
-  expect(h.memory.taskEligibility("dreaming", { sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ due: true });
+  const due = noterWrittenItem(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1);
+  expect(h.memory.store.dreamingDueByNoterChanges({ sessionId: 1, branch: "main", headTurnId: 1 }, 1)).toBe(true);
 
   // Both phases hold their own real wire requests; D must not be a stand-in for retired C.
   h.provider(async () => new Promise<Reply>(() => {}));

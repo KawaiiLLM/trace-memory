@@ -183,7 +183,7 @@ test("Pi busy own phases defer closed-session scans and never borrow invalid tar
       [{ sources: [{ entry: user, address: `T1#E${user.entryOrdinal}` }], text: "Own rule",
         category: "decision", actor: "user", createdAt: at }]).facts[0]!;
     knowledge(store, store.knowledgePath(own.id, "main", 1), "session", "constraint", [evidence.id],
-      "Own knowledge", { run: { kind: "manual", createdAt: at } });
+      "Own knowledge", { run: { kind: "noting", createdAt: at } }); // only Noter changes make a Dreamer due (2026-10-22)
     const good = closedTarget(h.memory, own.projectId);
     const bad = closedTarget(h.memory, own.projectId, true);
     await h.emit("session_tree");

@@ -41,6 +41,19 @@ export const noterTurn = (body: Body, fact: Record<string, unknown> = {}, tokens
   return calls("write", "write", [{ path: files[1], content: Object.keys(fact).length ? factsFile([fact as never]) : "## none\n" },
     { path: files[2], content: knowledge }], tokens);
 };
+/** The scripted Dreamer on the wire (ticket 144, stage 4): call `check`; write the file the latest report or follow-up names (`## none` for
+ * curate and verify, every listed item 50 for the scorer); stop. Returns the reply to the request `body` holds. */
+export const dreamerTurn = (body: Body, tokens = usage()): Response => {
+  const text = (message: Body) => typeof message.content === "string" ? message.content : (message.content ?? []).map((part: Body) => part.text ?? "").join("");
+  const named = (body.messages ?? []).filter((m: Body) => m.role !== "assistant" && m.role !== "system").map(text).filter((value: string) => /(?:Your file|File): \S+\.md/.test(value));
+  if (!named.length) return call("check-1", "check", {}, tokens);
+  const report = named.at(-1)!;
+  const file = /(?:Your file|File): (\S+?\.md)/.exec(report)![1]!;
+  const written = (body.messages ?? []).flatMap((m: Body) => (m.tool_calls ?? []).filter((c: Body) => c.function?.name === "write").map((c: Body) => JSON.parse(c.function.arguments).path));
+  if (written.includes(file)) return say("Done.", tokens);
+  const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
+  return call(`write-${written.length + 1}`, "write", { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n" : "## none\n" }, tokens);
+};
 export const broken = () => new Response(JSON.stringify({ error: { message: "provider exploded" } }), { status: 500, headers: { "content-type": "application/json" } });
 
 /** Tell the child's requests from the parent's by the production prompt they carry. */
