@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import type { DreamingAgentInput, RunAgentResult } from "../../src/core/api/index.ts";
+import type { DreamingAgentInput, DreamingTaskInput, RunAgentResult } from "../../src/core/api/index.ts";
 import type { RunAgent, TraceMemory } from "../source-fixture.ts";
 import { REQUEST } from "./noter.ts";
 import { workspaceBatch } from "./workspace.ts";
@@ -77,3 +77,11 @@ export function dreamerFixture(memories: TraceMemory[], script: DreamerScript = 
   return { ...b, dreamer, target, dream, next: (agent: RunAgent) => { runners.push(agent); } };
 }
 export type DreamerFixture = ReturnType<typeof dreamerFixture>;
+
+/** The curate model of a test that does something the scripted one does not: it calls `check`, writes the batch file `check` names
+ * with `text`, and meets the stop hook once. Returns the hook's answer (the next batch, or undefined when the task is over). */
+export async function writeCurateBatch(input: DreamingTaskInput, text: string): Promise<string | undefined> {
+  const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
+  writeFileSync(FILE.curate!.exec(report)![1]!, text);
+  return input.passEnd();
+}

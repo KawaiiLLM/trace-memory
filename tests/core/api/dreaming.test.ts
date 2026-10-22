@@ -2,7 +2,6 @@
 // prompt and request, and the Store state after a failure, a cancellation or a fault in the final transaction. The run shape
 // itself (hand-off, resume, retries, the cancellation fence) is `dreaming-run.test.ts`.
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
 import { afterEach, expect, test } from "vitest";
 import type { DreamingTaskInput, RunAgentResult } from "../../../src/core/api/index.ts";
 import { dreamingWorkspaceToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
@@ -11,7 +10,7 @@ import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import type { TraceMemory } from "../../source-fixture.ts";
-import { dreamerFixture as makeDreamerFixture, type DreamerScript } from "../../support/dreamer.ts";
+import { dreamerFixture as makeDreamerFixture, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
 import { REQUEST } from "../../support/noter.ts";
 import { block } from "../../support/workspace.ts";
 
@@ -24,12 +23,7 @@ const covered = (f: Fixture) => f.store.db.prepare("SELECT revision_id FROM know
 const revisions = (f: Fixture) => Number(f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions").get()!.n);
 const curateRun = (f: Fixture) => f.store.listRuns(f.session.id).find(run => run.rangeFrom === `S${f.session.id}/curate`)!;
 const update = (item: { ref: string }, text: string) => block(`update ${item.ref}`, { reason: "tidy" }, text);
-/** The model of a curate task that does something the scripted one does not: it names the file `check` gives, writes it and meets the stop hook. */
-async function writeBatch(input: DreamingTaskInput, text: string) {
-  const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
-  writeFileSync(/File: (\S+?\.md)/.exec(report)![1]!, text);
-  return input.passEnd();
-}
+const writeBatch = (input: DreamingTaskInput, text: string) => writeCurateBatch(input, text);
 
 // ---- Capacity, prompt and tools ------------------------------------------------------------------------------------------------
 
@@ -144,6 +138,39 @@ test("64c missing request without an unavailable-audit acknowledgement is an exp
   if (!("runId" in result)) throw new Error("missing run id");
   expect(result.problems).toContain("runAgent must return the exact provider request");
   expect(f.store.getRun(result.runId)!.request).toBeNull();
+});
+
+test.each(["failure", "cancelled"] as const)("64c %s terminal transaction persists the audit and covers nothing", async terminal => {
+  const f = dreamerFixture();
+  const item = f.item(`${terminal} rule`, { category: "constraint" });
+  f.next(async raw => { (raw as DreamingTaskInput).acknowledgeRequest(); return { outcome: terminal, output: `${terminal} output`, request: { terminal }, nativeLog: `/tmp/${terminal}.jsonl` }; });
+  const result = await f.dream();
+  if (!("runId" in result)) throw new Error("missing run");
+  const run = f.store.getRun(result.runId)!;
+  expect(run.outcome).toBe(terminal);
+  expect(JSON.parse(run.response!)).toMatchObject({ output: `${terminal} output`, nativeLog: `/tmp/${terminal}.jsonl` });
+  expect(JSON.parse(run.request!)).toEqual({ terminal });
+  expect(covered(f)).toEqual([]);
+  expect(f.store.currentCommit(item.knowledgeId, f.path)[0]!.id).toBe(item.commit);
+});
+
+test("64c a rejected terminal transaction rolls back the batch and its coverage but preserves the attempt evidence", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("fenced rule", { category: "constraint" });
+  f.next(async raw => {
+    const input = raw as DreamingTaskInput;
+    input.acknowledgeRequest();
+    f.store.invalidateExecutor(f.memory.executorId); // the claim is gone before the batch is applied
+    await writeBatch(input, update(rule, "fenced rewrite"));
+    return { outcome: "success", output: "done", request: REQUEST };
+  });
+  const result = await f.dream();
+  if (!("runId" in result)) throw new Error("missing run");
+  expect(result.outcome).toBe("failure");
+  expect(covered(f)).toEqual([]);
+  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.id).toBe(rule.commit);
+  expect(JSON.parse(f.store.getRun(result.runId)!.response!)).toMatchObject({ output: "done" });
+  expect(f.store.getRun(result.runId)!.request).toBe(JSON.stringify(REQUEST));
 });
 
 // ---- What a failed or cancelled run leaves in the Store --------------------------------------------------------------------------
