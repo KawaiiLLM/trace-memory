@@ -5,7 +5,7 @@ import type { RunAgent, TraceMemory } from "../source-fixture.ts";
 import { REQUEST } from "./noter.ts";
 import { block, workspaceBatch } from "./workspace.ts";
 import { applyWorkspace, describeBlock, plan } from "../../src/core/workspace/index.ts";
-import { CURATE_ROTATION, type CurateOperation } from "../../src/core/store/executions.ts";
+import { CURATE_ROTATION, curatePairOf, type CurateOperation, type CuratePair } from "../../src/core/store/executions.ts";
 import type { Proposal } from "../../src/core/dreaming/changes.ts";
 import type { KnowledgePath, Store } from "../../src/core/store/index.ts";
 import { knowledge as seedKnowledge } from "./seed.ts";
@@ -113,11 +113,11 @@ export function dreamerFixture(memories: TraceMemory[], script: DreamerScript = 
   b.memory.config.dreaming.triggerOperations = 1;
   const target = { sessionId: b.session.id, branch: "main", headTurnId: b.path.headTurnId!, model: "scripted" };
   const dream = () => b.memory.dream(target);
-  /** Reach a later operation by real cycles (stage 5 §9.8): Noter-written items that reach the trigger, then one empty `dream()`, until
-   * the project's next operation is `operation`. Never seeds run records or edits the rotation. */
-  const cycleTo = async (operation: CurateOperation) => {
-    for (let guard = 0; b.store.nextCurateOperation(b.project.id) !== operation; guard++) {
-      if (guard > CURATE_ROTATION.length) throw new Error(`cycleTo(${operation}) did not converge`);
+  /** Reach a later pair by real cycles (stage 5 §9.8): Noter-written items that reach the trigger, then one empty `dream()`, until
+   * the project's next pair is `pair`. Never seeds run records or edits the rotation. */
+  const cycleTo = async (pair: CuratePair) => {
+    for (let guard = 0; b.store.nextCuratePair(b.project.id) !== pair; guard++) {
+      if (guard > CURATE_ROTATION.length) throw new Error(`cycleTo(${pair}) did not converge`);
       noterWrittenItem(b.memory, b.path as never, b.existingFact(`Cycle fact ${guard}`).id);
       const result = await dream();
       if (result.outcome !== "success") throw new Error(`cycleTo: a cycle ended ${result.outcome}`);
@@ -138,17 +138,17 @@ export async function writeCurateFiles(input: DreamingAgentInput, ...texts: stri
 
 /** Part 4b: the vehicle for tests whose subject is what a merge, split, archive or update leaves in the Store, not the Dreamer's run.
  * It applies a curate file to a path through the same check and `commitWorkspaceRun` a Dreamer's pass uses, and throws on a file that
- * fails its check. A curate file holds one operation (stage 5 §3.5): `operation` names it, or a text that mixes operations is split into
- * consecutive single-operation files, applied in order. Each operation still commits or is refused on its own: read `blocks` for a stale base. */
+ * fails its check. A curate file holds the operations of one pair (146 ruling 13): `operation` names one, or a text that mixes pairs is split into
+ * consecutive single-pair files, applied in order. Each operation still commits or is refused on its own: read `blocks` for a stale base. */
 export function curateNow(memory: { store: Store }, path: KnowledgePath, text: string, operation?: CurateOperation) {
-  const groups: { operation: CurateOperation; text: string }[] = [];
-  if (operation) groups.push({ operation, text });
+  const groups: { pair: CuratePair; text: string }[] = [];
+  if (operation) groups.push({ pair: curatePairOf(operation), text });
   else for (const segment of text.split(/^(?=## )/m).filter(part => part.trim())) {
-    const op = /^## (\w+)/.exec(segment)?.[1] as CurateOperation;
-    if (groups.at(-1)?.operation === op) groups.at(-1)!.text += segment; else groups.push({ operation: op, text: segment });
+    const pair = curatePairOf(/^## (\w+)/.exec(segment)?.[1] as CurateOperation);
+    if (groups.at(-1)?.pair === pair) groups.at(-1)!.text += segment; else groups.push({ pair, text: segment });
   }
   const done = groups.map(group => {
-    const result = applyWorkspace(memory.store, { kind: "curate", operation: group.operation, sessionId: path.sessionId, path, file: { name: `curate-${group.operation}.md`, text: group.text } });
+    const result = applyWorkspace(memory.store, { kind: "curate", pair: group.pair, sessionId: path.sessionId, path, file: { name: `curate-${group.pair}.md`, text: group.text } });
     if (!result.ok) throw new Error(result.problems.join("\n"));
     return result;
   });
@@ -221,13 +221,13 @@ export function coverKnowledge(store: Store, path: KnowledgePath, revisionIds: r
   return run.id;
 }
 
-/** The operation a curate file of one operation names, from its first block's heading (for a test helper that takes the file's text only). */
-export const operationOfText = (text: string): CurateOperation => /^## (update|merge|split|archive)\b/m.exec(text)?.[1] as CurateOperation ?? "update";
+/** The pair a curate file names, from its first block's heading (for a test helper that takes the file's text only). */
+export const pairOfText = (text: string): CuratePair => curatePairOf(/^## (update|merge|split|archive)\b/m.exec(text)?.[1] as CurateOperation ?? "update");
 
 /** The proposals a curate run kept (stage 5 §4.2), compiled from curate blocks the way the batch check does: one entry per block, in change order. */
 export function proposalsOf(memory: { store: Store }, path: KnowledgePath, ...entries: [CurateOperation, string][]): Proposal[] {
   return entries.flatMap(([operation, text]) => {
-    const planned = plan(memory.store, { kind: "curate", operation, sessionId: path.sessionId, path, file: { name: "curate.md", text } });
+    const planned = plan(memory.store, { kind: "curate", pair: curatePairOf(operation), sessionId: path.sessionId, path, file: { name: "curate.md", text } });
     if (planned.problems.length) throw new Error(planned.problems.join("\n"));
     return planned.knowledge.map(entry => ({ run: 0, category: "constraint", block: describeBlock(entry.block), operation: entry.make().operation as Proposal["operation"] }));
   }).map((proposal, i) => ({ ...proposal, n: i + 1 }));

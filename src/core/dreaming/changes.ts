@@ -5,6 +5,7 @@
 import type { KnowledgeRevision } from "../model/index.ts";
 import { knowledgeTitle } from "../render/index.ts";
 import type { KnowledgeOperationInput, KnowledgePath, Store } from "../store/index.ts";
+import { curatePairOf } from "../store/executions.ts";
 import { BARE_ADDRESS, list, plan, traceProblem, describeBlock, parseBlocks, problem, type Block, type Length, type Section, type WorkspaceFile } from "../workspace/index.ts";
 
 /** One operation curate proposed, as its batch run recorded it at check time (the operation compiled then, so the change file never re-parses against a moved store). */
@@ -165,7 +166,7 @@ export function checkVerify(store: Store, path: KnowledgePath, file: WorkspaceFi
         if (!block.body) problems.push(fmt(block.line, "missing the complete body after the blank line"));
         else {
           const synthetic: WorkspaceFile = { name: "edit", text: overlay(proposal, block, at) };
-          const compiled = plan(store, { kind: "curate", operation: proposal.operation.op as "update", sessionId: path.sessionId, path, file: synthetic });
+          const compiled = plan(store, { kind: "curate", pair: curatePairOf(proposal.operation.op), sessionId: path.sessionId, path, file: synthetic });
           const strip = (message: string) => message.replace(/^[^:]*:\d+: block 1 `[^`]*`(?: child \d+)?: /, "");
           problems.push(...compiled.problems.map(message => fmt(block.line, `the edit does not pass the ${proposal.operation.op} check: ${strip(message)}`)));
           lengths.push(...compiled.lengths.map(length => ({ ...length, block: where })));

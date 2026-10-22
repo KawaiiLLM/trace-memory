@@ -24,7 +24,7 @@ import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
-import { dreamerFixture as makeDreamerFixture, noterWrittenItem, operationOfText, proposalsOf, scriptedDreamer, writeCurateFiles, type DreamerScript } from "../../support/dreamer.ts";
+import { dreamerFixture as makeDreamerFixture, noterWrittenItem, pairOfText, proposalsOf, scriptedDreamer, writeCurateFiles, type DreamerScript } from "../../support/dreamer.ts";
 import { buildPendingSection } from "../../../src/hosts/trace-menu.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { checkVerify } from "../../../src/core/dreaming/changes.ts";
@@ -43,6 +43,7 @@ import * as ccNative from "../../../src/hosts/cc/native-session.ts";
 import { CcImporter } from "../../../src/hosts/cc/importer.ts";
 import { DatabaseSync } from "node:sqlite";
 import { Store } from "../../../src/core/store/index.ts";
+import { curatePairOf, type CuratePair } from "../../../src/core/store/executions.ts";
 import { archive as seedArchive, knowledgeBatch, updateKnowledge } from "../../support/seed.ts";
 import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyArchive, legacyFacts, legacyKnowledge, session as seedSession } from "../../support/seed.ts";
 import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
@@ -693,7 +694,7 @@ test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要�
   expect(write([update(old, { edits: [{ old: "word", new: "rule" }] })]).results[0]).toContain("over the limit of 220 (target 200)");
   expect(write([update(old, { text: "Use pnpm", category: "constraint", scope: "project", topics: [] })]).committed).toHaveLength(1);
   // The Dreamer's curate file is checked by the same limits.
-  const refused = checkWorkspace(memory.store, { kind: "curate", operation: "update", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+  const refused = checkWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, commitOf(created))}`, { reason: "Touch an old item" }, long) } });
   expect(refused.problems.join("\n")).toContain("over the limit of 220 (target 200)");
   // The limits are configuration, not constants.
@@ -738,7 +739,7 @@ test("144/2026-10-22: a merge without a title takes the named primary's title, t
   const older = committed("Older rule", "Use pnpm"), newer = committed("Newer rule", "Avoid npm");
   const survivor = committed("Survivor rule", "Pin the Node version");
   const legacy = legacyKnowledge(memory.store, path, { text: "Legacy rule body", category: "constraint", scope: "project", supports: [1] });
-  const merge = (primary: string, absorb: string) => ({ kind: "curate" as const, operation: "merge" as const, sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+  const merge = (primary: string, absorb: string) => ({ kind: "curate" as const, pair: "merge-split" as const, sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`merge ${primary}`, { absorb, reason: "Merged duplicate knowledge." }, "Merged body.") } });
   // Names the newer one: it keeps its identity and its title.
   const merged = applyWorkspace(memory.store, merge(history(newer.knowledgeId, commitOf(newer)), history(older.knowledgeId, commitOf(older))));
@@ -779,7 +780,7 @@ test("2026-10-22: a split keeps the original identity as the primary part, creat
   const original = (write([{ ...create, text: "Use pnpm and keep the lockfile" }]).committed as Array<{ knowledgeId: number; version: string }>)
     .map(item => ({ ...item, commit: commitOf(item) }))[0]!;
   const child = (title: string, category: string, text: string) => `\n### child\ntitle: ${title}\ncategory: ${category}\nscope: project\ntopics:\nsupports: F1\nreason: split out\n\n${text}\n`;
-  const result = applyWorkspace(memory.store, { kind: "curate", operation: "split", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+  const result = applyWorkspace(memory.store, { kind: "curate", pair: "merge-split", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`split ${history(original.knowledgeId, original.commit)}`, { reason: "Two independent rules." }, "Use pnpm")
       + child("Lockfile", "reference", "Keep the lockfile") + child("Registry", "goal", "Use the mirror") } });
   if (!result.ok) throw new Error(result.problems.join("\n"));
@@ -901,10 +902,10 @@ function curateWrite(path: { sessionId: number; headTurnId: number; branch: stri
     if (op.op === "merge") fields.absorb = op.absorb.map(address).join(", ");
     return workspaceBlock(`${op.op} ${address(op.id)}`, fields, op.text);
   });
-  // A curate file holds one operation (stage 5): a mixed list becomes consecutive single-operation files, applied in order.
-  const grouped: { operation: "update" | "merge" | "split" | "archive"; text: string[] }[] = [];
-  operations.forEach((op, i) => { if (grouped.at(-1)?.operation === op.op) grouped.at(-1)!.text.push(blocks[i]!); else grouped.push({ operation: op.op, text: [blocks[i]!] }); });
-  const applied = grouped.map(group => applyWorkspace(store, { kind: "curate", operation: group.operation, sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+  // A curate file holds the operations of one pair (146 ruling 13): a mixed list becomes consecutive single-pair files, applied in order.
+  const grouped: { pair: CuratePair; text: string[] }[] = [];
+  operations.forEach((op, i) => { const pair = curatePairOf(op.op); if (grouped.at(-1)?.pair === pair) grouped.at(-1)!.text.push(blocks[i]!); else grouped.push({ pair, text: [blocks[i]!] }); });
+  const applied = grouped.map(group => applyWorkspace(store, { kind: "curate", pair: group.pair, sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
     file: { name: "curate.md", text: group.text.join("\n") } }));
   for (const each of applied) if (!each.ok) throw new Error(each.problems.join("\n"));
   const result = { ok: true as const, blocks: applied.flatMap(each => each.ok ? each.blocks : []) };
@@ -1146,7 +1147,7 @@ test("64b: stale absorbed bases name the surviving current commit across merge l
     id: tagged(1, merged.commit), ...content(root.fact, "Surviving current conclusion") }]);
   const survivor = updatedReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
   publish(other);
-  const stale = applyWorkspace(memory.store, { kind: "curate", operation: "update", sessionId: other.sessionId, path: { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId },
+  const stale = applyWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: other.sessionId, path: { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`update ${history(second.knowledgeId, second.commit)}`, { reason: "Substantive correction of the recorded conclusion.", supports: other.fact }, "Invalid absorbed edit") } });
   const rejected = stale.ok ? stale.blocks.map(entry => entry.reason ?? "").join("\n") : stale.problems.join("\n");
   expect(rejected).toContain(`current: ${history(survivor.knowledgeId, survivor.commit)}`);
@@ -1771,16 +1772,16 @@ test("64b/21a: a curate update's supports face the same session/project/global t
     publish(c);
     const created = c.writeCommitted([{ op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope, reason: "Admitted for the scope check." }])[0]!;
     const allowed = origin === c || scope === "global" || (scope === "project" && origin === same);
-    const checked = checkWorkspace(memory.store, { kind: "curate", operation: "update", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
+    const checked = checkWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
       file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `Retired on ${origin.branch} evidence.`, supports: origin.fact }, "Changed body.") } });
     expect(checked.problems.length === 0, `${scope} from ${origin.branch}: ${checked.problems.join("; ")}`).toBe(allowed);
   }
   // Reason prose cannot adopt a foreign fact.
   const created = c.writeCommitted([{ op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope: "session", reason: "Admitted for the reason-bypass check." }])[0]!;
-  const prose = checkWorkspace(memory.store, { kind: "curate", operation: "update", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
+  const prose = checkWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `The user adopted ${outside.fact} on this path.` }, "Changed body.") } });
   expect(prose.problems).toEqual([]); // it inherits the parent's evidence; the fact named in the reason is not a citation
-  const applied = applyWorkspace(memory.store, { kind: "curate", operation: "update", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
+  const applied = applyWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `The user adopted ${outside.fact} on this path.` }, "Changed body.") } });
   if (!applied.ok) throw new Error(applied.problems.join("\n"));
   expect(memory.store.currentCommit(created.knowledgeId, c)[0]!.supports).toEqual([Number(c.fact.slice(1))]);
@@ -1839,7 +1840,7 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   // A label is written by the ordinary manual call, with no model call and no independent catalog block.
   expect(write([{ ...create, topics: ["packaging"] }]).committed).toHaveLength(1);
   // Topics stay inherited on archives; the archive block requires an explicit kind and takes no topics.
-  const archiveFile = (fields: Record<string, string>) => checkWorkspace(memory.store, { kind: "curate", operation: "archive", sessionId: s.id,
+  const archiveFile = (fields: Record<string, string>) => checkWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: s.id,
     path: { sessionId: s.id, branch: "main", headTurnId: 1 }, file: { name: "curate.md", text: workspaceBlock("archive K1@v1", fields, "No longer holds.") } }).problems.join("\n");
   expect(archiveFile({ reason: "r" })).toContain("missing required field `kind`");
   expect(archiveFile({ kind: "invalid", reason: "r", topics: "packaging" })).toContain("field `topics` is not allowed here");
@@ -2350,16 +2351,16 @@ test("N and D compose shared definitions and principles with their permitted mai
 
 
 
-// 2026-10-22 (smell classes, Dreaming half): a curate run and its verify get exactly the class of the run's operation, and no other.
-test("2026-10-22: each curate run and its verify get exactly their operation's smell class, and the verify procedure", () => {
+// 2026-10-22 (smell classes, Dreaming half), pairs per 146 ruling 13: a curate run and its verify get exactly the classes of the run's two operations, and no other.
+test("2026-10-22, 146 ruling 13: each curate run and its verify get exactly their pair's two smell classes, and the verify procedure", () => {
   const block = (name: string) => renderLimits(readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8").trimEnd(), DEFAULT_WRITING_LIMITS);
-  const operations = ["update", "merge", "split", "archive"] as const;
-  for (const task of ["curate", "verify"] as const) for (const operation of operations) {
-    const composed = loadPrompt(`tasks/${task}-${operation}.md`);
+  const pairs = { "update-archive": ["update", "archive"], "merge-split": ["merge", "split"] } as const;
+  for (const task of ["curate", "verify"] as const) for (const [pair, own] of Object.entries(pairs) as [keyof typeof pairs, readonly string[]][]) {
+    const composed = loadPrompt(`tasks/${task}-${pair}.md`);
     expect(composed).not.toContain("<!-- include:");
-    for (const other of operations) {
-      if (other === operation) expect(composed, `${task}-${operation} has ${other}`).toContain(block(`smells-${other}`));
-      else expect(composed, `${task}-${operation} lacks ${other}`).not.toContain(block(`smells-${other}`));
+    for (const other of ["update", "merge", "split", "archive"]) {
+      if (own.includes(other)) expect(composed, `${task}-${pair} has ${other}`).toContain(block(`smells-${other}`));
+      else expect(composed, `${task}-${pair} lacks ${other}`).not.toContain(block(`smells-${other}`));
     }
     expect(composed.includes(block("verify-procedure"))).toBe(task === "verify");
     expect(composed).not.toContain(block("smells-facts"));
@@ -2388,29 +2389,49 @@ test("2026-10-22, 144: 「合并实际没有发生，核查通过后才发生」
   expect(g.dreamer.messages[0]).toContain("is not a verdict");
 });
 
-test("2026-10-22, 144: 「D不创建知识，那是N的职责」 and 「每次运行D轮换执行一种操作」 — a curate file refuses create and any other operation than the run's, and the rotation runs update, merge, split, archive", async () => {
+test("2026-10-22, 144: 「D不创建知识，那是N的职责」 — a curate file refuses create in either pair", async () => {
   const f = dreamerFixture();
   const item = f.item("Rule one", { category: "constraint" });
   const created = { title: "Fresh rule", category: "constraint", scope: "project", topics: "", supports: `F${item.supports[0]}`, reason: "new" };
-  expect(checkWorkspace(f.store, workspaceCurate(f, workspaceBlock("create", created, "A fresh rule."), "update")).problems.join("\n")).toContain("`## create` is not allowed in a curate file");
-  expect(checkWorkspace(f.store, workspaceCurate(f, workspaceBlock(`archive ${item.ref}`, { kind: "invalid", reason: "r" }, "Gone for good, per the user."), "update")).problems.join("\n")).toContain("`## archive` is not allowed in a curate file; allowed: `update`");
-  const order: string[] = [];
-  for (let lap = 0; lap < 4; lap++) {
-    order.push(f.store.nextCurateOperation(f.project.id));
-    f.item(`Rule ${lap + 2}`, { category: "reference" });
-    expect(await f.dream()).toMatchObject({ outcome: "success" });
-  }
-  expect(order).toEqual(["update", "merge", "split", "archive"]);
-  expect(f.store.nextCurateOperation(f.project.id)).toBe("update");
+  for (const pair of ["update-archive", "merge-split"] as const)
+    expect(checkWorkspace(f.store, workspaceCurate(f, workspaceBlock("create", created, "A fresh rule."), pair)).problems.join("\n")).toContain("`## create` is not allowed in a curate file");
 });
 
-test("2026-10-22, 144: /trace shows the next curate operation and no running batch (maintainer chose A) — after an update run finishes the Dreaming section's row says merge", async () => {
+// Maintainer, 2026-10-22 (ticket 146 ruling 13, superseding 144 stage 5's four-step rotation): 「D 的轮换可以减少为两种，第一种是更新+归档，第二种是合并+拆分」, then 「B」 over two parallel agents.
+test("2026-10-22, 146 ruling 13: a run performs one pair, update+archive then merge+split; the one curate agent may propose either operation of its pair per item, and none outside it", async () => {
   const f = dreamerFixture();
-  const row = () => buildPendingSection({ noting: { tokens: 0, trigger: 1 }, dreaming: { pending: { tokens: 0, trigger: 1 }, next: f.store.nextCurateOperation(f.project.id) } }).dreamingNext;
-  expect(row()).toEqual({ label: "next curate", value: "update" });
+  const a = f.item("Rule A", { category: "constraint" }), b = f.item("Rule B", { category: "constraint" }), c = f.item("Rule C", { category: "constraint" });
+  const update = workspaceBlock(`update ${a.ref}`, { reason: "tidy" }, "Rule A, tidied");
+  const archive = workspaceBlock(`archive ${b.ref}`, { kind: "invalid", reason: "superseded" }, "Superseded by rule C, which carries the same ruling.");
+  // Both operations of the pair pass one check; an operation of the other pair is refused.
+  expect(checkWorkspace(f.store, workspaceCurate(f, `${update}\n${archive}`, "update-archive")).problems).toEqual([]);
+  expect(checkWorkspace(f.store, workspaceCurate(f, workspaceBlock(`merge ${a.ref}`, { absorb: c.ref, reason: "same" }, "Merged."), "update-archive")).problems.join("\n"))
+    .toContain("`## merge` is not allowed in a curate file; allowed: `update`, `archive`");
+  expect(checkWorkspace(f.store, workspaceCurate(f, update, "merge-split")).problems.join("\n")).toContain("`## update` is not allowed in a curate file; allowed: `merge`, `split`");
+  // A run proposes both for different items, verify confirms, and both are applied.
+  expect(f.store.nextCuratePair(f.project.id)).toBe("update-archive");
+  f.dreamer.script.curate!.constraint = `${update}\n${archive}`;
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(f.store.currentCommit(a.knowledgeId, f.path)[0]!.text).toBe("Rule A, tidied");
+  expect(f.store.currentCommit(b.knowledgeId, f.path)[0]).toMatchObject({ op: "archive", archiveKind: "invalid" });
+  // The rotation then alternates: merge+split, and a lap returns to update+archive.
+  const order: string[] = [];
+  f.dreamer.script.curate = {};
+  for (let lap = 0; lap < 3; lap++) {
+    order.push(f.store.nextCuratePair(f.project.id));
+    f.item(`Later rule ${lap}`, { category: "reference" });
+    expect(await f.dream()).toMatchObject({ outcome: "success" });
+  }
+  expect(order).toEqual(["merge-split", "update-archive", "merge-split"]);
+});
+
+test("2026-10-22, 144: /trace shows the next curate pair and no running batch (maintainer chose A) — after an update+archive run finishes the Dreaming section's row says merge-split", async () => {
+  const f = dreamerFixture();
+  const row = () => buildPendingSection({ noting: { tokens: 0, trigger: 1 }, dreaming: { pending: { tokens: 0, trigger: 1 }, next: f.store.nextCuratePair(f.project.id) } }).dreamingNext;
+  expect(row()).toEqual({ label: "next curate", value: "update-archive" });
   f.item("Rule one", { category: "constraint" });
   expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(row()).toEqual({ label: "next curate", value: "merge" });
+  expect(row()).toEqual({ label: "next curate", value: "merge-split" });
 });
 
 // Maintainer, 2026-10-22: 「同一个project，如果另一个会话触发了Dreamer，按理说它处理的部分已经包含本会话N产生的project级以上的知识，所以处理完后应该同时将本会话的对应的project级以上待处理知识标记为完成，避免重复处理」.
@@ -2734,8 +2755,8 @@ test("133: pending Raw uses only the temporary allowance; unused Knowledge allow
 
 
 // Ticket 144, Stage 2: the workspace file contract. Each ruling it implements has a named test.
-const workspaceCurate = (b: ReturnType<typeof workspaceBatch>, text: string, operation = operationOfText(text)) =>
-  ({ kind: "curate" as const, operation, sessionId: b.session.id, path: b.path, file: { name: "curate.md", text } });
+const workspaceCurate = (b: ReturnType<typeof workspaceBatch>, text: string, pair = pairOfText(text)) =>
+  ({ kind: "curate" as const, pair, sessionId: b.session.id, path: b.path, file: { name: "curate.md", text } });
 
 test("2026-10-21/22: a file holds at most one record per knowledge item, an absorbed item included", () => {
   const b = workspaceBatch();
@@ -2769,8 +2790,8 @@ test("2026-10-21/22: update keeps the identity and adds a version; Dreaming make
     if (!result.ok) throw new Error(result.problems.join("\n"));
     expect(result.blocks[0]!.versions).toEqual([`K${item.knowledgeId}@v2`]);
     const created = { title: "Fresh rule", category: "constraint", scope: "project", topics: "", supports: `F${item.supports[0]}`, reason: "new" };
-    for (const operation of ["update", "merge", "split", "archive"] as const)
-      expect(checkWorkspace(b.store, workspaceCurate(b, workspaceBlock("create", created, "A fresh rule."), operation)).problems.join("\n")).toContain("`## create` is not allowed in a curate file");
+    for (const pair of ["update-archive", "merge-split"] as const)
+      expect(checkWorkspace(b.store, workspaceCurate(b, workspaceBlock("create", created, "A fresh rule."), pair)).problems.join("\n")).toContain("`## create` is not allowed in a curate file");
   } finally { b.memory.close(); }
 });
 

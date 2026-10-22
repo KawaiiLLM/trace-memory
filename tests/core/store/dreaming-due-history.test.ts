@@ -140,7 +140,7 @@ function measureLowHitChain(manual: number, children = 0) {
     if (children) {
       const ref = `K${created.knowledgeId}@v${store.versionOrdinal(created.knowledgeId, base)}`;
       const child = `\n### child\ntitle: Child rule\ncategory: reference\nscope: project\ntopics: split\nsupports: F${fact.id}\nreason: split out\n\nA child.\n`;
-      const split = applyWorkspace(store, { kind: "curate", operation: "split", sessionId: session.id, path,
+      const split = applyWorkspace(store, { kind: "curate", pair: "merge-split", sessionId: session.id, path,
         file: { name: "curate.md", text: block(`split ${ref}`, { reason: "many topics" }, "Rule, first part.") + child.repeat(children) } });
       if (!split.ok) throw new Error(split.problems.join("\n"));
       expect(store.liveKnowledge(path).length).toBe(children + 1);

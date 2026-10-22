@@ -56,7 +56,7 @@ test("2026-10-22, 146 — the first check lists batches of 20, 20 and 5; a merge
   const f = dreamerFixture();
   const rules = items(f, "constraint", 45);
   const reference = f.item("A reference item", { category: "reference", title: "Reference" });
-  await f.cycleTo("merge");
+  await f.cycleTo("merge-split");
   f.dreamer.inputs.length = 0; f.dreamer.reports.length = 0;
   const merge = (absorb: { ref: string }) => block(`merge ${rules[0]!.ref}`, { absorb: absorb.ref, reason: "repeats" }, "Merged constraint rule");
   f.dreamer.script.curate!.constraint = merge(rules[42]!); // batch 1 absorbs an item of batch 3
@@ -75,7 +75,7 @@ test("2026-10-22, 146 — a merge that absorbs another category's item is refuse
   const f = dreamerFixture();
   const [rule] = items(f, "constraint", 2);
   const reference = f.item("A reference item", { category: "reference", title: "Reference" });
-  await f.cycleTo("merge");
+  await f.cycleTo("merge-split");
   const merge = block(`merge ${rule!.ref}`, { absorb: reference.ref, reason: "repeats" }, "Merged");
   f.dreamer.script.curate!.constraint = [merge, merge];
   noterWrittenItem(f.memory, f.path as never, f.existingFact("Trigger 2").id);
@@ -480,7 +480,7 @@ test("a frozen group that no longer fits fails the run as a capacity refusal on 
   await f.dream();
   const before = JSON.stringify(f.store.handoff(f.session.id, "dreaming")!.detail);
   const input = f.dreamer.inputs.filter(i => i.task === "curate").at(-1)!;
-  const taskPrompt = Math.max(...(["curate", "verify"] as const).map(task => tokens(loadPrompt(`tasks/${task}-update.md`, canonicalToolNames, f.memory.config.writing))));
+  const taskPrompt = Math.max(...(["curate", "verify"] as const).map(task => tokens(loadPrompt(`tasks/${task}-update-archive.md`, canonicalToolNames, f.memory.config.writing))));
   const price = tokens(input.prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingWorkspaceToolDefinitions, canonicalToolNames))) + tokens(input.text) + taskPrompt;
   const calls = f.dreamer.inputs.length;
   const resumed = await f.memory.dream({ ...f.target, capacity: { inputTokens: price - 1 } });

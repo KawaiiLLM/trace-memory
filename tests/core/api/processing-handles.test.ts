@@ -3,7 +3,7 @@ import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { seedSourceEntry } from "../../source-fixture.ts";
 import { applyWorkspace, checkWorkspace } from "../../../src/core/workspace/index.ts";
 import { block } from "../../support/workspace.ts";
-import { operationOfText } from "../../support/dreamer.ts";
+import { pairOfText } from "../../support/dreamer.ts";
 
 const all: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const m of all.splice(0)) m.close(); });
@@ -78,7 +78,7 @@ test("92 supersedes named-read grants: copied Raw tags do not prove reading, but
 
 // The Dreamer names a base by its exact version address `K<id>@v<n>` in a curate file (ticket 144 Stage 4); each operation commits
 // or is refused on its own, a base that is no longer current is refused as stale and left for the next run.
-const curate = (a: ReturnType<typeof setup>, text: string) => applyWorkspace(a.m.store, { kind: "curate", operation: operationOfText(text), sessionId: a.path.sessionId, path: a.path, file: { name: "curate.md", text } });
+const curate = (a: ReturnType<typeof setup>, text: string) => applyWorkspace(a.m.store, { kind: "curate", pair: pairOfText(text), sessionId: a.path.sessionId, path: a.path, file: { name: "curate.md", text } });
 const applied = (a: ReturnType<typeof setup>, text: string) => { const result = curate(a, text); if (!result.ok) throw new Error(result.problems.join("\n")); return result.blocks; };
 
 test("99: Dreamer invalidation commits immediately and an ordinary update revives the identity", () => {
@@ -95,7 +95,7 @@ test("99: Dreamer invalidation commits immediately and an ordinary update revive
 
 test("92 supersedes 32: mutations require an exact version address, not a bare identity, a numeric commit or a manual tag", () => {
   const a = setup();
-  const check = (text: string) => checkWorkspace(a.m.store, { kind: "curate", operation: operationOfText(text), sessionId: a.path.sessionId, file: { name: "curate.md", text } }).problems.join("\n");
+  const check = (text: string) => checkWorkspace(a.m.store, { kind: "curate", pair: pairOfText(text), sessionId: a.path.sessionId, file: { name: "curate.md", text } }).problems.join("\n");
   for (const id of ["K1", "K1@1", `K1#${a.m.store.versionTag(1, 1)}`]) {
     expect(check(block(`update ${id}`, { reason: "r" }, "body A, again"))).toContain("is not a version address");
     expect(check(block(`archive ${id}`, { kind: "invalid", reason: "r" }, "The user withdrew it the same day."))).toContain("is not a version address");

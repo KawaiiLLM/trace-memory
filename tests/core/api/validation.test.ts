@@ -54,9 +54,9 @@ describe("checkMemoryBatch", async () => {
       const primary = b.item("Rule");
       const before = b.store.listKnowledgeRevisions();
       const text = block(`merge ${primary.ref}`, { absorb: "not-an-id", reason: "Merge duplicate." }, "Merged rule");
-      const checked = checkWorkspace(b.store, { kind: "curate", operation: "merge", sessionId: b.session.id, file: { name: "curate.md", text } });
+      const checked = checkWorkspace(b.store, { kind: "curate", pair: "merge-split", sessionId: b.session.id, file: { name: "curate.md", text } });
       expect(checked.problems.join("\n")).toContain("not-an-id");
-      expect(applyWorkspace(b.store, { kind: "curate", operation: "merge", sessionId: b.session.id, path: b.path, file: { name: "curate.md", text } })).toMatchObject({ ok: false });
+      expect(applyWorkspace(b.store, { kind: "curate", pair: "merge-split", sessionId: b.session.id, path: b.path, file: { name: "curate.md", text } })).toMatchObject({ ok: false });
       expect(b.store.listKnowledgeRevisions()).toEqual(before);
     } finally { b.memory.close(); }
   });

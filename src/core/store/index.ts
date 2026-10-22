@@ -11,7 +11,7 @@ import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, mig
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
-import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome, CURATE_ROTATION, type CurateOperation } from "./executions.ts";
+import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome, CURATE_ROTATION, type CuratePair } from "./executions.ts";
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_OPERATIONS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
@@ -3806,9 +3806,9 @@ export class Store {
     /** Both are decided once the run exists: the hand-off's curate runs include this run, the coverage includes what it wrote. */
     cover?: (done: { runId: number; results: WorkspaceOperationResult[] }) => readonly { id: number; pool?: string }[];
     handoff: (done: { runId: number; results: WorkspaceOperationResult[] }) => { nextTask: string; detail: NonNullable<Handoff["detail"]> } | null;
-    /** 144 stage 5 §3.2: the run's operation, given by the pass that may end the run. When `handoff` returns null the run is finished in this
-     * same transaction: `finished: { operation, advanced }` joins the run's body, `advanced` only if the operation is the one due (Q13). */
-    finish?: { operation: CurateOperation } }): { runId: number; results: WorkspaceOperationResult[] } {
+    /** 144 stage 5 §3.2: the run's pair, given by the pass that may end the run. When `handoff` returns null the run is finished in this
+     * same transaction: `finished: { pair, advanced }` joins the run's body, `advanced` only if the pair is the one due (Q13). */
+    finish?: { pair: CuratePair } }): { runId: number; results: WorkspaceOperationResult[] } {
     return this.transaction(() => {
       const done = this.commitWorkspaceRun({ run: input.run, path: input.path, operations: input.operations ?? [], response: input.response });
       const sessionId = input.run.sessionId!;
@@ -3832,22 +3832,23 @@ export class Store {
         // 146 Q16: only a finished run resets the failure streak, as the Noter's does at its success; a kept batch or an applied group does not.
         this.db.prepare("UPDATE task_failures SET count = 0 WHERE session_id = ? AND phase = 'dreaming' AND pool = ?").run(sessionId, ALL_POOLS);
         if (input.finish) {
-          const advanced = input.finish.operation === this.nextCurateOperation(this.getSession(sessionId)!.projectId);
+          const advanced = input.finish.pair === this.nextCuratePair(this.getSession(sessionId)!.projectId);
           const body = JSON.parse(String(this.db.prepare("SELECT response FROM run_bodies WHERE run_id = ?").get(done.runId)?.response ?? "{}"));
-          this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify({ ...body, finished: { operation: input.finish.operation, advanced } }), done.runId);
+          this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify({ ...body, finished: { pair: input.finish.pair, advanced } }), done.runId);
         }
       }
       return done;
     });
   }
 
-  /** 144 stage 5 §3.2: the operation the project's next Dreamer run performs. The newest run of the project's sessions that finished
-   * and advanced the rotation names the operation just done; none (or only runs from before Stage 5) starts at `update`. */
-  nextCurateOperation(projectId: number): CurateOperation {
-    const row = this.db.prepare(`SELECT json_extract(b.response, '$.finished.operation') AS operation FROM runs r
+  /** 146 ruling 13: the pair the project's next Dreamer run performs. The newest run of the project's sessions that finished
+   * and advanced the rotation names the pair just done; none (or only runs from before the pairs, whose body has no `finished.pair`)
+   * starts at `update-archive`. */
+  nextCuratePair(projectId: number): CuratePair {
+    const row = this.db.prepare(`SELECT json_extract(b.response, '$.finished.pair') AS pair FROM runs r
       JOIN run_bodies b ON b.run_id = r.id JOIN sessions s ON s.id = r.session_id
       WHERE s.project_id = ? AND r.kind = 'dreaming' AND json_extract(b.response, '$.finished.advanced') = 1 ORDER BY r.id DESC LIMIT 1`).get(projectId);
-    const at = CURATE_ROTATION.indexOf(row?.operation as CurateOperation);
+    const at = CURATE_ROTATION.indexOf(row?.pair as CuratePair);
     return CURATE_ROTATION[(at + 1) % CURATE_ROTATION.length]!;
   }
 

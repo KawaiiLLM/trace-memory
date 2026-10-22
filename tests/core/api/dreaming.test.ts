@@ -41,7 +41,7 @@ test("native Read token estimate counts in Dreamer capacity: the fixed part alon
   const nativeReadToolTokens = 402;
   const definitions = pricedToolDefinitions(dreamingWorkspaceToolDefinitions, canonicalToolNames);
   // The largest task prompt the run can send (curate's or verify's, delivered with `check`) is priced with the first message (stage 5 §0).
-  const taskPrompt = Math.max(...(["curate", "verify"] as const).map(task => tokens(loadPrompt(`tasks/${task}-update.md`, canonicalToolNames, f.memory.config.writing))));
+  const taskPrompt = Math.max(...(["curate", "verify"] as const).map(task => tokens(loadPrompt(`tasks/${task}-update-archive.md`, canonicalToolNames, f.memory.config.writing))));
   const price = tokens(base.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(base.text) + taskPrompt;
   const fixed = price - tokens(base.text) + tokens(base.text.replace(curatePrefix(f.store, f.path).text, curatePrefix(f.store, f.path, [], 1).text));
   const runs = f.store.listRuns(f.session.id).length;
@@ -52,7 +52,7 @@ test("native Read token estimate counts in Dreamer capacity: the fixed part alon
   expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")?.count ?? 0).toBe(0);
   // (b) The fixed part fits and the group does not (price - 1): no model call, one failed run naming the problem, counted once.
   const refused = await f.memory.dream({ ...f.target, nativeReadToolTokens, capacity: { inputTokens: price - 1 } });
-  expect(refused).toMatchObject({ outcome: "failure", failure: { task: "curate", operation: "update" } });
+  expect(refused).toMatchObject({ outcome: "failure", failure: { task: "curate", pair: "update-archive" } });
   expect(refused.outcome === "failure" && refused.problems.join(" ")).toMatch(/allowance|fits no group/);
   expect(f.store.listRuns(f.session.id)).toHaveLength(runs + 1);
   expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")?.count).toBe(1);
@@ -236,7 +236,7 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D 
     // 146 ruling 12 (Q23): a cancellation closes the fences before the files could be kept, so nothing is kept and the next run redoes the batches.
     expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
   } else {
-    expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate", detail: { operation: "update", groups: [{ batches: [
+    expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate", detail: { pair: "update-archive", groups: [{ batches: [
       { category: "constraint", run: expect.any(Number) }, { category: "reference" }] }] } }); // the file that passed is kept, the one never written is not
     expect(f.store.handoff(f.session.id, "dreaming")!.detail!.groups![0]!.batches[1]).not.toHaveProperty("run");
   }
@@ -270,7 +270,7 @@ test("2026-10-22, 144: 「任务说明由第一次 check 结果告知」 — a D
   const rule = f.item("Rule", { category: "constraint" });
   f.dreamer.script.curate!.constraint = ["## bogus\n", update(rule, "Rule, tidied")];
   expect(await f.dream()).toMatchObject({ outcome: "success" });
-  const prompt = (task: "curate" | "verify") => loadPrompt(`tasks/${task}-update.md`, canonicalToolNames, f.memory.config.writing);
+  const prompt = (task: "curate" | "verify") => loadPrompt(`tasks/${task}-update-archive.md`, canonicalToolNames, f.memory.config.writing);
   const count = (text: string, part: string) => text.split(part).length - 1;
   const [curate, verify] = f.dreamer.inputs;
   for (const input of [curate!, verify!]) for (const task of ["curate", "verify"] as const) { expect(input.prompt).not.toContain(prompt(task)); expect(input.text).not.toContain(prompt(task)); }
@@ -300,7 +300,7 @@ test("a model that never calls check still gets its task's instructions, in the 
     return { outcome: "success", output: "Done.", request: REQUEST } as RunAgentResult;
   });
   expect(await f.dream()).toMatchObject({ outcome: "success" });
-  const instructions = loadPrompt("tasks/curate-update.md", canonicalToolNames, f.memory.config.writing);
+  const instructions = loadPrompt("tasks/curate-update-archive.md", canonicalToolNames, f.memory.config.writing);
   expect(seen[0]).toContain(instructions);
   expect(seen[1]).not.toContain(instructions);
 });

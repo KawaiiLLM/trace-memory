@@ -1578,7 +1578,7 @@ export default function (pi: ExtensionAPI) {
         ], complete: composition.complete },
       pending: { noting: { tokens: noting.tokens, trigger: noting.trigger, ...(noting.state === "known" && noting.atLeast ? { atLeast: true, entries: noting.entries } : {}) },
         dreaming: { pending: dreamingPendingInput(dreaming.pending, memory.config.dreaming.triggerOperations),
-          ...(state.sessionId ? { next: memory.store.nextCurateOperation(memory.store.getSession(state.sessionId)!.projectId) } : {}) } },
+          ...(state.sessionId ? { next: memory.store.nextCuratePair(memory.store.getSession(state.sessionId)!.projectId) } : {}) } },
       spend: { session: totals?.cost ?? 0, sessionUnknown: totals?.unknown ?? 0,
         noting: { runs: totals?.runs.noting ?? 0, cost: totals?.costs.noting ?? 0 },
         consolidation: { runs: totals?.runs.consolidation ?? 0, cost: totals?.costs.consolidation ?? 0 },

@@ -10,7 +10,7 @@ import { isKnowledgeCategory, substantiveArchiveStatement, validateNotingFact, K
 import { parseKnowledgeAddress, parseTurnAddress } from "../model/address.ts";
 import { words, wordLimit } from "../render/index.ts";
 import type { FactCommitInput, KnowledgeOperationInput, KnowledgePath, RunInput, Store } from "../store/index.ts";
-import type { CurateOperation } from "../store/executions.ts";
+import { CURATE_PAIRS, type CuratePair } from "../store/executions.ts";
 import { describeBlock, parseBlocks, parseScores, problem, type Block, type Section, type WorkspaceFile } from "./parse.ts";
 
 export type TaskKind = "noting-facts" | "noting-knowledge" | "curate" | "classify";
@@ -22,8 +22,8 @@ export type WorkspaceTask =
   | { kind: "noting-facts"; scope: NotingScope; file: WorkspaceFile }
   /** `facts` is the run's facts file; its labels are what `supports:` may cite besides `F<id>`. */
   | { kind: "noting-knowledge"; scope: NotingScope; file: WorkspaceFile; facts: WorkspaceFile }
-  /** 144 stage 5 §3.5: a curate file holds blocks of the run's one `operation`, and never a `create` (Dreaming creates no knowledge). */
-  | { kind: "curate"; operation: CurateOperation; sessionId: number; path?: KnowledgePath; file: WorkspaceFile }
+  /** 146 ruling 13: a curate file holds blocks of either operation of the run's `pair`, and never a `create` (Dreaming creates no knowledge). */
+  | { kind: "curate"; pair: CuratePair; sessionId: number; path?: KnowledgePath; file: WorkspaceFile }
   | { kind: "classify"; items: readonly number[]; file: WorkspaceFile };
 
 /** The host-measured length of one title or body in units, whether or not it is over its limit; the limit is the target plus 10% (145). */
@@ -49,7 +49,7 @@ export interface Plan {
 }
 
 const allowedOps = (task: WorkspaceTask): readonly string[] =>
-  task.kind === "noting-facts" ? ["fact"] : task.kind === "noting-knowledge" ? ["create", "update"] : task.kind === "curate" ? [task.operation] : [];
+  task.kind === "noting-facts" ? ["fact"] : task.kind === "noting-knowledge" ? ["create", "update"] : task.kind === "curate" ? CURATE_PAIRS[task.pair] : [];
 
 const FIELDS: Record<string, readonly string[]> = {
   fact: ["title", "support", "negate"],

@@ -129,7 +129,7 @@ export const dreamingPendingInput = (pending: { operations: number; trigger: num
     : { tokens: null, trigger, unit: "operations" };
 
 /** Dreaming's one condition (146 §1): the Noter knowledge operations not yet covered by a Dreamer run, against the trigger.
- * `next`: the curate operation the project's next run performs (stage 5 §3.2, `Store.nextCurateOperation`); absent without a session. */
+ * `next`: the curate pair the project's next run performs (146 ruling 13, `Store.nextCuratePair`); absent without a session. */
 export interface PendingSectionInput {
   noting: PendingInput;
   dreaming: { pending: PendingInput; next?: string };
@@ -318,7 +318,7 @@ export const TRACE_MENU_FIXTURE: TraceMenuInput = {
   },
   pending: {
     noting: { tokens: 3_200, trigger: 10_000 },
-    dreaming: { pending: { tokens: 12, trigger: 30, unit: "operations" }, next: "merge" },
+    dreaming: { pending: { tokens: 12, trigger: 30, unit: "operations" }, next: "merge-split" },
   },
   spend: {
     session: 1.23,

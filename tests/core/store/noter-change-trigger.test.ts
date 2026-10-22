@@ -31,7 +31,7 @@ function setup() {
     return result.committed[0]!;
   };
   const merge = (primary: { ref: string }, absorbed: { ref: string }) => {
-    const result = applyWorkspace(b.store, { kind: "curate", operation: "merge", sessionId: b.session.id, path: b.path,
+    const result = applyWorkspace(b.store, { kind: "curate", pair: "merge-split", sessionId: b.session.id, path: b.path,
       file: { name: "curate.md", text: block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same rule" }, "Merged rule body.") } });
     if (!result.ok) throw new Error(result.problems.join("\n"));
     return b.store.liveKnowledge(b.path).find(r => r.op === "merge")!;
@@ -64,7 +64,7 @@ describe("what counts", () => {
   test("a revision that two live items share counts once", () => {
     const s = setup();
     const item = s.noterItem("A rule about two topics");
-        const split = applyWorkspace(s.b.store, { kind: "curate", operation: "split", sessionId: s.b.session.id, path: s.b.path,
+        const split = applyWorkspace(s.b.store, { kind: "curate", pair: "merge-split", sessionId: s.b.session.id, path: s.b.path,
       file: { name: "curate.md", text: block(`split K${item.knowledgeId}@v${s.b.store.versionOrdinal(item.knowledgeId, item.commit)}`, { reason: "two topics" }, "Rule, first part.")
         + `\n### child\ntitle: Child rule\ncategory: reference\nscope: project\ntopics: split\nsupports: F${s.support()[0]}\nreason: split out\n\nA child.\n` } });
     if (!split.ok) throw new Error(split.problems.join("\n"));
@@ -81,7 +81,7 @@ describe("what counts", () => {
     expect(s.changed()).toBe(1); // the manual update is current; the walk reaches the Noter create
     s.cover(noted.commit);
     expect(s.changed()).toBe(0); // the covered ancestor ends the branch
-    const dreamed = applyWorkspace(s.b.store, { kind: "curate", operation: "update", sessionId: s.b.session.id, path: s.b.path,
+    const dreamed = applyWorkspace(s.b.store, { kind: "curate", pair: "update-archive", sessionId: s.b.session.id, path: s.b.path,
       file: { name: "curate.md", text: block(`update ${manual.ref}`, { reason: "tidy" }, "Manual rule, tidied.") } });
     expect(dreamed.ok).toBe(true);
     expect(s.changed()).toBe(0);
@@ -166,7 +166,7 @@ describe("the due rule", () => {
     const s = setup();
     s.noterItem("Rule");
     expect(s.b.store.dreamingDue(s.b.path, 2)).toBe(false);
-    writeHandoff(s.b.store, { sessionId: s.b.session.id, phase: "dreaming", nextTask: "curate", runId: s.run.id, branch: null, entryIds: [], detail: { operation: "update" } });
+    writeHandoff(s.b.store, { sessionId: s.b.session.id, phase: "dreaming", nextTask: "curate", runId: s.run.id, branch: null, entryIds: [], detail: { pair: "update-archive" } });
     expect(s.b.store.dreamingDue(s.b.path, 2)).toBe(true); // retry or resume at this check
   });
 });

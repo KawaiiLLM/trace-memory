@@ -102,7 +102,7 @@ test("a write after curate: the change shows its base as stale, and confirming i
 test("a reverted merge leaves every item untouched; an edited merge applies the edited body and archives the absorbed item", async () => {
   for (const how of ["revert", "edit"] as const) {
     const f = dreamerFixture();
-    await f.cycleTo("merge");
+    await f.cycleTo("merge-split");
     const primary = f.item("Pi agent ran the suite on Linux; Windows unverified", { category: "constraint", title: "Suite run" });
     const absorbed = f.item("Pi agent ran the suite on Linux", { category: "constraint", title: "Suite run on Linux" });
     f.dreamer.script.curate!.constraint = block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same run" }, "Pi agent ran the suite on Linux.");
@@ -128,7 +128,7 @@ test("a verify file that fails twice applies nothing and keeps curate's proposal
   proposeUpdate(f, rule, "Rule one, tidied");
   f.dreamer.script.verify = ["## bogus\n", "## bogus\n"];
   expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { task: "verify", class: "check failed twice" } });
-  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "verify", detail: { operation: "update", groups: [{ batches: [{ category: "constraint", run: expect.any(Number) }] }] } });
+  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "verify", detail: { pair: "update-archive", groups: [{ batches: [{ category: "constraint", run: expect.any(Number) }] }] } });
   expect(textOf(f, rule.knowledgeId)).toBe("Rule one"); // nothing was applied
   let changes = "";
   f.dreamer.script.verify = report => { changes = changesOf(report); return "## confirm 1\n"; };
@@ -207,7 +207,7 @@ test("an edit of a split changes a child's body, title and supports but not the 
   const child = (rule: { supports: number[] }, title: string, text: string) =>
     `\n### child\ntitle: ${title}\ncategory: constraint\nscope: project\ntopics: \nsupports: F${rule.supports[0]}\nreason: split\n\n${text}\n`;
   const f = dreamerFixture();
-  await f.cycleTo("split");
+  await f.cycleTo("merge-split");
   const rule = f.item("Package rule and release process", { category: "constraint", title: "Rules" });
   const other = f.existingFact("Other support");
   f.dreamer.script.curate!.constraint = block(`split ${rule.ref}`, { reason: "two topics" }, "Package rule.") + child(rule, "Release process", "Releases are cut from main.");
@@ -224,7 +224,7 @@ test("an edit of a split changes a child's body, title and supports but not the 
 
 test("an edit of a merge may not change which items it absorbs or its category; an archive takes only confirm or revert", async () => {
   const f = dreamerFixture();
-  await f.cycleTo("merge");
+  await f.cycleTo("merge-split");
   const primary = f.item("Suite ran on Linux; Windows unverified", { category: "constraint", title: "Suite run" });
   const absorbed = f.item("Suite ran on Linux", { category: "constraint", title: "Suite run on Linux" });
   const third = f.item("Suite ran in CI", { category: "constraint", title: "Suite in CI" });
@@ -233,7 +233,7 @@ test("an edit of a merge may not change which items it absorbs or its category; 
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.dreamer.messages[0]).toContain("cannot change which items the merge absorbs");
   const h = dreamerFixture();
-  await h.cycleTo("merge");
+  await h.cycleTo("merge-split");
   const first = h.item("Suite ran on Linux; Windows unverified", { category: "constraint", title: "Suite run" });
   const second = h.item("Suite ran on Linux", { category: "constraint", title: "Suite run on Linux" });
   h.dreamer.script.curate!.constraint = block(`merge ${first.ref}`, { absorb: second.ref, reason: "same run" }, "Suite ran on Linux.");
@@ -241,7 +241,7 @@ test("an edit of a merge may not change which items it absorbs or its category; 
   expect(await h.dream()).toMatchObject({ outcome: "success" });
   expect(h.dreamer.messages[0]).toContain("merged items share one category"); // refused by the merge rule, which the message names
   const g = dreamerFixture();
-  await g.cycleTo("archive");
+  await g.cycleTo("update-archive");
   const old = g.item("Running log of the release", { category: "reference", title: "Log" });
   g.dreamer.script.curate!.reference = block(`archive ${old.ref}`, { kind: "inadmissible", reason: "running log" }, "Only records who did what; nothing lasting remains in it.");
   g.dreamer.script.verify = [block(`edit 1 archive ${old.ref}`, { evidence: evidence(old) }, "A different statement of the grounds."), "## confirm 1\n"];
@@ -282,7 +282,7 @@ test("the caps in force at apply: a confirmed proposal over the lowered cap is r
 
 test("a seeded misattribution in a proposed update is edited and a proposed archive of a valid ruling is reverted", async () => {
   const f = dreamerFixture();
-  await f.cycleTo("archive");
+  await f.cycleTo("update-archive");
   const ruling = f.item("The user ruled that logs never change their prefix", { category: "constraint", title: "Log prefix rule" });
   f.dreamer.script.curate!.constraint = block(`archive ${ruling.ref}`, { kind: "invalid", reason: "implemented" }, "Implemented, so it no longer applies as a rule; see the specification.");
   f.dreamer.script.verify = block("revert 1", { evidence: evidence(ruling), reason: "the ruling still constrains behavior" });

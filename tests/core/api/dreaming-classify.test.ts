@@ -109,7 +109,7 @@ test("an empty frozen set passes through a no-work run: above 100 items, all sco
   const f = dreamerFixture();
   manyItems(f, 101);
   await f.dream(); // scores all 101
-  await f.cycleTo("archive"); // the rotation, run for real, reaches the archive operation
+  await f.cycleTo("update-archive"); // the rotation, run for real, reaches update+archive again
   const fresh = f.item("A new rule", { category: "reference", title: "New rule" });
   f.dreamer.script.curate!.reference = block(`archive ${fresh.ref}`, { kind: "invalid", reason: "does not meet admission" },
     "The facts show this only records an implementation step, which fails admission; no other item replaces it.");
@@ -120,7 +120,7 @@ test("an empty frozen set passes through a no-work run: above 100 items, all sco
   expect(tasks.filter(task => task === "curate")).toHaveLength(2);
   expect(tasks.filter(task => task === "verify")).toHaveLength(2);
   expect(tasks).not.toContain("classify");
-  expect(JSON.parse(f.store.getRun(f.store.db.prepare("SELECT MAX(id) AS id FROM runs WHERE kind = 'dreaming'").get()!.id as number)!.response!)).toMatchObject({ task: "classify", passes: 0, operation: "archive", finished: { operation: "archive", advanced: true } });
+  expect(JSON.parse(f.store.getRun(f.store.db.prepare("SELECT MAX(id) AS id FROM runs WHERE kind = 'dreaming'").get()!.id as number)!.response!)).toMatchObject({ task: "classify", passes: 0, pair: "update-archive", finished: { pair: "update-archive", advanced: true } });
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
   expect(f.store.db.prepare("SELECT outcome FROM task_executions ORDER BY rowid DESC LIMIT 1").get()).toEqual({ outcome: "success" });
 });
@@ -195,6 +195,6 @@ test.each([[[0, 1, 2]], [[2, 0, 1]], [[1, 2, 0]]])("2026-10-22, 146: three class
   expect(await running).toMatchObject({ outcome: "success" });
   expect(seen).toEqual([0, 0, 1]); // only the last commit finishes
   expect(finishedNow()).toBe(1);
-  expect(f.store.nextCurateOperation(f.project.id)).toBe("merge");
+  expect(f.store.nextCuratePair(f.project.id)).toBe("merge-split");
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
 });

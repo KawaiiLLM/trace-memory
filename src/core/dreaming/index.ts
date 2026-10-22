@@ -1,6 +1,6 @@
 // Dreaming as curate, verify and classify (ticket 144, stages 4 and 5). One run is one admission, one claim and one execution; it
-// runs from the hand-off's next task to the end, each task through `runAgent`. One run performs one curate operation (the project's
-// rotation, stage 5 §3); curate only proposes, verify gives every proposal a verdict and applies, classify scores. This module owns
+// runs from the hand-off's next task to the end, each task through `runAgent`. One run performs one pair of curate operations (the project's
+// rotation, 146 ruling 13); curate only proposes, verify gives every proposal a verdict and applies, classify scores. This module owns
 // the run shape (§1), the hand-off and resume (§3), the curate task (§4), verify (§5) and classify (§6).
 
 import { createHash } from "node:crypto";
@@ -19,7 +19,7 @@ import type { Handoff, HandoffDetail } from "../store/executions.ts";
 import type { KnowledgePath, RunInput, Store, TaskClaim } from "../store/index.ts";
 import { checkWorkspace, describeBlock, overCaps, parseScores } from "../workspace/index.ts";
 import { TaskWorkspace, defaultWorkspaceRoot } from "../workspace/run.ts";
-import { batchFileName, batchesOf, checkBatch, curatePrefix, formGroups, wholeCost, type Category, type CurateItem, type CurateOperation } from "./curate.ts";
+import { batchFileName, batchesOf, checkBatch, curatePrefix, formGroups, wholeCost, type Category, type CurateItem, type CuratePair } from "./curate.ts";
 import { buildChanges, checkVerify } from "./changes.ts";
 import { classifyAnchors, classifyMessage, classifySet } from "./classify.ts";
 import { allowedRoots, repositoryEvidenceProblem } from "./roots.ts";
@@ -50,9 +50,9 @@ export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
   | { outcome: "success" | "failure" | "cancelled"; runId: number; problems: string[];
-      /** A failure's task, its class label (what failed, shown in the reason and the /trace notice; it decides nothing about the retry), the operation a
+      /** A failure's task, its class label (what failed, shown in the reason and the /trace notice; it decides nothing about the retry), the pair a
        * resumed run repeats, and each failed group (146 §7); `task` and `class` are the earliest failed group's. */
-      failure?: { task: DreamingTask; class: string; operation: CurateOperation; groups: { group: number; task: DreamingTask; class: string }[] } });
+      failure?: { task: DreamingTask; class: string; pair: CuratePair; groups: { group: number; task: DreamingTask; class: string }[] } });
 
 /** What core builds for one Dreaming task call. */
 export interface DreamingAgentInput extends AgentControl {
@@ -82,8 +82,8 @@ export interface DreamingFrozen {
   groups: FrozenGroup[];
   /** A refusal found while forming or checking the groups (§2.5): the run raises it as an ordinary failure. */
   refusal?: string;
-  /** This run's one curate operation (stage 5 §3.1): the hand-off's when it resumes, else the project's next in the rotation. */
-  operation: CurateOperation;
+  /** This run's curate pair (146 ruling 13): the hand-off's when it resumes, else the project's next in the rotation. */
+  pair: CuratePair;
   /** The task prompts curate and verify deliver with their first `check` result. */
   taskPrompts: Record<"curate" | "verify", { text: string; hash: string }>;
   /** The hand-off row read at admission: where this run resumes, and which batches are kept. */
@@ -102,9 +102,9 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
     throw new Error("Invalid native Read token estimate: expected a nonnegative safe integer");
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
   const handoff = store.handoff(path.sessionId, "dreaming");
-  const operation = handoff?.detail?.operation ?? store.nextCurateOperation(store.getSession(path.sessionId)!.projectId);
+  const pair = handoff?.detail?.pair ?? store.nextCuratePair(store.getSession(path.sessionId)!.projectId);
   const taskPrompt = (task: "curate" | "verify") => {
-    const body = loadPrompt(`tasks/${task}-${operation}.md` as PromptFile, names, config.writing);
+    const body = loadPrompt(`tasks/${task}-${pair}.md` as PromptFile, names, config.writing);
     return { text: body, hash: createHash("sha256").update(body).digest("hex") };
   };
   const taskPrompts = { curate: taskPrompt("curate"), verify: taskPrompt("verify") };
@@ -146,7 +146,7 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
       refusal = `group ${group.no} (${group.items.length} items) exceeds the model input allowance`;
   }
   return { sessionId: path.sessionId, branch: path.branch, path, claim, names, prompt, promptHash: createHash("sha256").update(prompt).digest("hex"),
-    models: { main, classify }, groups, ...(refusal ? { refusal } : {}), operation, taskPrompts, handoff };
+    models: { main, classify }, groups, ...(refusal ? { refusal } : {}), pair, taskPrompts, handoff };
 }
 
 export interface DreamingRunOptions {
@@ -176,7 +176,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   options: DreamingRunOptions): Promise<DreamingResult> {
   const { sessionId, branch, path, groups } = frozen;
   const first = Math.max(0, DREAMING_TASKS.indexOf((frozen.handoff?.nextTask ?? "curate") as DreamingTask));
-  const { operation } = frozen;
+  const { pair } = frozen;
   const root = options.workspaceRoot ?? defaultWorkspaceRoot();
   const template = (task: DreamingTask, model: string, promptHash = frozen.promptHash): RunInput => ({ kind: "dreaming", sessionId, branch, model, mode: "subagent",
     promptHash, createdAt: new Date().toISOString(), rangeFrom: `S${sessionId}/${task}`, rangeTo: `S${sessionId}/${task}` });
@@ -184,7 +184,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   let lastRunId = 0;
 
   /** §3.4: the hand-off's detail, written whole at every commit from the in-memory groups, which change only inside a commit's `handoff` callback. */
-  const detailOf = (): HandoffDetail => ({ operation, groups: groups.map(group => ({
+  const detailOf = (): HandoffDetail => ({ pair, groups: groups.map(group => ({
     batches: group.batches.map(batch => ({ category: batch.category, items: batch.items.map(item => item.value.revision.knowledgeId), ...(batch.run !== undefined ? { run: batch.run } : {}) })),
     ...(group.verifyRun !== undefined ? { verifyRun: group.verifyRun } : {}) })) });
   const pending = (group: FrozenGroup) => group.batches.filter(batch => batch.items.length && batch.run === undefined);
@@ -196,8 +196,8 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const run = template(task, frozen.models.main.model);
     const bound = bind(context, run, { check: () => "no work" });
     bound.close(); // the run record only; it has no tools to run
-    const done = store.commitTaskPass({ run: { ...run, response: JSON.stringify({ task, passes: 0, operation, ...(group ? { group: group.no } : {}) }) }, path, cover,
-      handoff: ({ runId }) => { if (group) group.verifyRun = runId; return next ? { nextTask: group ? nextTask() : next, detail: detailOf() } : null; }, ...(next ? {} : { finish: { operation } }) });
+    const done = store.commitTaskPass({ run: { ...run, response: JSON.stringify({ task, passes: 0, pair, ...(group ? { group: group.no } : {}) }) }, path, cover,
+      handoff: ({ runId }) => { if (group) group.verifyRun = runId; return next ? { nextTask: group ? nextTask() : next, detail: detailOf() } : null; }, ...(next ? {} : { finish: { pair } }) });
     return { ok: true, runId: lastRunId = done.runId };
   };
 
@@ -231,9 +231,9 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const run = template("curate", frozen.models.main.model);
     const roots = allowedRoots(store, sessionId), delivered = delivery("curate");
     const read = (batch: FrozenBatch) => ({ name: name(batch), text: workspace.text(name(batch)), written: workspace.written(name(batch)) });
-    const checkAll = () => todo.map(batch => ({ batch, checked: checkBatch(store, path, read(batch), operation) }));
+    const checkAll = () => todo.map(batch => ({ batch, checked: checkBatch(store, path, read(batch), pair) }));
     const report = (results = checkAll(), only?: FrozenBatch[]) => [
-      `Task: curate ${operation} (group ${group.no} of ${groups.length}, ${todo.length} batch${todo.length === 1 ? "" : "es"} to do)`,
+      `Task: curate ${pair} (group ${group.no} of ${groups.length}, ${todo.length} batch${todo.length === 1 ? "" : "es"} to do)`,
       `Repositories you may read: ${roots.join(", ") || "none"}`,
       ...results.filter(({ batch }) => !only || only.includes(batch)).flatMap(({ batch, checked }) => [
         `batch ${batch.no} of ${group.batches.length}, category ${batch.category}. Items: ${batch.items.map(item => item.address).join(", ")}. File: ${files.get(batch)}`,
@@ -275,7 +275,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       const covers: Cover[] = batch.items.filter(item => !item.covered).map(item => ({ id: item.value.revision.id, pool: item.pool }));
       try {
         const done = store.commitTaskPass({ run: { ...run }, path,
-          response: () => JSON.stringify({ task: "curate", operation, group: group.no, category: batch.category, batch: batch.no, file: files.get(batch), text: read(batch).text, covers,
+          response: () => JSON.stringify({ task: "curate", pair, group: group.no, category: batch.category, batch: batch.no, file: files.get(batch), text: read(batch).text, covers,
             proposed: checked.planned.map(entry => ({ block: describeBlock(entry.block), operation: entry.make().operation })) }),
           handoff: ({ runId }) => { batch.run = runId; return { nextTask: nextTask(), detail: detailOf() }; } });
         lastKept = lastRunId = done.runId;
@@ -291,7 +291,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const problems = problem ? [problem] : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
       : requestMissing(result) ? ["runAgent must return the exact provider request"]
       : left.length ? [`ended before batch ${left[0]!.no}/${group.batches.length} was kept`] : [];
-    recordAttempt(run, result, { task: "curate", operation, group: group.no, taskPrompts: delivered.hashes(), stopChecks, toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
+    recordAttempt(run, result, { task: "curate", pair, group: group.no, taskPrompts: delivered.hashes(), stopChecks, toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
     // The conversation's request and usage ride on the last kept file's run, or on the failed run when no file is kept.
     if (lastKept) {
       const previous = JSON.parse(store.getRun(lastKept)?.response ?? "{}");
@@ -354,7 +354,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const success = result.outcome === "success" && !requestMissing(result) && !problem && appliedRun !== 0;
     const problems = problem ? [problem] : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
       : requestMissing(result) ? ["runAgent must return the exact provider request"] : appliedRun === 0 ? [`ended before ${spec.label} was applied`] : [];
-    recordAttempt(run, result, { task: spec.task, operation, ...(spec.group ? { group: spec.group } : {}), taskPrompts: delivered.hashes(), stopChecks, ...(spec.selfCheck ? { firstScores: firstWritten ?? null } : {}), toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
+    recordAttempt(run, result, { task: spec.task, pair, ...(spec.group ? { group: spec.group } : {}), taskPrompts: delivered.hashes(), stopChecks, ...(spec.selfCheck ? { firstScores: firstWritten ?? null } : {}), toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
     if (success) {
       const previous = JSON.parse(store.getRun(appliedRun)?.response ?? "{}");
       store.updateRun(appliedRun, { ...run, response: JSON.stringify({ ...previous, ...JSON.parse(run.response!) }), outcome: "success" });
@@ -388,7 +388,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const resolveRepository = (reference: string) => repositoryEvidenceProblem(reference, roots);
     const checked = () => checkVerify(store, path, { name: "verify.md", text: workspace.text("verify.md") }, changes.proposals, resolveRepository);
     const report = (result = checked()) => [
-      `Task: verify ${operation} (group ${group.no} of ${groups.length}). Change file: ${changesFile} (${changes.blocks} blocks, ${changes.lines} lines; read it in pages). Your file: ${file}`,
+      `Task: verify ${pair} (group ${group.no} of ${groups.length}). Change file: ${changesFile} (${changes.blocks} blocks, ${changes.lines} lines; read it in pages). Your file: ${file}`,
       `Repositories you may read: ${roots.join(", ") || "none"}`,
       result.problems.length ? `Problems: ${result.problems.length}\n${result.problems.join("\n")}` : "Problems: none",
       ...(result.lengths.length ? ["Lengths:", ...lengthLines("verify.md", result.lengths as Length[])] : [])].join("\n");
@@ -402,7 +402,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         const applying = result.verdicts.flatMap((verdict, i) => verdict.operation && !over[i]!.length ? [i] : []);
         try {
           return store.commitTaskPass({ run: { ...run }, path, operations: applying.map(i => result.verdicts[i]!.operation!),
-            response: out => JSON.stringify({ task: "verify", operation, group: group.no, file, verdicts: result.verdicts.map((verdict, i) => ({ n: verdict.n, verdict: verdict.verdict,
+            response: out => JSON.stringify({ task: "verify", pair, group: group.no, file, verdicts: result.verdicts.map((verdict, i) => ({ n: verdict.n, verdict: verdict.verdict,
               ...(verdict.reason ? { reason: verdict.reason } : {}), ...(verdict.evidence ? { evidence: verdict.evidence } : {}),
               ...(verdict.operation ? { result: over[i]!.length ? { ok: false, stale: false, reason: over[i]!.join("; ") } : out[applying.indexOf(i)] } : {}) })) }),
             cover: ({ results }) => [...coveredBy(), ...written(results, own)],
@@ -443,9 +443,9 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
             const shown = new Map(pass.map(item => [item.value.revision.knowledgeId, item.value.revision.id]));
             const last = applied + 1 === passes.length;
             const done = store.commitTaskPass({ run: { ...run }, path, scores: scores.map(line => ({ knowledgeId: line.knowledgeId, commit: shown.get(line.knowledgeId)!, score: line.score })),
-              response: () => JSON.stringify({ task: "classify", operation, pass: at + 1, passes: passes.length, file, scores: scores.map(line => [line.knowledgeId, line.score]) }),
+              response: () => JSON.stringify({ task: "classify", pair, pass: at + 1, passes: passes.length, file, scores: scores.map(line => [line.knowledgeId, line.score]) }),
               handoff: () => last ? null : { nextTask: "classify", detail: detailOf() },
-              ...(last ? { finish: { operation } } : {}) });
+              ...(last ? { finish: { pair } } : {}) });
             applied++;
             return done.runId;
           } });
@@ -477,7 +477,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
 
   if (frozen.refusal) {
     const failed = thrown(DREAMING_TASKS[first]!, undefined, new Refusal(frozen.refusal));
-    return { outcome: failed.outcome, runId: failed.runId, problems: failed.problems, failure: { task: DREAMING_TASKS[first]!, class: failed.class, operation, groups: [] } };
+    return { outcome: failed.outcome, runId: failed.runId, problems: failed.problems, failure: { task: DREAMING_TASKS[first]!, class: failed.class, pair, groups: [] } };
   }
   if (!groups.length) {
     // Nothing to curate: curate and verify are recorded as no-work runs (§2.1).
@@ -485,7 +485,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     catch (error) {
       if (store.closed) return { outcome: "dropped" };
       const failed = thrown(first < 1 ? "curate" : "verify", undefined, error);
-      return { outcome: failed.outcome, runId: failed.runId, problems: failed.problems, failure: { task: first < 1 ? "curate" : "verify", class: failed.class, operation, groups: [] } };
+      return { outcome: failed.outcome, runId: failed.runId, problems: failed.problems, failure: { task: first < 1 ? "curate" : "verify", class: failed.class, pair, groups: [] } };
     }
   } else {
     const outcomes = (await Promise.all(groups.filter(group => group.verifyRun === undefined).map(pipeline))).filter(outcome => outcome !== undefined);
@@ -494,14 +494,14 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       const earliest = outcomes.some(failed => failed.task === "curate") ? "curate" : "verify", head = outcomes.find(failed => failed.task === earliest)!;
       return { outcome: outcomes.some(failed => failed.outcome.outcome === "cancelled") ? "cancelled" : "failure", runId: head.outcome.runId,
         problems: outcomes.flatMap(failed => failed.outcome.problems),
-        failure: { task: earliest, class: head.outcome.class, operation, groups: outcomes.map(failed => ({ group: failed.group, task: failed.task, class: failed.outcome.class })) } };
+        failure: { task: earliest, class: head.outcome.class, pair, groups: outcomes.map(failed => ({ group: failed.group, task: failed.task, class: failed.outcome.class })) } };
     }
   }
   let outcome: TaskOutcome;
   try { outcome = await runClassify(); } catch (error) { outcome = thrown("classify", undefined, error); }
   if (!outcome.ok) {
     if (store.closed) return { outcome: "dropped" };
-    return { outcome: outcome.outcome, runId: outcome.runId, problems: outcome.problems, failure: { task: "classify", class: outcome.class, operation, groups: [] } };
+    return { outcome: outcome.outcome, runId: outcome.runId, problems: outcome.problems, failure: { task: "classify", class: outcome.class, pair, groups: [] } };
   }
   return { outcome: "success", runId: lastRunId, problems: [] };
 }

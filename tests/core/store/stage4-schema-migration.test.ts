@@ -71,7 +71,7 @@ test("a fresh database has a base of 20,000, scores within 1 to 100, and a hand-
     f.store.db.exec("DELETE FROM knowledge_budget_policy");
     f.store.db.prepare("INSERT OR IGNORE INTO knowledge_budget_policy VALUES (1,?,?,?)").run(1, 2, 3);
     expect(f.store.handoff(f.session.id, "dreaming")!.detail).toBeUndefined();
-    const detail = { operation: "update" as const, groups: [{ batches: [{ category: "constraint", items: [1], run: f.run.id }] }] };
+    const detail = { pair: "update-archive" as const, groups: [{ batches: [{ category: "constraint", items: [1], run: f.run.id }] }] };
     writeHandoff(f.store, { sessionId: f.session.id, phase: "dreaming", nextTask: "verify", runId: f.run.id, branch: null, entryIds: [], detail });
     expect(f.store.handoff(f.session.id, "dreaming")!.detail).toEqual(detail);
     expect(() => f.store.db.exec("UPDATE knowledge SET score = 101")).toThrow();

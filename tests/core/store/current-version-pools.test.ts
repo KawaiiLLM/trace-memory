@@ -10,7 +10,7 @@ import { block } from "../../support/workspace.ts";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { archive, clearSupports, entry, knowledge, knowledgeBatch, legacyFacts, updateKnowledge } from "../../support/seed.ts";
-import { operationOfText } from "../../support/dreamer.ts";
+import { pairOfText } from "../../support/dreamer.ts";
 
 const stores: Store[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); });
@@ -183,7 +183,7 @@ test.each(["update", "archive", "split"] as const)("126 writable set: a %s base 
     : op === "archive" ? block(`archive ${ref}`, { kind: "invalid", reason: "cross pool" }, WITHDRAWN)
     : block(`split ${ref}`, { reason: "cross pool" }, "forbidden") + `\n### child\ntitle: Fixture child\ncategory: constraint\nscope: project\ntopics:\nsupports: ${supports}\nreason: cross pool\n\none\n`;
   const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(foreign.knowledgeId) };
-  const result = applyWorkspace(f.store, { kind: "curate", operation: operationOfText(text), sessionId: f.session.id, path: f.target, file: { name: "curate.md", text } });
+  const result = applyWorkspace(f.store, { kind: "curate", pair: pairOfText(text), sessionId: f.session.id, path: f.target, file: { name: "curate.md", text } });
   // Either the file fails its check or the block is refused; in both nothing is written and the reason names the foreign version.
   const reasons = result.ok ? result.blocks.flatMap(entry => entry.status === "refused" ? [entry.reason ?? ""] : []) : result.problems;
   expect(reasons.length).toBeGreaterThan(0);
@@ -196,7 +196,7 @@ test.each(["update", "archive", "split"] as const)("126 writable set: a %s base 
 test("64c merge scope: merge parents from two of the session's pools are refused without side effects", () => {
   const f = setup(), global = f.create("global"), project = f.create("project");
   const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(project.knowledgeId) };
-  const result = applyWorkspace(f.store, { kind: "curate", operation: "merge", sessionId: f.session.id, path: f.target, file: { name: "curate.md", text:
+  const result = applyWorkspace(f.store, { kind: "curate", pair: "merge-split", sessionId: f.session.id, path: f.target, file: { name: "curate.md", text:
     block(`merge K${global.knowledgeId}@v1`, { absorb: `K${project.knowledgeId}@v1`, category: "constraint", scope: "global", reason: "cross pool" }, "forbidden merge") } });
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.problems.join(" ")).toContain("merged items share one scope");

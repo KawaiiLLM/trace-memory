@@ -125,7 +125,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
         explicit: binding.enrollment.choice !== null },
       context: { model: "Claude Code" },
       pending: { noting: pending("noting"), dreaming: { pending: dreamingPendingInput(dreaming.pending, null),
-        ...(session ? { next: store.nextCurateOperation(session.projectId) } : {}) } },
+        ...(session ? { next: store.nextCuratePair(session.projectId) } : {}) } },
       spend: { session: spend?.cost ?? 0, sessionUnknown: spend?.unknown ?? 0,
         noting: { runs: spend?.runs.noting ?? 0, cost: spend?.costs.noting ?? 0 },
         consolidation: { runs: spend?.runs.consolidation ?? 0, cost: spend?.costs.consolidation ?? 0 },

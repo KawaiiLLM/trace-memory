@@ -71,7 +71,7 @@ test.each([
 
 test("64c a merge names its primary: the older identity continues, both parents are the merge's parents, the absorbed item is no longer current", async () => {
   const f = makeDreamerFixture(memories);
-  await f.cycleTo("merge");
+  await f.cycleTo("merge-split");
   const older = f.item("original earlier conclusion", { category: "constraint" }), newer = f.item("最新主张：条件与例外原样保留。", { category: "constraint", title: "最新主张" });
   const explicit = "Deliberately rewritten merge";
   f.dreamer.script.curate!.constraint = block(`merge ${older.ref}`, { absorb: newer.ref, topics: "merged", reason: "same conclusion" }, explicit);

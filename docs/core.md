@@ -160,11 +160,12 @@ schema migration in parent-before-child order; an all-empty ancestry remains emp
 by item count and by the model's input allowance, a category cut only when it fits no empty group), frozen as knowledge
 ids in the hand-off (`detail.groups`). A group's first message is its prefix (every item whole, by category) and tells the
 model to call `check`, whose first result lists the group's **batches**, at most 20 items of one category each, with one
-file per batch, and carries the task's instructions (`prompts/tasks/curate-<op>.md`, priced in the capacity check). Groups
+file per batch, and carries the task's instructions (`prompts/tasks/curate-<pair>.md`, priced in the capacity check). Groups
 curate and verify side by side; each group's verify follows its own curate, and classify follows all groups. A group's
-failure does not stop its siblings. A run performs **one operation**, rotating per project `update` → `merge` → `split` → `archive`
-(`Store.nextCurateOperation`, derived from the newest finished run that advanced it; the hand-off's `detail.operation`
-repeats a failed run's operation on resume). The agent writes the batch files in order, one block per item of the run's operation only (never `create`), and stops
+failure does not stop its siblings. A run performs **one pair of operations** (146 ruling 13), alternating per project `update`+`archive` and `merge`+`split`
+(`Store.nextCuratePair`, derived from the newest finished run that advanced it; a project with none starts at `update-archive`; the hand-off's `detail.pair`
+repeats a failed run's pair on resume). The curate agent of a group decides item by item which operation of the pair to propose, or none, so proposals never conflict,
+and checks each item against both operations' smell lists; verify is the same for both pairs. The agent writes the batch files in order, one block per item, of the run's two operations only (never `create`), and stops
 once: the stop hook runs one final check over every file (a file never written fails it) and allows one repair. When the
 conversation ends, whatever the outcome but a cancellation, each file that passes is **kept** in its run record as a
 proposal and recorded as the batch's `run`; a resume does only the batches without one. A batch may act on any live item of
@@ -1072,7 +1073,7 @@ selection query. Manual catchup drains its frozen Noting boundary. Ticket 68 che
 at start and after every successful catchup-owned phase completion; C and D use ordinary eligibility.
 Ticket 86 immediately retries a failed Noting step in the same phase and boundary, without checking
 other phases. A failed Dreaming run is not retried inside the drain (146, ruling 10: it retries at the next entry-end check): it ends the drain for the same session and path, whoever started the run, and counts once toward the Dreamer's streak. Both phases use the ordinary three-consecutive-failures rule; off or cancellation also ends the drain.
-`dream({ manual: true })` (146 §18) starts a Dreaming run now: it skips only the due test, and keeps enrollment, the database-wide seat, the claim and the lease. It resumes a hand-off with the hand-off's operation, writes coverage, advances the rotation and counts toward the streak like any run. A refusal creates no execution: `dropped` carries its reason (memory off, another session holds the seat, a Dreamer already runs for this session) and `empty` means there is nothing to curate and no hand-off.
+`dream({ manual: true })` (146 §18) starts a Dreaming run now: it skips only the due test, and keeps enrollment, the database-wide seat, the claim and the lease. It resumes a hand-off with the hand-off's pair, writes coverage, advances the rotation and counts toward the streak like any run. A refusal creates no execution: `dropped` carries its reason (memory off, another session holds the seat, a Dreamer already runs for this session) and `empty` means there is nothing to curate and no hand-off.
 It no longer freezes a fact set for forced below-threshold Consolidation. The *exact* target is what a host that re-admits a frozen batch names: `exactEntryIds`
 (27d's `entryIds`) and `exactFactIds` (29e). Under either, the freeze selects exactly those pending
 members, trims optional material to fit them — the Noter's history, the Consolidator's knowledge

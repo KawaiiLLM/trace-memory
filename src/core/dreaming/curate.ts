@@ -5,7 +5,7 @@ import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup } from "../model/index.ts"
 import { problem, plan, type CheckResult, type WorkspaceFile } from "../workspace/index.ts";
 import { renderKnowledge, tokens, withFactDates, withKnowledgeCost } from "../render/index.ts";
 import type { KnowledgePath, Store, WorkspaceOperationResult } from "../store/index.ts";
-import { CURATE_ROTATION, type CurateOperation } from "../store/executions.ts";
+import { CURATE_ROTATION, type CuratePair } from "../store/executions.ts";
 import type { PlannedBlock } from "../workspace/plan.ts";
 
 /** 146 rulings 2 and 3: a curate agent takes at most this many items, all shown whole; it works through them in batches of at most
@@ -80,13 +80,13 @@ export function batchesOf(items: readonly CurateItem[]): { category: Category; i
 
 export const batchFileName = (index: number, category: string) => `curate-${index + 1}-${category}.md`;
 
-/** The check of a curate batch file: the Stage 2 plan for the run's one operation (never `create`). A batch may act on any live item of the
+/** The check of a curate batch file: the Stage 2 plan for either operation of the run's pair (never `create`). A batch may act on any live item of the
  * session's pools, inside or outside it (ruling 3); merged items share one category and scope, which the plan checks. A file the agent
  * never wrote fails (it is not read as `## none`). */
-export function checkBatch(store: Store, path: KnowledgePath, file: WorkspaceFile & { written: boolean }, operation: CurateOperation): CheckResult & { planned: PlannedBlock[] } {
+export function checkBatch(store: Store, path: KnowledgePath, file: WorkspaceFile & { written: boolean }, pair: CuratePair): CheckResult & { planned: PlannedBlock[] } {
   if (!file.written) return { ok: false, problems: [problem(file, 0, file.name, "not written: write this batch's file, with `## none` when nothing in it needs a change")], lengths: [], planned: [] };
-  const planned = plan(store, { kind: "curate", operation, sessionId: path.sessionId, path, file });
+  const planned = plan(store, { kind: "curate", pair, sessionId: path.sessionId, path, file });
   return { ok: !planned.problems.length, problems: planned.problems, lengths: planned.lengths, planned: planned.knowledge };
 }
-export { CURATE_ROTATION, type CurateOperation };
+export { CURATE_ROTATION, type CuratePair };
 export type { WorkspaceOperationResult };

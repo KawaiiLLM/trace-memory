@@ -137,7 +137,7 @@ try {
   dreamer.provider(async conversation => {
     assert.ok(/^# (Dreamer|Classifying)/.test(conversation.systemPrompt ?? ""));
     assert.ok(!conversation.tools?.some(t => t.name === "note" || t.name === "memory"));
-    // The first run of a project performs the rotation's first operation, update; verify confirms it and its pass applies it.
+    // The first run of a project performs the rotation's first pair, update+archive; verify confirms it and its pass applies it.
     return dreamerFiles(conversation, { curate: block(`update ${heading}`, { reason: "Smoke tidy" }, "Remember the choice, tidied.") }) ?? reply("Done");
   });
   await dreamer.turn(); await dreamer.drain();

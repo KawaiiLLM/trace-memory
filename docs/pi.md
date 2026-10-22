@@ -255,7 +255,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   project and this session together. A run is due when the Noter operations since the last covered Dreamer pass reach
   `dreaming.triggerOperations` (30 by default; each Noter create or update counted once, a second update of one item counts again, manual and
   Dreamer revisions never counted), or when a hand-off row asks for a retry or resume. One run covers all three pools and
-  runs three tasks: **curate** (groups of at most 100 items side by side, each worked in batches of at most 20 with one file per batch, blocks of the run's one operation, rotating `update`, `merge`, `split`, `archive`; the files that pass are kept and nothing is applied before verify), **verify** (per group, one confirm, edit or revert for every proposal, against
+  runs three tasks: **curate** (groups of at most 100 items side by side, each worked in batches of at most 20 with one file per batch, blocks of either operation of the run's pair, alternating `update`+`archive` and `merge`+`split`; the files that pass are kept and nothing is applied before verify), **verify** (per group, one confirm, edit or revert for every proposal, against
   facts, Raw and the session's repositories; its pass applies the confirmed and edited ones) and **classify** (importance scores 1 to 100, in fresh passes of at most 100 items that run side by side, each with a self-check step). Each task writes a
   file in its own workspace with Pi's `write`/`edit` and `check`, and ends when the model stops; a task with nothing to do
   makes no model call. A passed task leaves a hand-off, so a stop or failure resumes where it left off at the next entry-end check, with no wait for a
@@ -559,7 +559,7 @@ completion. Bars cap at 100%; numbers and percentages do not:
 - **Consolidation:** applicable unconsolidated facts, including group framing and
   relations, through the same renderer and threshold calculation as eligibility.
 - **Dreaming:** one row (146): the Noter operations since the last covered Dreamer pass against
-  `dreaming.triggerOperations`, as `n / 30 Noter ops` (`≥30` once the count has reached the trigger). The bar does not imply that the database-wide seat is available. The notice area also shows the
+  `dreaming.triggerOperations`, as `n / 30 Noter ops` (`≥30` once the count has reached the trigger), and a `next curate` row naming the pair the project's next run performs (`update-archive` or `merge-split`). The bar does not imply that the database-wide seat is available. The notice area also shows the
   Dreamer's latest failure while no later run has succeeded: `Dreamer failed: <task>: <class> (R<run>, <UTC time>)`.
   Three consecutive Dreamer failures switch memory off like the Noter's; this notice does not depend on the automatic-off state.
 
@@ -783,7 +783,7 @@ resolved independently, so an external commit at the same leaf remains observabl
 
 ## Manual dream (146)
 
-`/trace dream` starts one Dreaming run for the current session, whatever the Noter-operation count says. Like `/trace catchup` it answers at once (`Dream: starting`) and reports through the `/trace` status line and a notification: `Dream: running`, then `completed`, `failed — <reason>` or `stopped`. It is an ordinary run in every other way: it needs memory on, respects the database-wide seat, resumes a hand-off with the hand-off's operation, writes coverage, advances the rotation and counts toward the three-failure rule. It is refused, with the reason on the status line and no execution, while this executor's Dreamer slot is taken, while another session holds the seat, and when there is nothing to curate. `/trace stop` ends it as `stopped`. A failure of a manual dream ends an active catchup drain for the same session and branch.
+`/trace dream` starts one Dreaming run for the current session, whatever the Noter-operation count says. Like `/trace catchup` it answers at once (`Dream: starting`) and reports through the `/trace` status line and a notification: `Dream: running`, then `completed`, `failed — <reason>` or `stopped`. It is an ordinary run in every other way: it needs memory on, respects the database-wide seat, resumes a hand-off with the hand-off's pair, writes coverage, advances the rotation and counts toward the three-failure rule. It is refused, with the reason on the status line and no execution, while this executor's Dreamer slot is taken, while another session holds the seat, and when there is nothing to curate. `/trace stop` ends it as `stopped`. A failure of a manual dream ends an active catchup drain for the same session and branch.
 
 ## Manual catchup and stop (18b)
 

@@ -9,7 +9,7 @@ afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 
 test("48/92: the trusted facade revives an archived identity from exact version bases", async () => {
   const f = dreamerFixture(memories);
-  await f.cycleTo("merge");
+  await f.cycleTo("merge-split");
   const old = f.item("Original widget state", { title: "Widget state" });
   const archiveCommit = archive(f.store, f.path, old.knowledgeId, old.commit, old.supports, "invalid", "Widget retired: the user said it was removed and nothing replaces it");
   expect(f.store.versionOrdinal(old.knowledgeId, archiveCommit)).toBe(2);

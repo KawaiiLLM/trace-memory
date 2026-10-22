@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { checkWorkspace } from "../../../src/core/workspace/index.ts";
 import { checkVerify, type Proposal } from "../../../src/core/dreaming/changes.ts";
-import type { CurateOperation } from "../../../src/core/store/executions.ts";
+import { curatePairOf, type CurateOperation } from "../../../src/core/store/executions.ts";
 import { block, workspaceBatch, type WorkspaceBatch } from "../../support/workspace.ts";
 import { proposalsOf } from "../../support/dreamer.ts";
 
@@ -16,7 +16,7 @@ const create = { title: "Use pnpm", category: "constraint", scope: "project", to
 const noterFacts = (b: WorkspaceBatch, text: string) => checkWorkspace(b.store, { kind: "noting-facts", scope: b.scope, file: file(text, "facts.md") });
 const noterKnowledge = (b: WorkspaceBatch, text: string, factsText = factText(b)) =>
   checkWorkspace(b.store, { kind: "noting-knowledge", scope: b.scope, file: file(text, "knowledge.md"), facts: file(factsText, "facts.md") });
-const curate = (b: WorkspaceBatch, text: string, operation: CurateOperation = "update") => checkWorkspace(b.store, { kind: "curate", operation, sessionId: b.session.id, file: file(text, "curate.md") });
+const curate = (b: WorkspaceBatch, text: string, operation: CurateOperation = "update") => checkWorkspace(b.store, { kind: "curate", pair: curatePairOf(operation), sessionId: b.session.id, file: file(text, "curate.md") });
 const joined = (result: { problems: string[] }) => result.problems.join("\n");
 
 describe("file format", () => {
@@ -167,14 +167,17 @@ describe("curate", () => {
     expect(curate(b, block(`archive ${old!.ref}`, { kind: "inadmissible", reason: "a running log" }, "A running log of one session, not an understanding."), "archive").problems).toEqual([]);
   });
 
-  test("a block of another operation, and any create, are refused in a curate file (Dreaming creates no knowledge)", () => {
+  test("a block of an operation outside the run's pair, and any create, are refused in a curate file (Dreaming creates no knowledge)", () => {
     const b = batch();
     const item = b.item("Rule one"), other = b.item("Rule two");
     const make = { ...create, supports: `F${item.supports[0]}` };
-    for (const operation of ["update", "merge", "split", "archive"] as const)
-      expect(joined(curate(b, block("create", make, "A new rule."), operation))).toContain(`\`## create\` is not allowed in a curate file; allowed: \`${operation}\``);
-    expect(joined(curate(b, block(`merge ${item.ref}`, { absorb: other.ref, reason: "same" }, "Merged."), "update"))).toContain("`## merge` is not allowed in a curate file; allowed: `update`");
-    expect(joined(curate(b, block(`update ${item.ref}`, { reason: "r" }, "Rule."), "archive"))).toContain("`## update` is not allowed in a curate file; allowed: `archive`");
+    for (const [operation, allowed] of [["update", "`update`, `archive`"], ["archive", "`update`, `archive`"], ["merge", "`merge`, `split`"], ["split", "`merge`, `split`"]] as const)
+      expect(joined(curate(b, block("create", make, "A new rule."), operation))).toContain(`\`## create\` is not allowed in a curate file; allowed: ${allowed}`);
+    expect(joined(curate(b, block(`merge ${item.ref}`, { absorb: other.ref, reason: "same" }, "Merged."), "update"))).toContain("`## merge` is not allowed in a curate file; allowed: `update`, `archive`");
+    expect(joined(curate(b, block(`archive ${item.ref}`, { kind: "invalid", reason: "r" }, "Gone for good, per the user."), "split"))).toContain("`## archive` is not allowed in a curate file; allowed: `merge`, `split`");
+    expect(joined(curate(b, block(`update ${item.ref}`, { reason: "r" }, "Rule."), "merge"))).toContain("`## update` is not allowed in a curate file; allowed: `merge`, `split`");
+    // Both operations of the pair are allowed in one file.
+    expect(curate(b, block(`update ${item.ref}`, { reason: "r" }, "Rule one, tidied.") + "\n" + block(`archive ${other.ref}`, { kind: "invalid", reason: "r" }, "Gone for good, per the user."), "update").problems).toEqual([]);
   });
 
   test("an update inherits what it omits, and may leave supports out", () => {
