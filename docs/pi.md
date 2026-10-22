@@ -283,7 +283,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   and the advanced keys live in the settings files.
 - `consolidation.knowledgeTokens` is **removed** (ticket 45). Consolidator Knowledge uses the bound
   database's Knowledge base, frozen at task admission. Any configuration layer
-  that supplies the old key fails by name and directs the user to the three database Knowledge budgets
+  that supplies the old key fails by name and directs the user to the database Knowledge base
   in Settings; the value is never reinterpreted or ignored.
 - `consolidation.subagentModeDefault` is **removed** (ticket 25 amendment 2). A saved value of either polarity fails the load with
   `Removed setting consolidation.subagentModeDefault: Consolidation is retired; remove this key`. Nothing is normalized behind the setting and no settings file is
@@ -631,8 +631,8 @@ evidence and budgets. Setting scope to `off` does not cancel it; use Stop to end
 running work. Another Pi process sees the new
 global default through its own settings load; there is no cross-process watcher.
 Editing a preference starts no worker and starts nothing else. The same Settings
-screen separately edits the bound database's Global, Project and Session Knowledge budgets. Those
-values are database policy, not Pi global preferences, and saves never copy them into `settings.json`.
+screen separately edits the bound database's Knowledge base. That
+value is database policy, not a Pi global preference, and saves never copy it into `settings.json`.
 The screen shows the Knowledge base, the temporary allowance and their maximum Knowledge input separately.
 
 All configuration layers validate before use, including masked values. Unknown or

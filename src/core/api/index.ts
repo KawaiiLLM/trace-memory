@@ -148,7 +148,7 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   // Ticket 144 stage 4: one temporary allowance per context replaces the Knowledge-only shared allowance.
   "compaction.sharedAllowanceTokens": "one temporary allowance, compaction.temporaryTokens, replaces it; remove this key",
   "consolidation.subagentModeDefault": "Consolidation is retired; remove this key",
-  "consolidation.knowledgeTokens": "remove it and use Settings to edit the bound database's Global, Project and Session Knowledge budgets",
+  "consolidation.knowledgeTokens": "remove it and use Settings to edit the bound database's Knowledge base",
   "noting.nearThreshold": "remove it; Noting lexical NEAR review no longer exists",
   // Ruling 2026-10-22: a fork's prefix is the main conversation, not the compaction memory the Noter starts from.
   // The old spelling is removed too, never read as the same preference.
@@ -174,7 +174,7 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "render.toolCallTokens": PART_BUDGETS,
   "render.secondaryToolCallTokens": `removed with the tier-2 view: ${PART_BUDGETS} — one bounded view everywhere`,
   "render.secondaryEntryTokens": "removed with the tier-2 view: use render.entryTokens — one bounded view everywhere",
-  "render.knowledgeBlockTokens": "remove it and use Settings to edit the bound database's Global, Project and Session Knowledge budgets",
+  "render.knowledgeBlockTokens": "remove it and use Settings to edit the bound database's Knowledge base",
 };
 const removedSetting = (key: string) => new Error(`Removed setting ${key}: ${REMOVED_SETTINGS[key]}`);
 
