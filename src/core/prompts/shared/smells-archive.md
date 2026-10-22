@@ -1,0 +1,9 @@
+**Bad smells when archiving knowledge**
+
+The commonest ways the existing principles are broken in real records, ranked by frequency and harm, to be checked item by item. The list adds no principle; judge by the principles, and handle anything not listed by them.
+
+1. **A running log with nothing to keep**: only process, and nothing that still holds after a rewrite. Archive it as inadmissible. (Keep no running log, Useful afterwards)
+2. **`open` left with progress only**: the work is finished, and the item holds no open question or risk and nothing that can be rewritten as a conclusion. Archive it as inadmissible. (Choose the category by use)
+3. **No longer holds**: a rule with a time limit has expired as a whole, or the same object has a newer current statement and the old item is superseded as a whole. Check conditions, versions and grounds, then archive it as invalid; for a successor, confirm it is current and name it. (Archive)
+4. **A one-off snapshot**: a statistics snapshot or one-off state that served only one execution, or an item left with only "something was implemented". It no longer carries a lasting understanding, ground for judgment or necessary condition. Archive it as inadmissible; statistics with an observation time that still support understanding or judgment are not covered. (Valid over the medium to long term, Useful afterwards, Filter by meaning, not by type)
+5. **Archiving knowledge that still holds**: a ruling that still constrains behavior is archived because it is "implemented", "defer to the specification" or "elsewhere", or the item the reason points to is itself archived. Do not archive what still holds; a mention elsewhere is not a merge. Content that has been merged into another current item is absorbed by a merge, which archives the absorbed item and names the item that took it over. (Archive, Merge)

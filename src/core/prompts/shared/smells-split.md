@@ -1,0 +1,8 @@
+**Bad smells when splitting knowledge**
+
+The commonest ways the existing principles are broken in real records, ranked by frequency and harm, to be checked item by item. The list adds no principle; judge by the principles, and handle anything not listed by them.
+
+1. **Several topics in one item**: several topics that need separate maintenance are crowded into one item. Split by independent maintenance, not mechanically by category. Do not split mechanically for length either: compress first under Insufficient length, and judge by independent maintenance only if it still does not fit. (Divide by independent maintenance, Insufficient length)
+2. **Settled and unresolved mixed in one item**: a settled ruling and a long-standing open question or risk need separate updating, completion or invalidation, yet share one item. Split along the boundary of independent maintenance; each result must be understandable on its own and meet admission, and then takes the category that fits its use. (Divide by independent maintenance, Choose the category by use)
+3. **Split by source**: a split is proposed only because the content comes partly from the user and partly from an agent, with no need to maintain the parts separately. Propose no split, and when verifying, revert the proposal; a wrong attribution in the original item is left for an update to correct. (Judge claim by claim, Divide by independent maintenance)
+4. **A split body is distorted**: a child lost a ruling, condition or qualifier of the original item that still holds, or a claim, attribution or ground does not match. Restore or correct it. (Preserve qualifiers, Distinguish evidence)

@@ -1,0 +1,13 @@
+**Bad smells in facts**
+
+The commonest ways the existing principles are broken in real records, ranked by frequency and harm, to be checked item by item. The list adds no principle; judge by the principles, and handle anything not listed by them.
+
+1. **The title narrates**: a chain of actions, outcomes or commit ids. Rewrite it as object and activity; outcomes go in the body. (Write an index title)
+2. **Material limits written as the event**: "output truncated", "not seen in this batch", "no conclusion yet" usually describe the extractor's clipped view or a result that falls in the next batch, not the event. Check the entry first: delete notes the extractor added about its material or batch, and write what the entry actually holds; keep the source's own truncation, unverified points or open questions where they affect meaning. (Separate recording from assessment, Preserve qualifiers)
+3. **Routine operations step by step**: one segment per file edit, branch deletion, commit, or background command that ended normally. Delete source segments with no new contribution; keep the shortest summary for an entry that does contribute, still one segment per source. (Facts admission, Summarize source by source)
+4. **A value cited to the wrong entry**: a commit id or count from a result is written on the call's segment, so the cited entry does not contain it. Cite the entry that holds the result, or move the value to that entry's segment. (Summarize source by source, Separate results from interpretation)
+5. **Qualifiers dropped**: the report named what was unverified, inferred or untested, and the segment keeps only the conclusion or recommendation. Restore the shortest qualifier, without adding your own judgment. (Preserve qualifiers, Distinguish evidence)
+6. **Only what was read**: a tool segment says "read a file" or "printed a report" while the entry holds the value or finding. Write that value or finding; with no finding, do not cite it. (Separate results from interpretation)
+7. **A reply without its referent**: "The user answered 「A」", "as you suggested", with no way to tell what was chosen or approved. Find the question or proposal it answers and name it. (Resolve references)
+8. **Paraphrase inside the user's quotation marks**: a 「」 in a user segment holds the agent's question or proposal, not the user's words. Remove the marks or name the source. (Preserve qualifiers, Distinguish evidence)
+9. **An unrelated topic mixed in**: a fact carries segments of another topic, or its title strings unrelated episodes together. Delete segments another fact covers or that are not worth keeping; move the rest into their own fact, and keep each title consistent with its body. (Facts division)
