@@ -4,39 +4,29 @@ import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory, type RunAgent, type TraceMemory } from "../../source-fixture.ts";
-import { scriptedDreamer, type DreamerScript } from "../../support/dreamer.ts";
+import { sourceSeededMemory, type TraceMemory } from "../../source-fixture.ts";
+import { dreamerFixture as makeDreamerFixture, scriptedDreamer, type DreamerScript } from "../../support/dreamer.ts";
 import { archive, knowledge, legacyKnowledge, updateKnowledge } from "../../support/seed.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
 import { TASK_GAP_MS, executionLimitMs, remainingTasks } from "../../../src/core/dreaming/index.ts";
-import { block, workspaceBatch } from "../../support/workspace.ts";
+import { block } from "../../support/workspace.ts";
 
 const memories: TraceMemory[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 
-function dreamerFixture(script: DreamerScript = {}, dbPath?: string) {
-  const dreamer = scriptedDreamer(script);
-  /** A test swaps in its own runner (one that waits, or ignores a stop) for the calls that follow. */
-  const runners: RunAgent[] = [];
-  const b = workspaceBatch({ agent: raw => (runners.shift() ?? dreamer.agent)(raw), dbPath });
-  memories.push(b.memory);
-  b.memory.config.dreaming.triggerTokens = 1;
-  const target = { sessionId: b.session.id, branch: "main", headTurnId: b.path.headTurnId!, model: "scripted" };
-  const dream = () => b.memory.dream(target);
-  return { ...b, dreamer, target, dream, next: (agent: RunAgent) => { runners.push(agent); } };
-}
+const dreamerFixture = (script: DreamerScript = {}, dbPath?: string) => makeDreamerFixture(memories, script, dbPath);
 const archiveItem = (f: ReturnType<typeof dreamerFixture>, item: { knowledgeId: number; commit: number; supports: number[] }) =>
   archive(f.store, f.path, item.knowledgeId, item.commit, item.supports, "invalid", "No longer holds, per the user's later correction, which replaces it");
 const covered = (f: { store: { db: { prepare(sql: string): { all(): Record<string, unknown>[] } } } }) =>
   f.store.db.prepare("SELECT revision_id FROM knowledge_processed ORDER BY revision_id").all().map(row => Number(row.revision_id));
 
-test("a due run curates every category, passes the stub tasks, covers what it showed and leaves no hand-off", async () => {
+test("a due run curates every category, scores the items, covers what it showed and leaves no hand-off", async () => {
   const f = dreamerFixture();
   const rule = f.item("Use pnpm everywhere", { category: "constraint" }), fact = f.item("Lockfile is committed", { category: "reference" });
   const result = await f.dream();
   expect(result).toMatchObject({ outcome: "success" });
-  expect(f.dreamer.inputs.map(input => input.task)).toEqual(["curate"]);
+  expect(f.dreamer.inputs.map(input => input.task)).toEqual(["curate", "classify"]); // curate changed nothing, so verify has no model call
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
   expect(covered(f)).toEqual([rule.commit, fact.commit].sort((a, b) => a - b));
   const execution = f.store.db.prepare("SELECT outcome FROM task_executions").all();
@@ -116,9 +106,8 @@ test("a batch applies at once; a failure in the next keeps it, and a later run r
   f.dreamer.script.curate!.reference = "## none\n";
   f.item("A later Noter item", { category: "reference" });
   expect(await f.dream()).toMatchObject({ outcome: "success" });
-  const inputs = f.dreamer.inputs.slice(-1);
-  expect(inputs).toHaveLength(1);
-  expect(f.dreamer.reports.at(-1)).toContain("batch 1 of 1, category reference");
+  expect(f.dreamer.inputs.slice(-3).map(input => input.task)).toEqual(["curate", "verify", "classify"]);
+  expect(f.dreamer.reports.at(-3)).toContain("batch 1 of 1, category reference");
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
   expect(covered(f)).toContain(ref.commit);
 });
@@ -291,7 +280,7 @@ test("after a restart the hand-off resumes at the first category not done, and t
     const path = { sessionId, branch, headTurnId };
     knowledge(memory.store, path, "project", "reference", [laterFact.id], "A later reference", { operation: { title: "Later item" } });
     expect(await memory.dream({ sessionId, branch, headTurnId, model: "scripted" })).toMatchObject({ outcome: "success" });
-    expect(dreamer.reports).toHaveLength(1);
+    expect(dreamer.inputs.map(input => input.task)).toEqual(["curate", "verify", "classify"]); // the earlier batch's change is verified
     expect(dreamer.reports[0]).toContain("batch 1 of 1, category reference");
     const processed = memory.store.db.prepare("SELECT revision_id FROM knowledge_processed").all().map(row => Number(row.revision_id));
     expect(processed).toEqual(expect.arrayContaining([rule.commit, ref.commit]));
