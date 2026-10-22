@@ -189,6 +189,8 @@ export default function (pi: ExtensionAPI) {
     diagnostic?: string;
   };
   let catchup: Catchup | undefined;
+  // 146 §18, Q21: the manual dream's status, a sibling of the catchup record. A dream is one Dreaming run, so it has no entry counts.
+  let dream: { state: "running" | "completed" | "stopped" | "failed"; diagnostic?: string } | undefined;
   /** What the last compaction of this executor did — the bounded views, or a native delegation and its
    * reason — for `/trace status` (ticket 20 "Failure visibility"). A diagnostic string, not a state
    * machine: nothing reads it back. */
@@ -327,7 +329,7 @@ export default function (pi: ExtensionAPI) {
   // One admission path for ordinary (own/borrowed) and manual-catchup work (18b): only the target
   // and admission flags differ. `boundary` is absent for ordinary automatic work.
   const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
-      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary },
+      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; manual?: boolean },
       ): Promise<NotingResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
@@ -376,8 +378,18 @@ export default function (pi: ExtensionAPI) {
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
       nativeReadToolTokens, nativeWriteToolTokens, workspaceRoot: defaultWorkspaceRoot(),
       ...(options.boundary ? { boundary: options.boundary } : {}) };
-    return (kind === "dreaming" ? memory.dream(common) : memory.noting(common))
-      .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); return result; });
+    return (kind === "dreaming" ? memory.dream({ ...common, ...(options.manual ? { manual: true } : {}) }) : memory.noting(common))
+      .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); endCatchupOnDreamingFailure(kind, target, result); return result; });
+  };
+  /** 146 Q18: a Dreaming failure retries at the next entry-end check (ruling 10), so it ends an active drain for the same session and
+   * path, whoever started the run (the drain, an entry-end check the drain skipped as busy, or `/trace dream`). The Noter's retry loop
+   * is unchanged. A Noter run still in flight is not cancelled; its late success finds an ended drain and drives nothing. */
+  const endCatchupOnDreamingFailure = (kind: WorkerPhase, target: TaskTarget, result: { outcome: string; problems?: string[]; automaticOff?: string }) => {
+    const c = catchup;
+    if (kind !== "dreaming" || result.outcome !== "failure" || !c || c.outcome || c.stopped ||
+        c.sessionId !== target.sessionId || c.branch !== target.branch) return;
+    c.outcome = result.automaticOff ? "stopped" : "failed"; c.waitingPhase = undefined;
+    c.diagnostic = result.problems?.join("; ") || result.outcome;
   };
   // Keep the existing storage provenance value; session.project_declaration controls sharing.
   const ownProject = (piId: string) => (memory.store.findProjectByName(`pi:${piId}`)
@@ -805,6 +817,11 @@ export default function (pi: ExtensionAPI) {
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
     return settled;
   };
+  /** Only an explicit catchup may chain on an ordinary worker's release (and `/trace dream` is one). */
+  const releaseOrdinary = (context: ExtensionContext, outcome: string | undefined) => {
+    showSpend(context);
+    if (catchup && outcome !== "failure" && outcome !== "cancelled") driveCatchup(outcome === "success");
+  };
   const checkQueues = (opportunity?: TaskTarget, includeBorrowed = false) => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
@@ -849,11 +866,7 @@ export default function (pi: ExtensionAPI) {
       let settled: Awaited<ReturnType<typeof work>>;
       trackSlot(kind, slot, promise.then(result => { settled = result; reportProblems(result, context); }, error => {
         context.ui.notify(String(error), "error");
-      }), context, () => {
-        showSpend(context);
-        // Only an explicit catchup may chain on an ordinary worker's release.
-        if (catchup && settled?.outcome !== "failure" && settled?.outcome !== "cancelled") driveCatchup(settled?.outcome === "success");
-      });
+      }), context, () => releaseOrdinary(context, settled?.outcome));
     }
     if (catchup) driveCatchup(false); // A manual drain retains its independent checkpoint.
   };
@@ -938,7 +951,7 @@ export default function (pi: ExtensionAPI) {
         if (outcome === "failure") {
           c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
           if ((result as { automaticOff?: string }).automaticOff) c.outcome = "stopped";
-          else retry = true;
+          else if (phase === "noting") retry = true; // a Dreaming failure already ended the drain (Q18)
         } else if (outcome !== "success" && outcome !== "empty") {
           c.outcome = outcome === "cancelled" ? "stopped" : "failed";
           c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
@@ -979,6 +992,41 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify("Trace Memory: catchup found nothing pending; already caught up.", "info"); return;
     }
     ctx.ui.notify(catchupLine()!, "info");
+  };
+  const dreamLine = (): string | undefined => {
+    if (!dream) return undefined;
+    if (dream.state === "running") return "Dream: running";
+    if (dream.state === "completed") return "Dream: completed";
+    if (dream.state === "stopped") return `Dream: stopped${dream.diagnostic ? ` (${dream.diagnostic})` : ""}; /trace dream starts a new run`;
+    return `Dream: failed — ${dream.diagnostic}`;
+  };
+  // 146 §18: one Dreaming run now, whatever the Noter-operation count says, through the one admission path with `manual: true`.
+  // Like `startCatchup` it answers at once; the refusal or the outcome arrives through the status line and a notification.
+  const startDream = () => {
+    if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
+    if (dream?.state === "running") { ctx.ui.notify(dreamLine()!, "info"); return; }
+    if (!state.sessionId || !state.head) { ctx.ui.notify("Trace Memory: no assistant reply yet; nothing to dream.", "info"); return; }
+    const refuse = (diagnostic: string) => { dream = { state: "failed", diagnostic }; ctx.ui.notify(dreamLine()!, "warning"); };
+    if (slots.has("dreaming")) { refuse("a Dreamer is already running in this session"); return; }
+    reconcile(false);
+    const context = ctx, own = { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
+    const slot: Slot = { target: own };
+    slots.set("dreaming", slot); activity.running.set("dreaming", 1); showSpend(context);
+    dream = { state: "running" };
+    const promise = attemptPhase(context, "dreaming", own, { borrowed: false, automatic: false, manual: true });
+    slot.result = promise.catch(() => undefined);
+    let outcome: string | undefined;
+    const handled = promise.then(result => {
+      const r = result as { outcome: string; problems?: string[]; reason?: string; permanent?: string; automaticOff?: string };
+      outcome = r.outcome;
+      const problems = r.problems?.join("; ");
+      dream = r.outcome === "success" ? { state: "completed" }
+        : r.outcome === "empty" ? { state: "failed", diagnostic: "nothing to curate" }
+        : r.outcome === "dropped" ? { state: "failed", diagnostic: r.permanent ?? r.reason ?? "the core refused the run" }
+        : { state: r.outcome === "cancelled" || r.automaticOff ? "stopped" : "failed", diagnostic: problems || r.outcome };
+    }, error => { dream = { state: "failed", diagnostic: String(error) }; });
+    trackSlot("dreaming", slot, handled, context, () => { releaseOrdinary(context, outcome); context.ui.notify(dreamLine()!, "info"); });
+    context.ui.notify("Dream: starting", "info");
   };
   const stopCatchup = () => {
     const active = hasBackgroundWork();
@@ -1272,7 +1320,7 @@ export default function (pi: ExtensionAPI) {
   // ---- 24b: the command surface ----
   // `enable`, `disable`, `status` and `runs` are retired — status and runs live in the menu's
   // Current session. Project assignment, catchup and stop retain headless command forms.
-  const commands = "/trace (menu; status when headless) | /trace on | /trace off | /trace catchup | /trace stop | " +
+  const commands = "/trace (menu; status when headless) | /trace on | /trace off | /trace catchup | /trace dream | /trace stop | " +
     "/trace project <name>";
   const retiredForms: Record<string, string> = {
     enable: "/trace on", disable: "/trace off",
@@ -1489,6 +1537,8 @@ export default function (pi: ExtensionAPI) {
     if (lastCompaction) recovery.push(`Compaction: ${lastCompaction}`);
     const catchupStatus = catchupLine();
     if (catchupStatus) recovery.push(catchupStatus);
+    const dreamStatus = dreamLine();
+    if (dreamStatus) recovery.push(dreamStatus);
     const shared = compact ? (state.shared ? ["Shared identity"] : [])
       : [state.shared ? "Shared identity: this switch also affects forks or clones carrying this memory identity."
         : "Forks or clones carrying this memory identity share this switch."];
@@ -1509,6 +1559,8 @@ export default function (pi: ExtensionAPI) {
     if (lastCompaction) notices.push(`Compaction: ${lastCompaction}`);
     const catchup = catchupLine();
     if (catchup) notices.push(catchup);
+    const dreamStatus = dreamLine();
+    if (dreamStatus) notices.push(dreamStatus);
     if (state.shared) notices.push("Shared identity");
     const today = memory.spendSince(localMidnight());
     return {
@@ -1558,6 +1610,7 @@ export default function (pi: ExtensionAPI) {
     }
     if (choice === "Settings…") { await settingsMenu(); return; }
     if (choice === "Catch up") { try { startCatchup(); } catch (error) { ctx.ui.notify(String(error), "error"); } return; }
+    if (choice === "Dream") { try { startDream(); } catch (error) { ctx.ui.notify(String(error), "error"); } return; }
     if (choice === "Stop") { stopCatchup(); return; }
     if (choice === "Turn on" || choice === "Turn off") {
       const on = choice === "Turn on";
@@ -1565,7 +1618,7 @@ export default function (pi: ExtensionAPI) {
       if (await ctx.ui.confirm(confirmation.title, confirmation.message)) toggle(on);
     }
   };
-  pi.registerCommand("trace", { description: "Trace Memory: menu, session participation (on/off), catchup/stop and project assignment.",
+  pi.registerCommand("trace", { description: "Trace Memory: menu, session participation (on/off), catchup/dream/stop and project assignment.",
     async handler(args, context) {
       ensure(context);
       const parts = args.trim() ? args.trim().split(/\s+/) : [];
@@ -1575,6 +1628,7 @@ export default function (pi: ExtensionAPI) {
       const [verb, ...rest] = parts;
       if ((verb === "on" || verb === "off") && !rest.length) { toggle(verb === "on"); return; }
       if (verb === "catchup" && !rest.length) { startCatchup(); return; }
+      if (verb === "dream" && !rest.length) { startDream(); return; }
       if (verb === "stop" && !rest.length) { stopCatchup(); return; }
       if (verb === "project" && rest.length) { assignProject(rest.join(" ")); return; }
       // A retired subcommand and a malformed argument end in the same place: the usage, and no

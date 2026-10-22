@@ -298,6 +298,7 @@ export const register = (on: any) => {
         selectedAction = value; screen = "confirm"; $.ui.invalidate("ui.render"); return;
       }
       if (value === "catch-up") void act("catchup");
+      else if (value === "dream") void act("dream");
       else if (value === "stop") void act("stop");
     };
     const message = notice ? <Text>{notice}</Text> : null;

@@ -368,9 +368,13 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
     const first = s.frame().map(line => line.trimEnd()).join("\n");
-    const compactFirst = first.replace(/[⛁⛶⛀]/g, "").replace(/\s+/g, " ");
+    // The seven-row action list (146 added Dream) leaves one body row fewer at 24 rows: below 79 columns the model and SDK
+    // lines are on the first page-down, still reachable, rather than on the first frame.
+    let top = first;
+    if (width < 79) { s.key("\x1b[6~"); top += `\n${s.frame().map(line => line.trimEnd()).join("\n")}`; s.key("\x1b[5~"); }
+    const compactFirst = top.replace(/[⛁⛶⛀]/g, "").replace(/\s+/g, " ");
     if (width > 20) expect(compactFirst).toContain("44.5k / 1M tokens (4.5%, SDK)");
-    expect(first).toContain("fake/test");
+    expect(top).toContain("fake/test");
     expect(first).not.toMatch(/100 cells|Pi estimate|worker readiness|Forks or clones/);
     const viewed = [first];
     for (let page = 0; page < 20; page++) { s.key("\x1b[6~"); viewed.push(s.frame().map(line => line.trimEnd()).join("\n")); }
