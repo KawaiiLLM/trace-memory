@@ -1,15 +1,16 @@
 // Publishing a checked workspace file (ticket 144, Stage 2). The Noter's two files go through the existing
 // Noting commit, so facts, their ids and the knowledge that cites them land in one transaction, and a stale
-// update becomes a create there. Dreaming's knowledge file goes through `commitWorkspaceRun`, which refuses an
+// update becomes a create there. Dreaming's curate file goes through `commitWorkspaceRun`, which refuses an
 // operation whose base is no longer current (and what depends on it) and leaves it for the next run.
 
 import { describeBlock, type Block, type WorkspaceFile } from "./parse.ts";
 import { plan, type NotingScope, type PlannedBlock } from "./plan.ts";
 import type { KnowledgePath, RunInput, Store } from "../store/index.ts";
+import type { CurateOperation } from "../store/executions.ts";
 
 export type ApplyInput =
   | { kind: "noting"; scope: NotingScope; facts: WorkspaceFile; knowledge: WorkspaceFile; run?: RunInput }
-  | { kind: "curate" | "verify"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile; run?: RunInput };
+  | { kind: "curate"; operation: CurateOperation; sessionId: number; path?: KnowledgePath; file: WorkspaceFile; run?: RunInput };
 
 /** What publishing did with one block. `versions` are the versions it wrote, as `K<id>@v<n>`. */
 export interface BlockResult {
@@ -31,12 +32,12 @@ export type ApplyResult =
 
 export function applyWorkspace(store: Store, input: ApplyInput): ApplyResult {
   if (input.kind === "noting") return applyNoting(store, input);
-  const planned = plan(store, { kind: input.kind, sessionId: input.sessionId, path: input.path, file: input.file });
+  const planned = plan(store, { kind: "curate", operation: input.operation, sessionId: input.sessionId, path: input.path, file: input.file });
   if (planned.problems.length) return { ok: false, problems: planned.problems };
   const path = planned.path!;
   const blocks = planned.knowledge;
   const run: RunInput = input.run ?? { kind: "dreaming", sessionId: path.sessionId, branch: path.branch ?? null, createdAt: new Date().toISOString() };
-  const done = store.commitWorkspaceRun({ run, path, operations: blocks.map(entry => entry.make().operation!), response: results => JSON.stringify({ workspace: input.kind,
+  const done = store.commitWorkspaceRun({ run, path, operations: blocks.map(entry => entry.make().operation!), response: results => JSON.stringify({ workspace: input.kind, operation: input.operation,
     blocks: blocks.map((entry, i) => ({ block: describeBlock(entry.block), line: entry.block.line, result: results[i] })) }) });
   return { ok: true, runId: done.runId, factIds: {}, blocks: blocks.map((entry, i): BlockResult => {
     const result = done.results[i]!, where = describeBlock(entry.block);

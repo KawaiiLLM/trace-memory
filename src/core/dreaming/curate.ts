@@ -5,6 +5,7 @@ import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup, type KnowledgeCategory } 
 import { describeBlock, problem, plan, type CheckResult, type WorkspaceFile } from "../workspace/index.ts";
 import { knowledgeTitle, renderKnowledge, tokens, withFactDates, withKnowledgeCost } from "../render/index.ts";
 import type { KnowledgeOperationInput, KnowledgePath, Store, WorkspaceOperationResult } from "../store/index.ts";
+import { CURATE_ROTATION, type CurateOperation } from "../store/executions.ts";
 import type { PlannedBlock } from "../workspace/plan.ts";
 
 /** The knowledge block every task of a run opens with (§4.1): named constant, not a setting. */
@@ -42,11 +43,11 @@ export function curatePrefix(store: Store, path: KnowledgePath, items: readonly 
 
 export const batchFileName = (index: number, category: string) => `curate-${index + 1}-${category}.md`;
 
-/** The check of a curate batch file: the Stage 2 plan, then the rule that a batch touches only its own category (§4.3). Merge
- * parents and every base must sit in the batch's category group; `create`, split children and a category change by `update`
- * may name any category. */
-export function checkBatch(store: Store, path: KnowledgePath, category: Category, file: WorkspaceFile): CheckResult & { planned: PlannedBlock[] } {
-  const planned = plan(store, { kind: "curate", sessionId: path.sessionId, path, file });
+/** The check of a curate batch file: the Stage 2 plan for the run's one operation (never `create`), then the rule that a batch touches only
+ * its own category (§4.3). Every base, merge primary and absorbed item must sit in the batch's category group; split children and a
+ * category change by `update` may name any category. */
+export function checkBatch(store: Store, path: KnowledgePath, category: Category, file: WorkspaceFile, operation: CurateOperation): CheckResult & { planned: PlannedBlock[] } {
+  const planned = plan(store, { kind: "curate", operation, sessionId: path.sessionId, path, file });
   const problems = [...planned.problems];
   const groupAt = (knowledgeId: number, baseCommit: number) => {
     const revision = store.getKnowledgeRevision(knowledgeId, baseCommit);
@@ -66,4 +67,5 @@ export function checkBatch(store: Store, path: KnowledgePath, category: Category
   }
   return { ok: !problems.length, problems, lengths: planned.lengths, planned: planned.knowledge };
 }
+export { CURATE_ROTATION, type CurateOperation };
 export type { WorkspaceOperationResult };

@@ -973,7 +973,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           const outcome = terminal.outcome === "success" ? "success" : stopped ? "cancelled" : "failure";
           const failure = phase === "dreaming" && "failure" in terminal ? terminal.failure : undefined;
           const lostFailure = outcome === "failure" && lost && phase === "dreaming"
-            ? { task: failure?.task ?? "curate", class: "claim lost", transient: true } : failure;
+            ? { task: failure?.task ?? "curate", class: "claim lost", transient: true, ...(failure?.operation ? { operation: failure.operation } : {}) } : failure;
           const reason = lostFailure ? `${lostFailure.task}: ${lostFailure.class}` : outcome === "failure" && lost ? "claim lost" : terminal.problems?.join("; ");
           const settled = store.transaction(() => store.settleExecution(executionId!, outcome, terminal.runId, reason, lostFailure));
           if (settled.automaticOff) {

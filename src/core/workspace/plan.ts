@@ -10,9 +10,10 @@ import { isKnowledgeCategory, substantiveArchiveStatement, validateNotingFact, K
 import { parseKnowledgeAddress, parseTurnAddress } from "../model/address.ts";
 import { tokens } from "../render/index.ts";
 import type { FactCommitInput, KnowledgeOperationInput, KnowledgePath, RunInput, Store } from "../store/index.ts";
+import type { CurateOperation } from "../store/executions.ts";
 import { describeBlock, parseBlocks, parseScores, problem, type Block, type Section, type WorkspaceFile } from "./parse.ts";
 
-export type TaskKind = "noting-facts" | "noting-knowledge" | "curate" | "verify" | "classify";
+export type TaskKind = "noting-facts" | "noting-knowledge" | "curate" | "classify";
 
 /** The frozen batch a Noting task writes about: the same range and entries the Noter's tools are bound to. */
 export interface NotingScope { sessionId: number; branch: string; range: { from: string; to: string }; entryIds?: readonly number[] }
@@ -21,20 +22,9 @@ export type WorkspaceTask =
   | { kind: "noting-facts"; scope: NotingScope; file: WorkspaceFile }
   /** `facts` is the run's facts file; its labels are what `supports:` may cite besides `F<id>`. */
   | { kind: "noting-knowledge"; scope: NotingScope; file: WorkspaceFile; facts: WorkspaceFile }
-  | { kind: "curate"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile }
-  /** `authority` binds a Dreaming verify file to curate's results (§5.3) and its evidence to the allowed roots (§5.4); without it
-   * (the Stage 2 contract tests) any current version may be named and a repository reference is taken as is. */
-  | { kind: "verify"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile; authority?: VerifyAuthority }
+  /** 144 stage 5 §3.5: a curate file holds blocks of the run's one `operation`, and never a `create` (Dreaming creates no knowledge). */
+  | { kind: "curate"; operation: CurateOperation; sessionId: number; path?: KnowledgePath; file: WorkspaceFile }
   | { kind: "classify"; items: readonly number[]; file: WorkspaceFile };
-
-export interface VerifyAuthority {
-  /** Each item curate wrote this cycle: the version its latest curate operation produced. */
-  results: ReadonlyMap<number, number>;
-  /** The version that same operation was written from; absent for a `create`, a split child and a merge's absorbed item. */
-  bases: ReadonlyMap<number, number>;
-  /** The roots a repository reference in `evidence:` must resolve under (§5.4). */
-  resolveRepository(reference: string): string | null;
-}
 
 /** The host-measured length of one title or body, whether or not it is over its limit. */
 export interface Length { block: string; field: "title" | "body"; count: number; limit: number }
@@ -57,13 +47,8 @@ export interface Plan {
   sources?: ReturnType<typeof notingSources>;
 }
 
-const ALLOWED: Record<TaskKind, readonly string[]> = {
-  "noting-facts": ["fact"],
-  "noting-knowledge": ["create", "update"],
-  curate: ["create", "update", "merge", "split", "archive"],
-  verify: ["update", "archive", "revert"],
-  classify: [],
-};
+const allowedOps = (task: WorkspaceTask): readonly string[] =>
+  task.kind === "noting-facts" ? ["fact"] : task.kind === "noting-knowledge" ? ["create", "update"] : task.kind === "curate" ? [task.operation] : [];
 
 const FIELDS: Record<string, readonly string[]> = {
   fact: ["title", "support", "negate"],
@@ -73,22 +58,21 @@ const FIELDS: Record<string, readonly string[]> = {
   split: ["title", "category", "scope", "topics", "supports", "reason"],
   child: ["title", "category", "scope", "topics", "supports", "reason"],
   archive: ["kind", "reason"],
-  revert: ["reason"],
 };
 const REQUIRED: Record<string, readonly string[]> = {
   fact: ["title"],
   create: ["title", "category", "scope", "topics", "supports", "reason"],
   update: ["reason"], merge: ["absorb", "reason"], split: ["reason"],
   child: ["title", "category", "scope", "topics", "supports", "reason"],
-  archive: ["kind", "reason"], revert: ["reason"],
+  archive: ["kind", "reason"],
 };
 const ARCHIVE_KINDS = ["invalid", "inadmissible"] as const;
 /** Merging has one form; an archive that names a successor is the old, refused way to say it. */
 const USE_MERGE = "to merge an item into another current item, write a `merge` block with `absorb:`";
 const VERSION = /^K([1-9]\d*)@v([1-9]\d*)$/;
 /** An address the evidence field takes only as `trace://...`: a fact, a version or a Raw turn written bare. */
-const BARE_ADDRESS = /^(?:F[1-9]\d*|K[1-9]\d*(?:@v[1-9]\d*|#\w+)?|S[1-9]\d*(?:\/\S*)?)$/;
-const list = (value: string | undefined): string[] => (value ?? "").split(",").map(item => item.trim()).filter(Boolean);
+export const BARE_ADDRESS = /^(?:F[1-9]\d*|K[1-9]\d*(?:@v[1-9]\d*|#\w+)?|S[1-9]\d*(?:\/\S*)?)$/;
+export const list = (value: string | undefined): string[] => (value ?? "").split(",").map(item => item.trim()).filter(Boolean);
 
 type Made = { operation?: KnowledgeOperationInput; problems: string[] };
 interface Base { knowledgeId: number; ordinal: number; commit: number; revision: KnowledgeRevision }
@@ -122,7 +106,7 @@ export function plan(store: Store, task: WorkspaceTask): Plan {
   if (none.length && parsed.blocks.length > none.length)
     out.problems.push(problem(file, none[0]!.line, describeBlock(none[0]!), "`## none` must be the only block of the file"));
   else if (none.length > 1) out.problems.push(problem(file, none[1]!.line, describeBlock(none[1]!), "`## none` appears once"));
-  const allowed = ALLOWED[task.kind];
+  const allowed = allowedOps(task);
   for (const block of parsed.blocks) if (block.op !== "none" && !allowed.includes(block.op))
     out.problems.push(problem(file, block.line, describeBlock(block), `\`## ${block.op}\` is not allowed in a ${task.kind} file; allowed: ${allowed.map(op => `\`${op}\``).join(", ")}, or \`## none\``));
   const blocks = parsed.blocks.filter(block => allowed.includes(block.op));
@@ -131,14 +115,13 @@ export function plan(store: Store, task: WorkspaceTask): Plan {
   return out;
 }
 
-/** The fields a section may and must carry; verify files also carry `evidence:` on every block. */
-function checkFields(file: WorkspaceFile, section: Section, kind: string, where: string, verify: boolean): string[] {
-  const evidence = verify && kind !== "child" ? ["evidence"] : [];
-  const allowed = [...FIELDS[kind]!, ...evidence];
+/** The fields a section may and must carry. */
+function checkFields(file: WorkspaceFile, section: Section, kind: string, where: string): string[] {
+  const allowed = FIELDS[kind]!;
   return [
     ...[...section.fields].filter(([name]) => !allowed.includes(name)).map(([name, field]) =>
       problem(file, field.line, where, `field \`${name}\` is not allowed here; ${kind === "child" ? "a child" : `a \`${kind}\` block`} takes ${allowed.map(f => `\`${f}\``).join(", ")}${kind === "archive" && name === "successor" ? `; ${USE_MERGE}` : ""}`)),
-    ...[...REQUIRED[kind] ?? [], ...evidence].filter(name => !section.fields.has(name)).map(name => problem(file, section.line, where, `missing required field \`${name}\``)),
+    ...(REQUIRED[kind] ?? []).filter(name => !section.fields.has(name)).map(name => problem(file, section.line, where, `missing required field \`${name}\``)),
   ];
 }
 
@@ -154,7 +137,7 @@ function planFacts(store: Store, task: Extract<WorkspaceTask, { kind: "noting-fa
   const position = new Map(blocks.map((block, i) => [block.target, i + 1] as const).reverse());
   for (const block of blocks) {
     const where = describeBlock(block);
-    out.problems.push(...checkFields(file, block, "fact", where, false));
+    out.problems.push(...checkFields(file, block, "fact", where));
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(block.target)) out.problems.push(problem(file, block.line, where, "expected `## fact <label>` with a label such as `f1`, unique in the file"));
     else if (labels.has(block.target)) out.problems.push(problem(file, block.line, where, `label \`${block.target}\` is already used by ${describeBlock(labels.get(block.target)!)}`));
     else labels.set(block.target, block);
@@ -181,8 +164,7 @@ function planFacts(store: Store, task: Extract<WorkspaceTask, { kind: "noting-fa
 }
 
 function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "noting-facts" | "classify" }>, blocks: Block[], out: Plan) {
-  const file = task.file, noting = task.kind === "noting-knowledge", verify = task.kind === "verify";
-  const authority = task.kind === "verify" ? task.authority : undefined;
+  const file = task.file, noting = task.kind === "noting-knowledge";
   const path: KnowledgePath = noting ? { sessionId: task.scope.sessionId, headTurnId: Number(task.scope.range.to.split("/T")[1]), branch: task.scope.branch }
     : task.path ?? store.knowledgePath(task.sessionId);
   out.path = path;
@@ -204,7 +186,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
     const line = (name: string) => block.fields.get(name)?.line ?? block.line;
     const value = (section: Section, name: string) => section.fields.get(name)?.value;
     const missing = (section: Section, kind: string) => (REQUIRED[kind] ?? []).some(name => !section.fields.has(name));
-    add(...checkFields(file, block, block.op, where, verify));
+    add(...checkFields(file, block, block.op, where));
 
     const record = (knowledgeId: number, at: number) => {
       const earlier = recorded.get(knowledgeId);
@@ -219,14 +201,6 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
         const commit = store.resolveVersionOrdinal(knowledgeId, ordinal);
         return { knowledgeId, ordinal, commit, revision: store.getKnowledgeRevision(knowledgeId, commit)! };
       } catch { add(fmt(at, `${ref} does not exist`)); return null; }
-    };
-    /** §5.3: verify may change only an item's latest curate result. */
-    const curated = (b: Base, at: number): boolean => {
-      const result = authority?.results.get(b.knowledgeId);
-      if (!authority || result === b.commit) return true;
-      add(fmt(at, result === undefined ? `K${b.knowledgeId} was not changed by curate this cycle; verify checks only curate's changes`
-        : `K${b.knowledgeId}@v${b.ordinal} is not curate's latest result for K${b.knowledgeId}, which is K${b.knowledgeId}@v${store.versionOrdinal(b.knowledgeId, result)}; name that version`));
-      return false;
     };
     const lengths = (section: Section, label: string) => {
       if (value(section, "title") !== undefined) out.lengths.push({ block: label, field: "title", count: tokens(value(section, "title")!), limit: store.writing.titleTokens });
@@ -275,19 +249,6 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       add(...entry.make().problems);
     };
 
-    if (verify) {
-      const refs = list(value(block, "evidence"));
-      if (block.fields.has("evidence") && !refs.length) add(fmt(line("evidence"), "evidence is empty; name the fact, Raw or repository address the change rests on"));
-      // A trace address must resolve; a bare id is refused; any other value is a repository reference, resolved when the task
-      // names its roots (§5.4).
-      for (const ref of refs) {
-        const bad = ref.startsWith("trace://") ? traceProblem(store, ref)
-          : BARE_ADDRESS.test(ref) ? `write \`trace://${ref}\``
-          : task.kind === "verify" ? task.authority?.resolveRepository(ref) ?? null : null;
-        if (bad) add(fmt(line("evidence"), `evidence \`${ref}\`: ${bad}`));
-      }
-    }
-
     if (block.op === "create") {
       lengths(block, where); body(block, where);
       if (block.children.length) add(fmt(block.line, "a `create` block has no `### child` sections"));
@@ -298,12 +259,12 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       if (block.op === "split" && !block.children.length) add(fmt(block.line, "a `split` block needs one or more `### child` sections"));
       block.children.forEach((child, i) => {
         const label = `${where} child ${i + 1}`;
-        add(...checkFields(file, child, "child", label, false));
+        add(...checkFields(file, child, "child", label));
         body(child, label, "the child's complete body");
         lengths(child, label);
       });
       const primary = base(block.target, block.line);
-      if (!primary || !curated(primary, block.line)) continue;
+      if (!primary) continue;
       record(primary.knowledgeId, block.line);
       const absorbed: Base[] = [];
       if (block.op === "merge") {
@@ -348,39 +309,11 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       if (kind !== undefined && !ARCHIVE_KINDS.includes(kind as never))
         add(fmt(line("kind"), `kind must be ${ARCHIVE_KINDS.join(" | ")}, got \`${kind}\`${kind === "merged" ? `; ${USE_MERGE}` : ""}`));
       const target = base(block.target, block.line);
-      if (!target || !curated(target, block.line)) continue;
+      if (!target) continue;
       record(target.knowledgeId, block.line);
       planned({
         make: () => ({ problems: [], operation: { op: "archive", knowledgeId: target.knowledgeId, baseCommit: target.commit, kind: (kind ?? "invalid") as "invalid",
           text: block.body, supports: [], reason: value(block, "reason") ?? "", createdAt: new Date().toISOString() } }) });
-    } else if (block.op === "revert") {
-      const match = /^(K[1-9]\d*@v[1-9]\d*)\s*->\s*(K[1-9]\d*@v[1-9]\d*)$/.exec(block.target);
-      if (!match) { add(fmt(block.line, "expected `## revert K<id>@v<n> -> K<id>@v<m>`")); continue; }
-      if (block.body) add(fmt(block.line, "a `revert` block has no body"));
-      const from = base(match[1]!, block.line), to = base(match[2]!, block.line);
-      if (!from || !to || !curated(from, block.line)) continue;
-      if (from.knowledgeId === to.knowledgeId && authority && authority.bases.get(from.knowledgeId) !== to.commit) {
-        const origin = authority.bases.get(from.knowledgeId);
-        add(fmt(block.line, origin === undefined ? `K${from.knowledgeId}@v${from.ordinal} was written without an earlier version of this item, so it has nothing to revert to; write an \`update\` instead`
-          : `a revert may restore only the version curate wrote K${from.knowledgeId} from, K${from.knowledgeId}@v${store.versionOrdinal(from.knowledgeId, origin)}; older state is reached by an \`update\` with \`evidence:\``));
-        continue;
-      }
-      if (from.knowledgeId !== to.knowledgeId) { add(fmt(block.line, `a revert restores a version of the same item; K${from.knowledgeId} and K${to.knowledgeId} differ`)); continue; }
-      if (to.ordinal >= from.ordinal) add(fmt(block.line, `a revert restores an earlier version; v${to.ordinal} is not earlier than v${from.ordinal}`));
-      if (to.revision.title === null) add(fmt(block.line, `K${to.knowledgeId}@v${to.ordinal} has no title (it predates titles) and a new version needs one; write an \`update\` with a title instead`));
-      record(from.knowledgeId, block.line);
-      // A revert writes a new live version, so it is an update of the restored content and meets the same caps.
-      const restored = to.revision;
-      out.lengths.push({ block: where, field: "title", count: tokens(restored.title ?? ""), limit: store.writing.titleTokens },
-        { block: where, field: "body", count: tokens(restored.text), limit: store.writing.bodyTokens });
-      // §5.6: the new version carries the target's supports exactly, even none (`replaceSupports`), not the base's.
-      planned({ make: () => {
-        if (!isKnowledgeCategory(restored.category))
-          return { problems: [fmt(block.line, `K${to.knowledgeId}@v${to.ordinal} has the legacy category \`${restored.category}\`; write an \`update\` that supplies one of ${KNOWLEDGE_CATEGORIES.join(", ")}`)] };
-        const made = piece({ op: "update", id: `K${from.knowledgeId}#${store.versionTag(from.knowledgeId, from.commit)}`, title: restored.title, text: restored.text, category: restored.category,
-          scope: restored.scope, topics: restored.topics, supports: restored.supports.map(id => `F${id}`), reason: value(block, "reason") ?? "" }, where, block.line, "", undefined, true);
-        return made.operation?.op === "update" ? { ...made, operation: { ...made.operation, supports: restored.supports, replaceSupports: true } } : made;
-      } });
     }
   }
 
@@ -425,4 +358,16 @@ export function traceProblem(store: Store, address: string): string | null {
   for (const entry of turn.entries ?? []) for (const ordinal of [entry.from, entry.to ?? entry.from])
     if (!store.db.prepare("SELECT 1 FROM source_entries WHERE turn_id = ? AND entry_ordinal = ?").get(turn.turn, ordinal)) return `no entry E${ordinal} in that turn`;
   return null;
+}
+
+/** 144 stage 5 §4.5: the caps in force now against one compiled operation (title and body of what it writes, an archive's explanation,
+ * each split child). `plan` reports the same counts as `Length`; apply refuses an operation over them, per operation. */
+export function overCaps(store: Store, operation: KnowledgeOperationInput): string[] {
+  const { titleTokens, bodyTokens } = store.writing;
+  const out: string[] = [];
+  const check = (what: string, text: string | undefined, limit: number) => { const count = tokens(text ?? ""); if (count > limit) out.push(`${what}: ${count} tokens, over the ${limit}-token limit`); };
+  if (operation.op !== "archive") { check("title", operation.title, titleTokens); check("body", operation.text, bodyTokens); }
+  else check("body", operation.text, bodyTokens);
+  if (operation.op === "split") operation.children.forEach((child, i) => { check(`child ${i + 1} title`, child.title, titleTokens); check(`child ${i + 1} body`, child.text, bodyTokens); });
+  return out;
 }

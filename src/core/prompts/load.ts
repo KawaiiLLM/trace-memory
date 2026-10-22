@@ -5,7 +5,9 @@ import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames 
 
 /** Every prompt file under `src/core/prompts/` (stage prompts, then `tasks/<name>.md`), the one list the CC bundle
  * build composes from, so a file listed here cannot be missing from the bundle. */
-export const PROMPT_FILES = ["noting.md", "dreaming.md", "classifying.md"] as const;
+export const PROMPT_FILES = ["noting.md", "dreaming.md", "classifying.md",
+  "tasks/curate-update.md", "tasks/curate-merge.md", "tasks/curate-split.md", "tasks/curate-archive.md",
+  "tasks/verify-update.md", "tasks/verify-merge.md", "tasks/verify-split.md", "tasks/verify-archive.md"] as const;
 export type PromptFile = (typeof PROMPT_FILES)[number];
 const INCLUDE = /<!-- include:\s*([^\s>]+)\s*-->/g;
 
