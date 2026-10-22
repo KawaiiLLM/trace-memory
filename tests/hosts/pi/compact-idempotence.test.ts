@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { call, calls, fixture, piSession, say } from "./native-fixture.ts";
+import { dreamerTurn, fixture, piSession, say } from "./native-fixture.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
 import { knowledgeBatch, legacyFacts } from "../../support/seed.ts";
@@ -76,15 +76,13 @@ test("persisted hook lifecycle: repeat, N progress, 117 knowledge commits, small
     const consolidated = knowledgeBatch(store, store.knowledgePath(1, "main", 1),
       Array.from({ length: 117 }, (_, i) => ({ topics: [], reason: "Initial admission.", author: "fixture",
         text: `Durable knowledge ${i}`, category: "constraint" as const, scope: "global" as const,
-        supports: [fact.id], createdAt: "seed" })), { kind: "manual", createdAt: "seed" });
-    let dreamSubmitted = false;
+        supports: [fact.id], createdAt: "seed" })), { kind: "noting", createdAt: "seed" });
+    // Only a Noter-written item makes a Dreamer due (2026-10-22); the scripted Dreamer checks, writes `## none` and scores, and stops.
+    let dreamerRequests = 0;
     f.script(body => {
-      if (!JSON.stringify(body).includes("# Dreamer")) return say("answer");
-      if (dreamSubmitted) return say("Done");
-      dreamSubmitted = true;
-      return calls("skip-all", "memory", consolidated.committed.map(item => ({
-        skip: `K${item.knowledgeId}@v1`, because: "reviewed; retain",
-      })));
+      if (!/# (Dreamer|Classifying)/.test(JSON.stringify(body))) return say("answer");
+      dreamerRequests++;
+      return dreamerTurn(body);
     });
     const knowledge = await compact();
     expect(knowledge.details.traceMemory.supplied.knowledgeCommitIds).toHaveLength(117);
@@ -98,8 +96,9 @@ test("persisted hook lifecycle: repeat, N progress, 117 knowledge commits, small
     expect(added.summary).toContain("THIRD"); expect(added.summary).toContain("FOURTH");
     expect(await compact()).toEqual(added);
     expect(store.listSourceEntries(1)).toHaveLength(8);
-    expect(f.sent).toHaveLength(7); // four foreground requests plus the Dreamer's skip batch, closing reply and end-review reply (125)
-    expect(store.listRuns(1).filter(run => run.kind === "dreaming")).toHaveLength(1);
+    expect(dreamerRequests).toBeGreaterThan(0);
+    expect(f.sent).toHaveLength(4 + dreamerRequests); // four foreground requests plus the Dreamer's own
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM task_executions WHERE phase = 'dreaming'").get()).toEqual({ n: 1 });
 
     const tip = f.manager().getLeafId()!;
     f.manager().branch(early);
