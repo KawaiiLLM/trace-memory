@@ -1,355 +1,83 @@
-import { afterEach, expect, test, vi } from "vitest";
-import { roomyPoolBudget } from "../../knowledge-budget-fixture.ts";
-import { TraceMemory, memoryFiles, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
-import { tokens } from "../../../src/core/render/index.ts";
-import { dreamerWrite, skipRest as skipAll } from "../../dreaming-skips.ts";
-import { receiptCommit } from "../../support/seed.ts";
+// What a Dreamer run does to the current versions of knowledge (ticket 144, stage 4): what a passing curate covers, how a stop,
+// a memory-off or an executor exit fences a model that keeps working, and a merge that names its primary.
+import { afterEach, expect, test } from "vitest";
+import { writeFileSync } from "node:fs";
+import type { DreamingTaskInput } from "../../../src/core/dreaming/index.ts";
+import type { TraceMemory } from "../../source-fixture.ts";
+import { dreamerFixture as makeDreamerFixture, writeCurateBatch } from "../../support/dreamer.ts";
+import { REQUEST } from "../../support/noter.ts";
+import { block } from "../../support/workspace.ts";
 
-const memories: ReturnType<typeof TraceMemory>[] = [];
+const memories: TraceMemory[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
+type Fixture = ReturnType<typeof makeDreamerFixture>;
+const covered = (f: Fixture) => f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed ORDER BY revision_id").all();
+const revisions = (f: Fixture) => Number(f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions").get()!.n);
 
-function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>) {
-  const memory = TraceMemory(":memory:", raw => agent(raw as DreamingAgentInput), { dreaming: { triggerTokens: 1 } });
-  memories.push(memory);
-  const store = memory.store;
-  const project = store.createProject({ name: "P", declaredBy: "mark" });
-  const session = store.createSession({ host: "test", enrollmentChoice: true, projectId: project.id, startedAt: "now", firstReplyAt: "now" });
-  const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
-  const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "test", nativeId: "root", role: "user", text: "rule", raw: "{}", calls: [] });
-  memory.selectEntries(session.id, "main", [entry.id]);
-  const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" },
-    facts: [{ turnId: turn.id, entryIds: [entry.id], category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#E1`], createdAt: "now" }] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
-  const create = (scope: "global" | "project" | "session", text: string) => {
-    const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{
-      op: "create", title: "Fixture title", handle: `$${Math.random()}`, author: "test", text, category: "constraint", scope,
-      supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now",
-    }] });
-    if (!result.ok) throw new Error(result.problems.join("; "));
-    return result.committed[0]!;
-  };
-  return { memory, store, project, session, target, create };
-}
-
-const ok = { outcome: "success", output: "done", request: { exact: "request" } } as const;
-
-test("67: admission, freeze, final check and consumption have bounded independent projections", async () => {
-  let admissionGraphs = -1;
-  const f = fixture(async task => { admissionGraphs = graph.mock.calls.length; task.acknowledgeRequest(); skipAll(task); return ok; });
-  f.create("project", "due rule");
-  f.create("project", "second rule");
-  f.create("global", "below threshold");
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(`project:${f.project.id}`, f.target) * 2);
-  const graph = vi.spyOn(f.store, "commitGraphInput");
-  try {
-    expect((await f.memory.dream(f.target)).outcome).toBe("success");
-    // Discovery, claim admission and freeze share one unchanged atomic snapshot.
-    expect(admissionGraphs).toBe(1);
-    // Final read-only check (pools, then later foreign successors of frozen versions) and terminal
-    // writes are separate operations, each seeing fresh state.
-    expect(graph).toHaveBeenCalledTimes(3); // terminal settlement no longer recomputes pool suppression state
-  } finally { graph.mockRestore(); }
-});
-
-test("64c facade freezes the due pending and terminal success processes its exact current versions", async () => {
-  let seen!: DreamingAgentInput;
-  const f = fixture(async task => { seen = task; task.acknowledgeRequest(); skipAll(task); return ok; });
-  const item = f.create("project", "project rule");
-  const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", roomyPoolBudget(f.store.pendingPoolWeight(pool, f.target)));
-
+test("64c a due run covers the exact current versions it showed; afterwards nothing is due", async () => {
+  const f = makeDreamerFixture(memories);
+  const item = f.item("project rule", { category: "constraint" });
   expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
-  const result = await f.memory.dream(f.target);
-  expect(result.outcome).toBe("success");
-  expect(seen.material.changed).toContain(`K${item.knowledgeId}@v${f.store.versionOrdinal(item.knowledgeId, item.commit)}`);
-  expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all()).toEqual([{ pool, revision_id: item.commit }]);
+  expect((await f.dream()).outcome).toBe("success");
+  expect(f.dreamer.inputs[0]!.text).toContain(`[${item.ref}]`);
+  expect(covered(f)).toEqual([{ pool: `project:${f.project.id}`, revision_id: item.commit }]);
   expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: false });
   expect(f.memory.progress(f.session.id, "main", f.target.headTurnId)).toMatchObject({ knowledge: 1, changedKnowledge: 0 });
   expect(f.memory.progress(f.session.id, "main", f.target.headTurnId)).not.toHaveProperty("processedKnowledge");
   expect(f.memory.progress(f.session.id, "main", f.target.headTurnId)).not.toHaveProperty("unprocessedKnowledge");
 });
 
-test("64c facade leaves an external mid-run revision pending while recording the frozen range", async () => {
-  let release!: () => void;
-  const wait = new Promise<void>(resolve => { release = resolve; });
-  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); await wait; return ok; });
-  const first = f.create("project", "first rule ".repeat(20));
-  const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 3); // 104: the late arrival still fits
-  const running = f.memory.dream(f.target);
-  await new Promise(resolve => setTimeout(resolve, 0));
-  const late = f.create("project", "late rule ".repeat(10));
-  release();
-  expect((await running).outcome).toBe("success");
-  expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([late.commit]);
-  expect(f.store.pendingPoolWeight(pool, f.target) * 2).toBeLessThan(f.store.knowledgeBudgets().project);
-  expect(f.store.dreamingDue(f.target, 1)).toBe(true); // mid-run arrival retains pending eligibility
-  expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ?",).all(pool).map(row => Number(row.revision_id))).toEqual([first.commit]);
-});
-
-test("64c facade cancellation before a commit closes the range without processing", async () => {
-  const controller = new AbortController();
-  const f = fixture(async task => await new Promise<RunAgentResult>(resolve => {
-    task.acknowledgeRequest(); task.signal!.addEventListener("abort", () => resolve({ outcome: "cancelled", output: "cancelled", request: { exact: "request" } }), { once: true });
-  }));
-  f.create("project", "cancelled rule");
-  const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
-  const running = f.memory.dream({ ...f.target, signal: controller.signal });
-  await new Promise(resolve => setTimeout(resolve, 0)); controller.abort();
-  expect((await running).outcome).toBe("cancelled");
-  expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
-  expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
-  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
-});
-
-test("64c cancelled run after a scope-changing commit processes only its resulting owner", async () => {
-  const controller = new AbortController();
-  let output = 0;
-  const f = fixture(async task => {
-    task.acknowledgeRequest();
-    const memory = task.tools.find(tool => tool.name === "memory")!;
-    const committed = JSON.parse(dreamerWrite(memory, { operations: [{ op: "update", id: `K${input.knowledgeId}#${f.store.versionTag(input.knowledgeId, input.commit)}`,
-      text: "moved global rule", category: "constraint", scope: "global", supports: [], topics: [], reason: "scope change" }], skipped: [] })).committed;
-    output = receiptCommit(f.store, committed[0]);
-    return await new Promise<RunAgentResult>(resolve => task.signal!.addEventListener("abort",
-      () => resolve({ outcome: "cancelled", output: "cancelled", request: { exact: "request" } }), { once: true }));
-  });
-  const input = f.create("project", "project source");
-  const projectPool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(projectPool, f.target) * 2);
-  const running = f.memory.dream({ ...f.target, signal: controller.signal });
-  while (!output) await new Promise(resolve => setTimeout(resolve, 0));
-  controller.abort();
-  expect((await running).outcome).toBe("cancelled");
-  expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed ORDER BY revision_id").all()).toEqual([
-    { pool: "global", revision_id: output },
-  ]);
-});
-
 test.each([
   { committed: false, stopping: false, disabled: false }, { committed: true, stopping: false, disabled: false },
   { committed: false, stopping: true, disabled: false }, { committed: true, stopping: true, disabled: false },
   { committed: false, stopping: false, disabled: true }, { committed: true, stopping: false, disabled: true },
-])("64c executor cancellation fences tools but completes pool accounting ($committed/$stopping/$disabled)", async ({ committed, stopping, disabled }) => {
-  let task!: DreamingAgentInput, output = 0, release!: () => void, entered!: () => void;
+])("64c executor cancellation fences the model's files and keeps the claim until the task ends ($committed/$stopping/$disabled)", async ({ committed, stopping, disabled }) => {
+  let task!: DreamingTaskInput, release!: () => void, entered!: () => void;
   const ready = new Promise<void>(resolve => { entered = resolve; });
   const held = new Promise<void>(resolve => { release = resolve; });
-  const f = fixture(async input => {
-    task = input; task.acknowledgeRequest();
-    if (committed) {
-      const receipt = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [{
-        op: "update", id: `K${item.knowledgeId}#${f.store.versionTag(item.knowledgeId, item.commit)}`, text: "maintained rule",
-        category: "constraint", scope: "project", supports: [], topics: [], reason: "maintain",
-      }], skipped: [] }));
-      output = receiptCommit(f.store, receipt.committed[0]);
-    }
+  const f = makeDreamerFixture(memories);
+  const item = f.item("project rule", { category: "constraint" }), original = f.store.getKnowledgeRevision(item.knowledgeId, item.commit)!.text;
+  f.item("reference", { category: "reference" }); // a second batch, so that the committed case is still inside curate when it is cancelled
+  f.next(async raw => {
+    task = raw as DreamingTaskInput; task.acknowledgeRequest();
+    if (committed) await writeCurateBatch(task, block(`update ${item.ref}`, { reason: "maintain" }, "maintained rule"));
     entered(); await held;
-    return { outcome: "cancelled", output: "stopped", request: { exact: "request" } };
+    return { outcome: "cancelled", output: "stopped", request: REQUEST };
   });
-  const item = f.create("project", "project rule");
-  const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
   const running = f.memory.dream({ ...f.target, executorSessionId: f.session.id });
   try {
     await ready;
-    const claim = f.store.getClaim(f.session.id, "dreaming")!;
+    const claim = f.store.getClaim(f.session.id, "dreaming")!, lateSupport = f.existingFact("Late support").id;
     if (disabled) f.store.setEnrollment(f.session.id, false);
     expect(f.memory.cancelTasks(stopping)).toEqual([expect.objectContaining({ sessionId: f.session.id, phase: "dreaming" })]);
     expect(task.signal!.aborted).toBe(true);
-    expect(f.store.getClaim(f.session.id, "dreaming")).toEqual(claim);
-    expect(f.store.acquireClaim(f.target, "dreaming", "other-executor")).toBeNull();
-    const before = f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions").get();
-    const late = task.tools.find(tool => tool.name === "memory")!.execute({
-      op: "archive", kind: "budget", id: `K${item.knowledgeId}#${f.store.versionTag(item.knowledgeId, output || item.commit)}`, supports: [], reason: "late forbidden write",
-    });
-    expect(late).toBe("rejected: run has finished");
-    expect(f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions").get()).toEqual(before);
+    // 144 Stage 4 section 1.5: the fence closes first and the executor's claims expire at once; no token is kept for a terminal transaction.
+    expect(f.store.getClaim(f.session.id, "dreaming")).toEqual({ ...claim, expiresAt: 0 });
+    const before = revisions(f);
+    // The model keeps working: its late file is never applied.
+    writeFileSync(task.workspace.write[committed ? 1 : 0]!, block("create", { title: "Late rule", category: "reference", scope: "project", topics: "",
+      supports: `F${lateSupport}`, reason: "late forbidden write" }, "Late rule body"));
+    expect(task.passEnd()).toBeUndefined();
+    expect(revisions(f)).toBe(before);
     release();
-    const result = await running;
-    expect(result.outcome).toBe("cancelled");
+    expect((await running).outcome).toBe("cancelled");
     expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
-    expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
-    expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
-      .map(row => Number(row.revision_id))).toEqual(committed ? [output] : []);
-    expect(f.store.dreamingDue(f.target, 1)).toBe(!committed);
-    expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(!committed && !stopping && !disabled);
+    expect(covered(f)).toEqual([]); // curate did not pass: nothing is covered, whatever a batch wrote
+    expect(f.store.currentCommit(item.knowledgeId, f.path)[0]!.text).toBe(committed ? "maintained rule" : original);
+    expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(!stopping && !disabled);
     expect(f.store.enabled(f.session.id)).toBe(!disabled);
     expect(f.store.taskFailures(f.session.id).every(failure => failure.count === 0)).toBe(true);
   } finally { release(); await running; }
 });
 
-test.each(["absorbed", "survivor", "explicit"] as const)("64c merge shorthand copies the later exact body, not the newer identity (%s)", async mode => {
-  let older!: { knowledgeId: number; commit: number }, newer!: typeof older, merged = 0;
-  const latest = "  最新主张\n条件与例外原样保留。  ";
+test("64c a merge names its primary: the older identity continues, both parents are the merge's parents, the absorbed item is no longer current", async () => {
+  const f = makeDreamerFixture(memories);
+  const older = f.item("original earlier conclusion", { category: "constraint" }), newer = f.item("最新主张：条件与例外原样保留。", { category: "constraint", title: "最新主张" });
   const explicit = "Deliberately rewritten merge";
-  const f = fixture(async task => {
-    task.acknowledgeRequest();
-    const write = task.tools.find(tool => tool.name === "memory")!;
-    if (mode === "survivor") {
-      const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
-        text: latest, category: "constraint", scope: "project", supports: [], topics: [], reason: "newer commit of older identity" }], skipped: [] }));
-      older = { knowledgeId: updated.committed[0].knowledgeId, commit: receiptCommit(f.store, updated.committed[0]) };
-      expect(memoryFiles(f.memory, task.reader!).read(`trace://${updated.committed[0].version}`).content).toContain(latest.trim());
-    }
-    const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: `K${older.knowledgeId}#${f.store.versionTag(older.knowledgeId, older.commit)}`,
-      absorb: [`K${newer.knowledgeId}#${f.store.versionTag(newer.knowledgeId, newer.commit)}`], ...(mode === "explicit" ? { text: explicit } : {}),
-      category: "constraint", scope: "project", supports: [], topics: ["merged"], reason: "same conclusion" }], skipped: [] }));
-    merged = receiptCommit(f.store, receipt.committed[0]);
-    return ok;
-  });
-  older = f.create("project", "original earlier conclusion");
-  newer = f.create("project", latest);
-  const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
-  expect((await f.memory.dream(f.target)).outcome).toBe("success");
-  const result = f.store.knowledgeRevision(merged)!;
-  expect(result.knowledgeId).toBe(older.knowledgeId);
-  expect(result.text).toBe(mode === "explicit" ? explicit : latest);
-  expect(result.topics).toEqual(["merged"]);
-  expect(f.store.commitParents(result).map(parent => parent.id).sort((a, b) => a - b))
-    .toEqual([older.commit, newer.commit].sort((a, b) => a - b));
-  expect(f.store.currentCommit(newer.knowledgeId, f.target)).toEqual([]);
-});
-
-test("64c a shared global threshold can be serviced from another session while project pools remain independent", async () => {
-  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
-  const global = f.create("global", "shared global");
-  f.create("project", "private project");
-  const otherProject = f.store.createProject({ name: "Other", declaredBy: "mark" });
-  const otherSession = f.store.createSession({ host: "test", enrollmentChoice: true, projectId: otherProject.id, startedAt: "now", firstReplyAt: "now" });
-  const otherTurn = f.store.appendTurn({ sessionId: otherSession.id, kind: "turn", userPrompt: "other", startedAt: "now" });
-  const otherEntry = f.memory.appendEntry({ sessionId: otherSession.id, turnId: otherTurn.id, nativeLineage: "other", nativeId: "root", role: "user", text: "other", raw: "{}", calls: [] });
-  f.memory.selectEntries(otherSession.id, "main", [otherEntry.id]);
-  const other = { sessionId: otherSession.id, branch: "main", headTurnId: otherTurn.id, triggerEntryId: otherEntry.id };
-  f.store.setKnowledgeBudget("global", roomyPoolBudget(f.store.pendingPoolWeight("global", other)));
-  expect(f.store.dreamingDue(other, 1)).toBe(true);
-  expect(f.store.knowledgePools(other).map(value => value.pool)).not.toContain(`project:${f.project.id}`);
-  expect((await f.memory.dream(other)).outcome).toBe("success");
-  expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all()).toEqual([{ pool: "global", revision_id: global.commit }]);
-});
-
-test("68 untouched residual stays due before and after an older version becomes visible", async () => {
-  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
-  const q = f.store.createProject({ name: "Q", declaredBy: "mark" });
-  const qs = f.store.createSession({ host: "q", enrollmentChoice: true, projectId: q.id, projectDeclaration: "mark", startedAt: "now", firstReplyAt: "now" });
-  const qt = f.store.appendTurn({ sessionId: qs.id, kind: "turn", userPrompt: "q", startedAt: "now" });
-  const qe = f.memory.appendEntry({ sessionId: qs.id, turnId: qt.id, nativeLineage: "q", nativeId: "q", role: "user", text: "q", raw: "{}", calls: [] });
-  f.memory.selectEntries(qs.id, "main", [qe.id]);
-  const qn = f.store.commitNotingRun({ run: { kind: "manual", sessionId: qs.id, createdAt: "now" }, facts: [{ turnId: qt.id,
-    entryIds: [qe.id], category: "decision", actor: "user", text: "q", source: [`T${qt.id}#E1`], createdAt: "now" }] });
-  if (!qn.ok) throw new Error(qn.problems.join("; "));
-  const old = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: qs.id, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title",
-    handle: "$old", author: "test", text: "old q item", category: "constraint", scope: "project", supports: [qn.facts[0]!.id], topics: [], reason: "old", createdAt: "now" }] });
-  if (!old.ok) throw new Error(old.problems.join("; "));
-
-  for (let i = 0; i < 14; i++) f.create("project", `rule ${i} ` + "words ".repeat(800));
-  const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", 30_000);
-  expect(tokens(["Pending current knowledge:", ...f.store.pendingVersions(pool, f.target).map(value => value.material)].join("\n"))).toBeGreaterThan(10_000);
-  expect((await f.memory.dream(f.target)).outcome).toBe("success");
-  const remaining = f.store.pendingPoolWeight(pool, f.target);
-  expect(remaining).toBeGreaterThan(0);
-  expect(remaining * 2).toBeLessThan(f.store.knowledgeBudgets().project);
-  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
-
-  f.store.mergeProject(q.id, f.project.id);
-  expect(old.committed[0]!.commit).toBeLessThan(Math.min(...f.store.pendingVersions(pool, f.target).filter(v => v.revisionId !== old.committed[0]!.commit).map(v => v.revisionId)));
-  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
-});
-
-test("85/104: an untouched residual above the pending threshold remains due; the run ending over budget fails", async () => {
-  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
-  for (let i = 0; i < 14; i++) f.create("project", `rule ${i} ` + "words ".repeat(800));
-  const pool = `project:${f.project.id}`, pending = f.store.pendingVersions(pool, f.target);
-  const one = tokens(["Pending current knowledge:", pending[0]!.material].join("\n"));
-  expect(tokens(["Pending current knowledge:", pending[0]!.material, pending[1]!.material].join("\n"))).toBeGreaterThan(one);
-  f.store.setKnowledgeBudget("project", one);
-  expect((await f.memory.dream(f.target)).outcome).toBe("failure"); // 104: success needs the pool within its budget
-  const residual = f.store.pendingPoolWeight(pool, f.target);
-  expect(residual * 2).toBeGreaterThanOrEqual(one);
-  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
-});
-
-test("64c successful terminal transaction persists the full provider audit", async () => {
-  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return { ...ok, usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.1 }, nativeLog: "/tmp/dream.jsonl" }; });
-  f.create("project", "audited rule");
-  const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", roomyPoolBudget(f.store.pendingPoolWeight(pool, f.target)));
-  const result = await f.memory.dream(f.target);
-  if (!("runId" in result)) throw new Error("missing run");
-  const run = f.store.getRun(result.runId)!;
-  expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.response!)).toMatchObject({ check: { totals: expect.arrayContaining([expect.objectContaining({ pool })]) }, nativeLog: "/tmp/dream.jsonl", usage: { input: 7, output: 3 } });
-  expect(JSON.parse(run.request!)).toEqual({ exact: "request" });
-});
-
-test.each(["failure", "cancelled"] as const)("64c %s terminal transaction persists audit and closes exact processing state", async terminal => {
-  const f = fixture(async task => { task.acknowledgeRequest(); return { outcome: terminal, output: `${terminal} output`, request: { terminal }, nativeLog: `/tmp/${terminal}.jsonl` }; });
-  const item = f.create("project", `${terminal} rule`), pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
-  const result = await f.memory.dream(f.target);
-  if (!("runId" in result)) throw new Error("missing run");
-  const run = f.store.getRun(result.runId)!;
-  expect(run.outcome).toBe(terminal);
-  expect(JSON.parse(run.response!)).toMatchObject({ output: `${terminal} output`, check: { totals: expect.arrayContaining([expect.objectContaining({ pool })]) }, nativeLog: `/tmp/${terminal}.jsonl` });
-  expect(JSON.parse(run.request!)).toEqual({ terminal });
-  expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
-  expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([item.commit]);
-});
-
-test("64c rejected terminal transaction rolls back processing but preserves attempt evidence", async () => {
-  let f!: ReturnType<typeof fixture>;
-  f = fixture(async task => { task.acknowledgeRequest(); f.store.invalidateExecutor(f.memory.executorId); return ok; });
-  const item = f.create("project", "fenced rule"), pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
-  const result = await f.memory.dream(f.target);
-  if (!("runId" in result)) throw new Error("missing run");
-  expect(result.outcome).toBe("failure");
-  expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
-  expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([item.commit]);
-  expect(JSON.parse(f.store.getRun(result.runId)!.response!)).toMatchObject({ check: { totals: expect.arrayContaining([expect.objectContaining({ pool })]) }, output: "done" });
-});
-
-test("85: a cancelled pending run does not consume its frozen versions", async () => {
-  let mode: "skip" | "cancel" = "skip";
-  const f = fixture(async task => {
-    task.acknowledgeRequest();
-    if (mode === "cancel") return { outcome: "cancelled", output: "cancelled", request: { exact: "request" } };
-    skipAll(task); return ok;
-  });
-  f.create("project", "large ".repeat(100));
-  const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2); // generous: under budget
-  expect((await f.memory.dream(f.target)).outcome).toBe("success"); // clears pending; under budget writes no state row
-  const firstSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
-  f.store.setKnowledgeBudget("project", firstSize - 1);
-  expect(f.store.dreamingDue(f.target)).toBe(false);
-  f.create("project", "another rule");
-  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
-  mode = "cancel";
-  expect((await f.memory.dream(f.target)).outcome).toBe("cancelled");
-  expect(f.store.dreamingDue(f.target, 1)).toBe(true);
-});
-
-test("85: a cancelled run still records skipped versions without suppression state", async () => {
-  let mode: "skip" | "cancelAfterSkip" = "skip";
-  const f = fixture(async task => {
-    task.acknowledgeRequest();
-    if (mode === "skip") { skipAll(task); return ok; }
-    skipAll(task); return { outcome: "cancelled", output: "cancelled", request: { exact: "request" } };
-  });
-  f.create("project", "large ".repeat(100));
-  const pool = `project:${f.project.id}`;
-  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
-  expect((await f.memory.dream(f.target)).outcome).toBe("success");
-
-  const firstSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
-  f.store.setKnowledgeBudget("project", firstSize - 1);
-  f.create("project", "another rule to skip"); // something pending this run actually deliberates
-  mode = "cancelAfterSkip";
-  expect((await f.memory.dream(f.target)).outcome).toBe("cancelled");
-  expect(f.store.pendingVersions(pool, f.target)).toEqual([]);
-  expect(f.store.dreamingDue(f.target)).toBe(false);
+  f.dreamer.script.curate!.constraint = block(`merge ${older.ref}`, { absorb: newer.ref, topics: "merged", reason: "same conclusion" }, explicit);
+  expect((await f.dream()).outcome).toBe("success");
+  const merged = f.store.currentCommit(older.knowledgeId, f.path)[0]!;
+  expect(merged).toMatchObject({ knowledgeId: older.knowledgeId, op: "merge", text: explicit, topics: ["merged"] });
+  expect(f.store.commitParents(merged).map(parent => parent.id).sort((a, b) => a - b)).toEqual([older.commit, newer.commit].sort((a, b) => a - b));
+  expect(f.store.currentCommit(newer.knowledgeId, f.path)).toEqual([]);
 });
