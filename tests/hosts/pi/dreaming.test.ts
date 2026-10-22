@@ -84,7 +84,7 @@ test("the /trace notice area shows the Dreamer's latest failure while memory sta
     h.answers.push(undefined); await h.commands.get("trace").handler("", h.ctx);
     const failure = store.dreamerFailure(1)!;
     expect(failure.reason).toMatch(/^curate: /);
-    expect(h.dialogs.at(-1)!.title).toContain(`Dreamer failed: ${failure.reason} (R${failure.runId}, ${failure.at.slice(0, 16).replace("T", " ")} UTC)`);
+    for (const field of [failure.reason, `R${failure.runId}`, failure.at.slice(0, 16).replace("T", " ")]) expect(h.dialogs.at(-1)!.title, field).toContain(field); // task and class, run, time
     expect(store.enabled(1)).toBe(true);
   } finally { measure.mockRestore(); await h.dispose(); }
 });

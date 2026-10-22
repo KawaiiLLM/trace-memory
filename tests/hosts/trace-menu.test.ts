@@ -3,7 +3,7 @@
 // header, context categories, Pending/trigger, spend, notices, actions and the settings rows.
 import { expect, test } from "vitest";
 import {
-  buildSettingsChoices, buildTraceMenu, buildTraceSettings, formatCompactTokens, formatPercent,
+  buildSettingsChoices, buildTraceMenu, buildTraceSettings, dreamerFailureNotice, formatCompactTokens, formatPercent,
   TRACE_MENU_FIXTURE, TRACE_MENU_FIXTURE_WITH_NOTICE, TRACE_SETTINGS_FIXTURE, TRACE_SETTINGS_FIXTURE_CC,
 } from "../../src/hosts/trace-menu.ts";
 
@@ -109,4 +109,14 @@ test("settings: neither worker has an execution-mode row on either host (the Not
 
 test("settings: closed-session scope line lists all three choices", () => {
   expect(buildTraceSettings(TRACE_SETTINGS_FIXTURE).closedSessionsLine).toBe("Closed sessions   project   (off · project · global)");
+});
+
+// The notice view's one snapshot; the host tests read its fields (task, class, retry state, run, time) and lifecycle instead.
+test("notice: the Dreamer failure line", () => {
+  expect(dreamerFailureNotice({ runId: 7, at: "2026-10-22T09:30:00.000Z", reason: "verify: provider error, retry 2/3" })).toMatchInlineSnapshot(`
+    [
+      "Dreamer failed: verify: provider error, retry 2/3 (R7, 2026-10-22 09:30 UTC)",
+    ]
+  `);
+  expect(dreamerFailureNotice(null)).toEqual([]);
 });
