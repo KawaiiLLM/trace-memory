@@ -45,6 +45,11 @@ test("a legacy version shows its body's leading characters, cut to the title tar
   // A body with no more units than the target is its own title, trailing punctuation included; CJK counts per character.
   expect(knowledgeTitle({ title: null, text: "Use pnpm, never npm." }, limit)).toBe("Use pnpm, never npm.");
   expect(knowledgeTitle({ title: null, text: "项目一律使用 pnpm 管理依赖，禁止使用 npm 安装任何包，锁文件必须提交到仓库。" }, 10)).toBe("项目一律使用 pnpm 管理依");
+  // One unbroken run (a path, an identifier) is one unit, so the unit cut alone would make all of it the title: it is bounded to 8 characters per unit of the target.
+  const run = "src/".repeat(500) + "x";
+  expect(words(run)).toBe(1);
+  expect(knowledgeTitle({ title: null, text: `${run} then more words` }, limit)).toHaveLength(limit * 8);
+  expect(knowledgeTitle({ title: null, text: "𠮷".repeat(500) }, limit)).toBe("𠮷".repeat(limit)); // a CJK title is cut by units first and a surrogate pair is never split
 });
 
 test("injection, the compaction block, the knowledge view, an exact read and the Dreamer's curate view put the title on the header line", () => {

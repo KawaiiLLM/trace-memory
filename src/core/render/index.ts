@@ -553,16 +553,20 @@ export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap =
 // Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
 
+/** Longest fallback title per unit of the title target, in characters. A path or an identifier counts as one unit, so the unit cut alone lets one unbroken run become the whole title. */
+const FALLBACK_TITLE_CHARS_PER_UNIT = 8;
+
 /** The title a knowledge version shows (ticket 144): its own, or for a legacy untitled version the
- * leading characters of its body, flattened to one line and cut to the title target in units (145). */
+ * leading characters of its body, flattened to one line and cut to the title target in units (145),
+ * and to at most `titleWords * 8` characters. */
 export function knowledgeTitle(r: Pick<KnowledgeRevision, "title" | "text">, titleWords: number): string {
-  return r.title ?? leadingWords(r.text.replace(/\s+/g, " ").trim(), titleWords);
+  return r.title ?? Array.from(leadingWords(r.text.replace(/\s+/g, " ").trim(), titleWords)).slice(0, titleWords * FALLBACK_TITLE_CHARS_PER_UNIT).join("").trimEnd();
 }
 
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`, showSize = false,
   limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  const size = showSize ? ` (${words(r.text)}/${limits.bodyWords} units)` : "";
+  const size = showSize ? ` (${words(r.text)}/${limits.bodyWords} units, limit ${wordLimit(limits.bodyWords)})` : "";
   const tags = `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size}`;
   return `${tags} ${knowledgeTitle(r, limits.titleWords)}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }

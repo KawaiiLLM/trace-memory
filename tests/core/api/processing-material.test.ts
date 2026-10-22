@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { sourceSeededMemory, memoryFiles, type NotingAgentInput } from "../../source-fixture.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
-import { tokens, words } from "../../../src/core/render/index.ts";
+import { tokens, words, wordLimit } from "../../../src/core/render/index.ts";
 import { scoreAll } from "../../support/seed.ts";
 import { knowledgeFile, submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
@@ -90,8 +90,10 @@ test("N material shows each knowledge body's cap-check units count; injection do
     scoreAll(f.memory.store);
     setKnowledgeCapacity(f.memory, 20_000);
     const material = f.freeze().prepared!.text;
-    expect(material).toContain(`[constraint/project] (${words(body)}/${f.memory.config.writing.bodyWords} units) Fixture title\n${body}`);
+    expect(material).toContain(`[constraint/project] (${words(body)}/${f.memory.config.writing.bodyWords} units, limit ${wordLimit(f.memory.config.writing.bodyWords)}) Fixture title\n${body}`);
     expect(material).not.toMatch(/\(\d+ tokens\)/); // 134: the Dreamer's pool-cost form never joins it for the same item
-    expect(f.memory.injection(f.target).text).not.toContain("tokens) ");
+    const injection = f.memory.injection(f.target).text;
+    expect(injection).toContain(body); // the body is delivered whole, without the length mark
+    expect(injection).not.toMatch(/\(\d+\/\d+ units/);
   } finally { f.memory.close(); }
 });

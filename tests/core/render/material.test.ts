@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { words } from "../../../src/core/render/index.ts";
+import { words, wordLimit } from "../../../src/core/render/index.ts";
 import { sourceSeededMemory, compacted, renderEntry, tokens, type ConfigOverride, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
@@ -68,8 +68,8 @@ function seeded() {
   return { s, t, user, read: (address: string) => memoryFiles(memory, path).read(`trace://${address}`).content };
 }
 let knowledgeBlock: string;
-/** Fresh N alone shows the body's cap-check token count after the category tag. */
-const withSize = (block: string) => block.replace("[constraint/project] Package manager", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} units) Package manager`);
+/** Fresh N alone shows the body's cap-check units count, target and limit after the category tag. */
+const withSize = (block: string) => block.replace("[constraint/project] Package manager", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} units, limit ${wordLimit(memory.config.writing.bodyWords)}) Package manager`);
 const views = (sessionId: number, head: number) =>
   hydrate(memory.pendingEntries(sessionId, "main", head), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
 

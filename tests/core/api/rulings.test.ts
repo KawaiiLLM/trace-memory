@@ -398,7 +398,7 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
 
 /** Knowledge to lead the block with: one manually written fact, consolidated by hand into K1. */
 /** Fresh N alone shows each body's token count after the category tag; everything else in the block is the shared layout. */
-const withSize = (block: string) => block.replace("[constraint/project] Fixture title", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} units) Fixture title`);
+const withSize = (block: string) => block.replace("[constraint/project] Fixture title", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} units, limit ${wordLimit(memory.config.writing.bodyWords)}) Fixture title`);
 function seededKnowledge(sessionId: number, turnId: number) {
   const tools = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId });
   const entry = hydrate(memory.store.listSourceEntries(sessionId, turnId), memory.store).find(value => value.role === "user")!;
@@ -701,7 +701,8 @@ test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要�
 });
 
 // 145 supersedes the unit of 144's 20 + 200 caps (tokens) and the 10-21 wording "20 + 200 token" above; option A of the dispatcher's three.
-test("2026-10-22, 145: '原则上要求不超过200 [units]，但实际check不超过250 token就不再警告，标题同理' (option A) — the prompts state 200 and 20 units, and every check counts units and refuses only above 220 and 22", () => {
+// Maintainer, 2026-10-22: "原则上要求不超过200 字/词，但实际check不超过250 token就不再警告，标题同理".
+test("2026-10-22, 145 (option A): the prompts state the 20 and 200 unit targets, and every check counts units and refuses only above 220 and 22", () => {
   expect(DEFAULT_CONFIG.writing).toEqual({ titleWords: 20, bodyWords: 200 });
   memory.config.writing.bodyWords = DEFAULT_CONFIG.writing.bodyWords; // this file lifts the body cap for its large fixtures
   const { create, write, path, tools } = memoryWriter();
@@ -719,7 +720,8 @@ test("2026-10-22, 145: '原则上要求不超过200 [units]，但实际check不�
   // The prompts state the target and the unit and never the tolerance.
   for (const file of ["noting.md", "dreaming.md"] as const) {
     const prompt = loadPrompt(file, canonicalToolNames);
-    expect(prompt).toContain("a title of a fact or knowledge is at most 20 units and a body at most 200 units");
+    expect(prompt).toMatch(/\b20 units\b/);
+    expect(prompt).toMatch(/\b200 units\b/);
     expect(prompt).not.toMatch(/\b220\b|\b22 units|tolerance|10 ?%/);
   }
   // The token caps' settings are removed, not read as word counts.
