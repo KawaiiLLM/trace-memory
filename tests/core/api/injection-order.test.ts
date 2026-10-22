@@ -1,41 +1,13 @@
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory, noVisibility, deliveredView, type VisibleView } from "../../../src/core/api/index.ts";
+import { noVisibility, deliveredView, type VisibleView } from "../../../src/core/api/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
-import { fixtureTitle, legacyFacts } from "../../support/seed.ts";
 import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
+import { injectionFixture as fixture, closeInjectionFixtures } from "../../support/injection.ts";
 
 // 144 stage 4 §7: knowledge is injected in score order within the Knowledge base; one temporary allowance per
 // context carries unscored items, then titles of scored items that missed the base.
 
-const memories: ReturnType<typeof TraceMemory>[] = [];
-afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
-
-function fixture() {
-  const memory = TraceMemory(":memory:", async () => { throw new Error("offline"); }, { writing: { bodyTokens: 1_000_000 } });
-  memories.push(memory);
-  const project = memory.store.createProject({ name: "order", declaredBy: "mark" });
-  const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-  const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
-  const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "e", role: "user", text: "evidence", raw: "evidence", calls: [] });
-  memory.selectEntries(session.id, "main", [entry.id]);
-  const noted = legacyFacts(memory.store, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
-    sources: [{ entry, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "evidence", createdAt: "now" }]);
-  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-  let sequence = 0;
-  /** A knowledge item of about `size` words, with a classify score (null: unscored). */
-  const create = (label: string, size: number, score: number | null) => {
-    const text = `${label} ` + "word ".repeat(size);
-    const result = memory.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{
-      op: "create", title: fixtureTitle(label), handle: `$${++sequence}`, author: "test", text, category: "constraint", scope: "project",
-      supports: [noted.facts[0]!.id], topics: [], reason: "order fixture", createdAt: "now" }] });
-    if (!result.ok) throw new Error(result.problems.join("; "));
-    const done = result.committed[0]!;
-    memory.store.db.prepare("UPDATE knowledge SET score = ? WHERE id = ?").run(score, done.knowledgeId);
-    return done;
-  };
-  return { memory, session, target, create };
-}
-type Fixture = ReturnType<typeof fixture>;
+afterEach(closeInjectionFixtures);
 const shown = (text: string, label: string) => text.includes(`${label} word`);
 const titled = (text: string, label: string) => new RegExp(`\\(title only\\) ${label}`).test(text);
 

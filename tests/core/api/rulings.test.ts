@@ -1,6 +1,8 @@
 import { readHandle } from "../../read-handle-fixture.ts";
 import { knowledgeStatusNotes } from "../../../src/core/api/read.ts";
 import { compacted, recorded } from "../../source-fixture.ts";
+import { injectionFixture, closeInjectionFixtures } from "../../support/injection.ts";
+import { setKnowledgeInjection as setKnowledgeBase } from "../../knowledge-budget-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -2661,4 +2663,33 @@ test("2026-10-22, 144: '所有交付都是文件，包括评级任务，这样�
   }
   const score = f.store.db.prepare("SELECT score FROM knowledge WHERE id = ?").get(rule.knowledgeId)!.score;
   expect(score).toBe(77); // classify's scores came from its file
+});
+
+// ---- 144 stage 4 part 5: injection by score and the one temporary allowance ----
+afterEach(closeInjectionFixtures);
+
+test("2026-10-21, 144: injection follows scores, not age", () => {
+  const f = injectionFixture();
+  const old = f.create("OLDHIGH", 600, 95), fresh = f.create("NEWLOW", 600, 10);
+  setKnowledgeBase(f.memory, 1_000); // one body fits
+  const delivery = f.memory.injection(f.target);
+  expect(delivery.knowledgeCommitIds).toEqual([old.commit]); // the older, higher-scored item takes the base
+  expect(delivery.knowledgeTitleCommitIds).toEqual([fresh.commit]); // the newer one is a title, not a body
+});
+
+test("2026-10-22, 144: allowance order: pending Raw, unscored knowledge, titles, then user words and fact titles", () => {
+  const f = injectionFixture();
+  const scoredBig = f.create("SCOREDBIG", 3_000, 60), unscored = f.create("UNSCORED", 300, null);
+  setKnowledgeBase(f.memory, 1_000);
+  f.memory.appendEntry({ sessionId: f.session.id, turnId: f.target.headTurnId, nativeLineage: "fixture", nativeId: "pending", role: "assistant", text: "pending " + "other ".repeat(700), raw: "", calls: [] });
+  f.memory.config.compaction.rawTokens = 40;
+  const full = f.memory.compact(f.session.id, "main", f.target.headTurnId);
+  if ("native" in full) throw new Error(full.reason);
+  // Everything fits: Raw borrowed first, then the unscored body whole, then the scored misfit as a title.
+  expect(full.supplied.entries.length).toBeGreaterThan(0);
+  expect(full.supplied.knowledgeCommitIds).toEqual([unscored.commit]);
+  expect(full.supplied.knowledgeTitleCommitIds).toEqual([scoredBig.commit]);
+  expect(full.charged!.knowledge).toBe(0); // the base carried nothing: only scored items fit it, and the big one did not
+  expect(full.charged!.temporary).toBe(full.supplied.temporaryTokens);
+  expect(full.charged!.knowledge + full.charged!.facts + full.charged!.raw + full.charged!.temporary).toBeLessThanOrEqual(full.charged!.envelope);
 });
