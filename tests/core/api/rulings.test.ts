@@ -24,7 +24,7 @@ import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
-import { dreamerFixture as makeDreamerFixture, operationOfText, proposalsOf, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
+import { dreamerFixture as makeDreamerFixture, noterWrittenItem, operationOfText, proposalsOf, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
 import { buildPendingSection } from "../../../src/hosts/trace-menu.ts";
 import { checkVerify } from "../../../src/core/dreaming/changes.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
@@ -2377,6 +2377,30 @@ test("2026-10-22, 144: /trace shows the next curate operation and no running bat
   f.item("Rule one", { category: "constraint" });
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(row()).toEqual({ label: "next curate", value: "merge" });
+});
+
+// Maintainer, 2026-10-22: 「同一个project，如果另一个会话触发了Dreamer，按理说它处理的部分已经包含本会话N产生的project级以上的知识，所以处理完后应该同时将本会话的对应的project级以上待处理知识标记为完成，避免重复处理」.
+// Coverage is keyed by pool and revision, not by session, so no per-session bookkeeping carries it.
+test("2026-10-22: a Dreamer run of another session in the same project covers this session's project- and global-level Noter changes; its session-level ones stay pending", async () => {
+  const f = dreamerFixture();
+  const sessionB = f.store.createSession({ host: "offline", projectId: f.project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+  const turnB = f.store.appendTurn({ sessionId: sessionB.id, kind: "turn", userPrompt: "second", startedAt: "now" });
+  const entryB = f.memory.appendEntry({ sessionId: sessionB.id, turnId: turnB.id, nativeLineage: "fixture", nativeId: "second", role: "user", text: "second", raw: "second", calls: [] });
+  f.memory.selectEntries(sessionB.id, "main", [entryB.id]);
+  const pathB = { sessionId: sessionB.id, branch: "main", headTurnId: turnB.id };
+  const factB = seedFact(f.memory, pathB, "B fact", [{ entry: entryB, text: "second" }]);
+  const noteA = (scope: "global" | "project" | "session") => noterWrittenItem(f.memory, f.path as never, f.existingFact(`A ${scope} fact`).id, scope);
+  const projectA = noteA("project"), globalA = noteA("global"), sessionA = noteA("session");
+  noterWrittenItem(f.memory, pathB as never, factB.id); // B's own trigger
+  expect(f.store.noterChangedItems(f.path)).toBe(4); // A's three and B's project item, which A sees too
+  let late!: { commit: number };
+  f.next(async raw => { late = noteA("project"); return f.dreamer.agent(raw); }); // A's Noter writes while B's run is under way
+  expect(await f.memory.dream({ ...pathB, model: "scripted" })).toMatchObject({ outcome: "success" });
+  const covered = (f.store.db.prepare("SELECT revision_id FROM knowledge_processed").all() as { revision_id: number }[]).map(row => row.revision_id);
+  expect(covered).toEqual(expect.arrayContaining([projectA.commit, globalA.commit]));
+  expect(covered).not.toContain(sessionA.commit);
+  expect(covered).not.toContain(late.commit);
+  expect(f.store.noterChangedItems(f.path)).toBe(2); // A's session item and the one written mid-run
 });
 
 // 61 (2026-09-19): the prompts are written to one standard — shared memory-model blocks, per-stage judgment,
