@@ -1,15 +1,13 @@
 import { afterEach, expect, test } from "vitest";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite, skipRest } from "../../dreaming-skips.ts";
+import { curateNow, versionRef } from "../../support/dreamer.ts";
+import { block } from "../../support/workspace.ts";
 import { sourceSeededMemory } from "../../source-fixture.ts";
-import { tokens } from "../../../src/core/render/index.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
 
 const at = "2026-09-20T12:00:00Z";
 
 function fixture() {
-  const scenarios = new AdmittedDreamerScenarios(async () => ({ outcome: "success", output: "unused", request: { unused: true } }));
-  const memory = sourceSeededMemory(":memory:", scenarios.agent);
+  const memory = sourceSeededMemory(":memory:", async () => ({ outcome: "success", output: "unused", request: { unused: true } }));
   const project = memory.store.createProject({ name: "64b", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "root", startedAt: at });
@@ -29,15 +27,11 @@ function fixture() {
     run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: at }, operations: [{ op: "create", title: "Fixture title", handle: "$root", author: "test",
       text: "root knowledge", category: "constraint", scope: "project", supports: [fact], topics: [], reason: "Initial rule.", createdAt: at }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
-  return { memory, scenarios, session, turn, root, left, right, joined, fact, base: created.committed[0]! };
+  return { memory, session, turn, root, left, right, joined, fact, base: created.committed[0]! };
 }
 
 let open: ReturnType<typeof fixture>["memory"] | undefined;
 afterEach(() => open?.close());
-
-function createTrigger(f: ReturnType<typeof fixture>, branch: "left" | "right" | "joined", sequence: number) {
-  return createDreamerTrigger(f.memory, { sessionId: f.session.id, branch, headTurnId: f.turn.id }, f.fact, sequence, "project");
-}
 
 function branchFact(f: ReturnType<typeof fixture>, branch: "left" | "right", entryId: number, entryOrdinal: number) {
   const noted = f.memory.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch, createdAt: at }, facts: [{
@@ -48,88 +42,49 @@ function branchFact(f: ReturnType<typeof fixture>, branch: "left" | "right", ent
   return noted.facts[0]!.id;
 }
 
-async function maintain(f: ReturnType<typeof fixture>, branch: "left" | "right", triggerEntryId: number, text: string, sequence: number,
-  evidence?: number) {
+/** One maintenance update of the base on a branch: a curate block applied on that branch's path. */
+function maintain(f: ReturnType<typeof fixture>, branch: "left" | "right", triggerEntryId: number, text: string, evidence?: number) {
   const path = { sessionId: f.session.id, branch, headTurnId: f.turn.id, triggerEntryId };
   f.memory.store.setCurrentPath(f.session.id, branch, f.turn.id, "test-lineage");
-  const trigger = createTrigger(f, branch, sequence);
-  const olderTriggers = f.memory.store.currentKnowledge(path).filter(item => item.knowledge.id !== f.base.knowledgeId &&
-    item.knowledge.id !== trigger.knowledgeId && item.revision.text.startsWith("Fixture trigger"));
-  const result = await f.scenarios.run(f.memory, path, input => {
-    const request = { branch, sequence }; input.reportRequest(request);
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
-    read(tag(f.base.knowledgeId, f.base.commit));
-    read(tag(trigger.knowledgeId, trigger.commit));
-    for (const item of olderTriggers) read(tag(item.knowledge.id, item.revision.id));
-    const receipt = dreamerWrite(write, { operations: [
-      { op: "update", id: tag(f.base.knowledgeId, f.base.commit), text, category: "constraint", scope: "project",
-        supports: evidence === undefined ? [] : [`F${evidence}`], topics: [], reason: `${branch} maintenance.` },
-      ...olderTriggers.map(item => ({ op: "archive", kind: "budget", id: tag(item.knowledge.id, item.revision.id), supports: [], reason: "Retire earlier explicit trigger." })),
-      { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
-    ], skipped: [] });
-    expect(receipt).toContain('"committed"');
-    return { outcome: "success", output: "maintained", request };
-  });
-  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  return { result, trigger };
+  const base = f.memory.store.currentCommit(f.base.knowledgeId, path)[0]!;
+  const result = curateNow(f.memory, path, block(`update ${versionRef(f.memory.store, f.base.knowledgeId, base.id)}`,
+    { ...(evidence === undefined ? {} : { supports: `F${evidence}` }), reason: `${branch} maintenance.` }, text));
+  expect(result.blocks.map(entry => entry.status)).toEqual(["applied"]);
+  return { result };
 }
 
-test("64b: admitted maintenance writes inherit parents without creating a system fact", async () => {
+test("64b: admitted maintenance writes inherit parents without creating a system fact", () => {
   const f = fixture(); open = f.memory;
   const factsBefore = f.memory.store.listSessionFacts(f.session.id).map(fact => fact.id);
-  const { result } = await maintain(f, "left", f.left.id, "left knowledge", 1);
+  const { result } = maintain(f, "left", f.left.id, "left knowledge");
   expect(f.memory.store.listFactsByRun(result.runId)).toEqual([]);
   expect(f.memory.store.listSessionFacts(f.session.id).map(fact => fact.id)).toEqual(factsBefore);
   const revisions = f.memory.store.listCommitsByRun(result.runId);
-  expect(revisions).toHaveLength(2);
+  expect(revisions).toHaveLength(1);
   expect(revisions.every(revision => revision.supports.length === 1 && revision.supports[0] === f.fact)).toBe(true);
 });
 
-test("64b: global current selects one direct-fact branch and rejects the historical sibling as a write base", async () => {
+test("64b: global current selects one direct-fact branch and rejects the historical sibling as a write base", () => {
   const f = fixture(); open = f.memory;
   const leftEvidence = branchFact(f, "left", f.left.id, f.left.entryOrdinal);
-  await maintain(f, "left", f.left.id, "left knowledge", 1, leftEvidence);
+  maintain(f, "left", f.left.id, "left knowledge", leftEvidence);
   const leftPath = { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id };
   const leftTip = f.memory.store.currentCommit(f.base.knowledgeId, leftPath)[0]!;
   const rightEvidence = branchFact(f, "right", f.right.id, f.right.entryOrdinal);
-  await maintain(f, "right", f.right.id, "right knowledge", 2, rightEvidence);
+  maintain(f, "right", f.right.id, "right knowledge", rightEvidence);
   const rightPath = { sessionId: f.session.id, branch: "right", headTurnId: f.turn.id, triggerEntryId: f.right.id };
   const rightTip = f.memory.store.currentCommit(f.base.knowledgeId, rightPath)[0]!;
   expect(rightTip.id).toBeGreaterThan(leftTip.id);
   expect(rightTip.text).toBe("right knowledge");
   expect(f.memory.store.currentCommit(f.base.knowledgeId, leftPath).map(revision => revision.id)).toEqual([rightTip.id]);
 
-  const trigger = createTrigger(f, "right", 3);
-  let changed = "";
-  const result = await f.scenarios.run(f.memory, rightPath, input => {
-    changed = input.material.changed;
-    const request = { branch: "right", purpose: "global-current stale refusal" }; input.reportRequest(request);
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const tag = (id: number, commit: number) => `K${id}#${f.memory.store.versionTag(id, commit)}`;
-    for (const revision of [leftTip, rightTip]) read(tag(f.base.knowledgeId, revision.id));
-    read(tag(trigger.knowledgeId, trigger.commit));
-    const before = f.memory.store.listKnowledgeRevisions().length;
-    const refused = write.execute({ op: "update", id: tag(f.base.knowledgeId, leftTip.id), text: "stale sibling edit", category: "constraint",
-      scope: "project", supports: [], topics: [], reason: "Probe the historical sibling write fence." });
-    // 76: baseProblem now names the current version when the identity has a visible one on this branch,
-    // instead of the generic "missing, archived, inapplicable or outside the writer's scope" fallback.
-    expect(refused).toContain(`K${f.base.knowledgeId}@v2 is not current on this branch; current is K${f.base.knowledgeId}@v3`);
-    expect(f.memory.store.listKnowledgeRevisions()).toHaveLength(before);
-    expect(write.execute({ drop: "M1" })).toContain("dropped: M1"); // 127: a refusal blocks until withdrawn
-    expect(dreamerWrite(write, { operations: [
-      { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
-    ], skipped: [] })).toContain('"committed"');
-    skipRest(input, [`K${trigger.knowledgeId}@v1`]);
-    return { outcome: "success", output: "global current checked", request };
-  });
-  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  expect(changed).toContain(`New K${trigger.knowledgeId}@v1`);
-  expect(changed).not.toContain(`K${f.base.knowledgeId}@v3`);
-  expect(changed).not.toContain(`K${f.base.knowledgeId}@v2`);
-  expect(tokens(changed)).toBeLessThanOrEqual(10000);
+  const before = f.memory.store.listKnowledgeRevisions().length;
+  const refused = curateNow(f.memory, rightPath, block(`update ${versionRef(f.memory.store, f.base.knowledgeId, leftTip.id)}`,
+    { reason: "Probe the historical sibling write fence." }, "stale sibling edit")).blocks[0]!;
+  // 76: baseProblem names the current version when the identity has a visible one on this branch.
+  expect(refused).toMatchObject({ status: "refused", stale: true });
+  expect(refused.reason).toContain(`K${f.base.knowledgeId}@v2 is not current on this branch; current is K${f.base.knowledgeId}@v3`);
+  expect(f.memory.store.listKnowledgeRevisions()).toHaveLength(before);
   const history = memoryFiles(f.memory, { sessionId: f.session.id, branch: "right", headTurnId: f.turn.id })
     .read(`trace://K${f.base.knowledgeId}.history`).content;
   expect(history).toContain("left knowledge");
