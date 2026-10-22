@@ -50,7 +50,10 @@ export function buildChanges(store: Store, path: KnowledgePath, curateRuns: read
       lines.push("", `absorbed ${version(revision)} (archived into the primary if confirmed):`, titled(revision));
     }
     lines.push("", "proposed:", `${operation.title ?? knowledgeTitle(base, store.writing.titleTokens)}\n${operation.text ?? ""}`);
-    if (operation.op === "split") operation.children.forEach((child, i) => lines.push("", `proposed child ${i + 1}:`, `${child.title ?? ""}\n${child.text}`));
+    // A child is written with its own category, topics, scope and supports, else the operation's (supports resolved as the store does).
+    if (operation.op === "split") operation.children.forEach((child, i) => lines.push("", `proposed child ${i + 1}:`, `category: ${child.category}`,
+      `scope: ${child.scope ?? operation.scope}`, `topics: ${JSON.stringify(child.topics)}`,
+      `supports: ${(child.supports ?? supportsOf(operation, base)).map(f => `F${f}`).join(", ")}`, "", `${child.title ?? ""}\n${child.text}`));
     return lines.join("\n");
   });
   const text = blocks.join("\n\n") + (blocks.length ? "\n" : "");
