@@ -38,7 +38,7 @@ test("toggle, project, runs and settings retain their existing effects and cance
   const before = readFileSync(file, "utf8");
   h.answers.push("Settings…", undefined); await command(h);
   expect(h.dialogs.at(-1)!.title).toContain("Trace Memory · Settings");
-  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + shared allowance 10,000");
+  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + temporary allowance 10,000");
   expect(readFileSync(file, "utf8")).toBe(before);
   h.answers.push("Settings…", "Project Knowledge budget: 15,000", "16000"); await command(h);
   expect(h.memory.knowledgeBudgets().project).toBe(16_000);

@@ -206,7 +206,7 @@ test("branch switches select exact source membership and returned snapshots do n
 
 test("73: an over-budget allocator truncates rather than refusing, and starts no worker or native fallback", async () => {
   const f = await fixture({ "noting.triggerTokens": 20, "dreaming.triggerTokens": 1,
-    "compaction.factsTokens": 1, "compaction.rawTokens": 1, "compaction.sharedAllowanceTokens": 1 });
+    "compaction.factsTokens": 1, "compaction.rawTokens": 1 });
   try {
     // The scripted worker makes no note commit, so pending Raw remains after ordinary admission.
     f.script(() => say("answer"));
@@ -267,7 +267,7 @@ test("79 item 3 (ruled a): a persisted native message changed under the same id 
 // 79 item 3: the integrity check itself reads no Raw (metadata and digests only); with nothing that
 // fits `compact`'s tiny budget, every capture below belongs to the integrity comparison alone.
 test("79 item 3: the snapshot's integrity check reads no Raw, asserted with statement capture", async () => {
-  const h = host({ ...quiet, "compaction.rawTokens": 1, "compaction.factsTokens": 1, "compaction.sharedAllowanceTokens": 1 });
+  const h = host({ ...quiet, "compaction.rawTokens": 1, "compaction.factsTokens": 1 });
   try {
     h.ctx.sessionManager.getSessionFile = () => `${h.dir}/persisted.jsonl`;
     await h.prompt("Question"); await h.answer("Answer"); await h.emit("agent_settled");

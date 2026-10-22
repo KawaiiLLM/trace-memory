@@ -2,7 +2,7 @@
 import { expect, test, vi } from "vitest";
 import { host } from "./test-host.ts";
 import { fixture } from "./native-fixture.ts";
-import { knowledgeBatch, legacyFacts } from "../../support/seed.ts";
+import { knowledgeBatch, legacyFacts, scoreAll } from "../../support/seed.ts";
 import { Store } from "../../../src/core/store/index.ts";
 
 const time = "2026-09-12T00:00:00Z";
@@ -16,9 +16,11 @@ const fact = (h: Host, text: string) => {
       text, createdAt: time }]).facts[0]!.id;
 };
 const create = (h: Host, support: number, scope: "project" | "global", ...texts: string[]) => {
-  return knowledgeBatch(h.memory.store, h.memory.store.knowledgePath(1, "main", 1),
+  const committed = knowledgeBatch(h.memory.store, h.memory.store.knowledgePath(1, "main", 1),
     texts.map(text => ({ author: "fixture", text, category: "constraint", scope, supports: [support],
       topics: [], reason: "record conclusion", createdAt: time })), { kind: "manual", createdAt: time }).committed;
+  scoreAll(h.memory.store); // the Knowledge base carries scored items
+  return committed;
 };
 const command = (h: Host, line: string) => h.commands.get("trace")!.handler(line, h.ctx);
 const carrier = (message: any) => message.details.traceMemory as { supplied: { knowledgeCommitIds: number[]; knowledgeStates?: unknown[] } };
@@ -238,7 +240,7 @@ test("97 a native compaction restarts the set empty; a compaction Pi never appen
 });
 
 test("97 transition: carriers from before 97 are not read; one delivery within budget, then nothing while unchanged", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "compaction.sharedAllowanceTokens": 1 });
+  const h = host({ "noting.triggerTokens": 1e9 });
   try {
     await h.prompt(); await h.answer();
     const support = fact(h, "use pnpm");

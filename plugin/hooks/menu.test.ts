@@ -11,7 +11,7 @@ const menu = {
     spend: { session: 0, noting: { runs: 0, cost: 0 }, consolidation: { runs: 0, cost: 0 }, dreaming: { runs: 0, cost: 0 }, today: 0 },
     notices: [], actions: { enabled: true },
   },
-  settings: { database: "/tmp/test-trace.db", budgets: { global: 4000, project: 15000, session: 1000, sharedAllowanceTokens: 10000 },
+  settings: { database: "/tmp/test-trace.db", budgets: { global: 4000, project: 15000, session: 1000, temporaryTokens: 10000 },
     workers: [{ phase: "Noter", model: "sonnet", thinking: "high" }, { phase: "Dreamer", model: "opus", thinking: "high" }],
     closedSessionScope: "project" },
   models: ["sonnet", "opus"],

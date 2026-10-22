@@ -195,7 +195,7 @@ test("92: Settings shows N/D preferences with effective sources and masked layer
     "Classifier model: fake/test", "Classifier thinking: inherit", "Closed sessions: project",
   ]);
   expect(h.dialogs.at(-1)!.title).toContain(join(h.dir, "trace.db"));
-  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + shared allowance 10,000 = 30,000 max input");
+  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + temporary allowance 10,000 = 30,000 max input");
   expect([readFileSync(globalPath), readFileSync(projectPath)]).toEqual(before);
   expect(h.requests).toEqual([]);
   // The advanced keys the menu no longer displays are still loaded and still validated by name.

@@ -229,7 +229,7 @@ test("73: SessionStart injection reads the resolved configuration, not the defau
     const dir = mkdtempSync(join(tmpdir(), "tm73-cfg-")); dirs.push(dir);
     const transcriptPath = join(dir, "t.jsonl"), nativeSession = "native-cfg";
     const config = resolveCcHostConfig({ dbPath: join(dir, "m.sqlite"), stateDir: join(dir, "s"), baseline: "2025-01-01T00:00:00.000Z",
-      ...(allowanceOverride === undefined ? {} : { "compaction.sharedAllowanceTokens": allowanceOverride }) });
+      ...(allowanceOverride === undefined ? {} : { "compaction.temporaryTokens": allowanceOverride }) });
     const records = [user("u", null, "evidence"), assistant("a", "u", "answer")];
     writeFileSync(transcriptPath, records.map(line).join(""));
     const initial = await recordSessionStart(config, { hook_event_name: "SessionStart", source: "startup", session_id: nativeSession, transcript_path: transcriptPath }, time(1));
@@ -240,11 +240,11 @@ test("73: SessionStart injection reads the resolved configuration, not the defau
       entryIds: [entry.id], facts: [{ turnId: entry.turnId, entryIds: [entry.id], category: "decision", actor: "user", text: "config fact",
         source: [`T${entry.turnId}#E${entry.entryOrdinal}`], createdAt: time(4) }] });
     if (!noted.ok) throw new Error(noted.problems.join("; "));
-    // Sized to fit the default 20,000-token base plus the default 10,000-token allowance, but not a
-    // base plus a 1-token allowance.
+    // Unscored, so the temporary allowance carries it: sized to fit the default 10,000-token allowance, but not a
+    // 1-token allowance.
     const committed = importer.memory.store.commitConsolidationRun({ path: { sessionId: result.coreSessionId!, branch: result.branch, headTurnId: result.headTurnId! },
       run: { kind: "manual", sessionId: result.coreSessionId!, branch: result.branch, createdAt: time(5) }, operations: [{ op: "create", title: "Fixture title", handle: "$k",
-        author: "fixture", text: `config knowledge ${"word ".repeat(24_000)}`, category: "constraint", scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: time(5) }] });
+        author: "fixture", text: `config knowledge ${"word ".repeat(8_000)}`, category: "constraint", scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: time(5) }] });
     if (!committed.ok) throw new Error(committed.problems.join("; "));
     importer.close();
     // `ccSessionStartInjection` directly, not `handleCcHook`: the latter re-resolves its config input

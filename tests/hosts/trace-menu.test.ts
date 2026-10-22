@@ -103,7 +103,7 @@ test("settings: budgets derive the knowledge window and max input from the code 
     { label: "Project", value: "15,000", qualifier: "per project" },
     { label: "Session", value: "1,000", qualifier: "per session" },
   ]);
-  expect(budgets.derivedLine).toBe("→ knowledge window 20,000 + shared allowance 10,000 = 30,000 max input");
+  expect(budgets.derivedLine).toBe("→ knowledge window 20,000 + temporary allowance 10,000 = 30,000 max input");
 });
 
 test("settings: neither worker has an execution-mode row on either host (the Noter runs fresh only)", () => {

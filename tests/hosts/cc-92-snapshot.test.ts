@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSy
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { TraceMemory } from "../../src/core/api/index.ts";
-import { knowledgeBatch, legacyFacts } from "../support/seed.ts";
+import { knowledgeBatch, legacyFacts, scoreAll } from "../support/seed.ts";
 import { commitDreamerOps } from "../support/dreamer.ts";
 import { databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
 
@@ -98,6 +98,7 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
     const created = knowledgeBatch(memory.store, memory.store.knowledgePath(session.id, "main", turn.id),
       Array.from({ length: 24 }, (_, n) => ({ ...content, text: `Original rule ${n}: ${"x".repeat(6000)}` })),
       { kind: "manual", createdAt: "now" });
+    scoreAll(memory.store); // the Knowledge base carries scored items
     memory.store.db.exec("UPDATE knowledge_budget_policy SET global_tokens=100000");
     const oldIds = created.committed.map(commit => commit.commit);
     const producer = f.run(0, epoch, { pauseSnapshot: true });

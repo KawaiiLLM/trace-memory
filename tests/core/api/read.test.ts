@@ -200,14 +200,14 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   expect(compacted(memory.compact(s.id))).not.toContain("abandoned raw");
   const n = noting(s.id, selected.id, fixture.interpretation);
   // Both exact sources are covered while Raw is supplied; exclude Raw to exercise the independent Fact window.
-  Object.assign(memory.config.compaction, { rawTokens: 0, sharedAllowanceTokens: 0 });
+  Object.assign(memory.config.compaction, { rawTokens: 0 });
   const whole = memory.compact(s.id, "main", selected.id);
   const full = compacted(whole);
   expect(full.indexOf("[F1]")).toBeLessThan(full.indexOf(`[F${n.facts[0]!.id}]`)); // chronological presentation
   // 92: facts are chosen newest-first within their independent base. A tight facts window keeps
   // the newest and receipts the older, regardless of historical C processing.
   const windows = charged(whole);
-  Object.assign(memory.config.compaction, { factsTokens: Math.ceil(windows.facts * 0.7), sharedAllowanceTokens: 0 });
+  Object.assign(memory.config.compaction, { factsTokens: Math.ceil(windows.facts * 0.7) });
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${n.facts[0]!.id}]`); expect(limited).not.toContain("[F1]");
   defaultWindows();
@@ -234,7 +234,7 @@ test("20c/92: pending Raw and historical facts fit their independent windows wit
   expect(memory.store.listRuns(s.id)).toHaveLength(runsBefore);
   expect(hydrate(memory.pendingEntries(s.id, "main", selected.id), memory.store).map(e => e.id)).toEqual(pending.map(e => e.id));
   // Exclude Raw for this independent Fact-window measurement: source coverage is then absent.
-  Object.assign(memory.config.compaction, { rawTokens: 0, sharedAllowanceTokens: 0 });
+  Object.assign(memory.config.compaction, { rawTokens: 0 });
   const factWhole = memory.compact(s.id, "main", selected.id);
   if ("native" in factWhole) throw new Error(factWhole.reason);
   expect(factWhole.supplied.factIds).toEqual([second.id, 1]); // selection newest-first; rendering remains chronological
@@ -457,7 +457,7 @@ test("64c/92: the independent facts window bounds history while Knowledge and Ra
   // Historical C processing is irrelevant to the now-independent facts window.
   expect(hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store)).toHaveLength(0);
   // No pending Raw: facts fill their own window; the three windows stay inside the envelope.
-  Object.assign(memory.config.compaction, { rawTokens: 0, sharedAllowanceTokens: 0 });
+  Object.assign(memory.config.compaction, { rawTokens: 0 });
   const roomy = memory.compact(s.id, "main", t.id);
   const spare = compacted(roomy);
   if ("native" in roomy) throw new Error(roomy.reason);
@@ -484,7 +484,7 @@ test("64c/92: the independent facts window bounds history while Knowledge and Ra
   // Size Raw to its complete views, facts to its receipt alone and Knowledge to its measured body.
   // Raw and Knowledge remain, while facts are omitted because their own window cannot hold a body.
   setKnowledgeInjection(memory, Math.max(3, measured.knowledge));
-  Object.assign(memory.config.compaction, { rawTokens: measured.raw, factsTokens: receiptBudget, sharedAllowanceTokens: 0 });
+  Object.assign(memory.config.compaction, { rawTokens: measured.raw, factsTokens: receiptBudget });
   const crowded = assemble(s.id, "main", t.id, [], false, { processedRawRefill: false });
   expect("native" in crowded).toBe(false); // fact truncation does not delegate compaction
   const text = compacted(crowded);
@@ -514,7 +514,7 @@ test("25c 2026-09-09, rescaled by 73: pending membership is processing progress 
   const bounded = compacted(memory.compact(s.id, "main", t.id));
   expect(bounded).toContain("PARTIAL_PENDING");
   expect(bounded).not.toContain("PARTIAL_FACT"); // fully covered by the selected Raw source
-  Object.assign(memory.config.compaction, { rawTokens: 0, sharedAllowanceTokens: 0 });
+  Object.assign(memory.config.compaction, { rawTokens: 0 });
   const factOnly = memory.compact(s.id, "main", t.id);
   expect(compacted(factOnly)).toContain("PARTIAL_FACT");
   expect(charged(factOnly).facts).toBeGreaterThan(0);
@@ -864,7 +864,7 @@ test("28a/30/92: facts and Raw refill stay whole, recent, path-applicable and de
   // Tight independent windows retain the newest fact and pending Raw, dropping older facts and
   // processed Raw without a worker, delegation or processing reset.
   const runsBefore = memory.store.listRuns(s.id).length;
-  Object.assign(memory.config.compaction, { factsTokens: 150, rawTokens: 150, sharedAllowanceTokens: 0 });
+  Object.assign(memory.config.compaction, { factsTokens: 150, rawTokens: 150 });
   const tight = memory.compact(s.id, "main", selected.id);
   expect("native" in tight).toBe(false);
   const bare = compacted(tight);
@@ -888,7 +888,7 @@ test("28a/92: the independent facts window keeps newest whole facts and receipts
   const measured = charged(memory.compact(s.id, "main", t.id));
   // Neither fact has a C processing mark. Facts never borrow; a base between one item and two
   // keeps only the newer whole body and receipts the older omission.
-  Object.assign(memory.config.compaction, { factsTokens: Math.ceil(measured.facts * 0.65), sharedAllowanceTokens: 0 });
+  Object.assign(memory.config.compaction, { factsTokens: Math.ceil(measured.facts * 0.65) });
   const text = compacted(memory.compact(s.id, "main", t.id));
   expect(text).toContain("NEWEST"); expect(text).not.toContain("OLDEST");
   expect(text).toContain(`omitted 1 older facts; expand: trace://F${older.id}`);

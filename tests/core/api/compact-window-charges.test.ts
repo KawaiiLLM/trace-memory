@@ -29,7 +29,7 @@ test("133/73: Raw overflow and its receipt are charged once, and facts cannot sp
     legacyFacts(memory.store, { kind: "noting", sessionId: session.id, branch: "main", createdAt: at }, [{
       sources: [{ entry: user, address: `T${turn.id}#user` }], text: "fact ".repeat(45), category: "observation", actor: "user", createdAt: at,
     }]);
-    Object.assign(memory.config.compaction, { rawTokens: 30, factsTokens: 40, sharedAllowanceTokens: 100, temporaryTokens: 100 });
+    Object.assign(memory.config.compaction, { rawTokens: 30, factsTokens: 40, temporaryTokens: 100 });
     const result = memory.compact(session.id, "main", turn.id);
     if ("native" in result) throw new Error("native");
     expect(result.truncated?.raw?.entries).toBeGreaterThan(0);
@@ -64,7 +64,7 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
       operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [noted.facts[0]!.id], reason: "archive", createdAt: at }] });
     if (!archived.ok) throw new Error(JSON.stringify(archived));
     const visible = noVisibility(); visible.knowledgeCommitIds.add(base.commit); // a status notice is now due
-    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, sharedAllowanceTokens: 1, temporaryTokens: 1 });
+    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 1 });
     const result = memory.compact(session.id, "main", turn.id, visible);
     if ("native" in result) throw new Error("native");
     expect(result.text).toBe(readingGuide(session.id, canonicalToolNames)); // fixed framing, no window titles, tags or receipts
@@ -108,7 +108,7 @@ test("79: an omitted entry the walk never reaches is not rendered, and the trunc
     memory.store.appendToolCall({ turnId: turn.id, name: "bash", input: "test", result: "broken", status: "success" });
     memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeId: "new", nativeLineage: "fixture", role: "assistant",
       text: "word ".repeat(1000), raw: "", calls: [] });
-    Object.assign(memory.config.compaction, { rawTokens: 30, sharedAllowanceTokens: 1, temporaryTokens: 1 });
+    Object.assign(memory.config.compaction, { rawTokens: 30, temporaryTokens: 1 });
     let result: ReturnType<typeof memory.compact> | undefined;
     expect(() => { result = memory.compact(session.id, "main", turn.id); }).not.toThrow();
     if (!result || "native" in result) throw new Error("expected a bounded compact result");
@@ -136,7 +136,7 @@ test("73: processed material never borrows — its receipts and framing fit its 
         text: `fact ${i} ${"word ".repeat(15)}`, category: "observation" as const, actor: "user" as const, createdAt: at })),
       path.map(entry => entry.id));
     for (const fact of noted.facts) memory.store.markConsolidated(fact.id, noted.runId, memory.store.getSession(session.id)!.projectId);
-    Object.assign(memory.config.compaction, { rawTokens: 110, factsTokens: 160, sharedAllowanceTokens: 10_000 });
+    Object.assign(memory.config.compaction, { rawTokens: 110, factsTokens: 160 });
     const result = memory.compact(session.id, "main", parent);
     if ("native" in result) throw new Error("native");
     expect(memory.store.pendingEntryIds(session.id, "main", parent)).toEqual([]);

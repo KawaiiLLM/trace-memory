@@ -2470,7 +2470,7 @@ test("133: pending Raw uses only the temporary allowance; unused Knowledge allow
   const project = memory.store.createProject({ name: "temporary", declaredBy: "marker" });
   const s = memory.store.createSession({ host: "fake", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
   const turn = memory.store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: time, userPrompt: "pending ".repeat(100) });
-  Object.assign(memory.config.compaction, { rawTokens: 30, temporaryTokens: 1, sharedAllowanceTokens: 1000 });
+  Object.assign(memory.config.compaction, { rawTokens: 30, temporaryTokens: 1 });
   const small = memory.compact(s.id, "main", turn.id);
   if ("native" in small) throw new Error("native");
   expect(small.supplied.entries).toEqual([]);

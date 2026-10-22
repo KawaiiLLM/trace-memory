@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import type { CompactionEntry, CustomMessageEntry, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { host, reply } from "./test-host.ts";
-import { entry, knowledge, legacyFacts } from "../../support/seed.ts";
+import { entry, knowledge, legacyFacts, scoreAll } from "../../support/seed.ts";
 import { visibility } from "../../../src/hosts/pi/index.ts";
 import { tokens } from "../../../src/core/render/tokens.ts";
 import { tag } from "../../../src/hosts/pi/settings.ts";
@@ -24,8 +24,10 @@ const seedKnowledge = (h: ReturnType<typeof host>, text = "全局规则") => {
   const evidence = legacyFacts(store, { kind: "noting", sessionId: seed.id, createdAt: "now" },
     [{ sources: [{ entry: source, address: `T${turn.id}#E${source.entryOrdinal}` }], text: "规则",
       category: "decision", actor: "user", createdAt: "now" }]).facts[0]!;
-  return knowledge(store, store.knowledgePath(seed.id, "main", turn.id), "global", "constraint",
+  const commit = knowledge(store, store.knowledgePath(seed.id, "main", turn.id), "global", "constraint",
     [evidence.id], text, { run: { kind: "manual", createdAt: "now" } }).commit;
+  scoreAll(store); // the Knowledge base carries scored items
+  return commit;
 };
 /** The identity this host binds its carriers to, read the way `restore` reads it: the resolved
  * database path, the memory session id the host recorded in its own state entry (absent before the

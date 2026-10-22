@@ -4,7 +4,7 @@ import { appendFileSync, closeSync, mkdtempSync, openSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../src/core/store/index.ts";
-import { entry, knowledge, knowledgeBatch, legacyFacts, session } from "../support/seed.ts";
+import { entry, knowledge, knowledgeBatch, legacyFacts, scoreAll, session } from "../support/seed.ts";
 import { readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
@@ -55,6 +55,7 @@ async function fixture(texts = ["Use pnpm."], settings: Record<string, unknown> 
   const path = { sessionId: seed.id, headTurnId: seedTurn.id };
   const versions = knowledgeBatch(store, path, texts.map(text => ({ scope: "global" as const, category: "constraint" as const,
     supports: [fact.id], text })), { kind: "manual", createdAt: time(0) }).committed;
+  scoreAll(store); // the Knowledge base carries scored items
   const input = { session_id: nativeSession, transcript_path: transcriptPath };
   const visible = () => ({ db: databaseIdentity(config.dbPath), nativeSession, coreSession: readBinding(config, nativeSession)!.coreSessionId });
   const slicer = (output: Parameters<typeof sliceCcInjection>[1] extends never ? never : any, binding: Parameters<typeof sliceCcInjection>[0]) =>
@@ -156,6 +157,7 @@ test("97 a compaction's supplement belongs to the compaction's own node: version
     const before = f.delivered(f.turnOf("u4"));
     expect(before.knowledgeStates).toEqual(new Set([`${first}>${archive}`]));
     const added = knowledge(f.store, f.path, "global", "constraint", [f.fact.id], "Review before release.", { run: { kind: "manual", createdAt: time(0) } }).commit;
+    scoreAll(f.store);
 
     const supplement = f.decode(await f.compact());
     expect(supplement.flatMap(header => header.commits)).toEqual([kept, added]);
@@ -167,7 +169,7 @@ test("97 a compaction's supplement belongs to the compaction's own node: version
     expect(f.decode(await f.prompt("p5"))).toEqual([]);
     await f.restartExecutor();
     const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
-    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set([kept, added]), knowledgeStates: new Set(), knowledgeTokens: cost });
+    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set([kept, added]), knowledgeStates: new Set(), knowledgeTokens: cost, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
     expect(f.delivered(f.turnOf("u4"))).toEqual(before);
     expect(f.decode(await f.prompt("p5"))).toEqual([]);
     // A branch from before the compaction, rewinding to that node, still misses what came later.
@@ -275,7 +277,7 @@ test("97 hooks read the transcript only after the stored leaf", async () => {
 
 test("97 transition: a context with no records gets one delivery within its budget; unchanged, later prompts deliver nothing", async () => {
   const f = await fixture(["First rule. " + "x".repeat(400), "Second rule. " + "y".repeat(400), "Third rule. " + "z".repeat(400)],
-    { "compaction.sharedAllowanceTokens": 1 });
+    { "compaction.temporaryTokens": 1 });
   try {
     // Carriers written before 97 are never read: one here claims every version.
     const old = encodeCcInjection(f.visible(), { text: "legacy", knowledgeCommitIds: f.versions.map(item => item.commit) });
@@ -325,7 +327,7 @@ test("102 a Trace Memory compaction's node holds exactly what its block emitted;
     expect(built!.warning).toBeUndefined();
     await f.append(...installedBlock("cb", "u3", built!.text, "p3"), assistant("a3", "cb-block"));
     const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
-    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set(header.commits), knowledgeStates: new Set(), knowledgeTokens: header.knowledgeTokens });
+    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set(header.commits), knowledgeStates: new Set(), knowledgeTokens: header.knowledgeTokens, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
     expect(f.delivered(f.turnOf("u3")).knowledgeStates).toEqual(new Set([`${first}>${archived.committed[0]!.commit}`]));
     // SessionStart(compact) never injects; the next prompt and a resume find nothing missing.
     expect(await f.sessionStart("compact")).toBeNull();

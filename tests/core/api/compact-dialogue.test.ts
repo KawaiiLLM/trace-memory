@@ -200,7 +200,7 @@ test("133: live tasks survive exhausted windows and are included in measured tex
   const { memory, session } = setup();
   try {
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: at, userPrompt: "pending" });
-    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 1, sharedAllowanceTokens: 1 });
+    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 1 });
     const without = memory.compact(session.id, "main", turn.id);
     const withTask = memory.compact(session.id, "main", turn.id, [], false,
       { runningTasks: [{ id: "live1", kind: "Explore", description: "Investigate the active branch", status: "running" }] });

@@ -17,7 +17,7 @@ import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { ccNativeTranscriptPath } from "../../src/hosts/cc/worker.ts";
 import { CC_INJECTION_HEADER, databaseIdentity, decodeCcInjection } from "../../src/hosts/cc/injection.ts";
 import { CC_AUTO_CONTINUE_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX, ccCarrierStart, ccStripAutoContinue } from "../../src/hosts/cc/transcript.ts";
-import { entry, knowledge, legacyFacts, session } from "../support/seed.ts";
+import { entry, knowledge, legacyFacts, scoreAll, session } from "../support/seed.ts";
 import { fencedClaudeVersion, createFencedClaudeExecutable, fenceToolsAvailable, preflightNetworkFence } from "./cc-native-fence.ts";
 
 const executable = process.env.TM_NATIVE_CLAUDE_EXECUTABLE ?? "/opt/homebrew/bin/claude";
@@ -96,6 +96,7 @@ async function run(scenario: Scenario) {
       address: `T${turn.id}#E${source.entryOrdinal}` }], text: "rule", category: "decision", actor: "user", createdAt: "now" }]).facts[0]!;
     rule = knowledge(store, { sessionId: seed.id, headTurnId: turn.id }, "global", "constraint", [fact.id], "Use pnpm, never npm.",
       { run: { kind: "manual", createdAt: "now" } }).commit;
+    scoreAll(store); // the Knowledge base carries scored items
   } finally { store.close(); }
 
   const requests: Body[] = [];
@@ -210,7 +211,8 @@ function installed(result: Awaited<ReturnType<typeof run>>) {
   expect(persisted.turns).toHaveLength(1);
   // The compaction node's delivered state is exactly what the block emitted (97's records).
   expect(persisted.delivered[0]).toEqual({ knowledgeCommitIds: new Set(header.commits),
-    knowledgeStates: new Set(header.states.map(state => `${state.fromCommit}>${state.toCommits.join(",")}`)), knowledgeTokens: header.knowledgeTokens });
+    knowledgeStates: new Set(header.states.map(state => `${state.fromCommit}>${state.toCommits.join(",")}`)), knowledgeTokens: header.knowledgeTokens,
+    knowledgeTitleCommitIds: new Set(header.titles), temporaryTokens: header.temporaryTokens ?? 0 });
   return { at, block, header, raw: block.split("\n").filter(line => /^\[T\d+#E\d+@/.test(line)) };
 }
 
@@ -265,7 +267,7 @@ test("a prompt that is too long compacts with the block and retries on it", asyn
 
 test("133 R1 supersedes 73: pending Raw overflow keeps the native summary and Knowledge supplement", async () => {
   const long = Array.from({ length: 6 }, (_, i) => `LONG turn ${i + 1}`);
-  const result = await run({ prompts: [...long, "/compact", "AFTER prompt"], settings: { "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 },
+  const result = await run({ prompts: [...long, "/compact", "AFTER prompt"], settings: { "compaction.temporaryTokens": 1 },
     reply: body => promptOf(body).startsWith("LONG") ? { blocks: [{ type: "text", text: `${promptOf(body)}: ${"many words ".repeat(3_000)}` }] } : ack(body) });
   const summary = result.requests.findIndex(summarises);
   expect(summary).toBeGreaterThan(0);

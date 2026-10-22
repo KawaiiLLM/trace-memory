@@ -68,7 +68,7 @@ test("35d Settings edits the bound database row, shows derived diagnostics, and 
   h.answers.push("Settings…", undefined);
   await command(h, "");
   expect(h.dialogs.at(-1)!.title).toContain(`\n${join(h.dir, "trace.db")}`);
-  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + shared allowance 10,000 = 30,000 max input");
+  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + temporary allowance 10,000 = 30,000 max input");
   expect(h.dialogs.at(-1)!.options!.slice(0, 3)).toEqual([
     "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
   ]);
@@ -76,7 +76,7 @@ test("35d Settings edits the bound database row, shows derived diagnostics, and 
   expect(h.memory.knowledgeBudgets()).toMatchObject({ global: 4000, project: 16000, session: 1000,
     applicable: 21000, injection: 21000 });
   expect(h.notices.at(-1)).toContain("saved Project Knowledge budget = 16000 tokens");
-  expect(h.notices.at(-1)).toContain("Knowledge base window 21000; shared material allowance 10000; maximum Knowledge input 31000");
+  expect(h.notices.at(-1)).toContain("Knowledge base window 21000; temporary allowance 10000; maximum Knowledge input 31000");
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   expect(h.requests).toEqual([]);
 

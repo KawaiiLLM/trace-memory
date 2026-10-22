@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { host, reply, notingFact, type Reply } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { fact, knowledge } from "../../support/seed.ts";
+import { fact, knowledge, scoreAll } from "../../support/seed.ts";
 
 // Ticket 20c — compaction at the host boundary. Core decides between the custom replacement and the
 // native delegation over its own frozen snapshot (core/api/read.test.ts); this file pins what the Pi
@@ -45,7 +45,7 @@ test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary unde
 
 test("133 R1: pending Raw overflow delegates without a delivery or an extra Noter; the next Noter observes the native boundary", async () => {
   const h = host({ ...eager, "noting.batchTokens": 300, "dreaming.triggerTokens": 1,
-    "compaction.factsTokens": 50, "compaction.rawTokens": 600, "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
+    "compaction.factsTokens": 50, "compaction.rawTokens": 600, "compaction.temporaryTokens": 1 });
   try {
     h.memory.setKnowledgeBudget("global", 0);
     h.memory.setKnowledgeBudget("project", 0);
@@ -72,7 +72,7 @@ test("133 R1: pending Raw overflow delegates without a delivery or an extra Note
 
 test("133 R1: pending Raw overflow goes native even when its omission receipt cannot fit", async () => {
   const h = host({ ...quiet, "compaction.factsTokens": 1, "compaction.rawTokens": 1,
-    "compaction.sharedAllowanceTokens": 1, "compaction.temporaryTokens": 1 });
+    "compaction.temporaryTokens": 1 });
   try {
     h.memory.setKnowledgeBudget("global", 0);
     h.memory.setKnowledgeBudget("project", 0);
@@ -190,6 +190,7 @@ test("133 R1: native fallback leaves Knowledge recovery at the next ordinary pro
     const source = h.memory.store.sourcePath(1, "main", 1).map(entry => h.memory.store.getSourceEntry(entry.id)!).find(entry => entry.role === "user")!;
     const support = fact(h.memory, path, "Support", [{ entry: source, text: "establish support" }]);
     const created = knowledge(h.memory.store, path, "project", "constraint", [support.id], "RECOVER_AFTER_NATIVE");
+    scoreAll(h.memory.store); // the Knowledge base carries scored items; the temporary allowance here is 1
     expect((await h.prompt("deliver before compaction")).message.content).toContain("RECOVER_AFTER_NATIVE");
     await h.answer();
     const runs = h.memory.store.listRuns(1).length;
