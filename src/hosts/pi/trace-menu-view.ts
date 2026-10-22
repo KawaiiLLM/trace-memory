@@ -131,6 +131,7 @@ export function renderTraceMenu(input: TraceMenuInput, width: number, paint: Pai
   lines.push(pendingLine(model.pending.noting));
   lines.push(`  ${model.pending.dreamingHeading}`);
   for (const row of model.pending.dreaming) lines.push(pendingLine(row, "    "));
+  if (model.pending.dreamingNext) lines.push(`    ${model.pending.dreamingNext.label.padEnd(13)} ${model.pending.dreamingNext.value}`);
   lines.push("");
 
   lines.push(model.spend.sessionLine);

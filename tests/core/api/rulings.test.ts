@@ -25,6 +25,7 @@ import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-bud
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
 import { dreamerFixture as makeDreamerFixture, operationOfText, proposalsOf, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
+import { buildPendingSection } from "../../../src/hosts/trace-menu.ts";
 import { checkVerify } from "../../../src/core/dreaming/changes.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { receiptCommit, scoreAll } from "../../support/seed.ts";
@@ -2367,6 +2368,15 @@ test("2026-10-22, 144: 「D不创建知识，那是N的职责」 and 「每次�
   }
   expect(order).toEqual(["update", "merge", "split", "archive"]);
   expect(f.store.nextCurateOperation(f.project.id)).toBe("update");
+});
+
+test("2026-10-22, 144: /trace shows the next curate operation and no running batch (maintainer chose A) — after an update run finishes the Dreaming section's row says merge", async () => {
+  const f = dreamerFixture();
+  const row = () => buildPendingSection({ noting: { tokens: 0, trigger: 1 }, dreaming: { pending: { tokens: 0, trigger: 1 }, next: f.store.nextCurateOperation(f.project.id) } }).dreamingNext;
+  expect(row()).toEqual({ label: "next curate", value: "update" });
+  f.item("Rule one", { category: "constraint" });
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(row()).toEqual({ label: "next curate", value: "merge" });
 });
 
 // 61 (2026-09-19): the prompts are written to one standard — shared memory-model blocks, per-stage judgment,

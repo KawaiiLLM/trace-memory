@@ -121,16 +121,19 @@ const pendingRow = (label: string, value: PendingInput): PendingRow => {
   return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio), amount };
 };
 
-/** Dreaming's one condition (144 stage 4 §2.3): the tokens of knowledge the Noter changed since the last run, against the trigger. */
+/** Dreaming's one condition (144 stage 4 §2.3): the tokens of knowledge the Noter changed since the last run, against the trigger.
+ * `next`: the curate operation the project's next run performs (stage 5 §3.2, `Store.nextCurateOperation`); absent without a session. */
 export interface PendingSectionInput {
   noting: PendingInput;
-  dreaming: { pending: PendingInput };
+  dreaming: { pending: PendingInput; next?: string };
 }
 export interface PendingSection {
   heading: string;
   noting: PendingRow;
   dreamingHeading: string;
   dreaming: PendingRow[];
+  /** Not a token amount, so not a `PendingRow`: both hosts print it as `label  value` under the bar rows. */
+  dreamingNext?: { label: string; value: string };
 }
 export function buildPendingSection(input: PendingSectionInput): PendingSection {
   return {
@@ -138,6 +141,7 @@ export function buildPendingSection(input: PendingSectionInput): PendingSection 
     noting: pendingRow("Noting", input.noting),
     dreamingHeading: "Dreaming",
     dreaming: [pendingRow("pending", input.dreaming.pending)],
+    ...(input.dreaming.next ? { dreamingNext: { label: "next curate", value: input.dreaming.next } } : {}),
   };
 }
 
@@ -307,7 +311,7 @@ export const TRACE_MENU_FIXTURE: TraceMenuInput = {
   },
   pending: {
     noting: { tokens: 3_200, trigger: 10_000 },
-    dreaming: { pending: { tokens: 1_819, trigger: 10_000 } },
+    dreaming: { pending: { tokens: 1_819, trigger: 10_000 }, next: "merge" },
   },
   spend: {
     session: 1.23,

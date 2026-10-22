@@ -64,6 +64,7 @@ test("pending: Noting/Dreaming rows with compact ratios and whole-number percent
   expect(pending.dreaming).toEqual([
     { label: "pending", tokens: 1_819, trigger: 10_000, ratio: 0.1819, percent: "18%", amount: "1.8k / 10k" },
   ]);
+  expect(pending.dreamingNext).toEqual({ label: "next curate", value: "merge" });
 });
 
 test("pending: a Noting backlog counted up to its trigger shows at-least with the exact entry count (maintainer, 2026-09-25)", () => {
