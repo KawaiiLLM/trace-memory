@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import type { DreamingAgentInput, RunAgentResult } from "../../src/core/api/index.ts";
 import type { RunAgent, TraceMemory } from "../source-fixture.ts";
 import { REQUEST } from "./noter.ts";
-import { workspaceBatch } from "./workspace.ts";
+import { block, workspaceBatch } from "./workspace.ts";
 import { applyWorkspace } from "../../src/core/workspace/index.ts";
 import type { KnowledgePath, Store } from "../../src/core/store/index.ts";
 
@@ -90,3 +90,32 @@ export function curateNow(memory: { store: Store }, path: KnowledgePath, text: s
 }
 /** `K<id>@v<n>` of a committed version. */
 export const versionRef = (store: Store, knowledgeId: number, commit: number) => `K${knowledgeId}@v${store.versionOrdinal(knowledgeId, commit)}`;
+
+type Operation = import("../../src/core/store/index.ts").KnowledgeOperationInput;
+/** The store-level operations a Dreamer's pass would commit, written as one curate file and applied with `curateNow`. For tests that seed
+ * lineage (updates, merges, splits) and need the versions back: every block must apply. Returns the committed versions in block order
+ * (a split: the primary part, then its children). An `archive` of kind `budget` is written as `invalid`. */
+export function curateWrite(memory: { store: Store }, path: KnowledgePath, operations: readonly Operation[]): { knowledgeId: number; commit: number }[] {
+  const { store } = memory;
+  const ref = (knowledgeId: number, commit: number) => versionRef(store, knowledgeId, commit);
+  const F = (ids: readonly number[]) => ids.map(id => `F${id}`).join(", ");
+  const shared = (op: { category: string; scope: string; topics: readonly string[]; supports: readonly number[]; reason: string }) =>
+    ({ category: op.category, scope: op.scope, topics: op.topics.join(", "), ...(op.supports.length ? { supports: F(op.supports) } : {}), reason: op.reason });
+  const blocks = operations.map(op => {
+    if (op.op === "update") return block(`update ${ref(op.knowledgeId, op.baseCommit)}`, { ...(op.title ? { title: op.title } : {}), ...shared(op) }, op.text);
+    if (op.op === "merge") return block(`merge ${ref(op.intoKnowledgeId, op.intoBaseCommit)}`, { absorb: op.absorb.map(parent => ref(parent.knowledgeId, parent.baseCommit)).join(", "), ...(op.title ? { title: op.title } : {}), ...shared(op) }, op.text);
+    if (op.op === "split") return block(`split ${ref(op.knowledgeId, op.baseCommit)}`, shared(op), op.text) + op.children.map(child =>
+      `\n### child\ntitle: ${child.title}\ncategory: ${child.category}\nscope: ${op.scope}\ntopics: ${child.topics.join(", ")}\nsupports: ${F(op.supports)}\nreason: ${op.reason}\n\n${child.text}\n`).join("");
+    if (op.op === "archive") return block(`archive ${ref(op.knowledgeId, op.baseCommit)}`, { kind: op.kind === "inadmissible" ? "inadmissible" : "invalid", reason: op.reason },
+      op.text ?? "The user withdrew this and nothing replaces it; the grounds are in the cited evidence.");
+    if (op.op === "create") return block("create", { title: op.title ?? "Fixture title", ...shared(op) }, op.text);
+    throw new Error(`curateWrite: unsupported operation ${op.op}`);
+  });
+  const result = curateNow(memory, path, blocks.join("\n"));
+  const refused = result.blocks.filter(entry => entry.status !== "applied");
+  if (refused.length) throw new Error(refused.map(entry => `${entry.block}: ${entry.reason}`).join("\n"));
+  return result.blocks.flatMap(entry => entry.versions).map(version => {
+    const [, id, ordinal] = /^K(\d+)@v(\d+)$/.exec(version)!;
+    return { knowledgeId: Number(id), commit: store.resolveVersionOrdinal(Number(id), Number(ordinal)) };
+  });
+}
