@@ -26,16 +26,22 @@ const SECRET_DIRS = [".ssh", ".aws", ".gnupg"];
  * at home would otherwise search them, so the exclusion names them too (any directory of the same name is skipped as well). */
 const DENIED_TREES = [".trace-memory", ".pi/agent"];
 const SECRET = new RegExp(`^(?:${SECRET_FILES.map(name => name.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")).join("|")})$`, "i");
+/** ripgrep's `--glob` is case-sensitive, so each letter becomes a class (`.env` -> `.[eE][nN][vV]`) to match `SECRET`'s case-insensitivity. */
+const anyCase = (name: string) => name.replace(/[a-z]/gi, letter => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
 /** The same list as a ripgrep exclusion, for a Grep call (a hook can only allow or rewrite a call, never filter its output). */
-export const SECRET_GLOB = `!**/{${[...SECRET_FILES, ...SECRET_DIRS.map(name => `${name}/**`), ...DENIED_TREES.map(tree => `${tree}/**`)].join(",")}}`;
+export const SECRET_GLOB = `!**/{${[...SECRET_FILES, ...SECRET_DIRS.map(name => `${name}/**`), ...DENIED_TREES.map(tree => `${tree}/**`)].map(anyCase).join(",")}}`;
 
-/** The one deny list: the production memory directory, the Pi agent directory and secret files. A symlink out of the roots is
- * refused by `resolveRepositoryPath`, which tests the resolved path. */
+/** The one deny list: the production memory directory, the Pi agent directory and secret files, by name in any letter case. A protected
+ * directory is denied both where it is named and where it really is (it may be a symbolic link into a root). A symlink out of the roots
+ * is refused by `resolveRepositoryPath`, which tests the resolved path. */
 export function deniedPath(path: string): string | null {
-  const home = real(homedir());
-  for (const forbidden of DENIED_TREES.map(tree => join(home, ...tree.split("/"))))
-    if (path === forbidden || path.startsWith(forbidden + sep)) return "that directory holds the memory database or agent configuration and is never read";
-  if (SECRET.test(basename(path)) || path.split(sep).some(part => SECRET_DIRS.includes(part))) return "that looks like a secret file and is never read";
+  const lower = path.toLowerCase();
+  const forbidden = new Set<string>();
+  for (const home of new Set([homedir(), real(homedir())]))
+    for (const tree of DENIED_TREES) { const named = join(home, ...tree.split("/")); forbidden.add(named.toLowerCase()); forbidden.add(real(named).toLowerCase()); }
+  for (const tree of forbidden)
+    if (lower === tree || lower.startsWith(tree + sep)) return "that directory holds the memory database or agent configuration and is never read";
+  if (SECRET.test(basename(path)) || path.split(sep).some(part => SECRET_DIRS.includes(part.toLowerCase()))) return "that looks like a secret file and is never read";
   return null;
 }
 

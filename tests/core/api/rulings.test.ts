@@ -3009,18 +3009,26 @@ test("2026-10-21, 144: injection follows scores, not age", () => {
   expect(delivery.knowledgeTitleCommitIds).toEqual([fresh.commit]); // the newer one is a title, not a body
 });
 
-test("2026-10-22, 144: verify reads the working directories of the project's sessions; another project's directory, a session without one and a vanished directory add nothing", () => {
+// Maintainer, 2026-10-22 (144): verify reads the working directories of the project's sessions. 2026-10-23 (148): a session's root is its directory,
+// else the directory it started in, and a start directory that is the home directory makes home a root. This extends the 144 ruling and replaces its test.
+test("2026-10-23, 148: a session's root is its directory, else its start directory (a home start directory makes home a root); another project's sessions, sessions with neither and vanished directories add nothing", () => {
   const b = workspaceBatch();
   try {
     const base = realpathSync(directory);
-    const [one, two, other] = ["one", "two", "other"].map(name => { mkdirSync(join(base, name)); return join(base, name); }) as [string, string, string];
-    const sibling = b.store.createSession({ projectId: b.project.id, host: "pi:workspace", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-    const stranger = b.store.createSession({ projectId: b.store.createProject({ name: "other", declaredBy: "mark" }).id, host: "pi:workspace", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-    const set = b.store.db.prepare("UPDATE sessions SET directory = ? WHERE id = ?");
-    set.run(one, b.session.id); set.run(two, sibling.id); set.run(other, stranger.id);
-    expect(allowedRoots(b.store, b.session.id)).toEqual([one, two].sort());
-    set.run(join(one, "gone"), b.session.id);
-    expect(allowedRoots(b.store, b.session.id)).toEqual([two]);
+    const [one, two, started, sub, home, other, ignored] = ["one", "two", "started", "sub", "home", "other", "ignored"].map(name => { mkdirSync(join(base, name)); return join(base, name); }) as string[] as [string, string, string, string, string, string, string];
+    const project = b.project.id, stranger = b.store.createProject({ name: "other", declaredBy: "mark" }).id;
+    b.store.db.prepare("UPDATE sessions SET directory = ? WHERE id = ?").run(one, b.session.id);
+    seedSession(b.store, project, "pi:workspace", { directory: two });
+    seedSession(b.store, project, "pi:workspace", { directory: null, startDirectory: started });
+    seedSession(b.store, project, "pi:workspace", { directory: sub, startDirectory: ignored }); // the directory wins over the start directory
+    seedSession(b.store, project, "pi:workspace", { startDirectory: join(base, "gone") }); // vanished
+    seedSession(b.store, project, "pi:workspace"); // neither
+    seedSession(b.store, stranger, "pi:workspace", { directory: other });
+    expect(allowedRoots(b.store, b.session.id)).toEqual([one, two, started, sub].sort());
+    seedSession(b.store, project, "pi:workspace", { startDirectory: home }); // started in home: home is a root
+    expect(allowedRoots(b.store, b.session.id)).toEqual([one, two, started, sub, home].sort());
+    b.store.db.prepare("UPDATE sessions SET directory = ? WHERE id = ?").run(join(one, "gone"), b.session.id);
+    expect(allowedRoots(b.store, b.session.id)).toEqual([two, started, sub, home].sort());
   } finally { b.memory.close(); }
 });
 

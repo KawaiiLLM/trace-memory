@@ -19,8 +19,9 @@ export function receiptCommit(store: Store, item: Pick<MemoryReceipt["committed"
 
 const at = "2026-09-21T00:00:00.000Z";
 
-export function session(store: Store, projectId: number, host: string) {
-  return store.createSession({ enrollmentChoice: true, projectId, host, startedAt: at, firstReplyAt: at });
+/** `where` sets the working directories a host records: the repository `directory` and the `startDirectory` it started in. */
+export function session(store: Store, projectId: number, host: string, where: { directory?: string | null; startDirectory?: string | null } = {}) {
+  return store.createSession({ enrollmentChoice: true, projectId, host, startedAt: at, firstReplyAt: at, ...where });
 }
 
 /** A completed entry; callers own the Turn and select the source path explicitly. */
