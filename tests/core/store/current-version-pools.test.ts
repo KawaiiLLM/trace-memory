@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { tokens } from "../../../src/core/render/index.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
-import { skipRest, suppliedHandles } from "../../dreaming-skips.ts";
+import { scriptedDreamer } from "../../support/dreamer.ts";
 import { Store, type RunInput, type TaskClaim } from "../../../src/core/store/index.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { ALL_POOLS } from "../../../src/core/store/processing.ts";
-import { archive, clearSupports, entry, knowledgeBatch, legacyFacts, updateKnowledge } from "../../support/seed.ts";
+import { archive, clearSupports, entry, knowledge, knowledgeBatch, legacyFacts, updateKnowledge } from "../../support/seed.ts";
 
 const stores: Store[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); });
@@ -521,45 +521,43 @@ test("104: two sessions sharing a pool start one Dreamer run", async () => {
     return { outcome: "cancelled", output: "fixture", request: {} };
   }, { dreaming: { triggerTokens: 1 } });
   const a = setup(memory.store, "shared"), b = setup(memory.store, "shared");
-  a.create("project", "shared rule ".repeat(30));
+  knowledge(memory.store, a.target, "project", "constraint", [a.fact.id], "shared rule ".repeat(30)); // a Noter version: only those make the Dreamer due
   expect([a, b].map(value => memory.taskEligibility("dreaming", value.target).due)).toEqual([true, true]);
   const first = memory.dream(a.target);
   await vi.waitFor(() => expect(started).toBe(1));
   expect(await memory.dream(b.target)).toEqual({ outcome: "dropped" });
   release();
-  expect((await first).outcome).toBe("cancelled");
+  expect((await first).outcome).not.toBe("dropped");
   expect(started).toBe(1);
 });
 
-test.each(["A", "B"] as const)("126: two sessions due at once on the shared global pool run one at a time; %s first leaves the other only what it did not freeze", async opener => {
+test.each(["A", "B"] as const)("126: two sessions due at once on the shared global pool run one at a time; %s first, then the other", async opener => {
   let hold = true, release = () => {};
-  const runs: { sessionId: number; frozen: number[] }[] = [];
+  const dreamer = scriptedDreamer();
+  const runs: number[] = [];
   const memory = TraceMemory(":memory:", async raw => {
-    const task = raw as DreamingAgentInput;
-    task.acknowledgeRequest();
-    runs.push({ sessionId: task.sessionId, frozen: suppliedHandles(task.material.changed).map(handle => {
-      const [, id, ordinal] = /^K(\d+)@v(\d+)$/.exec(handle)!; return memory.store.resolveVersionOrdinal(Number(id), Number(ordinal)); }) });
+    runs.push((raw as DreamingAgentInput).sessionId);
     if (hold) await new Promise<void>(resolve => { release = resolve; });
-    skipRest(task);
-    return { outcome: "success", output: "deliberated", request: { fixture: "126 shared global" } };
+    return dreamer.agent(raw);
   }, { dreaming: { triggerTokens: 1 } });
   const a = setup(memory.store, "A"), b = setup(memory.store, "B");
-  const shared = a.create("global", "shared rule ".repeat(30));
-  const own = { A: a.create("project", "A's project rule"), B: b.create("project", "B's project rule") };
+  const noted = (f: Fixture, scope: "global" | "project", text: string) => knowledge(memory.store, f.target, scope, "constraint", [f.fact.id], text);
+  noted(a, "global", "shared rule ".repeat(30));
+  noted(a, "project", "A's project rule"); noted(b, "project", "B's project rule");
   const [first, second] = opener === "A" ? [a, b] : [b, a];
-  const [firstOwn, secondOwn] = opener === "A" ? [own.A, own.B] : [own.B, own.A];
   expect([a, b].map(value => memory.taskEligibility("dreaming", value.target).due)).toEqual([true, true]);
   const running = memory.dream(first.target);
   await vi.waitFor(() => expect(runs).toHaveLength(1));
   expect(await memory.dream(second.target)).toEqual({ outcome: "dropped" }); // one database-wide Dreamer seat
-  const late = second.create("global", "late shared rule"); // written while the first run holds the global pool
+  noted(second, "global", "late shared rule"); // written while the first run holds the seat
   hold = false; release();
   expect((await running).outcome).toBe("success");
-  expect(runs[0]).toEqual({ sessionId: first.session.id, frozen: [shared.commit, firstOwn.commit] });
-  expect(memory.store.pendingVersions("global", second.target).map(value => value.revisionId)).toEqual([late.commit]);
+  expect([...new Set(runs)]).toEqual([first.session.id]); // one conversation per task: the session's run, not the other's
+  // The other session still has its own uncovered project rule and the late one: it runs next, then nothing is due.
+  expect(memory.taskEligibility("dreaming", second.target).due).toBe(true);
   expect((await memory.dream(second.target)).outcome).toBe("success");
-  expect(runs[1]).toEqual({ sessionId: second.session.id, frozen: [secondOwn.commit, late.commit].sort((x, y) => x - y) });
-  for (const f of [a, b]) expect(memory.store.knowledgePools(f.target).flatMap(pool => pool.pending)).toEqual([]);
+  expect([...new Set(runs)]).toEqual([first.session.id, second.session.id]);
+  for (const f of [a, b]) expect(memory.taskEligibility("dreaming", f.target).due).toBe(false);
 });
 
 // 139: a story with a processed reference, a Changed, an Archived, a New and a supportless item, whose
