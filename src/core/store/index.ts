@@ -1742,9 +1742,15 @@ export class Store {
     this.db.prepare("UPDATE sessions SET closed_at = ? WHERE id = ?").run(at, sessionId);
   }
 
-  private otherSessionOwnsDreamerSeat(sessionId: number, now: number): boolean {
-    return !!this.db.prepare(`SELECT 1 FROM task_claims
+  /** The other session whose unexpired Dreamer claim holds the database-wide seat, if any. */
+  dreamerSeatHolder(sessionId: number, now = Date.now()): number | null {
+    const row = this.db.prepare(`SELECT session_id FROM task_claims
       WHERE phase = 'dreaming' AND session_id != ? AND expires_at > ? LIMIT 1`).get(sessionId, now);
+    return row ? Number(row.session_id) : null;
+  }
+
+  private otherSessionOwnsDreamerSeat(sessionId: number, now: number): boolean {
+    return this.dreamerSeatHolder(sessionId, now) !== null;
   }
 
   private dreamerSeatHeld(now: number): boolean {
@@ -1772,13 +1778,13 @@ export class Store {
   }
 
   /** A Dreamer admission is due by `dreamingDue` (144 stage 4 §8.2): a due hand-off with no threshold work still gets the claim.
-   * `leaseMs` lets it outlive its execution backstop (§1.3). */
+   * `leaseMs` lets it outlive its execution backstop (§1.3). `manual` (146 §18) passes the pending test only. */
   acquireClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed = false, eligible: () => boolean = () => true,
-    triggerOperations = DEFAULT_DREAMING_TRIGGER_OPERATIONS, leaseMs?: number): TaskClaim | null {
+    triggerOperations = DEFAULT_DREAMING_TRIGGER_OPERATIONS, leaseMs?: number, manual = false): TaskClaim | null {
     if (phase !== "noting" && phase !== "dreaming") throw new Error(`Unsupported live phase: ${phase}`);
     return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => phase === "noting"
       ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId).length > 0
-      : this.dreamingDue(target, triggerOperations), eligible, leaseMs));
+      : manual || this.dreamingDue(target, triggerOperations), eligible, leaseMs));
   }
 
   /** Called only by atomic Store operations. Pending discovery is private and synchronous, so

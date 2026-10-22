@@ -663,3 +663,65 @@ test("146: a lost claim counts toward the streak; a user stop does not; a succes
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(count(f)).toBe(0);
 });
+
+// ---- The manual trigger (146 §18): `dream({ manual: true })` skips the due test and nothing else ------------------------------
+
+const executions = (f: Fixture) => Number(f.store.db.prepare("SELECT COUNT(*) AS n FROM task_executions").get()!.n);
+
+test("146 §18: a manual run starts below the trigger, writes coverage and advances the rotation; the same call without manual is empty", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Use pnpm everywhere", { category: "constraint" });
+  f.memory.config.dreaming.triggerOperations = Number.MAX_SAFE_INTEGER;
+  const before = f.store.nextCurateOperation(f.project.id);
+  expect(await f.dream()).toMatchObject({ outcome: "empty" });
+  expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "success" });
+  expect(covered(f)).toEqual([rule.commit]);
+  expect(f.store.nextCurateOperation(f.project.id)).not.toBe(before);
+});
+
+test("146 §18: a refusal carries its reason and creates no execution", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  f.memory.config.dreaming.triggerOperations = Number.MAX_SAFE_INTEGER;
+  const manual = () => f.memory.dream({ ...f.target, manual: true });
+  const other = f.store.createSession({ projectId: f.project.id, host: "pi:other", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+  f.store.db.prepare("INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, 'dreaming', 'other', 't', ?, 0, 0)")
+    .run(other.id, Date.now() + 60_000);
+  expect(await manual()).toEqual({ outcome: "dropped", reason: `session S${other.id} holds the Dreamer seat` });
+  f.store.db.prepare("DELETE FROM task_claims").run();
+  f.store.db.prepare("INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, 'dreaming', 'other', 't', ?, 0, 0)")
+    .run(f.session.id, Date.now() + 60_000);
+  expect(await manual()).toMatchObject({ outcome: "dropped", reason: expect.stringContaining("already running") });
+  f.store.db.prepare("DELETE FROM task_claims").run();
+  f.store.setEnrollment(f.session.id, false);
+  expect(await manual()).toEqual({ outcome: "dropped", reason: "Trace Memory is off for this session" });
+  expect(await f.dream()).toEqual({ outcome: "dropped" }); // an automatic run still gets no reason
+  expect(executions(f)).toBe(0);
+});
+
+test("146 §18: with nothing to curate and no hand-off a manual run is empty and creates no execution", async () => {
+  const f = dreamerFixture();
+  f.memory.config.dreaming.triggerOperations = Number.MAX_SAFE_INTEGER;
+  expect(await f.memory.dream({ ...f.target, manual: true })).toEqual({ outcome: "empty" });
+  expect(executions(f)).toBe(0);
+});
+
+test("146 §18: a manual run that fails counts once toward the streak; the third switches memory off; a hand-off is resumed by the next manual run", async () => {
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  f.memory.config.dreaming.triggerOperations = Number.MAX_SAFE_INTEGER;
+  const manual = () => f.memory.dream({ ...f.target, manual: true });
+  for (let i = 1; i <= 2; i++) {
+    f.next(async () => ({ outcome: "failure", output: "bad request" }));
+    expect(await manual()).toMatchObject({ outcome: "failure" });
+    expect(count(f)).toBe(i);
+  }
+  f.next(async () => ({ outcome: "failure", output: "bad request" }));
+  expect(await manual()).toMatchObject({ outcome: "failure", automaticOff: expect.stringContaining("dreaming off after three failures") });
+  expect(f.store.enabled(f.session.id)).toBe(false);
+  f.store.setEnrollment(f.session.id, true);
+  expect(f.store.handoff(f.session.id, "dreaming")).not.toBeNull();
+  expect(await manual()).toMatchObject({ outcome: "success" }); // resumes the hand-off
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+  expect(count(f)).toBe(0);
+});
