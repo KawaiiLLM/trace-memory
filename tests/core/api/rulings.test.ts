@@ -1270,7 +1270,7 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
   memory.config.noting.batchTokens = 50;
   expect("native" in memory.compact(s.id, "main", t.id)).toBe(false);
   memory.config.noting.batchTokens = DEFAULT_CONFIG.noting.batchTokens;
-  // The budgets compact still answers to are its three windows and the shared allowance (73): below
+  // The budgets compact still answers to are its three windows and the one temporary allowance (73, 144): below
   // the same Raw it is missed, and compact truncates to the newest span instead of delegating.
   compactionWindows(1_000, 100, 100);
   const tight = memory.compact(s.id, "main", t.id);
@@ -2465,7 +2465,7 @@ test("knowledge text, split child text and invalid-archive text may name F- and 
   expect(archive.results[0]).not.toContain("rejected");
 });
 
-// 133 supersedes 73's single shared allowance for episodic borrowing.
+// 133 supersedes 73's single shared allowance for episodic borrowing; 144 makes the temporary allowance the only one.
 test("133: pending Raw uses only the temporary allowance; unused Knowledge allowance cannot hold it", () => {
   const project = memory.store.createProject({ name: "temporary", declaredBy: "marker" });
   const s = memory.store.createSession({ host: "fake", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });

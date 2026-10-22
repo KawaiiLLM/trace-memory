@@ -426,7 +426,7 @@ test("73: when the bounded views miss the Raw window compact truncates to the ne
   expect(charged(receipted).raw).toBeLessThanOrEqual(memory.config.compaction.rawTokens);
   // 25c: there is no second cap to miss any more. The Noter's batch ceiling is not compact's knob —
   // shrinking it to fifty tokens neither truncates this snapshot nor appears in any receipt — so the
-  // three windows and the shared allowance are the only budgets that can bite.
+  // three windows and the one temporary allowance are the only budgets that can bite.
   defaultWindows(); memory.config.noting.batchTokens = 50;
   const inner = memory.compact(s.id, "main", parent);
   expect("native" in inner).toBe(false);
@@ -445,7 +445,7 @@ test("73: when the bounded views miss the Raw window compact truncates to the ne
   expect(calls).toBe(0);
 });
 
-// ---- Independent fact/Raw bases plus Knowledge-first shared allowance (92). ----
+// ---- Independent fact/Raw bases plus the one temporary allowance (92, 144). ----
 
 test("64c/92: the independent facts window bounds history while Knowledge and Raw retain their own budgets", () => {
   setKnowledgeCapacity(memory, 3);
