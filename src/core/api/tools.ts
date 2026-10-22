@@ -55,8 +55,8 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
     if: { minProperties: 1 }, then: { required: memoryOperationSchema.required, allOf: memoryOperationSchema.allOf } } },
 ];
 
-/** The Noter's `check` (identical in both of its tasks): the stop hook's check on the task's two files, on demand. */
-const notingCheckDefinition: Omit<ToolDefinition, "execute"> = { name: "check", description: "Checks this task's two workspace files with the check that runs when you stop: block format, source addresses in this batch, one segment per entry per fact, roles, required fields, base versions, one record per knowledge item, allowed operations, and the title and body limits. Returns your task and file paths, each problem with file and line, and the host-measured tokens of every title and body against its limit. Writes and publishes nothing.", parameters: object({}) };
+/** The Noter's `check` (identical in both of its tasks): the stop hook's check on the current step's file, on demand. */
+const notingCheckDefinition: Omit<ToolDefinition, "execute"> = { name: "check", description: "Checks the file of your current step with the check that runs when you stop: block format, source addresses in this batch, one segment per entry per fact, roles, required fields, base versions, one record per knowledge item, allowed operations, and the title and body limits. Returns your task, step and file path, each problem with file and line, and the host-measured tokens of every title and body against its limit; the first result of a step also carries that step's instructions. Writes and publishes nothing.", parameters: object({}) };
 /** The Noter's own tools; its native read, write and edit are the host's. */
 export const notingToolDefinitions: Omit<ToolDefinition, "execute">[] = [searchToolDefinition, notingCheckDefinition];
 

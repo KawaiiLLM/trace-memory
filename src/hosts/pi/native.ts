@@ -242,13 +242,13 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     await session.prompt(task.task, { expandPromptTemplates: false });
     await session.waitForIdle();
     // A native prompt includes the whole tool loop and provider retries. Only now is this a pass end. The same child, counters
-    // and retry accounting survive the follow-ups core authorizes: the Noter's one repair, and for a Dreaming task as many
-    // passes as its stop hook returns a message for (stage 4 §1.1; core bounds the count).
+    // and retry accounting survive the follow-ups core authorizes: as many passes as the stop hook returns a message for
+    // (a Noter's repair or next step, a Dreaming task's next batch; core bounds the count).
     for (let pass = 1; task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted"; pass++) {
       // Only a normally ended pass gets a follow-up, so a truncated one stays the run's failure (125).
       const normal = terminal !== undefined && terminal.stopReason !== "length" && !terminal.errorMessage;
-      // The Noter's one repair needs a normally ended pass; a Dreaming task is asked after every pass, truncated or not (125).
-      const followup = task.kind === "dreaming" || (pass === 1 && normal) ? task.passEnd() : undefined;
+      // A Noter follow-up needs a normally ended pass; a Dreaming task is asked after every pass, truncated or not (125).
+      const followup = task.kind === "dreaming" || normal ? task.passEnd() : undefined;
       if (!(followup && normal && (task.kind === "dreaming" ? task.maxToolRounds === 0 || rounds < task.maxToolRounds : true))) break;
       // A new public prompt reapplies before_agent_start. An idle custom-message turn skips it,
       // so Pi's next-turn refresh would replace the worker instructions with its base prompt.

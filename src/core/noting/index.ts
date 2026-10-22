@@ -9,7 +9,7 @@ import type { bindTools } from "../api/tools.ts";
 import { pricedToolDefinitions, notingToolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import { applyWorkspace, type NotingScope } from "../workspace/index.ts";
-import { NotingWorkspace, defaultWorkspaceRoot, type NotingTask } from "./workspace.ts";
+import { NotingWorkspace, defaultWorkspaceRoot, stepPrompts, type NotingTask, type StepPrompts } from "./workspace.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type EntryView, type ResultExtractor } from "../render/index.ts";
@@ -21,13 +21,15 @@ import type { NotingDiagnostic } from "./review.ts";
 // Pricing includes the launch's rendered names, not the canonical template. The lazy per-map cache
 // avoids repeatedly tokenizing static schemas through the source-selection loop. The host's native read, write
 // and edit definitions are priced from its own estimates.
-const fixed = new Map<string, { prompt: string; instructions: number; tools: number }>();
+const fixed = new Map<string, { prompt: string; taskPrompts: StepPrompts; instructions: number; tools: number }>();
 const fixedCost = (names: ToolNames, native: number, limits: WritingLimits) => {
   const key = JSON.stringify([names, native, limits]);
   let cost = fixed.get(key);
   if (!cost) {
     const domain = loadPrompt("noting.md", names, limits), prompt = withRetrievalPolicy(domain, names);
-    cost = { prompt, instructions: tokens(prompt),
+    // The largest set of step prompts a task can carry is priced with the system prompt (stage 5 §0): the conversation will hold it.
+    const taskPrompts = stepPrompts(names, limits), largest = Math.max(...Object.values(taskPrompts).map(pair => tokens(pair.join("\n\n"))));
+    cost = { prompt, taskPrompts, instructions: tokens(prompt) + largest,
       tools: tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, names))) + native };
     fixed.set(key, cost);
   }
@@ -36,7 +38,7 @@ const fixedCost = (names: ToolNames, native: number, limits: WritingLimits) => {
 
 /** The one line that ends both tasks' material. The task and paths reach the model only through `check`'s result, so
  * both tasks' first requests are byte-identical and the second reads the first's cached material. */
-const CHECK_FIRST = "Call {{tool.check}} first: it names your task and your two files.";
+const CHECK_FIRST = "Call {{tool.check}} first: it names your task, its first step and your files.";
 
 export interface NotingInput extends TaskOptions {
   sessionId: number;
@@ -56,7 +58,8 @@ export interface NotingInput extends TaskOptions {
 export type { NotingMaterial } from "../render/material.ts";
 export interface NotingAgentInput extends AgentControl {
   kind: "noting";
-  /** Ticket 144: one batch is handled by two independent runs of this same input apart from this field. */
+  /** Ticket 144: one batch is handled by two independent runs of this same input apart from this field. The task's instructions
+   * reach the model only through `check` results and the stop hook's messages. */
   task: NotingTask;
   entryIds: number[];
   sessionId: number;
@@ -82,8 +85,8 @@ export interface NotingAgentInput extends AgentControl {
   tools: ToolDefinition[];
   /** The run's directory and its two files. The host confines native write and edit to exactly these two paths. */
   workspace: { dir: string; facts: string; knowledge: string };
-  /** The stop hook, called after the first normally completed pass: nothing when the files pass the check, otherwise the
-   * one follow-up message that lists what to correct. */
+  /** The stop hook, called after every normally completed pass: nothing when the task is over, otherwise the one follow-up message
+   * that lists what to correct or brings the next step's instructions (each step has one repair; core bounds the passes at four). */
   passEnd(): string | undefined;
   /** Host-only: a proven later model turn acknowledges review delivery without fabricating an audit
    * payload. This is not a model-facing tool or argument. A native boundary calls this or
@@ -178,7 +181,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // budget check inside the loop below is unchanged and still decides every freeze that passes here
   // (parent 22: "A fast preflight supplements the final guard; it does not replace it").
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
-  const { prompt, instructions, tools } = fixedCost(names, (input.nativeReadToolTokens ?? 0) + (input.nativeWriteToolTokens ?? 0), config.writing);
+  const { prompt, taskPrompts, instructions, tools } = fixedCost(names, (input.nativeReadToolTokens ?? 0) + (input.nativeWriteToolTokens ?? 0), config.writing);
   const mandatory = instructions + tools;
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
     throw new Error(`${NOTING_CAPACITY}instructions ${instructions}, tools ${tools}`
@@ -246,7 +249,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const priced = instructions + tools + tokens(prepared.text);
     lastPrice = priced;
     const fits = !capacity || priced <= capacity.inputTokens;
-    if (fits) return { ...frozen, prepared, prompt, promptHash: createHash("sha256").update(prompt).digest("hex"), names };
+    if (fits) return { ...frozen, prepared, prompt, taskPrompts, promptHash: createHash("sha256").update(prompt).digest("hex"), names };
     // 133: temporary context, including receipt-only omissions, goes before full facts.
     if (capacity && temporary && assembled.charged!.temporary) {
       temporary = Math.max(0, Math.min(temporary - 1, assembled.charged!.temporary - Math.max(1, priced - capacity.inputTokens)));
@@ -270,7 +273,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     + `it costs ${lastPrice} tokens`
     + `${input.capacity ? ` against the ${input.capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
   return { sessionId: session.id, branch: input.branch, entries, turns: [], model: input.model ?? "session", prepared: undefined,
-    names, prompt, promptHash: createHash("sha256").update(prompt).digest("hex") };
+    names, prompt, taskPrompts, promptHash: createHash("sha256").update(prompt).digest("hex") };
 }
 
 /** The one Noting material builder. The frozen task is the whole processing target — chosen by
@@ -345,7 +348,7 @@ export async function runNoting(
       toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } };
   const entryIds = entries.map(e => e.id);
   const scope: NotingScope = { sessionId, branch, range, entryIds };
-  const workspace = new NotingWorkspace(store, scope, options.workspaceRoot ?? defaultWorkspaceRoot(), sessionId, options.executionId);
+  const workspace = new NotingWorkspace(store, scope, options.workspaceRoot ?? defaultWorkspaceRoot(), sessionId, options.executionId, frozen.taskPrompts);
   options.registerFence?.(workspace);
   let writeRunId = options.resumeRunId;
 
@@ -354,12 +357,12 @@ export async function runNoting(
     const started = Date.now();
     const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
       promptHash: frozen.promptHash, model, entryAudit, createdAt: new Date().toISOString() };
-    const binding = tools({ kind: "noting", sessionId, branch, range, entryIds }, run, { check: () => workspace.report(task) });
-    workspace.stopChecks.length = 0;
+    workspace.beginTask(task);
+    const binding = tools({ kind: "noting", sessionId, branch, range, entryIds }, run, { check: () => workspace.checkTool() });
     const agentInput: NotingAgentInput = { kind: "noting", task, entryIds, sessionId, branch, range,
       model, prompt: frozen.prompt!, promptHash: frozen.promptHash!,
       material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit),
-      tools: binding.tools, workspace: { dir: workspace.dir, ...workspace.paths }, passEnd: () => workspace.passEnd(task),
+      tools: binding.tools, workspace: { dir: workspace.dir, ...workspace.paths }, passEnd: () => workspace.passEnd(),
       acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
     try {
       let result: RunAgentResult;
@@ -369,14 +372,14 @@ export async function runNoting(
       if (store.closed) return { outcome: "dropped" };
       if ((binding.cancelled || workspace.closed) && result.outcome === "success") result = { ...result, outcome: "cancelled", output: "Noter cancelled before terminal publication" };
       // The stop hook is the host's courtesy; this second check is what decides, so a host that never ran the first
-      // still cannot pass bad files.
+      // still cannot pass bad files, and a task whose two steps did not both pass fails whatever the files then hold.
       const final = result.outcome === "success" ? workspace.check() : undefined;
-      if (final) workspace.stopChecks.push({ ok: final.ok, problems: final.problems });
+      const unfinished = result.outcome === "success" ? workspace.unfinished() : undefined;
       const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)]
-        : requestMissing(result) ? ["runAgent must return the exact provider request"] : final!.problems;
+        : requestMissing(result) ? ["runAgent must return the exact provider request"] : [...(unfinished ? [unfinished] : []), ...final!.problems];
       const { facts, knowledge } = workspace.read();
       recordAttempt(run, result, { task, ...(task === "verify" ? { writeRun: writeRunId } : {}), files: { facts, knowledge },
-        stopChecks: [...workspace.stopChecks], toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
+        ...workspace.record(), toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
       if (problems.length || result.outcome !== "success") {
         const outcome = result.outcome !== "success" ? result.outcome : "failure";
         return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id };

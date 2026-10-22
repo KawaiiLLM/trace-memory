@@ -451,8 +451,8 @@ export class CcAgentWorker {
         cacheRead: settled.cacheRead + tail.cacheRead, cacheWrite: settled.cacheWrite + tail.cacheWrite } : settled;
     };
     const progress = () => { const usage = observedUsage(); task.reportProgress?.({ retries: [...retries], ...(usage ? { usage } : {}) }); };
-    // Passes core has authorized so far: the first, then one more for each follow-up string its stop hook returned. The Noter's hook
-    // is asked after its first pass only; a Dreaming task's after every pass, and core bounds the count (stage 4 §1.1).
+    // Passes core has authorized so far: the first, then one more for each follow-up string its stop hook returned. The hook is
+    // asked after every pass, for the Noter (a repair or the next step, stage 5 §1.4) as for a Dreaming task, and core bounds the count.
     let authorized = 1;
     let passState: "open" | "awaiting" | "complete" = "open";
     const toolsAllowed = () => passState !== "complete";
@@ -536,7 +536,7 @@ export class CcAgentWorker {
           outcome = succeeded ? "success" : "failure";
           if (!succeeded) { passState = "complete"; input.close(); }
           else {
-            const repair = task.kind === "dreaming" || pass === 1 ? task.passEnd() : undefined;
+            const repair = task.passEnd();
             if (typeof repair === "string" && repair.length > 0) {
               authorized++;
               passState = "awaiting";
