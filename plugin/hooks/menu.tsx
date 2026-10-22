@@ -81,7 +81,8 @@ function buildPendingSection(input) {
     heading: "Pending / trigger",
     noting: pendingRow("Noting", input.noting),
     dreamingHeading: "Dreaming",
-    dreaming: [pendingRow("pending", input.dreaming.pending), pendingRow("knowledge", input.dreaming.knowledge)]
+    dreaming: [pendingRow("pending", input.dreaming.pending)],
+    ...input.dreaming.next ? { dreamingNext: { label: "next curate", value: input.dreaming.next } } : {}
   };
 }
 function buildSpendSection(input) {
@@ -125,27 +126,19 @@ function buildTraceMenu(input) {
   };
 }
 function buildSettingsBudgets(input) {
-  const window = input.global + input.project + input.session;
   return {
-    rows: [
-      { label: "Global", value: formatTokens(input.global) },
-      { label: "Project", value: formatTokens(input.project), qualifier: "per project" },
-      { label: "Session", value: formatTokens(input.session), qualifier: "per session" }
-    ],
-    derivedLine: `\u2192 knowledge window ${formatTokens(window)} + shared allowance ${formatTokens(input.sharedAllowanceTokens)} = ${formatTokens(window + input.sharedAllowanceTokens)} max input`
+    rows: [{ label: "Knowledge base", value: formatTokens(input.base) }],
+    derivedLine: `\u2192 knowledge base ${formatTokens(input.base)} + temporary allowance ${formatTokens(input.temporaryTokens)} = ${formatTokens(input.base + input.temporaryTokens)} max input`
   };
 }
 function buildSettingsWorkers(input) {
   return { rows: input.map((w) => ({ ...w })) };
 }
 function buildSettingsChoices(input) {
-  const budgetRows = buildSettingsBudgets(input.budgets).rows;
-  const budgets = ["global", "project", "session"].map((scope, i) => ({
-    id: `budget.${scope}`,
-    label: `${budgetRows[i].label} Knowledge budget: ${budgetRows[i].value}`
-  }));
+  const base = buildSettingsBudgets(input.budgets).rows[0];
+  const budgets = [{ id: "knowledgeBase", label: `${base.label}: ${base.value}` }];
   const workers = input.workers.flatMap((w) => {
-    const phase = w.phase === "Noter" ? "noting" : "dreaming";
+    const phase = { Noter: "noting", Dreamer: "dreaming", Classifier: "classify" }[w.phase];
     return [
       { id: `${phase}.model`, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
       { id: `${phase}.thinking`, label: `${w.phase} thinking: ${w.thinking}`, source: w.sources?.thinking }
@@ -182,10 +175,7 @@ var TRACE_MENU_FIXTURE = {
   },
   pending: {
     noting: { tokens: 3200, trigger: 1e4 },
-    dreaming: {
-      pending: { tokens: 1819, trigger: 5e3 },
-      knowledge: { tokens: 17300, trigger: 3e4 }
-    }
+    dreaming: { pending: { tokens: 1819, trigger: 1e4 }, next: "merge" }
   },
   spend: {
     session: 1.23,
@@ -203,7 +193,7 @@ var TRACE_MENU_FIXTURE_WITH_NOTICE = {
 };
 var TRACE_SETTINGS_FIXTURE = {
   database: "~/.trace-memory/trace.db",
-  budgets: { global: 4e3, project: 15e3, session: 1e3, sharedAllowanceTokens: 1e4 },
+  budgets: { base: 2e4, temporaryTokens: 1e4 },
   workers: [
     { phase: "Noter", model: "follow foreground", thinking: "inherit" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" }
@@ -377,7 +367,8 @@ function renderTraceMenu(input, cc) {
     pendingLines: [
       pendingLine("Noting", model.pending.noting),
       `  ${model.pending.dreamingHeading}`,
-      ...model.pending.dreaming.map((row) => pendingLine(row.label, row, "    "))
+      ...model.pending.dreaming.map((row) => pendingLine(row.label, row, "    ")),
+      ...model.pending.dreamingNext ? [`    ${model.pending.dreamingNext.label.padEnd(13)} ${model.pending.dreamingNext.value}`] : []
     ],
     spendLines: [model.spend.sessionLine, `        ${model.spend.phaseLine}`, model.spend.todayLine],
     notices: model.notices,
@@ -388,7 +379,7 @@ function renderTraceSettings(input) {
   const model = buildTraceSettings(input);
   return {
     header: model.header,
-    budgetLines: model.budgets.rows.map((row) => `${row.label.padEnd(9)} ${row.value.padStart(6)}${row.qualifier ? `  ${row.qualifier}` : ""}`),
+    budgetLines: model.budgets.rows.map((row) => `${row.label.padEnd(14)} ${row.value.padStart(6)}`),
     derivedLine: model.budgets.derivedLine,
     workerHeader: "Workers        model                thinking",
     workerLines: model.workers.rows.map((w) => `${w.phase.padEnd(14)} ${w.model.padEnd(20)} ${w.thinking}${w.source ? ` (${w.source})` : ""}`),
@@ -406,8 +397,8 @@ function memoryPath(value) {
 
 // src/core/prompts/tool-names.ts
 var TOOL_ROLES = ["search", "note", "memory", "check"];
-var canonicalToolNames = { search: "search", note: "note", memory: "memory", check: "check", read: "read", grep: "grep" };
-var NAME_ROLES = [...TOOL_ROLES, "read"];
+var canonicalToolNames = { search: "search", note: "note", memory: "memory", check: "check", read: "read", write: "write", edit: "edit", grep: "grep" };
+var NAME_ROLES = [...TOOL_ROLES, "read", "write", "edit"];
 function validateToolNames(names) {
   const roles = names?.grep === void 0 ? NAME_ROLES : [...NAME_ROLES, "grep"];
   if (!names || roles.some((role) => typeof names[role] !== "string" || !/^[a-zA-Z][\w-]*$/.test(names[role])))
@@ -417,7 +408,7 @@ function validateToolNames(names) {
   return Object.freeze({ ...names });
 }
 function renderToolNames(text, names) {
-  return text.replace(/\{\{tool\.(search|note|memory|check|read|grep)\}\}/g, (_, role) => {
+  return text.replace(/\{\{tool\.(search|note|memory|check|read|write|edit|grep)\}\}/g, (_, role) => {
     const name = names[role];
     if (name === void 0) throw new Error(`Missing exposed tool name: ${role}`);
     return name;
@@ -443,7 +434,7 @@ var CC_PLUGIN_NAME = "trace-memory";
 var CC_MCP_SERVER_NAME = "traceMemory";
 var exposed = (prefix) => ({ ...Object.fromEntries(
   TOOL_ROLES.map((role) => [role, `${prefix}${canonicalToolNames[role]}`])
-), read: "Read" });
+), read: "Read", write: "Write", edit: "Edit" });
 var ccWorkerToolNames = exposed(`mcp__${CC_WORKER_SERVER_NAME}__`);
 var ccPluginToolNames = exposed(`mcp__plugin_${CC_PLUGIN_NAME}_${CC_MCP_SERVER_NAME}__`);
 
@@ -790,7 +781,7 @@ export const register = (on) => {
     if (screen === "settings") {
       const settings = renderTraceSettings(reply.settings);
       return <Box flexDirection="column"><Text>{settings.header}</Text><Text> </Text>
-        <Text>Knowledge budgets</Text>{settings.budgetLines.map((line, i) => <Text key={`budget-${i}`}>{line}</Text>)}
+        <Text>Knowledge base</Text>{settings.budgetLines.map((line, i) => <Text key={`budget-${i}`}>{line}</Text>)}
         <Text>{settings.derivedLine}</Text><Text> </Text><Text>{settings.workerHeader}</Text>
         {settings.workerLines.map((line, i) => <Text key={`worker-${i}`}>{line}</Text>)}
         <Text>{settings.closedSessionsLine}</Text>{message}
