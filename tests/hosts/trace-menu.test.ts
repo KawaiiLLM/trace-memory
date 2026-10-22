@@ -96,14 +96,10 @@ test("actions: Turn off/on flips with enrollment", () => {
   expect(off.actions[0]).toBe("Turn on");
 });
 
-test("settings: budgets derive the knowledge window and max input from the code defaults", () => {
+test("settings: one Knowledge base row and the max input derived from it and the temporary allowance", () => {
   const { budgets } = buildTraceSettings(TRACE_SETTINGS_FIXTURE);
-  expect(budgets.rows).toEqual([
-    { label: "Global", value: "4,000" },
-    { label: "Project", value: "15,000", qualifier: "per project" },
-    { label: "Session", value: "1,000", qualifier: "per session" },
-  ]);
-  expect(budgets.derivedLine).toBe("→ knowledge window 20,000 + temporary allowance 10,000 = 30,000 max input");
+  expect(budgets.rows).toEqual([{ label: "Knowledge base", value: "20,000" }]);
+  expect(budgets.derivedLine).toBe("→ knowledge base 20,000 + temporary allowance 10,000 = 30,000 max input");
 });
 
 test("settings: neither worker has an execution-mode row on either host (the Noter runs fresh only)", () => {

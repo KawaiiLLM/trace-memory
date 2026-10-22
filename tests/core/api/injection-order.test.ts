@@ -35,6 +35,24 @@ test("a high-score item that does not fit stops the base: lower ones do not fill
   expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([huge.commit, small.commit]));
 });
 
+test("injection and compaction read the Knowledge base from knowledge_base_policy; the three pool columns are unread", () => {
+  const f = fixture();
+  const item = f.create("ONLY", 800, 80);
+  f.memory.store.db.exec("UPDATE knowledge_budget_policy SET global_tokens = 0, project_tokens = 0, session_tokens = 0");
+  expect(f.memory.knowledgeBase()).toBe(20_000);
+  expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([item.commit]);
+  const compacted = (): number[] => {
+    const result = f.memory.compact(f.session.id, "main", f.target.headTurnId);
+    if ("native" in result) throw new Error(result.reason);
+    return result.supplied.knowledgeCommitIds;
+  };
+  expect(compacted()).toEqual([item.commit]);
+  f.memory.store.db.prepare("UPDATE knowledge_base_policy SET base_tokens = 0 WHERE id = 1").run();
+  expect(f.memory.knowledgeBase()).toBe(0);
+  expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([]);
+  expect(compacted()).toEqual([]);
+});
+
 test("an item that fills the base exactly is delivered whole although a lower one is left to the temporary allowance as a title", () => {
   const f = fixture();
   const a = f.create("EXACT", 400, 90);

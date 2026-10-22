@@ -5,9 +5,7 @@ import { legacyFacts } from "../../support/seed.ts";
 async function seeded(sharedAllowance = 50) {
   const h = host({ "noting.triggerTokens": 1e9,
     "compaction.factsTokens": 10000, "compaction.rawTokens": 10000 });
-  h.memory.setKnowledgeBudget("global", 0);
-  h.memory.setKnowledgeBudget("project", 0);
-  h.memory.setKnowledgeBudget("session", 0);
+  h.memory.setKnowledgeBase(0);
   // Restore real persisted history without an automatic admission, rather than hiding seed requests.
   h.persist({ role: "user", content: "Keep this rule", timestamp: 1 });
   h.persist(reply("Recorded."));
@@ -41,7 +39,7 @@ test.each(["budget", "new knowledge"] as const)("64c: publication reprices %s wi
       if (changed || !/compaction (used|preparing)/.test(message)) return;
       changed = true;
       if (change === "budget") {
-        h.memory.setKnowledgeBudget("project", 7_000);
+        h.memory.setKnowledgeBase(7_000);
       } else {
         // New same-pool versions arrive during preparation. Each manually written item stays below
         // the 1,000-token limit, while their aggregate exceeds the shared delivery allowance.

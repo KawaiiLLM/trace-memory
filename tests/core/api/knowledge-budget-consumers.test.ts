@@ -38,15 +38,13 @@ function fixture(runAgent?: Parameters<typeof TraceMemory>[1]) {
 }
 
 function zeroBase(memory: ReturnType<typeof TraceMemory>) {
-  memory.setKnowledgeBudget("global", 0);
-  memory.setKnowledgeBudget("project", 0);
-  memory.setKnowledgeBudget("session", 0);
+  memory.setKnowledgeBase(0);
 }
 
 test("144: an unscored item beyond the base rides the temporary allowance, in foreground and compact alike", () => {
   const f = fixture();
   f.memory.config.compaction.temporaryTokens = 45_000;
-  const cap = f.memory.knowledgeBudgets().injection + f.memory.config.compaction.temporaryTokens;
+  const cap = f.memory.knowledgeBase() + f.memory.config.compaction.temporaryTokens;
   const large = f.create("body ".repeat(30_000), "project", ["charged-topic"]);
   const delivery = f.memory.injection(f.target);
   expect(tokens(delivery.text)).toBeGreaterThan(20_000);
@@ -68,9 +66,7 @@ test("144: with a zero Knowledge base an unscored item rides only the temporary 
   const f = fixture();
   const item = f.create("body ".repeat(6_000));
   zeroBase(f.memory);
-  expect(f.memory.knowledgeBudgets()).toEqual({
-    global: 0, project: 0, session: 0, applicable: 0, injection: 0,
-  });
+  expect(f.memory.knowledgeBase()).toBe(0);
   f.memory.config.compaction.temporaryTokens = 20_000;
   const borrowed = f.memory.injection(f.target);
   expect(borrowed.knowledgeCommitIds).toEqual([item.commit]);

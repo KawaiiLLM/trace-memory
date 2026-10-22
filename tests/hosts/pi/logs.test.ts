@@ -57,7 +57,7 @@ test("82 Settings omits worker-log diagnostics without changing configured runsD
     const before = readFileSync(join(h.dir, "agent", "settings.json"));
     h.ctx.hasUI = true;
     h.answers.push("Settings…", undefined); await command(h, "");
-    expect(h.dialogs.at(-1)!.title).toContain("Knowledge budgets");
+    expect(h.dialogs.at(-1)!.title).toContain("Knowledge base");
     expect(h.dialogs.at(-1)!.title).not.toContain("Worker logs:");
     expect(h.dialogs.at(-1)!.title).not.toContain("outside Pi's scanned sessions tree");
     expect(readFileSync(join(h.dir, "agent", "settings.json"))).toEqual(before);

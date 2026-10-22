@@ -39,11 +39,11 @@ function seeded(store: Store) {
   return { store, project, sessionId, turnId, entry };
 }
 
-test("72: a knowledge-budget edit changes the signal", () => {
+test("72: a Knowledge base edit changes the signal", () => {
   const store = open();
   const { sessionId } = seeded(store);
   const before = store.progressSignal(sessionId);
-  const result = store.setKnowledgeBudget("session", 1);
+  const result = store.setKnowledgeBase(1);
   expect(result.changed).toBe(true);
   expect(store.progressSignal(sessionId)).not.toBe(before);
 });

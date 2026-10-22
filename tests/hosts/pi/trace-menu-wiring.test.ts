@@ -38,10 +38,10 @@ test("toggle, project, runs and settings retain their existing effects and cance
   const before = readFileSync(file, "utf8");
   h.answers.push("Settings…", undefined); await command(h);
   expect(h.dialogs.at(-1)!.title).toContain("Trace Memory · Settings");
-  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + temporary allowance 10,000");
+  expect(h.dialogs.at(-1)!.title).toContain("knowledge base 20,000 + temporary allowance 10,000");
   expect(readFileSync(file, "utf8")).toBe(before);
-  h.answers.push("Settings…", "Project Knowledge budget: 15,000", "16000"); await command(h);
-  expect(h.memory.knowledgeBudgets().project).toBe(16_000);
+  h.answers.push("Settings…", "Knowledge base: 20,000", "21000"); await command(h);
+  expect(h.memory.knowledgeBase()).toBe(21_000);
   expect(readFileSync(file, "utf8")).toBe(before);
   h.answers.push("Settings…", "Noter thinking: inherit", "high"); await command(h);
   expect(JSON.parse(readFileSync(file, "utf8"))["trace-memory"].notingThinking).toBe("high");
@@ -67,8 +67,8 @@ test("Runs count rejects invalid input instead of silently using another limit; 
 test("shared settings choices expose every editable row with stable IDs", () => {
   const choices = buildSettingsChoices(TRACE_SETTINGS_FIXTURE);
   expect(choices.map(c => c.id)).toEqual([
-    "budget.global", "budget.project", "budget.session", "noting.model", "noting.thinking",
+    "knowledgeBase", "noting.model", "noting.thinking",
     "dreaming.model", "dreaming.thinking", "closedSessionScope",
   ]);
-  expect(choices.find(c => c.id === "budget.project")!.label).toContain("15,000");
+  expect(choices.find(c => c.id === "knowledgeBase")!.label).toContain("20,000");
 });

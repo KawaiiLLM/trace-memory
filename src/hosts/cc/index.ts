@@ -268,17 +268,16 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
   if (verb === "setting") {
     const [id, value, capacity] = rest;
     if (!id || value === undefined || rest.length > 3) throw new Error("setting requires <row-id> <value> [capacity]");
-    if (id.startsWith("budget.")) {
-      if (!["budget.global", "budget.project", "budget.session"].includes(id) || capacity !== undefined)
-        throw new Error(`unsupported CC setting ${id}`);
+    if (id === "knowledgeBase") {
+      if (capacity !== undefined) throw new Error(`unsupported CC setting ${id}`);
       const amount = Number(value);
-      if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("Knowledge budget must be a non-negative safe integer");
+      if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("Knowledge base must be a non-negative safe integer");
       const store = new Store(config.dbPath);
       try {
         const binding = readBinding(config, validateNativeSessionId(nativeSessionId));
         if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
         assertOperatorBinding(config, binding, store);
-        store.setKnowledgeBudget(id.slice(7) as "global" | "project" | "session", amount);
+        store.setKnowledgeBase(amount);
       }
       finally { store.close(); }
       process.stdout.write(`${JSON.stringify({ saved: true, applied: true })}\n`); return;

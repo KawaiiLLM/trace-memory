@@ -62,7 +62,6 @@ test("49: material below N/D thresholds moves without an automatic flush", () =>
   const projectPending = () => f.memory.dreamingPending(f.path).pending!.tokens;
   const dreaming = projectPending();
   expect(dreaming).toBeGreaterThan(0);
-  f.memory.setKnowledgeBudget("project", dreaming * 2 + 2);
   expect(f.memory.declareProject(f.session.id, "below-target", "mark", f.path)).toContain("below-target");
   expect(f.store.consolidationBatch(f.session.id, f.path.branch, f.path.headTurnId).map(value => value.id)).toContain(pendingFact.id);
   expect(f.memory.pendingTokens("noting", f.path).tokens).toBeGreaterThan(0);

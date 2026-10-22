@@ -224,18 +224,13 @@ export function buildTraceMenu(input: TraceMenuInput): TraceMenuModel {
 
 // ---- Settings screen -------------------------------------------------------------------------------
 
-export interface SettingsBudgetsInput { global: number; project: number; session: number; temporaryTokens: number }
-export interface SettingsBudgetRow { label: string; value: string; qualifier?: string }
+export interface SettingsBudgetsInput { base: number; temporaryTokens: number }
+export interface SettingsBudgetRow { label: string; value: string }
 export interface SettingsBudgets { rows: SettingsBudgetRow[]; derivedLine: string }
 export function buildSettingsBudgets(input: SettingsBudgetsInput): SettingsBudgets {
-  const window = input.global + input.project + input.session;
   return {
-    rows: [
-      { label: "Global", value: formatTokens(input.global) },
-      { label: "Project", value: formatTokens(input.project), qualifier: "per project" },
-      { label: "Session", value: formatTokens(input.session), qualifier: "per session" },
-    ],
-    derivedLine: `→ knowledge window ${formatTokens(window)} + temporary allowance ${formatTokens(input.temporaryTokens)} = ${formatTokens(window + input.temporaryTokens)} max input`,
+    rows: [{ label: "Knowledge base", value: formatTokens(input.base) }],
+    derivedLine: `→ knowledge base ${formatTokens(input.base)} + temporary allowance ${formatTokens(input.temporaryTokens)} = ${formatTokens(input.base + input.temporaryTokens)} max input`,
   };
 }
 
@@ -247,14 +242,12 @@ export function buildSettingsWorkers(input: WorkerRowInput[]): SettingsWorkers {
   return { rows: input.map(w => ({ ...w })) };
 }
 
-export type SettingsRowId = "budget.global" | "budget.project" | "budget.session" | "noting.model" | "noting.thinking" | "dreaming.model" | "dreaming.thinking" | "classify.model" | "classify.thinking" | "closedSessionScope";
+export type SettingsRowId = "knowledgeBase" | "noting.model" | "noting.thinking" | "dreaming.model" | "dreaming.thinking" | "classify.model" | "classify.thinking" | "closedSessionScope";
 export interface SettingsChoice { id: SettingsRowId; label: string }
 /** Stable row identifiers and labels: adapters implement edits, not menu copy or ordering. */
 export function buildSettingsChoices(input: SettingsInput): SettingsChoice[] {
-  const budgetRows = buildSettingsBudgets(input.budgets).rows;
-  const budgets: SettingsChoice[] = (["global", "project", "session"] as const).map((scope, i) => ({
-    id: `budget.${scope}` as SettingsRowId, label: `${budgetRows[i]!.label} Knowledge budget: ${budgetRows[i]!.value}`,
-  }));
+  const base = buildSettingsBudgets(input.budgets).rows[0]!;
+  const budgets: SettingsChoice[] = [{ id: "knowledgeBase", label: `${base.label}: ${base.value}` }];
   const workers: SettingsChoice[] = input.workers.flatMap(w => {
     const phase = ({ Noter: "noting", Dreamer: "dreaming", Classifier: "classify" } as const)[w.phase];
     return ([{ id: `${phase}.model` as SettingsRowId, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
@@ -334,7 +327,7 @@ export const TRACE_MENU_FIXTURE_WITH_NOTICE: TraceMenuInput = {
 
 export const TRACE_SETTINGS_FIXTURE: SettingsInput = {
   database: "~/.trace-memory/trace.db",
-  budgets: { global: 4_000, project: 15_000, session: 1_000, temporaryTokens: 10_000 },
+  budgets: { base: 20_000, temporaryTokens: 10_000 },
   workers: [
     { phase: "Noter", model: "follow foreground", thinking: "inherit" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" },

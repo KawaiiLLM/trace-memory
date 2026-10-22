@@ -62,7 +62,7 @@ test.each(["consolidation", "budget", "cursor-back", "branch-switch", "path-rewr
     if (kind === "consolidation") {
       const run = writer.recordRun({ kind: "consolidation", sessionId, branch: "main", outcome: "success", createdAt: time });
       mutate = () => writer.markConsolidated(factId, run.id, project.id);
-    } else if (kind === "budget") mutate = () => { writer.setKnowledgeBudget("session", 321); };
+    } else if (kind === "budget") mutate = () => { writer.setKnowledgeBase(321); };
     else if (kind === "cursor-back") mutate = () => writer.setCurrentPath(sessionId, "main", turnId, "lineage-a");
     else if (kind === "branch-switch") mutate = () => writer.setCurrentPath(sessionId, "side", turnId, "lineage-a");
     else if (kind === "path-rewrite") mutate = () => writer.selectSourcePath(sessionId, "main", [tail.id]);

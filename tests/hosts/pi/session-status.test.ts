@@ -208,7 +208,7 @@ test("repeated Dreaming status reads show identical pending data without DB writ
       text: "rule", createdAt: "now" }]).facts[0]!;
   knowledge(store, store.knowledgePath(1, "main", turn.id), "project", "constraint", [evidence.id],
     "knowledge", { operation: { title: "Fixture title" } }); // Noter-written: it is what the Dreamer's pending row counts
-  h.memory.setKnowledgeBudget("project", 2468);
+  h.memory.setKnowledgeBase(2468);
   const before = changes(h), entries = structuredClone(h.entries);
   const first = await open(h);
   // 144 stage 4 §7.6: the Dreaming row is the Noter-changed tokens against the trigger; no pool-vs-window row is shown.

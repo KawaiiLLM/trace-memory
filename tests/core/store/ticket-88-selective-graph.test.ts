@@ -67,7 +67,7 @@ test("88: neutral writes do not revisit existing knowledge revisions", () => {
     // The run write performs fresh writer validation; measure the committed reader only.
     oldRevisionReads = components = examinedRevisions = examinedFacts = 0;
     assertNeutral("D coverage mark");
-    store.setKnowledgeBudget("session", 1500);
+    store.setKnowledgeBase(1500);
     assertNeutral("budget edit");
     monitored.graphComponent = originalComponent;
     monitored.revisionApplies = originalRevision;
@@ -257,7 +257,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     check();
     // An uncommitted savepoint must not escape into the committed read projection.
     writer.db.exec("SAVEPOINT probe88");
-    writer.setKnowledgeBudget("session", 987);
+    writer.setKnowledgeBase(987);
     writer.db.exec("ROLLBACK TO probe88; RELEASE probe88"); check();
     create(a, a.facts[0]!.id, "session"); check();
     // Deterministic mixed operations; assert against the uncached resolver after every step.
@@ -270,7 +270,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
         case 2: writer.setCurrentPath(a.session.id, "main", a.second.id, "one"); break;
         case 3: writer.setCurrentPath(b.session.id, "root", b.first.id, "two"); break;
         case 4: writer.setCurrentPath(b.session.id, "main", b.second.id, "two"); break;
-        default: writer.setKnowledgeBudget("session", 1000 + step); break;
+        default: writer.setKnowledgeBase(1000 + step); break;
       }
       check();
     }
@@ -409,7 +409,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
           case "rollback":
             writer.db.exec("SAVEPOINT random88");
             writer.setCurrentPath(b.session.id, "root", b.first.id, "two");
-            writer.setKnowledgeBudget("session", 1800 + sequence);
+            writer.setKnowledgeBase(1800 + sequence);
             writer.db.exec("ROLLBACK TO random88; RELEASE random88");
             break;
           case "outerRollback":

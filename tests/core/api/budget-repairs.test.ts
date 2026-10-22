@@ -47,7 +47,7 @@ test("92: fresh N has separate fact and knowledge windows without reviving C pro
     const knowledgeReceipts = input.material.receipts.filter(receipt => receipt.includes(" knowledge; expand:"));
     expect(tokens(compactText({ facts: input.material.facts, receipts: factReceipts }))).toBeLessThanOrEqual(f.m.config.compaction.factsTokens);
     expect(tokens(injectionText({ knowledge: input.material.knowledge, receipts: knowledgeReceipts })))
-      .toBeLessThanOrEqual(f.m.knowledgeBudgets().injection + f.m.config.compaction.temporaryTokens);
+      .toBeLessThanOrEqual(f.m.knowledgeBase() + f.m.config.compaction.temporaryTokens);
     expect(rawWindowTokens(input.material.entries.map(entry => entry.view), [])).toBeLessThanOrEqual(f.m.config.noting.batchTokens);
     expect(f.m.pendingEntries(f.s.id, "main", f.t.id)).toEqual([]);
   } finally { f.m.close(); }

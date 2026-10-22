@@ -27,7 +27,7 @@ const edit = async (h: ReturnType<typeof host>, line: string, value: string | un
   // Select by the canonical setting identity; values in older test call sites describe the
   // pre-redesign presentation, not a second Settings protocol.
   const key = line.split(":", 1)[0]!;
-  const labels = ["Global Knowledge budget", "Project Knowledge budget", "Session Knowledge budget",
+  const labels = ["Knowledge base",
     "Noter model", "Noter thinking", "Dreamer model", "Dreamer thinking", "Classifier model", "Classifier thinking", "Closed-session scope"];
   if (!labels.includes(key)) throw new Error(`Unknown editable settings row: ${line}`);
   h.answers.push("Settings…", undefined);
@@ -68,25 +68,24 @@ test("35d Settings edits the bound database row, shows derived diagnostics, and 
   h.answers.push("Settings…", undefined);
   await command(h, "");
   expect(h.dialogs.at(-1)!.title).toContain(`\n${join(h.dir, "trace.db")}`);
-  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + temporary allowance 10,000 = 30,000 max input");
-  expect(h.dialogs.at(-1)!.options!.slice(0, 3)).toEqual([
-    "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
-  ]);
-  await edit(h, "Project Knowledge budget: 15000 tokens per project owner pool (database)", "16000");
-  expect(h.memory.knowledgeBudgets()).toMatchObject({ global: 4000, project: 16000, session: 1000,
-    applicable: 21000, injection: 21000 });
-  expect(h.notices.at(-1)).toContain("saved Project Knowledge budget = 16000 tokens");
-  expect(h.notices.at(-1)).toContain("Knowledge base window 21000; temporary allowance 10000; maximum Knowledge input 31000");
+  expect(h.dialogs.at(-1)!.title).toContain("knowledge base 20,000 + temporary allowance 10,000 = 30,000 max input");
+  expect(h.dialogs.at(-1)!.options![0]).toBe("Knowledge base: 20,000");
+  expect(h.dialogs.at(-1)!.options!.filter(option => /Knowledge budget|^(Global|Project|Session) /.test(option))).toEqual([]); // one row, not three
+  await edit(h, "Knowledge base: 20000", "21000");
+  expect(h.memory.knowledgeBase()).toBe(21_000);
+  expect(h.memory.store.db.prepare("SELECT base_tokens FROM knowledge_base_policy WHERE id = 1").get()!.base_tokens).toBe(21_000);
+  expect(h.notices.at(-1)).toContain("saved Knowledge base = 21000 tokens");
+  expect(h.notices.at(-1)).toContain("maximum Knowledge input 31000");
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   expect(h.requests).toEqual([]);
 
   const rows = Number(h.memory.store.db.prepare("SELECT total_changes() AS n").get()!.n);
-  await edit(h, "Project Knowledge budget: 16000 tokens per project owner pool (database)", "16000");
+  await edit(h, "Knowledge base: 21000", "21000");
   expect(h.notices.at(-1)).toContain("nothing was written");
   expect(Number(h.memory.store.db.prepare("SELECT total_changes() AS n").get()!.n)).toBe(rows);
-  await edit(h, "Global Knowledge budget: 4000 tokens (database)", undefined);
-  await edit(h, "Global Knowledge budget: 4000 tokens (database)", "01");
-  expect(h.memory.knowledgeBudgets().global).toBe(4000);
+  await edit(h, "Knowledge base: 21000", undefined);
+  await edit(h, "Knowledge base: 21000", "01");
+  expect(h.memory.knowledgeBase()).toBe(21_000);
   expect(h.notices.at(-1)).toContain("exact nonnegative safe integer");
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
 });
@@ -95,19 +94,19 @@ test("35d cancelled, invalid, stale and failed database-budget edits preserve po
   const h = setup();
   await h.emit("session_start");
   const settings = readFileSync(globalPath(h), "utf8");
-  await edit(h, "Global Knowledge budget: 4000 tokens (database)", undefined);
-  expect(h.memory.knowledgeBudgets().global).toBe(4000);
-  await edit(h, "Global Knowledge budget: 4000 tokens (database)", "01");
+  await edit(h, "Knowledge base: 20000", undefined);
+  expect(h.memory.knowledgeBase()).toBe(20_000);
+  await edit(h, "Knowledge base: 20000", "01");
   expect(h.notices.at(-1)).toContain("exact nonnegative safe integer");
-  h.memory.setKnowledgeBudget("project", 16_000); // another connection wins after the row was displayed
-  await edit(h, "Session Knowledge budget: 1000 tokens per session owner pool (database)", "2000");
-  expect(h.memory.knowledgeBudgets()).toMatchObject({ project: 16_000, session: 2_000 });
+  h.memory.setKnowledgeBase(25_000); // another connection wins after the row was displayed
+  await edit(h, "Knowledge base: 20000", "2000");
+  expect(h.memory.knowledgeBase()).toBe(2_000);
 
-  h.memory.store.db.exec("CREATE TRIGGER reject_budget BEFORE UPDATE ON knowledge_budget_policy BEGIN SELECT RAISE(ABORT, 'policy write failed'); END");
-  await edit(h, "Global Knowledge budget: 4000 tokens (database)", "5000");
-  expect(h.notices.at(-1)).toContain("Global Knowledge budget unchanged");
+  h.memory.store.db.exec("CREATE TRIGGER reject_budget BEFORE UPDATE ON knowledge_base_policy BEGIN SELECT RAISE(ABORT, 'policy write failed'); END");
+  await edit(h, "Knowledge base: 2000", "5000");
+  expect(h.notices.at(-1)).toContain("Knowledge base unchanged");
   expect(h.notices.at(-1)).toContain("policy write failed");
-  expect(h.memory.knowledgeBudgets().global).toBe(4_000);
+  expect(h.memory.knowledgeBase()).toBe(2_000);
   expect(readFileSync(globalPath(h), "utf8")).toBe(settings);
   expect(h.requests).toEqual([]);
 });
@@ -179,7 +178,7 @@ test("24b: each control writes only its canonical key, and every other setting i
   // and thinking level plus the borrowing scope.
   h.answers.push("Settings…", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
-    "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
+    "Knowledge base: 20,000",
     "Noter model: fake/test-mini", "Noter thinking: inherit",
     "Dreamer model: fake/test", "Dreamer thinking: inherit",
     "Classifier model: fake/test", "Classifier thinking: inherit", "Closed sessions: project",
@@ -205,7 +204,7 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
   expect(file["trace-memory"]).toEqual({ "render.entryTokens": 222, notingThinking: "high", "dreaming.thinking": "minimal" });
   h.answers.push("Settings…", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
-    "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
+    "Knowledge base: 20,000",
     "Noter model: follow foreground", "Noter thinking: high",
     "Dreamer model: follow foreground", "Dreamer thinking: minimal",
     "Classifier model: follow foreground", "Classifier thinking: minimal", "Closed sessions: project",
@@ -266,7 +265,7 @@ test("24b: a saved model is used by the next subagent run, and choosing the fore
   expect((h.requests.at(-1) as { model: string }).model).toBe("test-mini"); // the child really used it
   h.ctx.hasUI = true;
   h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter model: fake/test-mini");
+  expect(h.dialogs.at(-1)!.options![1]).toBe("Noter model: fake/test-mini");
   await edit(h, "Noter model: fake/test-mini", "Follow foreground");
   expect(globalFile(h)["trace-memory"]).toEqual({ notingModel: "session" });
   expect(h.dialogs.at(-1)!.title).toContain("used by this phase's subagent runs");
@@ -285,11 +284,11 @@ test("24b: a project override stays effective and is explained; a global edit ne
   expect(readFileSync(projectPath)).toEqual(project);                       // the override file is untouched
   expect(globalFile(h)["trace-memory"]).toEqual({ notingModel: "fake/test" }); // the global edit was saved
   h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter model: fake/test-mini (Project setting — this edit will not take effect)");
+  expect(h.dialogs.at(-1)!.options![1]).toBe("Noter model: fake/test-mini (Project setting — this edit will not take effect)");
   // And the override survives a reopen, which re-reads every layer through the same load path.
   await h.emit("session_start");
   h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![3]).toBe("Noter model: fake/test-mini (Project setting — this edit will not take effect)");
+  expect(h.dialogs.at(-1)!.options![1]).toBe("Noter model: fake/test-mini (Project setting — this edit will not take effect)");
 });
 
 test("24b: cancelled, invalid, unavailable and failed edits leave the file and the effective settings alone", async () => {

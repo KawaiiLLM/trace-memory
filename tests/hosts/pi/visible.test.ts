@@ -218,7 +218,7 @@ test("144 title-only injection: carried, recorded once, not re-sent, and a later
   const h = host(quiet);
   try {
     const commit = seedKnowledge(h, "big rule " + "word ".repeat(1_500));
-    for (const field of ["global", "project", "session"] as const) h.memory.setKnowledgeBudget(field, 0); // the base holds nothing: a title
+    h.memory.setKnowledgeBase(0); // the base holds nothing: a title
     const first = await h.prompt("first");
     expect(first.message.content).toContain("(title only)");
     const supplied = carrierOf(first.message).supplied;
@@ -232,7 +232,7 @@ test("144 title-only injection: carried, recorded once, not re-sent, and a later
     await h.answer(); await h.emit("agent_settled"); await h.drain();
     expect(await h.prompt("second")).toBeUndefined(); // a title is never re-sent for the same version
     await h.answer(); await h.emit("agent_settled"); await h.drain();
-    h.memory.setKnowledgeBudget("project", 20_000); // base room appears
+    h.memory.setKnowledgeBase(20_000); // base room appears
     const third = await h.prompt("third");
     expect(carrierOf(third.message).supplied.knowledgeCommitIds).toEqual([commit]);
   } finally { await h.dispose(); }

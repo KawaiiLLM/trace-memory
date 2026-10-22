@@ -77,7 +77,6 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     };
     const dreaming = memory.dreamingPending(target);
     const spend = session ? memory.spend(session.id) : null;
-    const budgets = memory.knowledgeBudgets();
     const active = effective ?? config;
     const workers: SettingsInput["workers"] = (["noting", "dreaming", "classify"] as const).map((phase, index) => {
       const name = (["Noter", "Dreamer", "Classifier"] as const)[index]!;
@@ -91,7 +90,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
         model: current?.model ?? "unavailable", thinking: current?.thinking ?? "unavailable", ...(sources ? { sources } : {}) };
     });
     const settings: SettingsInput = { database: config.dbPath,
-      budgets: { global: budgets.global, project: budgets.project, session: budgets.session,
+      budgets: { base: memory.knowledgeBase(),
         temporaryTokens: active.coreConfig.compaction.temporaryTokens }, workers,
       closedSessionScope: active.closedSessionScope,
       ...(!effective ? { closedSessionSource: "saved file; effective configuration unavailable" }

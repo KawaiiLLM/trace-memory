@@ -99,7 +99,7 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
       Array.from({ length: 24 }, (_, n) => ({ ...content, text: `Original rule ${n}: ${"x".repeat(6000)}` })),
       { kind: "manual", createdAt: "now" });
     scoreAll(memory.store); // the Knowledge base carries scored items
-    memory.store.db.exec("UPDATE knowledge_budget_policy SET global_tokens=100000");
+    memory.store.db.exec("UPDATE knowledge_base_policy SET base_tokens=100000");
     const oldIds = created.committed.map(commit => commit.commit);
     const producer = f.run(0, epoch, { pauseSnapshot: true });
     await until(`${producer.control}.snapshot`);

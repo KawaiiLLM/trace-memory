@@ -71,9 +71,7 @@ const setWindows = (knowledge: number, facts: number, raw: number, allowance = 0
   Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw, temporaryTokens: allowance });
 };
 const defaultWindows = () => {
-  memory.setKnowledgeBudget("global", 4_000);
-  memory.setKnowledgeBudget("project", 15_000);
-  memory.setKnowledgeBudget("session", 1_000);
+  memory.setKnowledgeBase(20_000);
   memory.config.compaction.factsTokens = 10_000;
   memory.config.compaction.rawTokens = 10_000;
   memory.config.compaction.temporaryTokens = 10_000;
@@ -357,7 +355,7 @@ test("23 conversation-dense acceptance, rescaled by 73: a dozen long replies fit
   };
   const view = (entry: Parameters<typeof renderEntry>[0]) => renderEntry(entry, memory.config.render, memory.resultText).content;
   const total = (views: string[]) => tokens(views.join("\n\n"));
-  const capacity = memory.knowledgeBudgets().injection + memory.config.compaction.factsTokens + memory.config.compaction.rawTokens
+  const capacity = memory.knowledgeBase() + memory.config.compaction.factsTokens + memory.config.compaction.rawTokens
     + memory.config.compaction.temporaryTokens;
   // Long replies with few tool calls: the shape the retired compact-only view handled.
   const dozen = dense(12, 1_000);

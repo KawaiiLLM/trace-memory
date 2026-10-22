@@ -335,7 +335,7 @@ export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConf
       (SELECT IFNULL(MAX(scored_run),0) FROM knowledge) sr,
       (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) pa,
       (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) pm,
-      (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id=1) bp,
+      (SELECT base_tokens FROM knowledge_base_policy WHERE id=1) bp,
       (SELECT IFNULL(MAX(version),0) FROM session_lineage_cursors) cv,
       (SELECT IFNULL(MAX(version),0) FROM source_paths) sv`).get();
     const owner = binding.coreSessionId ? db.prepare(`SELECT project_id, enrollment_default, enrollment_choice

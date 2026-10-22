@@ -1423,7 +1423,7 @@ export default function (pi: ExtensionAPI) {
       return { phase, model: effective(model), thinking: effective(thinking),
         sources: { model: source(model), thinking: source(thinking) } };
     };
-    return { database: dbPath, budgets: { ...memory.knowledgeBudgets(), temporaryTokens: memory.config.compaction.temporaryTokens },
+    return { database: dbPath, budgets: { base: memory.knowledgeBase(), temporaryTokens: memory.config.compaction.temporaryTokens },
       workers: [worker("Noter", "noting"), worker("Dreamer", "dreaming"), worker("Classifier", "classify")],
       closedSessionScope: memory.config.closedSessionScope,
       closedSessionSource: sources.closedSessionScope && sources.closedSessionScope !== "Global"
@@ -1438,21 +1438,19 @@ export default function (pi: ExtensionAPI) {
     if (choice === undefined) return;
     const selected = rows.find(row => row.label === choice);
     if (!selected) throw new Error(`Unknown settings row: ${choice}`);
-    const field = selected.id.startsWith("budget.") ? selected.id.slice(7) as "global" | "project" | "session" : undefined;
-    const budget = field ? { field, name: `${field[0]!.toUpperCase()}${field.slice(1)} Knowledge budget` } : undefined;
-    if (budget) {
-      const input = await ctx.ui.input(`${budget.name} — enter tokens; changing this database policy does not run maintenance`);
+    if (selected.id === "knowledgeBase") {
+      const name = "Knowledge base";
+      const input = await ctx.ui.input(`${name} — enter tokens; changing this database policy does not run maintenance`);
       if (input === undefined) return;
       try {
-        const value = parseKnowledgeBudgetInput(input, budget.name);
-        const saved = memory.setKnowledgeBudget(budget.field, value);
+        const value = parseKnowledgeBudgetInput(input, name);
+        const saved = memory.setKnowledgeBase(value);
         if (saved.changed) armDreaming();
-        const base = saved.policy.global + saved.policy.project + saved.policy.session;
         const shared = memory.config.compaction.temporaryTokens;
         ctx.ui.notify(saved.changed
-          ? `Trace Memory: saved ${budget.name} = ${value} tokens in database ${dbPath}. Knowledge base window ${base}; temporary allowance ${shared}; maximum Knowledge input ${base + shared}. New admissions use these capacities; running inputs remain frozen.`
-          : `Trace Memory: ${budget.name} is already ${value} tokens in database ${dbPath}; nothing was written.`, "info");
-      } catch (error) { ctx.ui.notify(`Trace Memory: ${budget.name} unchanged — ${String(error)}`, "error"); }
+          ? `Trace Memory: saved ${name} = ${value} tokens in database ${dbPath}. Temporary allowance ${shared}; maximum Knowledge input ${value + shared}. New admissions use these capacities; running inputs remain frozen.`
+          : `Trace Memory: ${name} is already ${value} tokens in database ${dbPath}; nothing was written.`, "info");
+      } catch (error) { ctx.ui.notify(`Trace Memory: ${name} unchanged — ${String(error)}`, "error"); }
       return;
     }
     const [phase, kind] = selected.id.split(".");

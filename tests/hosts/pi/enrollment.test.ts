@@ -189,13 +189,13 @@ test("92: Settings shows N/D preferences with effective sources and masked layer
   h.answers.push("Settings…", undefined); await command(h, ""); // opened, then cancelled: inert
   const shown = h.dialogs.at(-1)!.options!;
   expect(shown).toEqual([
-    "Global Knowledge budget: 4,000", "Project Knowledge budget: 15,000", "Session Knowledge budget: 1,000",
+    "Knowledge base: 20,000",
     "Noter model: follow foreground", "Noter thinking: high (Project setting — this edit will not take effect)",
     "Dreamer model: fake/test", "Dreamer thinking: inherit",
     "Classifier model: fake/test", "Classifier thinking: inherit", "Closed sessions: project",
   ]);
   expect(h.dialogs.at(-1)!.title).toContain(join(h.dir, "trace.db"));
-  expect(h.dialogs.at(-1)!.title).toContain("knowledge window 20,000 + temporary allowance 10,000 = 30,000 max input");
+  expect(h.dialogs.at(-1)!.title).toContain("knowledge base 20,000 + temporary allowance 10,000 = 30,000 max input");
   expect([readFileSync(globalPath), readFileSync(projectPath)]).toEqual(before);
   expect(h.requests).toEqual([]);
   // The advanced keys the menu no longer displays are still loaded and still validated by name.

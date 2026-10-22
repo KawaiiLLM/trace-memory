@@ -325,7 +325,7 @@ export const register = (on: any) => {
     if (screen === "settings") {
       const settings = renderTraceSettings(reply.settings);
       return <Box flexDirection="column"><Text>{settings.header}</Text><Text> </Text>
-        <Text>Knowledge budgets</Text>{settings.budgetLines.map((line, i) => <Text key={`budget-${i}`}>{line}</Text>)}
+        <Text>Knowledge base</Text>{settings.budgetLines.map((line, i) => <Text key={`budget-${i}`}>{line}</Text>)}
         <Text>{settings.derivedLine}</Text><Text> </Text><Text>{settings.workerHeader}</Text>
         {settings.workerLines.map((line, i) => <Text key={`worker-${i}`}>{line}</Text>)}
         <Text>{settings.closedSessionsLine}</Text>{message}

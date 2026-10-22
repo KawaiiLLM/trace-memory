@@ -343,10 +343,10 @@ export interface TraceMemory {
   readonly config: TraceMemoryConfig;
   /** Advances on every cancellation; see `cancelTasks`. */
   readonly cancellation: number;
-  /** Current database-owned Knowledge policy and its derived capacities. */
-  knowledgeBudgets(): import("../store/processing.ts").KnowledgeBudgets;
-  /** Transactionally edit one row against the latest other two values. */
-  setKnowledgeBudget(field: import("../store/processing.ts").KnowledgeBudgetField, value: number): ReturnType<Store["setKnowledgeBudget"]>;
+  /** The database-owned Knowledge base (144 §8.2): what injection and compaction give scored knowledge. */
+  knowledgeBase(): number;
+  /** Transactionally replace the Knowledge base. */
+  setKnowledgeBase(value: number): ReturnType<Store["setKnowledgeBase"]>;
   /** Ticket 24 amendment 2: the one runtime configuration surface. A saved global preference must
    * reach tasks admitted afterwards without a reload. Only `closedSessionScope` may be replaced here, validated like the load
    * path. Other keys are refused: this is not a second configuration source and reloads nothing.
@@ -997,8 +997,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   };
   return {
     store, executorId, resultText, cancelTasks, taskEligibility, pendingTokens, dreamingPending, settleExecution,
-    knowledgeBudgets: () => store.knowledgeBudgets(),
-    setKnowledgeBudget: (field, value) => store.setKnowledgeBudget(field, value),
+    knowledgeBase: () => store.knowledgeBase(),
+    setKnowledgeBase: value => store.setKnowledgeBase(value),
     forceTasks: () => { for (const task of tasks) { task.close(); task.force(); } },
     get cancellation() { return cancellation; },
     config: cfg,

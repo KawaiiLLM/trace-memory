@@ -342,7 +342,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility(),
     transport = false, toolNames: ToolNames = canonicalToolNames): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
-    const baseCap = store.knowledgeBudgets().injection, temporaryCap = config.compaction.temporaryTokens;
+    const baseCap = store.knowledgeBase(), temporaryCap = config.compaction.temporaryTokens;
     if (!Number.isSafeInteger(baseCap + temporaryCap)) throw new Error("derived foreground Knowledge capacity must be a safe integer");
     const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
     if (id !== undefined && !store.enabled(id)) return empty();
@@ -715,7 +715,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const owners = new Map(sessionFacts.map(fact => [fact.turnId, sessionId]));
       const applicable = sessionFacts.filter(f => store.factOnPath(f, path, snapshot, undefined, owners, boundEntries));
       const factTurns = store.factTurnTimes(applicable);
-      const caps = { knowledge: store.knowledgeBudgets().injection, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
+      const caps = { knowledge: store.knowledgeBase(), facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
       const temporaryCap = config.compaction.temporaryTokens;
       const envelope = caps.knowledge + caps.facts + caps.raw + temporaryCap;
       if (!Number.isSafeInteger(envelope)) throw new Error("compact envelope must be a safe integer");

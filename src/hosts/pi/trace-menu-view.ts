@@ -145,11 +145,11 @@ export function renderTraceMenu(input: TraceMenuInput, width: number, paint: Pai
   return lines.flatMap(line => wrapTextWithAnsi(line, Math.max(1, width))).map(line => truncateToWidth(line, Math.max(1, width), ""));
 }
 
-/** Pi renderer for the Settings screen: budgets, workers, closed sessions. */
+/** Pi renderer for the Settings screen: Knowledge base, workers, closed sessions. */
 export function renderTraceSettings(input: SettingsInput, width: number, paint: Paint = (_c, t) => t): string[] {
   const model = buildTraceSettings(input);
-  const lines: string[] = [model.header, "", "Knowledge budgets"];
-  for (const row of model.budgets.rows) lines.push(`  ${row.label.padEnd(11)} ${row.value.padStart(6)}${row.qualifier ? `  ${row.qualifier}` : ""}`);
+  const lines: string[] = [model.header, "", "Knowledge base"];
+  for (const row of model.budgets.rows) lines.push(`  ${row.label.padEnd(14)} ${row.value.padStart(6)}`);
   lines.push(`  ${model.budgets.derivedLine}`, "", "Workers        model                thinking");
   for (const w of model.workers.rows) {
     lines.push(`  ${w.phase.padEnd(12)} ${w.model.padEnd(20)} ${w.thinking}`);

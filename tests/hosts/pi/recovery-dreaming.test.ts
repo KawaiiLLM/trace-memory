@@ -21,7 +21,7 @@ async function seeded(options: { rawTokens?: number } = {}) {
     "rule ".repeat(6000), { operation: { createdAt: "seed", title: "Fixture title" } }); // Noter-written: only Noter changes make the Dreamer due
   const pool = `project:${store.getSession(1)!.projectId}`;
   const pending = store.noterChangedTokens(store.knowledgePath(1)); // the item's weight toward the Dreamer trigger
-  h.memory.setKnowledgeBudget("project", pending * 2);
+  h.memory.setKnowledgeBase(pending * 2);
   return { h, store, pool, revisionId: created.commit };
 }
 
@@ -43,9 +43,7 @@ test("64c: due changed knowledge fits the knowledge window without compaction Dr
 test("133 R1 supersedes 73: oversized pending Raw delegates natively without a Dreamer run", async () => {
   const { h, store } = await seeded({ rawTokens: 100 });
   try {
-    h.memory.setKnowledgeBudget("global", 0);
-    h.memory.setKnowledgeBudget("project", 0);
-    h.memory.setKnowledgeBudget("session", 0);
+    h.memory.setKnowledgeBase(0);
     const turnId = store.listTurns(1).at(-1)!.id;
     for (let i = 0; i < 20; i++) h.memory.appendEntry({ sessionId: 1, turnId, nativeLineage: "oversized",
       nativeId: `extra-${i}`, role: "assistant", text: "word ".repeat(3_000), raw: "", calls: [] });

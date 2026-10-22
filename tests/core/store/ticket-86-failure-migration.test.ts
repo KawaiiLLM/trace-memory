@@ -58,7 +58,7 @@ function legacyDatabase() {
     if (!created.ok) throw new Error(created.problems.join("; "));
     const [first, second] = created.committed;
     const budget = 5_000;
-    store.setKnowledgeBudget("project", budget);
+    store.setKnowledgeBase(budget);
     // One failed and one successful historical Dreamer range over the two items; the success skipped only the first.
     legacyRange(store, session.id, turn.id, [first!.commit, second!.commit], "failure", "legacy-failure");
     legacyRange(store, session.id, turn.id, [first!.commit, second!.commit], "success", "legacy-success");

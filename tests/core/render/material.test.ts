@@ -249,7 +249,7 @@ test("25a/92: default N material has independent 10k facts and Raw windows plus 
   expect(factReceipts).toHaveLength(1); // the history cap really binds
   expect(material.receipts.some(r => r.includes(" knowledge; expand: "))).toBe(false); // the default K fits this fixture
   expect(knowledgeBlockOf(material)).toContain("<knowledge>");
-  expect(tokens(knowledgeBlockOf(material))).toBeLessThanOrEqual(memory.knowledgeBudgets().injection + memory.config.compaction.temporaryTokens);
+  expect(tokens(knowledgeBlockOf(material))).toBeLessThanOrEqual(memory.knowledgeBase() + memory.config.compaction.temporaryTokens);
   const historyCap = memory.config.compaction.factsTokens;
   expect(historyCap).toBe(10_000);
   expect(tokens(compactText({ facts: material.facts, receipts: factReceipts }))).toBeLessThanOrEqual(historyCap);

@@ -1505,6 +1505,24 @@ export class Store {
     return deriveKnowledgeBudgets({ global: Number(row.global_tokens), project: Number(row.project_tokens), session: Number(row.session_tokens) }, true);
   }
 
+  /** The Knowledge base (144 §8.2): the one ruled number injection and compaction read. The three pool budgets
+   * above stay in their table, unread by any consumer. */
+  knowledgeBase(): number {
+    const row = this.db.prepare("SELECT base_tokens FROM knowledge_base_policy WHERE id = 1").get() as { base_tokens: number } | undefined;
+    if (!row) throw new Error("stored Knowledge base policy: exactly one row with id 1 is required");
+    return Number(row.base_tokens);
+  }
+
+  setKnowledgeBase(value: number): { changed: boolean; base: number } {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error("Knowledge base must be a nonnegative safe integer");
+    return this.transaction(() => {
+      if (this.knowledgeBase() === value) return { changed: false, base: value };
+      if (this.db.prepare("UPDATE knowledge_base_policy SET base_tokens = ? WHERE id = 1").run(value).changes !== 1)
+        throw new Error("Knowledge base policy update did not affect its authoritative row");
+      return { changed: true, base: value };
+    });
+  }
+
   /** Apply one edited row against the latest other two values under the same write lock. Budgets
    * trigger maintenance; existing content above the new value is reported by the Dreamer check, not rejected. */
   setKnowledgeBudget(field: KnowledgeBudgetField, value: number): { changed: boolean; policy: KnowledgeBudgets } {
@@ -4346,7 +4364,7 @@ export class Store {
    *    memoized graph, footer count and C/D arming alike, reproduced across two connections: A and B
    *    share a project and A sees B's project knowledge; B is moved to another project; A's signal was
    *    unchanged, so a reused graph kept showing knowledge that no longer applies.)
-   *  - the knowledge budget policy (`knowledge_budget_policy`, a single point-lookup row);
+   *  - the Knowledge base (`knowledge_base_policy`, a single point-lookup row);
    *  - other sessions' current-path cursors (`session_lineage_cursors.version`, ticket 72: bumped only
    *    by a branch switch or a head moving back to an ancestor, never an ordinary forward move) and
    *    non-append rewrites of `source_paths` membership under an unchanged cursor
@@ -4367,7 +4385,7 @@ export class Store {
         (SELECT IFNULL(MAX(rowid), 0) FROM knowledge_processed) AS kp,
         (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) AS pa,
         (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm,
-        (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id = 1) AS bp,
+        (SELECT base_tokens FROM knowledge_base_policy WHERE id = 1) AS bp,
         (SELECT IFNULL(MAX(version), 0) FROM session_lineage_cursors) AS cv,
         (SELECT IFNULL(MAX(version), 0) FROM source_paths) AS sv,
         -- 144 stage 4 §2.5: what moves a Dreamer's due state besides coverage: its hand-off row, its failure count, and a score.
@@ -4375,7 +4393,7 @@ export class Store {
         (SELECT IFNULL(group_concat(count, ','), '') FROM task_failures WHERE phase = 'dreaming') AS df,
         (SELECT IFNULL(MAX(scored_run), 0) FROM knowledge) AS sr`)
       .get() as { f: number; cf: number; ne: number; kr: number; kp: number; pa: string | null; pm: number;
-        bp: string; cv: number; sv: number; ho: string; df: string; sr: number };
+        bp: number; cv: number; sv: number; ho: string; df: string; sr: number };
     return `${row.f}:${row.cf}:${row.ne}:${row.kr}:${row.kp}:${row.pa}:${row.pm}:${row.bp}:${row.cv}:${row.sv}:${row.ho}:${row.df}:${row.sr}`;
   }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one

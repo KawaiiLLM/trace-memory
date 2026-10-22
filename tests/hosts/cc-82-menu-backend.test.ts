@@ -172,6 +172,29 @@ test("a session reopened after /clear keeps its menu, runs and settings (63: the
   expect(JSON.parse(output)).toMatchObject({ saved: true, applied: false });
 });
 
+test("Settings shows one Knowledge base row and the settings route saves it to knowledge_base_policy", async () => {
+  const f = setup();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.session,
+    transcript_path: join(f.dir, "native.jsonl"), source: "startup" }, null);
+  const rows = (id: string) => buildSettingsChoices(readCcMenu(f.config, f.session, f.config).settings).filter(row => row.id.startsWith(id));
+  expect(readCcMenu(f.config, f.session, f.config).settings.budgets.base).toBe(20_000);
+  expect(buildSettingsChoices(readCcMenu(f.config, f.session, f.config).settings).filter(row => /^budget\.|^knowledgeBase$/.test(row.id)).map(row => row.id)).toEqual(["knowledgeBase"]);
+  let output = "";
+  const stdout = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { output += String(chunk); return true; });
+  try { await runCcCommand(["cli", "--config", f.path, "--session", f.session, "setting", "knowledgeBase", "21000"]); }
+  finally { stdout.mockRestore(); }
+  expect(JSON.parse(output)).toMatchObject({ saved: true, applied: true });
+  const store = new Store(f.config.dbPath);
+  try {
+    expect(store.knowledgeBase()).toBe(21_000);
+    expect(store.db.prepare("SELECT base_tokens FROM knowledge_base_policy WHERE id = 1").get()!.base_tokens).toBe(21_000);
+  } finally { store.close(); }
+  expect(readCcMenu(f.config, f.session, f.config).settings.budgets.base).toBe(21_000);
+  expect(rows("knowledgeBase")).toHaveLength(1);
+  for (const bad of ["-1", "1.5", "abc"])
+    await expect(runCcCommand(["cli", "--config", f.path, "--session", f.session, "setting", "knowledgeBase", bad])).rejects.toThrow("Knowledge base must be");
+});
+
 test("scheduler captures worker settings separately for each admission", async () => {
   const f = setup(), transcriptPath = join(f.dir, "native.jsonl");
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.session,

@@ -15,9 +15,7 @@ test.each(["automatic", "catchup"] as const)("%s releases a rejected slot once a
   const runtime = facades[0]!;
   try {
     await h.turn();
-    runtime.setKnowledgeBudget("global", 0);
-    runtime.setKnowledgeBudget("project", 0);
-    runtime.setKnowledgeBudget("session", 0);
+    runtime.setKnowledgeBase(0);
     runtime.config.noting.triggerTokens = 0;
     const start = async () => {
       if (mode === "automatic") { await h.prompt("next eligible turn"); return h.answer("next eligible entry"); }

@@ -282,7 +282,7 @@ test("97 transition: a context with no records gets one delivery within its budg
     // Carriers written before 97 are never read: one here claims every version.
     const old = encodeCcInjection(f.visible(), { text: "legacy", knowledgeCommitIds: f.versions.map(item => item.commit) });
     await f.append(attachment("legacy", "a1", old));
-    f.store.setKnowledgeBudget("global", 300); f.store.setKnowledgeBudget("project", 0); f.store.setKnowledgeBudget("session", 0);
+    f.store.setKnowledgeBase(300);
     const first = f.decode(await f.prompt("p2"));
     expect(first.flatMap(header => header.commits).length).toBeGreaterThan(0);
     expect(first.flatMap(header => header.commits).length).toBeLessThan(3);

@@ -94,7 +94,7 @@ const compactionWindows = (knowledge: number, facts: number, raw: number, tempor
   memory.config.compaction.rawTokens = raw;
   memory.config.compaction.temporaryTokens = temporary;
 };
-const defaultWindows = () => compactionWindows(memory.knowledgeBudgets().injection,
+const defaultWindows = () => compactionWindows(memory.knowledgeBase(),
   DEFAULT_CONFIG.compaction.factsTokens, DEFAULT_CONFIG.compaction.rawTokens, DEFAULT_CONFIG.compaction.temporaryTokens);
 /** The per-window accounting of one custom replacement (28a item 6). */
 const charged = (result: ReturnType<typeof memory.compact>) => {
@@ -1289,7 +1289,7 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
 // 133 changes the borrowing pool, not the core trace view's windows or processing invariants.
 // R1 delegates at the host boundary; this read-only allocator still reports pending omissions.
 test("73/133: core material uses independent windows, truncates newest-first and changes no progress", () => {
-  expect(memory.knowledgeBudgets().injection).toBe(20_000);
+  expect(memory.knowledgeBase()).toBe(20_000);
   expect(DEFAULT_CONFIG.render.episodicBlockTokens).toBe(20_000);
   expect(REMOVED_SETTINGS["render.episodicBlockTokens"]).toBeUndefined();
   const { s, t } = session();

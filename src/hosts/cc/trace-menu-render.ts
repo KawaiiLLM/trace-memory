@@ -330,7 +330,7 @@ export function renderTraceSettings(input: SettingsInput): RenderedSettings {
   const model = buildTraceSettings(input);
   return {
     header: model.header,
-    budgetLines: model.budgets.rows.map(row => `${row.label.padEnd(9)} ${row.value.padStart(6)}${row.qualifier ? `  ${row.qualifier}` : ""}`),
+    budgetLines: model.budgets.rows.map(row => `${row.label.padEnd(14)} ${row.value.padStart(6)}`),
     derivedLine: model.budgets.derivedLine,
     workerHeader: "Workers        model                thinking",
     workerLines: model.workers.rows.map(w => `${w.phase.padEnd(14)} ${w.model.padEnd(20)} ${w.thinking}${w.source ? ` (${w.source})` : ""}`),

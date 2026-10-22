@@ -47,9 +47,7 @@ test("133 R1: pending Raw overflow delegates without a delivery or an extra Note
   const h = host({ ...eager, "noting.batchTokens": 300, "dreaming.triggerTokens": 1,
     "compaction.factsTokens": 50, "compaction.rawTokens": 600, "compaction.temporaryTokens": 1 });
   try {
-    h.memory.setKnowledgeBudget("global", 0);
-    h.memory.setKnowledgeBudget("project", 0);
-    h.memory.setKnowledgeBudget("session", 0);
+    h.memory.setKnowledgeBase(0);
     failing(h);
     for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i} ` + "word ".repeat(250)); await h.answer(); await h.drain(); }
     await h.commands.get("trace").handler("on", h.ctx); await h.drain();
@@ -74,9 +72,7 @@ test("133 R1: pending Raw overflow goes native even when its omission receipt ca
   const h = host({ ...quiet, "compaction.factsTokens": 1, "compaction.rawTokens": 1,
     "compaction.temporaryTokens": 1 });
   try {
-    h.memory.setKnowledgeBudget("global", 0);
-    h.memory.setKnowledgeBudget("project", 0);
-    h.memory.setKnowledgeBudget("session", 0);
+    h.memory.setKnowledgeBase(0);
     await h.prompt(long("PENDING")); await h.answer();
     const pending = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
     expect(pending.length).toBeGreaterThan(0);

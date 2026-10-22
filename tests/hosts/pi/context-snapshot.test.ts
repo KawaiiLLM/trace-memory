@@ -211,7 +211,7 @@ test("73: an over-budget allocator truncates rather than refusing, and starts no
     // The scripted worker makes no note commit, so pending Raw remains after ordinary admission.
     f.script(() => say("answer"));
     await f.turn("required raw material ".repeat(200));
-    for (const scope of ["global", "project", "session"] as const) f.h.memory.setKnowledgeBudget(scope, 0);
+    f.h.memory.setKnowledgeBase(0);
     const sent = f.sent.length;
     const runs = f.h.memory.store.listRuns(1).length;
     const result = request(f.h);
