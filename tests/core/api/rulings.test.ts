@@ -7,7 +7,7 @@ import { setKnowledgeInjection as setKnowledgeBase } from "../../knowledge-budge
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { loadPrompt } from "../../../src/core/prompts/load.ts";
+import { loadPrompt, PROMPT_FILES } from "../../../src/core/prompts/load.ts";
 import { DEFAULT_WRITING_LIMITS, renderLimits } from "../../../src/core/prompts/limits.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -2252,9 +2252,30 @@ test("N and D compose shared definitions and principles with their permitted mai
 
 
 
+// 2026-10-22 (smell classes, Dreaming half): a curate run and its verify get exactly the class of the run's operation, and no other.
+test("2026-10-22: each curate run and its verify get exactly their operation's smell class, and the verify procedure", () => {
+  const block = (name: string) => renderLimits(readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8").trimEnd(), DEFAULT_WRITING_LIMITS);
+  const operations = ["update", "merge", "split", "archive"] as const;
+  for (const task of ["curate", "verify"] as const) for (const operation of operations) {
+    const composed = loadPrompt(`tasks/${task}-${operation}.md`);
+    expect(composed).not.toContain("<!-- include:");
+    for (const other of operations) {
+      if (other === operation) expect(composed, `${task}-${operation} has ${other}`).toContain(block(`smells-${other}`));
+      else expect(composed, `${task}-${operation} lacks ${other}`).not.toContain(block(`smells-${other}`));
+    }
+    expect(composed.includes(block("verify-procedure"))).toBe(task === "verify");
+    expect(composed).not.toContain(block("smells-facts"));
+    expect(composed).not.toContain(block("smells-create"));
+  }
+  // The system prompt holds no class and no operation's instructions: they travel with the first check result (stage 5 §0).
+  const system = loadPrompt("dreaming.md");
+  for (const name of ["smells-update", "smells-merge", "smells-split", "smells-archive", "verify-procedure"]) expect(system).not.toContain(block(name));
+});
+
 // 61 (2026-09-19): the prompts are written to one standard — shared memory-model blocks, per-stage judgment,
 // short imperative sentences, no internal references, defined vocabulary only.
 const STAGE_PROMPTS = ["noting.md", "dreaming.md"] as const;
+const TASK_PROMPTS = PROMPT_FILES.filter(file => file.startsWith("tasks/"));
 const promptSentences = (text: string) => {
   const body = text.replace(/```[\s\S]*?```/g, "");
   const sentences: string[] = [];
@@ -2291,7 +2312,7 @@ test("61: every stage prompt is composed from the shared blocks in one section o
 test("61: sentences are short, paragraphs are not walls, and no internal reference or internal vocabulary leaks into the prompts", () => {
   const banned = [/\bv1\.\d\b/, /\b\d\d[a-z]?'s\b/, /\bticket\s+\d+/, /\bcase \d\b/, /\buncertified\b/, /\bcertificate\b/, /\bneutral conflict\b/, /\bpost-freeze\b/,
     /\beffective grounding\b/, /\bfrozen family\b/, /\bfamily\b/, /\bCONTEXT\.md\b/];
-  for (const file of [...STAGE_PROMPTS, "classifying.md"] as const) {
+  for (const file of [...STAGE_PROMPTS, "classifying.md", ...TASK_PROMPTS] as const) {
     const prompt = loadPrompt(file);
     const sentences = promptSentences(prompt);
     const walls = sentences.filter(s => s.startsWith("WALL:"));
@@ -2313,11 +2334,11 @@ test("61: every backticked category, kind or field word used in a stage file is 
     "session", "project", "global", "search", "supports", "reason", "topics", "text", "title", "sources", "address",
     "category", "scope", "inbound", "support", "negate", "strong", "weak"]);
   for (const word of defined) expect(shared, `shared blocks define ${word}`).toMatch(new RegExp("`" + word + "`|\\*\\*" + word + "\\*\\*"));
-  for (const file of STAGE_PROMPTS) {
+  for (const file of [...STAGE_PROMPTS, ...TASK_PROMPTS]) {
     const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8").replace(/```[\s\S]*?```/g, "");
     for (const match of raw.matchAll(/`([a-z]+)`/g)) {
       const word = match[1]!;
-      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skip", "skipped", "operations", "layer", "code", "full", "ok", "absorb", "edits", "source", "slot", "drop", "budget", "fact", "none"].includes(word)) continue; // stage tools, operation fields and the workspace file blocks, defined in the stage's own sections
+      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skip", "skipped", "operations", "layer", "code", "full", "ok", "absorb", "edits", "source", "slot", "drop", "budget", "fact", "none", "confirm", "edit", "revert", "evidence", "kind", "invalid", "inadmissible", "child"].includes(word)) continue; // stage tools, operation fields and the workspace file blocks, defined in the stage's own sections
       expect(defined.has(word), `${file}: \`${word}\` is not a defined term`).toBe(true);
     }
   }
