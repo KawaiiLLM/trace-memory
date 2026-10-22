@@ -69,6 +69,15 @@ test("the receipt for a temporary item the slice cannot carry is charged to the 
   expect(sum(slices, "temporaryTokens")).toBeLessThanOrEqual(1_000);
 });
 
+test("a base item omitted for capacity charges its receipt to the base, and the resulting overrun evicts base items, never the temporary one", () => {
+  const a = knowledge(1, 0, "base"), t = knowledge(2, 1, "temporary"), huge = knowledge(3, 2, "base", 200_000); // the huge one fits no slice
+  const baseOnly = sum(sliceCcInjection(binding, [a]), "knowledgeTokens"); // A fills the base to the token
+  const slices = sliceCcInjection(binding, [a, t, huge], undefined, baseOnly, Infinity);
+  expect(commits(slices)).toContain(2); // T was not evicted for the base cap
+  expect(sum(slices, "knowledgeTokens")).toBeLessThanOrEqual(baseOnly);
+  expect(slices.map(slice => slice?.hookSpecificOutput.additionalContext ?? "").join("")).toContain("trace://K3@3"); // the omission is named
+});
+
 test("Raw omitted for capacity lowers u", () => {
   const raw = (entryId: number, size: number): TransportItem => ({ kind: "raw", text: `[T1#E${entryId}] ${"r".repeat(size)}`, entryId, address: `T1#E${entryId}`, pending: true, allowance: "temporary", charge: 100 });
   const kept = sum(sliceCcInjection(binding, [raw(1, 200)]), "temporaryTokens");

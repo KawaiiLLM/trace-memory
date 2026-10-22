@@ -185,12 +185,13 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
       receipt.allowance = omittedKnowledge && !omittedBase ? "temporary" : "base";
       const isPlaced = tryPlace(receipt);
       if (isPlaced && fits()) break;
+      // Choose while the receipt's cost still counts: taking it out first can hide a base overrun it caused.
+      const retained = isPlaced ? lowestKnowledge() : [...ordered].reverse().find(item => item.kind !== "receipt" &&
+        slots.some(slot => slot.items.includes(item)));
       if (isPlaced) {
         const slot = slots.find(slot => slot.items.includes(receipt))!;
         slot.items.splice(slot.items.indexOf(receipt), 1);
       }
-      const retained = isPlaced ? lowestKnowledge() : [...ordered].reverse().find(item => item.kind !== "receipt" &&
-        slots.some(slot => slot.items.includes(item)));
       if (!retained) {
         if (!isPlaced) throw new Error("CC inline envelope cannot carry its omission receipt");
         break; // No K item remains, and even its omission receipt does not fit this window.
