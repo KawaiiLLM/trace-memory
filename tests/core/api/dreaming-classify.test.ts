@@ -117,7 +117,11 @@ test("an empty frozen set passes through a no-work run: above 100 items, all sco
     "The facts show this only records an implementation step, which fails admission; no other item replaces it.");
   f.dreamer.inputs.length = 0;
   expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(f.dreamer.inputs.map(input => input.task)).toEqual(["curate", "verify"]); // curate proposed something, so verify runs; classify has no model call
+  // 102 items are two groups (146), each with its own curate; the scripted text goes to the first reference batch of each group, so both propose and both verify; classify has no model call
+  const tasks = f.dreamer.inputs.map(input => input.task);
+  expect(tasks.filter(task => task === "curate")).toHaveLength(2);
+  expect(tasks.filter(task => task === "verify")).toHaveLength(2);
+  expect(tasks).not.toContain("classify");
   expect(JSON.parse(f.store.getRun(f.store.db.prepare("SELECT MAX(id) AS id FROM runs WHERE kind = 'dreaming'").get()!.id as number)!.response!)).toMatchObject({ task: "classify", passes: 0, operation: "archive", finished: { operation: "archive", advanced: true } });
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
   expect(f.store.db.prepare("SELECT outcome FROM task_executions ORDER BY rowid DESC LIMIT 1").get()).toEqual({ outcome: "success" });

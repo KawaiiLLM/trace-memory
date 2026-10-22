@@ -59,7 +59,7 @@ test("injection, the compaction block, the knowledge view, an exact read and the
     injection: memory.inject(session.id),
     compaction: compacted(memory.compact(session.id, "main", path.headTurnId)),
     knowledge: memoryFiles(memory, path).read(`trace://knowledge/S${session.id}`).content,
-    dreamer: curatePrefix(memory.store, path, "update").text,
+    dreamer: curatePrefix(memory.store, path).text,
   };
   for (const [name, view] of Object.entries(views)) {
     const [head, body] = header(view, withTitle.knowledgeId);

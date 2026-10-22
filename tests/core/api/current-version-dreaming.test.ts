@@ -4,7 +4,7 @@ import { afterEach, expect, test } from "vitest";
 import { writeFileSync } from "node:fs";
 import type { DreamingAgentInput } from "../../../src/core/dreaming/index.ts";
 import type { TraceMemory } from "../../source-fixture.ts";
-import { dreamerFixture as makeDreamerFixture, writeCurateBatch } from "../../support/dreamer.ts";
+import { dreamerFixture as makeDreamerFixture, writeCurateFiles } from "../../support/dreamer.ts";
 import { REQUEST } from "../../support/noter.ts";
 import { block } from "../../support/workspace.ts";
 
@@ -40,7 +40,7 @@ test.each([
   const reference = f.item("reference", { category: "reference" }); // a second batch, so that the committed case is still inside curate when it is cancelled
   f.next(async raw => {
     task = raw as DreamingAgentInput; task.acknowledgeRequest();
-    if (committed) await writeCurateBatch(task, block(`update ${item.ref}`, { reason: "maintain" }, "maintained rule"));
+    if (committed) await writeCurateFiles(task, block(`update ${item.ref}`, { reason: "maintain" }, "maintained rule"));
     entered(); await held;
     return { outcome: "cancelled", output: "stopped", request: REQUEST };
   });

@@ -45,6 +45,8 @@ export class TaskWorkspace {
   path(name: string): string { return join(this.dir, name); }
   /** A file as it is; one the task never wrote reads as empty. */
   text(name: string): string { return existsSync(this.path(name)) ? readFileSync(this.path(name), "utf8") : ""; }
+  /** Whether the task wrote the file at all (an absent file reads as empty text, which is not the same as a written one). */
+  written(name: string): boolean { return existsSync(this.path(name)); }
   remove(): void { rmSync(this.dir, { recursive: true, force: true }); }
 
   /** The fence (§1.5): after it, the stop hook has nothing to say and core applies no file of this workspace. */

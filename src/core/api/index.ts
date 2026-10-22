@@ -437,8 +437,11 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const executorId = randomUUID();
   let stopping = false;
   const tasks = new Set<{ sessionId: number; phase: Phase; executionId: string; claimToken: string; controller: AbortController; force(result?: Partial<RunAgentResult>): void; close(): void }>();
+  // 146 §3.3: after the fences, the claim step and the abort, a Dreaming execution ends its calls' local waits at once (Q15), so several
+  // calls that ignore abort cannot keep it open. The Noter has one call, and its cooperative runner keeps the usage it returns after the abort.
+  const forceDreaming = (task: { phase: Phase; force(result?: Partial<RunAgentResult>): void }) => { if (task.phase === "dreaming") task.force(CANCELLED); };
   const abortTarget = (sessionId: number) => {
-    for (const task of tasks) if (task.sessionId === sessionId) { task.close(); task.controller.abort(); task.force(CANCELLED); }
+    for (const task of tasks) if (task.sessionId === sessionId) { task.close(); task.controller.abort(); forceDreaming(task); }
   };
   const settleExecution: TraceMemory["settleExecution"] = (id, outcome, runId, reason) => {
     const settled = store.settleExecution(id, outcome, runId, reason);
@@ -458,7 +461,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     try { for (const task of tasks) task.close(); }
     finally {
       try { if (!store.closed) { if (stop) store.beginShutdown(); store.invalidateExecutor(executorId); } }
-      finally { for (const task of tasks) { task.controller.abort(); task.force(CANCELLED); } }
+      finally { for (const task of tasks) { task.controller.abort(); forceDreaming(task); } }
     }
     return owned;
   };
@@ -903,7 +906,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       task.close();
       try { if (!store.closed) store.releaseClaim(claim!); }
       catch { /* Finalization retries the same token and reports any remaining release failure. */ }
-      finally { controller.abort(external!.reason); task.force(CANCELLED); }
+      finally { controller.abort(external!.reason); forceDreaming(task); }
     };
     if (external?.aborted) onExternalAbort();
     else external?.addEventListener("abort", onExternalAbort, { once: true });
@@ -997,10 +1000,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           const stopped = (controller.signal.aborted && !timedOut) || !store.enabled(target.sessionId) || terminal.outcome === "cancelled";
           const outcome = terminal.outcome === "success" ? "success" : stopped ? "cancelled" : "failure";
           const failure = phase === "dreaming" && "failure" in terminal ? terminal.failure : undefined;
-          const lostFailure = outcome === "failure" && lost && phase === "dreaming"
-            ? { task: failure?.task ?? "curate", class: "claim lost", ...(failure?.operation ? { operation: failure.operation } : {}) } : failure;
-          const reason = lostFailure ? `${lostFailure.task}: ${lostFailure.class}` : outcome === "failure" && lost ? "claim lost" : terminal.problems?.join("; ");
-          const settled = store.transaction(() => store.settleExecution(executionId!, outcome, terminal.runId, reason, lostFailure));
+          // 146 §7: the reason names every failed group; a lost claim joins them (it is not a replacement) unless a group already says so.
+          const failed = failure ? (failure.groups.length ? failure.groups.map(group => `${group.task} g${group.group}: ${group.class}`) : [`${failure.task}: ${failure.class}`]) : [];
+          const reasons = outcome === "failure" && lost && !failed.some(text => text.endsWith("claim lost")) ? [...failed, "claim lost"] : failed;
+          const taskFailure = failure ?? (outcome === "failure" && lost && phase === "dreaming" ? { task: "curate" } : undefined);
+          const reason = reasons.length ? reasons.join("; ") : terminal.problems?.join("; ");
+          const settled = store.transaction(() => store.settleExecution(executionId!, outcome, terminal.runId, reason, taskFailure));
           if (settled.automaticOff) {
             terminal.automaticOff = settled.automaticOff;
             // The off/fence transaction has committed before invoking any local abort listener.

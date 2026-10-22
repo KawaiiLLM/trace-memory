@@ -1,6 +1,7 @@
 // What a Dreamer run leaves behind and what it hands its model (ticket 144, stage 4): capacity before dispatch, the audited
 // prompt and request, and the Store state after a failure, a cancellation or a fault in the final transaction. The run shape
 // itself (hand-off, resume, retries, the cancellation fence) is `dreaming-run.test.ts`.
+import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { afterEach, expect, test } from "vitest";
@@ -12,7 +13,7 @@ import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import type { TraceMemory } from "../../source-fixture.ts";
-import { dreamerFixture as makeDreamerFixture, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
+import { dreamerFixture as makeDreamerFixture, writeCurateFiles, type DreamerScript } from "../../support/dreamer.ts";
 import { REQUEST } from "../../support/noter.ts";
 import { block } from "../../support/workspace.ts";
 
@@ -25,11 +26,11 @@ const covered = (f: Fixture) => f.store.db.prepare("SELECT revision_id FROM know
 const revisions = (f: Fixture) => Number(f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions").get()!.n);
 const curateRun = (f: Fixture) => f.store.listRuns(f.session.id).find(run => run.rangeFrom === `S${f.session.id}/curate`)!;
 const update = (item: { ref: string }, text: string) => block(`update ${item.ref}`, { reason: "tidy" }, text);
-const writeBatch = (input: DreamingAgentInput, text: string) => writeCurateBatch(input, text);
+const writeBatch = (input: DreamingAgentInput, text: string) => writeCurateFiles(input, text);
 
 // ---- Capacity, prompt and tools ------------------------------------------------------------------------------------------------
 
-test("native Read token estimate counts in Dreamer capacity before dispatch", async () => {
+test("native Read token estimate counts in Dreamer capacity: the fixed part alone over the allowance is an admission error; an item that does not fit is a counted run failure", async () => {
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
   let base: DreamingAgentInput | undefined;
@@ -42,16 +43,25 @@ test("native Read token estimate counts in Dreamer capacity before dispatch", as
   // The largest task prompt the run can send (curate's or verify's, delivered with `check`) is priced with the first message (stage 5 §0).
   const taskPrompt = Math.max(...(["curate", "verify"] as const).map(task => tokens(loadPrompt(`tasks/${task}-update.md`, canonicalToolNames, f.memory.config.writing))));
   const price = tokens(base.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(base.text) + taskPrompt;
-  const bounded = { ...f.target, nativeReadToolTokens, capacity: { inputTokens: price - 1 } };
+  const fixed = price - tokens(base.text) + tokens(base.text.replace(curatePrefix(f.store, f.path).text, curatePrefix(f.store, f.path, [], 1).text));
   const runs = f.store.listRuns(f.session.id).length;
+  // (a) The fixed part alone exceeds the allowance: nothing can run, so admission throws and the run stays pending.
   f.next(() => { throw new Error("over-cap dispatch"); });
-  await expect(f.memory.dream(bounded)).rejects.toThrow(/Dreaming capacity/);
+  await expect(f.memory.dream({ ...f.target, nativeReadToolTokens, capacity: { inputTokens: fixed - 1 } })).rejects.toThrow(/Dreaming capacity/);
   expect(f.store.listRuns(f.session.id)).toHaveLength(runs);
+  expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")?.count ?? 0).toBe(0);
+  // (b) The fixed part fits and the group does not (price - 1): no model call, one failed run naming the problem, counted once.
+  const refused = await f.memory.dream({ ...f.target, nativeReadToolTokens, capacity: { inputTokens: price - 1 } });
+  expect(refused).toMatchObject({ outcome: "failure", failure: { task: "curate", operation: "update" } });
+  expect(refused.outcome === "failure" && refused.problems.join(" ")).toMatch(/allowance|fits no group/);
+  expect(f.store.listRuns(f.session.id)).toHaveLength(runs + 1);
+  expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")?.count).toBe(1);
+  // At the price the request is the one priced.
   f.next(async raw => { const input = raw as DreamingAgentInput;
     expect(tokens(input.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(input.text) + taskPrompt).toBe(price);
     return stop(input); });
-  await f.memory.dream({ ...bounded, capacity: { inputTokens: price } });
-  expect(f.store.listRuns(f.session.id)).toHaveLength(runs + 1);
+  await f.memory.dream({ ...f.target, nativeReadToolTokens, capacity: { inputTokens: price } });
+  expect(f.store.listRuns(f.session.id)).toHaveLength(runs + 2);
   expect(covered(f)).toEqual([]);
 });
 
@@ -222,7 +232,14 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D 
   expect((await f.dream()).outcome).toBe(mode === "cancelled" || mode === "abort" ? "cancelled" : "failure");
   expect(f.store.listKnowledgeRevisions(rule.knowledgeId)).toHaveLength(1);
   expect(covered(f)).toEqual([]); // coverage is written when verify passes, never before
-  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate", detail: { doneCategories: ["constraint"], operation: "update" } }); // the kept batch survives
+  if (mode === "cancelled" || mode === "abort") {
+    // 146 ruling 12 (Q23): a cancellation closes the fences before the files could be kept, so nothing is kept and the next run redoes the batches.
+    expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+  } else {
+    expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate", detail: { operation: "update", groups: [{ batches: [
+      { category: "constraint", run: expect.any(Number) }, { category: "reference" }] }] } }); // the file that passed is kept, the one never written is not
+    expect(f.store.handoff(f.session.id, "dreaming")!.detail!.groups![0]!.batches[1]).not.toHaveProperty("run");
+  }
   expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
 });
 
