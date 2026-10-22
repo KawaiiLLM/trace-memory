@@ -44,8 +44,8 @@ const phaseSettingKeys = settingKeyPairs.flatMap(keys => [keys.model, keys.think
 const hostStrings = ["dbPath", "runsDir", ...phaseSettingKeys];
 export const thinkingChoices = ["inherit", ...THINKING_LEVELS];
 const thinkingKeys = settingKeyPairs.map(keys => keys.thinking);
-/** The key that decides classify's model or thinking. PENDING Q2 (stage 4 §12): until the maintainer rules whether Pi's
- * Dreamer tasks follow the main agent's model, a classify key that is absent follows the Dreamer's. */
+/** The key that decides classify's model or thinking. Pi's Dreamer tasks follow the main agent's model unless `dreaming.model`
+ * is set (user ruling, 2026-10-22), and a classify key that is absent follows the Dreamer's. */
 export const classifySettingKey = (flat: FlatConfig, kind: "model" | "thinking") =>
   flat[CLASSIFY_SETTING_KEYS[kind]] === undefined ? PHASE_SETTING_KEYS.dreaming[kind] : CLASSIFY_SETTING_KEYS[kind];
 /** One flat `section.key` layer, checked exactly as the load path checks it: every known section key

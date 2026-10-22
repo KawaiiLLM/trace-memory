@@ -800,7 +800,7 @@ since 30, one allocation since 73):
 
 **Allowances (133, 144).** Knowledge retains its database-derived 20,000-token base and spends it on
 scored items in score order (ties: newer version first); the first scored item that does not fit stops
-the base (PENDING Q4: the other option skips it and keeps filling). Facts and Raw retain 10,000-token bases.
+the base (user ruling, 2026-10-22: a smaller item behind it does not skip ahead). Facts and Raw retain 10,000-token bases.
 One 10,000-token temporary allowance per context is filled in order: pending Raw overflow first (compaction only);
 then unscored Knowledge whole, newest first; then titles of scored Knowledge that missed the base, in score order
 (`[K12#tag] [category/scope] (title only) <title>`; a delivered title is not re-sent and a later body still
@@ -811,7 +811,7 @@ within `compaction.userTurns` (100) path turns, then its titles within `compacti
 own reach drops out and the other continues alone to its reach. Both configurable reaches include
 the anchor; no older material fills spare room. Each kind keeps a newest-first whole-item prefix,
 and the first item that does not fit stops both kinds. User entries use the normal renderer with
-`compaction.userEntryTokens` (300) as their middle-cut cap. All four temporary-allowance settings require positive safe integers. Framing is charged to whoever needs it: the base pays for the window its own items and state notices make, the temporary allowance for the rest, so both caps hold with the base full. A compaction records what it charged to the temporary allowance in its delivery row (`temporary_tokens`), so the next prompt has none left (ordinary prompts spend what remains: PENDING Q5).
+`compaction.userEntryTokens` (300) as their middle-cut cap. All four temporary-allowance settings require positive safe integers. Framing is charged to whoever needs it: the base pays for the window its own items and state notices make, the temporary allowance for the rest, so both caps hold with the base full. A compaction records what it charged to the temporary allowance in its delivery row (`temporary_tokens`), so the next prompt has none left (ordinary prompts spend what remains, knowledge the Noter has just written included: user ruling, 2026-10-22).
 
 Full facts and Raw preserve their selection and coverage rules. Framing and receipts are
 charged in their owning window or allowance. Raw omissions stay pending; hosts delegate to

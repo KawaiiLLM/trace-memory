@@ -6,7 +6,7 @@ import { setKnowledgeInjection as setKnowledgeBase } from "../../knowledge-budge
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { DEFAULT_WRITING_LIMITS, renderLimits } from "../../../src/core/prompts/limits.ts";
 import { tmpdir } from "node:os";
@@ -23,11 +23,13 @@ import { ccPluginToolNames } from "../../../src/hosts/cc/tool-names.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
+import { noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
 import { dreamerFixture as makeDreamerFixture, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { receiptCommit, scoreAll } from "../../support/seed.ts";
 import { block as workspaceBlock, workspaceBatch } from "../../support/workspace.ts";
 import { applyWorkspace, checkWorkspace } from "../../../src/core/workspace/index.ts";
+import { allowedRoots } from "../../../src/core/dreaming/roots.ts";
 import { resolveCcHostConfig } from "../../../src/hosts/cc/config.ts";
 import { readBinding, recordSessionStart } from "../../../src/hosts/cc/binding.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../../src/hosts/cc/lifecycle.ts";
@@ -2724,6 +2726,55 @@ test("2026-10-21, 144: injection follows scores, not age", () => {
   const delivery = f.memory.injection(f.target);
   expect(delivery.knowledgeCommitIds).toEqual([old.commit]); // the older, higher-scored item takes the base
   expect(delivery.knowledgeTitleCommitIds).toEqual([fresh.commit]); // the newer one is a title, not a body
+});
+
+test("2026-10-22, 144: verify reads the working directories of the project's sessions; another project's directory, a session without one and a vanished directory add nothing", () => {
+  const b = workspaceBatch();
+  try {
+    const base = realpathSync(directory);
+    const [one, two, other] = ["one", "two", "other"].map(name => { mkdirSync(join(base, name)); return join(base, name); }) as [string, string, string];
+    const sibling = b.store.createSession({ projectId: b.project.id, host: "pi:workspace", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+    const stranger = b.store.createSession({ projectId: b.store.createProject({ name: "other", declaredBy: "mark" }).id, host: "pi:workspace", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+    const set = b.store.db.prepare("UPDATE sessions SET directory = ? WHERE id = ?");
+    set.run(one, b.session.id); set.run(two, sibling.id); set.run(other, stranger.id);
+    expect(allowedRoots(b.store, b.session.id)).toEqual([one, two].sort());
+    set.run(join(one, "gone"), b.session.id);
+    expect(allowedRoots(b.store, b.session.id)).toEqual([two]);
+  } finally { b.memory.close(); }
+});
+
+test("2026-10-22, 144: the base fills in score order, ties newest first; the first item that does not fit stops it, and it and the rest are titles", () => {
+  const f = injectionFixture();
+  const low = f.create("LOW", 800, 20), first = f.create("TOP", 800, 90), tieOld = f.create("TIEOLD", 800, 70), tieNew = f.create("TIENEW", 800, 70);
+  setKnowledgeBase(f.memory, 2_000); // room for two 800-word bodies
+  const delivery = f.memory.injection(f.target);
+  const shown = (label: string) => delivery.text.includes(`${label} word`), titled = (label: string) => new RegExp(`\\(title only\\) ${label}`).test(delivery.text);
+  expect(delivery.knowledgeCommitIds.sort()).toEqual([first.commit, tieNew.commit].sort());
+  expect(shown("TOP") && shown("TIENEW")).toBe(true);
+  expect(shown("TIEOLD") || shown("LOW")).toBe(false);
+  // The misfits become titles in score order, one by one from the temporary allowance.
+  expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([tieOld.commit, low.commit]));
+  expect(titled("TIEOLD") && titled("LOW")).toBe(true);
+  expect(delivery.knowledgeTokens! + delivery.temporaryTokens!).toBe(tokens(delivery.text.split("\n\n").slice(1).join("\n\n")));
+  expect(delivery.knowledgeTokens!).toBeLessThanOrEqual(2_000);
+});
+
+test("2026-10-22, 144: a high-score item that does not fit stops the base: a lower one does not fill the gap", () => {
+  const f = injectionFixture();
+  const small = f.create("SMALL", 100, 40), huge = f.create("HUGE", 3_000, 95);
+  setKnowledgeBase(f.memory, 1_000);
+  const delivery = f.memory.injection(f.target);
+  expect(delivery.knowledgeCommitIds).toEqual([]); // SMALL does not jump ahead of HUGE
+  expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([huge.commit, small.commit]));
+});
+
+test("2026-10-22, 144: an ordinary prompt may spend the temporary allowance a context has left, and no more", () => {
+  const f = injectionFixture();
+  const base = f.create("BASE", 100, 80), unscored = f.create("UNSCORED", 100, null);
+  const spent: VisibleView = { ...noVisibility(), knowledgeCommitIds: new Set([base.commit]), knowledgeTokens: 500, temporaryTokens: 10_000 };
+  expect(f.memory.injection(f.target, spent).text).toBe(""); // a compaction spent the 10k
+  const roomy: VisibleView = { ...spent, temporaryTokens: 9_000 };
+  expect(f.memory.injection(f.target, roomy).knowledgeCommitIds).toEqual([unscored.commit]);
 });
 
 test("2026-10-22, 144: allowance order — unextracted Raw, then unscored bodies, then titles of scored misfits, then fact titles and user words; the room an earlier kind uses is not left to a later one", () => {

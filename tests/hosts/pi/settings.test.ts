@@ -142,7 +142,7 @@ test("32d: Dreamer preferences reuse Settings with no mode or advanced page", as
   expect(h.requests).toEqual([]);
 });
 
-test("classify has its own Settings rows and keys; absent, they show the Dreamer's values (PENDING Q2)", async () => {
+test("classify has its own Settings rows and keys; absent, they show the Dreamer's values", async () => {
   const h = setup();
   seed(h, { "dreaming.model": "fake/test-mini" });
   await h.emit("session_start");

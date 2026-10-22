@@ -9,31 +9,6 @@ import { injectionFixture as fixture, closeInjectionFixtures } from "../../suppo
 
 afterEach(closeInjectionFixtures);
 const shown = (text: string, label: string) => text.includes(`${label} word`);
-const titled = (text: string, label: string) => new RegExp(`\\(title only\\) ${label}`).test(text);
-
-test("the base fills in score order, ties newest first; the rest are titles, not skipped (PENDING Q4: stop at the first misfit)", () => {
-  const f = fixture();
-  const low = f.create("LOW", 800, 20), first = f.create("TOP", 800, 90), tieOld = f.create("TIEOLD", 800, 70), tieNew = f.create("TIENEW", 800, 70);
-  setKnowledgeInjection(f.memory, 2_000); // room for two 800-word bodies
-  const delivery = f.memory.injection(f.target);
-  expect(delivery.knowledgeCommitIds.sort()).toEqual([first.commit, tieNew.commit].sort());
-  expect(shown(delivery.text, "TOP") && shown(delivery.text, "TIENEW")).toBe(true);
-  expect(shown(delivery.text, "TIEOLD") || shown(delivery.text, "LOW")).toBe(false);
-  // The misfits become titles in score order, one by one from the temporary allowance.
-  expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([tieOld.commit, low.commit]));
-  expect(titled(delivery.text, "TIEOLD") && titled(delivery.text, "LOW")).toBe(true);
-  expect(delivery.knowledgeTokens! + delivery.temporaryTokens!).toBe(tokens(delivery.text.split("\n\n").slice(1).join("\n\n")));
-  expect(delivery.knowledgeTokens!).toBeLessThanOrEqual(2_000);
-});
-
-test("a high-score item that does not fit stops the base: lower ones do not fill the gap", () => {
-  const f = fixture();
-  const small = f.create("SMALL", 100, 40), huge = f.create("HUGE", 3_000, 95);
-  setKnowledgeInjection(f.memory, 1_000);
-  const delivery = f.memory.injection(f.target);
-  expect(delivery.knowledgeCommitIds).toEqual([]); // PENDING Q4 (stop): SMALL does not jump ahead of HUGE
-  expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([huge.commit, small.commit]));
-});
 
 test("injection and compaction read the Knowledge base from knowledge_base_policy; the three pool columns are unread", () => {
   const f = fixture();
@@ -115,15 +90,6 @@ test("base full, temporary left: temporary items arrive with their own framing a
   expect(next.knowledgeTokens).toBe(0);
   expect(next.temporaryTokens!).toBe(tokens(next.text.split("\n\n").slice(1).join("\n\n")));
   expect(next.temporaryTokens!).toBeLessThanOrEqual(1_000);
-});
-
-test("a context whose temporary allowance is spent gets no temporary item on the next prompt", () => {
-  const f = fixture();
-  const base = f.create("BASE", 100, 80), unscored = f.create("UNSCORED", 100, null);
-  const spent: VisibleView = { ...noVisibility(), knowledgeCommitIds: new Set([base.commit]), knowledgeTokens: 500, temporaryTokens: 10_000 };
-  expect(f.memory.injection(f.target, spent).text).toBe(""); // a compaction spent the 10k: PENDING Q5, ordinary prompts spend only what is left
-  const roomy: VisibleView = { ...spent, temporaryTokens: 9_000 };
-  expect(f.memory.injection(f.target, roomy).knowledgeCommitIds).toEqual([unscored.commit]);
 });
 
 test("a title is delivered once, is not re-sent, and a later body upgrades it", () => {

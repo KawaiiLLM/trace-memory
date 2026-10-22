@@ -590,8 +590,8 @@ path (the Noter has no execution-mode preference: it runs fresh only, 2026-10-22
 | Noter thinking | inherit / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `notingThinking` | `inherit` |
 | Dreamer model | Follow foreground / an available `provider/model-id` | `dreaming.model` | `session` |
 | Dreamer thinking | inherit / one of Pi's levels | `dreaming.thinking` | `inherit` |
-| Classifier model | Follow foreground / an available `provider/model-id` | `dreaming.classifyModel` | the Dreamer's model (PENDING Q2: whether Pi's Dreamer tasks follow the main agent's model) |
-| Classifier thinking | inherit / one of Pi's levels | `dreaming.classifyThinking` | the Dreamer's thinking (PENDING Q2) |
+| Classifier model | Follow foreground / an available `provider/model-id` | `dreaming.classifyModel` | the Dreamer's model, which follows the main agent's until set (user ruling, 2026-10-22) |
+| Classifier thinking | inherit / one of Pi's levels | `dreaming.classifyThinking` | the Dreamer's thinking |
 | Closed-session scope | off / project / global | `closedSessionScope` | `project` |
 
 **The thinking entries (26d/32d)** choose the level this phase's runs think at;

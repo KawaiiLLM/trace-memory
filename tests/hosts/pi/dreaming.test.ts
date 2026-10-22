@@ -55,11 +55,12 @@ test("Dreamer pre-request capacity failure names its own phase and retains its w
   } finally { measure.mockRestore(); await h.dispose(); }
 });
 
-test("classify has its own model and thinking, frozen at admission; absent, it follows the Dreamer (PENDING Q2)", async () => {
+test("2026-10-22, 144: Pi's Dreamer tasks follow the main agent's model unless set; classify has its own model and thinking, frozen at admission, and absent it follows the Dreamer", async () => {
   for (const [config, expected] of [
     [{ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high", "dreaming.classifyModel": "fake/test-mini", "dreaming.classifyThinking": "low" },
       { curate: "fake/test-thinking", classify: "fake/test-mini", classifyThinking: "low" }],
-    [{ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high" }, // PENDING Q2: Pi's classify follows the Dreamer's model
+    [{}, { curate: "fake/test", classify: "fake/test", classifyThinking: "off" }], // no key: every task runs on the foreground model
+    [{ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high" }, // classify follows the Dreamer's model
       { curate: "fake/test-thinking", classify: "fake/test-thinking", classifyThinking: "high" }],
   ] as const) {
     const { h, store } = await seeded(config);

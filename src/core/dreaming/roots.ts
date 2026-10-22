@@ -6,8 +6,8 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import type { Store } from "../store/index.ts";
 
-/** PENDING Q3: the maintainer has not chosen the roots. This is the recommended option A, the directories of the project's sessions
- * (`sessions.directory`); B (the session's own directory) or C (any path) change this function only. */
+/** The roots are the working directories of the project's sessions (`sessions.directory`; user ruling, 2026-10-22). A directory
+ * that is gone cannot be read and is left out. */
 export function allowedRoots(store: Store, sessionId: number): string[] {
   const projectId = store.getSession(sessionId)!.projectId;
   const roots = new Set<string>();

@@ -910,8 +910,8 @@ export function selectKnowledge(candidates: KnowledgeWithRevision[], options: { 
   const scored = candidates.filter(value => score(value) !== null).sort(byScore);
   const unscored = candidates.filter(value => score(value) === null).sort((a, b) => b.revision.id - a.revision.id);
   const noRequired = new Set<number>();
-  // PENDING Q4: a scored item that does not fit the rest of the base stops this kind, and the rest become
-  // titles (c). The other option skips the misfit and keeps filling; that is a skip mode in this one call.
+  // User ruling, 2026-10-22: the first scored item that does not fit the rest of the base stops this kind, and it and the
+  // rest become titles (c); a smaller item behind it does not skip ahead.
   const select = (alsoOmitted?: KnowledgeWithRevision[]): { result: SelectedKnowledge; named: boolean; unscoredOmitted: KnowledgeWithRevision[] } => {
     const base = (() => {
       if (!alsoOmitted) return budgetKnowledge(scored, baseCap, line, budget, noRequired, byScore, recencyNotice).commits;

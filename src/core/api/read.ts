@@ -382,8 +382,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // 144 §7.3: the base and the context's one temporary allowance are separate caps; each is spent by what earlier
     // deliveries on the path charged to it.
     const baseLeft = Math.max(0, baseCap - (visible.knowledgeTokens ?? unaccountedCost()));
-    // PENDING Q5: an ordinary prompt may spend what the context's 10k has left since its last compaction, /clear or
-    // session start. The other option (ordinary prompts use the base only) makes this 0 for a context that already holds a delivery.
+    // User ruling, 2026-10-22: an ordinary prompt may spend what the context's 10k has left since its last compaction, /clear
+    // or session start, and that includes knowledge the Noter has just written.
     const temporaryLeft = Math.max(0, temporaryCap - (visible.temporaryTokens ?? 0));
     if (baseLeft <= 0 && temporaryLeft <= 0) return empty();
 
