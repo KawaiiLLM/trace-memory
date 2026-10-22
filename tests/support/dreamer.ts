@@ -77,3 +77,11 @@ export function dreamerFixture(memories: TraceMemory[], script: DreamerScript = 
   return { ...b, dreamer, target, dream, next: (agent: RunAgent) => { runners.push(agent); } };
 }
 export type DreamerFixture = ReturnType<typeof dreamerFixture>;
+
+import { knowledge as seedKnowledge } from "./seed.ts";
+/** A small Noter-written item over `factId`: only Noter changes make a Dreamer due (stage 4, 2026-10-22). A host test pairs it with
+ * `dreaming.triggerTokens: 1`. Replaces the retired budget-crossing fixture `createDreamerTrigger`. */
+export function noterWrittenItem(memory: TraceMemory, path: { sessionId: number; branch: string; headTurnId: number }, factId: number,
+  scope: "global" | "project" | "session" = "project", category: "constraint" | "reference" = "constraint") {
+  return seedKnowledge(memory.store, path, scope, category, [factId], `Fixture trigger item ${factId}`, { operation: { title: `Trigger item ${factId}` } });
+}
