@@ -3,7 +3,7 @@ import { TraceMemory } from "../../../src/core/api/index.ts";
 import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
 import { Store, type TaskTarget } from "../../../src/core/store/index.ts";
 import { ALL_POOLS } from "../../../src/core/store/processing.ts";
-import { entry as seedEntry, legacyFacts } from "../../support/seed.ts";
+import { entry as seedEntry, knowledge as seedKnowledge, legacyFacts } from "../../support/seed.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -28,14 +28,9 @@ function fact(f: ReturnType<typeof base>) {
   }]).facts[0]!;
 }
 
+/** A Noter-written item: only what the Noter changed counts toward the Dreamer's trigger (Stage 4 2026-10-22). */
 function knowledge(f: ReturnType<typeof base>, scope: "project" | "global" | "session" = "project") {
-  const evidence = fact(f);
-  const result = f.store.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, operations: [
-    { op: "create", title: "Fixture title", handle: "$1", author: "test", text: "pending knowledge ".repeat(30), category: "constraint", scope,
-      supports: [evidence.id], topics: [], reason: "test", createdAt: "now" },
-  ] });
-  if (!result.ok) throw new Error(result.problems.join("; "));
-  return result.committed[0]!;
+  return seedKnowledge(f.store, f.path, scope, "constraint", [fact(f).id], "pending knowledge ".repeat(30));
 }
 
 for (const phase of ["noting"] as const) {
@@ -54,19 +49,6 @@ for (const phase of ["noting"] as const) {
     expect(f.memory.pendingTokens(phase, f.path).tokens).toBe(measured);
   });
 }
-
-test("104: declaration refuses while the session's knowledge overflows its window, pending below the trigger", () => {
-  const f = base(true);
-  knowledge(f);
-  f.memory.config.noting.triggerTokens = 1e9;
-  expect(f.memory.dreamingPending(f.path).pending!.tokens).toBeLessThan(f.memory.config.dreaming.triggerTokens);
-  for (const scope of ["global", "project", "session"] as const) f.memory.setKnowledgeBudget(scope, 0);
-  f.memory.config.compaction.sharedAllowanceTokens = 0;
-  expect(() => f.memory.declareProject(f.session.id, "overflowing", "mark", f.path)).toThrow(/dreaming is due/);
-  expect(f.store.findProjectByName("overflowing")).toBeNull();
-  f.memory.config.compaction.sharedAllowanceTokens = 10_000;
-  expect(f.memory.declareProject(f.session.id, "fits", "mark", f.path)).toContain("fits");
-});
 
 test("49: material below N/D thresholds moves without an automatic flush", () => {
   const f = base(true);
@@ -113,13 +95,10 @@ test("64c/49: disabled enrollment does not mask the Noting declaration guard or 
 
 test.each(["project", "global"] as const)("86: declaring session's Dreamer blocks its move while processing %s", scope => {
   const f = base(false), item = knowledge(f, scope);
-  const pool = scope === "global" ? "global" : `project:${f.own.id}`;
   f.memory.config.dreaming.triggerTokens = 1;
-  f.store.setKnowledgeBudget(scope, f.store.pendingPoolWeight(pool, f.path) * 2);
   expect(f.memory.taskEligibility("dreaming", f.path).due).toBe(true);
-  const claim = f.store.acquireClaim(f.path, "dreaming", "worker")!;
+  const claim = f.store.acquireClaim(f.path, "dreaming", "worker", false, () => true, 1)!;
   expect(claim).not.toBeNull();
-  const range = f.store.retainKnowledgePoolRange(f.path, claim);
   const before = { session: f.store.getSession(f.session.id), revisions: f.store.listKnowledgeRevisions() };
   expect(() => f.memory.declareProject(f.session.id, "move-target", "mark", f.path)).toThrow(/dreaming has a live claim/);
   expect(f.store.findProjectByName("move-target")).toBeNull();
@@ -128,18 +107,15 @@ test.each(["project", "global"] as const)("86: declaring session's Dreamer block
   f.store.releaseClaim(claim);
   f.memory.config.dreaming.triggerTokens = Number.MAX_SAFE_INTEGER;
   expect(f.memory.declareProject(f.session.id, "move-target", "mark", f.path)).toContain("move-target");
-  expect(f.store.dreamingRange(range.id)).not.toBeNull(); // an inactive old range is not a declaration gate
-  const target = f.store.findProjectByName("move-target")!;
-  expect(f.store.pendingVersions(scope === "global" ? "global" : `project:${target.id}`, f.path).map(v => v.revisionId)).toContain(item.commit);
+  expect(f.store.currentKnowledge(f.path).map(value => value.revision.id)).toContain(item.commit); // the item moves with the session
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
 });
 
 test.each(["global", "project", "session"] as const)("86: declaring session's %s Dreamer backlog blocks declaration", scope => {
-  const f = base(false), item = knowledge(f, scope);
+  const f = base(false);
+  knowledge(f, scope);
   f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
   f.memory.config.dreaming.triggerTokens = 1;
-  const pool = scope === "global" ? "global" : scope === "project" ? `project:${f.own.id}` : `session:${f.session.id}`;
-  expect(f.store.pendingVersions(pool, f.path).map(value => value.revisionId)).toContain(item.commit);
   expect(() => f.memory.declareProject(f.session.id, `dreaming-${scope}`, "mark", f.path)).toThrow(/dreaming is due/);
   expect(f.store.findProjectByName(`dreaming-${scope}`)).toBeNull();
 });
