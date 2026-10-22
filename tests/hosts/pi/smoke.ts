@@ -87,7 +87,7 @@ try {
         seen.push(...plain); component.handleInput?.("\x1b[6~");
       }
       assert.ok(seen.join(" ").includes("Pending / trigger"));
-      // Dreaming shows the Noter-changed tokens against its trigger, one bar.
+      // Dreaming shows the Noter operations against its trigger, one bar.
       assert.ok(/pending\s+░░░░░░░░░░/.test(seen.join(" ")), "missing empty pending bar");
       assert.ok(seen.join(" ").includes("⛶") && !seen.join(" ").includes("not task completion or worker"));
       assert.ok(!seen.join(" ").includes("Memory ~0"));
@@ -118,7 +118,7 @@ try {
 }
 
 // A subsequent main-session entry starts a due pool Dreamer. Compaction remains separate from processing.
-const dreamer = host({ "noting.triggerTokens": 1_000_000, "dreaming.triggerOperations": 5_000 }, { extension });
+const dreamer = host({ "noting.triggerTokens": 1_000_000, "dreaming.triggerOperations": 1 }, { extension });
 try {
   await dreamer.emit("session_start"); await dreamer.turn();
   const store = dreamer.memory.store;

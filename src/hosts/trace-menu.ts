@@ -318,7 +318,7 @@ export const TRACE_MENU_FIXTURE: TraceMenuInput = {
   },
   pending: {
     noting: { tokens: 3_200, trigger: 10_000 },
-    dreaming: { pending: { tokens: 1_819, trigger: 10_000 }, next: "merge" },
+    dreaming: { pending: { tokens: 12, trigger: 30, unit: "operations" }, next: "merge" },
   },
   spend: {
     session: 1.23,

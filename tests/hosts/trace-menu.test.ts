@@ -3,7 +3,7 @@
 // header, context categories, Pending/trigger, spend, notices, actions and the settings rows.
 import { expect, test } from "vitest";
 import {
-  buildSettingsChoices, buildTraceMenu, buildTraceSettings, dreamerFailureNotice, formatCompactTokens, formatPercent,
+  buildSettingsChoices, buildTraceMenu, buildTraceSettings, dreamerFailureNotice, dreamingPendingInput, formatCompactTokens, formatPercent,
   TRACE_MENU_FIXTURE, TRACE_MENU_FIXTURE_WITH_NOTICE, TRACE_SETTINGS_FIXTURE, TRACE_SETTINGS_FIXTURE_CC,
 } from "../../src/hosts/trace-menu.ts";
 
@@ -62,9 +62,16 @@ test("pending: Noting/Dreaming rows with compact ratios and whole-number percent
   expect(pending).not.toHaveProperty("consolidation");
   // 144 stage 4 §2.3, §7.6: one row, the Noter-changed tokens against the trigger; the pool-vs-window row is gone.
   expect(pending.dreaming).toEqual([
-    { label: "pending", tokens: 1_819, trigger: 10_000, ratio: 0.1819, percent: "18%", amount: "1.8k / 10k" },
+    { label: "pending", tokens: 12, trigger: 30, ratio: 0.4, percent: "40%", amount: "12 / 30 Noter ops" },
   ]);
   expect(pending.dreamingNext).toEqual({ label: "next curate", value: "merge" });
+});
+
+test("pending: the Dreaming row counts Noter operations; at the trigger it shows at-least, and an unavailable count shows no number", () => {
+  const row = (dreaming: Parameters<typeof dreamingPendingInput>[0]) => buildTraceMenu({ ...TRACE_MENU_FIXTURE, pending: { ...TRACE_MENU_FIXTURE.pending,
+    dreaming: { pending: dreamingPendingInput(dreaming, 30) } } }).pending.dreaming[0]!;
+  expect(row({ operations: 30, trigger: 30, atLeast: true })).toMatchObject({ ratio: 1, percent: "100%", amount: "≥30 / 30 Noter ops" });
+  expect(row(null)).toMatchObject({ tokens: null, trigger: null, amount: "?" });
 });
 
 test("pending: a Noting backlog counted up to its trigger shows at-least with the exact entry count (maintainer, 2026-09-25)", () => {

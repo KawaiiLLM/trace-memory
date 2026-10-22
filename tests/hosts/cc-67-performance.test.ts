@@ -43,7 +43,7 @@ function seedKnowledge(db: string, due: boolean) {
             source: [`T${turn.id}#E${entry.entryOrdinal}`], entryIds: [entry.id], createdAt: at }] });
         if (!noted.ok) throw new Error(noted.problems.join("; "));
         const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-        // The due owner's items are Noter-written and their summed weight reaches the 10k Dreamer trigger (2026-10-22); every other
+        // The due owner's items are Noter-written and their ten operations reach the Dreamer trigger of this fixture (2026-10-22, 146); every other
         // owner's items are manual writes, which never make a Dreamer due.
         const noterWritten = owner === 0 && due;
         const items = Array.from({ length: 10 }, (_, i) => ({ title: "Fixture title", category: "reference" as const, scope: noterWritten ? "global" as const : "session" as const,
@@ -61,7 +61,7 @@ async function fullChain(entries: number, due: boolean) {
   const transcriptPath = join(dir, "native.jsonl"), nativeSessionId = "performance";
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "s"),
     baseline: "2025-01-01T00:00:00Z", pollIntervalMs: 60_000, finalSyncTimeoutMs: 100, finalSyncStablePolls: 2,
-    notingModel: "synthetic", notingThinking: "medium", "dreaming.triggerOperations": 5_000,
+    notingModel: "synthetic", notingThinking: "medium", "dreaming.triggerOperations": 10,
     "dreaming.model": "synthetic", "dreaming.thinking": "medium", worker: { cwd: dir, claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000, sonnet: 200_000 } } });
   seedKnowledge(config.dbPath, due);
   // New installations must receive WAL from Store, without an operator step in the fixture.
