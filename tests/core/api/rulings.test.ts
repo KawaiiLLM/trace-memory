@@ -873,11 +873,13 @@ function curateWrite(path: { sessionId: number; headTurnId: number; branch: stri
     file: { name: "curate.md", text: group.text.join("\n") } }));
   for (const each of applied) if (!each.ok) throw new Error(each.problems.join("\n"));
   const result = { ok: true as const, blocks: applied.flatMap(each => each.ok ? each.blocks : []) };
+  const refused = result.blocks.filter(entry => entry.status !== "applied");
+  if (refused.length) throw new Error(refused.map(entry => entry.reason).join("\n"));
   const committed = result.blocks.flatMap(entry => entry.versions).map(version => {
     const [, id, ordinal] = /^K(\d+)@v(\d+)$/.exec(version)!;
     return { knowledgeId: Number(id), version, commit: store.resolveVersionOrdinal(Number(id), Number(ordinal)) };
   });
-  return { results: result.blocks.map(() => "ok"), committed: committed as [typeof committed[number], ...typeof committed] };
+  return { results: result.blocks.map(entry => entry.status === "applied" ? "ok" : entry.reason!), committed: committed as [typeof committed[number], ...typeof committed] };
 }
 
 test("2026-09-07 A: sibling-branch facts are readable but supports requires an adoption fact on this path", () => {
