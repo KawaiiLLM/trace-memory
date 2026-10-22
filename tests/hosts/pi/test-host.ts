@@ -138,6 +138,22 @@ export function noterReply(conversation: Conversation, plan: { facts?: string; k
   return call([{ id: "write-facts", name: "write", arguments: { path: files[1]!, content: plan.facts ?? "## none\n" } },
     { id: "write-knowledge", name: "write", arguments: { path: files[2]!, content: plan.knowledge ?? "## none\n" } }]);
 }
+/** The scripted Dreamer's side of a run (ticket 144 stage 4), as a model behaves on the wire: call `check`, write the file the latest
+ * message names (`## none` for curate and verify, every item 50 for the scorer), stop; a follow-up that names the next batch's file
+ * is answered the same way. Returns undefined when the model has nothing left to say. */
+export function dreamerFiles(conversation: Conversation): Reply | undefined {
+  const call = (calls: { id: string; name: string; arguments: JsonObject }[]): Reply => ({ ...reply(""), stopReason: "toolUse",
+    content: calls.map(value => ({ type: "toolCall" as const, ...value })) });
+  const mentions = conversation.messages.flatMap(m => m.role === "assistant" ? [] : [partsText((m as { content: unknown }).content)]).filter(text => /(?:Your file|File): \S+\.md/.test(text));
+  if (!mentions.length) return call([{ id: "check-1", name: "check", arguments: {} }]);
+  const report = mentions.at(-1)!;
+  const file = /(?:Your file|File): (\S+?\.md)/.exec(report)![1]!;
+  const written = conversation.messages.flatMap(m => m.role !== "assistant" || !Array.isArray(m.content) ? [] : (m.content as { type: string; name?: string; arguments?: { path?: string } }[])
+    .filter(part => part.type === "toolCall" && part.name === "write").map(part => part.arguments?.path));
+  if (written.includes(file)) return undefined;
+  const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
+  return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n" : "## none\n" } }]);
+}
 /** The requests one scripted Noter batch makes: the write task (check, the two files, stop) and the verify task (check, stop). */
 export const NOTER_BATCH_REQUESTS = 5;
 /** The Noter has staged its files (its write task wrote them). */

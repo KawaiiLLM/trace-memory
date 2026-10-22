@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { host as createHost, reply, notingFact, type Reply } from "./test-host.ts";
+import { host as createHost, reply, notingFact, dreamerFiles, type Reply } from "./test-host.ts";
 import { piSession, say, type Body } from "./native-fixture.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
@@ -7,23 +7,20 @@ import extension from "../../../src/hosts/pi/index.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { entry, session } from "../../support/seed.ts";
+import { entry, knowledge, session } from "../../support/seed.ts";
 
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
 function host(...args: Parameters<typeof createHost>) {
   const h = createHost(...args); disposers.push(h.dispose); return h;
 }
+/** A Noter-written constraint over one fact: only Noter changes make a Dreamer run due (stage 4 §2.2). */
 function seedKnowledge(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   const receipt = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "Package choice", sources: "[T1#E1] Use pnpm" }));
   expect(receipt.factIds).toHaveLength(1);
-  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Use pnpm", category: "constraint",
-    scope: "session", supports: [`F${receipt.factIds[0]}`], topics: [], reason: "Rule" })).not.toContain("rejected:");
+  knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "session", "constraint", receipt.factIds, "Use pnpm", { operation: { title: "Fixture title" } });
 }
-const skip = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "m1", name: "memory",
-  arguments: { skip: "K1@v1", because: "Reviewed unchanged" } }] });
-
 test.each(["session_start", "enable"] as const)(
   "%s imports check Noting without waiting for another native entry", async boundary => {
     const h = host({ "noting.triggerTokens": 30 });
@@ -94,7 +91,7 @@ test.each(["session_start", "session_tree"] as const)("%s with fully imported hi
 test("a tool-heavy turn admits Noting at its first due entry and Dreaming after a knowledge commit", async () => {
   const h = host({ "noting.triggerTokens": 300, "dreaming.triggerTokens": 1 });
   h.provider(async c => {
-    if (c.systemPrompt?.startsWith("# Dreamer")) return skip();
+    if (c.systemPrompt?.startsWith("# Dreamer") || c.systemPrompt?.startsWith("# Classifying")) return dreamerFiles(c) ?? reply("Done");
     return notingFact(c, "## create\ntitle: Fixture title\ncategory: constraint\nscope: session\ntopics: \nsupports: f1\nreason: Package choice\n\nUse pnpm\n");
   });
   await h.prompt("short");
@@ -107,7 +104,8 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
   expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // one batch: its write and verify runs
   h.persist(reply("next entry"));
   await h.emit("tool_execution_start"); await h.drain();
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success"]);
+  // One Dreamer run is a run for each task: curate's batch, verify with nothing to check, and the scoring pass.
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => [JSON.parse(r.response!).task, r.outcome])).toEqual([["curate", "success"], ["verify", "success"], ["classify", "success"]]);
 });
 
 test("busy entries queue nothing; the next entry after publication admits the next batch", async () => {
@@ -226,7 +224,7 @@ test("installed Pi SDK settles a cancelled turn once and checks again on the nex
 
 test("Raw entry ends reuse a not-due Dreaming result; restore re-arms the next entry", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
-  const due = vi.spyOn(Store.prototype, "dreamingDue");
+  const due = vi.spyOn(Store.prototype, "dreamingDueByNoterChanges");
   try {
     await h.turn();
     const initial = due.mock.calls.length;
@@ -235,9 +233,9 @@ test("Raw entry ends reuse a not-due Dreaming result; restore re-arms the next e
     }
     expect(due).toHaveBeenCalledTimes(initial);
     seedKnowledge(h); await h.emit("session_tree");
-    h.provider(async () => skip());
+    h.provider(async c => dreamerFiles(c) ?? reply("Done"));
     expect(h.requests).toHaveLength(0);
     h.persist(reply("next entry")); await h.emit("tool_execution_start"); await h.drain();
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success"]);
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success", "success", "success"]); // curate, verify, classify
   } finally { due.mockRestore(); }
 });
