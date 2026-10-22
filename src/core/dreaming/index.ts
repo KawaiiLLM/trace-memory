@@ -473,8 +473,8 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     return undefined;
   };
 
-  try { if (frozen.refusal) throw new Refusal(frozen.refusal); } catch (error) {
-    const failed = thrown(DREAMING_TASKS[first]!, undefined, error);
+  if (frozen.refusal) {
+    const failed = thrown(DREAMING_TASKS[first]!, undefined, new Refusal(frozen.refusal));
     return { outcome: failed.outcome, runId: failed.runId, problems: failed.problems, failure: { task: DREAMING_TASKS[first]!, class: failed.class, operation, groups: [] } };
   }
   if (!groups.length) {
