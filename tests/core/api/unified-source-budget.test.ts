@@ -2,8 +2,8 @@ import { expect, test } from "vitest";
 import { TraceMemory, memoryFiles, type RunAgent } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { factSources } from "../../support/seed.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite } from "../../dreaming-skips.ts";
+import { curateNow } from "../../support/dreamer.ts";
+import { block } from "../../support/workspace.ts";
 
 const time = "2026-09-01T00:00:00Z";
 function setup(agent: RunAgent = async () => { throw Error("offline only"); }) {
@@ -79,9 +79,8 @@ test("93 Turn facts show only contributing segments, with earliest source owning
   } finally { m.close(); }
 });
 
-test("92 exact historical versions retain complete tags without granting stale update authority", async () => {
-  const scenarios = new AdmittedDreamerScenarios(async () => { throw Error("unexpected model call"); });
-  const { m, sessionId, turn, files } = setup(scenarios.agent);
+test("92 exact historical versions retain complete tags without granting stale update authority", () => {
+  const { m, sessionId, turn, files } = setup();
   try {
     const tools = m.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" });
     const note = tools.find(t => t.name === "note")!, memory = tools.find(t => t.name === "memory")!;
@@ -89,35 +88,14 @@ test("92 exact historical versions retain complete tags without granting stale u
     const text = "A complete durable claim has its conditions and evidence. ".repeat(500);
     expect(memory.execute({ op: "create", title: "Fixture title", text, category: "understanding", scope: "project", supports: ["F1"], reason: "Initial evidence", topics: [] })).not.toContain("rejected:");
     const path = { sessionId, headTurnId: turn.id, branch: "main" };
-    const trigger = createDreamerTrigger(m, path, 1, 1, "project");
-    const settled = await scenarios.run(m, path, input => {
-      const request = { fixture: "make read target historical" }; input.reportRequest(request);
-      const write = input.tools.find(t => t.name === "memory")!;
-      const base = `K1#${m.store.versionTag(1, 1)}`;
-      expect(memoryFiles(m, input.reader!).read(`trace://${base}`).content).toContain(base);
-      dreamerWrite(write, { operations: [{ op: "update", id: base, text: "Current replacement", category: "understanding", scope: "project",
-        supports: ["F1"], reason: "Make old revision historical", topics: [] },
-      { op: "archive", kind: "budget", id: `K${trigger.knowledgeId}#${m.store.versionTag(trigger.knowledgeId, trigger.commit)}`, supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] });
-      return { outcome: "success", output: "settled", request };
-    });
-    if (settled.outcome !== "success") throw Error(JSON.stringify(settled));
     const oldTag = `K1#${m.store.versionTag(1, 1)}`;
+    // A Dreamer's curate update makes the old revision historical.
+    expect(curateNow(m, path, block("update K1@v1", { reason: "Make old revision historical" }, "Current replacement")).blocks[0]).toMatchObject({ status: "applied", versions: ["K1@v2"] });
     expect(files().read("trace://K1@v1").content).toContain(oldTag);
     expect(files().read("trace://K1@v2").content).toContain("Current replacement");
-    const next = createDreamerTrigger(m, path, 1, 2, "project");
-    const result = await scenarios.run(m, path, input => {
-      const request = { fixture: "stale version authority" }; input.reportRequest(request);
-      const write = input.tools.find(t => t.name === "memory")!;
-      expect(memoryFiles(m, input.reader!).read("trace://K1@v1").content).toContain(oldTag);
-      const rejected = dreamerWrite(write, { operations: [{ op: "update", id: oldTag, text: "Wrong replacement", category: "understanding", scope: "project",
-        supports: ["F1"], reason: "Wrong base", topics: [] }], skipped: [] });
-      expect(rejected).toContain("base is not the latest effective applicable revision; current: K1@v2");
-      expect(write.execute({ drop: "M1" })).toContain("dropped: M1"); // 127: a refusal blocks until withdrawn
-      dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: `K${next.knowledgeId}#${m.store.versionTag(next.knowledgeId, next.commit)}`,
-        supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] });
-      return { outcome: "success", output: "stale base checked", request };
-    });
-    if (result.outcome !== "success") throw Error(JSON.stringify(result));
+    const rejected = curateNow(m, path, block("update K1@v1", { reason: "Wrong base" }, "Wrong replacement")).blocks[0]!;
+    expect(rejected).toMatchObject({ status: "refused", stale: true });
+    expect(rejected.reason).toContain("base is not the latest effective applicable revision; current: K1@v2");
     expect(files().read("trace://K1@v2").content).toContain("Current replacement");
     expect(() => files().read("trace://K1@v1..v2")).toThrow();
   } finally { m.close(); }
