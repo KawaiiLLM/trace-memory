@@ -188,3 +188,9 @@ test("144: a cc.config.json that still carries the shared allowance fails to loa
   expect(() => resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", "compaction.sharedAllowanceTokens": 10_000 } as never))
     .toThrow(/Removed setting compaction\.sharedAllowanceTokens: one temporary allowance, compaction\.temporaryTokens/);
 });
+
+test("144: a cc.config.json that still carries dreaming.maxToolRounds fails to load, as in core and Pi", () => {
+  for (const value of [0, 1])
+    expect(() => resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", "dreaming.maxToolRounds": value } as never))
+      .toThrow(/Removed setting dreaming\.maxToolRounds/);
+});
