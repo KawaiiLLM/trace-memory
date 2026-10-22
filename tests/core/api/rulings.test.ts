@@ -24,11 +24,11 @@ import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
-import { dreamerFixture as makeDreamerFixture, noterWrittenItem, operationOfText, proposalsOf, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
+import { dreamerFixture as makeDreamerFixture, noterWrittenItem, operationOfText, proposalsOf, scriptedDreamer, writeCurateFiles, type DreamerScript } from "../../support/dreamer.ts";
 import { buildPendingSection } from "../../../src/hosts/trace-menu.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { checkVerify } from "../../../src/core/dreaming/changes.ts";
-import { curatePrefix, CURATE_ROTATION } from "../../../src/core/dreaming/curate.ts";
+import { CURATE_ROTATION } from "../../../src/core/dreaming/curate.ts";
 import { tokens as renderTokens, words, wordLimit } from "../../../src/core/render/index.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { budgetArchive, receiptCommit, scoreAll } from "../../support/seed.ts";
@@ -2197,7 +2197,7 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
     input.acknowledgeRequest();
     enteredDreaming();
     await heldDreaming;
-    await writeCurateBatch(input, "## none\n");
+    await writeCurateFiles(input, "## none\n");
     return ok([]);
   } } });
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
@@ -2368,26 +2368,6 @@ test("2026-10-22: each curate run and its verify get exactly their operation's s
   // The system prompt holds no class and no operation's instructions: they travel with the first check result (stage 5 §0).
   const system = loadPrompt("dreaming.md");
   for (const name of ["smells-update", "smells-merge", "smells-split", "smells-archive", "verify-procedure"]) expect(system).not.toContain(block(name));
-});
-
-// Maintainer, 2026-10-22: 「更新、合并仍然按分数降序，归档按分数生升序，拆分按长度/分数加权降序排名」 (sic); chosen: weight = the item's token cost x score.
-test("2026-10-22, 144: 「更新、合并仍然按分数降序，归档按分数生升序，拆分按长度/分数加权降序排名」 — the cap fits one scored item; which one depends on the operation", () => {
-  const f = dreamerFixture();
-  const high = f.item("HIGH short rule", { category: "constraint", title: "High" });
-  const low = f.item("LOW short rule", { category: "constraint", title: "Low" });
-  const long = f.item("LONG weighty rule ".repeat(12), { category: "constraint", title: "Long" });
-  for (const [item, score] of [[high, 90], [low, 10], [long, 60]] as const) f.store.db.prepare("UPDATE knowledge SET score = ? WHERE id = ?").run(score, item.knowledgeId);
-  const items = f.store.curateItems(f.path);
-  const longBlock = curatePrefix(f.store, f.path, "update", items, Infinity).text.split("\n\n").find(part => part.includes("LONG weighty"))!;
-  const cap = renderTokens(longBlock) + 1; // exactly the long item: any two items overflow it
-  const wholeAt = (operation: (typeof CURATE_ROTATION)[number]) => {
-    const text = curatePrefix(f.store, f.path, operation, items, cap).text;
-    return ["HIGH", "LOW", "LONG"].filter(marker => text.includes(`${marker} `));
-  };
-  expect(wholeAt("update")).toEqual(["HIGH"]); // score 90 first
-  expect(wholeAt("merge")).toEqual(["HIGH"]);
-  expect(wholeAt("archive")).toEqual(["LOW"]); // score 10 first
-  expect(wholeAt("split")).toEqual(["LONG"]); // 60 x long body outweighs 90 x short
 });
 
 test("2026-10-22, 144: 「合并实际没有发生，核查通过后才发生」 — curate's changes apply only after verify; every change gets confirm, edit or revert", async () => {
@@ -2897,10 +2877,10 @@ test("2026-10-22, 146: 「重试等下一个检查点，不清空计数，连续
     expect(f.store.noterOperations(f.path)).toBe(operations); // a failure resets no count
     expect(f.store.handoff(f.session.id, "dreaming")!.detail).not.toHaveProperty("waitFrom");
   }
-  expect(executionReasons(f)).toEqual(["verify: provider error", "verify: provider error"]); // the class label stays; no retry or wait suffix
+  expect(executionReasons(f)).toEqual(["verify g1: provider error", "verify g1: provider error"]); // the class label stays; no retry or wait suffix
   expect(f.store.enabled(f.session.id)).toBe(true); // two failures in a row leave memory on
   expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere"); // curate's output is kept as a proposal, not yet published
-  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "verify", detail: { curateRuns: [expect.any(Number)] } });
+  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "verify", detail: { groups: [{ batches: [{ category: "constraint", run: expect.any(Number) }] }] } });
   delete f.dreamer.script.instead;
   expect(await f.dream()).toMatchObject({ outcome: "success" }); // the next check resumes at verify; no new Noter operation was needed
   expect(taskNames(f).filter(task => task === "curate")).toHaveLength(1); // curate did not run again
@@ -2918,7 +2898,7 @@ test("2026-10-22, 146: 「连续失败自动关闭trace」 supersedes 2026-10-21
     expect(f.store.enabled(f.session.id), `after failure ${failure}`).toBe(failure < 3);
   }
   expect(results.slice(0, 2).every(result => !("automaticOff" in result))).toBe(true);
-  expect(results[2]).toMatchObject({ outcome: "failure", automaticOff: expect.stringMatching(/^Trace Memory: S\d+ dreaming off after three failures \(R\d+, R\d+, R\d+\); curate: error\. Use \/trace on to resume\.$/) });
+  expect(results[2]).toMatchObject({ outcome: "failure", automaticOff: expect.stringMatching(/^Trace Memory: S\d+ dreaming off after three failures \(R\d+, R\d+, R\d+\); curate g1: error\. Use \/trace on to resume\.$/) });
   expect(f.store.taskFailures(f.session.id).map(row => [row.phase, row.count])).toEqual([["dreaming", 3]]); // the Noter's row is separate
   expect(f.store.handoff(f.session.id, "dreaming")).not.toBeNull(); // the hand-off stays; /trace on resumes it
 });

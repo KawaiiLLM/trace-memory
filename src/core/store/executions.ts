@@ -93,8 +93,10 @@ export function beginExecution(store: Store, task: LogicalTask): string {
 /** What a passed first task leaves for the second: the files live in the first task's run body, so a restarted or
  * borrowing executor finds them with this one indexed read. */
 export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; nextTask: string; runId: number; branch: string | null; entryIds: number[]; createdAt: string;
-  /** 144 stage 4, Dreamer rows only: which batches are applied, and the operation a resumed run repeats. */
-  detail?: { curateRuns: number[]; doneCategories: string[]; operation?: CurateOperation } }
+  /** Dreamer rows only (146 §3.4): the operation a resumed run repeats and, once a task has committed, the run's groups frozen as knowledge ids.
+   * `run` on a batch is the kept run of its file; `verifyRun` is the group's applied verify. */
+  detail?: HandoffDetail }
+export interface HandoffDetail { operation?: CurateOperation; groups?: { batches: { category: string; items: number[]; run?: number }[]; verifyRun?: number }[] }
 export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"]): Handoff | null {
   const row = store.db.prepare("SELECT * FROM task_handoffs WHERE session_id = ? AND phase = ?").get(sessionId, phase);
   return row ? { sessionId, phase, nextTask: String(row.next_task), runId: Number(row.run_id), branch: row.branch === null ? null : String(row.branch),
@@ -177,6 +179,6 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
  * count and the failure streak are not touched here. */
 function keepDreamerRetry(store: Store, sessionId: number, runId: number, failure: TaskFailure | undefined): void {
   const handoff = store.handoff(sessionId, "dreaming");
-  const detail = { ...(handoff?.detail ?? { curateRuns: [], doneCategories: [] }), ...(handoff?.detail?.operation || !failure?.operation ? {} : { operation: failure.operation }) };
+  const detail = { ...handoff?.detail, ...(handoff?.detail?.operation || !failure?.operation ? {} : { operation: failure.operation }) };
   writeHandoff(store, { sessionId, phase: "dreaming", nextTask: handoff?.nextTask ?? failure?.task ?? "curate", runId: handoff?.runId ?? runId, branch: null, entryIds: [], detail });
 }

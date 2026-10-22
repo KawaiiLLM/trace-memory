@@ -155,16 +155,22 @@ schema migration in parent-before-child order; an all-empty ancestry remains emp
 
 ### Tasks
 
-**curate** runs one conversation over the whole pool. Its first message is the knowledge prefix (at most 50,000
-tokens; items whole, the lowest-scored ones reduced to a title when the cap is exceeded) and tells the model to call
-`check`, whose first result carries the task's instructions (`prompts/tasks/curate-<op>.md`, priced in the capacity
-check). A run performs **one operation**, rotating per project `update` → `merge` → `split` → `archive`
+**curate** runs one conversation for each **group**: the pool's live items are split into groups of at most 100 items
+(`formGroups`, `src/core/dreaming/curate.ts`: largest category first, each category whole into the first group with room
+by item count and by the model's input allowance, a category cut only when it fits no empty group), frozen as knowledge
+ids in the hand-off (`detail.groups`). A group's first message is its prefix (every item whole, by category) and tells the
+model to call `check`, whose first result lists the group's **batches**, at most 20 items of one category each, with one
+file per batch, and carries the task's instructions (`prompts/tasks/curate-<op>.md`, priced in the capacity check). Groups
+curate and verify side by side; each group's verify follows its own curate, and classify follows all groups. A group's
+failure does not stop its siblings. A run performs **one operation**, rotating per project `update` → `merge` → `split` → `archive`
 (`Store.nextCurateOperation`, derived from the newest finished run that advanced it; the hand-off's `detail.operation`
-repeats a failed run's operation on resume). Curate works one category per batch, each batch a file of blocks of that
-operation only (never `create`; one block per item), and a passing batch is **kept** in its run record as a proposal.
-Nothing is applied before verify passes. A merge names its primary, which keeps its identity; a split keeps the named
-item as its primary part. An archive is `invalid` or `inadmissible` with a statement. A batch that fails its check
-twice fails curate. It reads the repositories of the session's directories like verify.
+repeats a failed run's operation on resume). The agent writes the batch files in order, one block per item of the run's operation only (never `create`), and stops
+once: the stop hook runs one final check over every file (a file never written fails it) and allows one repair. When the
+conversation ends, whatever the outcome but a cancellation, each file that passes is **kept** in its run record as a
+proposal and recorded as the batch's `run`; a resume does only the batches without one. A batch may act on any live item of
+the session's pools. Nothing is applied before verify passes. A merge names its primary, which keeps its identity; a split keeps the named
+item as its primary part. An archive is `invalid` or `inadmissible` with a statement. Files that fail the check
+twice fail the group's curate. It reads the repositories of the session's directories like verify.
 
 **verify** gives every proposal one verdict, in a second conversation with the same first request (so it reads the
 cache curate wrote). Its change file numbers each proposal with its current and proposed text (a stale base is shown);
@@ -175,14 +181,16 @@ force now is refused for that operation and left for the next run. It makes no m
 and it writes coverage.
 
 **classify** scores items 1 to 100 by what forgetting them would cost, in passes of at most 100 items, each in a fresh
-conversation. The set is fixed when the task starts: all items up to 100, above that the unscored and changed ones with
+conversation; the passes run side by side under one deadline. A pass is two steps: its file passes the check, the stop hook
+sends the self-check message, and the file is applied once it passes again after the model's Edit. The pass whose commit
+finds every other pass applied finishes the run. The set is fixed when the task starts: all items up to 100, above that the unscored and changed ones with
 up to 30 scored items as anchors. A score is stored beside the version chain, for the version the scorer was shown, and
 an item keeps its score when it changes. It makes no model call when there is nothing to score.
 
 ### Hand-off, retry and completion
 
 A passed task writes a hand-off row, so a restart, a stop or a failure resumes at the first task (and, for curate, the
-first category) not done; coverage, applied batches and scores are written in the same transaction as the pass. A
+batches without a kept file) not done; coverage, applied batches and scores are written in the same transaction as the pass. A
 failed run leaves its hand-off, so the next entry-end check is due and resumes there: no wait for a threshold, no
 `waitFrom` floor, and the Noter-operation count is not reset. A failure counts toward switching memory off like the
 Noter's (see "Final business failure" below). Each task has the wall-clock bound `dreaming.timeoutMs`

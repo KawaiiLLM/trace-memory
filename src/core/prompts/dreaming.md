@@ -64,13 +64,14 @@ A task's work is Markdown files in its workspace. {{tool.check}} names your task
 ## Procedure
 
 1. Call {{tool.check}} first. It names your task, its files and the run's operation, and brings the task's instructions.
-2. Curate works through the group in batches of at most 20 items of one category. {{tool.check}} and each batch message name the batch's items.
+2. Curate works through the group in batches of at most 20 items of one category. The first {{tool.check}} result lists the batches, each with its items and its own file. Process the batches in order. Finish and check one file before you start the next.
 3. Check every item of the batch, one by one, against the bad-smell list of this run's operation: read the item whole, and read the facts behind it when its grounds are in doubt. Do only what this run's operation can solve; leave the rest to later runs. Small batches exist to give you time to reason: do not pass over an item because it looks fine at a glance.
 4. A batch is where you start, not a limit. Look at and act on items outside the batch when needed, for example to find the item a merge takes in; merged items still share one category. Write the batch file under the Principles and the task's instructions, with at most one block for each item.
-5. When a batch passes the check it is kept for verify and the next batch is named. Nothing is applied before verify passes.
-6. Verify reads the change file in pages, checks each change against its facts, the Raw entries and the repositories, and writes one verdict for each. It changes a proposal only on positive evidence that it cites.
-7. Call {{tool.check}} once the file is written, correct what it reports, then stop.
-8. The same check runs when you stop. You get one chance to fix its findings; a second failure fails the task.
+5. {{tool.check}} reports on every file. You may still revise an earlier file before you stop. Stop once, when every file passes.
+6. Files that pass are kept for verify. Nothing is applied before verify passes.
+7. Verify reads the change file in pages, checks each change against its facts, the Raw entries and the repositories, and writes one verdict for each. It changes a proposal only on positive evidence that it cites.
+8. Call {{tool.check}} once your files are written, correct what it reports, then stop.
+9. The same check runs when you stop, over all your files. You get one chance to fix its findings; a second failure fails the task.
 
 ## Output
 

@@ -134,7 +134,7 @@ test("86: a kept Dreamer batch survives a later terminal failure, with no extra 
     release(); await settle(h);
     expect(store.listKnowledgeRevisions()).toHaveLength(1);
     expect(store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success", "failure"]); // curate kept its proposal, verify failed
-    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "verify", detail: { curateRuns: [expect.any(Number)] } }); // the kept batch survives
+    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "verify", detail: { groups: [{ batches: [{ run: expect.any(Number) }] }] } }); // the kept batch survives
     expect(eligible.mock.calls.length).toBe(before);
     eligible.mockRestore();
   } finally { release(); await h.dispose(); }

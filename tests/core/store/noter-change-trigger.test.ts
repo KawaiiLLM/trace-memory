@@ -166,7 +166,7 @@ describe("the due rule", () => {
     const s = setup();
     s.noterItem("Rule");
     expect(s.b.store.dreamingDue(s.b.path, 2)).toBe(false);
-    writeHandoff(s.b.store, { sessionId: s.b.session.id, phase: "dreaming", nextTask: "curate", runId: s.run.id, branch: null, entryIds: [], detail: { curateRuns: [], doneCategories: [] } });
+    writeHandoff(s.b.store, { sessionId: s.b.session.id, phase: "dreaming", nextTask: "curate", runId: s.run.id, branch: null, entryIds: [], detail: { operation: "update" } });
     expect(s.b.store.dreamingDue(s.b.path, 2)).toBe(true); // retry or resume at this check
   });
 });

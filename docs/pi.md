@@ -255,13 +255,12 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   project and this session together. A run is due when the Noter operations since the last covered Dreamer pass reach
   `dreaming.triggerOperations` (30 by default; each Noter create or update counted once, a second update of one item counts again, manual and
   Dreamer revisions never counted), or when a hand-off row asks for a retry or resume. One run covers all three pools and
-  runs three tasks: **curate** (per category, blocks of the run's one operation, rotating `update`, `merge`, `split`, `archive`, kept
-  batch by batch and never applied before verify), **verify** (one confirm, edit or revert for every proposal, against
-  facts, Raw and the session's repositories; its pass applies the confirmed and edited ones) and **classify** (importance scores 1 to 100, in fresh passes of at most 100 items). Each task writes a
+  runs three tasks: **curate** (groups of at most 100 items side by side, each worked in batches of at most 20 with one file per batch, blocks of the run's one operation, rotating `update`, `merge`, `split`, `archive`; the files that pass are kept and nothing is applied before verify), **verify** (per group, one confirm, edit or revert for every proposal, against
+  facts, Raw and the session's repositories; its pass applies the confirmed and edited ones) and **classify** (importance scores 1 to 100, in fresh passes of at most 100 items that run side by side, each with a self-check step). Each task writes a
   file in its own workspace with Pi's `write`/`edit` and `check`, and ends when the model stops; a task with nothing to do
   makes no model call. A passed task leaves a hand-off, so a stop or failure resumes where it left off at the next entry-end check, with no wait for a
-  threshold and no count reset; three consecutive failed runs switch memory off for the session, as the Noter's do. Curate's first request is the knowledge prefix (at most 50,000 tokens) and
-  verify reuses it. Exact current bases and the live database-wide Dreamer claim are checked atomically; a stale base is
+  threshold and no count reset; three consecutive failed runs switch memory off for the session, as the Noter's do. A group's curate first request is its prefix (every item of the group whole) and
+  its verify reuses it. Exact current bases and the live database-wide Dreamer claim are checked atomically; a stale base is
   refused for that operation only. Ordinary completion starts no next run, even while the session remains due. The earlier
   pool-budget Dreamer (a frozen 10,000-token range, `memory` skips, an end review) is removed. There is no automatic Raw
   block or `note` tool.

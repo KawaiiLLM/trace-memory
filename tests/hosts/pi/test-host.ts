@@ -140,22 +140,24 @@ export function noterReply(conversation: Conversation, plan: { facts?: string; k
   if (!file || task === "verify" || written.includes(file)) return undefined;
   return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content: (step === "1" ? plan.facts : plan.knowledge) ?? "## none\n" } }]);
 }
-/** The scripted Dreamer's side of a run (ticket 144 stage 4), as a model behaves on the wire: call `check`, write the file the latest
- * message names (`## none` for curate, a `## confirm <n>` for every change of verify's change file, every item 50 for the scorer), stop; a follow-up that names the next batch's file
- * is answered the same way. Returns undefined when the model has nothing left to say. */
+/** The scripted Dreamer's side of a run (ticket 144 stage 4, 146), as a model behaves on the wire: call `check`, write the file the latest
+ * message names (`## none` for each curate batch file the first `check` result lists, a `## confirm <n>` for every change of verify's change
+ * file, every item 50 for the scorer), stop. Returns undefined when the model has nothing left to say. */
 export function dreamerFiles(conversation: Conversation, plan: { curate?: string; verify?: string } = {}): Reply | undefined {
   const call = (calls: { id: string; name: string; arguments: JsonObject }[]): Reply => ({ ...reply(""), stopReason: "toolUse",
     content: calls.map(value => ({ type: "toolCall" as const, ...value })) });
   const mentions = conversation.messages.flatMap(m => m.role === "assistant" ? [] : [partsText((m as { content: unknown }).content)]).filter(text => /(?:Your file|File): \S+\.md/.test(text));
   if (!mentions.length) return call([{ id: "check-1", name: "check", arguments: {} }]);
   const report = mentions.at(-1)!;
-  const file = /(?:Your file|File): (\S+?\.md)/.exec(report)![1]!;
   const written = conversation.messages.flatMap(m => m.role !== "assistant" || !Array.isArray(m.content) ? [] : (m.content as { type: string; name?: string; arguments?: { path?: string } }[])
     .filter(part => part.type === "toolCall" && part.name === "write").map(part => part.arguments?.path));
-  if (written.includes(file)) return undefined;
+  const files = /^Task: curate/m.test(report) ? [...report.matchAll(/^batch \d+ of \d+, category \w+\. Items: .*?\. File: (\S+?\.md)/gm)].map(match => match[1]!)
+    : [/(?:Your file|File): (\S+?\.md)/.exec(report)![1]!];
+  const todo = files.filter(file => !written.includes(file));
+  if (!todo.length) return undefined;
   const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
-  return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n"
-    : (/^Task: verify/m.test(report) ? plan.verify ?? confirmEvery(report) : /^Task: curate/m.test(report) ? plan.curate : undefined) ?? "## none\n" } }]);
+  return call(todo.map((file, i) => ({ id: `write-${written.length + i + 1}`, name: "write", arguments: { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n"
+    : (/^Task: verify/m.test(report) ? plan.verify ?? confirmEvery(report) : /^Task: curate/m.test(report) ? plan.curate : undefined) ?? "## none\n" } })));
 }
 /** The requests one scripted Noter batch makes: the write task (check, the facts file, stop, the knowledge file, stop) and the verify task
  * (check, then a stop at each of its two steps). */

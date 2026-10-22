@@ -1795,3 +1795,28 @@ test.each(["curate", "classify"] as const)("2026-10-22, 144: a %s task's Read, G
     expect(additional).toBeUndefined();
   }
 });
+
+// 146 §9.2: the scorer corrects its file with Edit in the self-check step; Edit on any other path is refused.
+test("a classify task's Write|Edit hook allows its own file and refuses another path", async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-classify-"))); dirs.push(directory);
+  const file = join(directory, "classify-1.md"), other = join(directory, "other.md");
+  writeFileSync(file, "K1 50\n"); writeFileSync(other, "x\n");
+  const decisions: Record<string, string> = {};
+  const fakeQuery = ((request: { options: Record<string, any> }) => {
+    const stream = (async function* () {
+      const hook = request.options.hooks.PreToolUse.find((entry: { matcher: string }) => entry.matcher === "Write|Edit").hooks[0];
+      for (const [name, tool, path] of [["edit", "Edit", file], ["write", "Write", file], ["other", "Edit", other]] as const)
+        decisions[name] = (await hook({ tool_name: tool, tool_input: { file_path: path } })).hookSpecificOutput.permissionDecision;
+      yield { type: "system", subtype: "init", session_id: "edit", claude_code_version: TEST_CC_VERSION, cwd: directory,
+        tools: ["Read"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "success", session_id: "edit", is_error: false, result: "ok", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "dreaming", task: "classify", text: "material", prompt: "instructions", tools: [], workspace: { dir: directory, read: [file], write: [file], roots: [] },
+    acknowledgeRequest: vi.fn(), passEnd: vi.fn(() => undefined), reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
+  await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0);
+  expect(decisions).toEqual({ edit: "allow", write: "allow", other: "deny" });
+});

@@ -5,10 +5,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, type TraceMemory } from "../../source-fixture.ts";
-import { dreamerFixture as makeDreamerFixture, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
+import { dreamerFixture as makeDreamerFixture, scriptedDreamer, writeCurateFiles, type DreamerScript } from "../../support/dreamer.ts";
 import { archive, knowledge, legacyKnowledge, updateKnowledge } from "../../support/seed.ts";
-import { tokens } from "../../../src/core/render/index.ts";
-import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
 import { TASK_GAP_MS, executionLimitMs, remainingTasks } from "../../../src/core/dreaming/index.ts";
 import { block } from "../../support/workspace.ts";
 import { REQUEST } from "../../support/noter.ts";
@@ -105,7 +103,7 @@ for (const path of ["stop", "executor exit", "memory off", "lost claim", "task d
 
 // ---- Hand-off, resume and the retry rule (§3) -------------------------------------------------------------------------------
 
-test("a batch is kept, not applied; a failure in the next keeps it, and a later run resumes at the batch that failed", async () => {
+test("a batch is kept, not applied; a failure in the next keeps it, and the next check resumes at the batch that failed", async () => {
   const f = dreamerFixture({ curate: { reference: ["## bogus\n"] } });
   const rule = f.item("Rule one", { category: "constraint" });
   const ref = f.item("Ref one", { category: "reference" });
@@ -115,7 +113,8 @@ test("a batch is kept, not applied; a failure in the next keeps it, and a later 
   expect(failed).toMatchObject({ outcome: "failure", failure: { task: "curate", class: "check failed twice", operation: "update" } });
   const handoff = f.store.handoff(f.session.id, "dreaming")!;
   expect(handoff.nextTask).toBe("curate");
-  expect(handoff.detail).toMatchObject({ doneCategories: ["constraint"], curateRuns: [expect.any(Number)], operation: "update" });
+  expect(handoff.detail).toMatchObject({ operation: "update", groups: [{ batches: [{ category: "constraint", run: expect.any(Number) }, { category: "reference" }] }] });
+  expect(handoff.detail!.groups![0]!.batches[1]).not.toHaveProperty("run");
   expect(covered(f)).toEqual([]); // coverage is written when verify passes, never before
   expect(revisions(f)).toBe(before); // the kept batch is not applied
   expect(keptBatches(f)).toBe(1);
@@ -123,7 +122,8 @@ test("a batch is kept, not applied; a failure in the next keeps it, and a later 
   f.dreamer.script.curate!.reference = "## none\n";
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.slice(-3).map(input => input.task)).toEqual(["curate", "verify", "classify"]);
-  expect(f.dreamer.reports.at(-3)).toContain("batch 1 of 1, category reference");
+  expect(f.dreamer.reports.at(-3)).toContain("batch 2 of 2, category reference");
+  expect(f.dreamer.reports.at(-3)).not.toContain("category constraint"); // the resume lists only the batch without a kept file
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
   expect(covered(f)).toContain(ref.commit);
   expect(f.store.currentKnowledge(f.path).find(value => value.knowledge.id === rule.knowledgeId)!.revision.text).toBe("Rule one, tidied"); // applied at verify's pass
@@ -143,7 +143,7 @@ test.each([["429 rate limit", "provider error"], ["bad request", "error"], ["gpt
     f.memory.config.dreaming.triggerOperations = 1;
     expect(f.store.noterOperations(f.path)).toBe(operations);
   }
-  expect(task(f).map(row => row.reason)).toEqual([`curate: ${label}`, `curate: ${label}`]);
+  expect(task(f).map(row => row.reason)).toEqual([`curate g1: ${label}`, `curate g1: ${label}`]);
   expect(count(f)).toBe(2);
   expect(await f.dream()).toMatchObject({ outcome: "success" }); // the third check resumes and finishes
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
@@ -178,7 +178,7 @@ test("a lost claim is one counted failure: hand-off kept, nothing written; user 
   g.release();
   expect(await running).toMatchObject({ outcome: "failure" });
   expect(revisions(f)).toBe(before);
-  expect(task(f)).toEqual([{ outcome: "failure", reason: "curate: claim lost" }]);
+  expect(task(f)).toEqual([{ outcome: "failure", reason: "curate g1: claim lost" }]);
   expect(count(f)).toBe(1);
   expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate" });
   // A stop is not a failure.
@@ -221,7 +221,7 @@ test("a model that ignores its deadline fails as a timeout at its own deadline; 
   f.next(raw => new Promise(() => { void raw; })); // never settles and never looks at the signal
   const stuck = await f.dream();
   expect(stuck).toMatchObject({ outcome: "failure", failure: { task: "curate", class: "timeout" } });
-  expect(task(f)[0]).toEqual({ outcome: "failure", reason: "curate: timeout" });
+  expect(task(f)[0]).toEqual({ outcome: "failure", reason: "curate g1: timeout" });
   f.next(raw => new Promise(resolve => {
     (raw as { signal: AbortSignal }).signal.addEventListener("abort", () => { aborted = true; resolve({ outcome: "cancelled", output: "stopped" }); });
   }));
@@ -232,47 +232,19 @@ test("a model that ignores its deadline fails as a timeout at its own deadline; 
 
 // ---- curate (§4) ------------------------------------------------------------------------------------------------------------
 
-test("a failing batch file gets one repair message and then is kept; the receipt says kept, and nothing is applied before verify", async () => {
+test("a failing batch file gets one repair message and then is kept; nothing is applied before verify", async () => {
   const f = dreamerFixture();
   const rule = f.item("Rule", { category: "constraint" });
   f.dreamer.script.curate!.constraint = ["## bogus\n", updateBlock(rule, "Fixed rule")];
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.dreamer.messages).toHaveLength(1);
-  expect(f.dreamer.messages[0]).toContain("does not pass the check");
+  expect(f.dreamer.messages[0]).toContain("do not pass the check");
   expect(f.store.listKnowledgeRevisions().some(revision => revision.text === "Fixed rule")).toBe(true); // applied at verify's pass
-});
-
-test("a batch touches only its own category: a base from another category is a check problem", async () => {
-  const f = dreamerFixture();
-  const rule = f.item("Rule", { category: "constraint" });
-  f.item("Reference", { category: "reference" });
-  const update = block(`update K${rule.knowledgeId}@v${rule.ordinal}`, { title: "Rule", reason: "tidy" }, "Rule, tidied");
-  f.dreamer.script.curate!.reference = [update, update]; // the reference batch names a constraint item
-  const result = await f.dream();
-  expect(result).toMatchObject({ outcome: "failure", failure: { class: "check failed twice" } });
-  expect(f.dreamer.messages.join("\n")).toContain("is in category constraint; this batch covers reference");
-});
-
-test("the prefix shows unscored items whole and scored items whole by score while the cap holds, then titles only; it is deterministic", () => {
-  const f = dreamerFixture();
-  const low = f.item("Low scored rule with a long body ".repeat(20), { category: "constraint", title: "Low item" });
-  const high = f.item("High scored rule with a long body ".repeat(20), { category: "constraint", title: "High item" });
-  f.item("Unscored rule with a long body ".repeat(20), { category: "constraint", title: "New item" });
-  f.store.db.prepare("UPDATE knowledge SET score = ? WHERE id = ?").run(30, low.knowledgeId);
-  f.store.db.prepare("UPDATE knowledge SET score = ? WHERE id = ?").run(90, high.knowledgeId);
-  const items = f.store.curateItems(f.path);
-  const whole = tokens(curatePrefix(f.store, f.path, "update", items, Infinity).text);
-  const text = curatePrefix(f.store, f.path, "update", items, Math.floor(whole * 0.8)).text;
-  expect(text).toContain("Unscored rule with a long body");
-  expect(text).toContain("High scored rule with a long body");
-  expect(text).not.toContain("Low scored rule with a long body");
-  expect(text).toContain("Low item"); // its header line, with the address and title
-  expect(curatePrefix(f.store, f.path, "update", items, Math.floor(whole * 0.8)).text).toBe(text);
 });
 
 // ---- Resume across a restart (§3.2) -----------------------------------------------------------------------------------------
 
-test("after a restart the hand-off resumes at the first category not done, and the earlier batch's coverage counts", async () => {
+test("after a restart the hand-off resumes at the first batch without a kept file, and the earlier batch's coverage counts", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-144-dreamer-restart-"));
   try {
     const file = join(dir, "memory.sqlite");
@@ -287,13 +259,13 @@ test("after a restart the hand-off resumes at the first category not done, and t
     const dreamer = scriptedDreamer();
     const memory = sourceSeededMemory(file, dreamer.agent); memories.push(memory);
     memory.config.dreaming.triggerOperations = 1;
-    expect(memory.store.handoff(sessionId, "dreaming")).toMatchObject({ nextTask: "curate", detail: { doneCategories: ["constraint"] } });
+    expect(memory.store.handoff(sessionId, "dreaming")).toMatchObject({ nextTask: "curate", detail: { groups: [{ batches: [{ category: "constraint", run: expect.any(Number) }, { category: "reference" }] }] } });
     // The permanent failure waits for newer Noter changes; one arrives.
     const path = { sessionId, branch, headTurnId };
     knowledge(memory.store, path, "project", "reference", [laterFact.id], "A later reference", { operation: { title: "Later item" } });
     expect(await memory.dream({ sessionId, branch, headTurnId, model: "scripted" })).toMatchObject({ outcome: "success" });
     expect(dreamer.inputs.map(input => input.task)).toEqual(["curate", "verify", "classify"]); // the earlier batch's change is verified
-    expect(dreamer.reports[0]).toContain("batch 1 of 1, category reference");
+    expect(dreamer.reports[0]).toContain("batch 2 of 2, category reference");
     const processed = memory.store.db.prepare("SELECT revision_id FROM knowledge_processed").all().map(row => Number(row.revision_id));
     expect(processed).toEqual(expect.arrayContaining([rule.commit, ref.commit]));
     expect(memory.store.handoff(sessionId, "dreaming")).toBeNull();
@@ -389,7 +361,8 @@ const classifyThen = (after: (input: import("../../source-fixture.ts").DreamingA
     if (Number(/pass (\d+)/.exec(report)?.[1] ?? 1) === failBefore) return { outcome: "failure", output: "429 rate limit", request: REQUEST } as import("../../source-fixture.ts").RunAgentResult; // fails before its stop: nothing committed
     const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => match[1]!);
     writeFileSync(/File: (\S+?\.md)/.exec(report)![1]!, ids.map(id => `K${id} 50`).join("\n") + "\n");
-    input.passEnd();
+    input.passEnd(); // step 1: the file passes and the self-check message comes back
+    input.passEnd(); // step 2: no edit; the file is applied
     const pass = Number(/pass (\d+)/.exec(report)?.[1] ?? 1);
     return { outcome: "success", output: "Done.", request: REQUEST, usage: { tokens: 12 }, ...(await after(input, pass) ?? {}) } as import("../../source-fixture.ts").RunAgentResult;
   };
@@ -560,6 +533,7 @@ test("a lost lease at the final pass commits no finish, and the next run repeats
     const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
     const ids = [...(/Items: (.*)/.exec(report)![1]!).matchAll(/K(\d+)/g)].map(match => match[1]!);
     writeFileSync(/File: (\S+?\.md)/.exec(report)![1]!, ids.map(id => `K${id} 50`).join("\n") + "\n");
+    input.passEnd(); // step 1 passes; the self-check message comes back
     f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'dreaming'").run(); // the lease lapses before the final commit
     input.passEnd();
     return { outcome: "success", output: "Done.", request: REQUEST } as never;
@@ -614,7 +588,7 @@ test("146 Q16: from a streak of 2, a kept batch does not reset it; the failure t
   f.next(async raw => { // curate keeps its first batch, then the model fails on the next
     const input = raw as import("../../source-fixture.ts").DreamingAgentInput;
     input.reportRequest(REQUEST);
-    await writeCurateBatch(input, "## none\n");
+    await writeCurateFiles(input, "## none\n");
     streakAfterBatch = count(f);
     return { outcome: "failure", output: "bad request" } as never;
   });

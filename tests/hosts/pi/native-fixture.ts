@@ -46,11 +46,15 @@ export const dreamerTurn = (body: Body, tokens = usage()): Response => {
   const named = (body.messages ?? []).filter((m: Body) => m.role !== "assistant" && m.role !== "system").map(text).filter((value: string) => /(?:Your file|File): \S+\.md/.test(value));
   if (!named.length) return call("check-1", "check", {}, tokens);
   const report = named.at(-1)!;
-  const file = /(?:Your file|File): (\S+?\.md)/.exec(report)![1]!;
   const written = (body.messages ?? []).flatMap((m: Body) => (m.tool_calls ?? []).filter((c: Body) => c.function?.name === "write").map((c: Body) => JSON.parse(c.function.arguments).path));
-  if (written.includes(file)) return say("Done.", tokens);
+  // A curate report lists a file for each batch of its group (146); the other tasks name one.
+  const files = /^Task: curate/m.test(report) ? [...report.matchAll(/^batch \d+ of \d+, category \w+\. Items: .*?\. File: (\S+?\.md)/gm)].map(match => match[1]!)
+    : [/(?:Your file|File): (\S+?\.md)/.exec(report)![1]!];
+  const todo = files.filter(file => !written.includes(file));
+  if (!todo.length) return say("Done.", tokens);
   const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
-  return call(`write-${written.length + 1}`, "write", { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n" : "## none\n" }, tokens);
+  const writes = todo.map(file => ({ path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n" : "## none\n" }));
+  return writes.length === 1 ? call(`write-${written.length + 1}`, "write", writes[0], tokens) : calls(`write-${written.length + 1}`, "write", writes, tokens);
 };
 export const broken = () => new Response(JSON.stringify({ error: { message: "provider exploded" } }), { status: 500, headers: { "content-type": "application/json" } });
 

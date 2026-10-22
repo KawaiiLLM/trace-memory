@@ -19,12 +19,14 @@ import { placementOwner } from "../../src/core/store/processing.ts";
  * entry scores every item 50. */
 type Text = string | readonly string[] | ((message: string) => string);
 export interface DreamerScript {
-  /** The curate batch files by category. */
+  /** The curate batch files by category: a category's text goes to its first listed batch, and `"batch<b>"` names batch b of the group. A batch with no entry writes `## none`. A conversation writes every batch file in order, then meets the
+   * stop hook; the repair message names the failing batches, and their files are written again with the next text of a list. */
   curate?: Partial<Record<string, Text>>;
   /** Verify's file. */
   verify?: Text;
-  /** Classify's file for each pass (1-based); `ids` are the pass's items. */
-  classify?: (pass: number, ids: number[], message: string) => Text | undefined;
+  /** Classify's file for each pass (1-based); `ids` are the pass's items. A pass writes its file and then meets the self-check step (146): by
+   * default it stops again without editing; `{ write, edit }` gives the file of step 1 and the text an Edit leaves in step 2. */
+  classify?: (pass: number, ids: number[], message: string) => Text | { write: Text; edit?: Text } | undefined;
   /** Result of the curate conversation (a failure, a cancellation); absent: success. */
   curateResult?: Partial<RunAgentResult>;
   /** Run instead of the scripted conversation for one task (a runner that hangs, ignores abort, or records its input). */
@@ -32,7 +34,9 @@ export interface DreamerScript {
 }
 
 const FILE: Record<string, RegExp> = { curate: /File: (\S+?\.md)/, verify: /Your file: (\S+?\.md)/, classify: /File: (\S+?\.md)/ };
-const CATEGORY = /category (\w+)/;
+/** The batches a curate `check` result (or a repair) lists: `batch b of n, category X. Items: …. File: path`. */
+export const listedBatches = (report: string) => [...report.matchAll(/^batch (\d+) of (\d+), category (\w+)\. Items: .*?\. File: (\S+?\.md)/gm)]
+  .map(match => ({ no: Number(match[1]), of: Number(match[2]), category: match[3]!, file: match[4]! }));
 
 /** The default verify file: `## confirm <n>` for every change numbered in the change file the report names. */
 export const confirmEvery = (report: string): string => {
@@ -43,7 +47,7 @@ export const confirmEvery = (report: string): string => {
 
 export function scriptedDreamer(script: DreamerScript = {}) {
   script.curate ??= {}; // a test may fill in a batch after the run is built
-  const inputs: DreamingAgentInput[] = [], messages: string[] = [], reports: string[] = [], attempts = new Map<string, number>();
+  const inputs: DreamingAgentInput[] = [], messages: string[] = [], selfChecks: string[] = [], reports: string[] = [], attempts = new Map<string, number>();
   const pick = (key: string, planned: Text | undefined, report: string): string => {
     const attempt = attempts.get(key) ?? 0;
     attempts.set(key, attempt + 1);
@@ -59,24 +63,44 @@ export function scriptedDreamer(script: DreamerScript = {}) {
     input.reportRequest(REQUEST);
     let report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
     reports.push(report);
-    for (let turn = 0; turn < 50; turn++) {
+    if (input.task === "curate") {
+      const nth = new Map<string, number>(), all = listedBatches(report).map(batch => ({ ...batch, nth: nth.set(batch.category, (nth.get(batch.category) ?? 0) + 1).get(batch.category)! }));
+      let listed = all;
+      for (let round = 0; round < 10; round++) {
+        for (const batch of listed) {
+          const planned = script.curate?.[`batch${batch.no}`] ?? (batch.nth === 1 ? script.curate?.[batch.category] : undefined);
+          const attempt = typeof planned === "function" ? planned(report) : typeof planned === "string" ? planned : (planned ?? ["## none\n"])[Math.min(round, (planned ?? [""]).length - 1)]!;
+          writeFileSync(batch.file, attempt);
+        }
+        const message = input.passEnd();
+        if (message === undefined) break;
+        messages.push(message);
+        report = message;
+        const failing = new Set(listedBatches(message).map(batch => batch.file));
+        listed = all.filter(batch => failing.has(batch.file));
+      }
+    } else for (let turn = 0, step2 = false, planned: ReturnType<NonNullable<DreamerScript["classify"]>> | undefined, asked = false; turn < 50; turn++) {
       const file = FILE[input.task]!.exec(report)![1]!;
-      const text = input.task === "curate" ? (() => { const category = CATEGORY.exec(report)![1]!; return pick(`curate:${category}`, script.curate?.[category], report); })()
-        : input.task === "verify" ? pick("verify", script.verify ?? confirmEvery(report), report)
-        : (() => {
-            const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
-            const pass = Number(/pass (\d+)/.exec(report)?.[1] ?? 1);
-            return pick(`classify:${pass}`, script.classify?.(pass, ids, report) ?? ids.map(id => `K${id} 50`).join("\n") + "\n", report);
-          })();
-      writeFileSync(file, text);
+      let text: string | undefined;
+      if (input.task === "verify") text = pick(`verify:${/group (\d+)/.exec(report)?.[1] ?? 1}`, script.verify ?? confirmEvery(report), report);
+      else {
+        const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
+        const pass = Number(/pass (\d+)/.exec(report)?.[1] ?? 1);
+        if (!asked) { asked = true; planned = script.classify?.(pass, ids, report); }
+        const plan: { write?: Text; edit?: Text } = planned !== undefined && typeof planned === "object" && "write" in planned ? planned : { write: planned as Text | undefined };
+        if (step2) text = plan.edit === undefined ? undefined : pick(`classify:${pass}:edit`, plan.edit, report);
+        else text = pick(`classify:${pass}`, plan.write ?? ids.map(id => `K${id} 50`).join("\n") + "\n", report);
+      }
+      if (text !== undefined) writeFileSync(file, text);
       const message = input.passEnd();
       if (message === undefined) break;
+      if (input.task === "classify" && /Step 2 of 2/.test(message)) { selfChecks.push(message); step2 = true; continue; }
       messages.push(message);
       report = message;
     }
     return { outcome: "success", output: "Done.", request: REQUEST, usage: { tokens: 12 }, ...(input.task === "curate" ? script.curateResult : {}) } as RunAgentResult;
   };
-  return { agent, inputs, messages, reports, script };
+  return { agent, inputs, messages, selfChecks, reports, script };
 }
 
 /** A session whose Dreamer is `scriptedDreamer`, due at the first check. `memories` collects what the test must close. A test swaps in
@@ -103,11 +127,12 @@ export function dreamerFixture(memories: TraceMemory[], script: DreamerScript = 
 }
 export type DreamerFixture = ReturnType<typeof dreamerFixture>;
 
-/** The curate model of a test that does something the scripted one does not: it calls `check`, writes the batch file `check` names
- * with `text`, and meets the stop hook once. Returns the hook's answer (the next batch, or undefined when the task is over). */
-export async function writeCurateBatch(input: DreamingAgentInput, text: string): Promise<string | undefined> {
+/** The curate model of a test that does something the scripted one does not: it calls `check`, writes the batch files `check` lists with
+ * `texts` (in batch order; a batch with no text is left unwritten), and meets the stop hook once. Returns the hook's answer (the repair message,
+ * or undefined when the task is over). */
+export async function writeCurateFiles(input: DreamingAgentInput, ...texts: string[]): Promise<string | undefined> {
   const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
-  writeFileSync(FILE.curate!.exec(report)![1]!, text);
+  listedBatches(report).forEach((batch, i) => { if (texts[i] !== undefined) writeFileSync(batch.file, texts[i]!); });
   return input.passEnd();
 }
 

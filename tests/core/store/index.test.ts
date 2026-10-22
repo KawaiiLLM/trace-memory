@@ -737,7 +737,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     if (!knowledge.ok) throw Error(knowledge.problems.join("; "));
     store.closeSession(s.id);
     // A Dreamer is due on a hand-off row (stage 4 §2.4); the manual item above is not a Noter change.
-    writeHandoff(store, { sessionId: s.id, phase: "dreaming", nextTask: "curate", branch: null, entryIds: [], detail: { curateRuns: [], doneCategories: [] },
+    writeHandoff(store, { sessionId: s.id, phase: "dreaming", nextTask: "curate", branch: null, entryIds: [], detail: { operation: "update" },
       runId: store.recordRun({ kind: "dreaming", sessionId: s.id, branch: "main", createdAt: consolidationAt, outcome: "success" }).id });
     const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
     const clock = Date.now();

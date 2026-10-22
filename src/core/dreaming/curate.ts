@@ -1,73 +1,92 @@
-// Dreaming's curate task (ticket 144 stage 4 §4): the pool view and the prefix every task of a run shares, the batches
-// (one per category), the check of a batch file and what is applied from it.
+// Dreaming's curate task (ticket 144 stage 4 §4, ticket 146): the pool view, the groups of at most 100 items, the batches of at most
+// 20 inside a group, the prefix a group's tasks share, the check of a batch file and what is applied from it.
 
-import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup, type KnowledgeCategory } from "../model/index.ts";
-import { describeBlock, problem, plan, type CheckResult, type WorkspaceFile } from "../workspace/index.ts";
-import { knowledgeTitle, renderKnowledge, tokens, withFactDates, withKnowledgeCost } from "../render/index.ts";
-import type { KnowledgeOperationInput, KnowledgePath, Store, WorkspaceOperationResult } from "../store/index.ts";
+import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup } from "../model/index.ts";
+import { problem, plan, type CheckResult, type WorkspaceFile } from "../workspace/index.ts";
+import { renderKnowledge, tokens, withFactDates, withKnowledgeCost } from "../render/index.ts";
+import type { KnowledgePath, Store, WorkspaceOperationResult } from "../store/index.ts";
 import { CURATE_ROTATION, type CurateOperation } from "../store/executions.ts";
 import type { PlannedBlock } from "../workspace/plan.ts";
 
-/** The knowledge block every task of a run opens with (§4.1): named constant, not a setting. */
-export const CURATE_PREFIX_TOKENS = 50_000;
+/** 146 rulings 2 and 3: a curate agent takes at most this many items, all shown whole; it works through them in batches of at most
+ * `CURATE_BATCH_ITEMS`, each of one category. Named constants, like `CLASSIFY_PASS_ITEMS`. */
+export const CURATE_GROUP_ITEMS = 100;
+export const CURATE_BATCH_ITEMS = 20;
 
 export type CurateItem = ReturnType<Store["curateItems"]>[number];
 export type Category = (typeof KNOWLEDGE_CATEGORIES)[number];
 const groupOf = (item: CurateItem): Category => knowledgeCategoryGroup(item.value.revision.category);
 
-/** The prefix text and the items it shows, by category. Unscored items are shown whole, even past the cap; scored items follow
- * in the run's operation order while the block stays within it (update and merge: score descending; archive: ascending; split: body
- * tokens x score descending; ties keep the newer version first); the rest show their header line only (title included). */
-export function curatePrefix(store: Store, path: KnowledgePath, operation: CurateOperation, items: readonly CurateItem[] = store.curateItems(path), cap = CURATE_PREFIX_TOKENS) {
-  const writing = store.writing;
-  const whole = new Map(items.map(item => {
-    const body = renderKnowledge(item.value, item.address, false, writing);
-    return [item.value.revision.id, withFactDates(withKnowledgeCost(body, tokens(body)), item.dates)] as const;
-  }));
-  const costOf = (item: CurateItem) => tokens(whole.get(item.value.revision.id)!) + 1;
-  const shown = new Set<number>();
-  let used = 0;
-  for (const item of items.filter(item => item.score === null)) { shown.add(item.value.revision.id); used += costOf(item); }
-  const rank = (item: CurateItem) => operation === "archive" ? -item.score! : operation === "split" ? item.score! * costOf(item) : item.score!;
-  const scored = items.filter(item => item.score !== null).sort((a, b) => rank(b) - rank(a) || b.value.revision.id - a.value.revision.id);
-  for (const item of scored) {
-    if (used + costOf(item) > cap) break;
-    shown.add(item.value.revision.id); used += costOf(item);
-  }
-  const render = (item: CurateItem) => shown.has(item.value.revision.id) ? whole.get(item.value.revision.id)!
-    : whole.get(item.value.revision.id)!.split("\n")[0]!;
+/** One item rendered whole, as the group prefix shows it. */
+export function wholeText(store: Store, item: CurateItem): string {
+  const body = renderKnowledge(item.value, item.address, false, store.writing);
+  return withFactDates(withKnowledgeCost(body, tokens(body)), item.dates);
+}
+/** What an item costs in a prefix: its whole rendering and the separator after it. */
+export const wholeCost = (store: Store, item: CurateItem): number => tokens(wholeText(store, item)) + 1;
+const headingOf = (category: Category) => `## ${category} (${CURATE_GROUP_ITEMS})\n\n`;
+export const headingCost = (category: Category) => tokens(headingOf(category));
+
+/** The prefix a group's tasks share (§2.4): the group's items whole, by category, oldest change first. `total` is the size of the whole pool. */
+export function curatePrefix(store: Store, path: KnowledgePath, items: readonly CurateItem[] = store.curateItems(path), total = store.curateItems(path).length) {
+  const text = KNOWLEDGE_CATEGORIES.map(category => ({ category, items: items.filter(item => groupOf(item) === category) })).filter(part => part.items.length)
+    .map(part => `## ${part.category} (${part.items.length})\n\n${part.items.map(item => wholeText(store, item)).join("\n\n")}`).join("\n\n");
+  return { text: `Knowledge of this group: ${items.length} of the session's ${total} current items, by category:\n\n${text || "none"}` };
+}
+
+/** §2.2: the groups of a run. Largest category first, each category whole into the first group that has room for it by item count and by
+ * token cost; a category that does not fit an empty group is cut into consecutive chunks. Deterministic, not optimal. `room` is the input
+ * allowance left for a group's items (Infinity without one). An item that fits no empty group alone refuses the formation. */
+export function formGroups(items: readonly CurateItem[], cost: (item: CurateItem) => number, room = Infinity): { groups: CurateItem[][] } | { refusal: string } {
   const byCategory = new Map<Category, CurateItem[]>();
-  for (const category of KNOWLEDGE_CATEGORIES) byCategory.set(category, items.filter(item => groupOf(item) === category));
-  const text = KNOWLEDGE_CATEGORIES.filter(category => byCategory.get(category)!.length)
-    .map(category => `## ${category} (${byCategory.get(category)!.length})\n\n${byCategory.get(category)!.map(render).join("\n\n")}`).join("\n\n");
-  return { text: `Current knowledge of this session's pools, by category:\n\n${text || "none"}`, byCategory };
+  for (const item of [...items].sort((a, b) => a.value.revision.id - b.value.revision.id)) { const list = byCategory.get(groupOf(item)); if (list) list.push(item); else byCategory.set(groupOf(item), [item]); }
+  const total = (list: readonly CurateItem[]) => list.reduce((sum, item) => sum + cost(item), 0);
+  const categories = [...byCategory.keys()].sort((a, b) => byCategory.get(b)!.length - byCategory.get(a)!.length
+    || total(byCategory.get(b)!) - total(byCategory.get(a)!) || KNOWLEDGE_CATEGORIES.indexOf(a) - KNOWLEDGE_CATEGORIES.indexOf(b));
+  interface Open { parts: Map<Category, CurateItem[]>; count: number; cost: number }
+  const fits = (open: Open, category: Category, chunk: readonly CurateItem[]) => open.count + chunk.length <= CURATE_GROUP_ITEMS
+    && open.cost + total(chunk) + (open.parts.has(category) ? 0 : headingCost(category)) <= room;
+  const empty = (): Open => ({ parts: new Map(), count: 0, cost: 0 });
+  const opened: Open[] = [];
+  const put = (category: Category, chunk: CurateItem[]) => {
+    let at = opened.find(open => fits(open, category, chunk));
+    if (!at) opened.push(at = empty());
+    if (!at.parts.has(category)) { at.cost += headingCost(category); at.parts.set(category, []); }
+    at.parts.get(category)!.push(...chunk); at.count += chunk.length; at.cost += total(chunk);
+  };
+  for (const category of categories) {
+    const list = byCategory.get(category)!;
+    if (fits(empty(), category, list)) { put(category, list); continue; }
+    for (let at = 0; at < list.length;) {
+      const chunk: CurateItem[] = [];
+      while (at < list.length && fits(empty(), category, [...chunk, list[at]!])) chunk.push(list[at++]!);
+      if (!chunk.length) return { refusal: `${list[at]!.address} costs ${cost(list[at]!)} tokens and fits no group alone (room ${room})` };
+      put(category, chunk);
+    }
+  }
+  const order = new Map(KNOWLEDGE_CATEGORIES.flatMap(category => (byCategory.get(category) ?? []).map((item, i) => [item, [KNOWLEDGE_CATEGORIES.indexOf(category), i] as const] as const)));
+  const rank = (item: CurateItem) => order.get(item)![0] * 1e6 + order.get(item)![1];
+  const groups = opened.map(open => KNOWLEDGE_CATEGORIES.flatMap(category => open.parts.get(category) ?? []).sort((a, b) => rank(a) - rank(b)));
+  return { groups: groups.sort((a, b) => rank(a[0]!) - rank(b[0]!)) };
+}
+
+/** §4.1: the batches of a group's items, in prefix order: each category's items cut into consecutive batches of at most 20. */
+export function batchesOf(items: readonly CurateItem[]): { category: Category; items: CurateItem[] }[] {
+  return KNOWLEDGE_CATEGORIES.flatMap(category => {
+    const own = items.filter(item => groupOf(item) === category);
+    return Array.from({ length: Math.ceil(own.length / CURATE_BATCH_ITEMS) }, (_, i) => ({ category, items: own.slice(i * CURATE_BATCH_ITEMS, (i + 1) * CURATE_BATCH_ITEMS) }));
+  });
 }
 
 export const batchFileName = (index: number, category: string) => `curate-${index + 1}-${category}.md`;
 
-/** The check of a curate batch file: the Stage 2 plan for the run's one operation (never `create`), then the rule that a batch touches only
- * its own category (§4.3). Every base, merge primary and absorbed item must sit in the batch's category group; split children and a
- * category change by `update` may name any category. */
-export function checkBatch(store: Store, path: KnowledgePath, category: Category, file: WorkspaceFile, operation: CurateOperation): CheckResult & { planned: PlannedBlock[] } {
+/** The check of a curate batch file: the Stage 2 plan for the run's one operation (never `create`). A batch may act on any live item of the
+ * session's pools, inside or outside it (ruling 3); merged items share one category and scope, which the plan checks. A file the agent
+ * never wrote fails (it is not read as `## none`). */
+export function checkBatch(store: Store, path: KnowledgePath, file: WorkspaceFile & { written: boolean }, operation: CurateOperation): CheckResult & { planned: PlannedBlock[] } {
+  if (!file.written) return { ok: false, problems: [problem(file, 0, file.name, "not written: write this batch's file, with `## none` when nothing in it needs a change")], lengths: [], planned: [] };
   const planned = plan(store, { kind: "curate", operation, sessionId: path.sessionId, path, file });
-  const problems = [...planned.problems];
-  const groupAt = (knowledgeId: number, baseCommit: number) => {
-    const revision = store.getKnowledgeRevision(knowledgeId, baseCommit);
-    return revision ? knowledgeCategoryGroup(revision.category) : undefined;
-  };
-  if (!planned.problems.length) for (const entry of planned.knowledge) {
-    const operation = entry.make().operation as KnowledgeOperationInput | undefined;
-    if (!operation || operation.op === "create") continue;
-    const bases = operation.op === "merge" ? [{ knowledgeId: operation.intoKnowledgeId, baseCommit: operation.intoBaseCommit }, ...operation.absorb]
-      : [{ knowledgeId: operation.knowledgeId, baseCommit: operation.baseCommit }];
-    for (const base of bases) {
-      const group = groupAt(base.knowledgeId, base.baseCommit);
-      if (group !== undefined && group !== category)
-        problems.push(problem(file, entry.block.line, describeBlock(entry.block),
-          `K${base.knowledgeId} is in category ${group}; this batch covers ${category}. Change a category with an update in the batch of the item's own category`));
-    }
-  }
-  return { ok: !problems.length, problems, lengths: planned.lengths, planned: planned.knowledge };
+  return { ok: !planned.problems.length, problems: planned.problems, lengths: planned.lengths, planned: planned.knowledge };
 }
 export { CURATE_ROTATION, type CurateOperation };
 export type { WorkspaceOperationResult };
