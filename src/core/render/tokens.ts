@@ -204,3 +204,29 @@ export function tokensJoined(parts: readonly string[], separator: string): numbe
   parts.forEach((part, index) => { if (index) counter.add(separator); counter.add(part); });
   return counter.count;
 }
+
+// ---- Length caps (ticket 145) ----
+// A title or body cap is written to the model in 字/词 and checked in the same unit: a model counts words
+// far more accurately than tokens, and a token count of the same text varies by 1.25 (p50) to 1.92 (p99)
+// per 字/词 on live bodies. Each CJK character (Han, Kana, Hangul) counts 1. Each run of letters,
+// digits and `_` counts 1, joined across an internal `.`, `-` or `/`, so a path or an identifier is one
+// word. Punctuation and whitespace count 0. This is the only place the rule lives.
+const CJK_UNIT = "\\p{Script=Han}\\p{Script=Hangul}\\p{Script=Hiragana}\\p{Script=Katakana}\\u30FC";
+const WORD_CHAR = `(?:(?![${CJK_UNIT}])[\\p{L}\\p{N}\\p{M}_])`;
+const UNIT = new RegExp(`[${CJK_UNIT}]|${WORD_CHAR}+(?:[./-]${WORD_CHAR}+)*`, "gu");
+
+/** The length of a title or body in 字/词. */
+export const words = (text: string): number => text.match(UNIT)?.length ?? 0;
+
+/** What a check allows for a target: the target plus 10%, rounded up. Integer arithmetic, because 200 * 1.1 is 220.00000000000003. */
+export const wordLimit = (target: number): number => Math.ceil(target * 11 / 10);
+
+/** The text up to and including its first `count` 字/词; a text that has no more is returned whole, trailing punctuation included. */
+export function leadingWords(text: string, count: number): string {
+  let end = 0, seen = 0;
+  for (const match of text.matchAll(UNIT)) {
+    if (seen++ === count) return text.slice(0, end);
+    end = match.index + match[0].length;
+  }
+  return text;
+}
