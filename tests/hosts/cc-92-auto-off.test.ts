@@ -45,7 +45,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     const fileOf = async (task: DreamingAgentInput) => /(?:Your file|File): (\S+?\.md)/.exec(String(await task.tools.find(tool => tool.name === "check")!.execute({})))![1]!;
     executeDream = async task => {
       const request = { fixture: "cc-auto-off", kind: "dreaming" };
-      if (task.task === "curate") { // the batch is applied at its pass end, before the stop
+      if (task.task === "curate") { // the batch is kept at its pass end, before the stop
         writeFileSync(await fileOf(task), block(`update K${changed!.knowledgeId}@v1`, { reason: "maintenance" }, "Rule 1 maintained"));
         expect(task.passEnd()).toBeUndefined();
         return { outcome: "success", output: "curated", request };
@@ -54,7 +54,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
       const file = await fileOf(task);
       claim = store.getClaim(session.id, "dreaming");
       lateWrite = () => {
-        writeFileSync(file, block(`update K${changed!.knowledgeId}@v2`, { reason: "late forbidden write", evidence: `trace://F${fid}` }, "Late rewrite"));
+        writeFileSync(file, block(`edit 1 update K${changed!.knowledgeId}@v1`, { evidence: `trace://F${fid}` }, "Late rewrite"));
         return task.passEnd();
       };
       const signal = task.signal;
@@ -85,13 +85,10 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     expect(diagnostics.some(message => message.includes("off after three failures"))).toBe(true);
     expect(store.getClaim(session.id, "dreaming")).toBeNull();
     expect(lateWrite()).toBeUndefined();
-    expect(revisions()).toBe(revisionsAtAbort); // curate's batch stays; nothing was added by the late write
-    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1 maintained");
+    expect(revisions()).toBe(revisionsAtAbort); // curate's batch is kept as a proposal, nothing is applied before verify passes; the late write added nothing
+    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1");
     expect(store.currentCommit(untouched!.knowledgeId, target)[0]!.id).toBe(untouched!.commit);
-    const own = store.currentCommit(changed!.knowledgeId, target)[0]!.id;
-    const processed = store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool=? ORDER BY revision_id")
-      .all(`session:${session.id}`).map(row => Number(row.revision_id));
-    expect(processed).toEqual([changed!.commit, skipped!.commit, untouched!.commit, own].sort((a, b) => a - b)); // curate passed
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`session:${session.id}`)!.n).toBe(0); // coverage is written when verify passes, and it did not
     expect(memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id)).toEqual(entries);
     expect(store.listRuns(session.id).filter(run => run.kind === "dreaming").at(-1)?.outcome).toBe("cancelled");
     expect(store.taskFailures(session.id).filter(item => item.phase === "dreaming")).toEqual([]);
