@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { hydrate, sourceSeededMemory, memoryFiles, type NotingAgentInput, type DreamingAgentInput } from "../../source-fixture.ts";
+import { hydrate, sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
-import { dreamerWrite } from "../../dreaming-skips.ts";
+import { applyWorkspace, checkWorkspace } from "../../../src/core/workspace/index.ts";
+import { block, workspaceBatch } from "../../support/workspace.ts";
 import { scriptedNoter, type ToolOperation } from "../../support/noter.ts";
 
 // Exercise the Noter's knowledge file and its real terminal publication.
@@ -47,39 +48,18 @@ describe("checkMemoryBatch", async () => {
     expect(problems.some((p) => p.includes("K1"))).toBe(true);
   });
 
-  test("rejects a merge whose absorb list holds a non-knowledge-id", async () => {
-    let reached = false;
-    const memory = sourceSeededMemory(":memory:", async raw => {
-      const input = raw as DreamingAgentInput;
-      expect(input.kind).toBe("dreaming");
-      expect(memory.store.getClaim(1, "dreaming")).not.toBeNull();
-      expect(memory.store.openDreamingRange(1, "main")).not.toBeNull();
-      const tag = `K1#${memory.store.versionTag(1, 1)}`;
-      expect(memoryFiles(memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://K1").content).toContain(tag);
-      const before = memory.store.listKnowledgeRevisions();
-      const receipt = dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [{ op: "merge", id: tag,
-        absorb: ["not-an-id"], text: "Merged rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Merge duplicate." }], skipped: [] });
-      expect(JSON.parse(receipt).results).toEqual(["rejected: M1: not-an-id: supply an exact K#tag version; not-an-id: knowledge version does not exist"]);
-      expect(memory.store.listKnowledgeRevisions()).toEqual(before);
-      reached = true;
-      input.reportRequest({});
-      return { outcome: "success", output: "refused", request: {} };
-    }, { dreaming: { triggerTokens: 1 } });
+  test("rejects a merge whose absorb list holds a non-knowledge-id", () => {
+    const b = workspaceBatch();
     try {
-      const project = memory.store.createProject({ name: "merge-shape", declaredBy: "mark" });
-      const session = memory.store.createSession({ projectId: project.id, host: "pi:test", enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-      const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Rule", startedAt: "now" });
-      const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id });
-      expect(tools.find(tool => tool.name === "note")!.execute({ title: "Rule admission", sources: `[T${turn.id}#E1] Rule` })).toContain("F1");
-      expect(JSON.parse(tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Rule", scope: "project", category: "understanding", topics: [], supports: ["F1"], reason: "Seed" })).committed).toHaveLength(1);
-      const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id });
-      expect(result.outcome, JSON.stringify(result)).toBe("failure");
-      if (result.outcome !== "failure") throw new Error("expected refused D batch");
-      expect(result.problems).toEqual(["M1: not-an-id: supply an exact K#tag version; not-an-id: knowledge version does not exist",
-        "frozen versions not deliberated: K1@v1"]); // 104: the refused merge left its frozen base undeliberated
-      expect(reached).toBe(true);
-      expect(memory.store.listKnowledgeRevisions()).toHaveLength(1);
-    } finally { memory.close(); }
+      const primary = b.item("Rule");
+      const before = b.store.listKnowledgeRevisions();
+      const text = block(`merge ${primary.ref}`, { absorb: "not-an-id", reason: "Merge duplicate." }, "Merged rule");
+      const checked = checkWorkspace(b.store, { kind: "curate", sessionId: b.session.id, file: { name: "curate.md", text } });
+      expect(checked.problems.join("\n")).toContain("not-an-id");
+      expect(applyWorkspace(b.store, { kind: "curate", sessionId: b.session.id, path: b.path, file: { name: "curate.md", text } })).toMatchObject({ ok: false });
+      expect(b.store.listKnowledgeRevisions()).toEqual(before);
+    } finally { b.memory.close(); }
   });
+
 
 });

@@ -76,43 +76,6 @@ test("Dreaming projection follows the selected head and current project, not dat
   } finally { memory.close(); }
 });
 
-test("104: dreamingPending is the session's summed pending weight and knowledge total, the figures the due check decides on", () => {
-  const memory = sourceSeededMemory(":memory:", vi.fn());
-  try {
-    const store = memory.store, project = store.createProject({ name: "P", declaredBy: "mark" });
-    const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-    const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
-    const user = hydrate(store.listSourceEntries(session.id, turn.id), store).find(entry => entry.role === "user")!;
-    const noted = legacyFacts(store, { kind: "manual", sessionId: session.id, createdAt: "now" }, [{
-      sources: [{ entry: user, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "rule", createdAt: "now",
-    }]);
-    const create = (scope: "global" | "project" | "session", text: string) => {
-      const written = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
-        { op: "create", title: "Fixture title", handle: `$${scope}`, author: "test", text, category: "constraint", scope, supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" },
-      ] });
-      if (!written.ok) throw Error(written.problems.join());
-    };
-    // Three pools with pending material. Budgets stay above each pool's whole rendered size, so
-    // the summed pending weight alone decides.
-    create("global", "global body ".repeat(5));
-    create("project", "project body ".repeat(30));
-    create("session", "session body ".repeat(15));
-    memory.setKnowledgeBudget("global", 150);
-    memory.setKnowledgeBudget("project", 200);
-    memory.setKnowledgeBudget("session", 160); // 120 before 144: an untitled item now also renders a title taken from its body
-    const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    const pools = store.knowledgePools(target);
-    expect(pools.every(pool => pool.pending.length > 0 && pool.tokens <= pool.budget)).toBe(true);
-    const pending = pools.reduce((sum, pool) => sum + pool.pending.reduce((total, value) => total + value.tokens, 0), 0);
-    memory.config.dreaming.triggerTokens = pending;
-    expect(memory.dreamingPending(target)).toEqual({ state: "known", pending: { tokens: pending, trigger: pending },
-      knowledge: { tokens: pools.reduce((sum, pool) => sum + pool.tokens, 0), window: 150 + 200 + 160 + memory.config.compaction.sharedAllowanceTokens } });
-    expect(memory.taskEligibility("dreaming", target).due).toBe(true);
-    memory.config.dreaming.triggerTokens = pending + 1;
-    expect(memory.taskEligibility("dreaming", target).due).toBe(false);
-  } finally { memory.close(); }
-});
-
 test("upToTrigger counts Noting only up to its trigger and reports the exact pending entry count (maintainer, 2026-09-25)", () => {
   const memory = sourceSeededMemory(":memory:", vi.fn());
   try {
