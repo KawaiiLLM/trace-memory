@@ -66,6 +66,22 @@ test("an item that fills the base exactly is delivered whole although a lower on
   expect(delivery.knowledgeTokens).toBe(exact);
 });
 
+test("what fits nowhere is named even when only the mandatory reselection can make room: an unscored item is named, a lower scored body gives way", () => {
+  const f = fixture();
+  const a = f.create("ALPHA", 400, 90);
+  f.create("BRAVO", 400, 80);
+  setKnowledgeInjection(f.memory, 5_000);
+  const exact = f.memory.injection(f.target).knowledgeTokens!; // A and B fill the base to the token
+  const u = f.create("UNSCORED", 400, null);
+  setKnowledgeInjection(f.memory, exact);
+  f.memory.config.compaction.temporaryTokens = 0; // U fits nowhere
+  const delivery = f.memory.injection(f.target);
+  expect(delivery.text).toContain(`trace://K${u.knowledgeId}`);
+  expect(delivery.knowledgeCommitIds).toContain(a.commit);
+  expect(delivery.knowledgeTokens!).toBeLessThanOrEqual(exact);
+  expect(delivery.temporaryTokens ?? 0).toBe(0);
+});
+
 test("unscored items ride the temporary allowance newest first, then titles of scored misfits", () => {
   const f = fixture();
   const scoredBig = f.create("SCOREDBIG", 3_000, 60), unscoredOld = f.create("UNSCOREDOLD", 300, null), unscoredNew = f.create("UNSCOREDNEW", 300, null);

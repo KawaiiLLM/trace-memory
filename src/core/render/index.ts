@@ -836,7 +836,9 @@ export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowle
  * No item is rewritten to fit, and omitted items remain stored and traceable. */
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = value => renderKnowledge(value),
   budget = "Knowledge capacity", required?: ReadonlySet<number>,
-  priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): BudgetedKnowledge {
+  priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE,
+  /** Items omitted by the caller's other selections: their receipts are reserved in this cap too. */
+  alsoOmitted: readonly KnowledgeWithRevision[] = []): BudgetedKnowledge {
   // Selection remains newest-first; presentation is grouped by category, oldest first inside a group.
   const ordered = orderedKnowledge(knowledge, line);
   const byCommit = new Map(knowledge.map(value => [value.revision.id, value]));
@@ -844,7 +846,7 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
     priority ? priority(byCommit.get(a.commit)!, byCommit.get(b.commit)!) : b.commit - a.commit);
   const ranks = new Map(optional.map((item, index) => [item.commit, index]));
   const selected = (kept: number) => ordered.filter(item => required?.has(item.commit) || ranks.get(item.commit)! < kept);
-  const receipts = (kept: number) => renderKnowledgeOmissions(optional.slice(kept).map(item => byCommit.get(item.commit)!));
+  const receipts = (kept: number) => renderKnowledgeOmissions([...optional.slice(kept).map(item => byCommit.get(item.commit)!), ...alsoOmitted]);
   // Prefix trials need only scalar costs; build grouped text and commit lists after selection.
   const outerCost = tokens(xmlBlock("knowledge", recencyNotice));
   const bodyCost = (kept: number) => {
@@ -910,11 +912,11 @@ export function selectKnowledge(candidates: KnowledgeWithRevision[], options: { 
   const noRequired = new Set<number>();
   // PENDING Q4: a scored item that does not fit the rest of the base stops this kind, and the rest become
   // titles (c). The other option skips the misfit and keeps filling; that is a skip mode in this one call.
-  const select = (receiptsMandatory: boolean): { result: SelectedKnowledge; named: boolean } => {
+  const select = (alsoOmitted?: KnowledgeWithRevision[]): { result: SelectedKnowledge; named: boolean; unscoredOmitted: KnowledgeWithRevision[] } => {
     const base = (() => {
-      if (!receiptsMandatory) return budgetKnowledge(scored, baseCap, line, budget, noRequired, byScore, recencyNotice).commits;
-      try { return budgetKnowledge(scored, baseCap, line, budget, undefined, byScore, recencyNotice).commits; }
-      catch { return budgetKnowledge(scored, baseCap, line, budget, noRequired, byScore, recencyNotice).commits; }
+      if (!alsoOmitted) return budgetKnowledge(scored, baseCap, line, budget, noRequired, byScore, recencyNotice).commits;
+      try { return budgetKnowledge(scored, baseCap, line, budget, undefined, byScore, recencyNotice, alsoOmitted).commits; }
+      catch { return budgetKnowledge(scored, baseCap, line, budget, noRequired, byScore, recencyNotice, alsoOmitted).commits; }
     })();
     const baseSet = new Set(base);
     const baseValues = scored.filter(value => baseSet.has(value.revision.id));
@@ -953,12 +955,13 @@ export function selectKnowledge(candidates: KnowledgeWithRevision[], options: { 
       temporaryCharge: window.cost + (receiptsToBase ? 0 : receiptPrice) - baseCharge,
       ranked: items.map(value => ({ value, form: titleSet.has(value.revision.id) ? "title" as const : "body" as const,
         allowance: baseSet.has(value.revision.id) ? "base" as const : "temporary" as const, rank: rankOf.get(value.revision.id)! })).sort((a, b) => a.rank - b.rank) };
-    return { result, named: omitted.length === 0 || receipts.length > 0 };
+    return { result, named: omitted.length === 0 || receipts.length > 0, unscoredOmitted: omitted.filter(value => score(value) === null) };
   };
   // Receipts follow what is finally omitted, so an intermediate receipt never changes which bodies the base takes.
   // Only when something is omitted and no allowance can carry its receipt do base bodies give way to it (34c).
-  const first = select(false);
-  return first.named ? first.result : select(true).result;
+  // The reselection reserves a receipt for every unscored item the first pass left out too (scored ones are in its own prefix).
+  const first = select();
+  return first.named ? first.result : select(first.unscoredOmitted).result;
 }
 
 /** Turn metadata, read once without loading Raw. Plain times also support metadata-free fixtures. */
