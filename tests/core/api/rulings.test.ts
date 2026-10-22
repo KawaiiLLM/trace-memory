@@ -2579,21 +2579,30 @@ const executionReasons = (f: ReturnType<typeof dreamerFixture>) => (f.store.db.p
 test("2026-10-22, 144: 'D的触发阈值可以看N变更过的知识 的token总数（不是diff）' — the Dreamer is due when the knowledge the Noter changed since its last pass weighs 10,000, each item once at its current title and body; a manual write does not count", () => {
   expect(DEFAULT_CONFIG.dreaming.triggerTokens).toBe(10_000);
   const f = dreamerFixture();
-  const manualSupport = f.existingFact("Manual support");
-  const manual = knowledgeBatch(f.store, f.path, [{ scope: "project", category: "constraint", supports: [manualSupport.id], title: "Manual rule", text: "A hand-written rule" }],
+  // Expected weights come from the texts written here (title plus body, each item once), not from the store's own count.
+  const weight = (title: string, body: string) => tokens(title) + tokens(body);
+  const total = () => f.store.noterChangedTokens(f.path);
+  knowledgeBatch(f.store, f.path, [{ scope: "project", category: "constraint", supports: [f.existingFact("Manual support").id], title: "Manual rule", text: "A hand-written rule that is long enough to weigh something" }],
     { kind: "manual", createdAt: "now" });
-  expect(manual.committed).toHaveLength(1);
-  const rule = f.item("A Noter rule");
-  const weight = f.store.noterChangedTokens(f.path);
-  expect(weight).toBeGreaterThan(0);
-  expect(f.store.noterChangedItems(f.path)).toBe(1); // only the Noter's item counts
-  f.memory.config.dreaming.triggerTokens = weight + 1;
+  expect(total()).toBe(0); // a manual write does not count
+  const first = { title: "Use pnpm", body: "Install dependencies with pnpm, never npm, in every repository the team owns." };
+  const second = { title: "Commit the lockfile", body: "The lockfile is committed, and CI refuses a build that would change it." };
+  const rule = f.item(first.body, { title: first.title });
+  expect(total()).toBe(weight(first.title, first.body));
+  f.item(second.body, { title: second.title });
+  expect(total()).toBe(weight(first.title, first.body) + weight(second.title, second.body));
+  expect(f.store.noterChangedItems(f.path)).toBe(2);
+  // A later edit of the first item replaces its weight with the new body's: counted once, and not as a diff.
+  const longer = `${first.body} Releases are cut from a clean checkout, and the version is read from the tag, never typed by hand.`;
+  updateKnowledge(f.store, f.path, rule.knowledgeId, rule.commit, longer, rule.supports);
+  const expected = weight(first.title, longer) + weight(second.title, second.body);
+  expect(total()).toBe(expected);
+  expect(f.store.noterChangedItems(f.path)).toBe(2);
+  // The boundary: due exactly when the total reaches the trigger.
+  f.memory.config.dreaming.triggerTokens = expected + 1;
   expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: false });
-  f.memory.config.dreaming.triggerTokens = weight;
+  f.memory.config.dreaming.triggerTokens = expected;
   expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
-  // A later edit of the same item changes its weight to the new body; it is not counted twice and not as a diff.
-  updateKnowledge(f.store, f.path, rule.knowledgeId, rule.commit, "A Noter rule, rewritten to be somewhat longer than before", rule.supports);
-  expect(f.store.noterChangedItems(f.path)).toBe(1);
 });
 
 test("2026-10-21, 144: '整理 → 核查 → 评级；先不轮换' — one run does curate, then verify, then classify, each category in turn within that one run", async () => {
