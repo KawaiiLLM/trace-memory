@@ -523,13 +523,6 @@ test("CC worker observes fifty-one native Read calls through its SDK hook with u
   expect(executed).toHaveBeenCalledTimes(51);
 });
 
-test("CC Dreamer rejects an observed write without a handler dispatch or correlated refusal", () => {
-  const task = { kind: "dreaming", acknowledgeRequest: vi.fn(), reportToolRejection: vi.fn() } as unknown as CcAgentTask;
-  const origins = new CcResponseOrigins(task, 100, 0, () => {});
-  origins.observe(assistant("response", ["undispatched-memory"], ccWorkerToolNames.memory));
-  expect(() => origins.requireDispatchedWrites()).toThrow("neither a handler dispatch nor a correlated refusal");
-});
-
 test("simultaneous phase workers keep model and thinking selection isolated", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-phases-")); dirs.push(directory);
   const executable = join(directory, "claude");
@@ -588,7 +581,8 @@ test("Dreamer uses one streaming child for one repair, accepts stable repeated i
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-")); dirs.push(directory);
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
-  const prompts: any[] = [], passEnd = vi.fn(() => "repair receipt");
+  // The Dreamer's pass end is asked after every pass: a repair after the first, nothing after the second.
+  const prompts: any[] = [], passEnd = vi.fn<() => string | undefined>().mockReturnValueOnce("repair receipt").mockReturnValue(undefined);
   const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
     const stream = (async function* () {
       const input = request.prompt[Symbol.asyncIterator]();
@@ -636,8 +630,9 @@ test.each(["noting", "dreaming"] as const)("117: CC %s result respects its origi
   const task = { kind, text: "material", prompt: "instructions", tools: [], signal: controller.signal,
     acknowledgeRequest: vi.fn(), reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
   const result = await new CcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0);
-  expect(result.outcome).toBe(kind === "noting" ? "cancelled" : "success");
-  expect(passEnd).toHaveBeenCalledTimes(kind === "noting" ? 0 : 1);
+  // 2026-10-22 cancellation fence: a Dreamer task that meets its stop is cancelled like a Noter task, and no pass end follows.
+  expect(result.outcome).toBe("cancelled");
+  expect(passEnd).toHaveBeenCalledTimes(0);
 });
 
 test("Dreamer rejects an unsolicited second pass and does not call passEnd twice", async () => {
@@ -1346,8 +1341,9 @@ test("scheduler reserves independent N/D slots and failed worker completion does
   const seed = append(memory, session.id, "seed", "A pending raw source.");
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: seed.turn.id });
   expect(manual.find(value => value.name === "note")!.execute({ title: "Pending fact", sources: `[T${seed.turn.id}#E1] A separate pending fact.` })).toContain("ok: F1");
-  expect(manual.find(value => value.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Pending maintenance", category: "constraint",
-    scope: "session", topics: [], supports: ["F1"], reason: "Seed D pool" })).not.toContain("rejected:");
+  // Only a Noter-written item makes a Dreamer due (2026-10-22).
+  knowledgeBatch(memory.store, { sessionId: session.id, branch: "main", headTurnId: seed.turn.id },
+    [{ scope: "session", category: "constraint", supports: [1], text: "Pending maintenance", title: "Fixture title" }]);
   const diagnostics: string[] = [], notingAdmission = vi.spyOn(memory, "noting"), dreamingAdmission = vi.spyOn(memory, "dream");
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, message => diagnostics.push(message));
   const reconcile = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: seed.turn.id,
@@ -1751,251 +1747,3 @@ test("scheduler borrows an eligible closed target only at the executor turn end"
   expect(memory.pendingEntries(closed.id, "main", tail.turn.id)).toEqual([]);
   memory.close();
 });
-
-test("production MCP D gets the end review after its first pass; its second-pass operation commits on the run's own latest version", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-review-")); dirs.push(directory);
-  const executable = join(directory, "claude");
-  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
-  const reviews: { text: string; synthetic: boolean }[] = [];
-  const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
-    const stream = (async function* () {
-      const prompts = request.prompt[Symbol.asyncIterator]();
-      await prompts.next();
-      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-      await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
-      const client = new Client({ name: "dreamer-review-test", version: "1" }); await client.connect(clientTransport);
-      yield { type: "system", subtype: "init", session_id: "dreamer-review", messaging_socket_path: "/tmp/dreamer-review.sock",
-        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [],
-        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
-      let ordinal = 0;
-      const rewrite = async function* (id: string, text: string) {
-        const callId = `memory-${++ordinal}`;
-        yield assistant(`response-${ordinal}`, [callId], ccWorkerToolNames.memory);
-        const result = await client.callTool({ name: "memory", arguments: { op: "update", id, text, category: "constraint",
-          scope: "project", topics: [], supports: [], reason: "rewrite" }, _meta: { "claudecode/toolUseId": callId } });
-        expect((result.content as { text: string }[])[0]!.text).not.toContain("rejected");
-      };
-      const result = { type: "result", subtype: "success", session_id: "dreamer-review", is_error: false, result: "done", errors: [],
-        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
-      yield* rewrite(firstTag, "Durable constraint, first rewrite");
-      yield result;
-      const review = (await prompts.next()).value;
-      reviews.push({ text: review.message.content[0].text, synthetic: review.isSynthetic === true });
-      yield* rewrite(/\[(K\d+#[a-z]+)\]/.exec(review.message.content[0].text)![1]!, "Durable constraint, corrected in the second pass");
-      yield result;
-      await client.close();
-    })() as any;
-    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
-    return stream;
-  }) as any;
-  const worker = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
-  const memory = TraceMemory(join(directory, "memory.sqlite"), raw => { const task = raw as CcAgentTask; task.reportRequest({ host: "cc-dreamer-review" });
-    return worker.run(task, 0); }, { dreaming: { triggerTokens: 1 } });
-  const project = memory.store.createProject({ name: "cc-dreamer-review", declaredBy: "mark" });
-  const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
-  const target = append(memory, session.id, "source", "Durable CC evidence");
-  const path = { sessionId: session.id, branch: "main", headTurnId: target.turn.id };
-  const evidence = seedFact(memory, path, "Durable CC evidence", [{ entry: memory.store.hydrateSourceEntries([target.entry.id])[0]!, text: "Durable CC evidence" }]);
-  const item = knowledgeBatch(memory.store, path, [{ scope: "project", category: "constraint", supports: [evidence.id], text: "Durable constraint" }],
-    { kind: "manual", createdAt: "now" }).committed[0]!;
-  const firstTag = `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, item.commit)}`;
-  const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: target.turn.id, triggerEntryId: target.entry.id,
-    model: "claude-sonnet-4-5", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
-  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  expect(reviews).toHaveLength(1);
-  expect(reviews[0]).toMatchObject({ synthetic: true, text: expect.stringContaining("Before this run ends, review it once.") });
-  expect(reviews[0]!.text).toContain("{+, first rewrite+}");
-  expect(memory.store.listCommitsByRun(result.runId).map(revision => revision.text))
-    .toEqual(["Durable constraint, first rewrite", "Durable constraint, corrected in the second pass"]);
-  memory.close();
-});
-
-test("126: one production MCP D run writes and skips across the session's pools and gets one end review", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-pools-")); dirs.push(directory);
-  const executable = join(directory, "claude");
-  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
-  const reviews: string[] = [];
-  let calls!: Record<string, unknown>[];
-  const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
-    const stream = (async function* () {
-      const prompts = request.prompt[Symbol.asyncIterator]();
-      await prompts.next();
-      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-      await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
-      const client = new Client({ name: "dreamer-pools-test", version: "1" }); await client.connect(clientTransport);
-      yield { type: "system", subtype: "init", session_id: "dreamer-pools", messaging_socket_path: "/tmp/dreamer-pools.sock",
-        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [],
-        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
-      const result = { type: "result", subtype: "success", session_id: "dreamer-pools", is_error: false, result: "done", errors: [],
-        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
-      // 127: one response carries the update and the skip as two memory calls.
-      yield assistant("response-1", calls.map((_, index) => `memory-${index + 1}`), ccWorkerToolNames.memory);
-      for (const [index, input] of calls.entries()) {
-        const written = await client.callTool({ name: "memory", arguments: input, _meta: { "claudecode/toolUseId": `memory-${index + 1}` } });
-        expect((written.content as { text: string }[])[0]!.text).not.toContain("rejected");
-      }
-      yield result;
-      reviews.push((await prompts.next()).value.message.content[0].text);
-      yield result;
-      await client.close();
-    })() as any;
-    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
-    return stream;
-  }) as any;
-  const worker = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
-  const memory = TraceMemory(join(directory, "memory.sqlite"), raw => { const task = raw as CcAgentTask; task.reportRequest({ host: "cc-dreamer-pools" });
-    return worker.run(task, 0); }, { dreaming: { triggerTokens: 1 } });
-  const project = memory.store.createProject({ name: "cc-dreamer-pools", declaredBy: "mark" });
-  const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
-  const target = append(memory, session.id, "source", "Durable CC evidence");
-  const path = { sessionId: session.id, branch: "main", headTurnId: target.turn.id };
-  const evidence = seedFact(memory, path, "Durable CC evidence", [{ entry: memory.store.hydrateSourceEntries([target.entry.id])[0]!, text: "Durable CC evidence" }]);
-  const [global, local] = knowledgeBatch(memory.store, path, (["global", "project"] as const).map(scope =>
-    ({ scope, category: "constraint" as const, supports: [evidence.id], text: `Durable ${scope} constraint` })), { kind: "manual", createdAt: "now" }).committed;
-  calls = [{ op: "update", id: `K${global!.knowledgeId}#${memory.store.versionTag(global!.knowledgeId, global!.commit)}`,
-    text: "Durable global constraint, clarified", category: "constraint", scope: "global", topics: [], supports: [], reason: "clarify" },
-    { skip: `K${local!.knowledgeId}@v${memory.store.versionOrdinal(local!.knowledgeId, local!.commit)}`, because: "Reviewed unchanged" }];
-  const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: target.turn.id, triggerEntryId: target.entry.id,
-    model: "claude-sonnet-4-5", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
-  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  expect(reviews).toHaveLength(1);
-  expect(reviews[0]).toContain("{+, clarified+}");
-  const own = memory.store.listCommitsByRun(result.runId)[0]!;
-  expect(memory.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed ORDER BY revision_id").all())
-    .toEqual([{ pool: `project:${project.id}`, revision_id: local!.commit }, { pool: "global", revision_id: own.id }]);
-  memory.close();
-});
-
-test("127: one CC response's memory calls commit independently even when dispatched together; a refused one blocks until the second pass drops it", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-calls-")); dirs.push(directory);
-  const executable = join(directory, "claude");
-  writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
-  let first!: Record<string, unknown>[], second!: Record<string, unknown>[], review = "";
-  const receipts: { text: string; isError: boolean }[] = [];
-  const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
-    const stream = (async function* () {
-      const prompts = request.prompt[Symbol.asyncIterator]();
-      await prompts.next();
-      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-      await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
-      const client = new Client({ name: "dreamer-calls-test", version: "1" }); await client.connect(clientTransport);
-      yield { type: "system", subtype: "init", session_id: "dreamer-calls", messaging_socket_path: "/tmp/dreamer-calls.sock",
-        claude_code_version: TEST_CC_VERSION, cwd: directory, tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [],
-        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
-      const result = { type: "result", subtype: "success", session_id: "dreamer-calls", is_error: false, result: "done", errors: [],
-        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
-      const respond = async function* (response: string, calls: Record<string, unknown>[], offset: number) {
-        const ids = calls.map((_, index) => `memory-${offset + index}`);
-        yield assistant(response, ids, ccWorkerToolNames.memory);
-        // Dispatched together: each handler's execute is synchronous and commits in its own transaction.
-        for (const value of await Promise.all(calls.map((input, index) =>
-          client.callTool({ name: "memory", arguments: input, _meta: { "claudecode/toolUseId": ids[index]! } }))))
-          receipts.push({ text: (value.content as { text: string }[])[0]!.text, isError: value.isError === true });
-      };
-      yield* respond("response-1", first, 1);
-      yield result;
-      review = (await prompts.next()).value.message.content[0].text;
-      yield* respond("response-2", second, first.length + 1);
-      yield result;
-      await client.close();
-    })() as any;
-    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
-    return stream;
-  }) as any;
-  const worker = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
-  const memory = TraceMemory(join(directory, "memory.sqlite"), raw => { const task = raw as CcAgentTask; task.reportRequest({ host: "cc-dreamer-calls" });
-    return worker.run(task, 0); }, { dreaming: { triggerTokens: 1 } });
-  const project = memory.store.createProject({ name: "cc-dreamer-calls", declaredBy: "mark" });
-  const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
-  const target = append(memory, session.id, "source", "Durable CC evidence");
-  const path = { sessionId: session.id, branch: "main", headTurnId: target.turn.id };
-  const evidence = seedFact(memory, path, "Durable CC evidence", [{ entry: memory.store.hydrateSourceEntries([target.entry.id])[0]!, text: "Durable CC evidence" }]);
-  const [a, b, c] = knowledgeBatch(memory.store, path, ["A", "B", "C"].map(name =>
-    ({ scope: "project" as const, category: "constraint" as const, supports: [evidence.id], text: `Durable rule ${name}` })), { kind: "manual", createdAt: "now" }).committed;
-  const update = (item: { knowledgeId: number }, tag: string) => ({ op: "update", id: `K${item.knowledgeId}#${tag}`, text: "Durable rule, clarified",
-    category: "constraint", scope: "project", topics: [], supports: [], reason: "clarify" });
-  const version = (item: { knowledgeId: number }) => `K${item.knowledgeId}@v1`;
-  first = [update(a!, memory.store.versionTag(a!.knowledgeId, a!.commit)), update(b!, "zzzz"), { skip: version(c!), because: "Reviewed unchanged" }];
-  second = [{ drop: "M1" }, { skip: version(b!), because: "Reviewed; the refused rewrite is withdrawn" }];
-  const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: target.turn.id, triggerEntryId: target.entry.id,
-    model: "claude-sonnet-4-5", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-  expect(receipts.map(receipt => receipt.isError)).toEqual([false, true, false, false, false]);
-  expect(receipts[1]!.text).toContain("rejected: M1: ");
-  expect(receipts[3]!.text).toContain("dropped: M1");
-  expect(review.split("\n\nBlockers:\n")[1]).toMatch(/^M1: /);
-  expect(memory.store.currentCommit(a!.knowledgeId, path)[0]!.text).toBe("Durable rule, clarified");
-  expect(memory.store.currentCommit(b!.knowledgeId, path)[0]!.id).toBe(b!.commit);
-  memory.close();
-});
-
-for (const variant of ["resolved", "unresolved", "unreported"] as const)
-  test(`127: a Dreamer memory call CC refuses natively is numbered and blocks until slot resubmits it (${variant})`, async () => {
-    const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-native-")); dirs.push(directory);
-    const executable = join(directory, "claude");
-    writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
-    let refused!: Record<string, unknown>, valid!: Record<string, unknown>, resubmitted!: Record<string, unknown>, review = "";
-    const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
-      const stream = (async function* () {
-        const prompts = request.prompt[Symbol.asyncIterator]();
-        await prompts.next();
-        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-        await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
-        const client = new Client({ name: "dreamer-native-test", version: "1" }); await client.connect(clientTransport);
-        yield { type: "system", subtype: "init", session_id: "dreamer-native", messaging_socket_path: "/tmp/dreamer-native.sock",
-          claude_code_version: TEST_CC_VERSION, cwd: directory, tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [],
-          mcp_servers: [{ name: "trace_memory", status: "connected" }] };
-        const result = { type: "result", subtype: "success", session_id: "dreamer-native", is_error: false, result: "done", errors: [],
-          usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
-        yield { type: "assistant", message: { id: "response-1", content: [
-          { type: "tool_use", id: "memory-refused", name: ccWorkerToolNames.memory, input: refused },
-          { type: "tool_use", id: "memory-valid", name: ccWorkerToolNames.memory, input: valid }] } };
-        // CC refuses the first call's arguments itself: no handler dispatch, only an error result.
-        if (variant !== "unreported") {
-          const refusal = { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "memory-refused", is_error: true,
-            content: "native argument validation refused" }] } };
-          yield refusal; yield refusal; // a duplicate observation allocates no second slot
-        }
-        await client.callTool({ name: "memory", arguments: valid, _meta: { "claudecode/toolUseId": "memory-valid" } });
-        yield result;
-        review = (await prompts.next()).value.message.content[0].text;
-        if (variant === "resolved") {
-          yield assistant("response-2", ["memory-slot"], ccWorkerToolNames.memory);
-          await client.callTool({ name: "memory", arguments: resubmitted, _meta: { "claudecode/toolUseId": "memory-slot" } });
-        }
-        yield result;
-        await client.close();
-      })() as any;
-      stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
-      return stream;
-    }) as any;
-    const worker = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
-    const memory = TraceMemory(join(directory, "memory.sqlite"), raw => { const task = raw as CcAgentTask; task.reportRequest({ host: "cc-dreamer-native" });
-      return worker.run(task, 0); }, { dreaming: { triggerTokens: 1 } });
-    const project = memory.store.createProject({ name: "cc-dreamer-native", declaredBy: "mark" });
-    const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
-    const target = append(memory, session.id, "source", "Durable CC evidence");
-    const path = { sessionId: session.id, branch: "main", headTurnId: target.turn.id };
-    const evidence = seedFact(memory, path, "Durable CC evidence", [{ entry: memory.store.hydrateSourceEntries([target.entry.id])[0]!, text: "Durable CC evidence" }]);
-    const [a, b] = knowledgeBatch(memory.store, path, ["A", "B"].map(name =>
-      ({ scope: "project" as const, category: "constraint" as const, supports: [evidence.id], text: `Durable rule ${name}` })), { kind: "manual", createdAt: "now" }).committed;
-    const update = (item: { knowledgeId: number; commit: number }) => ({ op: "update", id: `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, item.commit)}`,
-      text: "Durable rule, clarified", category: "constraint", scope: "project", topics: [], supports: [], reason: "clarify" });
-    refused = { ...update(b!), topics: "not an array" };
-    valid = update(a!);
-    resubmitted = { slot: "M1", ...update(b!) };
-    const result = await memory.dream({ sessionId: session.id, branch: "main", headTurnId: target.turn.id, triggerEntryId: target.entry.id,
-      model: "claude-sonnet-4-5", subagentThinkingLevel: "medium", toolNames: ccWorkerToolNames });
-    expect(result.outcome, JSON.stringify(result)).toBe(variant === "resolved" ? "success" : "failure");
-    if (variant === "unreported") expect("problems" in result && result.problems.join(" ")).toContain("neither a handler dispatch nor a correlated refusal");
-    else {
-      expect(review.split("\n\nBlockers:\n")[1]).toMatch(/^M1: .*native argument validation refused/);
-      if (!("runId" in result)) throw new Error("missing run");
-      const audit = JSON.parse(memory.store.getRun(result.runId)!.response!);
-      expect(audit.toolCalls.filter((call: { input?: { topics?: unknown } }) => call.input?.topics === "not an array")).toHaveLength(1);
-      if (variant === "unresolved") expect("problems" in result && result.problems[0]).toMatch(/^M1: /);
-    }
-    expect(memory.store.currentCommit(a!.knowledgeId, path)[0]!.text).toBe("Durable rule, clarified");
-    expect(memory.store.currentCommit(b!.knowledgeId, path)[0]!.text).toBe(variant === "resolved" ? "Durable rule, clarified" : "Durable rule B");
-    memory.close();
-  });
