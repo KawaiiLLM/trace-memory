@@ -181,6 +181,13 @@ export function legacyArchive(store: Store, path: KnowledgePath, knowledgeId: nu
   return commit;
 }
 
+/** An archive written before 2026-10-22 for the budget: the parent's body kept, kind `budget` (the kind is retired, so only SQL can write it now). */
+export function budgetArchive(store: Store, path: KnowledgePath, knowledgeId: number, baseCommit: number, supports: number[]): number {
+  const commit = archive(store, path, knowledgeId, baseCommit, supports);
+  store.db.prepare("UPDATE knowledge_revisions SET text = (SELECT text FROM knowledge_revisions WHERE id = ?), archive_kind = 'budget' WHERE id = ?").run(baseCommit, commit);
+  return commit;
+}
+
 /** Scores every knowledge item that has none (default 50): injection spends the Knowledge base on scored items only,
  * so a test of the base window scores its items first. A test of unscored knowledge leaves them alone. */
 export function scoreAll(store: Store, score = 50): void {

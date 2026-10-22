@@ -1,4 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
+import type { Store } from "./index.ts";
+import { placementOwner } from "./processing.ts";
+import { assignVersionTag } from "./version-tags.ts";
 
 export interface Migration64dReport {
   legacySchema: boolean;
@@ -98,6 +101,60 @@ export function migrateStage4Schema144(db: DatabaseSync): void {
     db.exec("CREATE TABLE knowledge_base_policy (id INTEGER PRIMARY KEY CHECK(id = 1), base_tokens INTEGER NOT NULL CHECK(base_tokens BETWEEN 0 AND 9007199254740991))");
     db.exec("INSERT INTO knowledge_base_policy SELECT 1, global_tokens + project_tokens + session_tokens FROM knowledge_budget_policy WHERE id = 1");
   }
+}
+
+/** Ticket 144, the deployment data step (maintainer, 2026-10-22), run once by Store's open after every schema migration. An item's
+ * current version is its newest revision. (1) A live item without a score gets 100 and no scored version; (2) an item whose current
+ * version is a `budget` archive is revived by an `update` that restores the archived version's parent content, with score 0 and no
+ * scored version; so the next classify rescores all of them by its "unscored or changed since scored" rule. (3) Every Noter change
+ * made so far is marked processed in its own owner pool, so no Dreaming run is due until new Noter changes arrive. Delivery rows are
+ * not touched. A revival is a manual write (`actor_role` manual, which no trigger counts) under one `manual` run per owner session,
+ * because a project- or session-scope version takes its pool from its run's session. A budget archive whose parent is missing or is
+ * itself an archive, or whose owner session is unknown, stays archived and is counted in `skipped`. */
+export function migrateDeploymentData144(store: Store, now = new Date().toISOString()): { scored: number; revived: number; skipped: number; covered: number } {
+  const db = store.db;
+  if (!db.isTransaction) throw new Error("144 deployment data step requires Store's schema transaction");
+  const newest = "SELECT r.* FROM knowledge_revisions r WHERE r.id = (SELECT MAX(id) FROM knowledge_revisions WHERE knowledge_id = r.knowledge_id)";
+  const scored = Number(db.prepare(`UPDATE knowledge SET score = 100, scored_commit = NULL WHERE score IS NULL
+    AND id IN (SELECT knowledge_id FROM (${newest}) WHERE op <> 'archive')`).run().changes);
+
+  type Row = { id: number; knowledge_id: number; parent_id: number | null; run_id: number | null; op: string; title: string | null; text: string; category: string;
+    scope: string; supports: string; support_semantics: string; topics: string };
+  const sessionOfRun = db.prepare("SELECT session_id FROM runs WHERE id = ?");
+  const revision = db.prepare("SELECT * FROM knowledge_revisions WHERE id = ?");
+  const runs = new Map<number | null, number>();
+  const runFor = (sessionId: number | null): number => {
+    let id = runs.get(sessionId);
+    if (id === undefined) runs.set(sessionId, id = store.recordRun({ kind: "manual", sessionId, createdAt: now, outcome: "success",
+      response: JSON.stringify({ deployment: "144 data step" }) }).id);
+    return id;
+  };
+  let revived = 0, skipped = 0;
+  for (const archived of db.prepare(`SELECT * FROM (${newest}) WHERE op = 'archive' AND archive_kind = 'budget' ORDER BY id`).all() as Row[]) {
+    const parent = archived.parent_id === null ? undefined : revision.get(archived.parent_id) as Row | undefined;
+    const sessionId = ([parent?.run_id, archived.run_id].map(run => run == null ? null : (sessionOfRun.get(run) as { session_id: number | null } | undefined)?.session_id ?? null)
+      .find(session => session !== null)) ?? null;
+    if (!parent || parent.op === "archive" || sessionId === null && parent.scope !== "global") { skipped++; continue; }
+    const id = Number(db.prepare(`INSERT INTO knowledge_revisions
+      (knowledge_id, parent_id, title, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role, archive_kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'update', ?, ?, ?, ?, 'manual', NULL)`).run(archived.knowledge_id, archived.id, parent.title, parent.text, parent.category,
+        parent.scope, parent.supports, parent.support_semantics, "Revived at deployment: archived only because the budget was exceeded; budget archives are retired (ticket 144).",
+        parent.topics, runFor(sessionId), now).lastInsertRowid);
+    assignVersionTag(db, archived.knowledge_id, id);
+    db.prepare("UPDATE knowledge SET score = 0, scored_commit = NULL WHERE id = ?").run(archived.knowledge_id);
+    revived++;
+  }
+
+  // The revived versions above are manual; this marks only what existed before the step, and only where an owner pool resolves.
+  let covered = 0, coverage: number | undefined;
+  const cover = db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool, revision_id, run_id) VALUES (?, ?, ?)");
+  for (const { id } of db.prepare("SELECT id FROM knowledge_revisions WHERE actor_role = 'noting' ORDER BY id").all() as { id: number }[]) {
+    const version = store.knowledgeRevision(id)!;
+    if (version.scope !== "global" && (version.runId === null || sessionOfRun.get(version.runId)?.session_id == null)) continue;
+    cover.run(placementOwner(store, { revision: version }), id, coverage ??= runFor(null));
+    covered++;
+  }
+  return { scored, revived, skipped, covered };
 }
 
 export function migrateFactSegments93(db: DatabaseSync): void {

@@ -28,7 +28,7 @@ import { dreamerFixture as makeDreamerFixture, noterWrittenItem, operationOfText
 import { buildPendingSection } from "../../../src/hosts/trace-menu.ts";
 import { checkVerify } from "../../../src/core/dreaming/changes.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
-import { receiptCommit, scoreAll } from "../../support/seed.ts";
+import { budgetArchive, receiptCommit, scoreAll } from "../../support/seed.ts";
 import { block as workspaceBlock, workspaceBatch } from "../../support/workspace.ts";
 import { applyWorkspace, checkWorkspace } from "../../../src/core/workspace/index.ts";
 import { allowedRoots } from "../../../src/core/dreaming/roots.ts";
@@ -38,8 +38,9 @@ import { CcCoordinator, recordCcSessionEnd } from "../../../src/hosts/cc/lifecyc
 import { handleCcHook } from "../../../src/hosts/cc/index.ts";
 import * as ccNative from "../../../src/hosts/cc/native-session.ts";
 import { CcImporter } from "../../../src/hosts/cc/importer.ts";
+import { DatabaseSync } from "node:sqlite";
 import { Store } from "../../../src/core/store/index.ts";
-import { knowledgeBatch, updateKnowledge } from "../../support/seed.ts";
+import { archive as seedArchive, knowledgeBatch, updateKnowledge } from "../../support/seed.ts";
 import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyArchive, legacyFacts, legacyKnowledge, session as seedSession } from "../../support/seed.ts";
 import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../../src/hosts/cc/slices.ts";
@@ -2401,6 +2402,61 @@ test("2026-10-22: a Dreamer run of another session in the same project covers th
   expect(covered).not.toContain(sessionA.commit);
   expect(covered).not.toContain(late.commit);
   expect(f.store.noterChangedItems(f.path)).toBe(2); // A's session item and the one written mid-run
+});
+
+// Maintainer, 2026-10-22, at the deployment start: 「1. 部署时将未归档的现行知识视为无评分的最高级，因预算被归档的视为0分并取消归档，等下次整理时统一重评分。
+// 2. 部署前的不追究」, then 「只恢复明确标了类型的 472 条」. The step runs once when the new code first opens a database (user_version 2); it adds no marker,
+// because a score without a scored version is already rescored by classify's "unscored or changed since scored" rule.
+test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live items 100, revives only budget archives at 0, marks earlier Noter changes processed, and a second open changes nothing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-deploy-")), file = join(dir, "m.sqlite");
+  try {
+    const seen: number[] = [];
+    const f = dreamerFixture({ classify: (_pass, ids) => { seen.push(...ids); return undefined; } });
+    f.memory.close(); // the fixture above is only the scripted agent; the database below is a file
+    const old = makeDreamerFixture(dreamers, {}, file);
+    const support = old.existingFact("Deployment fact").id;
+    knowledgeBatch(old.store, old.path, Array.from({ length: 101 }, (_, i) => ({ scope: "project" as const, category: "reference" as const, supports: [support],
+      text: `Noter item ${i}` })), { kind: "noting", createdAt: "2026-10-01T00:00:00.000Z" });
+    old.item("Manual rule"); const budget = old.item("Budget rule"), plain = old.item("Plain archived"), invalid = old.item("Invalid archived");
+    const budgetCommit = budgetArchive(old.store, old.path, budget.knowledgeId, budget.commit, budget.supports);
+    old.store.db.prepare("UPDATE knowledge_revisions SET text = '', archive_kind = NULL WHERE id = ?")
+      .run(seedArchive(old.store, old.path, plain.knowledgeId, plain.commit, plain.supports));
+    seedArchive(old.store, old.path, invalid.knowledgeId, invalid.commit, invalid.supports, "invalid");
+    expect(old.store.noterChangedItems(old.path)).toBeGreaterThan(100);
+    old.memory.close();
+    const raw = new DatabaseSync(file); // what production has: no score columns, no titles, no coverage, data step not yet run
+    for (const column of ["score", "scored_commit", "scored_run"]) raw.exec(`ALTER TABLE knowledge DROP COLUMN ${column}`);
+    raw.exec("ALTER TABLE knowledge_revisions DROP COLUMN title; DELETE FROM knowledge_processed; PRAGMA user_version = 1");
+    raw.close();
+
+    const memory = sourceSeededMemory(file, f.dreamer.agent);
+    dreamers.push(memory);
+    memory.config.dreaming.triggerTokens = 1;
+    const store = memory.store;
+    const state = (id: number) => store.db.prepare("SELECT score, scored_commit, (SELECT op FROM knowledge_revisions WHERE knowledge_id = k.id ORDER BY id DESC LIMIT 1) AS op FROM knowledge k WHERE id = ?").get(id);
+    const live = (store.db.prepare("SELECT id FROM knowledge WHERE id NOT IN (?, ?, ?)").all(budget.knowledgeId, plain.knowledgeId, invalid.knowledgeId) as { id: number }[]).map(row => row.id);
+    expect(live).toHaveLength(102);
+    for (const id of live) expect(state(id), `K${id}`).toEqual({ score: 100, scored_commit: null, op: expect.stringMatching(/^(create|update)$/) });
+    expect(state(budget.knowledgeId)).toEqual({ score: 0, scored_commit: null, op: "update" });
+    for (const archived of [plain, invalid]) expect(state(archived.knowledgeId), `K${archived.knowledgeId}`).toEqual({ score: null, scored_commit: null, op: "archive" });
+    const revived = store.db.prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id = ? ORDER BY id DESC LIMIT 1").get(budget.knowledgeId) as Record<string, unknown>;
+    expect(revived).toMatchObject({ text: "Budget rule", op: "update", parent_id: budgetCommit, category: "constraint", scope: "project", actor_role: "manual",
+      archive_kind: null, supports: JSON.stringify(budget.supports) });
+    expect(store.db.prepare("SELECT kind FROM runs WHERE id = ?").get(Number(revived.run_id))).toEqual({ kind: "manual" });
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed").get()).toEqual(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions WHERE actor_role = 'noting'").get()); // every Noter change, not the revival
+    expect(store.noterChangedItems(old.path)).toBe(0);
+    expect(store.dreamingDue(old.path, 1)).toBe(false);
+
+    const snapshot = () => ["knowledge", "knowledge_revisions", "knowledge_processed", "runs"].map(table => store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    const before = snapshot();
+    new Store(file).close(); // a second open
+    expect(snapshot()).toEqual(before);
+
+    noterWrittenItem(memory, old.path as never, support); // one new Noter change past the trigger
+    expect(store.dreamingDue(old.path, 1)).toBe(true);
+    expect(await memory.dream({ sessionId: old.path.sessionId, branch: "main", headTurnId: old.path.headTurnId!, model: "scripted" })).toMatchObject({ outcome: "success" });
+    expect([...seen].sort((a, b) => a - b)).toEqual([...live, budget.knowledgeId, Number(store.db.prepare("SELECT MAX(id) AS id FROM knowledge").get()!.id)].sort((a, b) => a - b));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 // 61 (2026-09-19): the prompts are written to one standard — shared memory-model blocks, per-stage judgment,

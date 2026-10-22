@@ -85,7 +85,7 @@ test("86 option A: clear only old D streaks once, and a streak row written after
   const fixture = legacyDatabase();
   let store = new Store(fixture.file);
   try {
-    expect(store.db.prepare("PRAGMA user_version").get()!.user_version).toBe(1);
+    expect(store.db.prepare("PRAGMA user_version").get()!.user_version).toBe(2); // 86's marker is 1; the 144 deployment step then sets 2
     expect(streaks(store.db)).toEqual(fixture.beforeStreaks.filter(row => row.phase !== "dreaming"));
     expect(audit(store.db)).toEqual(fixture.beforeAudit);
     expect(store.enabled(fixture.path.sessionId)).toBe(true);
@@ -129,7 +129,7 @@ test("86 option A: a later real upgrade failure rolls back both the D reset and 
   } finally { checked.close(); }
   const upgraded = new Store(fixture.file);
   try {
-    expect(upgraded.db.prepare("PRAGMA user_version").get()!.user_version).toBe(1);
+    expect(upgraded.db.prepare("PRAGMA user_version").get()!.user_version).toBe(2);
     expect(streaks(upgraded.db)).toEqual(fixture.beforeStreaks.filter(row => row.phase !== "dreaming"));
     expect(upgraded.enabled(fixture.disabledId)).toBe(false);
   } finally { upgraded.close(); }

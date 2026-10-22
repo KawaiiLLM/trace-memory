@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
-import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateDeploymentData144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
@@ -1257,8 +1257,11 @@ export class Store {
       // rebuild (its `createSql` already declares it); an already-split database gets it from the
       // backfill's own rebuild instead, since 79's rebuild has nothing left to do there.
       this.transaction(() => { this.migrateEntryOrdinalBackfill(); this.migrateHotColdSplit(); });
+      // 144: the deployment data step, once, after every schema migration. `user_version` 2 marks it, as 1 marks 86's reset above.
+      const dataStep = Number(this.db.prepare("PRAGMA user_version").get()!.user_version) < 2;
+      if (dataStep) { migrateDeploymentData144(this); this.db.exec("PRAGMA user_version = 2"); }
       const schemaChanged = Number(this.db.prepare("PRAGMA schema_version").get()!.schema_version) !== schemaBefore;
-      if (schemaChanged && this.db.prepare("PRAGMA foreign_key_check").all().length)
+      if ((schemaChanged || dataStep) && this.db.prepare("PRAGMA foreign_key_check").all().length)
         throw new Error("Store migration: foreign key violations");
       this.db.exec("COMMIT");
       began = false;
