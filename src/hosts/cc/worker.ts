@@ -6,6 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import type { DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 import { memoryPath, resolvedMemoryPath, toolRejected } from "../../core/api/index.ts";
 import { sweepStaleWorkspaces } from "../../core/noting/workspace.ts";
+import { confineSearch, resolveRepositoryPath } from "../../core/dreaming/roots.ts";
 import { CC_AGENT_SDK_VERSION, ccWorkspaceRoot, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
@@ -376,6 +377,18 @@ export class CcAgentWorker {
       } catch (error) { return { reason: error instanceof Error ? error.message : String(error) }; }
       return { path: file };
     };
+    // Stage 4 §5.4: verify alone may read repositories, through Read, Grep and Glob confined to its roots (one function, one deny list).
+    // curate and verify list the same tools so their first requests are alike; curate's roots are empty, so its calls are refused.
+    const roots = task.kind === "dreaming" && task.task === "verify" ? task.workspace.roots : [];
+    const searches = task.kind === "dreaming" && task.task !== "classify";
+    const onSearch = async (raw: unknown) => {
+      const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown> };
+      try {
+        const confined = confineSearch(event.tool_input ?? {}, roots, event.tool_name === "Glob" ? "glob" : "grep");
+        return { hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "allow" as const, permissionDecisionReason: "repository search",
+          updatedInput: { ...event.tool_input, path: confined.path, ...(confined.glob ? { glob: confined.glob } : {}) } } };
+      } catch (error) { return deny(error instanceof Error ? error.message : String(error)); }
+    };
     const onWrite = async (raw: unknown) => {
       const event = raw as { tool_input?: Record<string, unknown> };
       const checked = workspaceFile(event?.tool_input?.file_path, files.write);
@@ -398,6 +411,11 @@ export class CcAgentWorker {
           return { hookSpecificOutput: { hookEventName: "PreToolUse" as const,
             permissionDecision: "allow" as const, permissionDecisionReason: "read trace:// rendering",
             updatedInput: { ...event.tool_input, file_path: path } } };
+        }
+        // verify: a file under its roots, past the deny list (a rendering of this run is checked below).
+        if (roots.length && isAbsolute(file) && !rendered.has(file)) {
+          const resolved = resolveRepositoryPath(file, roots);
+          return "path" in resolved ? allow("repository file") : deny(resolved.reason);
         }
         // A continuation may name only a file rendered by this very run; never a sibling worker's
         // rendering or a path reached through a symlink or lexical traversal.
@@ -446,7 +464,7 @@ export class CcAgentWorker {
       async () => { try {
       task.signal?.throwIfAborted();
       // The Noter alone has native Write and Edit, confined by the hook above to its two files; `--restricted` keeps them inside the cwd.
-      const native = workspace ? ["Read", "Write", "Edit"] : ["Read"];
+      const native = workspace ? ["Read", "Write", "Edit", ...(searches ? ["Grep", "Glob"] : [])] : ["Read"];
       const allowedTools = [...native, ...task.tools.map(definition => ccWorkerToolNames[definition.name])];
       const execution = this.query({ prompt: input ?? task.text, options: {
         model: settings.model,
@@ -455,7 +473,8 @@ export class CcAgentWorker {
         env: this.environment,
         tools: native,
         allowedTools,
-        hooks: { PreToolUse: [{ matcher: "Read", hooks: [failClosed(onRead)] }, ...(workspace ? [{ matcher: "Write|Edit", hooks: [failClosed(onWrite)] }] : [])] },
+        hooks: { PreToolUse: [{ matcher: "Read", hooks: [failClosed(onRead)] }, ...(workspace ? [{ matcher: "Write|Edit", hooks: [failClosed(onWrite)] }] : []),
+          ...(searches ? [{ matcher: "Grep|Glob", hooks: [failClosed(onSearch)] }] : [])] },
         mcpServers: { [CC_WORKER_SERVER_NAME]: workerServer(task, origins, toolsAllowed) },
         abortController: controller,
         systemPrompt: task.prompt,
@@ -470,7 +489,9 @@ export class CcAgentWorker {
         // layer is read whatever the setting sources, and turning the plugin off there keeps the worker
         // plugin-free, as assertInit requires. 129: 2.1.293 adds `cc-plugin-plugin-authoring@builtin` the same way.
         extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking,
-          settings: JSON.stringify({ enabledPlugins: { "agents-md@builtin": false, "cc-plugin-plugin-authoring@builtin": false } }) },
+          settings: JSON.stringify({ enabledPlugins: { "agents-md@builtin": false, "cc-plugin-plugin-authoring@builtin": false },
+            // verify: `--restricted` confines the file tools to the working directories, `additionalDirectories` included.
+            ...(roots.length ? { permissions: { additionalDirectories: roots } } : {}) }) },
       } });
       for await (const message of execution) {
         if (passState === "complete")

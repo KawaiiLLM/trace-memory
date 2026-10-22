@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
-import { createEditToolDefinition, createGrepToolDefinition, createReadToolDefinition, createWriteToolDefinition, SettingsManager, truncateHead, truncateLine, formatSize, DEFAULT_MAX_BYTES, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createReadToolDefinition, createWriteToolDefinition, SettingsManager, truncateHead, truncateLine, formatSize, DEFAULT_MAX_BYTES, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { contextComposition } from "./context-composition.ts";
 import { statusBody } from "./session-status.ts";
 import { showSessionPanel } from "./session-panel.ts";
@@ -154,14 +154,15 @@ export default function (pi: ExtensionAPI) {
       return path;
     });
     // The Noter writes its two workspace files with Pi's own write and edit, confined to exactly those paths (ticket 144).
-    const files = workspaceFileTools(callContext.cwd, input.workspace);
+    const files = workspaceFileTools(callContext.cwd, input.workspace, input.kind === "dreaming" && input.task !== "classify");
     return runWorker(input, {
       model: model as unknown as WorkerModel | undefined, checkCapacity, tools, fileTools: files?.definitions as never,
       runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
       read: memoryReadTool(callContext.cwd, path => {
         if (!input.reader) throw new Error("Memory worker read requires its frozen reader");
         return memoryFiles(memory, input.reader).read(path);
-      }, { memoryOnly: true, readableDirectory: () => outputDirectory, readableFiles: () => files?.paths ?? [] }),
+      }, { memoryOnly: true, readableDirectory: () => outputDirectory, readableFiles: () => files?.paths ?? [],
+        readableRoots: () => input.kind === "dreaming" && input.task === "verify" ? input.workspace.roots : [] }),
       maxToolRounds: memory.config[input.kind].maxToolRounds,
       // Pi's own retry policy runs inside the child; the one warning per scheduled backoff stays the
       // adapter's. 51: the footer indicator no longer tracks a retry — the notify reports it.
@@ -358,7 +359,9 @@ export default function (pi: ExtensionAPI) {
     const { name, description, parameters } = createReadToolDefinition(context.cwd);
     const nativeReadToolTokens = tokens(JSON.stringify({ name, description, parameters }));
     // The Noter also has Pi's write and edit.
-    const nativeWriteToolTokens = [createWriteToolDefinition(context.cwd), createEditToolDefinition(context.cwd)]
+    // The Dreamer's curate and verify also list grep and find (stage 4 §5.4), priced beside write and edit.
+    const nativeWriteToolTokens = [createWriteToolDefinition(context.cwd), createEditToolDefinition(context.cwd),
+      ...(kind === "dreaming" ? [createGrepToolDefinition(context.cwd), createFindToolDefinition(context.cwd)] : [])]
       .reduce((sum, { name, description, parameters }) => sum + tokens(JSON.stringify({ name, description, parameters })), 0);
     const common = { ...target, model: selectedModel, thinkingLevel: inheritedThinking, subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,

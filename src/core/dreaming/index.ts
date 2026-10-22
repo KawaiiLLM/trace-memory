@@ -93,7 +93,7 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
   const { text: knowledge, byCategory } = curatePrefix(store, path);
   const text = [readingGuide(path.sessionId, names), knowledge, renderToolNames(CHECK_FIRST, names)].join("\n\n");
-  // PART 3: the prompt text of `dreaming.md` is still the old protocol's; part 3 rewrites it for files.
+  // curate and verify share this prompt (and the first message) so verify's first request reads the cache curate wrote (§1.4).
   const prompt = withRetrievalPolicy(loadPrompt("dreaming.md", names, config.writing), names);
   const main: DreamingTaskConfig = { model: input.model ?? "session", thinking: input.subagentThinkingLevel ?? input.thinkingLevel, capacity: input.capacity };
   const classify: DreamingTaskConfig = { model: input.classify?.model ?? main.model, thinking: input.classify?.thinkingLevel ?? main.thinking,
@@ -267,7 +267,8 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       return undefined;
     };
     const input: DreamingTaskInput = { kind: "dreaming", task: spec.task, sessionId, branch, model: spec.model.model, thinking: spec.model.thinking,
-      mode: "subagent", prompt: spec.prompt, promptHash: spec.promptHash, text: spec.text, tools: binding.tools,
+      mode: "subagent", prompt: spec.prompt, promptHash: spec.promptHash, text: spec.text,
+      tools: spec.task === "classify" ? binding.tools.filter(tool => tool.name === "check") : binding.tools, // §6.4: the scorer has check, read, write and edit
       workspace: { dir: spec.workspace.dir, read: spec.read, write: spec.write, roots: spec.roots }, passEnd, deadline: spec.deadline,
       acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
     let result: RunAgentResult;

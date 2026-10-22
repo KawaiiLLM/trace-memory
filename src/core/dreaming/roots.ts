@@ -18,8 +18,11 @@ export function allowedRoots(store: Store, sessionId: number): string[] {
 }
 
 const real = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
-const SECRET = /^(?:\.env(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)|\.netrc|\.npmrc|credentials(?:\.json)?)$|\.(?:pem|key|p12|pfx|keystore)$/i;
+const SECRET_FILES = [".env", ".env.*", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".netrc", ".npmrc", "credentials", "credentials.json", "*.pem", "*.key", "*.p12", "*.pfx", "*.keystore"];
 const SECRET_DIRS = [".ssh", ".aws", ".gnupg"];
+const SECRET = new RegExp(`^(?:${SECRET_FILES.map(name => name.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")).join("|")})$`, "i");
+/** The same list as a ripgrep exclusion, for a Grep call (a hook can only allow or rewrite a call, never filter its output). */
+export const SECRET_GLOB = `!**/{${[...SECRET_FILES, ...SECRET_DIRS.map(name => `${name}/**`)].join(",")}}`;
 
 /** The one deny list: the production memory directory, the Pi agent directory and secret files. A symlink out of the roots is
  * refused by `resolveRepositoryPath`, which tests the resolved path. */
@@ -54,4 +57,19 @@ export function repositoryEvidenceProblem(reference: string, roots: readonly str
   const resolved = resolveRepositoryPath(match[1]!, roots);
   if ("reason" in resolved) return resolved.reason;
   return statSync(resolved.path).isFile() ? null : `${match[1]} is not a file`;
+}
+
+/** One Grep or Glob call confined to the roots (verify only): the directory it searches, resolved, and for a Grep the exclusion of secret
+ * files. Throws the reason a call is refused. */
+export function confineSearch(input: { path?: unknown; glob?: unknown; pattern?: unknown }, roots: readonly string[], tool: "grep" | "glob"): { path: string; glob?: string } {
+  if (!roots.length) throw new Error("Grep and Glob read repositories during verify only, and this session has none");
+  if (typeof input.path !== "string" || !isAbsolute(input.path)) throw new Error(`name an absolute directory in path; allowed: ${roots.join(", ")}`);
+  const resolved = resolveRepositoryPath(input.path, roots);
+  if ("reason" in resolved) throw new Error(resolved.reason);
+  if (tool === "glob") {
+    if (typeof input.pattern !== "string" || isAbsolute(input.pattern) || input.pattern.split("/").includes("..")) throw new Error("a Glob pattern must be relative and stay inside path");
+    return { path: resolved.path };
+  }
+  if (input.glob !== undefined) throw new Error("a Grep glob is not available here: narrow the search with path");
+  return { path: resolved.path, glob: SECRET_GLOB };
 }
