@@ -127,7 +127,8 @@ test("an empty frozen set passes through a no-work run: above 100 items, all sco
 
 // ---- 146 §9: parallel passes, the self-check step, the finish by the last commit ---------------------------------------------
 
-test("2026-10-22, 146: 「评分可以并行」「评分写完文件后加内容自查步骤，用 Edit 改分数」 — above 100 items the passes are in flight together; each writes, meets the self-check, edits, and the edited scores are the ones stored; a self-check without edits stores the step-1 scores", async () => {
+// 「评分可以并行」 「评分写完文件后加内容自查步骤，用 Edit 改分数」
+test("2026-10-22, 146 — above 100 items the passes are in flight together; each writes, meets the self-check, edits, and the edited scores are the ones stored; a self-check without edits stores the step-1 scores", async () => {
   const f = dreamerFixture();
   const items = manyItems(f, 105);
   let arrived = 0;
@@ -151,7 +152,8 @@ test("2026-10-22, 146: 「评分可以并行」「评分写完文件后加内容
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
 });
 
-test("2026-10-22, 146: 「评分写完文件后加内容自查步骤」 — a file that fails at step 2 gets one repair; a second failure fails the pass, the passes that applied keep their scores and the hand-off stays at classify", async () => {
+// 「评分写完文件后加内容自查步骤」
+test("2026-10-22, 146 — a file that fails at step 2 gets one repair; a second failure fails the pass, the passes that applied keep their scores and the hand-off stays at classify", async () => {
   const f = dreamerFixture();
   const items = manyItems(f, 105);
   f.dreamer.script.classify = (pass, ids) => pass === 1 ? { write: ids.map(id => `K${id} 40`).join("\n") + "\n", edit: ["## bogus\n", "## bogus\n"] } : undefined;

@@ -33,7 +33,8 @@ function barrier(f: DreamerFixture, n: number) {
   for (let i = 0; i < n; i++) f.next(async raw => { open(); await all; return f.dreamer.agent(raw); });
 }
 
-test("2026-10-22, 146: 「相同的知识类型尽量分在一起」 — 230 items (90/80/60) are three groups run side by side; each item is shown whole in exactly one group's first message and its verify's equals its curate's", async () => {
+// 「相同的知识类型尽量分在一起」
+test("2026-10-22, 146 — 230 items (90/80/60) are three groups run side by side; each item is shown whole in exactly one group's first message and its verify's equals its curate's", async () => {
   const f = dreamerFixture();
   const constraint = items(f, "constraint", 90), reference = items(f, "reference", 80), open = items(f, "open", 60);
   for (const set of [constraint, reference, open]) f.dreamer.script.curate![set === constraint ? "constraint" : set === reference ? "reference" : "open"] = update(set[0]!);
@@ -50,7 +51,8 @@ test("2026-10-22, 146: 「相同的知识类型尽量分在一起」 — 230 ite
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
 }, 60_000);
 
-test("2026-10-22, 146: 「以20条为一批，且不代表只能处理这20条，例如合并一定要看其他知识」 — the first check lists batches of 20, 20 and 5; a merge in batch 1 absorbs a same-category item of batch 3, a merge that absorbs another category's item is refused", async () => {
+// 「以20条为一批，且不代表只能处理这20条，例如合并一定要看其他知识」
+test("2026-10-22, 146 — the first check lists batches of 20, 20 and 5; a merge in batch 1 absorbs a same-category item of batch 3, a merge that absorbs another category's item is refused", async () => {
   const f = dreamerFixture();
   const rules = items(f, "constraint", 45);
   const reference = f.item("A reference item", { category: "reference", title: "Reference" });
@@ -68,7 +70,8 @@ test("2026-10-22, 146: 「以20条为一批，且不代表只能处理这20条�
   expect(live).not.toContain(rules[42]!.knowledgeId); // absorbed after verify passed
 }, 60_000);
 
-test("2026-10-22, 146: 「合并还需要同类别」 — a merge that absorbs another category's item is refused by the merge rule", async () => {
+// 「合并还需要同类别」
+test("2026-10-22, 146 — a merge that absorbs another category's item is refused by the merge rule", async () => {
   const f = dreamerFixture();
   const [rule] = items(f, "constraint", 2);
   const reference = f.item("A reference item", { category: "reference", title: "Reference" });
@@ -91,7 +94,8 @@ function threeBatches() {
 }
 const textOf = (f: DreamerFixture, knowledgeId: number) => f.store.currentCommit(knowledgeId, f.path)[0]!.text;
 
-test("2026-10-22, 146: 「让agent自己分批处理，每批交付一个文件」 (a) — the agent writes three files in order and stops once; one final check covers all three, `check` reports on every file, no next-batch message exists, and the three files are kept", async () => {
+// 「让agent自己分批处理，每批交付一个文件」
+test("2026-10-22, 146 (a) — the agent writes three files in order and stops once; one final check covers all three, `check` reports on every file, no next-batch message exists, and the three files are kept", async () => {
   const { f, firsts, files } = threeBatches();
   const reports: string[] = [];
   const messages: (string | undefined)[] = [];
@@ -119,7 +123,8 @@ test("2026-10-22, 146: 「让agent自己分批处理，每批交付一个文件�
   for (const [i, first] of firsts.entries()) expect(textOf(f, first.knowledgeId)).toBe(`batch ${i + 1} text`); // applied after verify passed
 });
 
-test("2026-10-22, 146: 「让agent自己分批处理，每批交付一个文件」 (b) — one repair message lists the failing file only; if it still fails the task fails naming batch 2 and files 1 and 3 are kept", async () => {
+// 「让agent自己分批处理，每批交付一个文件」
+test("2026-10-22, 146 (b) — one repair message lists the failing file only; if it still fails the task fails naming batch 2 and files 1 and 3 are kept", async () => {
   const fixed = threeBatches();
   fixed.f.dreamer.script.curate = { batch1: fixed.files[0]!, batch2: ["## bogus\n", fixed.files[1]!], batch3: fixed.files[2]! };
   expect(await fixed.f.dream()).toMatchObject({ outcome: "success" });
@@ -139,7 +144,8 @@ test("2026-10-22, 146: 「让agent自己分批处理，每批交付一个文件�
   expect(batches.map(batch => batch.run !== undefined)).toEqual([true, false, true]); // kept batches need not be a prefix
 });
 
-test("2026-10-22, 146: 「失败时前面的产出保留」 (c, d) — files that passed are kept when the task fails or times out; the next check does only the remaining batch, verify sees all three in batch order, and the run finishes once", async () => {
+// 「失败时前面的产出保留」
+test("2026-10-22, 146 (c, d) — files that passed are kept when the task fails or times out; the next check does only the remaining batch, verify sees all three in batch order, and the run finishes once", async () => {
   for (const ending of ["failure", "timeout"] as const) {
     const { f, firsts, files } = threeBatches();
     f.memory.config.dreaming.timeoutMs = 200;
@@ -174,7 +180,8 @@ test("2026-10-22, 146: 「失败时前面的产出保留」 (c, d) — files tha
   }
 });
 
-test("2026-10-22, 146: 「失败时前面的产出保留」 — a deadline after all three files pass keeps all three, and the resume starts at verify; a cancellation keeps nothing", async () => {
+// 「失败时前面的产出保留」
+test("2026-10-22, 146 — a deadline after all three files pass keeps all three, and the resume starts at verify; a cancellation keeps nothing", async () => {
   const { f, files } = threeBatches();
   f.memory.config.dreaming.timeoutMs = 200;
   f.next(async raw => {
@@ -192,7 +199,8 @@ test("2026-10-22, 146: 「失败时前面的产出保留」 — a deadline after
   expect(f.dreamer.inputs.map(input => input.task)).toEqual(["verify", "classify"]); // curate did not run again
 });
 
-test("2026-10-22, 146: 「让agent自己分批处理，每批交付一个文件」 (e) — an earlier file revised after a later one passed is accepted with no repair, and the kept run holds the revised text; order is not enforced", async () => {
+// 「让agent自己分批处理，每批交付一个文件」
+test("2026-10-22, 146 (e) — an earlier file revised after a later one passed is accepted with no repair, and the kept run holds the revised text; order is not enforced", async () => {
   const { f, rules, files } = threeBatches();
   const messages: (string | undefined)[] = [];
   f.next(async raw => {
@@ -211,7 +219,8 @@ test("2026-10-22, 146: 「让agent自己分批处理，每批交付一个文件�
   expect(textOf(f, rules[1]!.knowledgeId)).toBe("batch 1 revised");
 });
 
-test("2026-10-22, 146: 「让agent自己分批处理，每批交付一个文件」 (f) — a file never written fails the final check as `not written` and is not read as `## none`", async () => {
+// 「让agent自己分批处理，每批交付一个文件」
+test("2026-10-22, 146 (f) — a file never written fails the final check as `not written` and is not read as `## none`", async () => {
   const { f, files } = threeBatches();
   const messages: (string | undefined)[] = [];
   f.next(async raw => {
@@ -247,7 +256,8 @@ function twoGroups() {
   return { f, pathB, constraint, reference };
 }
 
-test("2026-10-22, 146: 「知识可能处理失败」 (processed means verified) — a group whose curate fails keeps counting in the other session; the group that passed counts 0; after the resume everything counts 0", async () => {
+// 「知识可能处理失败」
+test("2026-10-22, 146 (processed means verified) — a group whose curate fails keeps counting in the other session; the group that passed counts 0; after the resume everything counts 0", async () => {
   const { f, pathB, constraint, reference } = twoGroups();
   expect(f.store.noterOperations(pathB)).toBe(110);
   f.dreamer.script.curate = { reference: ["## bogus\n", "## bogus\n"] }; // group 2 fails its first batch twice
@@ -265,7 +275,8 @@ test("2026-10-22, 146: 「知识可能处理失败」 (processed means verified)
   expect(count(f)).toBe(0);
 });
 
-test("2026-10-22, 146: 「重试等下一个检查点」 across groups — group 2's final check fails twice on batch 1 only; groups pass and fail independently, classify does not run, the next check redoes only group 2's batch 1, then its verify, then classify, and the run finishes once", async () => {
+// 「重试等下一个检查点」
+test("2026-10-22, 146 across groups — group 2's final check fails twice on batch 1 only; groups pass and fail independently, classify does not run, the next check redoes only group 2's batch 1, then its verify, then classify, and the run finishes once", async () => {
   const { f, constraint } = twoGroups();
   f.dreamer.script.curate = { constraint: update({ ref: ref(f, constraint[0]!) }, "group 1 tidied"), reference: ["## bogus\n"] };
   expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { task: "curate", groups: [{ group: 2, task: "curate", class: "check failed twice" }] } });
@@ -288,7 +299,8 @@ test("2026-10-22, 146: 「重试等下一个检查点」 across groups — group
   expect(finished).toHaveLength(1);
 });
 
-test("2026-10-22, 146: 「连续失败自动关闭trace」 — two groups fail in one run: the reason names both, the streak grows by one; a lost claim joins the reason", async () => {
+// 「连续失败自动关闭trace」
+test("2026-10-22, 146 — two groups fail in one run: the reason names both, the streak grows by one; a lost claim joins the reason", async () => {
   const { f } = twoGroups();
   f.dreamer.script.curate = { constraint: ["## bogus\n"], reference: ["## bogus\n"] };
   expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { groups: [{ group: 1 }, { group: 2 }] } });
@@ -296,19 +308,31 @@ test("2026-10-22, 146: 「连续失败自动关闭trace」 — two groups fail i
   expect(count(f)).toBe(1);
 });
 
-test("deadline isolation (146 §3.3): one group's call passes its deadline while its runner ignores abort; the other group's workspace stays open, its files are kept and its verify applies", async () => {
-  const { f, constraint } = twoGroups();
-  f.memory.config.dreaming.timeoutMs = 300;
-  f.dreamer.script.curate = { constraint: update({ ref: ref(f, constraint[0]!) }, "group 1 tidied") };
-  f.next(() => new Promise<RunAgentResult>(() => {})); // the first call to arrive (group 1's curate) never answers and ignores abort
-  const result = await f.memory.dream({ ...f.target });
-  void result;
-  const tasks = f.dreamer.inputs.map(input => input.task);
-  expect(tasks).toContain("curate"); // group 2 ran its conversation to the end
-  expect(execution(f)[0]).toMatchObject({ outcome: "failure" });
-  expect(execution(f)[0]!.reason).toMatch(/curate g\d: timeout/);
+test("deadline isolation (146 §3.3): group 1's call passes its deadline while its runner ignores abort; group 2's verify, held past that deadline, still has its workspace and applies its update", async () => {
+  const { f, reference } = twoGroups();
+  const T = 600;
+  f.memory.config.dreaming.timeoutMs = T;
+  const x = reference[0]!;
+  f.dreamer.script.curate = { reference: update({ ref: ref(f, x) }, "group 2 tidied") };
+  let release!: () => void;
+  const latch = new Promise<void>(resolve => { release = resolve; });
+  const route = async (raw: unknown): Promise<RunAgentResult> => {
+    const input = raw as DreamingAgentInput & { signal: AbortSignal };
+    if (input.text.includes("## constraint (")) { // group 1: never answers and ignores abort; its deadline releases group 2's verify
+      input.signal.addEventListener("abort", () => release());
+      return new Promise<RunAgentResult>(() => {});
+    }
+    await new Promise(resolve => setTimeout(resolve, T / 2)); // group 2's curate ends mid-way, so its verify deadline lies after group 1's
+    return f.dreamer.agent(raw);
+  };
+  f.next(route); f.next(route);
+  f.next(async raw => { await latch; return f.dreamer.agent(raw); }); // group 2's verify starts, then waits past group 1's deadline
+  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { groups: [{ group: 1, task: "curate" }] } });
+  expect(execution(f)[0]!.reason).toMatch(/curate g1: timeout/);
   const kept = groupsOf(f);
-  expect(kept.some(group => group.verifyRun !== undefined)).toBe(true); // the other group went on to verify and applied
+  expect(kept[0]!.verifyRun).toBeUndefined();
+  expect(kept[1]!.verifyRun).toEqual(expect.any(Number)); // group 2's verify passed its own deadline's test: its tools worked after group 1's deadline
+  expect(textOf(f, x.knowledgeId)).toBe("group 2 tidied");
 }, 30_000);
 
 test("spill routing (146 §3.3): two groups' oversized search outputs are each saved through their own call", async () => {
@@ -383,6 +407,20 @@ test("frozen membership: between the failure and the resume an item of group 2 i
   expect(curate).toHaveLength(1); // group 2 only; group 1 had passed
   expect(curate[0]!.text).not.toContain(`K${archived.knowledgeId}@`);
   expect(curate[0]!.text).not.toContain(`K${fresh.knowledgeId}@`);
+});
+
+test("2026-10-22, 146: coverage is by membership [Y9] — a Noter item created after the groups froze belongs to no group: a resumed curate that updates it does not cover it, so it keeps counting", async () => {
+  const { f, pathB } = twoGroups();
+  f.dreamer.script.curate = { reference: ["## bogus\n", "## bogus\n"] }; // group 2 fails, so the groups stay frozen
+  await f.dream();
+  expect(f.store.noterOperations(pathB)).toBe(50);
+  const x = noterWrittenItem(f.memory, f.path as never, f.existingFact("late").id, "project", "reference"); // created after the freeze: in no group
+  expect(f.store.noterOperations(pathB)).toBe(51);
+  f.dreamer.script.curate = { reference: update({ ref: ref(f, x) }, "X, updated by the resumed curate") };
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(textOf(f, x.knowledgeId)).toBe("X, updated by the resumed curate"); // group 2's verify applied it
+  expect(covered(f)).not.toContain(f.store.currentCommit(x.knowledgeId, f.path)[0]!.id);
+  expect(f.store.noterOperations(pathB)).toBe(1); // group 2's 50 are covered now; X counts through its Noter create
 });
 
 test("two groups act on one item in one run: exactly one update applies, the other is refused as stale, and both groups are covered", async () => {

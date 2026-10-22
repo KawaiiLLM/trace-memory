@@ -366,8 +366,10 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       : { class: `ended before ${spec.label} was applied` };
     return { ok: false, outcome, problems, ...classified, runId: store.recordRun({ ...run, outcome }).id };
   };
-  const written = (results: { ok: boolean; committed?: { commit: number; knowledgeId: number }[] }[], others: ReadonlySet<number>): Cover[] =>
-    results.flatMap(result => result.ok ? result.committed!.filter(item => !others.has(item.knowledgeId)).map(item => ({ id: item.commit })) : []);
+  // Coverage by membership (§3.2, Y9): an operation belongs to the group when the item it acts on (its first committed version, the split's
+  // primary part) is a frozen member; its other versions (a split's new children) go with it. An item created after the groups froze is no one's.
+  const written = (results: { ok: boolean; committed?: { commit: number; knowledgeId: number }[] }[], own: ReadonlySet<number>): Cover[] =>
+    results.flatMap(result => result.ok && own.has(result.committed![0]!.knowledgeId) ? result.committed!.map(item => ({ id: item.commit })) : []);
 
   /** §5 (stage 5 §4, per group §3): verify gives every change the group's curate kept one verdict against the facts, Raw and the repositories;
    * its pass then applies the confirmed and edited operations, the first time anything curate proposed reaches the Store. */
@@ -375,9 +377,9 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const runs = group.batches.flatMap(batch => batch.run ?? []);
     const changes = buildChanges(store, path, runs);
     // Coverage is written at the group's verify pass (§3.2, ruling 「processed means verified」): what its batches showed, and the versions this pass
-    // wrote on items that are not another group's (a version written on another group's item is covered by that group's own pass).
+    // wrote on the group's own members (a version written on another group's item is covered by that group's own pass).
     const coveredBy = () => runs.flatMap(id => (JSON.parse(store.getRun(id)?.response ?? "{}").covers ?? []) as Cover[]);
-    const others = new Set(groups.filter(other => other !== group).flatMap(other => other.items.map(item => item.value.revision.knowledgeId)));
+    const own = new Set(group.items.map(item => item.value.revision.knowledgeId));
     if (!changes.blocks) return noWork("verify", "classify", coveredBy, group); // nothing was proposed: no model call
     const roots = allowedRoots(store, sessionId);
     const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `verify-g${group.no}`).open({ "changes.md": changes.text });
@@ -403,7 +405,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
             response: out => JSON.stringify({ task: "verify", operation, group: group.no, file, verdicts: result.verdicts.map((verdict, i) => ({ n: verdict.n, verdict: verdict.verdict,
               ...(verdict.reason ? { reason: verdict.reason } : {}), ...(verdict.evidence ? { evidence: verdict.evidence } : {}),
               ...(verdict.operation ? { result: over[i]!.length ? { ok: false, stale: false, reason: over[i]!.join("; ") } : out[applying.indexOf(i)] } : {}) })) }),
-            cover: ({ results }) => [...coveredBy(), ...written(results, others)],
+            cover: ({ results }) => [...coveredBy(), ...written(results, own)],
             handoff: ({ runId }) => { group.verifyRun = runId; return { nextTask: nextTask(), detail: detailOf() }; } }).runId;
         } catch (error) { group.verifyRun = undefined; throw error; }
       } });

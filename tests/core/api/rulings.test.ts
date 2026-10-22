@@ -2822,7 +2822,8 @@ const dreamerFixture = (script: DreamerScript = {}) => makeDreamerFixture(dreame
 const taskNames = (f: ReturnType<typeof dreamerFixture>) => f.dreamer.inputs.map(input => input.task);
 const executionReasons = (f: ReturnType<typeof dreamerFixture>) => (f.store.db.prepare("SELECT reason FROM task_executions ORDER BY rowid").all() as { reason: string }[]).map(row => row.reason);
 
-test("2026-10-22, 146: 「N更新或新建一次知识算一次，同条多次各算；默认30次触发」 — Dreaming is due at the 30th Noter operation and not the 29th; a second update of one item counts again; a manual write does not", () => {
+// 「N更新或新建一次知识算一次，同条多次各算；默认30次触发」
+test("2026-10-22, 146 — Dreaming is due at the 30th Noter operation and not the 29th; a second update of one item counts again; a manual write does not", () => {
   expect(DEFAULT_CONFIG.dreaming.triggerOperations).toBe(30);
   // The token trigger is removed by name, not read as a count.
   expect(() => api.validateConfig({ dreaming: { triggerTokens: 10_000 } } as never)).toThrow("Removed setting dreaming.triggerTokens: Dreaming is due by Noter operations: use dreaming.triggerOperations");
@@ -2863,7 +2864,8 @@ test("2026-10-21, 144: '整理 → 核查 → 评级；先不轮换' — one run
   expect(Number(covered)).toBeGreaterThanOrEqual(2); // no rotation: both categories were covered by this run
 });
 
-test("2026-10-22, 146: 「重试等下一个检查点，不清空计数，连续失败自动关闭trace，不要等下一个阈值」 — a failed run is retried at the next check with no new Noter operation, no threshold and no wait, the operation count is not reset, and curate's output stays as a proposal until verify passes", async () => {
+// 「重试等下一个检查点，不清空计数，连续失败自动关闭trace，不要等下一个阈值」
+test("2026-10-22, 146 — a failed run is retried at the next check with no new Noter operation, no threshold and no wait, the operation count is not reset, and curate's output stays as a proposal until verify passes", async () => {
   const f = dreamerFixture();
   const rule = f.item("Use pnpm everywhere", { category: "constraint" });
   f.dreamer.script.curate!.constraint = workspaceBlock(`update ${rule.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
@@ -2888,7 +2890,8 @@ test("2026-10-22, 146: 「重试等下一个检查点，不清空计数，连续
   expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere, tidied"); // published once the resumed verify passed
 });
 
-test("2026-10-22, 146: 「连续失败自动关闭trace」 supersedes 2026-10-21 「就参考MC的做法」 (failure handling) — the third consecutive Dreamer failure switches memory off like the Noter's, the first two do not, and the Dreamer's streak is its own row", async () => {
+// 「连续失败自动关闭trace」 「就参考MC的做法」
+test("2026-10-22, 146 supersedes the 2026-10-21 failure-handling ruling — the third consecutive Dreamer failure switches memory off like the Noter's, the first two do not, and the Dreamer's streak is its own row", async () => {
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
   const results = [];
