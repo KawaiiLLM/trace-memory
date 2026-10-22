@@ -13,6 +13,7 @@ import { CcCoordinator } from "../../src/hosts/cc/lifecycle.ts";
 import { CcImporter, CcProjection } from "../../src/hosts/cc/importer.ts";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { CcAgentWorker } from "../../src/hosts/cc/worker.ts";
+import { knowledgeBatch } from "../support/seed.ts";
 
 const at = "2026-01-01T00:00:00.000Z";
 const line = (value: unknown) => JSON.stringify(value) + "\n";
@@ -41,17 +42,16 @@ function seedKnowledge(db: string, due: boolean) {
           entryIds: [entry.id], facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "Synthetic rule",
             source: [`T${turn.id}#E${entry.entryOrdinal}`], entryIds: [entry.id], createdAt: at }] });
         if (!noted.ok) throw new Error(noted.problems.join("; "));
-        const created = store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
-          run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: at },
-          operations: Array.from({ length: 10 }, (_, i) => ({ op: "create" as const, title: "Fixture title", handle: `$k${i}`, author: "fixture",
-            category: "reference" as const, scope: owner === 0 && due ? "global" as const : "session" as const,
-            // 104: the due owner's pending weight, summed, reaches the 5k Dreamer trigger.
-            text: `Rule ${owner}-${i}: ${"synthetic body ".repeat(owner === 0 && due ? 250 : 40)}`, supports: [noted.facts[0]!.id], topics: [],
-            reason: "synthetic fixture", createdAt: at })) });
-        if (!created.ok) throw new Error(created.problems.join("; "));
+        const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+        // The due owner's items are Noter-written and their summed weight reaches the 10k Dreamer trigger (2026-10-22); every other
+        // owner's items are manual writes, which never make a Dreamer due.
+        const noterWritten = owner === 0 && due;
+        const items = Array.from({ length: 10 }, (_, i) => ({ title: "Fixture title", category: "reference" as const, scope: noterWritten ? "global" as const : "session" as const,
+          text: `Rule ${owner}-${i}: ${"synthetic body ".repeat(noterWritten ? 400 : 40)}`, supports: [noted.facts[0]!.id], reason: "synthetic fixture", createdAt: at }));
+        if (noterWritten) knowledgeBatch(store, path, items, { kind: "noting", createdAt: at });
+        else knowledgeBatch(store, path, items, { kind: "manual", createdAt: at });
       }
     });
-    if (due) store.setKnowledgeBudget("global", 1000);
   } finally { memory.close(); }
 }
 
