@@ -2,6 +2,9 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { NotingAgentInput, RunAgentResult } from "../../src/core/api/index.ts";
 import type { TraceMemory } from "../source-fixture.ts";
 import { block } from "./workspace.ts";
+import { loadPrompt } from "../../src/core/prompts/load.ts";
+import { canonicalToolNames, type ToolNames } from "../../src/core/prompts/tool-names.ts";
+import { tokens } from "../../src/core/render/index.ts";
 
 /** A scripted Noter (ticket 144, Stage 3): the one stand-in for the model behind `runAgent` in tests that publish through the
  * real two-task run. Like a host, it calls `check`, writes the two workspace files named in `input.workspace`, runs the stop
@@ -78,15 +81,49 @@ const put = (input: NotingAgentInput, changes: Partial<Files> | void) => {
   if (changes?.knowledge !== undefined) writeFileSync(input.workspace.knowledge, changes.knowledge);
 };
 
-/** One task of a scripted run, as a host's model does it: call `check`, write the files, hit the stop hook once. Returns the
- * stop hook's follow-up message, if it had one (after the correction `output.fix` makes to it). */
-export async function submit(input: NotingAgentInput, memory: TraceMemory, output: NoterOutput = {}): Promise<string | undefined> {
+/** One task of a scripted run, as a host's model does it: call `check`, write the step's file, hit the stop hook, and carry on
+ * as the hook says (stage 5 §1.2, §9.8). A step-advance message ("Step 1 passed.") is consumed here: the next step's file is
+ * written and the hook is hit again. A repair message goes back to the caller: it is returned (the first one), pushed to `seen`
+ * (every one), and `output.fix` may correct the current step's file, after which the same step is stopped again. A repair with
+ * no fix is not stopped again: that would spend the step's single repair with nothing corrected. Once step 1 has passed the
+ * facts file is closed, so a fix that returns facts at step 2 counts as no fix. */
+export async function submit(input: NotingAgentInput, memory: TraceMemory, output: NoterOutput = {}, seen?: string[]): Promise<string | undefined> {
   await input.tools.find(tool => tool.name === "check")!.execute({});
-  if (input.task === "write") put(input, { facts: factsFile(output.noteInput), knowledge: knowledgeFile(memory, output.memoryInput), ...output.files });
-  else if (output.verify) put(input, await output.verify(filesOf(input), input));
+  const plan: Partial<Files> = input.task === "write" ? { facts: factsFile(output.noteInput), knowledge: knowledgeFile(memory, output.memoryInput), ...output.files }
+    : (output.verify ? await output.verify(filesOf(input), input) : undefined) ?? {};
+  let step: 1 | 2 = 1, first: string | undefined;
+  const write = (changes: Partial<Files>) => put(input, step === 1 ? { facts: changes.facts } : { knowledge: changes.knowledge });
+  write(plan);
+  for (;;) {
+    const message = input.passEnd();
+    if (message === undefined) return first;
+    if (message.startsWith("Step 1 passed.")) { step = 2; write(plan); continue; }
+    first ??= message; seen?.push(message);
+    const fixed = output.fix?.(message, filesOf(input));
+    const change = step === 1 ? fixed?.facts : fixed?.knowledge;
+    if (change === undefined) return first;
+    write({ facts: change, knowledge: change });
+  }
+}
+
+/** Pass step 1 with the facts this output gives and leave the task at step 2, where `check` also reads the knowledge file. */
+export function toKnowledgeStep(input: NotingAgentInput, output: Pick<NoterOutput, "noteInput" | "files"> = {}): void {
+  put(input, { facts: output.files?.facts ?? factsFile(output.noteInput) });
   const message = input.passEnd();
-  if (message) put(input, output.fix?.(message, filesOf(input)));
-  return message;
+  if (!message?.startsWith("Step 1 passed.")) throw new Error(`step 1 did not pass: ${String(message)}`);
+}
+/** Write the knowledge file this output gives at step 2 and stop; returns the stop hook's message (a repair), if any. */
+export function finishKnowledgeStep(input: NotingAgentInput, memory: TraceMemory, output: Pick<NoterOutput, "memoryInput" | "files"> = {}): string | undefined {
+  put(input, { knowledge: output.files?.knowledge ?? knowledgeFile(memory, output.memoryInput) });
+  return input.passEnd();
+}
+
+/** Write the current step's file as `submit` would and return what `check` reports, without stopping: no repair is spent. A test that
+ * enumerates several invalid inputs to one task uses this, or one run per input (a second failure is terminal). */
+export async function probe(input: NotingAgentInput, memory: TraceMemory, output: NoterOutput = {}): Promise<string> {
+  const files = input.task === "write" ? { facts: factsFile(output.noteInput), knowledge: knowledgeFile(memory, output.memoryInput), ...output.files } : output.files ?? {};
+  put(input, files);
+  return String(await input.tools.find(tool => tool.name === "check")!.execute({}));
 }
 
 /** A verify task that finds nothing to correct. */
@@ -95,7 +132,7 @@ export async function verifyUnchanged(raw: unknown, reply: Partial<RunAgentResul
   const result = { outcome: "success", output: "verified", request: REQUEST, ...reply } as RunAgentResult;
   if (result.request !== undefined) input.reportRequest(result.request); else input.acknowledgeRequest();
   await input.tools.find(tool => tool.name === "check")!.execute({});
-  input.passEnd();
+  while (input.passEnd() !== undefined);
   return result;
 }
 
@@ -123,8 +160,7 @@ export function scriptedNoter(memory: () => TraceMemory, script: Script[] = [], 
       ...(input.task === "verify" ? verifyResult : {}) } as RunAgentResult;
     if (result.request !== undefined) input.reportRequest(result.request);
     if (result.outcome !== "success") { await input.tools.find(tool => tool.name === "check")!.execute({}); put(input, input.task === "write" ? { facts: factsFile(output.noteInput), knowledge: knowledgeFile(memory(), output.memoryInput), ...output.files } : undefined); return result; }
-    const message = await submit(input, memory(), output);
-    if (message) stopMessages.push(message);
+    await submit(input, memory(), output, stopMessages);
     return result;
   };
   return { agent, inputs, stopMessages, script, written };
@@ -138,5 +174,12 @@ export function submitEmpty(raw: unknown): void {
   mkdirSync(input.workspace.dir, { recursive: true });
   input.tools.find(tool => tool.name === "check")!.execute({});
   writeFileSync(input.workspace.facts, "## none\n"); writeFileSync(input.workspace.knowledge, "## none\n");
-  input.passEnd();
+  while (input.passEnd() !== undefined);
 }
+
+/** What the freeze adds to the Noter's instructions for the step prompts (stage 5 §0): the larger of the two tasks' pairs, priced as
+ * the model will hold them. A test that prices "fixed cost" against a host window adds this to the system prompt. */
+export const largestTaskPromptTokens = (names: ToolNames = canonicalToolNames): number => {
+  const pairs = [["tasks/noting-write-facts.md", "tasks/noting-write-knowledge.md"], ["tasks/noting-verify-facts.md", "tasks/noting-verify-knowledge.md"]] as const;
+  return Math.max(...pairs.map(pair => tokens(pair.map(file => loadPrompt(file, names)).join("\n\n"))));
+};

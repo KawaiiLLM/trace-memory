@@ -119,10 +119,10 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   expect(JSON.parse(run.response!)).toMatchObject({ task: "write" });
   expect(JSON.parse(runs[1]!.response!)).toMatchObject({ task: "verify" });
   expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test");
-  const writeRequests = 3; // check, write both files, stop
+  const writeRequests = 5; // check, the facts file, stop, the knowledge file (after the step-advance message), stop
   expect(JSON.parse(run.request!)).toEqual(h.requests[writeRequests - 1]);
   expect(JSON.parse(runs[1]!.request!)).toEqual(h.requests.at(-1));
-  expect(h.conversations[writeRequests - 1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "assistant", "toolResult", "toolResult"]);
+  expect(h.conversations[writeRequests - 1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "assistant", "toolResult", "assistant", "user", "assistant", "toolResult"]);
   // 137: a fresh Noter's system prompt is its instructions plus the retrieval policy, once.
   expect(h.conversations[0]!.systemPrompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
   expect(h.conversations[0]!.systemPrompt!.split("When to look up memory")).toHaveLength(2);
@@ -625,8 +625,9 @@ test("a subagent Noter reads omitted evidence through virtual Read and records i
   const call = { type: "toolCall" as const, id: "call-1", name: "read", arguments: { path } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.prompt("next main turn"); await h.answer("word ".repeat(1000)); await h.drain();
-  // Task 1: read, check, write, stop. Task 2 starts from the same first message, so its model reads the same evidence, then checks and stops.
-  expect(h.conversations).toHaveLength(7);
+  // Task 1: read, check, the facts file, stop, the knowledge file, stop. Task 2 starts from the same first message, so its model reads the same
+  // evidence, then checks and stops at each of its two steps.
+  expect(h.conversations).toHaveLength(10);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   expect(JSON.stringify(h.conversations.at(-1)!.messages)).toContain("Task: verify");
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
@@ -636,7 +637,7 @@ test("a subagent Noter reads omitted evidence through virtual Read and records i
   expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["search", "check", "read", "write", "edit"]);
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.request!)).toEqual(h.requests[3]); // the write task's last request
+  expect(JSON.parse(run.request!)).toEqual(h.requests[5]); // the write task's last request
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
@@ -991,8 +992,8 @@ test("a retry re-sends the same request: a stream error after a tool round does 
   const run = h.memory.store.listRuns(1)[0]!, response = JSON.parse(run.response!);
   expect(run.outcome).toBe("success");
   // Every attempt that reported usage counts; the attempt that died in transport reported none.
-  // The write task's requests: all but the dead attempt and the verify task's two (its own run).
-  expect(response.usage.input).toBe(usage.input * (h.conversations.length - 1 - 2));
+  // The write task's requests: all but the dead attempt and the verify task's three (its own run).
+  expect(response.usage.input).toBe(usage.input * (h.conversations.length - 1 - 3));
   // Pi's own retry loop records the provider's error text as it arrived at the transport.
   expect(response.retries).toEqual([{ attempt: 1, error: expect.stringContaining("fetch failed") }]);
 });

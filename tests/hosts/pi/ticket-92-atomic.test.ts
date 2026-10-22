@@ -1,11 +1,14 @@
 import { expect, test } from "vitest";
 import { join } from "node:path";
 import { sourceSeededMemory, type NotingAgentInput } from "../../source-fixture.ts";
-import { fixture, broken, noterTurn, submitted, usage } from "./native-fixture.ts";
+import { fixture, broken, noterTurn, usage, type Body } from "./native-fixture.ts";
 import { runWorker } from "../../../src/hosts/pi/worker.ts";
 import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
 import { workspaceFileTools } from "../../../src/hosts/pi/workspace-files.ts";
 import { memoryFiles } from "../../../src/core/api/index.ts";
+
+/** How many `write` calls the conversation so far holds: the Noter writes one file per step. */
+const writes = (body: Body) => (body.messages ?? []).flatMap((m: Body) => m.tool_calls ?? []).filter((c: Body) => c.function?.name === "write").length;
 
 function frozenRead(memory: ReturnType<typeof sourceSeededMemory>, task: NotingAgentInput, cwd: string, files: string[]) {
   if (!task.reader) throw new Error("Pi worker fixture requires the Core-frozen reader");
@@ -36,7 +39,7 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker l
       rounds++;
       expect(memory.store.listSessionFacts(session.id)).toEqual([]);
       expect(memory.store.currentKnowledge(path)).toEqual([]);
-      if (ending === "error" && submitted(body)) return broken(); // the write task's files exist; its last reply fails
+      if (ending === "error" && writes(body) >= 2) return broken(); // the write task's two files exist (one per step); its last reply fails
       return noterTurn(body, { title: "Durable rule", sources: "[T1#E1] User set a durable rule" }, usage(),
         "## create\ntitle: Fixture title\ncategory: constraint\nscope: session\ntopics: \nsupports: f1\nreason: User requirement\n\nFollow the durable rule\n");
     });

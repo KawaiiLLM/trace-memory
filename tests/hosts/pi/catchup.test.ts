@@ -4,7 +4,7 @@ import { expect, test, vi } from "vitest";
 import { TraceMemory, type NotingAgentInput } from "../../../src/core/api/index.ts";
 import { host, reply, notingFact, dreamerFiles, NOTER_BATCH_REQUESTS, type Reply } from "./test-host.ts";
 import { knowledge } from "../../support/seed.ts";
-import { submit } from "../../support/noter.ts";
+import { largestTaskPromptTokens, submit } from "../../support/noter.ts";
 import { submitEmpty } from "../../support/noter.ts";
 
 type Memory = ReturnType<typeof TraceMemory>;
@@ -420,7 +420,7 @@ test("disabled executors cannot acquire or commit borrowed N; project change fen
 test("failed own capacity admission leaves its N slot free for a smaller closed tail", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   try {
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 20000 }; // small enough that the own batch is refused and the smaller closed tail still fits
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 20000 + largestTaskPromptTokens() }; // small enough that the own batch is refused and the smaller closed tail still fits
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);

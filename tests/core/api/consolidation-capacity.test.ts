@@ -6,6 +6,7 @@ import { scoreAll } from "../../support/seed.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { largestTaskPromptTokens } from "../../support/noter.ts";
 
 const memories: ReturnType<typeof sourceSeededMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -51,7 +52,7 @@ test("fresh Noter prices the native Read, Write and Edit definitions", () => {
   const definitions = pricedToolDefinitions(notingToolDefinitions, canonicalToolNames);
   const input = { ...f.target, nativeReadToolTokens, nativeWriteToolTokens, boundary: { exactEntryIds: f.pending } };
   const full = freezeNoting(f.memory.store, input, f.memory.config);
-  const freshPrice = tokens(full.prompt!) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + nativeWriteToolTokens + tokens(full.prepared!.text);
+  const freshPrice = tokens(full.prompt!) + largestTaskPromptTokens() + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + nativeWriteToolTokens + tokens(full.prepared!.text);
   expect(freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice } }, f.memory.config)
     .prepared!.selectedEntryIds).toEqual(f.pending);
   expect(() => freezeNoting(f.memory.store, { ...input, capacity: { inputTokens: freshPrice - 1 } }, f.memory.config))

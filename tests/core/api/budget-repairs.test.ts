@@ -10,7 +10,7 @@ import { memoryFiles } from "../../../src/core/api/index.ts";
 import { budgetMaterial, compactText, injectionText, notingText, rawWindowTokens, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { curateWrite } from "../../support/dreamer.ts";
-import { submitEmpty } from "../../support/noter.ts";
+import { submitEmpty, largestTaskPromptTokens } from "../../support/noter.ts";
 
 function seeded(config: Record<string, unknown> = {}) {
   const calls: NotingAgentInput[] = [];
@@ -87,7 +87,7 @@ test("review 2026-09-08, on Noting since 25a: a smaller model window trims the o
   try {
     await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id });
     const bare = f.calls[0] as NotingAgentInput;
-    const size = (input: NotingAgentInput) => tokens(input.prompt) + tokens(JSON.stringify(input.tools)) + tokens(input.text);
+    const size = (input: NotingAgentInput) => tokens(input.prompt) + largestTaskPromptTokens() + tokens(JSON.stringify(input.tools)) + tokens(input.text);
     for (let i = 0; i < 4; i++) expect(f.note("Optional historical evidence " + "word ".repeat(1500))).toContain(`ok: F${i + 1}`);
     const next = f.m.store.appendTurn({ sessionId: f.s.id, parentTurnId: f.t.id, kind: "turn", userPrompt: "Second request", assistantText: "Second reply", startedAt: "2026-09-08" });
     const entries = hydrate(f.m.pendingEntries(f.s.id, "main", next.id), f.m.store).length;
@@ -150,7 +150,7 @@ test("review 2026-09-08: Noting runs the prepared material the capacity negotiat
   const f = seeded();
   try {
     await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id });
-    const size = (input: NotingAgentInput) => tokens(input.prompt) + tokens(JSON.stringify(input.tools)) + tokens(input.text);
+    const size = (input: NotingAgentInput) => tokens(input.prompt) + largestTaskPromptTokens() + tokens(JSON.stringify(input.tools)) + tokens(input.text);
     const capacity = size(f.calls[0] as NotingAgentInput) + 500;
     for (let i = 0; i < 4; i++) expect(f.note("Optional historical evidence " + "word ".repeat(1500))).toContain(`ok: F${i + 1}`);
     const next = f.m.store.appendTurn({ sessionId: f.s.id, parentTurnId: f.t.id, kind: "turn", userPrompt: "Next request", assistantText: "Okay", startedAt: "2026-09-08" });

@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { call, fixture, say, sse, usage, worker, type Body } from "./native-fixture.ts";
+import { call, fixture, say, worker, type Body } from "./native-fixture.ts";
 import { factsFile, knowledgeFile } from "../../support/noter.ts";
 
 const GOOD = [{ title: "Episode one", sources: "[T1#E1] 用 pnpm，不要 npm" }];
@@ -13,15 +13,11 @@ const BAD = [{ title: "Episode one", sources: "[T1#E99] 用 pnpm，不要 npm" }
 const create = { op: "create", title: "Fixture title", text: "Use pnpm, never npm", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "The user chose pnpm." };
 const variants = ["published", "corrected-at-stop", "unfixed"] as const;
 
-/** The two files a request's `check` result names. */
+/** The two files of the run's workspace, from the first `check` result's step-1 file (the knowledge file sits beside it). */
 const filesIn = (body: Body) => {
-  const found = /Files: (\S+facts\.md), (\S+knowledge\.md)/.exec(JSON.stringify(body.messages));
-  return found ? { facts: found[1]!, knowledge: found[2]! } : undefined;
+  const found = /File: (\S+facts\.md)/.exec(JSON.stringify(body.messages));
+  return found ? { facts: found[1]!, knowledge: found[1]!.replace(/facts\.md$/, "knowledge.md") } : undefined;
 };
-const mixed = (id: string, parts: { name: string; args: unknown }[]) => sse([{ id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0,
-  delta: { role: "assistant", tool_calls: parts.map((part, index) => ({ index, id: `${id}-${index + 1}`, type: "function", function: { name: part.name, arguments: JSON.stringify(part.args) } })) },
-  finish_reason: "tool_calls" }], usage: usage() }]);
-
 for (const variant of variants) test(`real Pi two-task Noter: ${variant}`, async () => {
   const f = await fixture({ "noting.triggerTokens": 1 });
   const workerBodies: Body[] = [];
@@ -35,23 +31,29 @@ for (const variant of variants) test(`real Pi two-task Noter: ${variant}`, async
       workerBodies.push(body);
       const files = filesIn(body)!, task = conversations;
       // `step` is the number of assistant turns this conversation has had; a follow-up message after the stop continues the count.
+      // Each task has two steps: the stop after the facts file brings the knowledge step's message, the stop after that ends the task.
       const steps: (() => Response)[] = task === 1
         ? variant === "published" ? [
             () => call("check-1", "check", {}),
             () => call("outside", "write", { path: outside, content: "escape" }),
-            () => mixed("write", [{ name: "write", args: { path: files.facts, content: factsFile(GOOD) } }, { name: "write", args: { path: files.knowledge, content: knowledgeFile(f.h.memory, create) } }]),
+            () => call("write-facts", "write", { path: files.facts, content: factsFile(GOOD) }),
+            () => say("done"),
+            () => call("write-knowledge", "write", { path: files.knowledge, content: knowledgeFile(f.h.memory, create) }),
             () => say("done")]
           : variant === "corrected-at-stop" ? [
             () => call("check-1", "check", {}),
-            () => mixed("write", [{ name: "write", args: { path: files.facts, content: factsFile(BAD) } }, { name: "write", args: { path: files.knowledge, content: "## none\n" } }]),
-            () => say("done"),                                                                       // the stop check fails: one follow-up
+            () => call("write-facts", "write", { path: files.facts, content: factsFile(BAD) }),
+            () => say("done"),                                                                       // the stop check fails: step 1's one repair
             () => call("fix", "edit", { path: files.facts, edits: [{ oldText: "T1#E99", newText: "T1#E1" }] }),
-            () => say("fixed")]
+            () => say("fixed"),
+            () => call("write-knowledge", "write", { path: files.knowledge, content: "## none\n" }),
+            () => say("done")]
           : [() => call("check-1", "check", {}),
-            () => mixed("write", [{ name: "write", args: { path: files.facts, content: factsFile(BAD) } }, { name: "write", args: { path: files.knowledge, content: "## none\n" } }]),
+            () => call("write-facts", "write", { path: files.facts, content: factsFile(BAD) }),
             () => say("done"), () => say("still done")]
         : [() => call("check-2", "check", {}), () => call("read-1", "read", { path: files.facts }),
-          () => call("edit-1", "edit", { path: files.facts, edits: [{ oldText: "title: Episode one", newText: "title: Episode one, verified" }] }), () => say("verified")];
+          () => call("edit-1", "edit", { path: files.facts, edits: [{ oldText: "title: Episode one", newText: "title: Episode one, verified" }] }), () => say("verified"),
+          () => say("knowledge verified")];
       return (steps[assistant] ?? (() => say("done")))();
     });
     await f.turn();

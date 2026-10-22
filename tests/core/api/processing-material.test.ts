@@ -4,7 +4,7 @@ import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { scoreAll } from "../../support/seed.ts";
-import { submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
+import { knowledgeFile, submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
 function fixture(agent?: (input: NotingAgentInput) => Promise<void>) {
   const memory = sourceSeededMemory(":memory:", async raw => {
@@ -35,9 +35,9 @@ test("92: omitted knowledge has no printed tag; an exact tag works without read 
     expect(input).not.toHaveProperty("readKnowledgeCommits");
     expect(input.text).not.toContain("word ".repeat(400));
     const operation = { op: "update", id: "K1@1", ...f.content, text: "Updated concise rule using its exact version" };
-    expect(await submit(input, f.memory, { memoryInput: operation })).toContain("not a version address");
-    operation.id = `K1#${f.memory.store.versionTag(1, 1)}`;
-    expect(await submit(input, f.memory, { memoryInput: operation })).toBeUndefined();
+    // The knowledge step first names a version address, is repaired once, then names the exact tag.
+    expect(await submit(input, f.memory, { memoryInput: operation,
+      fix: () => ({ knowledge: knowledgeFile(f.memory, { ...operation, id: `K1#${f.memory.store.versionTag(1, 1)}` }) }) })).toContain("not a version address");
     expect(f.memory.store.currentKnowledge(f.memory.store.knowledgePath(1))[0]!.revision.text).toBe(f.content.text);
   });
   try {

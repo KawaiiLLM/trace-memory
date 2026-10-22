@@ -304,17 +304,17 @@ test("19c 2026-09-08: the child's retry policy is Pi's own, read from settings.j
 }, 20000);
 
 test("review 2026-09-08: provider retries never spend the tool-round cap; the cap counts model turns that call tools", async () => {
-  const f = await fixture({ "noting.maxToolRounds": 2, retry: { maxRetries: 3, baseDelayMs: 1 } }); // check, then the files: two rounds
+  const f = await fixture({ "noting.maxToolRounds": 3, retry: { maxRetries: 3, baseDelayMs: 1 } }); // check, then one file per step: three rounds
   try {
     let attempt = 0;
     f.script(body => !worker(body) ? say("好的。") : attempt++ < 2 ? broken() : noterTurn(body, noteBatch));
     await f.turn();
     const run = await settled(f);
-    // Two failed attempts, then the write task's two tool rounds within the cap and its terminal reply, then the verify task.
+    // Two failed attempts, then the write task's three tool rounds within the cap and its two stops, then the verify task's three requests.
     expect(run.outcome).toBe("success");
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
-    expect(f.sent.filter(body => worker(body))).toHaveLength(7);
-    expect(JSON.stringify(f.sent.filter(body => worker(body)).at(-1)!.messages)).not.toContain("Your files do not pass the check"); // the files pass, so no follow-up
+    expect(f.sent.filter(body => worker(body))).toHaveLength(10);
+    expect(JSON.stringify(f.sent.filter(body => worker(body)).at(-1)!.messages)).not.toContain("Your files do not pass the check"); // the files pass, so no repair
     expect(JSON.parse(run.response!).retries).toHaveLength(2);
   } finally { await f.dispose(); }
 }, 20000);
@@ -355,7 +355,7 @@ test("review 2026-09-08: a child cancelled before any usage arrived reports unkn
 }, 20000);
 
 test("review 2026-09-08: a failed response's partial tool call never spends a tool round; the retried complete call is the first round", async () => {
-  const f = await fixture({ "noting.maxToolRounds": 2, retry: { maxRetries: 2, baseDelayMs: 1 } });
+  const f = await fixture({ "noting.maxToolRounds": 3, retry: { maxRetries: 2, baseDelayMs: 1 } });
   try {
     let attempt = 0;
     f.script(body => {

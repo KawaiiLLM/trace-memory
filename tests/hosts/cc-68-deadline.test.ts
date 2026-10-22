@@ -139,12 +139,12 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
 
     vi.useRealTimers();
     deadlineRun = false;
-    const passEnd = vi.fn(() => "Review this run once.");
+    const passEnd = vi.fn<() => string | undefined>().mockReturnValueOnce("Review this run once.").mockReturnValue(undefined);
     const nextTask = { kind: "noting", text: "next", prompt: "next", tools: [], acknowledgeRequest: vi.fn(), passEnd,
       reader: { ...target, projectId: memory.store.getSession(session.id)!.projectId } } as unknown as NotingAgentInput;
     const next = await worker.run(nextTask, 0);
     expect(next).toMatchObject({ outcome: "success", output: "healthy" });
-    expect(passEnd).toHaveBeenCalledTimes(1);
+    expect(passEnd).toHaveBeenCalledTimes(2); // after each of the two passes
     expect(calls).toBe(2);
   } finally { vi.useRealTimers(); memory.close(); }
 });

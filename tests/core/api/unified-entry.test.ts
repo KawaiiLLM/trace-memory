@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { TraceMemory, DEFAULT_CONFIG, renderEntry, tokens, type NotingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
-import { submit, verifyUnchanged } from "../../support/noter.ts";
+import { probe, submit, verifyUnchanged } from "../../support/noter.ts";
 const time = "2026-09-01T00:00:00Z";
 function fixture() {
   let run: (input: NotingAgentInput) => Promise<RunAgentResult> = async () => { throw new Error("offline test"); };
@@ -75,9 +75,10 @@ test("92: whole-entry frozen citations bind only that occurrence; block selector
     f.m.selectEntries(f.session.id, "main", [a.id, b.id, c.id]);
     f.setNoter(async input => {
       const fact = (source: string) => ({ title: "Statement", sources: `[${source}] Pi agent reports a statement` });
-      expect(await submit(input, f.m, { noteInput: [{ title: "Rejected sibling", sources: `[T${f.turn.id}#E3] Sibling evidence` }], memoryInput: {} })).toContain("invalid source");
+      // Invalid inputs are read off `check` (a stop would spend the step's one repair); the one valid submit follows.
+      expect(await probe(input, f.m, { noteInput: [{ title: "Rejected sibling", sources: `[T${f.turn.id}#E3] Sibling evidence` }], memoryInput: {} })).toContain("invalid source");
       for (const source of [`T${f.turn.id}#E2@thinking`, `T${f.turn.id}#E2@nonexistent`, `T${f.turn.id}#E2@text`])
-        expect(await submit(input, f.m, { noteInput: [fact(source)], memoryInput: {} })).toContain("invalid source");
+        expect(await probe(input, f.m, { noteInput: [fact(source)], memoryInput: {} })).toContain("invalid source");
       expect(await submit(input, f.m, { noteInput: [fact(`T${f.turn.id}#E2`)], memoryInput: {} })).toBeUndefined();
       expect(f.m.store.listTurnFacts(f.turn.id)).toEqual([]);
       return { outcome: "success", output: "done", request: {} };

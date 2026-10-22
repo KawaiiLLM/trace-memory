@@ -107,12 +107,12 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
     h.provider(async c => emptyNote(c) ?? reply("No durable material."));
     release[0]!(reply("No durable material.")); // the ordinary run finishes, but does not chain a catchup batch
     await settle(h);
-    expect(h.requests).toHaveLength(6); // the held first request, its one correcting pass (which writes the files), and the verify task; no chained batch
+    expect(h.requests).toHaveLength(8); // the held first request, the write task's repair of step 1 and its step 2, and the verify task's three; no chained batch
     expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(2);
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
     await command(h, "catchup"); // the ordinary run exhausted Raw; finish the waiting drain without another launch
     await settle(h);
-    expect(h.requests).toHaveLength(6);
+    expect(h.requests).toHaveLength(8);
     expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(2);
     expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(2);
     await command(h, "");

@@ -7,7 +7,7 @@ import { block, workspaceBatch } from "../../support/workspace.ts";
 import { fact as seedFact, legacyKnowledge, receiptCommit } from "../../support/seed.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { writeFileSync } from "node:fs";
-import { factsFile, knowledgeFile, submit, verifyUnchanged, type Files } from "../../support/noter.ts";
+import { factsFile, finishKnowledgeStep, knowledgeFile, toKnowledgeStep, verifyUnchanged, type Files } from "../../support/noter.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>, triggerEntryId: number;
 afterEach(() => memory?.close());
@@ -132,13 +132,14 @@ test("the Noter's check refuses length and title with their counts, and a correc
   setup();
   script = async input => {
     const address = "T1#E1";
-    seen.push(await checked(input, { facts: factsFile([{ title: sized(21), sources: `[${address}] fine` }]), knowledge: "## none\n" }));
+    seen.push(await checked(input, { facts: factsFile([{ title: sized(21), sources: `[${address}] fine` }]) }));
     seen.push(await checked(input, { facts: factsFile([{ title: "Fits", sources: `[${address}] ${sized(201)}` }]) }));
-    seen.push(await checked(input, { facts: factsFile([{ title: "Fits", sources: `[${address}] Use pnpm` }]),
-      knowledge: knowledgeFile(memory, create(sized(21), "Use pnpm")) }));
+    // Knowledge problems are read at step 2, after the facts file has passed step 1.
+    toKnowledgeStep(input, { noteInput: [{ title: "Fits", sources: `[${address}] Use pnpm` }] });
+    seen.push(await checked(input, { knowledge: knowledgeFile(memory, create(sized(21), "Use pnpm")) }));
     seen.push(await checked(input, { knowledge: knowledgeFile(memory, { ...create("Package manager", "Use pnpm"), title: undefined }) }));
     seen.push(await checked(input, { knowledge: knowledgeFile(memory, create("Package manager", sized(201))) }));
-    await submit(input, memory, { noteInput: [{ title: "Fits", sources: `[${address}] Use pnpm` }], memoryInput: create("Package manager", "Use pnpm") });
+    expect(finishKnowledgeStep(input, memory, { memoryInput: create("Package manager", "Use pnpm") })).toBeUndefined();
     return success();
   };
   const result = await memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
@@ -157,9 +158,10 @@ test("a Noter update is checked on its resulting body and needs a title when its
   const seen: string[] = [];
   script = async input => {
     const update = { op: "update", id: tag(legacy.knowledgeId), supports: ["F1"], reason: "Compress", category: "constraint", scope: "project", topics: [] };
-    seen.push(await checked(input, { facts: "## none\n", knowledge: knowledgeFile(memory, { ...update, text: "Rule, compressed." }) }));
+    toKnowledgeStep(input, { files: { facts: "## none\n" } });
+    seen.push(await checked(input, { knowledge: knowledgeFile(memory, { ...update, text: "Rule, compressed." }) }));
     seen.push(await checked(input, { knowledge: knowledgeFile(memory, { ...update, title: "Legacy rule", text: sized(250, "Legacy rule. ") }) }));
-    await submit(input, memory, { noteInput: [], memoryInput: { ...update, title: "Legacy rule", text: "Rule, compressed." } });
+    expect(finishKnowledgeStep(input, memory, { memoryInput: { ...update, title: "Legacy rule", text: "Rule, compressed." } })).toBeUndefined();
     return success();
   };
   const result = await memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });

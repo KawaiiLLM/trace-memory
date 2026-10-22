@@ -1,6 +1,6 @@
 // Ticket 144, Stage 3: the two-task Noter on the real, pinned Claude Code executable, under the network fence against a scripted
 // loopback model. What is real: the SDK worker, the PreToolUse file hooks, native Write/Read/Edit under `--restricted`, the stop
-// check and its one follow-up, the hand-off between the tasks and publication. What is scripted: the model's replies.
+// check and each step's one repair, the hand-off between the tasks and publication. What is scripted: the model's replies.
 // Set TM144_EVIDENCE to a directory to keep each variant's requests and the native transcripts of both tasks.
 import { afterAll, afterEach, expect, test } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -57,12 +57,14 @@ for (const variant of variants)
     let files: Files = { facts: "", knowledge: "" }, checkpointError: unknown, checkpointsRun = 0;
     const knowledge = () => knowledgeFile(memory, { op: "create", title: "Fixture title", text: "Claude Code notes the two episodes", category: "understanding",
       scope: "session", topics: [], supports: ["$1", "$2"], reason: "Both episodes" });
-    const steps: Step[] = variant === "published" ? [check, outside, write("facts", factsFile(GOOD)), (f, c) => write("knowledge", knowledge())(f, c), finish,
-      check, read("facts"), edit("facts", "title: Episode two", "title: Episode two, verified"), finish]
-      : variant === "none" ? [check, write("facts", factsFile()), write("knowledge", knowledgeFile(undefined as never)), finish, check, finish]
-      : variant === "corrected-at-stop" ? [check, write("facts", factsFile(BAD)), write("knowledge", "## none\n"), finish,
-        edit("facts", "T2#E99", "T2#E1"), finish, check, finish]
-      : [check, write("facts", factsFile(BAD)), write("knowledge", "## none\n"), finish, finish];
+    // One request per entry. Each task has two steps: the stop after the facts file brings step 2 (a new request), the stop after
+    // the knowledge file ends the task; a failing stop brings the step's one repair (a new request too).
+    const steps: Step[] = variant === "published" ? [check, outside, write("facts", factsFile(GOOD)), finish, (f, c) => write("knowledge", knowledge())(f, c), finish,
+      check, read("facts"), edit("facts", "title: Episode two", "title: Episode two, verified"), finish, finish]
+      : variant === "none" ? [check, write("facts", factsFile()), finish, write("knowledge", knowledgeFile(undefined as never)), finish, check, finish, finish]
+      : variant === "corrected-at-stop" ? [check, write("facts", factsFile(BAD)), finish,
+        edit("facts", "T2#E99", "T2#E1"), finish, write("knowledge", "## none\n"), finish, check, finish, finish]
+      : [check, write("facts", factsFile(BAD)), finish, finish];
     // A task has written nothing to the database before its verify task ends: the hand-off is the only thing that exists between them.
     const unpublished = (handoff: number) => () => {
       const reader = new Store(settings.dbPath);
@@ -73,12 +75,12 @@ for (const variant of variants)
         expect((reader.db.prepare("SELECT count(*) AS n FROM task_handoffs").get() as { n: number }).n).toBe(handoff);
       } finally { reader.close(); }
     };
-    if (variant === "published") { checkpoints[5] = unpublished(1); checkpoints[8] = unpublished(1); }
+    if (variant === "published") { checkpoints[6] = unpublished(1); checkpoints[10] = unpublished(1); }
     const loopback = await startLoopbackAnthropic((_turns, body) => {
       const index = requests.length;
       requests.push(body);
-      const found = /Files: (\S+facts\.md), (\S+knowledge\.md)/.exec(JSON.stringify(body));
-      if (found) files = { facts: found[1]!, knowledge: found[2]! };
+      const found = /File: (\S+facts\.md)/.exec(JSON.stringify(body)); // the first check result names the facts file; the knowledge file sits beside it
+      if (found) files = { facts: found[1]!, knowledge: found[1]!.replace(/facts\.md$/, "knowledge.md") };
       try { checkpoints[index]?.(); if (checkpoints[index]) checkpointsRun++; } catch (error) { checkpointError = error; }
       return (steps[index] ?? finish)(files, cwd);
     });
@@ -132,7 +134,7 @@ for (const variant of variants)
       if (variant === "published") {
         expect(transcripts[0]).toContain("this task may use only its two workspace files"); // Write outside the workspace is denied by the hook
         // Both tasks open with the same bytes (system prompt, tool definitions, task text), so task 2 reads task 1's cached prefix.
-        const [one, two] = [requests[0], requests[5]] as [{ system: unknown; tools: unknown; messages: unknown[] }, { system: unknown; tools: unknown; messages: unknown[] }];
+        const [one, two] = [requests[0], requests[6]] as [{ system: unknown; tools: unknown; messages: unknown[] }, { system: unknown; tools: unknown; messages: unknown[] }];
         expect(JSON.stringify(two.system)).toBe(JSON.stringify(one.system));
         expect(JSON.stringify(two.tools)).toBe(JSON.stringify(one.tools));
         expect(JSON.stringify(two.messages[0])).toBe(JSON.stringify(one.messages[0]));

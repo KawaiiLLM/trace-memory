@@ -10,7 +10,7 @@ import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.t
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
 import { facts } from "../../support/seed.ts";
-import { submitEmpty } from "../../support/noter.ts";
+import { submitEmpty, largestTaskPromptTokens } from "../../support/noter.ts";
 
 const memories: ReturnType<typeof sourceSeededMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -107,7 +107,7 @@ test("ticket92material capacity shrinking reuses metadata and Raw views but rebi
   const config = { ...f.memory.config, compaction: { ...f.memory.config.compaction, factsTokens: 1 } };
   const complete = freezeNoting(f.store, { ...f.target }, config);
   const batchIds = new Set(complete.entries.map(entry => entry.id));
-  const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames)));
+  const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + largestTaskPromptTokens() + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames)));
   const historicalUsers = f.store.sourcePath(f.session.id, "main", f.turn.id)
     .filter(entry => !batchIds.has(entry.id) && entry.addresses.some(address => /#user$/.test(address)))
     .map(entry => entry.id);
@@ -145,7 +145,7 @@ test("133: fresh receipt-only temporary context trims before rejecting an exact 
   expect(complete.prepared!.material.receipts.join("\n")).toContain("user");
   const withoutTemporary = freezeNoting(f.store, input,
     { ...config, compaction: { ...config.compaction, temporaryTokens: 0 } });
-  const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames)));
+  const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + largestTaskPromptTokens() + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames)));
   const inputTokens = fixed + tokens(withoutTemporary.prepared!.text);
   expect(fixed + tokens(complete.prepared!.text)).toBeGreaterThan(inputTokens);
   const entryIds = complete.entries.map(entry => entry.id);

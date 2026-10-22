@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { conversationOf, dreamerFiles, host, NOTER_BATCH_REQUESTS, reply, usage } from "./test-host.ts";
-import { submit, verifyUnchanged } from "../../support/noter.ts";
+import { largestTaskPromptTokens, submit, verifyUnchanged } from "../../support/noter.ts";
 import { noterWrittenItem } from "../../support/dreamer.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { hydrate } from "../../source-fixture.ts";
@@ -103,7 +103,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     h.persist(reply("word ".repeat(15000)));
     // Price the current shared prompt/schema, not the pre-92 fixed overhead. The remaining
     // 3k holds one 2k entry and framing, but not two entries. Production limits are unchanged.
-    const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
+    const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + largestTaskPromptTokens() + tokens(JSON.stringify(pricedToolDefinitions(toolDefinitions, canonicalToolNames)));
     const fittingWindow = fixed + 3_000 + CONTEXT_HEADROOM;
     h.ctx.model = { ...h.ctx.model!, contextWindow: fittingWindow };
     await h.emit("session_start");

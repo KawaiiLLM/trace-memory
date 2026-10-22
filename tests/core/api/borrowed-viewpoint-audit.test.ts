@@ -2,7 +2,7 @@ import { expect, test } from 'vitest';
 import { sourceSeededMemory, recorded, hydrate, type RunAgent, type NotingAgentInput } from '../../source-fixture.ts';
 import { memoryFiles } from '../../../src/core/api/index.ts';
 import { fact as seedFact } from '../../support/seed.ts';
-import { submit, verifyUnchanged } from '../../support/noter.ts';
+import { knowledgeFile, probe, submit, verifyUnchanged } from '../../support/noter.ts';
 
 const at = '2026-09-01T00:00:00.000Z';
 type Worker = NotingAgentInput;
@@ -61,17 +61,19 @@ async function execute(borrowed:boolean,dead:boolean) {
     expect(historical, historical).toContain('SIBLING_MUST_NOT_LEAK');
     {
       // Neither a sibling's nor the executor's Raw is evidence for this target.
-      expect(await submit(input,f.memory,{noteInput:[{title:'Wrong sibling',sources:`[T${f.live.id}#E1] wrong sibling`}],memoryInput:{}})).toContain('invalid source');checks.push('sibling Raw citation rejected');
-      expect(await submit(input,f.memory,{noteInput:[{title:'Wrong executor',sources:`[T${f.ex.id}#E1] wrong executor`}],memoryInput:{}})).toContain('invalid source');checks.push('executor Raw citation rejected');
+      // Invalid inputs are read off `check`, which spends no repair; the one `submit` below carries the task.
+      expect(await probe(input,f.memory,{noteInput:[{title:'Wrong sibling',sources:`[T${f.live.id}#E1] wrong sibling`}],memoryInput:{}})).toContain('invalid source');checks.push('sibling Raw citation rejected');
+      expect(await probe(input,f.memory,{noteInput:[{title:'Wrong executor',sources:`[T${f.ex.id}#E1] wrong executor`}],memoryInput:{}})).toContain('invalid source');checks.push('executor Raw citation rejected');
     }
     {
       const base = `K1#${f.s.versionTag(1, 1)}`;
       expect(memoryFiles(f.memory,input.reader!).read('trace://K1@v1').content).toContain(base);
       const op={op:'update',id:base,category:'constraint',scope:'project',text:'OLD_BRANCH_RESULT',topics:[],reason:'target evidence changes the rule'};
       const target={title:'Target statement',sources:`[T${f.old.id}#E1] Recorded target statement`};
-      expect(await submit(input,f.memory,{noteInput:[target],memoryInput:{...op,supports:[`F${f.liveFact.id}`]}})).toContain('do not pass the check');checks.push('sibling fact citation rejected');
       const create={op:'create',title:'Fixture title',category:'constraint',scope:'project',text:'SHARED_ANCESTOR_RESULT',topics:[],reason:'shared ancestor remains on active path',supports:[`F${f.rootFact.id}`]};
-      expect(await submit(input,f.memory,{noteInput:[target],memoryInput:[{...op,supports:['$1']},create]})).toBeUndefined();
+      // The knowledge step first cites a sibling's fact and is repaired once (the repair message is what `submit` returns), then passes.
+      expect(await submit(input,f.memory,{noteInput:[target],memoryInput:{...op,supports:[`F${f.liveFact.id}`]},
+        fix:()=>({knowledge:knowledgeFile(f.memory,[{...op,supports:['$1']},create])})})).toContain('do not pass the check');checks.push('sibling fact citation rejected');
       expect(f.s.currentCommit(1)[0]!.text).toBe('ROOT_KNOWLEDGE');
       expect(f.s.listSessionFacts(f.target.id).some(fact=>fact.text==='Recorded target statement')).toBe(false);
     }

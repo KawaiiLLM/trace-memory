@@ -84,7 +84,8 @@ function phaseWorkerConfig(directory: string) {
 /** Old single-result SDK fixtures still exercise their original contract, followed by a real
  * synthetic user-message/reply handshake. No completion is invented when the native mock fails. */
 function withNoterReview(queryMock: (request: any) => any, task?: CcAgentTask): any {
-  if (task?.kind === "noting" && !task.passEnd) task.passEnd = vi.fn(() => "Review this run once.");
+  // The stop hook is asked after every normal pass (stage 5 §1.4); this fixture's one review is followed by the end.
+  if (task?.kind === "noting" && !task.passEnd) task.passEnd = vi.fn<() => string | undefined>().mockReturnValueOnce("Review this run once.").mockReturnValue(undefined);
   return (request: any) => {
     const prompt = request.prompt[Symbol.asyncIterator]();
     let reads = 0;
@@ -255,7 +256,7 @@ test.each(["noting", "dreaming"] as const)("136 review SPEC4: a fresh %s worker'
     return stream;
   }) as any;
   const task = { kind, text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
-    passEnd: vi.fn(() => kind === "noting" ? "Review this run once." : undefined), setSpill: (save: (text: string) => string) => { spill = save; },
+    passEnd: kind === "noting" ? vi.fn<() => string | undefined>().mockReturnValueOnce("Review this run once.").mockReturnValue(undefined) : vi.fn(() => undefined), setSpill: (save: (text: string) => string) => { spill = save; },
     reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
   expect((await new NativeCcAgentWorker(config, { query: kind === "noting" ? withNoterReview(fakeQuery, task) : fakeQuery }).run(task, 0)).outcome).toBe("success");
   expect(observed).toBe(true);
@@ -297,7 +298,7 @@ test("production worker serves original schemas and raw arguments, publishes the
   expect(result.usage).toEqual({ input: 11, output: 7, cacheRead: 5, cacheWrite: 3, cost: { total: 0.125 } });
   expect(seen).toEqual([{ cursor: "opaque-K" }]);
   expect(acknowledgeRequest).toHaveBeenCalledTimes(1);
-  expect(task.passEnd).toHaveBeenCalledTimes(1);
+  expect(task.passEnd).toHaveBeenCalledTimes(2); // after the first pass (the review) and after the review's
   expect((listed[0] as any).tools[0]).toMatchObject({ inputSchema: conditional,
     _meta: { "anthropic/maxResultSizeChars": CC_MAX_RESULT_CHARS } });
   expect(optionsSeen[0]).toMatchObject({ settingSources: [], plugins: [], tools: ["Read"], strictMcpConfig: true,
@@ -820,8 +821,10 @@ test("production worker reads a trace:// snapshot, runs search code and accounts
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const schemas: unknown[] = [], rawInputs: Record<string, unknown>[] = [];
   const text = `needle ${"word ".repeat(1200)}`;
-  const fakeQuery = ((request: { options: Record<string, any> }) => {
+  const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
     const stream = (async function* () {
+      const prompts = request.prompt[Symbol.asyncIterator]();
+      await prompts.next();
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
       const client = new Client({ name: "core-worker-test", version: "1" }); await client.connect(clientTransport);
@@ -848,10 +851,16 @@ test("production worker reads a trace:// snapshot, runs search code and accounts
       expect(plain).toMatch(/^\[S\d+\/T\d+#E1@user\] .*needle word word/);
       // The model's native Write is simulated by the file it would leave: `check` names the paths.
       yield assistant(`check-${++id}`, [`check-${id}`], ccWorkerToolNames.check);
-      const paths = /Files: (.+?\.md), (.+?\.md)/.exec(await call(`check-${id}`, `check-${id}`, "check", {}))!.slice(1);
-      for (const path of paths) writeFileSync(path, "## none\n");
+      const facts = /File: (.+?facts\.md)/.exec(await call(`check-${id}`, `check-${id}`, "check", {}))![1]!;
+      writeFileSync(facts, "## none\n");
       yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: id,
         usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 5, cache_creation_input_tokens: 3 },
+        modelUsage: {}, total_cost_usd: 0.125 };
+      // Step 1 passed: the stop hook's message brings step 2, whose file the model then writes.
+      expect((await prompts.next()).value.message.content[0].text).toContain("Step 1 passed.");
+      writeFileSync(facts.replace(/facts\.md$/, "knowledge.md"), "## none\n");
+      yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: id,
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
         modelUsage: {}, total_cost_usd: 0.125 };
       await client.close();
     })() as any;
@@ -918,18 +927,21 @@ test.each([false, true])("production MCP N: files that fail the stop check get o
         yield assistant(id, [id], ccWorkerToolNames.check);
         const text = (await client.callTool({ name: "check", arguments: {}, _meta: { "claudecode/toolUseId": id } }) as any).content[0].text as string;
         checks.push(text);
-        return { task: /Task: (\w+)/.exec(text)![1]!, paths: /Files: (.+?\.md), (.+?\.md)/.exec(text)!.slice(1) as [string, string] };
+        const facts = /File: (.+?facts\.md)/.exec(text)![1]!;
+        return { task: /Task: (\w+)/.exec(text)![1]!, paths: [facts, facts.replace(/facts\.md$/, "knowledge.md")] as [string, string] };
       };
       const result = { type: "result", subtype: "success", is_error: false, result: "done", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
         modelUsage: {}, total_cost_usd: 0 };
       const { task, paths } = yield* check();
       tasks.push(task);
-      // The native Write is simulated by the file the model would leave.
-      if (task === "write") {
-        writeFileSync(paths[0], factsFile([]));
-        writeFileSync(paths[1], knowledgeFile(memory, invalidFirst ? { ...valid, supports: [] } : valid));
-      }
+      // The native Write is simulated by the file the model would leave, one file per step.
+      if (task === "write") writeFileSync(paths[0], factsFile([]));
+      yield { ...result, num_turns: ordinal };
+      const advance = (await prompts.next()).value;
+      expect(advance.isSynthetic).toBe(true);
+      expect(advance.message.content[0].text).toContain("Step 1 passed.");
+      if (task === "write") writeFileSync(paths[1], knowledgeFile(memory, invalidFirst ? { ...valid, supports: [] } : valid));
       expect(memory.store.currentKnowledge()).toHaveLength(0); // not a partial publication
       yield { ...result, num_turns: ordinal };
       if (task === "write" && invalidFirst) {

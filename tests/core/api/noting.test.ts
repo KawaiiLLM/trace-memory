@@ -15,7 +15,7 @@ import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.t
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
-import { REQUEST, scriptedNoter, type NoterOutput, type ToolFact } from "../../support/noter.ts";
+import { REQUEST, scriptedNoter, type NoterOutput, type ToolFact, largestTaskPromptTokens } from "../../support/noter.ts";
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -80,9 +80,9 @@ test("worker tool names are rendered before capacity and audit, and the first re
   expect(priced.prompt).not.toContain("`note(");
   expect(priced.prompt).not.toContain("{{tool.");
   expect(canonical.prompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
-  expect(priced.prepared!.text.endsWith("Call mcp__trace_memory__check first: it names your task and your two files.")).toBe(true);
-  const price = tokens(expected) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, workerNames))) + tokens(priced.prepared!.text);
-  expect(price).toBeGreaterThan(tokens(canonical.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))) + tokens(canonical.prepared!.text));
+  expect(priced.prepared!.text.endsWith("Call mcp__trace_memory__check first: it names your task, its first step and your files.")).toBe(true);
+  const price = tokens(expected) + largestTaskPromptTokens(workerNames) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, workerNames))) + tokens(priced.prepared!.text);
+  expect(price).toBeGreaterThan(tokens(canonical.prompt!) + largestTaskPromptTokens() + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))) + tokens(canonical.prepared!.text));
   expect(() => freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: workerNames,
     boundary: { exactEntryIds: priced.entries.map(e => e.id) }, capacity: { inputTokens: price - 1 } }, memory.config)).toThrow("Noting capacity");
   expect(freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: workerNames,
@@ -141,7 +141,7 @@ test("a fresh admission freezes its tool namespace, exact cost and hash", () => 
   expect(fresh.prompt).toContain(`with ${freshNames.search};`);
   expect(fresh.prompt).not.toContain("mcp__plugin_trace-memory_traceMemory__");
   expect(fresh.promptHash).toBe(createHash("sha256").update(fresh.prompt!).digest("hex"));
-  const freshPrice = tokens(fresh.prompt!) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, freshNames))) + tokens(fresh.prepared!.text);
+  const freshPrice = tokens(fresh.prompt!) + largestTaskPromptTokens(freshNames) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, freshNames))) + tokens(fresh.prepared!.text);
   expect(() => freezeNoting(memory.store, { ...target, toolNames: freshNames, boundary,
     capacity: { inputTokens: freshPrice - 1 } }, memory.config)).toThrow("Noting capacity");
   expect(freezeNoting(memory.store, { ...target, toolNames: freshNames, boundary,

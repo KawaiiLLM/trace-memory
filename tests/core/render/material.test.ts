@@ -38,7 +38,7 @@ const time = "2026-09-08T00:00:00Z";
 const tag = (knowledgeId: number, commit: number) => `K${knowledgeId}#${memory.store.versionTag(knowledgeId, commit)}`;
 
 /** Core ends the Noter\u2019s material with this line, so both tasks of a run begin with the same request. */
-const CHECK_FIRST = "\n\nCall check first: it names your task and your two files.";
+const CHECK_FIRST = "\n\nCall check first: it names your task, its first step and your files.";
 const ok = (): RunAgentResult => ({ outcome: "success", output: "[]", request: { fake: true } });
 
 /** These cases size items in thousands of tokens, as items written before the caps are (ticket 144); the caps are lifted here, not in each case. */

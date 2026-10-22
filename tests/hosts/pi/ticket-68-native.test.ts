@@ -31,19 +31,21 @@ test("68: native Dreamer with an unlimited round count completes more than fifty
   } finally { await f.dispose(); }
 });
 
-test("Noter gets one fixed review at the exact tool-round cap; the second normal pass cannot open a third", async () => {
+// Stage 5 §1.4 (2026-10-22: each Noter task runs as two steps, each with its repair) supersedes "one review, then no third pass":
+// the host asks the stop hook after every normal pass and the Noter's step machine bounds the count.
+test("Noter's stop hook is asked after every normally ended pass until it has nothing more to say, tool-round cap or not", async () => {
   const f = await fixture({ "noting.triggerTokens": 1e9 });
   try {
     let reviews = 0; const requests: unknown[] = [];
     let responses = 0;
     f.script(() => ++responses === 1 ? call("first", "search", {}) : say(responses === 2 ? "First pass done" : "Review done"));
     const result = await runNative(nativeTask(f, { kind: "noting", maxToolRounds: 1,
-      passEnd: () => { reviews++; return "Your files do not pass the check"; },
+      passEnd: () => ++reviews <= 2 ? "Your files do not pass the check" : undefined,
       onRequest: body => { requests.push(body); } }));
     expect(result.outcome).toBe("success");
     expect(result.output, `requests=${requests.length} reviews=${reviews}`).toBe("Review done");
-    expect(reviews).toBe(1);
-    expect(requests).toHaveLength(3);
+    expect(reviews).toBe(3);
+    expect(requests).toHaveLength(4);
     expect(JSON.stringify(requests.at(-1))).toContain("Your files do not pass the check");
   } finally { await f.dispose(); }
 });

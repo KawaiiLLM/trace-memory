@@ -15,6 +15,7 @@ import { FACTS_TITLE } from "../../../src/core/render/material.ts";
 import { submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 import { sourceSeededMemory, renderEntry, toolDefinitions, tokens, ENTRY_VIEW_VERSION,
   compacted, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
+import { largestTaskPromptTokens } from "../../support/noter.ts";
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>;
 let calls: NotingAgentInput[];
@@ -279,7 +280,7 @@ function calibratedNoting(sessionId: number, headTurnId: number, maxEntryId?: nu
   const frozen = freezeNoting(memory.store, { sessionId, branch: "main", headTurnId,
     ...(maxEntryId === undefined ? {} : { boundary: { maxEntryId } }) }, memory.config);
   if (!frozen.prepared) throw new Error("Expected pending Noting material for capacity calibration");
-  const fixed = tokens(frozen.prompt) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, frozen.names)));
+  const fixed = tokens(frozen.prompt) + largestTaskPromptTokens() + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, frozen.names)));
   return { frozen, cost: fixed + tokens(frozen.prepared.text) };
 }
 
@@ -303,7 +304,7 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
     const input = raw as NotingAgentInput;
     expect(input.material.entries.map(e => e.id)).toEqual(owned.map(e => e.id)); // oldest first, one Turn
     expect(input.range).toEqual({ from: `S${sessionId}/T${first.id}`, to: `S${sessionId}/T${first.id}` });
-    expect(tokens(input.prompt) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))) + tokens(input.text)).toBeLessThanOrEqual(inputTokens);
+    expect(tokens(input.prompt) + largestTaskPromptTokens() + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))) + tokens(input.text)).toBeLessThanOrEqual(inputTokens);
     // Inherited context is not evidence permission: the excluded tail cannot be cited.
     const refused = await submit(input, memory, { noteInput: [fact(`T${second.id}#E1`)], memoryInput: {} });
     expect(refused).toContain("invalid source");
@@ -437,7 +438,7 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
   if (result.outcome !== "success") throw new Error("expected success");
   expect(calls).toHaveLength(1); // one reduction, one freeze, one model call
   // What core priced is what it sends, and it fits the window the host reported.
-  expect(tokens(sent.prompt) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))) + tokens(sent.text))
+  expect(tokens(sent.prompt) + largestTaskPromptTokens() + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))) + tokens(sent.text))
     .toBeLessThanOrEqual(inputTokens);
   // Evidence, frozen material, audit membership and the recorded range are the same reduced set.
   expect(sent.entryIds).toEqual(owned);

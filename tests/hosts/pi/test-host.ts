@@ -123,20 +123,21 @@ function releaseAgentDir(agentDir: string) {
   borrowedAgentDir = undefined;
 }
 
-/** The scripted Noter's side of the two-task run (ticket 144), as a model behaves on the wire: call `check` first; in the write
- * task, write the two files it names; stop. A verify task finds nothing to correct and stops. `plan` is the text written to each
+/** The scripted Noter's side of the two-task run (ticket 144, stage 5), as a model behaves on the wire: call `check` first; in the
+ * write task, write the file the latest message names for its step (facts, then knowledge, the second after the stop hook's
+ * step-advance message); stop. A verify task finds nothing to correct and stops at each step. `plan` is the text written to each
  * file; the default is `## none` in both. Returns undefined when the model has nothing left to say. */
 export function noterReply(conversation: Conversation, plan: { facts?: string; knowledge?: string } = {}): Reply | undefined {
-  const results = (name: string) => conversation.messages.filter(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === name);
   const call = (calls: { id: string; name: string; arguments: JsonObject }[]): Reply => ({ ...reply(""), stopReason: "toolUse",
     content: calls.map(value => ({ type: "toolCall" as const, ...value })) });
-  const checked = results("check").at(-1);
-  if (!checked) return call([{ id: "check-1", name: "check", arguments: {} }]);
-  const report = partsText((checked as { content: unknown }).content);
-  const files = /Files: (.+?\.md), (.+?\.md)/.exec(report);
-  if (!files || /^Task: verify/m.test(report) || results("write").length) return undefined;
-  return call([{ id: "write-facts", name: "write", arguments: { path: files[1]!, content: plan.facts ?? "## none\n" } },
-    { id: "write-knowledge", name: "write", arguments: { path: files[2]!, content: plan.knowledge ?? "## none\n" } }]);
+  const mentions = conversation.messages.flatMap(m => m.role === "assistant" ? [] : [partsText((m as { content: unknown }).content)]).filter(text => /^Task: (write|verify)/m.test(text));
+  if (!mentions.length) return call([{ id: "check-1", name: "check", arguments: {} }]);
+  const report = mentions.at(-1)!;
+  const [, task, step, file] = /^Task: (write|verify).*?Step (\d) of 2 \(\w+\)\. File: (\S+?\.md)(?:\.|\s|$)/ms.exec(report) ?? [];
+  const written = conversation.messages.flatMap(m => m.role !== "assistant" || !Array.isArray(m.content) ? [] : (m.content as { type: string; name?: string; arguments?: { path?: string } }[])
+    .filter(part => part.type === "toolCall" && part.name === "write").map(part => part.arguments?.path));
+  if (!file || task === "verify" || written.includes(file)) return undefined;
+  return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content: (step === "1" ? plan.facts : plan.knowledge) ?? "## none\n" } }]);
 }
 /** The scripted Dreamer's side of a run (ticket 144 stage 4), as a model behaves on the wire: call `check`, write the file the latest
  * message names (`## none` for curate and verify, every item 50 for the scorer), stop; a follow-up that names the next batch's file
@@ -155,8 +156,9 @@ export function dreamerFiles(conversation: Conversation, plan: { curate?: string
   return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n"
     : (/^Task: verify/m.test(report) ? plan.verify : /^Task: curate/m.test(report) ? plan.curate : undefined) ?? "## none\n" } }]);
 }
-/** The requests one scripted Noter batch makes: the write task (check, the two files, stop) and the verify task (check, stop). */
-export const NOTER_BATCH_REQUESTS = 5;
+/** The requests one scripted Noter batch makes: the write task (check, the facts file, stop, the knowledge file, stop) and the verify task
+ * (check, then a stop at each of its two steps). */
+export const NOTER_BATCH_REQUESTS = 8;
 /** The Noter has staged its files (its write task wrote them). */
 export const noteHeld = (conversation: Conversation): boolean => conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "write");
 export const emptyNote = (conversation: Conversation): Reply | undefined =>

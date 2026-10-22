@@ -30,13 +30,14 @@ test("144: a worker that writes only one of its two files ends without publishin
   try {
     let requests = 0;
     h.provider(async c => {
-      if (++requests > 4) throw new Error("single-file failure script repeated a request");
+      if (++requests > 5) throw new Error("single-file failure script repeated a request");
       const next = noterReply(c, { facts: "## fact f1\ntitle: Package choice\n\n[T1#E1] User prefers pnpm\n" });
-      // The knowledge file is never written: the stop check prompts once, the model has nothing more to do, the second check fails.
-      return next && { ...next, content: next.content.filter(part => part.type !== "toolCall" || part.id !== "write-knowledge") } || reply("Done.");
+      // The knowledge file is never written: step 1 passes, step 2's stop check prompts once, the model has nothing more to do, the second check fails.
+      const writesKnowledge = next?.content.some(part => part.type === "toolCall" && part.name === "write" && String(part.arguments.path).endsWith("knowledge.md"));
+      return !next || writesKnowledge ? reply("Done.") : next;
     }, { autoStop: false });
     await h.turn();
-    expect(requests).toBe(4); // check, write facts, stop, stop again after the one follow-up
+    expect(requests).toBe(5); // check, write facts, stop (step 1 passes), stop at step 2, stop again after the one repair
     const run = notingRuns(h)[0]!;
     expect(run.outcome).toBe("failure");
     expect(JSON.parse(run.response!).problems.join("\n")).toContain("knowledge.md");

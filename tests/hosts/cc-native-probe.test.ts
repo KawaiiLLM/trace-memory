@@ -64,6 +64,9 @@ function loopbackEnvironment(configDir: string, baseUrl: string): NodeJS.Process
     ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: "sk-ant-fake-probe-key", CLAUDE_CODE_MAX_RETRIES: "0", ...CLI_OPT_OUTS };
 }
 
+/** The stop hook is asked after every normal pass (stage 5 §1.4): one review, then nothing more to say. */
+function onceThen(message: string): () => string | undefined { let asked = false; return () => asked ? undefined : (asked = true, message); }
+
 function workerConfig(cwd: string, executable = fencedClaude) {
   return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
     notingModel: "sonnet", notingThinking: "medium",
@@ -97,7 +100,7 @@ probe("native file: a real CC worker run writes its transcript under <config dir
     const environment = loopbackEnvironment(configDir, loopback.url);
     const task = { kind: "noting", text: "material", prompt: "instructions",
       tools: [], reader, acknowledgeRequest: () => {},
-      passEnd: () => "Test host requests one final review." } as unknown as CcAgentTask;
+      passEnd: onceThen("Test host requests one final review.") } as unknown as CcAgentTask;
     const journal: { event: string; details?: Record<string, unknown> }[] = [];
     const result = await new CcAgentWorker(workerConfig(cwd), { environment, journal: (event, details) => journal.push({ event, details }) }).run(task, 0);
     expect(result.outcome, JSON.stringify(result)).toBe("success");
@@ -160,7 +163,7 @@ probe("isolation: a SessionStart Hook configured for the config directory never 
     await fence(cwd, [Number(new URL(loopback.url).port)]);
     const environment = loopbackEnvironment(configDir, loopback.url);
     const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], reader: workerReader(cwd), acknowledgeRequest: () => {},
-      passEnd: () => "Test host requests one final review." } as unknown as CcAgentTask;
+      passEnd: onceThen("Test host requests one final review.") } as unknown as CcAgentTask;
     const result = await new CcAgentWorker(workerConfig(cwd), { environment }).run(task, 0);
     expect(result.outcome, JSON.stringify(result)).toBe("success");
     // `settingSources: []` (unchanged isolation) means the worker's session never loads this
