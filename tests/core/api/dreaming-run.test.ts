@@ -414,7 +414,7 @@ test("a curate file holds the run's one operation: a block of another operation,
   expect(g.dreamer.messages[0]).toContain("`## create` is not allowed in a curate file");
 });
 
-test("the first run is update; each finished run advances the project to the next operation, and a lap returns to update", async () => {
+test("2026-10-22, 144: 「每次运行D轮换执行一种操作」 — the first run is update; each finished run advances the project to the next operation, and a lap returns to update", async () => {
   const f = dreamerFixture();
   expect(due(f)).toBe("update");
   f.item("Rule", { category: "constraint" });
@@ -439,7 +439,7 @@ test("a run with nothing to curate or score finishes and advances through its no
 });
 
 for (const failing of ["curate", "verify", "classify"] as const) {
-  test(`a ${failing} failure does not advance: a second session of the project runs the same operation, and the failed run resumes it`, async () => {
+  test(`2026-10-22, 144: a ${failing} failure does not advance the rotation: a second session of the project runs the same operation, and the failed run resumes it`, async () => {
     const f = dreamerFixture();
     const rule = f.item("Rule", { category: "constraint" });
     if (failing !== "classify") f.dreamer.script.curate!.constraint = failing === "curate" ? ["## bogus\n", "## bogus\n"] : block(`update ${rule.ref}`, { reason: "tidy" }, "Rule, tidied");
@@ -467,7 +467,7 @@ for (const failing of ["curate", "verify", "classify"] as const) {
   });
 }
 
-test("a finished run whose operation is not the one due does not move the rotation; finishing first, or after a whole lap, does [Q13]", async () => {
+test("2026-10-22, 144: Q13 — a finished run whose operation is not the one due does not move the rotation; finishing first does", async () => {
   // A (update) fails at verify and keeps its hand-off; B runs update and merge; A resumes update: the next run is split, not merge.
   const f = dreamerFixture();
   const rule = f.item("Rule", { category: "constraint" });
@@ -498,7 +498,7 @@ test("a finished run whose operation is not the one due does not move the rotati
   expect(due(g)).toBe("merge");
 });
 
-test("wrap-around is compared by operation name: after the others go once round, a resumed update that finishes advances", async () => {
+test("2026-10-22, 144: Q13 wrap-around is compared by operation name: after the others go once round, a resumed update that finishes advances", async () => {
   const f = dreamerFixture();
   const rule = f.item("Rule", { category: "constraint" });
   f.dreamer.script.curate!.constraint = block(`update ${rule.ref}`, { reason: "tidy" }, "Rule, tidied");
@@ -575,7 +575,7 @@ test("a lost lease at the final pass commits no finish, and the next run repeats
   expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "classify", detail: { operation: "update" } });
 });
 
-test.each(["failure", "cancelled", "claim lost"] as const)("a final commit, then a host %s: the run is complete, no hand-off or retry is recreated, and the rotation advanced once", async how => {
+test.each(["failure", "cancelled", "claim lost"] as const)("2026-10-22, 144: a final commit, then a host %s: the run is complete, no hand-off or retry is recreated, and the rotation advanced once", async how => {
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
   f.dreamer.script.instead = { classify: classifyThen(input => {

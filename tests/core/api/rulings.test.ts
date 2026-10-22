@@ -2275,6 +2275,40 @@ test("2026-10-22: each curate run and its verify get exactly their operation's s
   for (const name of ["smells-update", "smells-merge", "smells-split", "smells-archive", "verify-procedure"]) expect(system).not.toContain(block(name));
 });
 
+test("2026-10-22, 144: 「合并实际没有发生，核查通过后才发生」 — curate's changes apply only after verify; every change gets confirm, edit or revert", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Use pnpm everywhere", { category: "constraint" });
+  f.dreamer.script.curate!.constraint = workspaceBlock(`update ${rule.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
+  let during = "";
+  f.dreamer.script.verify = report => { during = f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text; void report; return "## confirm 1\n"; };
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(during).toBe("Use pnpm everywhere"); // nothing was applied while verify worked
+  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere, tidied");
+  // A verdict file that misses a change is refused: every change has one.
+  const g = dreamerFixture();
+  const other = g.item("Use pnpm everywhere", { category: "constraint" });
+  g.dreamer.script.curate!.constraint = workspaceBlock(`update ${other.ref}`, { reason: "tidy" }, "Tidied");
+  g.dreamer.script.verify = ["## none\n", "## confirm 1\n"];
+  expect(await g.dream()).toMatchObject({ outcome: "success" });
+  expect(g.dreamer.messages[0]).toContain("is not a verdict");
+});
+
+test("2026-10-22, 144: 「D不创建知识，那是N的职责」 and 「每次运行D轮换执行一种操作」 — a curate file refuses create and any other operation than the run's, and the rotation runs update, merge, split, archive", async () => {
+  const f = dreamerFixture();
+  const item = f.item("Rule one", { category: "constraint" });
+  const created = { title: "Fresh rule", category: "constraint", scope: "project", topics: "", supports: `F${item.supports[0]}`, reason: "new" };
+  expect(checkWorkspace(f.store, workspaceCurate(f, workspaceBlock("create", created, "A fresh rule."), "update")).problems.join("\n")).toContain("`## create` is not allowed in a curate file");
+  expect(checkWorkspace(f.store, workspaceCurate(f, workspaceBlock(`archive ${item.ref}`, { kind: "invalid", reason: "r" }, "Gone for good, per the user."), "update")).problems.join("\n")).toContain("`## archive` is not allowed in a curate file; allowed: `update`");
+  const order: string[] = [];
+  for (let lap = 0; lap < 4; lap++) {
+    order.push(f.store.nextCurateOperation(f.project.id));
+    f.item(`Rule ${lap + 2}`, { category: "reference" });
+    expect(await f.dream()).toMatchObject({ outcome: "success" });
+  }
+  expect(order).toEqual(["update", "merge", "split", "archive"]);
+  expect(f.store.nextCurateOperation(f.project.id)).toBe("update");
+});
+
 // 61 (2026-09-19): the prompts are written to one standard — shared memory-model blocks, per-stage judgment,
 // short imperative sentences, no internal references, defined vocabulary only.
 const STAGE_PROMPTS = ["noting.md", "dreaming.md"] as const;
