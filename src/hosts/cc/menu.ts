@@ -4,7 +4,7 @@ import { dreamerFailureNotice, dreamingPendingInput, type SettingsInput, type Tr
 
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { ccResultText, ccHumanUser } from "./transcript.ts";
-import type { CcCatchupStatus } from "./scheduler.ts";
+import type { CcCatchupStatus, CcDreamStatus } from "./scheduler.ts";
 import { assertOperatorBinding, coreHostOf, readBinding, sessionEnabled, validateNativeSessionId } from "./binding.ts";
 const localMidnight = () => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(); };
 import { ccContextEvidence, type CcContextSnapshot } from "./menu-context.ts";
@@ -25,6 +25,15 @@ export function ccCatchupNotice(status: CcCatchupStatus | null): string | null {
   if (status.state === "starting") return "Catchup: starting (syncing the transcript); reopen /trace for progress";
   if (status.state === "waiting") return `Catchup: waiting for ${status.phase ?? "a task"} (${entries})`;
   return `Catchup: running${status.phase ? ` ${status.phase}` : ""} (${entries})`;
+}
+/** 146 §18: the manual dream's one-line status, the sibling of the catchup line. */
+export function ccDreamNotice(status: CcDreamStatus | null): string | null {
+  if (!status) return null;
+  if (status.state === "starting") return "Dream: starting (syncing the transcript); reopen /trace for progress";
+  if (status.state === "running") return "Dream: running";
+  if (status.state === "completed") return "Dream: completed";
+  if (status.state === "stopped") return `Dream: stopped${status.diagnostic ? ` (${status.diagnostic})` : ""}; /trace dream starts a new run`;
+  return `Dream: failed — ${status.diagnostic ?? "executor reported failure"}`;
 }
 export interface CcMenuReply {
   menu: TraceMenuInput;
@@ -54,7 +63,7 @@ export function readCcRuns(config: ResolvedCcHostConfig, nativeSessionId: string
 
 export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string,
   effective?: ResolvedCcHostConfig, runLimit = 10, catchup: CcCatchupStatus | null = null,
-  current?: CcContextSnapshot): CcMenuReply {
+  current?: CcContextSnapshot, dream: CcDreamStatus | null = null): CcMenuReply {
   if (!Number.isSafeInteger(runLimit) || runLimit < 1) throw new Error("Runs count must be a positive safe integer");
   const id = validateNativeSessionId(nativeSessionId), binding = readBinding(config, id);
   if (!binding) throw new Error(`Claude Code session ${id} is not bound`);
@@ -107,6 +116,8 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       notices.push("Saved file settings differ from running executor");
     const progress = ccCatchupNotice(catchup);
     if (progress) notices.push(progress);
+    const dreamNotice = ccDreamNotice(dream);
+    if (dreamNotice) notices.push(dreamNotice);
     if (binding.clearedFrom || binding.clearedInto) notices.push("Shared identity");
     const today = memory.spendSince(localMidnight());
     const data: TraceMenuInput = {

@@ -76,8 +76,9 @@ Start a new Pi process, run `/trace` (the menu, or status when headless), and us
 
 Enabled sessions make background model requests using your Pi credentials and may incur charges. Noter and Dreamer always use a fresh subagent. Live Consolidation is retired. Automatic N and D checks occur after each persisted main-session entry (141). Busy phases queue nothing; ordinary task completion schedules nothing. Failures retry at a later entry end, and three consecutive failures still disable memory.
 
-- **Inspect:** `/trace` opens the menu — Current session (context composition, N/D queues, status, On/Off, runs and project), Catch up, Stop and Settings.
+- **Inspect:** `/trace` opens the menu — Current session (context composition, N/D queues, status, On/Off, runs and project), Catch up, Dream, Stop and Settings.
 - **Catch up:** `/trace catchup` keeps its explicit frozen-Raw drain in bounded Noting subagents. Start and successful catchup-owned completions check N/D; it finishes when frozen Raw is exhausted, D is not due and owned tasks have settled. Busy checks are skipped, not queued; below-threshold tails may remain.
+- **Dream:** `/trace dream` starts one Dreaming run for this session now, whatever the Noter-operation count says; a failed run retries at the next entry-end check and ends an active catchup drain.
 - **Stop:** `/trace stop` cancels this executor's background work; future automatic triggers remain enabled.
 - **Turn off:** `/trace off` pauses this session's processing and future injection without deleting memory; `/trace on` resumes it. There is no global switch.
 - **Settings:** saves phase mode/model/thinking and `closedSessionScope`: `project` (default), `global`, or `off`. Closed-session borrowing applies only to Noting; Dreamer processes the pools visible at the current node. Database budgets are edited separately without writing Pi settings. Running tasks retain their frozen settings and material.

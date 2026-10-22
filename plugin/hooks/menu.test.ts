@@ -91,8 +91,10 @@ test("local command renders headless text and a mountable narrow pane, then disp
   expect(await ui.find({ type: "Text", text: "R25 noting completed" }), `requested runs mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
   await ui.select({ key: "runs-back", value: "back" });
   await ui.select({ key: "actions", value: "catch-up" });
+  await ui.select({ key: "actions", value: "dream" });
   await ui.select({ key: "actions", value: "stop" });
   expect(seen.some(args => args.endsWith(" catchup"))).toBe(true);
+  expect(seen.some(args => args.endsWith(" dream"))).toBe(true);
   expect(seen.some(args => args.endsWith(" stop"))).toBe(true);
   await ui.select({ key: "actions", value: "turn-off" });
   expect(await ui.find({ type: "Text", text: "Turn Trace Memory off" }), `confirmation mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();

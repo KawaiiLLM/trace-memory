@@ -13,7 +13,7 @@ test("main menu uses shared action order; cancellation and read do not schedule 
   const h = setup(); await h.turn(); h.ctx.hasUI = true;
   const before = { entries: h.entries.length, runs: h.memory.store.listRuns(1), requests: h.requests.length };
   h.answers.push(undefined); await command(h);
-  expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Stop", "Project…", "Runs…", "Settings…"]);
+  expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Dream", "Stop", "Project…", "Runs…", "Settings…"]);
   expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger");
   expect(h.dialogs.at(-1)!.title).toContain("Trace Memory · S1");
   expect(h.entries).toHaveLength(before.entries);

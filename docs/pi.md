@@ -448,6 +448,7 @@ The direct command forms are exactly these, and nothing else acts:
 | `/trace` | Opens the menu; without dialog-capable UI (`-p`, rpc) prints status and this table's forms |
 | `/trace on` / `/trace off` | Enables or disables **this** memory-session identity, at once, without a reload |
 | `/trace catchup` / `/trace stop` | Start and cancel the manual finite drain described below |
+| `/trace dream` | Starts one Dreaming run for this session now, whatever the Noter-operation count says; see below |
 | `/trace project <name>` | Declares the project after the first assistant reply |
 
 `enable`, `disable`, `status` and `runs` are **retired without aliases**: status and
@@ -464,6 +465,7 @@ Bare `/trace` opens a native menu with four top-level entries:
   `On`/`Off` with confirmation and shared fork/clone scope, `Runs` with a count input,
   and `Project` with a name input.
 - **Catch up:** starts (or reports) the manual finite drain described below.
+- **Dream:** the same as `/trace dream`.
 - **Stop:** cancels this executor's background work, including a running or
   waiting catchup. It never changes participation.
 - **Settings:** the global preferences below.
@@ -779,6 +781,10 @@ chain extends it using only new entries. Navigation, compaction and binding chan
 the native selected context. Readers do not mutate this view. Database changes do not invalidate delivery: current applicability is
 resolved independently, so an external commit at the same leaf remains observable.
 
+## Manual dream (146)
+
+`/trace dream` starts one Dreaming run for the current session, whatever the Noter-operation count says. Like `/trace catchup` it answers at once (`Dream: starting`) and reports through the `/trace` status line and a notification: `Dream: running`, then `completed`, `failed — <reason>` or `stopped`. It is an ordinary run in every other way: it needs memory on, respects the database-wide seat, resumes a hand-off with the hand-off's operation, writes coverage, advances the rotation and counts toward the three-failure rule. It is refused, with the reason on the status line and no execution, while this executor's Dreamer slot is taken, while another session holds the seat, and when there is nothing to curate. `/trace stop` ends it as `stopped`. A failure of a manual dream ends an active catchup drain for the same session and branch.
+
 ## Manual catchup and stop (18b)
 
 `/trace catchup` operates on the current enabled session's selected branch, not
@@ -795,10 +801,12 @@ It checks all three phases: N drains the frozen entry boundary even below `notin
 while C and D use ordinary eligibility, with D due only on the pending threshold. Batch and context
 limits still apply. Several C batches or due D pools can therefore run without another N batch.
 Completion requires no frozen Raw left, neither C nor D due, and no owned task still running.
-Below-threshold tails remain. Empty/dropped results do not re-arm. A failed catchup step immediately
-retries the same phase under the existing boundary, without checking other phases. Ordinary failure
-accounting disables memory after three consecutive failures of the same logical task and ends the
-drain. Cancellation also ends it. A waiting state need not imply an in-flight task when a due phase could not progress.
+Below-threshold tails remain. Empty/dropped results do not re-arm. A failed Noting step immediately
+retries the same phase under the existing boundary, without checking other phases. A failed Dreaming
+run does not (146): it retries at the next entry-end check, and it ends an active drain for the same
+session and branch whoever started it (the drain, an ordinary check the drain skipped as busy, or
+`/trace dream`). Ordinary failure accounting disables memory after three consecutive failures of
+the same logical task and ends the drain. Cancellation also ends it. A waiting state need not imply an in-flight task when a due phase could not progress.
 
 N and C can overlap. Successful owned completions remain checkpoints after the final N batch.
 Stop/off/shutdown/path changes fence those callbacks. This remains the sole exception to ordinary

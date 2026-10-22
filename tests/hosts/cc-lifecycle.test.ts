@@ -765,6 +765,28 @@ test("control socket routes catchup to the live executor and never creates an op
   } finally { await server.close(); memory.close(); }
 });
 
+test("control socket routes dream to the live executor and answers `starting` at once; without one the verb is unavailable", async () => {
+  const f = fixture("control-dream"); f.write();
+  f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-dream-")); dirs.push(f.config.stateDir);
+  const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  expect(await controlSession(f.config, f.nativeSessionId, "dream")).toEqual({ state: "unavailable",
+    diagnostic: "CC dream requires the session's live executor" });
+  const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "must not run" }));
+  let calls = 0;
+  const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
+    catchup: async () => ({ state: "completed", entriesDone: 0, entriesTotal: 0 }),
+    dream: async () => { calls++; return { state: "starting", diagnostic: "syncing the transcript" }; },
+    beforeCancel: () => {},
+    holdImport: () => () => {},
+  });
+  try {
+    const result = await controlSession(f.config, f.nativeSessionId, "dream");
+    expect(result).toMatchObject({ state: "acknowledged", reply: { verb: "dream", abortRequested: [], dream: { state: "starting" } } });
+    expect(calls).toBe(1);
+  } finally { await server.close(); memory.close(); }
+});
+
 test("off fences again after a contended disable before acknowledging", async () => {
   const f = fixture("off-disable-window"); f.write();
   f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-off-window-")); dirs.push(f.config.stateDir);

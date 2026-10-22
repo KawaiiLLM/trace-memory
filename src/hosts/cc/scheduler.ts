@@ -15,6 +15,9 @@ export interface CcCatchupStatus {
   entriesTotal: number;
   diagnostic?: string;
 }
+/** 146 §18, Q21: the manual dream's status, a sibling of the catchup status. A dream is one Dreaming run, so it has no entry counts. */
+export type CcDreamState = "starting" | "running" | "completed" | "stopped" | "failed";
+export interface CcDreamStatus { state: CcDreamState; diagnostic?: string }
 interface Catchup {
   target: TaskTarget;
   maxEntryId?: number;
@@ -157,6 +160,40 @@ export class CcTaskScheduler {
   }
 
   private startStatus: CcCatchupStatus | null = null;
+  private dream: CcDreamStatus | null = null;
+
+  /** 146 §18: the last manual dream's status (kept after it ends, until the next one). */
+  dreamSnapshot(): CcDreamStatus | null { return this.dream; }
+  /** A repeated `dream` command while one is starting or running is only reported. */
+  activeDream(): CcDreamStatus | null { return this.dream?.state === "starting" || this.dream?.state === "running" ? this.dream : null; }
+  /** Acknowledged at once, as a catchup is: the transcript sync can outlast the operator's 2-second wait. */
+  beginDream(): CcDreamStatus { return this.dream = { state: "starting", diagnostic: "syncing the transcript" }; }
+  failDream(diagnostic: string): void { this.dream = { state: "failed", diagnostic }; }
+
+  /** The manual dream after the sync: the checks `startCatchup` makes, then the Dreaming slot and the core with `manual: true`.
+   * A refusal replaces the status with its reason; a finished run shows its outcome. It adds no drain and no Noter check. */
+  startDream(reconcile: CcReconcileResult, ticket: number): void {
+    if (ticket !== this.cancellationEpoch) { this.dream = { state: "stopped", diagnostic: "stop requested before admission" }; return; }
+    const refuse = (diagnostic: string) => { this.failDream(diagnostic); };
+    if (this.stopped) return refuse("CC executor is shutting down");
+    if (!this.worker)
+      return refuse("CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured");
+    if (reconcile.state === "disabled") return refuse("Trace Memory is disabled for this session");
+    if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedCount)
+      return refuse(reconcile.problems.join("; ") || "persisted selected source path is not ready");
+    if (!this.memory.store.enabled(reconcile.coreSessionId)) return refuse("Trace Memory is disabled for this session");
+    if (this.slots.has("dreaming")) return refuse("a Dreamer is already running in this session");
+    const target: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
+      headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedTailId! };
+    this.dream = { state: "running" };
+    this.reserve("dreaming", async () => {
+      try {
+        const result = await this.runCandidate("dreaming", target.sessionId, target, false, ticket, true);
+        this.dream = dreamOutcome(result);
+        return result;
+      } catch (error) { this.failDream(error instanceof Error ? error.message : String(error)); }
+    });
+  }
 
   private failedStatus(diagnostic: string): CcCatchupStatus {
     return { state: "failed", entriesDone: 0, entriesTotal: 0, diagnostic };
@@ -252,12 +289,24 @@ export class CcTaskScheduler {
 
   /** One ordinary admission path; callers own continuation and error handling, not claim policy. */
   private async runCandidate(phase: CcWorkerPhase, executorSessionId: number, target: TaskTarget,
-    borrowed: boolean, epoch: number): Promise<CcTaskResult | undefined> {
+    borrowed: boolean, epoch: number, manual = false): Promise<CcTaskResult | undefined> {
     if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) return;
-    const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
-    const result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream(options);
+    const options = { ...this.common(phase, target, borrowed, !manual), executorSessionId };
+    const result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream({ ...options, manual });
     this.report(phase, target, result);
+    if (phase === "dreaming") this.endDrainOnDreamingFailure(target, result);
     return result;
+  }
+
+  /** 146 Q18: a Dreaming failure retries at the next entry-end check (ruling 10), so it ends an active drain for the same session and
+   * path, whoever started the run (the drain, an entry-end check that the drain skipped as busy, or `/trace dream`). The Noter's retry
+   * loop is unchanged. A Noter run still in flight is not cancelled; its late success finds an ended drain and drives nothing. */
+  private endDrainOnDreamingFailure(target: TaskTarget, result: CcTaskResult): void {
+    const drain = this.catchup;
+    if (result.outcome !== "failure" || !drain || (drain.state !== "running" && drain.state !== "waiting") ||
+        drain.target.sessionId !== target.sessionId || drain.target.branch !== target.branch) return;
+    drain.state = result.automaticOff ? "stopped" : "failed"; drain.phase = undefined;
+    drain.diagnostic = result.problems.join("; ") || result.outcome;
   }
 
   private report(phase: CcWorkerPhase, target: TaskTarget, result: CcTaskResult): void {
@@ -388,4 +437,14 @@ export class CcTaskScheduler {
   stop(): void { this.stopCatchup("executor shutdown"); this.stopped = true; }
 
   async settle(): Promise<void> { await Promise.allSettled([...this.slots.values()]); }
+}
+
+/** The manual dream's status from the core's answer; a refusal (`empty`, `dropped`) reads as a failed start with its reason. */
+function dreamOutcome(result: CcTaskResult | undefined): CcDreamStatus {
+  if (!result) return { state: "stopped", diagnostic: "stop requested before admission" };
+  if (result.outcome === "success") return { state: "completed" };
+  if (result.outcome === "empty") return { state: "failed", diagnostic: "nothing to curate" };
+  if (result.outcome === "dropped") return { state: "failed", diagnostic: result.reason ?? "the core refused the run" };
+  const diagnostic = ("problems" in result ? result.problems.join("; ") : "") || result.outcome;
+  return { state: result.outcome === "cancelled" || result.automaticOff ? "stopped" : "failed", diagnostic };
 }

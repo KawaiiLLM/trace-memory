@@ -99,7 +99,7 @@ test("notices: empty by default, one line when automatic off fires", () => {
 });
 
 test("actions: Turn off/on flips with enrollment", () => {
-  expect(buildTraceMenu(TRACE_MENU_FIXTURE).actions).toEqual(["Turn off", "Catch up", "Stop", "Project…", "Runs…", "Settings…"]);
+  expect(buildTraceMenu(TRACE_MENU_FIXTURE).actions).toEqual(["Turn off", "Catch up", "Dream", "Stop", "Project…", "Runs…", "Settings…"]);
   const off = buildTraceMenu({ ...TRACE_MENU_FIXTURE, actions: { enabled: false } });
   expect(off.actions[0]).toBe("Turn on");
 });

@@ -89,7 +89,7 @@ test("92: catchup waits for ordinary N; its successful joint publication checkpo
   } finally { release(); await h.dispose(); }
 });
 
-for (const success of [true, false]) test(`92: ordinary D ${success ? "success settles" : "failure does not resume"} a zero-Raw catchup wait`, async () => {
+for (const success of [true, false]) test(`92: ordinary D ${success ? "success settles" : "failure ends (146 Q18)"} a zero-Raw catchup wait`, async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -110,7 +110,7 @@ for (const success of [true, false]) test(`92: ordinary D ${success ? "success s
     await command(h, "catchup"); expect(h.notices.at(-1)).toContain("waiting for dreaming");
     release(); await settle(h);
     expect(dreamExecutions(h)).toEqual([success ? "success" : "failure"]);
-    await command(h, ""); expect(h.notices.at(-1)).toContain(success ? "Catchup: completed" : "waiting for dreaming");
+    await command(h, ""); expect(h.notices.at(-1)).toContain(success ? "Catchup: completed" : "Catchup: failed");
   } finally { release(); await h.dispose(); }
 });
 
@@ -267,4 +267,87 @@ test("67: entries persisted after catchup freezes do not extend Noting's boundar
     expect(remaining.some(id => frozen.includes(id))).toBe(false);
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "consolidation")).toEqual([]);
   } finally { release(); await h.dispose(); }
+}, 30000);
+
+// ---- 146 Q18: a Dreaming failure while a drain is active ends the drain, whoever started the run; the retry is the next entry-end check ----
+
+const fail = (message: string): Reply => ({ ...reply(""), stopReason: "error", errorMessage: message });
+
+test("146 Q18: an ordinary D fails while the drain's N is still running: the drain ends, the late N success drives nothing, the next turn retries D once", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
+  let releaseD = () => {}, releaseN = () => {};
+  const heldD = new Promise<void>(resolve => { releaseD = resolve; }), heldN = new Promise<void>(resolve => { releaseN = resolve; });
+  let dFails = true, nCalls = 0;
+  try {
+    await h.turn(); seed(h);
+    h.provider(async c => {
+      if (!dreaming(c)) { if (++nCalls === 1) await heldN; return notingFact(c); }
+      if (dFails) { await heldD; return fail("ordinary D terminal failure"); }
+      return retain(c);
+    });
+    await h.turn(); await h.drain(); // the ordinary D is admitted and held
+    expect(h.memory.store.getClaim(1, "dreaming")).not.toBeNull();
+    await command(h, "catchup"); await vi.waitFor(() => expect(nCalls).toBe(1)); // the drain's N runs; the busy D is skipped
+    releaseD(); await vi.waitFor(() => expect(dreamExecutions(h)).toEqual(["failure"]));
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: failed");
+    releaseN(); await settle(h);
+    expect(dreamExecutions(h)).toEqual(["failure"]); // the late N success started no D
+    dFails = false;
+    await h.turn(); await settle(h);
+    expect(dreamExecutions(h)).toEqual(["failure", "success"]); // the next entry-end check, once
+  } finally { releaseD(); releaseN(); await h.dispose(); }
+}, 30000);
+
+test("146 Q18: the drain's own D fails: one run, the drain ends, and the next entry-end check retries once", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
+  let dFails = true;
+  try {
+    await h.turn(); seed(h);
+    h.provider(async c => dreaming(c) ? (dFails ? fail("drain D terminal failure") : retain(c)) : notingFact(c));
+    await command(h, "catchup"); await settle(h);
+    expect(dreamExecutions(h)).toEqual(["failure"]);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: failed");
+    dFails = false;
+    await h.turn(); await settle(h);
+    expect(dreamExecutions(h)).toEqual(["failure", "success"]);
+  } finally { await h.dispose(); }
+}, 30000);
+
+test("146 Q18: a D failure that carries automaticOff stops the drain", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  try {
+    await h.turn(); seed(h);
+    h.provider(async c => dreaming(c) ? fail("terminal") : notingFact(c));
+    for (let i = 0; i < 2; i++) { await command(h, "dream"); await settle(h); }
+    h.memory.config.dreaming.triggerOperations = 1; // the drain's own D is now due
+    await command(h, "catchup"); await settle(h);
+    expect(h.memory.store.enabled(1)).toBe(false); // the third failure switched memory off
+    expect(h.notices.some(text => text.includes("dreaming off after three failures"))).toBe(true);
+  } finally { await h.dispose(); }
+}, 30000);
+
+// 146 Q18 (d): an old-path D still running when the path switches is not cancelled by the switch (the new path is another core
+// session), and it can fail after the new path's drain started. Its target differs from the drain's, so the failure must leave the drain.
+test("146 Q18 (d): the old path's D fails late after a path switch: the new path's drain keeps running", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  let releaseD = () => {}, releaseN = () => {};
+  const heldD = new Promise<void>(resolve => { releaseD = resolve; }), heldN = new Promise<void>(resolve => { releaseN = resolve; });
+  let dreams = 0, nCalls = 0;
+  try {
+    await h.turn(); seed(h);
+    h.provider(async c => {
+      if (dreaming(c)) { dreams++; await heldD; return fail("old-path D terminal failure"); }
+      if (++nCalls === 1) await heldN;
+      return notingFact(c);
+    }, { ignoreAbort: true });
+    await command(h, "dream"); await vi.waitFor(() => expect(dreams).toBe(1)); // the old path's D is held
+    h.entries.length = 0; h.allEntries.length = 0; h.ctx.sessionManager.getSessionId = () => "forked-session";
+    await h.emit("session_tree");
+    await h.turn();
+    await command(h, "catchup"); await vi.waitFor(() => expect(nCalls).toBe(1)); // the new path's drain runs its Noter
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: running noting");
+    releaseD(); await vi.waitFor(() => expect(dreamExecutions(h)).toEqual(["failure"])); // session 1's D failed
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: running noting"); // the drain on session 2 is untouched
+    releaseN(); await settle(h);
+  } finally { releaseD(); releaseN(); await h.dispose(); }
 }, 30000);

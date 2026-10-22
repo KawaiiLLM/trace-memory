@@ -376,7 +376,9 @@ export interface TraceMemory {
   notingBatch(target: TaskTarget, boundary?: TaskBoundary): SourceEntry[];
   tools(context: ToolContext): ToolDefinition[];
   noting(input: NotingInput): Promise<NotingResult>;
-  dream(input: DreamingInput): Promise<DreamingResult>;
+  /** `manual` (146 §18) starts a run whatever the Noter-operation count says; it skips the due test and nothing else. A refusal is
+   * `dropped` with its reason, or `empty` when there is nothing to curate; neither creates an execution. */
+  dream(input: DreamingInput & { manual?: boolean }): Promise<DreamingResult>;
   /** Committed lineage facts and unrecorded raw, without dropping facts. */
   branchSummary(sessionId: number, branch: string, headTurnId: number, toolNames?: ToolNames): string;
   /** Ticket 20, as 30 and 28a left it: the compaction result — the three allocated windows over one
@@ -804,13 +806,15 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false };
     return { due: phase === "noting" ? notingDue(target) : dreamingDue(target) };
   };
-  const execute = async (phase: Phase, input: NotingInput): Promise<NotingResult | DreamingResult> => {
-    if (stopping || store.closed || !store.enabled(input.sessionId)) return { outcome: "dropped" };
+  const execute = async (phase: Phase, input: NotingInput & { manual?: boolean }): Promise<NotingResult | DreamingResult> => {
+    if (stopping || store.closed || !store.enabled(input.sessionId)) return input.manual
+      ? { outcome: "dropped", reason: stopping || store.closed ? "the executor is shutting down" : "Trace Memory is off for this session" }
+      : { outcome: "dropped" };
     const target = { sessionId: input.sessionId, branch: input.branch, triggerEntryId: input.triggerEntryId,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
     const closedSessionScope = cfg.closedSessionScope;
     let claim: TaskClaim | null = null;
-    let empty = false, projectId: number;
+    let empty = false, projectId: number, refusal: string | undefined;
     let executionId: string;
     let resumeRunId: number | undefined;
     let origin: import("../model/index.ts").TriggerOrigin | null = null;
@@ -823,11 +827,22 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           !store.borrowedTargetActive(target))) return null;
       if (phase === "dreaming") {
         // 144 stage 4: one admission is one claim and one execution for the tasks left, whatever the budget of any pool.
-        if (!store.enabled(target.sessionId) || (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId))) return null;
-        if (!dreamingDue(target)) { empty = true; return null; }
-        executionLimit = executionLimitMs(remainingTasks(store.handoff(target.sessionId, "dreaming")?.nextTask), cfg.dreaming.timeoutMs);
-        claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerOperations, executionLimit + CLAIM_LEASE_MARGIN_MS);
-        if (!claim) return null;
+        if (!store.enabled(target.sessionId) || (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId))) {
+          if (input.manual) refusal = "Trace Memory is off for this session";
+          return null;
+        }
+        const handoff = store.handoff(target.sessionId, "dreaming");
+        // 146 §18: a manual run skips the due test. With no hand-off to resume and nothing to curate there is nothing to do.
+        if (input.manual ? !handoff && !store.curateItems(target).length : !dreamingDue(target)) { empty = true; return null; }
+        executionLimit = executionLimitMs(remainingTasks(handoff?.nextTask), cfg.dreaming.timeoutMs);
+        claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerOperations, executionLimit + CLAIM_LEASE_MARGIN_MS, input.manual);
+        if (!claim) {
+          if (input.manual) {
+            const holder = store.dreamerSeatHolder(target.sessionId);
+            refusal = holder !== null ? `session S${holder} holds the Dreamer seat` : "a Dreamer is already running for this session";
+          }
+          return null;
+        }
         projectId = store.getSession(input.sessionId)!.projectId;
         origin = store.triggerOrigin(target, target.triggerEntryId);
         const frozen = prepareDreaming(store, { ...input, ...target }, cfg, claim, target);
@@ -877,7 +892,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (error instanceof Error && error.message.startsWith(NOTING_MEMBERSHIP)) return { outcome: "dropped", reason: error.message };
       throw new Error(error instanceof Error ? error.message : String(error), { cause: "task admission" });
     }
-    if (!frozen || !claim) return { outcome: empty ? "empty" : "dropped" };
+    if (!frozen || !claim) return empty ? { outcome: "empty" } : { outcome: "dropped", ...(refusal ? { reason: refusal } : {}) };
     const controller = new AbortController();
     // 146 §3.3: calls of one execution may run side by side. Each call has its own progress, its own forced wait and its own binding
     // and fences; execution-level paths (stop, off, exit, backstop) close and force all of them.
