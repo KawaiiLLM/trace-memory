@@ -72,8 +72,9 @@ function buildContextSection(input) {
 var pendingRow = (label, value) => {
   if (value.tokens === null || value.trigger === null) return { label, tokens: null, trigger: null, ratio: null, percent: "?", amount: "?" };
   const ratio = value.trigger === 0 ? value.tokens === 0 ? 0 : 1 : Math.min(1, value.tokens / value.trigger);
-  const trigger = formatCompactTokens(value.trigger);
-  const amount = value.atLeast ? `\u2265${trigger} / ${trigger} (${(value.entries ?? 0).toLocaleString("en-US")} ${value.entries === 1 ? "entry" : "entries"})` : `${formatCompactTokens(value.tokens)} / ${trigger}`;
+  const operations = value.unit === "operations";
+  const trigger = operations ? String(value.trigger) : formatCompactTokens(value.trigger);
+  const amount = operations ? `${value.atLeast ? "\u2265" : ""}${value.tokens} / ${trigger} Noter ops` : value.atLeast ? `\u2265${trigger} / ${trigger} (${(value.entries ?? 0).toLocaleString("en-US")} ${value.entries === 1 ? "entry" : "entries"})` : `${formatCompactTokens(value.tokens)} / ${trigger}`;
   return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio), amount };
 };
 function buildPendingSection(input) {
@@ -100,7 +101,7 @@ function buildHeader(input) {
 }
 function buildActions(input) {
   const toggle = input.enabled ? "Turn off" : "Turn on";
-  return [toggle, "Catch up", "Stop", "Project\u2026", "Runs\u2026", "Settings\u2026"];
+  return [toggle, "Catch up", "Dream", "Stop", "Project\u2026", "Runs\u2026", "Settings\u2026"];
 }
 var toggleConfirmation = (turnOn, shared) => ({
   title: `Turn Trace Memory ${turnOn ? "on" : "off"} for this session?`,
@@ -175,7 +176,7 @@ var TRACE_MENU_FIXTURE = {
   },
   pending: {
     noting: { tokens: 3200, trigger: 1e4 },
-    dreaming: { pending: { tokens: 1819, trigger: 1e4 }, next: "merge" }
+    dreaming: { pending: { tokens: 12, trigger: 30, unit: "operations" }, next: "merge-split" }
   },
   spend: {
     session: 1.23,
@@ -755,6 +756,7 @@ export const register = (on) => {
         return;
       }
       if (value === "catch-up") void act("catchup");
+      else if (value === "dream") void act("dream");
       else if (value === "stop") void act("stop");
     };
     const message = notice ? <Text>{notice}</Text> : null;
