@@ -27,6 +27,8 @@ import { noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
 import { dreamerFixture as makeDreamerFixture, noterWrittenItem, operationOfText, proposalsOf, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
 import { buildPendingSection } from "../../../src/hosts/trace-menu.ts";
 import { checkVerify } from "../../../src/core/dreaming/changes.ts";
+import { curatePrefix, CURATE_ROTATION } from "../../../src/core/dreaming/curate.ts";
+import { tokens as renderTokens } from "../../../src/core/render/index.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { budgetArchive, receiptCommit, scoreAll } from "../../support/seed.ts";
 import { block as workspaceBlock, workspaceBatch } from "../../support/workspace.ts";
@@ -2335,6 +2337,26 @@ test("2026-10-22: each curate run and its verify get exactly their operation's s
   // The system prompt holds no class and no operation's instructions: they travel with the first check result (stage 5 §0).
   const system = loadPrompt("dreaming.md");
   for (const name of ["smells-update", "smells-merge", "smells-split", "smells-archive", "verify-procedure"]) expect(system).not.toContain(block(name));
+});
+
+// Maintainer, 2026-10-22: 「更新、合并仍然按分数降序，归档按分数生升序，拆分按长度/分数加权降序排名」 (sic); chosen: weight = the item's token cost x score.
+test("2026-10-22, 144: 「更新、合并仍然按分数降序，归档按分数生升序，拆分按长度/分数加权降序排名」 — the cap fits one scored item; which one depends on the operation", () => {
+  const f = dreamerFixture();
+  const high = f.item("HIGH short rule", { category: "constraint", title: "High" });
+  const low = f.item("LOW short rule", { category: "constraint", title: "Low" });
+  const long = f.item("LONG weighty rule ".repeat(12), { category: "constraint", title: "Long" });
+  for (const [item, score] of [[high, 90], [low, 10], [long, 60]] as const) f.store.db.prepare("UPDATE knowledge SET score = ? WHERE id = ?").run(score, item.knowledgeId);
+  const items = f.store.curateItems(f.path);
+  const longBlock = curatePrefix(f.store, f.path, "update", items, Infinity).text.split("\n\n").find(part => part.includes("LONG weighty"))!;
+  const cap = renderTokens(longBlock) + 1; // exactly the long item: any two items overflow it
+  const wholeAt = (operation: (typeof CURATE_ROTATION)[number]) => {
+    const text = curatePrefix(f.store, f.path, operation, items, cap).text;
+    return ["HIGH", "LOW", "LONG"].filter(marker => text.includes(`${marker} `));
+  };
+  expect(wholeAt("update")).toEqual(["HIGH"]); // score 90 first
+  expect(wholeAt("merge")).toEqual(["HIGH"]);
+  expect(wholeAt("archive")).toEqual(["LOW"]); // score 10 first
+  expect(wholeAt("split")).toEqual(["LONG"]); // 60 x long body outweighs 90 x short
 });
 
 test("2026-10-22, 144: 「合并实际没有发生，核查通过后才发生」 — curate's changes apply only after verify; every change gets confirm, edit or revert", async () => {

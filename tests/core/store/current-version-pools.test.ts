@@ -406,7 +406,7 @@ test("139: the curate material shows the UTC date range of the supports of the v
   expect(story.datesOf(story.ids.updated.commit)).toBe("2026-10-03"); // its own support, not merged with the earlier version's
   expect(story.datesOf(story.ids.archive.commit)).toBeUndefined(); // an archived item is not live: the curate view does not list it
   expect(story.datesOf(story.ids.bare.commit)).toBeUndefined();
-  const prefix = curatePrefix(story.f.store, story.f.target).text;
+  const prefix = curatePrefix(story.f.store, story.f.target, "update").text;
   expect(prefix).toMatch(/\(\d+ tokens; facts 2026-10-02\.\.2026-10-05\)/);
   expect(prefix).toMatch(/\(\d+ tokens; facts 2026-10-03\)/);
 });
@@ -414,7 +414,7 @@ test("139: the curate material shows the UTC date range of the supports of the v
 test("139: the dates never count toward item tokens", () => {
   const dated = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T23:30:00.000Z"]);
   const plain = datedStory(["now", "now", "now"]);
-  const withDates = curatePrefix(dated.f.store, dated.f.target).text, without = curatePrefix(plain.f.store, plain.f.target).text;
+  const withDates = curatePrefix(dated.f.store, dated.f.target, "update").text, without = curatePrefix(plain.f.store, plain.f.target, "update").text;
   expect(without).not.toContain("facts 20");
   expect(withDates).toContain("facts 20");
   // The label on every item states the same cost, with or without dates.

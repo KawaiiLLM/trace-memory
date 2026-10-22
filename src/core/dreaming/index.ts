@@ -91,10 +91,10 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
   if (input.nativeReadToolTokens !== undefined && (!Number.isSafeInteger(input.nativeReadToolTokens) || input.nativeReadToolTokens < 0))
     throw new Error("Invalid native Read token estimate: expected a nonnegative safe integer");
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
-  const { text: knowledge, byCategory } = curatePrefix(store, path);
-  const text = [readingGuide(path.sessionId, names), knowledge, renderToolNames(CHECK_FIRST_TASK, names)].join("\n\n");
   const handoff = store.handoff(path.sessionId, "dreaming");
   const operation = handoff?.detail?.operation ?? store.nextCurateOperation(store.getSession(path.sessionId)!.projectId);
+  const { text: knowledge, byCategory } = curatePrefix(store, path, operation);
+  const text = [readingGuide(path.sessionId, names), knowledge, renderToolNames(CHECK_FIRST_TASK, names)].join("\n\n");
   const taskPrompt = (task: "curate" | "verify") => {
     const body = loadPrompt(`tasks/${task}-${operation}.md` as PromptFile, names, config.writing);
     return { text: body, hash: createHash("sha256").update(body).digest("hex") };

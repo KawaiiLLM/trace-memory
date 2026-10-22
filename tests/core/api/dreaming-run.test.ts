@@ -266,13 +266,13 @@ test("the prefix shows unscored items whole and scored items whole by score whil
   f.store.db.prepare("UPDATE knowledge SET score = ? WHERE id = ?").run(30, low.knowledgeId);
   f.store.db.prepare("UPDATE knowledge SET score = ? WHERE id = ?").run(90, high.knowledgeId);
   const items = f.store.curateItems(f.path);
-  const whole = tokens(curatePrefix(f.store, f.path, items, Infinity).text);
-  const text = curatePrefix(f.store, f.path, items, Math.floor(whole * 0.8)).text;
+  const whole = tokens(curatePrefix(f.store, f.path, "update", items, Infinity).text);
+  const text = curatePrefix(f.store, f.path, "update", items, Math.floor(whole * 0.8)).text;
   expect(text).toContain("Unscored rule with a long body");
   expect(text).toContain("High scored rule with a long body");
   expect(text).not.toContain("Low scored rule with a long body");
   expect(text).toContain("Low item"); // its header line, with the address and title
-  expect(curatePrefix(f.store, f.path, items, Math.floor(whole * 0.8)).text).toBe(text);
+  expect(curatePrefix(f.store, f.path, "update", items, Math.floor(whole * 0.8)).text).toBe(text);
 });
 
 // ---- Resume across a restart (§3.2) -----------------------------------------------------------------------------------------

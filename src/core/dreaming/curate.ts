@@ -16,21 +16,23 @@ export type Category = (typeof KNOWLEDGE_CATEGORIES)[number];
 const groupOf = (item: CurateItem): Category => knowledgeCategoryGroup(item.value.revision.category);
 
 /** The prefix text and the items it shows, by category. Unscored items are shown whole, even past the cap; scored items follow
- * in score order while the block stays within it; the rest show their header line only (title included). */
-export function curatePrefix(store: Store, path: KnowledgePath, items: readonly CurateItem[] = store.curateItems(path), cap = CURATE_PREFIX_TOKENS) {
+ * in the run's operation order while the block stays within it (update and merge: score descending; archive: ascending; split: body
+ * tokens x score descending; ties keep the newer version first); the rest show their header line only (title included). */
+export function curatePrefix(store: Store, path: KnowledgePath, operation: CurateOperation, items: readonly CurateItem[] = store.curateItems(path), cap = CURATE_PREFIX_TOKENS) {
   const writing = store.writing;
   const whole = new Map(items.map(item => {
     const body = renderKnowledge(item.value, item.address, false, writing);
     return [item.value.revision.id, withFactDates(withKnowledgeCost(body, tokens(body)), item.dates)] as const;
   }));
+  const costOf = (item: CurateItem) => tokens(whole.get(item.value.revision.id)!) + 1;
   const shown = new Set<number>();
   let used = 0;
-  for (const item of items.filter(item => item.score === null)) { shown.add(item.value.revision.id); used += tokens(whole.get(item.value.revision.id)!) + 1; }
-  const scored = items.filter(item => item.score !== null).sort((a, b) => b.score! - a.score! || b.value.revision.id - a.value.revision.id);
+  for (const item of items.filter(item => item.score === null)) { shown.add(item.value.revision.id); used += costOf(item); }
+  const rank = (item: CurateItem) => operation === "archive" ? -item.score! : operation === "split" ? item.score! * costOf(item) : item.score!;
+  const scored = items.filter(item => item.score !== null).sort((a, b) => rank(b) - rank(a) || b.value.revision.id - a.value.revision.id);
   for (const item of scored) {
-    const cost = tokens(whole.get(item.value.revision.id)!) + 1;
-    if (used + cost > cap) break;
-    shown.add(item.value.revision.id); used += cost;
+    if (used + costOf(item) > cap) break;
+    shown.add(item.value.revision.id); used += costOf(item);
   }
   const render = (item: CurateItem) => shown.has(item.value.revision.id) ? whole.get(item.value.revision.id)!
     : whole.get(item.value.revision.id)!.split("\n")[0]!;
