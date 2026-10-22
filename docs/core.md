@@ -1062,8 +1062,9 @@ to ids no later than `maxEntryId` before its usual batch-token loop, and
 building its range; both reuse the same store readers rather than adding a second
 selection query. Manual catchup drains its frozen Noting boundary. Ticket 68 checks N, C and D
 at start and after every successful catchup-owned phase completion; C and D use ordinary eligibility.
-Ticket 86 immediately retries a failed catchup step in the same phase and boundary, without checking
-other phases. It uses the ordinary three-business-failures rule; off or cancellation ends the drain.
+Ticket 86 immediately retries a failed Noting step in the same phase and boundary, without checking
+other phases. A failed Dreaming run is not retried inside the drain (146, ruling 10: it retries at the next entry-end check): it ends the drain for the same session and path, whoever started the run, and counts once toward the Dreamer's streak. Both phases use the ordinary three-consecutive-failures rule; off or cancellation also ends the drain.
+`dream({ manual: true })` (146 §18) starts a Dreaming run now: it skips only the due test, and keeps enrollment, the database-wide seat, the claim and the lease. It resumes a hand-off with the hand-off's operation, writes coverage, advances the rotation and counts toward the streak like any run. A refusal creates no execution: `dropped` carries its reason (memory off, another session holds the seat, a Dreamer already runs for this session) and `empty` means there is nothing to curate and no hand-off.
 It no longer freezes a fact set for forced below-threshold Consolidation. The *exact* target is what a host that re-admits a frozen batch names: `exactEntryIds`
 (27d's `entryIds`) and `exactFactIds` (29e). Under either, the freeze selects exactly those pending
 members, trims optional material to fit them — the Noter's history, the Consolidator's knowledge
