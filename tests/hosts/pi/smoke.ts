@@ -33,7 +33,7 @@ try {
   assert.equal(runs.length, 2);
   assert.ok(runs.every(run => run.kind === "noting" && run.outcome === "success"));
   assert.deepEqual(runs.map(run => JSON.parse(run.response!).task), ["write", "verify"]);
-  assert.deepEqual(JSON.parse(runs[0]!.request!), h.requests[2]); // the write task: check, write both files, stop
+  assert.deepEqual(JSON.parse(runs[0]!.request!), h.requests[4]); // the write task's last request: check, write the facts, step 2, write the knowledge, stop
   assert.deepEqual(JSON.parse(runs[1]!.request!), h.requests.at(-1));
   assert.deepEqual(h.conversations[0]!.tools!.map(t => t.name), ["search", "check", "read", "write", "edit"]);
   assert.equal(JSON.stringify(h.conversations[3]!.messages[0]), JSON.stringify(h.conversations[0]!.messages[0]), "both tasks open with the same task text");
