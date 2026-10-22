@@ -60,7 +60,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   project_declaration TEXT NOT NULL DEFAULT 'marker' CHECK (project_declaration IN ('undeclared','marker','mark')),
   -- 62: the real repository root (or cwd) the session started in; the key later sessions join by.
   -- NULL for sessions allocated before the column existed or in an excluded directory (home, temp).
-  directory TEXT
+  directory TEXT,
+  -- 148: the real path of the directory the session started in (the host's cwd), whatever its directory was resolved to;
+  -- only the Dreamer's reads use it. NULL when unknown (a record that is gone, or a session from before the column).
+  start_directory TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_lineage_cursors (
@@ -346,6 +349,7 @@ export interface CreateSessionInput {
   parentSessionId?: number | null;
   projectDeclaration?: "undeclared" | "marker" | "mark";
   directory?: string | null; // 62: the resolved repository root or cwd; absent or null when excluded
+  startDirectory?: string | null; // 148: the real path of cwd at session creation; absent or null when unknown
 }
 
 export interface AppendTurnInput {
@@ -717,6 +721,7 @@ function toSession(row: any): Session {
     projectId: row.project_id,
     parentSessionId: row.parent_session_id,
     directory: row.directory ?? null,
+    startDirectory: row.start_directory ?? null,
   };
 }
 
@@ -994,6 +999,8 @@ export class Store {
         // 62: existing sessions keep NULL; they are never re-attributed to a directory.
         const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
         if (!sessionColumns.some(r => r.name === "directory")) this.db.exec("ALTER TABLE sessions ADD COLUMN directory TEXT");
+        // 148: existing sessions keep NULL until the one-time backfill reads their hosts' native records.
+        if (!sessionColumns.some(r => r.name === "start_directory")) this.db.exec("ALTER TABLE sessions ADD COLUMN start_directory TEXT");
         // 64b: lineage cursors replace the never-deployed session-wide foreground columns.
         if (sessionColumns.some(r => r.name === "current_branch")) this.db.exec("ALTER TABLE sessions DROP COLUMN current_branch");
         if (sessionColumns.some(r => r.name === "current_head")) this.db.exec("ALTER TABLE sessions DROP COLUMN current_head");
@@ -1587,7 +1594,7 @@ export class Store {
     if (!input.firstReplyAt) {
       throw new Error("a session is allocated an id only once an assistant reply exists (firstReplyAt is required)");
     }
-    const info = this.db.prepare("INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration, enrollment_default, enrollment_choice, directory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker", Number(enrollmentDefault(input.nativeCreatedAt, input.baseline)), input.enrollmentChoice == null ? null : Number(input.enrollmentChoice), input.directory ?? null);
+    const info = this.db.prepare("INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration, enrollment_default, enrollment_choice, directory, start_directory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker", Number(enrollmentDefault(input.nativeCreatedAt, input.baseline)), input.enrollmentChoice == null ? null : Number(input.enrollmentChoice), input.directory ?? null, input.startDirectory ?? null);
     return this.getSession(Number(info.lastInsertRowid))!;
   }
 

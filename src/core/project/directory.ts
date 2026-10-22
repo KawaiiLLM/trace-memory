@@ -40,12 +40,14 @@ export function sessionDirectory(cwd: string, options: DirectoryOptions = {}): D
 /** The allocation rule shared by every host: an excluded (or unknown) cwd keeps the session's own
  * project and records no directory; a directory whose recorded sessions belong to exactly one
  * effective project joins it as a `marker` declaration; none or several keep the own project and
- * record the directory for the next session. `own` allocates the host's per-session project. */
+ * record the directory for the next session. `own` allocates the host's per-session project. 148: `startDirectory` is
+ * the real path of cwd itself, recorded whatever the verdict (it plays no part in allocation). */
 export function directoryAllocation(store: Store, cwd: string | undefined, own: () => number, options?: DirectoryOptions):
-  { projectId: number; projectDeclaration: "marker" | "undeclared"; directory: string | null } {
+  { projectId: number; projectDeclaration: "marker" | "undeclared"; directory: string | null; startDirectory: string | null } {
+  const startDirectory = realpathOrNull(cwd);
   const resolved = cwd === undefined ? { excluded: true as const } : sessionDirectory(cwd, options);
-  if ("excluded" in resolved) return { projectId: own(), projectDeclaration: "undeclared", directory: null };
+  if ("excluded" in resolved) return { projectId: own(), projectDeclaration: "undeclared", directory: null, startDirectory };
   const projects = store.directoryProjects(resolved.directory);
-  return projects.length === 1 ? { projectId: projects[0]!, projectDeclaration: "marker", directory: resolved.directory }
-    : { projectId: own(), projectDeclaration: "undeclared", directory: resolved.directory };
+  return projects.length === 1 ? { projectId: projects[0]!, projectDeclaration: "marker", directory: resolved.directory, startDirectory }
+    : { projectId: own(), projectDeclaration: "undeclared", directory: resolved.directory, startDirectory };
 }

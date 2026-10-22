@@ -72,7 +72,7 @@ test("the home directory and temporary directories are never keys", () => {
   const slashTmp = mkdtempSync("/tmp/tm-62-"); disposers.push(() => rmSync(slashTmp, { recursive: true, force: true }));
   git(slashTmp, "init", "-q");
   expect(sessionDirectory(slashTmp)).toEqual({ excluded: true });
-  expect(directoryAllocation(store(), slashTmp, () => 7)).toEqual({ projectId: 7, projectDeclaration: "undeclared", directory: null });
+  expect(directoryAllocation(store(), slashTmp, () => 7)).toEqual({ projectId: 7, projectDeclaration: "undeclared", directory: null, startDirectory: realpathSync(slashTmp) });
   // A home subdirectory outside any repository is an ordinary key: only home itself is excluded.
   const documents = join(f.home, "documents"); mkdirSync(documents);
   expect(sessionDirectory(documents, f.options)).toEqual({ directory: realpathSync(documents) });
@@ -89,7 +89,7 @@ test("store: one recorded project joins, none or several allocate the own projec
   expect(first).toMatchObject({ projectDeclaration: "undeclared", directory: f.root });
   const a = session(s, "pi:a", first);
   expect(s.getSession(a.id)!.directory).toBe(f.root);
-  expect(directoryAllocation(s, f.worktree, own, f.options)).toEqual({ projectId: a.projectId, projectDeclaration: "marker", directory: f.root });
+  expect(directoryAllocation(s, f.worktree, own, f.options)).toEqual({ projectId: a.projectId, projectDeclaration: "marker", directory: f.root, startDirectory: realpathSync(f.worktree) });
   // A second project in the same directory (a session marked elsewhere) makes it ambiguous.
   const b = session(s, "pi:b", { projectId: a.projectId, projectDeclaration: "marker", directory: f.root, enrollmentChoice: true });
   const turn = s.appendTurn({ sessionId: b.id, kind: "turn", userPrompt: "source", startedAt: at });
@@ -109,21 +109,22 @@ test("store: one recorded project joins, none or several allocate the own projec
   // Merging the two resolves it; the merged project is followed to the survivor.
   s.mergeProject(other.id, a.projectId);
   expect(s.directoryProjects(f.root)).toEqual([a.projectId]);
-  expect(directoryAllocation(s, f.worktree, own, f.options)).toEqual({ projectId: a.projectId, projectDeclaration: "marker", directory: f.root });
+  expect(directoryAllocation(s, f.worktree, own, f.options)).toEqual({ projectId: a.projectId, projectDeclaration: "marker", directory: f.root, startDirectory: realpathSync(f.worktree) });
   expect(s.getSession(legacy.id)).toEqual(legacy); // never re-attributed
 });
 
-test("store: opening an existing database adds sessions.directory without touching other rows", () => {
+test("store: opening an existing database adds sessions.directory and start_directory without touching other rows", () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-62-db-")); disposers.push(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "trace.db");
   const before = new Store(path);
   const legacy = session(before, "pi:legacy", {});
-  before.db.exec("ALTER TABLE sessions DROP COLUMN directory"); // the pre-62 shape
-  expect(before.db.prepare("PRAGMA table_info(sessions)").all().some(row => row.name === "directory")).toBe(false);
+  before.db.exec("ALTER TABLE sessions DROP COLUMN directory; ALTER TABLE sessions DROP COLUMN start_directory"); // the pre-62 shape
+  const hasColumn = (s: Store, name: string) => s.db.prepare("PRAGMA table_info(sessions)").all().some(row => row.name === name);
+  expect(hasColumn(before, "directory") || hasColumn(before, "start_directory")).toBe(false);
   before.close();
   const after = new Store(path); disposers.push(() => after.close());
-  expect(after.db.prepare("PRAGMA table_info(sessions)").all().some(row => row.name === "directory")).toBe(true);
-  expect(after.getSession(legacy.id)).toEqual({ ...legacy, directory: null });
+  expect(hasColumn(after, "directory") && hasColumn(after, "start_directory")).toBe(true);
+  expect(after.getSession(legacy.id)).toEqual({ ...legacy, directory: null, startDirectory: null });
   expect(after.db.prepare("SELECT count(*) AS n FROM sessions").get()).toEqual({ n: 1 });
 });
 
@@ -133,18 +134,20 @@ test("Pi: the first session in a repository owns its project and records the dir
   await h.turn();
   const first = h.memory.store.getSession(1)!;
   expect(first.directory).toBe(f.root);
+  expect(first.startDirectory).toBe(realpathSync(f.repo));
   expect(h.memory.store.projectDeclaration(1)).toBe("undeclared");
   h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "worktree-session"; h.ctx.cwd = f.worktree;
   await h.emit("session_start"); await h.turn();
   const second = h.memory.store.getSession(2)!;
   const worktreeEntries = [...h.entries];
-  expect(second).toMatchObject({ projectId: first.projectId, directory: f.root });
+  expect(second).toMatchObject({ projectId: first.projectId, directory: f.root, startDirectory: realpathSync(f.worktree) });
   expect(h.memory.store.projectDeclaration(2)).toBe("marker");
   expect(h.entries.at(-1).data.projectId).toBe(first.projectId);
   h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "home-session"; h.ctx.cwd = f.home;
   await h.emit("session_start"); await h.turn();
   const third = h.memory.store.getSession(3)!;
   expect(third.directory).toBeNull();
+  expect(third.startDirectory).toBe(realpathSync(f.home)); // excluded as a key, still recorded as the start
   expect(third.projectId).not.toBe(first.projectId);
   expect(h.memory.store.projectDeclaration(3)).toBe("undeclared");
   expect(h.memory.store.getProject(third.projectId)!.name).toBe("pi:home-session");
@@ -179,6 +182,7 @@ test("Pi: a cwd under the temporary directory allocates the own project and reco
   git(h.dir, "init", "-q");
   await h.turn();
   expect(h.memory.store.getSession(1)!.directory).toBeNull();
+  expect(h.memory.store.getSession(1)!.startDirectory).toBe(realpathSync(h.dir));
   expect(h.memory.store.projectDeclaration(1)).toBe("undeclared");
   expect(h.memory.store.getProject(h.memory.store.getSession(1)!.projectId)!.name).toBe("pi:pi-test");
 });
@@ -209,7 +213,7 @@ test("CC: a SessionStart hook with cwd in a repository that has one Pi session j
   const result = await joined.importer.reconcile();
   expect(result.state).toBe("ready");
   const ccSession = joined.importer.memory.store.getSession(result.coreSessionId!)!;
-  expect(ccSession).toMatchObject({ host: "cc:cc-in-worktree", projectId: piSession.projectId, directory: f.root });
+  expect(ccSession).toMatchObject({ host: "cc:cc-in-worktree", projectId: piSession.projectId, directory: f.root, startDirectory: realpathSync(f.worktree) });
   expect(joined.importer.memory.store.projectDeclaration(ccSession.id)).toBe("marker");
   expect(joined.importer.currentBinding().projectId).toBe(piSession.projectId);
   const bare = await ccImporter(dbPath, "cc-no-cwd");
@@ -217,6 +221,7 @@ test("CC: a SessionStart hook with cwd in a repository that has one Pi session j
   const bareResult = await bare.importer.reconcile();
   const bareSession = bare.importer.memory.store.getSession(bareResult.coreSessionId!)!;
   expect(bareSession.directory).toBeNull();
+  expect(bareSession.startDirectory).toBeNull();
   expect(bareSession.projectId).not.toBe(piSession.projectId);
   expect(bare.importer.memory.store.getProject(bareSession.projectId)!.name).toBe("cc:cc-no-cwd");
   expect(bare.importer.memory.store.projectDeclaration(bareSession.id)).toBe("undeclared");
