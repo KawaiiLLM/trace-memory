@@ -376,7 +376,7 @@ export class CcAgentWorker {
     };
     // Stage 5 §3.7: curate and verify may read repositories, through Read, Grep and Glob confined to their roots (one function, one deny
     // list); classify has no roots, so its calls are refused. Equal roots keep curate's and verify's first requests alike.
-    const roots = task.kind === "dreaming" ? task.workspace.roots : [];
+    const roots = task.kind === "dreaming" ? task.workspace?.roots ?? [] : [];
     const searches = task.kind === "dreaming" && task.task !== "classify";
     const onSearch = async (raw: unknown) => {
       const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown> };
