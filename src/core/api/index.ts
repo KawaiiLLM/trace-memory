@@ -311,9 +311,16 @@ export interface AgentControl {
   thinkingLevel?: string;
   /** 26d: the same, for the task's fresh-context execution (`TaskOptions.subagentThinkingLevel`). */
   subagentThinkingLevel?: string;
+  /** 146 §3.3: core-only; set by a task that runs calls side by side (see `CallFence`). */
+  call?: CallFence;
 }
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
+
+/** 146 §3.3: the handle of one runner call, so a deadline or a spill reaches that call alone. Core stamps `call` on a tool binding; a Dreaming task
+ * passes it in its agent input and registers its workspace on it. A call without one (the Noter's single call) falls back to the whole execution. */
+export interface CallFence { close(): void; fence(fence: { close(): void }): void; spill?: (text: string) => string }
+const CANCELLED = { outcome: "cancelled", output: "cancelled; provider completion and remaining usage unknown" } as const;
 
 
 // ---- Façade ----
@@ -429,9 +436,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const store = new Store(dbPath, normalizeSource, () => cfg.writing);
   const executorId = randomUUID();
   let stopping = false;
-  const tasks = new Set<{ sessionId: number; phase: Phase; executionId: string; claimToken: string; controller: AbortController; force(): void; close(): void }>();
+  const tasks = new Set<{ sessionId: number; phase: Phase; executionId: string; claimToken: string; controller: AbortController; force(result?: Partial<RunAgentResult>): void; close(): void }>();
   const abortTarget = (sessionId: number) => {
-    for (const task of tasks) if (task.sessionId === sessionId) { task.close(); task.controller.abort(); }
+    for (const task of tasks) if (task.sessionId === sessionId) { task.close(); task.controller.abort(); task.force(CANCELLED); }
   };
   const settleExecution: TraceMemory["settleExecution"] = (id, outcome, runId, reason) => {
     const settled = store.settleExecution(id, outcome, runId, reason);
@@ -451,7 +458,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     try { for (const task of tasks) task.close(); }
     finally {
       try { if (!store.closed) { if (stop) store.beginShutdown(); store.invalidateExecutor(executorId); } }
-      finally { for (const task of tasks) task.controller.abort(); }
+      finally { for (const task of tasks) { task.controller.abort(); task.force(CANCELLED); } }
     }
     return owned;
   };
@@ -869,22 +876,26 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     if (!frozen || !claim) return { outcome: empty ? "empty" : "dropped" };
     const controller = new AbortController();
-    let force!: (result?: RunAgentResult) => void;
-    const progress: Partial<RunAgentResult> = {};
-    const forced = new Promise<RunAgentResult>(resolve => { force = result => resolve(result ?? { ...progress, outcome: "cancelled", output: "executor cleanup deadline; provider completion and remaining usage unknown" }); });
-    // 144 stage 4 §1.5: one fence. `task.close()` closes the current tool binding and every workspace of the task; each terminal
-    // path (stop, memory off, executor exit, host signal, task deadline, backstop, settlement) calls it before anything else.
+    // 146 §3.3: calls of one execution may run side by side. Each call has its own progress, its own forced wait and its own binding
+    // and fences; execution-level paths (stop, off, exit, backstop) close and force all of them.
+    let forcedWith: Partial<RunAgentResult> | undefined;
+    const forcers = new Set<(result: Partial<RunAgentResult>) => void>();
+    const force = (result?: Partial<RunAgentResult>) => {
+      forcedWith ??= result ?? { outcome: "cancelled", output: "executor cleanup deadline; provider completion and remaining usage unknown" };
+      for (const forcer of forcers) forcer(forcedWith);
+    };
     const fences = new Set<{ close(): void }>();
-    let currentBinding: { close(): void } | undefined;
+    const calls = new Set<CallFence>();
+    let lastCall: (CallFence) | undefined;
     const task = { sessionId: target.sessionId, phase, executionId: executionId!, claimToken: (claim as TaskClaim).token, controller, force,
-      close: () => { currentBinding?.close(); for (const fence of fences) fence.close(); } };
+      close: () => { for (const call of calls) call.close(); for (const fence of fences) fence.close(); } };
     tasks.add(task);
     const admittedAt = Date.now();
     // 28b (parent 28 amendment 3): the admitting operation's own cancellation, linked to this task's
     // controller in exactly the shape `cancelTasks` uses for the whole executor — close the binding
     // first, release the claim immediately, then abort the run. Token matching preserves other claims;
     // finalization may safely release the old token again. `task.close` is read at abort time,
-    // never captured, so the fence this closes covers whichever binding and workspace are current. The listener is
+    // never captured, so the fence this closes covers whichever bindings and workspaces are current. The listener is
     // removed with the task below: a compaction that ends without cancelling leaves nothing attached
     // to its signal.
     const external = input.signal;
@@ -892,27 +903,31 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       task.close();
       try { if (!store.closed) store.releaseClaim(claim!); }
       catch { /* Finalization retries the same token and reports any remaining release failure. */ }
-      finally { controller.abort(external!.reason); }
+      finally { controller.abort(external!.reason); task.force(CANCELLED); }
     };
     if (external?.aborted) onExternalAbort();
     else external?.addEventListener("abort", onExternalAbort, { once: true });
-    let hostSpill: ((text: string) => string) | undefined;
-    const spill = (text: string) => (hostSpill ?? (() => { throw new Error("this run has no place to save output"); }))(text);
     const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, writer?: Parameters<typeof bindTools>[5]) => {
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
       run.executionId = executionId!;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
       Object.assign(run, store.bindRunOrigin(run, origin));
+      const own = new Set<{ close(): void }>();
+      const call: CallFence = { close: () => { binding.close(); for (const fence of own) fence.close(); }, fence: fence => { own.add(fence); } };
+      // Ticket 136: an oversized search output is saved where this call's own Read can read it.
+      const spill = (text: string) => (call.spill ?? (() => { throw new Error("this run has no place to save output"); }))(text);
       const binding = bindTools(store, read, { ...context, ...(input.maxReadChars === undefined ? {} : { maxReadChars: input.maxReadChars }), spill },
         run, frozen!.names, writer);
-      currentBinding = binding;
-      return binding;
+      calls.add(call); lastCall = call;
+      return Object.assign(binding, { call });
     };
     // Stage 4 §1.3: the effective deadline of a call never passes the backstop minus one gap, so the latest task deadline
     // always precedes the backstop and the backstop precedes lease expiry.
     const backstopAt = admittedAt + executionLimit;
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
+      const own = (raw as AgentControl).call, call = own ?? lastCall;
+      const progress: Partial<RunAgentResult> = {};
       const asked = (raw as { deadline?: number }).deadline;
       const deadline = asked === undefined ? undefined : Math.min(asked, backstopAt - TASK_GAP_MS);
       const late = (): RunAgentResult => ({ ...progress, outcome: "failure", failureClass: "timeout",
@@ -921,21 +936,27 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const taskController = deadline === undefined ? undefined : new AbortController();
       let taskForce!: (result: RunAgentResult) => void;
       const taskForced = new Promise<RunAgentResult>(resolve => { taskForce = resolve; });
+      let forcer!: (result: Partial<RunAgentResult>) => void;
+      const forced = new Promise<RunAgentResult>(resolve => { forcer = result => resolve({ ...progress, ...result } as RunAgentResult); });
+      forcers.add(forcer);
+      if (forcedWith) forcer(forcedWith);
       // With a deadline the host sees an effective signal: execution cancellation still reaches every task, the deadline only this call.
       const signal = taskController ? AbortSignal.any([controller.signal, taskController.signal]) : controller.signal;
       const timer = deadline === undefined ? undefined : setTimeout(() => {
         if (controller.signal.aborted) return;
-        // The same order as the execution timer: fence first, then the failure, then the abort (so an abort listener cannot turn it into a cancellation).
-        task.close();
+        // The same order as the execution timer: fence first (this call's own when it has one), then the failure, then the abort (so an abort listener cannot turn it into a cancellation).
+        if (own) own.close(); else task.close();
         taskForce(late());
         taskController!.abort(new Error("task deadline exceeded"));
       }, deadline - Date.now());
-      return Promise.race([runAgent({ ...raw as object, executionId: executionId!,
+      const running = runAgent({ ...raw as object, executionId: executionId!,
         reader: { sessionId: target.sessionId, branch: target.branch, headTurnId: target.headTurnId, projectId, toolNames: { ...frozen!.names } },
         signal, thinkingLevel: input.thinkingLevel,
         subagentThinkingLevel: (raw as { thinking?: string }).thinking ?? input.subagentThinkingLevel,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); },
-        setSpill: (save: (text: string) => string) => { hostSpill = save; } }), forced, taskForced]).finally(() => clearTimeout(timer));
+        setSpill: (save: (text: string) => string) => { if (call) call.spill = save; } });
+      running.catch(() => undefined); // a runner that rejects after the race ended is not unhandled
+      return Promise.race([running, forced, taskForced]).finally(() => { clearTimeout(timer); forcers.delete(forcer); });
     };
     let result: NotingResult | DreamingResult | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined, timedOut = false;
@@ -949,7 +970,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // rejection handler on that worker, so a late failure is not unowned.
       task.close();
       // Resolve the terminal failure before abort listeners can synchronously return "cancelled".
-      force({ ...progress, outcome: "failure", failureClass: "timeout", output: `${reason.message}; provider completion and remaining usage unknown` });
+      force({ outcome: "failure", failureClass: "timeout", output: `${reason.message}; provider completion and remaining usage unknown` });
       controller.abort(reason);
     }, executionLimit);
     try {
