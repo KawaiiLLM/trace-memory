@@ -34,6 +34,18 @@ test("a due run curates every category, scores the items, covers what it showed 
   expect(await f.dream()).toMatchObject({ outcome: "empty" }); // nothing changed since: not due
 });
 
+test("the trigger in the configuration is the one the due check and the admission use, whenever it is read", async () => {
+  // Part 4c saw `dreaming.triggerTokens: 1` read back as 10000 on a host test's observer; the instance that schedules and admits reads its own.
+  const f = dreamerFixture();
+  f.item("Rule", { category: "constraint" });
+  f.memory.config.dreaming.triggerTokens = Number.MAX_SAFE_INTEGER;
+  expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: false });
+  expect(await f.dream()).toMatchObject({ outcome: "empty" });
+  f.memory.config.dreaming.triggerTokens = 1;
+  expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+});
+
 // ---- Fixtures for the cases below -------------------------------------------------------------------------------------------
 
 const createBlock = (f: ReturnType<typeof dreamerFixture>, title: string, category = "constraint") =>

@@ -23,7 +23,7 @@ async function seeded(config: Record<string, unknown> = {}, text = "Keep the use
   const created = knowledge(store, path, "project", "constraint", [evidence.id], text, { operation: { title: "Fixture title" } });
   const item = { ...created, heading: `K${created.knowledgeId}@v1` };
   const pool = `project:${store.getSession(1)!.projectId}`;
-  expect(store.dreamingDueByNoterChanges(path, 1)).toBe(true);
+  expect(store.dreamingDue(path, 1)).toBe(true);
   return { h, store, item, pool };
 }
 /** curate's batch for the seeded item: a tidied body. */
@@ -193,5 +193,39 @@ test("64c native host: provider overflow in the next task keeps the applied batc
     expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint, tidied"]);
     const entries = readFileSync(JSON.parse(runs[1]!.response!).nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(entries.some(e => e.type === "compaction")).toBe(false);
+  } finally { await h.dispose(); }
+});
+
+// 144 stage 4 part 4d. Loose ends found in part 4c, each at the boundary where it occurred.
+test("the trigger a host is configured with is the one its Dreamer is due by: a Noter change below it starts no run, the same change at a lower trigger does", async () => {
+  // `h.memory` is an observer built with the default core config; it does not carry the host's `dreaming.*` options (reading
+  // `h.memory.config.dreaming.triggerTokens` right after setup gives 10000). The extension's own instance does, so the effect is observed on runs.
+  const quiet = await seeded({ "dreaming.triggerTokens": 10_000 });
+  try {
+    quiet.h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
+    await quiet.h.turn(); await quiet.h.drain();
+    expect(dreamingRuns(quiet.store)).toEqual([]);
+    expect(quiet.h.requests).toEqual([]);
+  } finally { await quiet.h.dispose(); }
+  const eager = await seeded({ "dreaming.triggerTokens": 1 });
+  try {
+    eager.h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
+    await eager.h.turn(); await eager.h.drain();
+    expect(dreamingRuns(eager.store).length).toBeGreaterThan(0);
+  } finally { await eager.h.dispose(); }
+});
+
+test("an empty change file completes verify without a model call (3.2)", async () => {
+  const { h, store } = await seeded();
+  try {
+    const wire: string[] = [];
+    h.provider(async c => { wire.push(JSON.stringify(c.messages)); return dreamerFiles(c) ?? reply("Done"); }, { autoStop: false });
+    await h.turn(); await h.drain(); // curate's file is `## none`: it changes nothing
+    const runs = dreamingRuns(store).map(run => JSON.parse(run.response!) as { task: string; passes?: number });
+    expect(runs.map(run => run.task)).toEqual(["curate", "verify", "classify"]);
+    expect(runs[1]!.passes).toBe(0); // the no-work run record
+    expect(wire.length).toBeGreaterThan(0);
+    expect(wire.some(body => body.includes("Task: verify"))).toBe(false); // no request ever named the verify task
+    expect(wire.some(body => body.includes("Task: classify"))).toBe(true);
   } finally { await h.dispose(); }
 });
