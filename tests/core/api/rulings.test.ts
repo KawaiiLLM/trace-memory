@@ -21,7 +21,7 @@ import { ccPluginToolNames } from "../../../src/hosts/cc/tool-names.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
-import { scriptedDreamer, writeCurateBatch } from "../../support/dreamer.ts";
+import { dreamerFixture as makeDreamerFixture, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { receiptCommit } from "../../support/seed.ts";
 import { block as workspaceBlock, workspaceBatch } from "../../support/workspace.ts";
@@ -33,6 +33,7 @@ import { handleCcHook } from "../../../src/hosts/cc/index.ts";
 import * as ccNative from "../../../src/hosts/cc/native-session.ts";
 import { CcImporter } from "../../../src/hosts/cc/importer.ts";
 import { Store } from "../../../src/core/store/index.ts";
+import { knowledgeBatch, updateKnowledge } from "../../support/seed.ts";
 import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyArchive, legacyFacts, legacyKnowledge, session as seedSession } from "../../support/seed.ts";
 import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../../src/hosts/cc/slices.ts";
@@ -2562,4 +2563,102 @@ test("2026-10-21/22: the Noter writes no parents, merge, split or archive", () =
     expect(knowledge(workspaceBlock("create", { ...create, parents: item.ref }, "Use pnpm."))).toContain("field `parents` is not allowed here");
     for (const op of ["merge", "split", "archive"]) expect(knowledge(workspaceBlock(`${op} ${item.ref}`, { reason: "r" }, "Body."))).toContain(`\`## ${op}\` is not allowed in a noting-knowledge file`);
   } finally { b.memory.close(); }
+});
+
+// ---- Ticket 144, stage 4: the Dreamer's superseding rulings (spec 10.4). Each test names its ruling, with the maintainer's words
+// where the proposal records them, and calls the scenario through the Dreamer fixture the behaviour tests use. ----------------------
+
+const dreamers: api.TraceMemory[] = [];
+afterEach(() => { for (const memory of dreamers.splice(0)) memory.close(); });
+const dreamerFixture = (script: DreamerScript = {}) => makeDreamerFixture(dreamers, script);
+const taskNames = (f: ReturnType<typeof dreamerFixture>) => f.dreamer.inputs.map(input => input.task);
+const executionReasons = (f: ReturnType<typeof dreamerFixture>) => (f.store.db.prepare("SELECT reason FROM task_executions ORDER BY rowid").all() as { reason: string }[]).map(row => row.reason);
+
+test("2026-10-22, 144: 'D的触发阈值可以看N变更过的知识 的token总数（不是diff）' — the Dreamer is due when the knowledge the Noter changed since its last pass weighs 10,000, each item once at its current title and body; a manual write does not count", () => {
+  expect(DEFAULT_CONFIG.dreaming.triggerTokens).toBe(10_000);
+  const f = dreamerFixture();
+  const manual = knowledgeBatch(f.store, f.path, [{ scope: "project", category: "constraint", supports: [f.existingFact("Manual support").id], title: "Manual rule", text: "A hand-written rule" }],
+    { kind: "manual", createdAt: "now" });
+  expect(manual.committed).toHaveLength(1);
+  const rule = f.item("A Noter rule");
+  const weight = f.store.noterChangedTokens(f.path);
+  expect(weight).toBeGreaterThan(0);
+  expect(f.store.noterChangedItems(f.path)).toBe(1); // only the Noter's item counts
+  f.memory.config.dreaming.triggerTokens = weight + 1;
+  expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: false });
+  f.memory.config.dreaming.triggerTokens = weight;
+  expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
+  // A later edit of the same item changes its weight to the new body; it is not counted twice and not as a diff.
+  updateKnowledge(f.store, f.path, rule.knowledgeId, rule.commit, "A Noter rule, rewritten to be somewhat longer than before", rule.supports);
+  expect(f.store.noterChangedItems(f.path)).toBe(1);
+});
+
+test("2026-10-21, 144: '整理 → 核查 → 评级；先不轮换' — one run does curate, then verify, then classify, each category in turn within that one run", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Use pnpm everywhere", { category: "constraint" });
+  f.item("The lockfile is committed", { category: "reference" });
+  f.dreamer.script.curate!.constraint = workspaceBlock(`update ${rule.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(taskNames(f)).toEqual(["curate", "verify", "classify"]); // one curate conversation visited both categories; classify came last
+  expect(f.dreamer.reports[0]).toContain("batch 1 of 2");
+  const covered = f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed").get()!.n;
+  expect(Number(covered)).toBeGreaterThanOrEqual(2); // no rotation: both categories were covered by this run
+});
+
+test("2026-10-22, 144: '如果下一个任务失败，上一个任务的输出仍然保留，等待下次触发接续失败的任务' and 「重试沿用MC」 — curate's output stays, a transient failure retries three more times, then the task waits for the next 10k of Noter changes and resumes there", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Use pnpm everywhere", { category: "constraint" });
+  f.dreamer.script.curate!.constraint = workspaceBlock(`update ${rule.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
+  f.dreamer.script.instead = { verify: () => ({ outcome: "failure", output: "429 rate limit" }) as never };
+  for (let attempt = 1; attempt <= 4; attempt++) expect(await f.dream(), `attempt ${attempt}`).toMatchObject({ outcome: "failure", failure: { task: "verify", transient: true } });
+  expect(executionReasons(f)).toEqual(["verify: provider error, retry 1/3", "verify: provider error, retry 2/3", "verify: provider error, retry 3/3", "verify: provider error, waits for threshold"]);
+  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere, tidied"); // curate's output is kept
+  expect(await f.dream()).toMatchObject({ outcome: "empty" }); // waiting: nothing newer
+  f.item("A later Noter item", { category: "reference" });
+  delete f.dreamer.script.instead;
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(taskNames(f).filter(task => task === "curate")).toHaveLength(1); // the resume continued at verify; curate did not run again
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+});
+
+test("2026-10-21, 144: 「就参考MC的做法」 (failure handling) replaces 2026-10-05 「仍然遵守失败三次关掉，不需要例外」 for the Dreamer — a Dreamer failure never switches memory off", async () => {
+  const f = dreamerFixture();
+  for (let cycle = 1; cycle <= 4; cycle++) {
+    f.item(`Rule ${cycle}`, { category: "constraint" });
+    f.next(async () => ({ outcome: "failure", output: "bad request" })); // a permanent failure: one attempt, then it waits
+    expect(await f.dream(), `failure ${cycle}`).toMatchObject({ outcome: "failure", failure: { transient: false } });
+    expect(f.store.enabled(f.session.id)).toBe(true);
+  }
+  expect(f.store.db.prepare("SELECT COUNT(*) AS n FROM task_executions WHERE outcome = 'failure'").get()!.n).toBe(4); // more than the old three
+});
+
+test("2026-10-21, 144: '超过 100 条后按 MC 的方法做，只评变更过的部分、按每批 100 条分批，并附加 30 条已评过的作为参照' — up to 100 items, one pass; beyond, passes of 100, and a later run scores only what changed beside 30 scored anchors", async () => {
+  const f = dreamerFixture();
+  const items = Array.from({ length: 105 }, (_, i) => f.item(`Rule number ${i}`, { category: "reference", title: `Rule ${i}` }));
+  const classify = () => f.dreamer.inputs.filter(input => input.task === "classify");
+  const shown = (text: string) => (text.match(/^K\d+ \[/gm) ?? []).length;
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(classify().map(input => shown(input.text))).toEqual([100, 5]);
+  updateKnowledge(f.store, f.path, items[0]!.knowledgeId, items[0]!.commit, "Rule number 0, changed", items[0]!.supports, "reference");
+  f.item("A new rule", { category: "reference", title: "New rule" });
+  f.dreamer.inputs.length = 0;
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  const text = classify()[0]!.text, cut = text.indexOf("Items to score");
+  expect(classify()).toHaveLength(1);
+  expect([shown(text.slice(0, cut)), shown(text.slice(cut))]).toEqual([30, 2]); // 30 scored anchors, then the changed and the new item only
+});
+
+test("2026-10-22, 144: '所有交付都是文件，包括评级任务，这样方便agent自己check自查' — curate, verify and classify each deliver one file the model checks with `check`; no task is given a memory-writing tool", async () => {
+  const f = dreamerFixture({ classify: (_pass, ids) => ids.map(id => `K${id} 77`).join("\n") + "\n" });
+  const rule = f.item("Use pnpm everywhere", { category: "constraint" });
+  f.dreamer.script.curate!.constraint = workspaceBlock(`update ${rule.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  expect(taskNames(f)).toEqual(["curate", "verify", "classify"]);
+  for (const input of f.dreamer.inputs) {
+    expect(input.tools.map(tool => tool.name), input.task).toContain("check");
+    expect(input.tools.map(tool => tool.name), input.task).not.toContain("memory");
+    expect(input.workspace.write, input.task).toHaveLength(1); // the one file the task may write
+  }
+  const score = f.store.db.prepare("SELECT score FROM knowledge WHERE id = ?").get(rule.knowledgeId)!.score;
+  expect(score).toBe(77); // classify's scores came from its file
 });
