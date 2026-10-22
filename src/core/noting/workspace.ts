@@ -89,24 +89,20 @@ export class NotingWorkspace extends TaskWorkspace {
     return { facts, knowledge, files: { facts: { name: "facts.md", text: facts }, knowledge: { name: "knowledge.md", text: knowledge } } };
   }
 
-  /** The check of both files, which core runs once more after the host returns. */
-  check(): { ok: boolean; problems: string[]; facts: CheckResult; knowledge: CheckResult } {
-    const { files } = this.read();
-    const facts = checkWorkspace(this.store, { kind: "noting-facts", scope: this.scope, file: files.facts });
-    const knowledge = checkWorkspace(this.store, { kind: "noting-knowledge", scope: this.scope, file: files.knowledge, facts: files.facts });
-    return { ok: facts.ok && knowledge.ok, problems: [...facts.problems, ...knowledge.problems], facts, knowledge };
-  }
-
   /** The check of the current step, pure: step 1 reads the facts file; step 2 also reads the knowledge file against it and
-   * requires the facts file to be what passed step 1 (Q10). */
-  private verify(): { ok: boolean; problems: string[]; facts: CheckResult; knowledge: CheckResult; text: string } {
+   * requires the facts file to be what passed step 1 (Q10). `both` reads the knowledge file at any step. */
+  private verify(both = false): { ok: boolean; problems: string[]; facts: CheckResult; knowledge: CheckResult; text: string } {
     const { facts: text, files } = this.read(), { step, factsAtStep1 } = this.steps;
     const facts = checkWorkspace(this.store, { kind: "noting-facts", scope: this.scope, file: files.facts });
-    const knowledge = step === 2 ? checkWorkspace(this.store, { kind: "noting-knowledge", scope: this.scope, file: files.knowledge, facts: files.facts }) : NO_PROBLEMS;
-    const frozen = step === 2 && text !== factsAtStep1 ? ["facts.md: changed after step 1 passed; step 2 may not change it, restore it as it was"] : [];
+    const knowledge = both || step === 2 ? checkWorkspace(this.store, { kind: "noting-knowledge", scope: this.scope, file: files.knowledge, facts: files.facts }) : NO_PROBLEMS;
+    const frozen = factsAtStep1 !== null && text !== factsAtStep1 ? ["facts.md: changed after step 1 passed; step 2 may not change it, restore it as it was"] : [];
     const problems = [...facts.problems, ...frozen, ...knowledge.problems];
     return { ok: !problems.length, problems, facts, knowledge, text };
   }
+
+  /** The check core runs once more after the host returns: the step check over both files, so a facts file rewritten after the
+   * steps passed fails the task. */
+  check(): { ok: boolean; problems: string[] } { const { ok, problems } = this.verify(true); return { ok, problems }; }
 
   /** A step's instructions, once: the text if this step's have not been carried by a message yet, and the call marks them
    * carried. Only code that is composing a message for the model calls it. */

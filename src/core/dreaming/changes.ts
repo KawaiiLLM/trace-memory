@@ -31,26 +31,38 @@ export function buildChanges(store: Store, path: KnowledgePath, curateRuns: read
   const blocks = proposals.map(({ n, category, operation }) => {
     const target = targetOf(operation), base = store.getKnowledgeRevision(target.knowledgeId, target.baseCommit)!;
     const bases = operation.op === "merge" ? operation.absorb : [];
-    const stale = [target, ...bases].flatMap(item => {
+    /** Each item whose base is no longer the live version: the proposal's base stays what it was, the live version is shown beside it. */
+    const staleItems = [target, ...bases].filter(item => live.get(item.knowledgeId)?.id !== item.baseCommit);
+    const stale = staleItems.map(item => {
       const current = live.get(item.knowledgeId);
-      return current?.id === item.baseCommit ? [] : [`current: ${current ? `${version(current)} (${current.actorRole ?? "unrecorded"})` : `K${item.knowledgeId} is no longer current`} — curate proposed from ${at(item.knowledgeId, item.baseCommit)}; this change will be refused at apply`];
+      return `current: ${current ? `${version(current)} (${current.actorRole ?? "unrecorded"})` : `K${item.knowledgeId} is no longer current`} — curate proposed from ${at(item.knowledgeId, item.baseCommit)}; this change will be refused at apply`;
     });
+    /** The current text of an item: its base when still live, else the proposal's base and the live version, each with its own text. */
+    const currentText = (item: { knowledgeId: number; baseCommit: number }, revision: KnowledgeRevision, label: string) => {
+      const current = live.get(item.knowledgeId);
+      if (current?.id === item.baseCommit) return [`${label}:`, titled(revision)];
+      return [`proposal base ${version(revision)} text:`, titled(revision), "",
+        ...(current ? [`current ${version(current)} text:`, titled(current)] : ["current: no live version"])];
+    };
     const attribute = (name: string, from: string, to: string) => `${name}: ${from === to ? to : `${from} -> ${to}`}`;
     const head = [`## ${n} · ${operation.op} K${target.knowledgeId} · batch ${category}`, ...(stale.length ? stale : [`current: ${version(base)}`])];
     if (operation.op === "archive")
-      return [...head, `archive: ${operation.kind}`, `reason: ${operation.reason}`, "", "current text:", titled(base), "", "proposed explanation:", operation.text ?? ""].join("\n");
+      return [...head, `archive: ${operation.kind}`, `reason: ${operation.reason}`, "", ...currentText(target, base, "current text"), "", "proposed explanation:", operation.text ?? ""].join("\n");
     const changed = (name: string, from: string, to: string | undefined) => to !== undefined && to !== from ? [`${name}: ${from} -> ${to}`] : [];
     const lines = [...head, attribute("category", base.category, operation.category),
       ...changed("scope", base.scope, operation.scope), ...changed("topics", JSON.stringify(base.topics), JSON.stringify(operation.topics)),
       ...changed("title", knowledgeTitle(base, store.writing.titleTokens), operation.title),
       attribute("supports", base.supports.map(f => `F${f}`).join(", "), supportsOf(operation, base).map(f => `F${f}`).join(", ")), `reason: ${operation.reason}`,
-      "", "current text:", titled(base)];
+      "", ...currentText(target, base, "current text")];
     if (operation.op === "merge") for (const item of operation.absorb) {
       const revision = store.getKnowledgeRevision(item.knowledgeId, item.baseCommit)!;
-      lines.push("", `absorbed ${version(revision)} (archived into the primary if confirmed):`, titled(revision));
+      lines.push("", ...currentText(item, revision, `absorbed ${version(revision)} (archived into the primary if confirmed)`));
     }
     lines.push("", "proposed:", `${operation.title ?? knowledgeTitle(base, store.writing.titleTokens)}\n${operation.text ?? ""}`);
-    if (operation.op === "split") operation.children.forEach((child, i) => lines.push("", `proposed child ${i + 1}:`, `${child.title ?? ""}\n${child.text}`));
+    // A child is written with its own category, topics, scope and supports, else the operation's (supports resolved as the store does).
+    if (operation.op === "split") operation.children.forEach((child, i) => lines.push("", `proposed child ${i + 1}:`, `category: ${child.category}`,
+      `scope: ${child.scope ?? operation.scope}`, `topics: ${JSON.stringify(child.topics)}`,
+      `supports: ${(child.supports ?? supportsOf(operation, base)).map(f => `F${f}`).join(", ")}`, "", `${child.title ?? ""}\n${child.text}`));
     return lines.join("\n");
   });
   const text = blocks.join("\n\n") + (blocks.length ? "\n" : "");
@@ -129,6 +141,9 @@ export function checkVerify(store: Store, path: KnowledgePath, file: WorkspaceFi
     if (seen.has(number)) { problems.push(fmt(block.line, `change ${number} already has a verdict (${describeBlock(seen.get(number)!)}); one verdict for each change`)); continue; }
     seen.set(number, block);
     if (block.op !== "edit" && block.body) problems.push(fmt(block.line, `a \`${block.op}\` block has no body`));
+    // Children are the split edit's alone; a verdict that carries them elsewhere is refused whole, never accepted with them dropped.
+    const strayChildren = block.children.length > 0 && !(block.op === "edit" && proposal.operation.op === "split");
+    if (strayChildren) problems.push(fmt(block.children[0]!.line, `\`### child\` sections belong only to an edit of a split; change ${number} is ${proposal.operation.op === "split" ? "a split, which takes them in an edit" : `${proposal.operation.op === "archive" ? "an" : "a"} ${proposal.operation.op}`}, and this is a \`${block.op}\``));
     const refs = list(block.fields.get("evidence")?.value);
     if (block.op !== "confirm") {
       if (!block.fields.has("evidence")) problems.push(fmt(block.line, "missing required field `evidence`"));
@@ -146,7 +161,7 @@ export function checkVerify(store: Store, path: KnowledgePath, file: WorkspaceFi
       problems.push(...mismatch.map(message => fmt(block.line, message)));
       for (const child of block.children) for (const [name, field] of child.fields) if (!CHILD_FIELDS.includes(name))
         problems.push(fmt(field.line, `field \`${name}\` is not allowed in a child; it takes ${CHILD_FIELDS.map(f => `\`${f}\``).join(", ")}`));
-      if (!mismatch.length) {
+      if (!mismatch.length && !strayChildren) {
         if (!block.body) problems.push(fmt(block.line, "missing the complete body after the blank line"));
         else {
           const synthetic: WorkspaceFile = { name: "edit", text: overlay(proposal, block, at) };

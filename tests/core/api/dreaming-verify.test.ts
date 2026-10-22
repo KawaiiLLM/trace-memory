@@ -94,6 +94,7 @@ test("a write after curate: the change shows its base as stale, and confirming i
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(changes).toContain(`current: K${rule.knowledgeId}@v2`);
   expect(changes).toContain(`curate proposed from K${rule.knowledgeId}@v1; this change will be refused at apply`);
+  expect(changes).toMatch(/proposal base K\d+@v1 text:\n[^\n]*\nRule one\n\ncurrent K\d+@v2 text:\n[^\n]*\nRule one, by hand\n/);
   expect(textOf(f, rule.knowledgeId)).toBe("Rule one, by hand");
   expect(verifyRun(f).verdicts[0].result).toMatchObject({ ok: false, stale: true });
 });

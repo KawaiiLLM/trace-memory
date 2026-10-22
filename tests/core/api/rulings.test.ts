@@ -50,7 +50,7 @@ import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { DirectoryOptions } from "../../../src/core/project/directory.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
-import { factsFile, scriptedNoter, submit, submitEmpty, verifyUnchanged, largestTaskPromptTokens } from "../../support/noter.ts";
+import { factsFile, probe, scriptedNoter, submit, submitEmpty, verifyUnchanged, largestTaskPromptTokens } from "../../support/noter.ts";
 
 // 62 excludes temporary directories, where every fixture lives. As in directory-projects.test.ts, the
 // hosts' `directoryAllocation` receives the exclusions a test sets; unset, it keeps the defaults.
@@ -486,15 +486,14 @@ test("2026-09-07 / 92: one terminal publication per run, not one immediate tool 
     if (input.task === "verify") return verifyUnchanged(input, { request: { round: 2 } });
     input.reportRequest({ round: 1 });
     const fact = { title: "Package manager decision", sources: `[T${t.id}#E1] Use pnpm` };
-    expect(await submit(input, memory, { noteInput: [fact], memoryInput: {} })).toBeUndefined();
+    // The model may rewrite its file before step 1 passes; only the final file is published.
+    await probe(input, memory, { noteInput: [fact], memoryInput: {} });
+    expect(await submit(input, memory, { noteInput: [{ ...fact, sources: `[T${t.id}#E1] Use pnpm, not npm` }], memoryInput: {} })).toBeUndefined();
     expect(memory.store.listSessionFacts(s.id)).toEqual([]);
     expect(memory.store.listRuns(s.id).some(run => run.outcome === "success")).toBe(false);
     const entries = memory.store.sourcePath(s.id, "main", t.id);
     expect(entries.length).toBeGreaterThan(0);
     expect(entries.some(entry => memory.store.entryNoted(entry.id))).toBe(false);
-    // The model may rewrite its file before it stops; only the final file is published.
-    await submit(input, memory, { noteInput: [{ ...fact, sources: `[T${t.id}#E1] Use pnpm, not npm` }], memoryInput: {} });
-    expect(memory.store.listSessionFacts(s.id)).toEqual([]);
     return { outcome: "success", output: "Done", request: { round: 1 } };
   });
   expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
@@ -874,11 +873,13 @@ function curateWrite(path: { sessionId: number; headTurnId: number; branch: stri
     file: { name: "curate.md", text: group.text.join("\n") } }));
   for (const each of applied) if (!each.ok) throw new Error(each.problems.join("\n"));
   const result = { ok: true as const, blocks: applied.flatMap(each => each.ok ? each.blocks : []) };
+  const refused = result.blocks.filter(entry => entry.status !== "applied");
+  if (refused.length) throw new Error(refused.map(entry => entry.reason).join("\n"));
   const committed = result.blocks.flatMap(entry => entry.versions).map(version => {
     const [, id, ordinal] = /^K(\d+)@v(\d+)$/.exec(version)!;
     return { knowledgeId: Number(id), version, commit: store.resolveVersionOrdinal(Number(id), Number(ordinal)) };
   });
-  return { results: result.blocks.map(() => "ok"), committed: committed as [typeof committed[number], ...typeof committed] };
+  return { results: result.blocks.map(entry => entry.status === "applied" ? "ok" : entry.reason!), committed: committed as [typeof committed[number], ...typeof committed] };
 }
 
 test("2026-09-07 A: sibling-branch facts are readable but supports requires an adoption fact on this path", () => {

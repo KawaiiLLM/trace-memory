@@ -46,6 +46,18 @@ test("a merge lists the absorbed items with their bodies; a split lists its chil
   expect(text).toContain("Primary part."); // the split item continues as its primary part
 });
 
+test("a split lists each child with the category, scope, topics and supports it will be written with", () => {
+  const b = batch();
+  const parent = b.item("Parent body to split.", { title: "Parent", scope: "project" }), other = b.existingFact("Another fact");
+  const child = (title: string, fields: string) => `\n### child\ntitle: ${title}\n${fields}\nreason: two rules\n\n${title} body.\n`;
+  const run = keptBatch(b.memory, b.path, "constraint", ["split", block(`split ${parent.ref}`, { reason: "two rules" }, "Primary part.")
+    + child("Own child", `category: reference\nscope: session\ntopics: tooling\nsupports: F${other.id}`)
+    + child("Bare child", `category: understanding\nscope: project\ntopics:\nsupports: F${parent.supports[0]}`)]);
+  const [, first, second] = buildChanges(b.store, b.path, [run]).text.split(/^proposed child \d:\n/m);
+  expect(first).toMatch(new RegExp(`^category: reference\nscope: session\ntopics: \\["tooling"\\]\nsupports: F${other.id}\n\nOwn child\nOwn child body\\.`));
+  expect(second).toMatch(new RegExp(`^category: understanding\nscope: project\ntopics: \\[\\]\nsupports: F${parent.supports[0]}\n\nBare child\nBare child body\\.`));
+});
+
 test("title, scope and topics are shown only when the proposal changes them; supports show what the proposal writes, inherited ones included", () => {
   const b = batch();
   const item = b.item("Rule one", { title: "Old title" });
@@ -66,6 +78,9 @@ test("the current version is the live one: a proposal whose base a later write r
   const text = buildChanges(b.store, b.path, [run]).text;
   expect(text).toContain(`current: K${item.knowledgeId}@v2`);
   expect(text).toContain(`curate proposed from ${item.ref}; this change will be refused at apply`);
+  // The proposal's base and the live version are shown apart, each with its own text; the proposed body is neither.
+  expect(text).toMatch(new RegExp(`proposal base ${item.ref} text:\\n[^\\n]*\\nRule one\\n\\ncurrent K${item.knowledgeId}@v2 text:\\n[^\\n]*\\nRule one, by hand\\n\\nproposed:\\n[^\\n]*\\nRule one, tidied`));
+  expect(text).not.toContain("current text:");
 });
 
 test("an update of an archived base lists the archive explanation as the current text", () => {
