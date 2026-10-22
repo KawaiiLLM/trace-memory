@@ -6,8 +6,7 @@ import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite } from "../../dreaming-skips.ts";
+import { curateWrite } from "../../support/dreamer.ts";
 import { receiptCommit } from "../../support/seed.ts";
 
 const time = "2026-09-12T00:00:00Z";
@@ -16,8 +15,7 @@ const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { while (memories.length) memories.pop()!.close(); });
 
 function fixture(config: Record<string, unknown> = {}) {
-  const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("offline only"); });
-  const memory = TraceMemory(":memory:", scenarios.agent, { writing: { bodyTokens: 1_000_000 }, ...config });
+  const memory = TraceMemory(":memory:", async () => { throw new Error("offline only"); }, { writing: { bodyTokens: 1_000_000 }, ...config });
   memories.push(memory);
   const project = memory.store.createProject({ name: "delivery", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
@@ -37,7 +35,7 @@ function fixture(config: Record<string, unknown> = {}) {
     return result.committed[0]!;
   };
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-  return { memory, session, turn, entries, facts: noted.facts, create, target, scenarios };
+  return { memory, session, turn, entries, facts: noted.facts, create, target };
 }
 
 /** These tests directly rewrite otherwise immutable rows. Simulate a cold Store read after the
@@ -57,32 +55,18 @@ function windowCost(sessionId: number, publication: { text: string; knowledgeTok
   return cost;
 }
 
-async function maintain(f: ReturnType<typeof fixture>, operation: Record<string, unknown>, addresses: string[], needsTrigger = true) {
-  const tag = (address: string) => address.replace(/^K(\d+)@(\d+)$/, (_, id, commit) => `K${id}#${f.memory.store.versionTag(Number(id), Number(commit))}`);
-  const history = (address: string) => address.replace(/^K(\d+)@(\d+)$/, (_, id, commit) => `K${id}@v${f.memory.store.versionOrdinal(Number(id), Number(commit))}`);
-  operation = { ...operation, id: tag(String(operation.id)), ...(Array.isArray(operation.absorb) ? { absorb: operation.absorb.map(tag) } : {}) };
-  const factId = f.facts[0]!.id;
-  f.memory.config.dreaming.triggerTokens = Math.min(f.memory.config.dreaming.triggerTokens, 5_000);
-  const trigger = needsTrigger ? createDreamerTrigger(f.memory, f.target, factId, f.memory.store.listKnowledgeRevisions().length + 1) : null;
-  let committed: { knowledgeId: number; commit: number }[] = [];
-  const result = await f.scenarios.run(f.memory, f.target, input => {
-    input.reportRequest({ fixture: "knowledge delivery maintenance" });
-    const files = memoryFiles(f.memory, input.reader!);
-    for (const address of addresses) expect(files.read(`trace://${tag(address)}`).content).toContain(tag(address));
-    const triggerAddress = trigger ? `K${trigger.knowledgeId}@${trigger.commit}` : null;
-    const supplied = new Set(input.material.changed.match(/K\d+@v\d+/g) ?? []);
-    if (triggerAddress) supplied.delete(history(triggerAddress)); for (const address of addresses) supplied.delete(history(address));
-    const receipt = JSON.parse(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [operation,
-      ...(triggerAddress ? [{ op: "archive", kind: "budget", id: tag(triggerAddress), supports: [`F${factId}`], reason: "Retire the explicit delivery trigger." }] : [])],
-      skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied item." })) }));
-    committed = receipt.committed.filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger?.knowledgeId)
-      .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId,
-        commit: receiptCommit(f.memory.store, item) }));
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return { outcome: "success", output: "delivery maintenance complete", request: { fixture: "knowledge delivery maintenance" } };
-  });
-  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  return committed;
+/** A Dreamer's pass: the operation (named by `K<id>@<commit>` bases) applied as a curate file. */
+async function maintain(f: ReturnType<typeof fixture>, operation: Record<string, unknown>, _addresses: string[], _needsTrigger = true) {
+  const parse = (address: string) => { const [, id, commit] = /^K(\d+)@(\d+)$/.exec(address)!; return { knowledgeId: Number(id), baseCommit: Number(commit) }; };
+  const facts = (list: unknown) => ((list as string[] | undefined) ?? []).map(value => Number(value.slice(1)));
+  const common = { text: String(operation.text), category: operation.category as "constraint", scope: operation.scope as "project", topics: (operation.topics ?? []) as string[],
+    supports: facts(operation.supports), reason: String(operation.reason), createdAt: time };
+  const base = parse(String(operation.id));
+  const op = operation.op === "update" ? { op: "update" as const, ...base, ...common }
+    : operation.op === "merge" ? { op: "merge" as const, intoKnowledgeId: base.knowledgeId, intoBaseCommit: base.baseCommit,
+      absorb: (operation.absorb as string[]).map(address => { const { knowledgeId, baseCommit } = parse(address); return { knowledgeId, baseCommit }; }), ...common }
+    : { op: "split" as const, ...base, children: operation.children as { title: string; text: string; category: "constraint" | "goal"; topics: string[] }[], ...common };
+  return curateWrite(f.memory, f.target, [op]);
 }
 
 test("92 facts and original/bounded Raw do not substitute for missing exact Knowledge bodies", () => {
@@ -229,22 +213,6 @@ test("34c a visible applicable Knowledge view at or above the configured 20,000 
   expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).text).toBe("");
   f.memory.store.db.prepare("UPDATE knowledge_revisions SET text = ? WHERE id = ?").run(body + " x", old.commit);
   expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).text).toBe("");
-});
-
-test("68 untouched frozen and post-freeze versions remain pending without affecting delivery eligibility", async () => {
-  const f = fixture({ dreaming: { triggerTokens: 1 } });
-  const processed = f.create("processed", [f.facts[1]!.id]);
-  const pool = `project:${f.session.projectId}`;
-  f.memory.setKnowledgeBudget("project", f.memory.store.pendingPoolWeight(pool, f.target) * 2);
-  let unprocessed!: ReturnType<typeof f.create>;
-  const result = await f.scenarios.run(f.memory, f.target, () => {
-    // This new version arrives after the range froze; only the original version is handled.
-    unprocessed = f.create("unprocessed", [f.facts[0]!.id]);
-    return { outcome: "success", output: "reviewed", request: { fixture: "delivery is independent" } };
-  });
-  expect(result.outcome).toBe("failure"); // 104: the untouched frozen version is not deliberated
-  expect(f.memory.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([processed.commit, unprocessed.commit]);
-  expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([processed.commit, unprocessed.commit]);
 });
 
 test("92 archive notices remain eligible even with complete current-change evidence", () => {

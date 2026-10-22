@@ -105,7 +105,7 @@ export function curateWrite(memory: { store: Store }, path: KnowledgePath, opera
     if (op.op === "update") return block(`update ${ref(op.knowledgeId, op.baseCommit)}`, { ...(op.title ? { title: op.title } : {}), ...shared(op) }, op.text);
     if (op.op === "merge") return block(`merge ${ref(op.intoKnowledgeId, op.intoBaseCommit)}`, { absorb: op.absorb.map(parent => ref(parent.knowledgeId, parent.baseCommit)).join(", "), ...(op.title ? { title: op.title } : {}), ...shared(op) }, op.text);
     if (op.op === "split") return block(`split ${ref(op.knowledgeId, op.baseCommit)}`, shared(op), op.text) + op.children.map(child =>
-      `\n### child\ntitle: ${child.title}\ncategory: ${child.category}\nscope: ${op.scope}\ntopics: ${child.topics.join(", ")}\nsupports: ${F(op.supports)}\nreason: ${op.reason}\n\n${child.text}\n`).join("");
+      `\n### child\ntitle: ${child.title}\ncategory: ${child.category}\nscope: ${op.scope}\ntopics: ${child.topics.join(", ")}\nsupports: ${F(op.supports.length ? op.supports : store.knowledgeRevision(op.baseCommit)!.supports)}\nreason: ${op.reason}\n\n${child.text}\n`).join("");
     if (op.op === "archive") return block(`archive ${ref(op.knowledgeId, op.baseCommit)}`, { kind: op.kind === "inadmissible" ? "inadmissible" : "invalid", reason: op.reason },
       op.text ?? "The user withdrew this and nothing replaces it; the grounds are in the cited evidence.");
     if (op.op === "create") return block("create", { title: op.title ?? "Fixture title", ...shared(op) }, op.text);
