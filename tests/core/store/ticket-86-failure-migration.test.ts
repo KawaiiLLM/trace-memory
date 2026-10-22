@@ -90,18 +90,7 @@ function legacyDatabase() {
   } finally { store.close(); }
 }
 
-function failNextRevision(store: Store, path: TaskTarget) {
-  const { claim, range } = reserve(store, path, "new-failure");
-  const executionId = store.beginExecution({ sessionId: path.sessionId, phase: "dreaming" });
-  const run = store.bindDreamingRun({ kind: "dreaming", sessionId: path.sessionId, branch: path.branch, createdAt: "now",
-    executionId, dreamingRangeId: range.id, claim });
-  store.completeKnowledgePoolRange(run, "failure");
-  const result = store.settleExecution(executionId, "failure", store.dreamingRunId(run)!, "new revision failed");
-  store.releaseClaim(claim);
-  return result;
-}
-
-test("86 option A: clear only old D streaks once; 126: the session's Dreamer streak then starts at one and reopen preserves its count", () => {
+test("86 option A: clear only old D streaks once, and a streak row written afterwards survives a reopen", () => {
   const fixture = legacyDatabase();
   let store = new Store(fixture.file);
   try {
@@ -110,18 +99,13 @@ test("86 option A: clear only old D streaks once; 126: the session's Dreamer str
     expect(audit(store.db)).toEqual(fixture.beforeAudit);
     expect(store.enabled(fixture.path.sessionId)).toBe(true);
     expect(store.enabled(fixture.disabledId)).toBe(false);
-    expect(failNextRevision(store, fixture.path)).toEqual({});
-    expect(store.taskFailures(fixture.path.sessionId).filter(row => row.phase === "dreaming"))
-      .toMatchObject([{ head: null, pool: ALL_POOLS, count: 1 }]);
-    store.close(); store = new Store(fixture.file);
-    expect(store.taskFailures(fixture.path.sessionId).filter(row => row.phase === "dreaming"))
-      .toMatchObject([{ head: null, pool: ALL_POOLS, count: 1 }]);
-    expect(failNextRevision(store, fixture.path)).toEqual({});
+    // A Dreamer failure no longer counts (Stage 4 2026-10-22), so a streak row is written directly: the reset runs once, not at every open.
+    store.db.prepare("INSERT INTO task_failures(session_id,phase,head,pool,count,last_reason,updated_at) VALUES (?,'dreaming',NULL,?,2,'kept','now')")
+      .run(fixture.path.sessionId, ALL_POOLS);
     store.close(); store = new Store(fixture.file);
     expect(store.taskFailures(fixture.path.sessionId).filter(row => row.phase === "dreaming"))
       .toMatchObject([{ head: null, pool: ALL_POOLS, count: 2 }]);
-    expect(failNextRevision(store, fixture.path).automaticOff).toBeTruthy();
-    expect(store.enabled(fixture.path.sessionId)).toBe(false);
+    expect(store.enabled(fixture.path.sessionId)).toBe(true);
     expect(store.enabled(fixture.disabledId)).toBe(false);
   } finally { store.close(); }
 });
