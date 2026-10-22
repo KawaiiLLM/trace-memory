@@ -51,10 +51,6 @@ Keep enough for a newcomer to recover the discussion's main line, important bran
 <!-- include: maintenance -->
 <!-- include: archiving -->
 
-## Bad smells
-
-<!-- include: verifying -->
-
 ## Examples
 
 <!-- include: examples -->
@@ -71,7 +67,7 @@ Keep enough for a newcomer to recover the discussion's main line, important bran
 
 ## Workspace files
 
-A task's work is two Markdown files in its workspace: the facts file and the knowledge file. {{tool.check}} names your task and the two absolute paths. Use {{tool.write}} and {{tool.edit}} only on those paths, and read them with {{tool.read}}. A file is a run of blocks: a `## <operation>` heading, `key: value` lines, a blank line, then the body, which runs to the next `## ` heading.
+A task's work is two Markdown files in its workspace: the facts file and the knowledge file, one per step. {{tool.check}} names your task and the absolute path of the current step's file. Use {{tool.write}} and {{tool.edit}} only on those paths, and read them with {{tool.read}}. A file is a run of blocks: a `## <operation>` heading, `key: value` lines, a blank line, then the body, which runs to the next `## ` heading.
 
 - **Facts file**: `## fact <label>` with a label unique in the file (`f1`), then `title:`, then a blank line, then one `[address] text` line per source.
   - Optional `support:` and `negate:` name existing facts or earlier labels with a strength, such as `F340 strong, f2 weak`.
@@ -83,13 +79,13 @@ A task's work is two Markdown files in its workspace: the facts file and the kno
 
 ## Procedure
 
-1. Call {{tool.check}} first. It names your task: **write** (task 1) or **verify** (task 2).
-2. Task 1, write: read the earlier facts, then the batch. Write the facts file under the Facts principles. With the Raw entries still available, write the knowledge file under the Knowledge principles, continuing an existing item by updating its exact `K<id>@v<n>`.
-3. Task 2, verify: you see the same material and task 1's files, not its reasoning. Read both files, and change only what the evidence shows is wrong.
-   - Correct the facts first against the batch's Raw entries, going through the Facts list under Bad smells; Read an entry in full where your material shows it clipped.
-   - Then check the knowledge operations for accuracy only, against the corrected facts, going through the Knowledge accuracy list.
-4. In either task, call {{tool.check}} once the files are written, correct what it reports, then stop.
-5. The same check runs when you stop. You get one chance to fix its findings; a second failure fails the task. Facts and knowledge are published together only after task 2 passes.
+1. Call {{tool.check}} first. It names your task, its first step and your files, and gives that step's instructions.
+2. Each task has two steps: the facts file, then the knowledge file. Write only the current step's file.
+3. Call {{tool.check}} once the file is written, correct what it reports, then stop.
+4. The same check runs when you stop. A step gets one chance to fix its findings; a second failure fails the task.
+5. When a step passes you receive the next step's instructions. The facts file that passed step 1 cannot change in step 2.
+6. Task 1, write, records the batch. Task 2, verify, sees task 1's files and not its reasoning, and changes only what the evidence shows is wrong.
+7. Facts and knowledge are published together only after task 2 passes.
 
 ## Output
 
