@@ -20,8 +20,8 @@ Core phase bounds use optional top-level keys in the same file:
 | Key | Default | Meaning |
 | --- | ---: | --- |
 | `noting.triggerTokens` | 10,000 | Noter trigger checked at every main-session entry end; catchup still drains below it |
-| `dreaming.triggerTokens` | 10,000 | Dreamer trigger on the session's pending weight summed across its pools |
-| `dreaming.timeoutMs` | 1,800,000 | Dreamer wall-clock bound; no tool-round ceiling |
+| `dreaming.triggerTokens` | 10,000 | Dreamer trigger: tokens of knowledge the Noter created or changed since the last covered Dreamer pass |
+| `dreaming.timeoutMs` | 1,800,000 | Wall-clock bound of each Dreamer task (curate, verify, classify); no tool-round ceiling |
 | `compaction.sharedAllowanceTokens` | 10,000 | Allowance lent to Knowledge only |
 | `compaction.temporaryTokens` | 10,000 | Separate allowance: pending Raw, then user words and titles together, turn by turn |
 | `compaction.userTurns` | 100 | User-word reach including the anchor, counted along its path |
@@ -32,8 +32,9 @@ Core phase bounds use optional top-level keys in the same file:
 
 The shared material allowance is this configured value, not derived from the N or D triggers.
 Noter publishes facts and knowledge together; facts have no later processing queue. Database pool
-budgets still size pools and decide a Dreamer run's success; a session whose knowledge exceeds their
-sum plus the shared allowance is due for a Dreamer run.
+budgets size injection and compaction only: they trigger no Dreamer run and decide none's success. The Dreamer
+curates the knowledge (merge, split, archive, rewrite), verifies its own changes against facts and the repositories,
+and classifies items by importance (1 to 100); a task with nothing to do makes no model call.
 
 Compaction retains the existing 10k Raw and 10k full-fact windows. The temporary allowance
 adds missing user words and uncovered fact titles without borrowing Knowledge's allowance
@@ -83,7 +84,7 @@ For startup, resume and clear, SessionStart uses 24 command slots, each at most 
 
 ## Automatic scheduling
 
-After every ingested main-session entry, N and D may each start one run under the existing seats (141). Busy phases queue nothing, and ordinary task completion schedules nothing; the next entry after settlement checks afresh. Automatic failures retry at a later entry end; three consecutive failures still disable memory. Manual catchup keeps its completion checkpoints, and closed-session borrowing remains turn-end-driven. Noting uses the incremental pending counter; Dreaming retains a not-due result until its progress signal or selected/enrollment state changes.
+After every ingested main-session entry, N and D may each start one run under the existing seats (141). Busy phases queue nothing, and ordinary task completion schedules nothing; the next entry after settlement checks afresh. Automatic failures retry at a later entry end; three consecutive failures still disable memory. Manual catchup keeps its completion checkpoints, and closed-session borrowing remains turn-end-driven. Noting uses the incremental pending counter; Dreaming retains a not-due result until its progress signal (coverage, hand-off, failure and score changes) or selected/enrollment state changes.
 
 The executor observes transcript writes with or without function hooks; no per-entry hook process blocks the native session. Each import that persists new selected main-session entries checks own N/D once after the complete path is published, using `reconcile.headTurnId` as head and the newest persisted entry's id as trigger. This includes historical bootstrap at executor startup, not a fully imported restart/resume. Subagent transcripts, sibling-only imports and unchanged polls create no entry opportunity. Manual catchup freezes its own boundary; the function turn-end reconcile retains the turn-end check. The main `turn.complete` checkpoint stays as a turn-end opportunity, with overlapping observations deduplicated. A withdrawal that leaves no native source creates no synthetic entry.
 

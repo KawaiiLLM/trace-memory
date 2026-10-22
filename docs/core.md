@@ -67,29 +67,27 @@ Both hosts check Noting and Dreaming after each persisted main-session user, ass
 
 An import that persists new selected entries checks own N/D once after publishing the complete path, using the selected head after import as `headTurnId` and the newest persisted entry as `triggerEntryId`. This includes live imports and historical bootstrap: CC executor startup, Pi `session_start` restore and enabling memory, only when they actually persist new selected history. Fully imported restart/resume, zero-append scans and sibling-only imports create no opportunity. Pi tree switches never check, even when they import new history. Manual catchup freezes its own boundary; CC's function turn-end reconcile retains the turn-end check instead.
 
-Noting uses the incremental pending count, stopping at its trigger. Dreaming retains a not-due result until a knowledge commit, restore, enrollment or budget change, or a change of `Store.progressSignal` re-arms it; Raw ingestion alone does not re-arm it. Failed automatic tasks retry at a later entry end; three consecutive business failures still disable memory. Explicit catchup retains its drain and completion checkpoints. Closed-session borrowing remains turn-end-driven. Thresholds, batch limits and project-declaration checks are unchanged.
+Noting uses the incremental pending count, stopping at its trigger. Dreaming retains a not-due result until a knowledge commit, restore or enrollment, or a change of `Store.progressSignal` (which includes coverage, the Dreamer's hand-off and failure rows and the latest score) re-arms it; Raw ingestion alone does not re-arm it. Failed automatic tasks retry at a later entry end; three consecutive business failures still disable memory. Explicit catchup retains its drain and completion checkpoints. Closed-session borrowing remains turn-end-driven. Thresholds, batch limits and project-declaration checks are unchanged.
 
 ## Dreamer execution
 
-Dreaming maintains a session's Knowledge pools in a fresh subagent. The three pool identities are
-`global`, `project:<id>` and `session:<id>`. At the automatic checkpoint above, the host checks the
-session's visible pools together. Pending membership includes the current visible revision of each
-identity without a `(pool, revision)` processing record, including archives; archives remain excluded
-from pool size. Intermediate revisions do not accumulate weight. A run is due for the session (104) when its pools' total size
-exceeds the Knowledge base plus the shared allowance, or when their nonempty pending weight, summed,
-reaches `dreaming.triggerTokens`. A run covers all three pools (126); which condition made it due
-does not change what it does. Ordinary completion starts no further run; the next main-session entry end checks afresh.
-Explicit manual catchup retains its own completion checkpoints.
+Dreaming (144, stage 4) maintains the quality and readability of the knowledge a session sees. It no longer keeps
+knowledge inside a budget: nothing is archived to make it fit, and the pool budgets decide no trigger, success or
+failure. One run is one admission, one claim and one execution of three tasks, in order, each through `runAgent`:
+**curate**, **verify** and **classify**. Every task delivers a file that `check` verifies; the hosts' follow-up loop
+and the tools are shared with the Noter's workspace files (`src/core/workspace/`).
 
-Each run freezes the pending versions of all three pools together, oldest first across them, up to
-10,000 rendered tokens in total; the rest stays pending. Versions an open range of a live claim already
-reserved are skipped. An oldest item that cannot fit leaves the run's pending in place.
-The database defaults are Global 4,000, Project 15,000 and Session 1,000 tokens, so the overflow window
-is 30,000 with the default 10,000 shared allowance. One pool over its budget within that window
-triggers nothing by itself. There is one database-wide Dreamer seat. The ordinary target claim,
-token, expiry, reserved takeover and project/range checks remain commit fences; a stale or lost claim
-cannot commit. Dreaming has no closed-session borrowing, frozen family, pool-budget write gate or
-retry range. Material windows and actual model context capacity remain hard limits.
+**Trigger and coverage.** The pool identities are `global`, `project:<id>` and `session:<id>`. A version is *covered*
+when `knowledge_processed` holds `(pool, revision)` for the pool that owns it, written by a passed curate or verify
+pass (never on failure) for the versions its batches showed and wrote. At every main-session entry end (above) a run is
+due when `Store.dreamingDue` says so: a hand-off row asks for a retry or resume, or `Store.noterChangedTokens` reaches
+`dreaming.triggerTokens` (10,000 by default). That sum counts each live item once, at the tokens of its current title
+plus body, when some branch of its parents reaches a Noter revision before a covered one; manual and Dreamer revisions
+never count, so the Dreamer cannot retrigger itself. The footer's changed count is the number of those items
+(`Store.noterChangedItems`), and the `/trace` Dreaming row shows the same tokens against the trigger. One database-wide
+Dreamer seat remains (the live claim). The claim lease outlives the execution backstop; a stale or lost claim cannot
+commit, and cancellation closes every tool binding and workspace of the task at once (the cancellation fence), so a
+late write or pass end changes nothing.
 
 ### Current revisions and write bases
 
@@ -119,7 +117,7 @@ historical reads do not make stale revisions writable.
 ### Operations and supports
 
 N and manual writers may update a visible current tagged base; only the Dreamer may merge or split.
-Dreamer also archives but cannot create a parentless identity. Manual Knowledge writes expose
+The Dreamer's files may also archive and create. Manual Knowledge writes expose
 fact-backed create/update/archive; the retired Consolidation stage historically exposed only create.
 
 An update accepts exactly one body form (135):
@@ -127,7 +125,7 @@ An update accepts exactly one body form (135):
 - **Exact edits:** `edits` is a non-empty array of `{old, new}`. Each non-empty `old` must occur
   exactly once in the exact tagged base body as it stands at that step; edits apply in order.
   An empty `new` deletes. A failed edit refuses the whole operation and names its position and
-  zero/multiple matches, including overlapping occurrences. D retains the normal refused `Mn`.
+  zero/multiple matches, including overlapping occurrences.
 - **Metadata:** omitted category, scope or topics inherit only with edits; supplied fields replace
   them under the existing rules. Inherited legacy categories remain unchanged, not reclassified.
   Supports and reason retain the role's existing requirements.
@@ -137,7 +135,7 @@ the title and body length checks of every writer (144), applied to the resulting
 The Noter's file carries the complete result against the exact base it names.
 The audited concurrent update-to-create conversion retains inherited legacy classification too;
 ordinary creates still cannot author a legacy category.
-Storage, Knowledge history, injection and the Dreamer's end review use complete revisions, never edit lists;
+Storage, Knowledge history and injection use complete revisions, never edit lists;
 the original request remains in the human audit. Immediate update receipts carry the new tag and
 pool item cost before/after without echoing the result body.
 
@@ -154,87 +152,44 @@ operation may submit empty `supports`; core materializes the parents' supports i
 child copy the split parent. There is no system maintenance fact. Historical empty supports are repaired by the
 schema migration in parent-before-child order; an all-empty ancestry remains empty.
 
-### Material, maintenance and completion
+### Tasks
 
-Changed items and current same-scope references share the Knowledge base plus shared allowance;
-direct facts have a separate 10k cap. Direct-fact selection keeps the newest whole facts by descending
-F-id, emits them in the existing chronological groups, and names omitted older facts honestly.
-Knowledge selection keeps complete items and charges framing and receipts.
+**curate** runs one conversation over the whole pool. Its first message is the knowledge prefix (at most 50,000
+tokens; items whole, the lowest-scored ones reduced to a title when the cap is exceeded) and tells the model to call
+`check`. It then works one category per batch, each batch a file of blocks (`update`, `merge`, `split`, `archive`,
+`create`; one block per item), and a passing batch is applied before the next is handed over. A merge names its
+primary, which keeps its identity; a split keeps the named item as its primary part. An archive is `invalid` or
+`inadmissible` with a statement; no archive is made to fit a budget. Each operation commits or is refused on its own: a
+stale base is refused for that operation and left for the next run. A batch that fails its check twice fails curate.
 
-Dreamer reference and pending item headers show their pool item cost: the canonical version header,
-body, supports and topics, excluding the count annotation itself. Pool category framing remains part
-of the pool total. An item carries this one annotation only: an `Archived` item shows it once on its removed body. Committed shared-memory receipts report `tokens.before` and `tokens.after` arrays:
-create has no parents; update has one; merge lists the primary then the absorbed parents; split lists
-its parent once, then the primary part and the children; archive reports the removed item cost then zero.
-Committed update, merge and split results each carry the newly authored version's `K#tag`, usable
-directly for the next mutation. Archive history addresses are unchanged.
+**verify** checks only curate's changes, in a second conversation with the same first request (so it reads the cache
+curate wrote), against facts, Raw and the repositories of the session's directories. Its change file lists each applied
+operation with its before and after; verify may `update` or `revert` only a curate result and `archive` with evidence
+that resolves. It makes no model call when curate changed nothing.
 
-Pending changes, Dreamer end reviews and Knowledge range reads use the same
-lossless sentence-first unified diff. Sentences end after `。；！？`, retaining the
-delimiter; each newline is its own row, shown as an empty line. Unchanged text appears once with `  `; removed and added sentences use `- ` and `+ `.
-Within a changed hunk, removed sentences pair in order with the first unused later added sentence
-sharing at least half the longer sentence's word tokens; paired word changes use `[-removed-]`
-and `{+added+}`. Unrelated replacements remain whole old sentences followed by whole new sentences.
-No character-context collapse hides body text. Metadata and added/removed change-weight accounting
-are unchanged; merge, split and archive reviews still show the full removed parent body (125).
-A complete `Changed` body carries its current `K#tag`; its comparison baseline and the current
-tagless `Archived` notice remain history addresses. An archived parent's tag is not the archive tag.
+**classify** scores items 1 to 100 by what forgetting them would cost, in passes of at most 100 items, each in a fresh
+conversation. The set is fixed when the task starts: all items up to 100, above that the unscored and changed ones with
+up to 30 scored items as anchors. A score is stored beside the version chain, for the version the scorer was shown, and
+an item keeps its score when it changes. It makes no model call when there is nothing to score.
 
-The Dreamer processes each supplied item through split, merge, conflict resolution and rewrite,
-committing one decision before moving to the next. It compares only within a scope. A later user
-ruling can displace an older ruling; an assistant proposal or report cannot. Archiving preserves a
-named survivor or cites evidence that the item is obsolete, contradicted, completed or abandoned;
-when over budget, first remove redundancy and reliably retrievable detail whose omission harms no
-recognition, understanding, judgement or continuation; preserve confirmed next steps and execution
-boundaries. Then coarsen suitable related topics, and only then archive lower-value knowledge if
-needed, checking until every pool fits (122). Categories have no fixed priority.
-Budget excess is never a write gate.
+### Hand-off, retry and completion
 
-`check`, the pass-end review's blockers and the final outcome use the same scoped pool totals (143):
-the exact non-archived pool versions at freeze, with only this run's commits applied. Later foreign
-creates, updates, merges and archives do not change those totals. An untouched item counts at its
-freeze-time version; a maintained item counts at this run's latest version even if another writer
-subsequently advances it. The newly pending revisions line remains live information, not budget input.
-Foreground injection and due checks still measure current pools.
+A passed task writes a hand-off row, so a restart, a stop or a failure resumes at the first task (and, for curate, the
+first category) not done; coverage, applied batches and scores are written in the same transaction as the pass. A
+transient failure (provider, network, store, deadline) is retried at later checks up to three times (Magic Context's
+rule); any other failure, or the fourth, waits until a further trigger's worth of Noter changes arrives. A Dreamer
+failure is never counted toward switching memory off. Each task has the wall-clock bound `dreaming.timeoutMs`
+(1,800,000 ms by default, no tool-round ceiling), clamped by the execution backstop; expiry fences the task and fails it.
+A run completes when classify has finished and no hand-off remains.
 
-A revision committed after freeze by any other run or manual writer is outside this run's writable
-scope, even after a complete read. Update/archive bases, merge survivors and absorbed parents, and
-split sources all enforce this boundary; this run's own commits remain valid bases. A refusal names
-the later version and leaves it for the next Dreaming run. A frozen version superseded by such a
-current version needs neither an operation nor a skip; its refused proposal still holds a numbered
-`Mn` blocker until corrected or dropped (127). The frozen material is not rewritten.
+Evidence rules, titles and lengths are the Noter's (`src/core/workspace/`). Pending changes, change files and range reads
+use the same lossless sentence-first unified diff. Project relabelling creates no processing event or revision; it
+removes destination-pool coverage only for moved-in project versions, so returning versions count again.
 
-Other blockers remain operation failures, a scoped pool over its budget and frozen versions neither
-operated on nor skipped. A run succeeds only with no blocker (126, 143); a timeout never succeeds.
-The writable pools remain global, this project's and this session's; merge parents and result share one scope.
-A run records `(pool, revision)` only for frozen versions explicitly skipped, each in its own pool,
-and revisions it wrote. A frozen version that a sibling session's project declaration moved out of the
-session's pools mid-run is not recorded; it stays pending in its new pool.
-Skipped versions use the existing processing table; terminal settlement adds own output and closes the
-range, including on failure or cancellation. Untouched frozen versions remain pending. No skip table
-or extra atomicity mechanism is introduced. Partial writes survive; a version already updated does
-not return merely because the model intended another update. A range ends once, and own outputs do
-not immediately trigger the same pool. Run audits report deliberated versus frozen item counts.
-
-Dreamer has no tool-round ceiling. The shared `dreaming.timeoutMs` default is 1,800,000 milliseconds
-on both hosts, including Pi where this adds a new time bound. Expiry closes writes, fails the run with
-the bound in its reason, settles partial work and releases its claim; it is not a completed pass.
-
-A run deliberates its pending items first, then any other item the round needs, then calls `check`; the
-budget is a check, not a target (131, superseding 103's "reduce the processed excess first"). A pool over
-budget at that `check` gets a round of reduction under the **Over budget** principle (remove, coarsen,
-archive order, 122), then `check` again. Only a run with no pending items (started by the three-pool
-total) is told in the task material which pools are over budget, with their `check` numbers, and to reduce
-them. If the wall-clock bound ends a run before its pools fit, the run fails (126).
-
-A run reduces each pool until it fits; one pool's excess alone makes no session due.
-Project relabelling creates no processing event or knowledge revision. It removes destination-pool
-processing records only for moved-in project versions, so returning versions become pending again.
-Unrelated destination records and global/session records are unchanged; order follows revision creation.
-
-The old [external-conflict design](dreamer-external-conflict.md) and its
-[verification record](dreamer-external-conflict-verification.md) are historical evidence only; their
-rules are not current runtime contracts.
+**History.** The earlier Dreamer (pool budgets, a frozen 10,000-token pending range, `memory` calls with skips and
+numbered refusals, an end review, a budget-checked success and a three-failure switch-off) is removed; its tickets (103,
+104, 125, 126, 127, 131, 143) and the old [external-conflict design](dreamer-external-conflict.md) with its
+[verification record](dreamer-external-conflict-verification.md) are historical evidence only.
 
 ## Runtime and verification
 
@@ -256,7 +211,7 @@ Ticket 86's one-time normal-open upgrade clears only legacy Dreamer failure coun
 
 `Store.settleExecution(id, outcome, runId, reason?)` records one authoritative terminal outcome and updates the logical task's streak in the same transaction. Successful Noting and Consolidation commits settle inside their business transactions. Dreamer processing records skipped frozen versions and own commits, then settles that one execution. Failure and cancellation retain the same partial processing semantics: untouched versions remain pending, and partial writes survive.
 
-Final business failure includes a Noting run that does not finish normally in either task (144), an unresolved Dreamer submission refusal and a failed Dreamer run after partial writes. Cancellation, shutdown, busy admission and corrected refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason, last run and update time. Success resets its key; explicit enrollment on clears all target streaks, while reopen does not.
+Final business failure includes a Noting run that does not finish normally in either task (144), including one whose execution claim was lost. A failed Dreamer run is counted for its retry rule only and never switches memory off. Cancellation, shutdown, busy admission and corrected refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason, last run and update time. Success resets its key; explicit enrollment on clears all target streaks, while reopen does not.
 
 The third failure atomically persists enrollment off and expires every target claim. The façade
 then closes and aborts locally owned target tasks. Only the transitioning settlement returns
@@ -824,8 +779,7 @@ that field are measured individually; ambiguous unescaped delimiters produce a d
 conservative whole-content charge, not an error or a zero. Repeated bodies and inapplicable old bodies
 still consume context. CC checks the sum of final segment Knowledge costs against the remaining
 allowance after packing; repeated domain framing counts, but host JSON and Fact/Raw do not.
-Fresh Noter and Dreamer material use the same Knowledge capacity and renderer;
-Dreamer's pending slice occupies part of that window. The historical Consolidator-era
+Fresh Noter material uses the same Knowledge capacity and renderer; the Dreamer's curate prefix has its own 50,000-token cap. The historical Consolidator-era
 synthetic method and 250/1,000-candidate measurements remain in [perf-34c.md](perf-34c.md);
 they are not performance evidence for the current N/D implementation.
 

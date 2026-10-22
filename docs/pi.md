@@ -52,7 +52,7 @@ A Noter batch is two runs, `write` and `verify`, each a fresh native child with 
 
 Pi checks own N/D downstream of the committed ancestry transaction, once per import that persists new main-session entries, anchored at the selected `state.head` after import with the newest persisted entry's id as trigger. The selected head can be a compaction Turn even when the newest entry belongs to an earlier user Turn. Historical bootstrap at `session_start` or enabling memory publishes the complete selected path before this one check. Fully imported restart/resume and zero-append scans do not check; `session_tree` never checks, even when it imports new history. Manual catchup freezes its own boundary instead. Pi persists after `message_end`; tool preflight, tool-result/next-message boundaries, provider requests and agent-end/settlement import the entries once available. Unchanged native leaves do no work. Before admission, the adapter saves its native state so a fork freezes a stable checkpoint. A busy phase queues nothing; the next entry after settlement checks afresh. Ordinary task success or failure starts no new check. Stop and path changes fence subsequent borrowed-candidate launches as well as current-session work.
 
-Noting uses the existing incremental pending counter, stopping at its trigger. Dreaming caches a not-due result until restore, enrollment, a budget change or the database progress signal re-arms it; a knowledge commit changes that signal, while Raw ingestion does not. Failures retry at a later entry end; three consecutive failures still disable memory. Closed-session borrowing stays at the deduplicated `agent_settled` checkpoint, and manual catchup remains an independent drain. See the [Core scheduling contract](core.md#automatic-scheduling-141).
+Noting uses the existing incremental pending counter, stopping at its trigger. Dreaming caches a not-due result until restore, enrollment or the database progress signal (coverage, the Dreamer's hand-off and failure rows, scores) re-arms it; a knowledge commit changes that signal, while Raw ingestion does not. Failures retry at a later entry end; three consecutive failures still disable memory. Closed-session borrowing stays at the deduplicated `agent_settled` checkpoint, and manual catchup remains an independent drain. See the [Core scheduling contract](core.md#automatic-scheduling-141).
 
 ## Configuration
 
@@ -105,14 +105,12 @@ Full facts do not borrow, and none of the bases lends to another.
 
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
 from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a named load error.
-`dreaming.triggerTokens` is configurable again: its default is 10,000, compared with the session's
-pending weight summed across its pools (104). Consolidator Knowledge and foreground publication may use the Knowledge base plus
-the shared allowance. Dreamer uses that same maximum for its Changed-plus-reference input, while a
-run's Changed range over all of the session's pools is capped at 10,000 rendered tokens. Database budget edits accept exact
+`dreaming.triggerTokens` is configurable: its default is 10,000, compared with the tokens of knowledge the
+Noter created or changed since the last covered Dreamer pass (144 stage 4). Foreground publication may use the Knowledge base plus
+the shared allowance. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
-connections to that database. Budgets decide a run's success, not writes: an over-budget pool
-is scheduled only when the session overflows its window or its summed pending reaches the trigger (104). Running Dreamer and Consolidator
-requests keep their frozen admitted capacities; later admissions use the current policy. Actual
+connections to that database. The budgets size injection and compaction only: they trigger no Dreamer run and decide none's success.
+Running requests keep their frozen admitted capacities; later admissions use the current policy. Actual
 provider context capacity remains an independent hard gate.
 
 Environment override example:
@@ -125,9 +123,9 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - `dreaming.model` and `dreaming.thinking` use the same model/thinking Settings selectors,
   defaults and precedence as the other phases. Dreamer has no new settings page.
   `dreaming.maxToolRounds` is fixed at 0 (unlimited). The shared `dreaming.timeoutMs` default is
-  1,800,000 milliseconds; this adds a wall-clock bound to Pi. Expiry fails the run, fences writes and
-  releases its claim. Provider retries do not reset the deadline. Budget checks no longer trigger a host-generated repair pass; the model may correct rejected
-  tool calls within the same bounded run.
+  1,800,000 milliseconds, applied to each of the Dreamer's three tasks (curate, verify, classify). Expiry fails the
+  task, fences its workspace and releases its claim. Provider retries do not reset the deadline. After a pass the host asks
+  for one repair of a file that fails its check, then ends the task.
 - `notingModel` and `consolidationModel` accept `provider/model-id`, or `session`. Omission
   and `session` both resolve to the current session model's audited provider/id.
 - `notingThinking` and `consolidationThinking` (26d) accept `inherit` (the default) or one of Pi's
@@ -254,24 +252,20 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   (see "Request capacity" below). An oldest entry that cannot fit remains
   pending with a capacity notification. Unknown model capacity still leaves work pending.
 - Dreaming is checked **per session** at each entry end through arming, over `global`, this session's
-  project and this session together. Pending is each pool's current visible, non-archived revision lacking a
-  `(pool, revision)` processing record, one revision per identity at its full rendered size. A run is
-  due when the pools' total exceeds the Knowledge base plus the shared allowance (30,000 by default), or
-  when their nonempty pending, summed, reaches `dreaming.triggerTokens` (104). One run covers all three
-  pools (126): their pending items, oldest first across the pools, fill one Changed range of at most 10,000
-  rendered tokens, and the rest stays pending. It succeeds only when every pool ends within its budget,
-  4,000 / 15,000 / 1,000 by default. Changed material and current references of the three pools share the
-  30,000-token Knowledge-base-plus-shared-allowance window; direct facts have a separate 10,000-token cap.
-  There is no automatic Raw block or `note` tool.
-
-  Dreamer may update, merge, split or archive, but never create (a new identity comes only from a split child). Evidence-driven
-  operations cite their direct facts. A trusted maintenance operation may submit empty supports;
-  core then materializes the exact parent supports: one parent for update/archive/split and all
-  parents' union for merge. Exact current bases and the live database-wide Dreamer claim are checked
-  atomically. Processing records skipped frozen versions and the run's own commits, including on
-  failure or cancellation. Untouched versions remain pending; own outputs do not trigger themselves.
-  A run succeeds only when its pool ends within its budget with every frozen version deliberated;
-  ordinary completion starts no next run, even while the session remains due. A run's range ends once.
+  project and this session together. A run is due when the Noter-changed tokens since the last covered Dreamer pass reach
+  `dreaming.triggerTokens` (10,000 by default; each changed live item counted once at its title plus body, manual and
+  Dreamer revisions never counted), or when a hand-off row asks for a retry or resume. One run covers all three pools and
+  runs three tasks: **curate** (per category, `update`, `merge`, `split`, `archive` and `create` blocks in a file, applied
+  batch by batch), **verify** (only curate's changes, against facts, Raw and the session's repositories, with `update`,
+  `revert` or `archive`) and **classify** (importance scores 1 to 100, in fresh passes of at most 100 items). Each task writes a
+  file in its own workspace with Pi's `write`/`edit` and `check`, and ends when the model stops; a task with nothing to do
+  makes no model call. A passed task leaves a hand-off, so a stop or failure resumes where it left off; a transient
+  failure is retried at later checks up to three times, any other waits for a further trigger's worth of changes, and a
+  Dreamer failure never switches memory off. Curate's first request is the knowledge prefix (at most 50,000 tokens) and
+  verify reuses it. Exact current bases and the live database-wide Dreamer claim are checked atomically; a stale base is
+  refused for that operation only. Ordinary completion starts no next run, even while the session remains due. The earlier
+  pool-budget Dreamer (a frozen 10,000-token range, `memory` skips, an end review) is removed. There is no automatic Raw
+  block or `note` tool.
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable
@@ -344,11 +338,11 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   string of `[address] text` segments (multiline segments allowed, no preamble) and writes one fact;
   `memory({op, supports, reason, ...})`
   writes one Knowledge operation immediately within the caller's authority; `note({})` and
-  `memory({})` are explicit empty calls. The Noter writes workspace files instead (144); the Dreamer sends one operation or one `{skip, because}` per call (127). Every operation
+  `memory({})` are explicit empty calls. The Noter and the Dreamer write workspace files instead (144). Every operation
   carries `supports` and a `reason`; create/update/merge also
   carry the revision's complete `topics` set. The Noter's file permits create/update; manual calls permit
-  fact-backed create/archive; Dreamer alone may merge, split or submit support-inheriting
-  maintenance operations. Main-agent executions call `tools(context)` with kind `manual` and
+  fact-backed create/archive; only the Dreamer's curate file may merge or split, and its files may submit
+  support-inheriting operations. Main-agent executions call `tools(context)` with kind `manual` and
   the current session, branch and turn. Writes commit immediately; `tool_result`
   records each raw call once. No prompt asks the main agent to maintain memory.
 - `/trace` opens the native menu described below, or prints status and the command forms when there
@@ -386,10 +380,8 @@ writes retain ordinary authority checks. Relabel creates no Knowledge revision a
 moved-in project versions' destination processing records, making return moves pending again.
 
 Normal shutdown stops admission and cancels this executor's model calls under one five-second
-cleanup deadline. Cancellation closes Knowledge tools immediately, but an exact Dreaming claim is
-retained through terminal processing. Processing covers only skipped frozen versions and own
-revisions, including on cancellation; untouched items remain pending.
-`/trace off` uses the same terminal exception: disabling future work cannot block this bookkeeping.
+cleanup deadline. Cancellation closes the tools and workspaces at once (the cancellation fence); the hand-off keeps
+the task that was cut off, so the next due check resumes there. `/trace off` does the same.
 Token, expiry, takeover, target project and frozen-range checks remain mandatory. After terminal
 processing or a pre-commit cancellation, the claim is released conditionally.
 
@@ -445,10 +437,9 @@ allocation. Compaction and tree hooks return no plugin override so Pi proceeds w
 handling. Stored Raw, facts, Knowledge, runs and scopes stay intact; other sessions still see shared
 Knowledge. Already-injected text remains in context.
 
-Disabling cancels this executor's active model calls and closes their tools. Ordinary late business
-writes are fenced. A Dreamer that already committed retains its exact claim only long enough to
-perform terminal processing, then releases it; disabling enrollment does not suppress that
-transaction. Another executor still must pass the ordinary target and claim checks.
+Disabling cancels this executor's active model calls and closes their tools and workspaces. Late business
+writes are fenced, a Dreamer's included: the cancelled task's claim expires at once and what the task already
+applied stays. Another executor still must pass the ordinary target and claim checks.
 
 ### Commands, menu and global settings (24b)
 
@@ -567,10 +558,8 @@ completion. Bars cap at 100%; numbers and percentages do not:
   the effective entry profile and Pi result extractor. Only imported evidence counts.
 - **Consolidation:** applicable unconsolidated facts, including group framing and
   relations, through the same renderer and threshold calculation as eligibility.
-- **Dreaming:** two rows (104): the session's pending weight summed across its applicable pools against
-  `dreaming.triggerTokens`, and its applicable knowledge total against the Knowledge base plus the shared
-  allowance. The bars
-  do not imply that the database-wide seat or an executable range is available.
+- **Dreaming:** one row (144 stage 4): the tokens of knowledge the Noter changed since the last covered Dreamer pass against
+  `dreaming.triggerTokens`. The bar does not imply that the database-wide seat is available.
 
 Thresholds come from the live core configuration. Off retains stored measurements;
 no memory identity and unavailable reads are shown separately from zero. Opening
@@ -966,8 +955,8 @@ manager is never passed in and never mutated. Its `getSessionFile()` is the run'
 - **System prompt.** One inline extension, supplied explicitly by the adapter, returns core's domain
   prompt from `before_agent_start`.
 - **Tools.** The child registers only the tools core bound for the run (the Noter's `search` and `check`; the
-  Dreamer's `search`, `memory` and `check`), plus restricted native Read and, for the Noter, Pi's own `write` and `edit`
-  confined to its two workspace files, with `noTools: "all"` and an explicit `tools` allowlist so nothing else can appear;
+  Dreamer's `search` and `check`), plus restricted native Read and, for the Noter and the Dreamer, Pi's own `write` and `edit`
+  confined to the task's workspace files (the Dreamer's verify may also read the session's repositories, never `.env` or key files), with `noTools: "all"` and an explicit `tools` allowlist so nothing else can appear;
   tool EXECUTION is whitelisted to them. Any other call returns an error result and never runs.
   Execution is sequential (`agent.toolExecution` plus a per-tool `executionMode`); Pi's tested default is parallel.
 - **Discovery.** Extensions, skills, prompt templates, themes and project context files are
@@ -1001,15 +990,14 @@ Three terminal business failures of one **logical task** persistently disable it
 The key is target session, phase and stable oldest selected backlog item: a source entry for Noting,
 the first fact in Consolidation order; since 126 the Dreamer's key is its session alone. A new leaf,
 a growing tail, another executor or partial Dreamer edits do not reset it. Cancellation is not a
-business failure. Dreamer ranges end once: processing covers skips and own output, leaving untouched
-material pending. A Dreamer run that times out, ends with any of the session's pools over its budget
-or leaves a frozen version undeliberated is a failure of the session's Dreamer task. Ordinary worker
+business failure. A failed Dreamer task keeps its hand-off and is retried by the rule above; a Dreamer failure is
+never counted toward switching memory off. Ordinary worker
 completion starts no next task beyond the Dreamer check after a successful run; later eligible entries supply new opportunities (compaction no
 longer runs recovery tasks: 73). Manual catchup alone rechecks all phases after its own successful
 completions.
 
 A terminal failure adds one. A Noting run that does not finish
-normally, in either task, and an unresolved Dreamer submission refusal count; cancellation, busy admission and audit errors
+normally, in either task (a lost execution claim included), counts; cancellation, busy admission and audit errors
 after business success do not. Duplicate observers and process restarts cannot count an
 execution twice. A successful task resets its own streak.
 
@@ -1102,14 +1090,12 @@ usage totals. The host publishes one status item through `ctx.ui.setStatus("trac
 | Field | Meaning |
 |---|---|
 | `notes: 24->102` | 24 imported source entries still await Noting; 102 facts are applicable on this path |
-| `memory: 9->54/306` | 9 applicable facts await Consolidation; 54 of 306 current visible Knowledge revisions are changed for their owner pools |
+| `memory: 9->54/306` | 9 applicable facts await Consolidation; 54 of the 306 live Knowledge items were created or changed by the Noter since the last covered Dreamer pass |
 | `cost` | Database-wide memory-run spend since local midnight, using recorded model usage and Pi's configured rates |
 
-`changedKnowledge` means the current owner pool has no processing record for that current revision.
-It is a scheduling measurement only, not a validity status and not a second visible partition. A new
-revision may become changed; archives are absent from the current visible total. Pool-level token bars
-in Current session are the authority for Dreamer triggers, because this footer count is revision count,
-not rendered tokens.
+`changedKnowledge` counts the live Knowledge items the Noter created or changed since the last covered Dreamer pass (items, not tokens).
+It is a scheduling measurement only, not a validity status and not a second visible partition. The Dreaming bar
+in Current session shows the same changes in tokens, which is what the trigger compares.
 
 A disabled session shows `🧠 ○ off`. Before allocation or when a read fails, counts are `?`, never an
 invented zero. Counts describe imported evidence only: enabling imports available native history and
