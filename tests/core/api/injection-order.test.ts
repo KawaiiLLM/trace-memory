@@ -156,3 +156,29 @@ test("compaction spends the one temporary allowance in order: pending Raw, then 
   expect(none.supplied.knowledgeCommitIds).toEqual([]);
   expect(none.supplied.knowledgeTitleCommitIds ?? []).toEqual([]);
 });
+
+test("a compaction that spent the temporary allowance on pending Raw leaves none for the next prompt", () => {
+  const f = fixture();
+  const unscored = f.create("UNSCORED", 300, null);
+  f.memory.config.compaction.rawTokens = 40; // the Raw framing fits its base; the entry itself borrows
+  f.memory.appendEntry({ sessionId: f.session.id, turnId: f.target.headTurnId, nativeLineage: "fixture", nativeId: "pending", role: "assistant", text: "pending " + "other ".repeat(700), raw: "", calls: [] });
+  const measured = f.memory.compact(f.session.id, "main", f.target.headTurnId);
+  if ("native" in measured) throw new Error(measured.reason);
+  expect(measured.supplied.entries.length).toBeGreaterThan(0);
+  expect(measured.supplied.knowledgeCommitIds).toEqual([unscored.commit]); // room for both: Raw first, the item from what was left
+  // An allowance that the Raw alone exhausts leaves nothing for the item: (a) comes first.
+  const rawOnly = measured.charged!.temporary - 360; // about the Raw's borrow; the item (300 words plus framing) cannot join it
+  f.memory.config.compaction.temporaryTokens = Math.max(1, rawOnly + 40);
+  const compacted = f.memory.compact(f.session.id, "main", f.target.headTurnId);
+  if ("native" in compacted) throw new Error(compacted.reason);
+  expect(compacted.supplied.entries.length).toBeGreaterThan(0);
+  expect(compacted.supplied.knowledgeCommitIds).toEqual([]);
+  const owner = "test";
+  f.memory.store.recordKnowledgeDelivery({ owner, nodeKey: "compaction-1" }, [{ knowledgeCommitIds: [], knowledgeStates: [], knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
+    temporaryTokens: compacted.supplied.temporaryTokens! }]);
+  const view = deliveredView(f.memory.store.deliveredKnowledge({ owner, sessionId: null, headTurnId: null, pending: [{ key: "compaction-1" }] }));
+  expect(view.temporaryTokens).toBe(compacted.supplied.temporaryTokens);
+  expect(f.memory.injection(f.target, view).knowledgeCommitIds).toEqual([]); // nothing left of the allowance
+  f.memory.config.compaction.temporaryTokens += 10_000; // a fresh 10k on top of what the compaction spent
+  expect(f.memory.injection(f.target, view).knowledgeCommitIds).toEqual([unscored.commit]);
+});
