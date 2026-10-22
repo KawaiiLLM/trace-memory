@@ -21,8 +21,8 @@ export const promptLoader = {
     // The bundle carries the composed prompts as constants, composed by the same `loadPrompt` the
     // runtime uses (Node strips the types), so the bundle needs no prompt files and cannot drift.
     build.onLoad({ filter: /src\/core\/prompts\/load\.ts$/ }, async () => {
-      const { composePrompt } = await import(pathToFileURL(resolve(root, "src/core/prompts/load.ts")).href);
-      const prompts = Object.fromEntries(["noting.md", "dreaming.md", "classifying.md"].map(file => [file, composePrompt(file)]));
+      const { composePrompt, PROMPT_FILES } = await import(pathToFileURL(resolve(root, "src/core/prompts/load.ts")).href);
+      const prompts = Object.fromEntries(PROMPT_FILES.map(file => [file, composePrompt(file)]));
       return { contents: `import { canonicalToolNames, renderToolNames, validateToolNames } from "./tool-names.ts";\nimport { DEFAULT_WRITING_LIMITS, renderLimits } from "./limits.ts";\nconst PROMPTS = ${JSON.stringify(prompts)};\nexport function loadPrompt(file, names = canonicalToolNames, limits = DEFAULT_WRITING_LIMITS) { const prompt = PROMPTS[file]; if (prompt === undefined) throw new Error("unknown prompt " + file); return renderLimits(renderToolNames(prompt, validateToolNames(names)), limits); }\n`, loader: "ts" };
     });
   },
