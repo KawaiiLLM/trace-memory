@@ -26,15 +26,16 @@ test("92: refusals name version addresses, never internal commit ids; a base out
   expect(final.outcome, JSON.stringify(final)).toBe("success");
   if (!("runId" in final)) throw new Error("missing run");
   // The refused block says what is wrong in version addresses; the other block still applies.
-  const run = f.store.listRuns(f.session.id).find(value => value.kind === "dreaming" && JSON.parse(value.response ?? "{}").category === "constraint")!;
-  const results = (JSON.parse(run.response!).blocks as { result: { ok: boolean; reason?: string } }[]).map(entry => entry.result);
+  // The refusal happens at verify's apply (stage 5: nothing is applied before verify passes), so the audit is verify's per-change results.
+  const run = f.store.listRuns(f.session.id).find(value => value.kind === "dreaming" && JSON.parse(value.response ?? "{}").verdicts)!;
+  const results = (JSON.parse(run.response!).verdicts as { result: { ok: boolean; reason?: string } }[]).map(entry => entry.result);
   expect(results.map(result => result.ok)).toEqual([false, true]);
   expect(results[0]!.reason).toContain(`K${out.knowledgeId}@v1`);
   expect(results[0]!.reason).toMatch(/outside the writer's scope/);
   expect(results[0]!.reason).not.toMatch(/K\d+@\d/); // never `K<id>@<commit>`
   // The audit keeps the internal diagnostics beside the refusal in version addresses: the refused item's own exact commit, and the applied block's.
   expect(run.response!).toContain(`K${out.knowledgeId}@${out.commit}`);
-  expect((JSON.parse(run.response!).blocks[0].result as { diagnostic: string }).diagnostic).toContain(`K${out.knowledgeId}@${out.commit}`);
+  expect((JSON.parse(run.response!).verdicts[0].result as { diagnostic: string }).diagnostic).toContain(`K${out.knowledgeId}@${out.commit}`);
   expect(run.response!).toContain(`"commit":${f.store.currentCommit(b.knowledgeId, f.path)[0]!.id}`);
   expect(f.dreamer.messages.join("\n")).not.toContain(`K${out.knowledgeId}@${out.commit}`); // the model never sees the commit id
   expect(f.store.currentCommit(out.knowledgeId, otherTarget)[0]!.id).toBe(out.commit);

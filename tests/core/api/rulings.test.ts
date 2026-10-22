@@ -2652,13 +2652,15 @@ test("2026-10-22, 144: '如果下一个任务失败，上一个任务的输出�
   f.dreamer.script.instead = { verify: () => ({ outcome: "failure", output: "429 rate limit" }) as never };
   for (let attempt = 1; attempt <= 4; attempt++) expect(await f.dream(), `attempt ${attempt}`).toMatchObject({ outcome: "failure", failure: { task: "verify", transient: true } });
   expect(executionReasons(f)).toEqual(["verify: provider error, retry 1/3", "verify: provider error, retry 2/3", "verify: provider error, retry 3/3", "verify: provider error, waits for threshold"]);
-  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere, tidied"); // curate's output is kept
+  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere"); // curate's output is kept as a proposal, not yet published (2026-10-22: 核查通过后才发生)
+  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "verify", detail: { curateRuns: [expect.any(Number)] } });
   expect(await f.dream()).toMatchObject({ outcome: "empty" }); // waiting: nothing newer
   f.item("A later Noter item", { category: "reference" });
   delete f.dreamer.script.instead;
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(taskNames(f).filter(task => task === "curate")).toHaveLength(1); // the resume continued at verify; curate did not run again
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
+  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere, tidied"); // published once the resumed verify passed
 });
 
 test("2026-10-21, 144: 「就参考MC的做法」 (failure handling) replaces 2026-10-05 「仍然遵守失败三次关掉，不需要例外」 for the Dreamer — a Dreamer failure never switches memory off", async () => {
@@ -2724,19 +2726,19 @@ test("2026-10-22, 144: '只需要核实整理阶段的修改，N对知识的修�
   let attempt = 0;
   f.dreamer.script.verify = report => {
     changes ||= readFileSync(/Change file: (\S+)/.exec(report)![1]!, "utf8");
-    if (attempt++) return "## none\n";
+    if (attempt++) return "## confirm 1\n";
+    // Verdicts are numbered changes of this run: a verdict for an item curate did not propose has no number to carry it, and an edit that names another item is refused.
     const evidence = (item: { supports: number[] }) => `trace://F${item.supports[0]}`;
-    return workspaceBlock(`update ${noter.ref}`, { reason: "verify one more", evidence: evidence(noter) }, "Tags are made by hand")
-      + workspaceBlock(`update ${manualRef}`, { reason: "verify one more", evidence: evidence({ supports: [manualSupport.id] }) }, "A hand-written rule, reworded");
+    return workspaceBlock(`edit 1 update ${noter.ref}`, { evidence: evidence(noter) }, "Tags are made by hand") + workspaceBlock("confirm 2");
   };
   const outcome = await f.dream();
   expect(outcome, JSON.stringify(outcome)).toMatchObject({ outcome: "success" });
   expect(changes).toContain(`update K${tidied.knowledgeId}`);
   expect(changes).not.toContain(`K${noter.knowledgeId}`);
   expect(changes).not.toContain(`K${manual.knowledgeId}`);
-  const refusal = f.dreamer.messages[0]!; // the first verify file failed its check, naming both versions it had no authority over
-  expect(refusal).toMatch(new RegExp(`update K${noter.knowledgeId}@v1.: K${noter.knowledgeId} was not changed by curate`));
-  expect(refusal).toMatch(new RegExp(`update K${manual.knowledgeId}@v1.: K${manual.knowledgeId} was not changed by curate`));
+  const refusal = f.dreamer.messages[0]!; // the first verify file failed its check: there is no change 2, and an edit cannot name another item than its change's
+  expect(refusal).toContain("there is no change 2");
+  expect(refusal).toContain(`names K${noter.knowledgeId}@v1; change 1 is on K${tidied.knowledgeId}@v1`);
   const text = (id: number) => f.store.currentKnowledge(f.path).find(value => value.knowledge.id === id)!.revision.text;
   expect(text(noter.knowledgeId)).toBe("Releases are tagged by hand");
   expect(text(manual.knowledgeId)).toBe("A hand-written rule");

@@ -9,6 +9,7 @@ afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 
 test("48/92: the trusted facade revives an archived identity from exact version bases", async () => {
   const f = dreamerFixture(memories);
+  await f.cycleTo("merge");
   const old = f.item("Original widget state", { title: "Widget state" });
   const archiveCommit = archive(f.store, f.path, old.knowledgeId, old.commit, old.supports, "invalid", "Widget retired: the user said it was removed and nothing replaces it");
   expect(f.store.versionOrdinal(old.knowledgeId, archiveCommit)).toBe(2);
@@ -17,10 +18,11 @@ test("48/92: the trusted facade revives an archived identity from exact version 
 
   const result = await f.dream();
   expect(result.outcome, JSON.stringify(result)).toBe("success");
-  const current = f.store.currentKnowledge(f.path);
-  expect(current).toHaveLength(1);
-  expect(current[0]!.knowledge.id).toBe(old.knowledgeId);
-  expect(current[0]!.revision.parentId).toBe(archiveCommit);
+  const current = f.store.currentKnowledge(f.path); // the cycles that reached the merge left their own items beside these
+  expect(current.filter(value => value.knowledge.id === returned.knowledgeId)).toHaveLength(0);
+  const revived = current.filter(value => value.knowledge.id === old.knowledgeId);
+  expect(revived).toHaveLength(1);
+  expect(revived[0]!.revision.parentId).toBe(archiveCommit);
   expect(f.store.listKnowledgeLinks(returned.knowledgeId)).toContainEqual(expect.objectContaining({ kind: "merged_into", toKnowledge: old.knowledgeId }));
   expect(f.memory.inject(f.path)).toContain("Returned widget state");
 });
