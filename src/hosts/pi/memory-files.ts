@@ -10,7 +10,7 @@ export function memoryReadTool(cwd: string, read: (path: string) => MemoryFile, 
   readableDirectory?: () => string | undefined;
   /** ...and exactly these files (the Noter's workspace files). */
   readableFiles?: () => readonly string[];
-  /** ...and files under these repository roots, past the one deny list (verify only; stage 4 §5.4). */
+  /** ...and files under these repository roots, past the one deny list (curate and verify; stage 5 §3.7). */
   readableRoots?: () => readonly string[];
 } = {}) {
   const native = createReadToolDefinition(cwd, { autoResizeImages: options.autoResizeImages });

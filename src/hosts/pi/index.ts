@@ -162,7 +162,7 @@ export default function (pi: ExtensionAPI) {
         if (!input.reader) throw new Error("Memory worker read requires its frozen reader");
         return memoryFiles(memory, input.reader).read(path);
       }, { memoryOnly: true, readableDirectory: () => outputDirectory, readableFiles: () => files?.paths ?? [],
-        readableRoots: () => input.kind === "dreaming" && input.task === "verify" ? input.workspace.roots : [] }),
+        readableRoots: () => input.kind === "dreaming" ? input.workspace.roots : [] }),
       maxToolRounds: input.kind === "noting" ? memory.config.noting.maxToolRounds : 0, // the Dreamer has no round limit
       // Pi's own retry policy runs inside the child; the one warning per scheduled backoff stays the
       // adapter's. 51: the footer indicator no longer tracks a retry — the notify reports it.
