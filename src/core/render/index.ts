@@ -910,49 +910,55 @@ export function selectKnowledge(candidates: KnowledgeWithRevision[], options: { 
   const noRequired = new Set<number>();
   // PENDING Q4: a scored item that does not fit the rest of the base stops this kind, and the rest become
   // titles (c). The other option skips the misfit and keeps filling; that is a skip mode in this one call.
-  // The base keeps its receipts mandatory, as foreground selection always did: items give way until the body and the
-  // receipts of what it omits fit together. Only when the receipts alone cannot fit are they optional.
-  const base = (() => {
-    try { return budgetKnowledge(scored, baseCap, line, budget, undefined, byScore, recencyNotice).commits; }
-    catch { return budgetKnowledge(scored, baseCap, line, budget, noRequired, byScore, recencyNotice).commits; }
-  })();
-  const baseSet = new Set(base);
-  const baseValues = scored.filter(value => baseSet.has(value.revision.id));
-  const whole = (values: KnowledgeWithRevision[], shownLine: (value: KnowledgeWithRevision) => string) =>
-    ({ ...knowledgeBody(orderedKnowledge(values, shownLine), recencyNotice), receipts: [] as string[] });
-  const baseWindow = whole(baseValues, line);
-  const baseCharge = baseValues.length ? baseWindow.cost : 0;
-  const ceiling = baseCharge + temporaryCap;
-  const unscoredKept = budgetKnowledge([...baseValues, ...unscored], ceiling, line, budget, baseSet, undefined, recencyNotice).commits
-    .filter(commit => !baseSet.has(commit));
-  const wholeSet = new Set([...base, ...unscoredKept]);
-  const missed = scored.filter(value => !baseSet.has(value.revision.id) && !options.titled?.has(value.revision.id));
-  const missedSet = new Set(missed.map(value => value.revision.id));
-  const shown = (value: KnowledgeWithRevision) => missedSet.has(value.revision.id) ? titleLine(value) : line(value);
-  const holding = [...candidates.filter(value => wholeSet.has(value.revision.id)), ...missed];
-  const titles = budgetKnowledge(holding, ceiling, shown, budget, wholeSet, byScore, recencyNotice).commits.filter(commit => !wholeSet.has(commit));
-  const titleSet = new Set(titles);
-  const items = candidates.filter(value => wholeSet.has(value.revision.id) || titleSet.has(value.revision.id));
-  const omitted = candidates.filter(value => !wholeSet.has(value.revision.id) && !titleSet.has(value.revision.id)
-    && !options.titled?.has(value.revision.id)).sort((a, b) => (score(b) ?? 0) - (score(a) ?? 0) || b.revision.id - a.revision.id);
-  let receipts = renderKnowledgeOmissions(omitted);
-  const receiptCost = () => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
-  const mixed = (value: KnowledgeWithRevision) => titleSet.has(value.revision.id) ? titleLine(value) : line(value);
-  const window = whole(items, mixed);
-  // Receipts are optional: the base pays when it has room, else the temporary allowance, else they are dropped.
-  const receiptsToBase = receipts.length > 0 && baseCharge + receiptCost() <= baseCap;
-  if (!receiptsToBase && window.cost + receiptCost() - baseCharge > temporaryCap) receipts = [];
-  const receiptPrice = receiptCost();
-  const rankOf = new Map<number, number>();
-  // Selection order, not presentation order: scored base items, then unscored ones, then titles, each in its own priority.
-  const selectionOrder = [...scored.filter(value => baseSet.has(value.revision.id)), ...unscored.filter(value => wholeSet.has(value.revision.id)),
-    ...missed.filter(value => titleSet.has(value.revision.id))].map(value => value.revision.id);
-  selectionOrder.forEach((commit, index) => rankOf.set(commit, index));
-  return { ...window, receipts, cost: window.cost + receiptPrice, receiptAllowance: receiptsToBase ? "base" : "temporary", baseGroups: baseWindow.groups, baseReceipts: receiptsToBase ? receipts : [], bodyCommits: window.commits.filter(commit => wholeSet.has(commit)),
-    titleCommits: titles, baseCharge: baseCharge + (receiptsToBase ? receiptPrice : 0),
-    temporaryCharge: window.cost + (receiptsToBase ? 0 : receiptPrice) - baseCharge,
-    ranked: items.map(value => ({ value, form: titleSet.has(value.revision.id) ? "title" as const : "body" as const,
-      allowance: baseSet.has(value.revision.id) ? "base" as const : "temporary" as const, rank: rankOf.get(value.revision.id)! })).sort((a, b) => a.rank - b.rank) };
+  const select = (receiptsMandatory: boolean): { result: SelectedKnowledge; named: boolean } => {
+    const base = (() => {
+      if (!receiptsMandatory) return budgetKnowledge(scored, baseCap, line, budget, noRequired, byScore, recencyNotice).commits;
+      try { return budgetKnowledge(scored, baseCap, line, budget, undefined, byScore, recencyNotice).commits; }
+      catch { return budgetKnowledge(scored, baseCap, line, budget, noRequired, byScore, recencyNotice).commits; }
+    })();
+    const baseSet = new Set(base);
+    const baseValues = scored.filter(value => baseSet.has(value.revision.id));
+    const whole = (values: KnowledgeWithRevision[], shownLine: (value: KnowledgeWithRevision) => string) =>
+      ({ ...knowledgeBody(orderedKnowledge(values, shownLine), recencyNotice), receipts: [] as string[] });
+    const baseWindow = whole(baseValues, line);
+    const baseCharge = baseValues.length ? baseWindow.cost : 0;
+    const ceiling = baseCharge + temporaryCap;
+    const unscoredKept = budgetKnowledge([...baseValues, ...unscored], ceiling, line, budget, baseSet, undefined, recencyNotice).commits
+      .filter(commit => !baseSet.has(commit));
+    const wholeSet = new Set([...base, ...unscoredKept]);
+    const missed = scored.filter(value => !baseSet.has(value.revision.id) && !options.titled?.has(value.revision.id));
+    const missedSet = new Set(missed.map(value => value.revision.id));
+    const shown = (value: KnowledgeWithRevision) => missedSet.has(value.revision.id) ? titleLine(value) : line(value);
+    const holding = [...candidates.filter(value => wholeSet.has(value.revision.id)), ...missed];
+    const titles = budgetKnowledge(holding, ceiling, shown, budget, wholeSet, byScore, recencyNotice).commits.filter(commit => !wholeSet.has(commit));
+    const titleSet = new Set(titles);
+    const items = candidates.filter(value => wholeSet.has(value.revision.id) || titleSet.has(value.revision.id));
+    const omitted = candidates.filter(value => !wholeSet.has(value.revision.id) && !titleSet.has(value.revision.id)
+      && !options.titled?.has(value.revision.id)).sort((a, b) => (score(b) ?? 0) - (score(a) ?? 0) || b.revision.id - a.revision.id);
+    let receipts = renderKnowledgeOmissions(omitted);
+    const receiptCost = () => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
+    const mixed = (value: KnowledgeWithRevision) => titleSet.has(value.revision.id) ? titleLine(value) : line(value);
+    const window = whole(items, mixed);
+    // Receipts are optional: the base pays when it has room, else the temporary allowance, else they are dropped.
+    const receiptsToBase = receipts.length > 0 && baseCharge + receiptCost() <= baseCap;
+    if (!receiptsToBase && window.cost + receiptCost() - baseCharge > temporaryCap) receipts = [];
+    const receiptPrice = receiptCost();
+    const rankOf = new Map<number, number>();
+    // Selection order, not presentation order: scored base items, then unscored ones, then titles, each in its own priority.
+    const selectionOrder = [...scored.filter(value => baseSet.has(value.revision.id)), ...unscored.filter(value => wholeSet.has(value.revision.id)),
+      ...missed.filter(value => titleSet.has(value.revision.id))].map(value => value.revision.id);
+    selectionOrder.forEach((commit, index) => rankOf.set(commit, index));
+    const result: SelectedKnowledge = { ...window, receipts, cost: window.cost + receiptPrice, receiptAllowance: receiptsToBase ? "base" : "temporary", baseGroups: baseWindow.groups, baseReceipts: receiptsToBase ? receipts : [], bodyCommits: window.commits.filter(commit => wholeSet.has(commit)),
+      titleCommits: titles, baseCharge: baseCharge + (receiptsToBase ? receiptPrice : 0),
+      temporaryCharge: window.cost + (receiptsToBase ? 0 : receiptPrice) - baseCharge,
+      ranked: items.map(value => ({ value, form: titleSet.has(value.revision.id) ? "title" as const : "body" as const,
+        allowance: baseSet.has(value.revision.id) ? "base" as const : "temporary" as const, rank: rankOf.get(value.revision.id)! })).sort((a, b) => a.rank - b.rank) };
+    return { result, named: omitted.length === 0 || receipts.length > 0 };
+  };
+  // Receipts follow what is finally omitted, so an intermediate receipt never changes which bodies the base takes.
+  // Only when something is omitted and no allowance can carry its receipt do base bodies give way to it (34c).
+  const first = select(false);
+  return first.named ? first.result : select(true).result;
 }
 
 /** Turn metadata, read once without loading Raw. Plain times also support metadata-free fixtures. */

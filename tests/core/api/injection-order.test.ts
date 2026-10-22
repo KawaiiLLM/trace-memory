@@ -35,6 +35,19 @@ test("a high-score item that does not fit stops the base: lower ones do not fill
   expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([huge.commit, small.commit]));
 });
 
+test("an item that fills the base exactly is delivered whole although a lower one is left to the temporary allowance as a title", () => {
+  const f = fixture();
+  const a = f.create("EXACT", 400, 90);
+  setKnowledgeInjection(f.memory, 5_000);
+  const exact = f.memory.injection(f.target).knowledgeTokens!; // A's window alone: the base that fits it to the token
+  const b = f.create("MISFIT", 3_000, 50);
+  setKnowledgeInjection(f.memory, exact);
+  const delivery = f.memory.injection(f.target);
+  expect(delivery.knowledgeCommitIds).toEqual([a.commit]);
+  expect(delivery.knowledgeTitleCommitIds).toEqual([b.commit]);
+  expect(delivery.knowledgeTokens).toBe(exact);
+});
+
 test("unscored items ride the temporary allowance newest first, then titles of scored misfits", () => {
   const f = fixture();
   const scoredBig = f.create("SCOREDBIG", 3_000, 60), unscoredOld = f.create("UNSCOREDOLD", 300, null), unscoredNew = f.create("UNSCOREDNEW", 300, null);
