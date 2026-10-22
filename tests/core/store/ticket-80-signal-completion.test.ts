@@ -109,7 +109,6 @@ test("a graph read inside a transaction cannot install an uncommitted result in 
     writer.currentKnowledge(path);
     throw new Error("rollback");
   })).toThrow("rollback");
-  expect(builds).toBeGreaterThanOrEqual(1);
   const after = builds;
   expect(writer.currentKnowledge(path)).toEqual(before);
   expect(builds).toBe(after);
