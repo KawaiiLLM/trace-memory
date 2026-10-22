@@ -33,7 +33,8 @@ export function deniedPath(path: string): string | null {
 
 /** A path as a verify tool call names it, resolved: absolute, or relative to the first root that holds it. Symbolic links are followed
  * and the result must sit inside a root and pass the deny list; the message says why not. */
-export function resolveRepositoryPath(reference: string, roots: readonly string[]): { path: string } | { reason: string } {
+export function resolveRepositoryPath(reference: string, given: readonly string[]): { path: string } | { reason: string } {
+  const roots = given.map(real);
   if (!roots.length) return { reason: "this session has no repository to read" };
   const candidates = isAbsolute(reference) ? [reference] : roots.map(root => join(root, reference));
   for (const candidate of candidates) {
