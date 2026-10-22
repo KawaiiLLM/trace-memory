@@ -21,7 +21,7 @@ Core phase bounds use optional top-level keys in the same file:
 | Key | Default | Meaning |
 | --- | ---: | --- |
 | `noting.triggerTokens` | 10,000 | Noter trigger checked at every main-session entry end; catchup still drains below it |
-| `dreaming.triggerTokens` | 10,000 | Dreamer trigger: tokens of knowledge the Noter created or changed since the last covered Dreamer pass |
+| `dreaming.triggerOperations` | 30 | Dreamer trigger: Noter knowledge operations (creates and updates) not yet covered by a Dreamer pass |
 | `dreaming.timeoutMs` | 1,800,000 | Wall-clock bound of each Dreamer task (curate, verify, classify); no tool-round ceiling |
 | `compaction.temporaryTokens` | 10,000 | The one temporary allowance of a context: pending Raw, then unscored Knowledge and knowledge titles, then user words and fact titles together, turn by turn |
 | `compaction.userTurns` | 100 | User-word reach including the anchor, counted along its path |

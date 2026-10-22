@@ -80,11 +80,12 @@ and the tools are shared with the Noter's workspace files (`src/core/workspace/`
 **Trigger and coverage.** The pool identities are `global`, `project:<id>` and `session:<id>`. A version is *covered*
 when `knowledge_processed` holds `(pool, revision)` for the pool that owns it, written by a passed curate or verify
 pass (never on failure) for the versions its batches showed and wrote. At every main-session entry end (above) a run is
-due when `Store.dreamingDue` says so: a hand-off row asks for a retry or resume, or `Store.noterChangedTokens` reaches
-`dreaming.triggerTokens` (10,000 by default). That sum counts each live item once, at the tokens of its current title
-plus body, when some branch of its parents reaches a Noter revision before a covered one; manual and Dreamer revisions
-never count, so the Dreamer cannot retrigger itself. The footer's changed count is the number of those items
-(`Store.noterChangedItems`), and the `/trace` Dreaming row shows the same tokens against the trigger. One database-wide
+due when `Store.dreamingDue` says so: a hand-off row asks for a retry or resume, or `Store.noterOperations` reaches
+`dreaming.triggerOperations` (30 by default). That count is the number of Noter `create` and `update` revisions that no
+covered revision of their pool hides, each revision once, reached by walking back from the live items (the walk goes on
+past a Noter revision, so a second update of one item counts again); manual and Dreamer revisions never count, so the
+Dreamer cannot retrigger itself. A failure resets no count and sets no floor. The footer's changed count is the exact
+number (`Store.noterOperations`), and the `/trace` Dreaming row shows it against the trigger as `n / 30 Noter ops`. One database-wide
 Dreamer seat remains (the live claim). The claim lease outlives the execution backstop; a stale or lost claim cannot
 commit, and cancellation closes every tool binding and workspace of the task at once (the cancellation fence), so a
 late write or pass end changes nothing.
@@ -182,9 +183,9 @@ an item keeps its score when it changes. It makes no model call when there is no
 
 A passed task writes a hand-off row, so a restart, a stop or a failure resumes at the first task (and, for curate, the
 first category) not done; coverage, applied batches and scores are written in the same transaction as the pass. A
-transient failure (provider, network, store, deadline) is retried at later checks up to three times (Magic Context's
-rule); any other failure, or the fourth, waits until a further trigger's worth of Noter changes arrives. A Dreamer
-failure is never counted toward switching memory off. Each task has the wall-clock bound `dreaming.timeoutMs`
+failed run leaves its hand-off, so the next entry-end check is due and resumes there: no wait for a threshold, no
+`waitFrom` floor, and the Noter-operation count is not reset. A failure counts toward switching memory off like the
+Noter's (see "Final business failure" below). Each task has the wall-clock bound `dreaming.timeoutMs`
 (1,800,000 ms by default, no tool-round ceiling), clamped by the execution backstop; expiry fences the task and fails it.
 A run completes when classify has finished and no hand-off remains: the final classify pass (or the no-work classify) commits
 `finished: { operation, advanced }` into its run body in the same transaction that removes the hand-off, and settlement
@@ -219,7 +220,7 @@ Ticket 86's one-time normal-open upgrade clears only legacy Dreamer failure coun
 
 `Store.settleExecution(id, outcome, runId, reason?)` records one authoritative terminal outcome and updates the logical task's streak in the same transaction. Successful Noting and Consolidation commits settle inside their business transactions. Dreamer processing records skipped frozen versions and own commits, then settles that one execution. Failure and cancellation retain the same partial processing semantics: untouched versions remain pending, and partial writes survive.
 
-Final business failure includes a Noting run that does not finish normally in either task (144), including one whose execution claim was lost. A failed Dreamer run is counted for its retry rule only and never switches memory off. Cancellation, shutdown, busy admission and corrected refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason, last run and update time. Success resets its key; explicit enrollment on clears all target streaks, while reopen does not.
+Final business failure includes a Noting run that does not finish normally in either task (144), including one whose execution claim was lost. A Dreamer run that does not finish normally counts once however many tasks failed, including one whose claim was lost, and the third consecutive failure switches memory off, as the Noter's does; only a run that finishes resets the streak (a kept batch or an applied verify does not). Cancellation, shutdown, busy admission and corrected refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason, last run and update time. Success resets its key; explicit enrollment on clears all target streaks, while reopen does not.
 
 The third failure atomically persists enrollment off and expires every target claim. The façade
 then closes and aborts locally owned target tasks. Only the transitioning settlement returns

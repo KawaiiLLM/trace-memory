@@ -78,7 +78,7 @@ For example, either settings file can contain:
     "noting.batchTokens": 10000,
     "noting.nearThreshold": 0.4,
     "consolidation.triggerTokens": 5000,
-    "dreaming.triggerTokens": 10000,
+    "dreaming.triggerOperations": 30,
     "dreaming.timeoutMs": 600000,
     "dreaming.model": "session",
     "dreaming.thinking": "inherit",
@@ -103,8 +103,9 @@ Full facts do not borrow, and none of the bases lends to another.
 
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
 from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a named load error.
-`dreaming.triggerTokens` is configurable: its default is 10,000, compared with the tokens of knowledge the
-Noter created or changed since the last covered Dreamer pass (144 stage 4). Foreground publication may use the Knowledge base and what the context's
+`dreaming.triggerOperations` is configurable: its default is 30, compared with the number of Noter knowledge operations
+(creates and updates) since the last covered Dreamer pass (146). `dreaming.triggerTokens` is removed: a settings file that still
+carries it fails to load by name. Foreground publication may use the Knowledge base and what the context's
 temporary allowance has left. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
 connections to that database. The budgets size injection and compaction only: they trigger no Dreamer run and decide none's success.
@@ -251,16 +252,15 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   (see "Request capacity" below). An oldest entry that cannot fit remains
   pending with a capacity notification. Unknown model capacity still leaves work pending.
 - Dreaming is checked **per session** at each entry end through arming, over `global`, this session's
-  project and this session together. A run is due when the Noter-changed tokens since the last covered Dreamer pass reach
-  `dreaming.triggerTokens` (10,000 by default; each changed live item counted once at its title plus body, manual and
+  project and this session together. A run is due when the Noter operations since the last covered Dreamer pass reach
+  `dreaming.triggerOperations` (30 by default; each Noter create or update counted once, a second update of one item counts again, manual and
   Dreamer revisions never counted), or when a hand-off row asks for a retry or resume. One run covers all three pools and
   runs three tasks: **curate** (per category, blocks of the run's one operation, rotating `update`, `merge`, `split`, `archive`, kept
   batch by batch and never applied before verify), **verify** (one confirm, edit or revert for every proposal, against
   facts, Raw and the session's repositories; its pass applies the confirmed and edited ones) and **classify** (importance scores 1 to 100, in fresh passes of at most 100 items). Each task writes a
   file in its own workspace with Pi's `write`/`edit` and `check`, and ends when the model stops; a task with nothing to do
-  makes no model call. A passed task leaves a hand-off, so a stop or failure resumes where it left off; a transient
-  failure is retried at later checks up to three times, any other waits for a further trigger's worth of changes, and a
-  Dreamer failure never switches memory off. Curate's first request is the knowledge prefix (at most 50,000 tokens) and
+  makes no model call. A passed task leaves a hand-off, so a stop or failure resumes where it left off at the next entry-end check, with no wait for a
+  threshold and no count reset; three consecutive failed runs switch memory off for the session, as the Noter's do. Curate's first request is the knowledge prefix (at most 50,000 tokens) and
   verify reuses it. Exact current bases and the live database-wide Dreamer claim are checked atomically; a stale base is
   refused for that operation only. Ordinary completion starts no next run, even while the session remains due. The earlier
   pool-budget Dreamer (a frozen 10,000-token range, `memory` skips, an end review) is removed. There is no automatic Raw
@@ -557,10 +557,10 @@ completion. Bars cap at 100%; numbers and percentages do not:
   the effective entry profile and Pi result extractor. Only imported evidence counts.
 - **Consolidation:** applicable unconsolidated facts, including group framing and
   relations, through the same renderer and threshold calculation as eligibility.
-- **Dreaming:** one row (144 stage 4): the tokens of knowledge the Noter changed since the last covered Dreamer pass against
-  `dreaming.triggerTokens`. The bar does not imply that the database-wide seat is available. The notice area also shows the
-  Dreamer's latest failure while no later run has succeeded: `Dreamer failed: <task>: <class>, retry k/3 | waits for threshold (R<run>, <UTC time>)`.
-  A Dreamer failure never switches memory off, so this notice does not depend on the automatic-off state.
+- **Dreaming:** one row (146): the Noter operations since the last covered Dreamer pass against
+  `dreaming.triggerOperations`, as `n / 30 Noter ops` (`≥30` once the count has reached the trigger). The bar does not imply that the database-wide seat is available. The notice area also shows the
+  Dreamer's latest failure while no later run has succeeded: `Dreamer failed: <task>: <class> (R<run>, <UTC time>)`.
+  Three consecutive Dreamer failures switch memory off like the Noter's; this notice does not depend on the automatic-off state.
 
 Thresholds come from the live core configuration. Off retains stored measurements;
 no memory identity and unavailable reads are shown separately from zero. Opening
@@ -1096,7 +1096,7 @@ usage totals. The host publishes one status item through `ctx.ui.setStatus("trac
 | `memory: 9->54/306` | 9 applicable facts await Consolidation; 54 of the 306 live Knowledge items were created or changed by the Noter since the last covered Dreamer pass |
 | `cost` | Database-wide memory-run spend since local midnight, using recorded model usage and Pi's configured rates |
 
-`changedKnowledge` counts the live Knowledge items the Noter created or changed since the last covered Dreamer pass (items, not tokens).
+`changedKnowledge` counts the Noter knowledge operations (creates and updates) since the last covered Dreamer pass (operations, not items or tokens; 146).
 It is a scheduling measurement only, not a validity status and not a second visible partition. The Dreaming bar
 in Current session shows the same changes in tokens, which is what the trigger compares.
 
