@@ -59,6 +59,16 @@ test("framing repeated across slices with base items removes the lowest-ranked b
   expect(commits(trimmed)).not.toContain(6);
 });
 
+test("the receipt for a temporary item the slice cannot carry is charged to the temporary allowance, not the base", () => {
+  const items = [knowledge(2, 0, "temporary"), knowledge(3, 1, "temporary", 200_000)]; // the second fits no slice
+  const slices = sliceCcInjection(binding, items, undefined, 0, 1_000); // Knowledge base 0, temporary room
+  expect(commits(slices)).toEqual([2]); // the base check did not evict the temporary item
+  const text = slices.map(slice => slice?.hookSpecificOutput.additionalContext ?? "").join("");
+  expect(text).toContain("trace://K3@3"); // the omission is named
+  expect(sum(slices, "knowledgeTokens")).toBe(0);
+  expect(sum(slices, "temporaryTokens")).toBeLessThanOrEqual(1_000);
+});
+
 test("Raw omitted for capacity lowers u", () => {
   const raw = (entryId: number, size: number): TransportItem => ({ kind: "raw", text: `[T1#E${entryId}] ${"r".repeat(size)}`, entryId, address: `T1#E${entryId}`, pending: true, allowance: "temporary", charge: 100 });
   const kept = sum(sliceCcInjection(binding, [raw(1, 200)]), "temporaryTokens");

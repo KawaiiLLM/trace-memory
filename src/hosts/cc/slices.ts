@@ -36,10 +36,11 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     throw new Error("CC Raw transport needs a bound core session");
   const slots: { items: TransportItem[] }[] = Array.from({ length: CC_SLICE_COUNT }, () => ({ items: [] }));
   const omitted: string[] = [];
-  let pendingRaw = 0, pendingFacts = 0, pendingFactTokens = 0, omittedKnowledge = false;
+  let pendingRaw = 0, pendingFacts = 0, pendingFactTokens = 0, omittedKnowledge = false, omittedBase = false;
   const omit = (item: TransportItem): void => {
     omitted.push(address(item, binding.coreSession));
     if (item.kind === "knowledge" || item.kind === "state") omittedKnowledge = true;
+    if (item.kind === "state" || item.kind === "knowledge" && !temporaryKnowledge(item)) omittedBase = true;
     if (item.kind === "raw" && item.pending) pendingRaw++;
     if (item.kind === "fact" && item.pending) { pendingFacts++; pendingFactTokens += tokens(item.text); }
   };
@@ -158,7 +159,8 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   const placed = (item: TransportItem) => slots.some(slot => slot.items.includes(item));
   const lowestBase = () => [...ordered].reverse().find(item => (item.kind === "state" || item.kind === "knowledge" && !temporaryKnowledge(item)) && placed(item));
   const lowestTemporary = () => [...ordered].reverse().find(item => temporaryKnowledge(item) && placed(item));
-  const lowestKnowledge = () => (costs().base > knowledgeAllowance ? lowestBase() : lowestTemporary()) ?? lowestTemporary() ?? lowestBase();
+  // Evicting a temporary item never lowers the base cost, so the base check only ever evicts base items.
+  const lowestKnowledge = () => costs().base > knowledgeAllowance ? lowestBase() : lowestTemporary() ?? lowestBase();
   // Same admission priorities as character packing: lowest-ranked first, state notices last. Final segment
   // framing belongs to K; host JSON framing and Fact/Raw do not. Two loops, base first: removing a slice's last
   // base item moves its framing to the temporary cost, and removing a temporary item never changes the base cost,
@@ -179,6 +181,8 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     while (true) {
       receipt.text = `omitted ${omitted.length} whole items at CC inline capacity; expand: ${expandList(omitted)}`;
       receipt.knowledge = omittedKnowledge;
+      // 144 §7.2: a receipt is charged to the allowance of the material it reports.
+      receipt.allowance = omittedKnowledge && !omittedBase ? "temporary" : "base";
       const isPlaced = tryPlace(receipt);
       if (isPlaced && fits()) break;
       if (isPlaced) {
