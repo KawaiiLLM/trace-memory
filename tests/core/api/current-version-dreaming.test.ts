@@ -2,7 +2,7 @@
 // a memory-off or an executor exit fences a model that keeps working, and a merge that names its primary.
 import { afterEach, expect, test } from "vitest";
 import { writeFileSync } from "node:fs";
-import type { DreamingTaskInput } from "../../../src/core/api/index.ts";
+import type { DreamingTaskInput } from "../../../src/core/dreaming/index.ts";
 import type { TraceMemory } from "../../source-fixture.ts";
 import { dreamerFixture as makeDreamerFixture, writeCurateBatch } from "../../support/dreamer.ts";
 import { REQUEST } from "../../support/noter.ts";

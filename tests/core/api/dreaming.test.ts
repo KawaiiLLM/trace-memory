@@ -3,7 +3,8 @@
 // itself (hand-off, resume, retries, the cancellation fence) is `dreaming-run.test.ts`.
 import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "vitest";
-import type { DreamingTaskInput, RunAgentResult } from "../../../src/core/api/index.ts";
+import type { RunAgentResult } from "../../../src/core/api/index.ts";
+import type { DreamingTaskInput } from "../../../src/core/dreaming/index.ts";
 import { dreamingWorkspaceToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";

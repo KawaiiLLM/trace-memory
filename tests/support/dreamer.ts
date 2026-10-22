@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs";
-import type { DreamingAgentInput, DreamingTaskInput, RunAgentResult } from "../../src/core/api/index.ts";
+import type { DreamingAgentInput, RunAgentResult } from "../../src/core/api/index.ts";
+import type { DreamingTaskInput } from "../../src/core/dreaming/index.ts";
 import type { RunAgent, TraceMemory } from "../source-fixture.ts";
 import { REQUEST } from "./noter.ts";
 import { workspaceBatch } from "./workspace.ts";

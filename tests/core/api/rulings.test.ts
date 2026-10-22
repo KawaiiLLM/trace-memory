@@ -1,5 +1,4 @@
 import { readHandle } from "../../read-handle-fixture.ts";
-import { dreamerWrite, skipRest, suppliedHandles } from "../../dreaming-skips.ts";
 import { knowledgeStatusNotes } from "../../../src/core/api/read.ts";
 import { compacted, recorded } from "../../source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
@@ -15,14 +14,14 @@ import { TraceMemory as createMemory } from "../../../src/core/api/index.ts";
 import * as api from "../../source-fixture.ts";
 import { tokens, hydrate } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
-import { dreamingToolDefinitions, pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
+import { pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
 import type { MemoryReceipt } from "../../../src/core/knowledge-write/bind.ts";
 import { canonicalToolNames, renderToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { ccPluginToolNames } from "../../../src/hosts/cc/tool-names.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { scriptedDreamer, writeCurateBatch } from "../../support/dreamer.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { receiptCommit } from "../../support/seed.ts";
 import { block as workspaceBlock, workspaceBatch } from "../../support/workspace.ts";
@@ -59,7 +58,7 @@ vi.mock("../../../src/core/project/directory.ts", async importOriginal => {
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
 let calls: NotingAgentInput[];
-let admittedScenarios: AdmittedDreamerScenarios;
+let agent: (raw: unknown) => Promise<RunAgentResult>;
 const time = "2026-09-06T00:00:00Z";
 const ok = (output: unknown): RunAgentResult => ({ outcome: "success", output: JSON.stringify(output), request: { fake: true } });
 const tagged = (knowledgeId: number, commitId: number) => `K${knowledgeId}#${memory.store.versionTag(knowledgeId, commitId)}`;
@@ -79,9 +78,9 @@ beforeEach(() => {
       submitEmpty(input);
     }
     return ok([]); };
-  admittedScenarios = new AdmittedDreamerScenarios(fallback);
+  agent = fallback;
   // Items here are sized in thousands of tokens, as items written before the caps (ticket 144) are; the caps are lifted for this file, and its own cap ruling restores them.
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), admittedScenarios.agent, { writing: { bodyTokens: 1_000_000 } });
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), agent, { writing: { bodyTokens: 1_000_000 } });
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
@@ -111,7 +110,7 @@ function session() {
 }
 
 test("thinking-only entries are processed without Noting material", async () => {
-  const m = sourceSeededMemory(join(directory, "thinking.sqlite"), admittedScenarios.agent, {}, undefined, piSourceBlocks);
+  const m = sourceSeededMemory(join(directory, "thinking.sqlite"), agent, {}, undefined, piSourceBlocks);
   try {
     const project = m.store.createProject({ name: "thinking", declaredBy: "mark" });
     const s = seedSession(m.store, project.id, "pi:fixture");
@@ -151,7 +150,7 @@ test("thinking-only entries are processed without Noting material", async () => 
 });
 
 test("pending counts stay exact as mixed batches publish and only thinking remains", async () => {
-  const m = sourceSeededMemory(join(directory, "pending-thinking.sqlite"), admittedScenarios.agent, {}, undefined, piSourceBlocks);
+  const m = sourceSeededMemory(join(directory, "pending-thinking.sqlite"), agent, {}, undefined, piSourceBlocks);
   try {
     const project = m.store.createProject({ name: "thinking", declaredBy: "mark" });
     const s = seedSession(m.store, project.id, "pi:fixture");
@@ -627,148 +626,6 @@ test("2026-10-09, 132: '注入知识改为按类别分组' — foreground, compa
   expect(headers(cc)).toEqual(expected);
 });
 
-test("2026-09-28, 104: '可以让总量超过20 + 10 就可以触发' — a session is due on knowledge overflow or summed pending, not per pool", () => {
-  const { path, create, write } = memoryWriter();
-  const body = "Durable user constraint ".repeat(150);
-  expect(write([{ ...create, text: body }, { ...create, scope: "global", text: `Global ${body}` }]).committed).toHaveLength(2);
-  const due = () => memory.taskEligibility("dreaming", path).due;
-  const [global, project] = memory.store.knowledgePools(path);
-  const weight = (pool: typeof global) => pool!.pending.reduce((sum, value) => sum + value.tokens, 0);
-  // Pending: the weight summed across the session's pools reaches the trigger where neither pool alone does.
-  memory.config.dreaming.triggerTokens = weight(global) + weight(project);
-  expect(Math.max(weight(global), weight(project))).toBeLessThan(memory.config.dreaming.triggerTokens);
-  expect(due()).toBe(true);
-  memory.config.dreaming.triggerTokens++;
-  expect(due()).toBe(false);
-  // Overflow: with pending still below the trigger, the knowledge total exceeding the injection base
-  // plus the shared allowance is due; a pool over its own budget within that window is not.
-  memory.setKnowledgeBudget("global", 0);
-  memory.setKnowledgeBudget("project", project!.tokens);
-  memory.setKnowledgeBudget("session", 0);
-  memory.config.compaction.sharedAllowanceTokens = global!.tokens;
-  expect(due()).toBe(false);
-  memory.config.compaction.sharedAllowanceTokens = global!.tokens - 1;
-  expect(due()).toBe(true);
-});
-
-test("Dreaming's frozen budget excludes later manual knowledge, which cannot be used as a maintenance base", async () => {
-  const { path, write, create } = memoryWriter();
-  memory.config.dreaming.triggerTokens = 1;
-  write([{ ...create, text: "freeze-time rule" }]);
-  const before = memory.store.poolSizes(path);
-  memory.setKnowledgeBudget("project", before.find(value => value.pool.startsWith("project:"))!.tokens);
-  let later = 0, finished = false;
-  const result = await admittedScenarios.run(memory, path, input => {
-    const created = write([{ ...create, text: "later manual knowledge ".repeat(500) }]).committed[0]!;
-    later = commitOf(created);
-    const memoryTool = input.tools.find(tool => tool.name === "memory")!;
-    const refused = memoryTool.execute({ op: "update", id: tagged(created.knowledgeId, later), text: "not this run's work",
-      category: "constraint", scope: "project", topics: [], supports: [], reason: "probe scope" });
-    expect(refused).toContain("rejected: M1:");
-    expect(refused).toContain(history(created.knowledgeId, later));
-    expect(refused).toContain("after this run's freeze");
-    expect(refused).toContain("next Dreaming run");
-    expect(memoryTool.execute({ drop: "M1" })).toContain("dropped: M1");
-    skipRest(input);
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    finished = true;
-    return ok([]);
-  });
-  expect(finished, JSON.stringify(result)).toBe(true);
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-  if (!("runId" in result)) throw new Error("missing run id");
-  const checked = JSON.parse(memory.store.getRun(result.runId)!.response!).check;
-  expect(checked.pendingRevisionIds).toEqual([later]);
-  for (const value of before) expect(checked.totals.find((item: { pool: string }) => item.pool === value.pool).tokens).toBe(value.tokens);
-  expect(memory.store.poolSizes(path).find(value => value.pool.startsWith("project:"))!.tokens).toBeGreaterThan(memory.knowledgeBudgets().project);
-});
-
-test.each(["pending", "overflow"] as const)("2026-10-05, 126: '两个阈值中任意一个触发，成功执行后应该都是待处理减少10k、知识在20k之内' — a run due by %s ends with every pool within its budget and its frozen pending processed; pending beyond 10k stays pending", async trigger => {
-  const { path, write, create } = memoryWriter();
-  const item = (scope: "global" | "project" | "session", label: string, words: number) =>
-    write([{ ...create, scope, text: `${label} ${"word ".repeat(words)}` }]).committed[0];
-  const pools = () => memory.store.knowledgePools(path);
-  const pendingIds = () => pools().flatMap(pool => pool.pending.map(value => value.revisionId)).sort((a, b) => a - b);
-  const defaults = () => { for (const [field, value] of [["global", 4_000], ["project", 15_000], ["session", 1_000]] as const) memory.setKnowledgeBudget(field, value); };
-  memory.config.compaction.sharedAllowanceTokens = 10_000;
-  if (trigger === "overflow") {
-    // Already-processed knowledge: 4.8k global and 20k project, deliberated by setup runs under roomy budgets.
-    item("global", "Processed global A", 2_400); item("global", "Processed global B", 2_400);
-    for (let i = 0; i < 10; i++) item("project", `Processed project ${i}`, 2_000);
-    for (const field of ["global", "project", "session"] as const) memory.setKnowledgeBudget(field, 100_000);
-    memory.config.dreaming.triggerTokens = 1;
-    while (pendingIds().length) expect((await admittedScenarios.run(memory, path, input => {
-      input.acknowledgeRequest(); skipRest(input); return ok([]); })).outcome).toBe("success");
-    defaults();
-    memory.config.dreaming.triggerTokens = 50_000; // pending stays below the trigger: overflow alone makes the run due
-    for (let i = 0; i < 9; i++) item("project", `Pending project ${i}`, 1_400);
-  } else {
-    memory.config.dreaming.triggerTokens = 10_000;
-    item("global", "Pending global A", 1_500); item("global", "Pending global B", 1_500);
-    for (let i = 0; i < 8; i++) item("project", `Pending project ${i}`, 1_400);
-    item("session", "Pending session", 300);
-    defaults();
-    memory.setKnowledgeBudget("global", pools()[0]!.tokens - 1); // a pool over budget the run must also bring back
-  }
-  const state = memory.dreamingPending(path);
-  if (state.state !== "known") throw new Error("dreaming state unavailable");
-  expect(state.pending.tokens >= state.pending.trigger).toBe(trigger === "pending");
-  expect(state.knowledge.tokens > state.knowledge.window).toBe(trigger === "overflow");
-  expect(memory.taskEligibility("dreaming", path).due).toBe(true);
-  const before = pendingIds();
-  const material = new Map(pools().flatMap(pool => pool.pending.map(value => [value.revisionId, value.material] as const)));
-
-  let frozen: number[] = [], changedTokens = 0;
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.acknowledgeRequest();
-    const handles = suppliedHandles(input.material.changed);
-    frozen = handles.map(handle => { const [, id, ordinal] = /^K(\d+)@v(\d+)$/.exec(handle)!; return memory.store.resolveVersionOrdinal(Number(id), Number(ordinal)); });
-    changedTokens = tokens(input.material.changed);
-    const memoryTool = input.tools.find(tool => tool.name === "memory")!, consumed: string[] = [];
-    // Scripted budget reduction: archive each over-budget pool's oldest item until every pool fits.
-    for (let over = pools().find(pool => pool.tokens > pool.budget); over; over = pools().find(pool => pool.tokens > pool.budget)) {
-      const oldest = [...over.versions].sort((a, b) => a.revision.id - b.revision.id)[0]!.revision;
-      expect(dreamerWrite(memoryTool, { operations: [{ op: "archive", kind: "budget", id: tagged(oldest.knowledgeId, oldest.id), supports: [],
-        reason: "Over budget: the oldest item is retired." }], skipped: [] })).toContain("committed");
-      consumed.push(history(oldest.knowledgeId, oldest.id));
-    }
-    expect(skipRest(input, consumed)).toContain("committed");
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return ok([]);
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-  for (const pool of pools()) expect(pool.tokens, pool.pool).toBeLessThanOrEqual(pool.budget);
-  expect(changedTokens).toBeLessThanOrEqual(10_000);
-  expect(frozen).toEqual(before.slice(0, frozen.length)); // the oldest pending first, across pools
-  // A full slice: the next pending version would have crossed 10,000 rendered tokens.
-  expect(tokens(["Pending current knowledge:", ...[...frozen, before[frozen.length]!].map(id => material.get(id)!)].join("\n"))).toBeGreaterThan(10_000);
-  expect(pendingIds()).toEqual(before.slice(frozen.length)); // every frozen version processed; the rest stays pending
-  expect(pendingIds().length).toBeGreaterThan(0);
-});
-
-test("92 §§6–8: a D range excludes a later version from this run's material and processing", async () => {
-  const { path, write, create } = memoryWriter();
-  const trigger = createDreamerTrigger(memory, path, 1, 1);
-  const pool = `project:${memory.store.getSession(path.sessionId)!.projectId}`;
-  let lateCommit = 0;
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.acknowledgeRequest();
-    const frozen = suppliedHandles(input.material.changed);
-    expect(frozen).toContain(history(trigger.knowledgeId, trigger.commit));
-    const late = write([{ ...create, text: "Later knowledge that did not exist at D admission" }]).committed[0];
-    lateCommit = commitOf(late);
-    expect(input.material.changed).not.toContain("Later knowledge that did not exist at D admission");
-    expect(frozen).not.toContain(history(late.knowledgeId, lateCommit));
-    expect(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [],
-      skipped: frozen.map(knowledge => ({ knowledge, because: "Reviewed only frozen versions" })) })).toContain("committed");
-    return ok([]);
-  });
-  expect(result.outcome).toBe("success");
-  expect(memory.store.getClaim(path.sessionId, "dreaming")).toBeNull();
-  expect(memory.store.openDreamingRange(path.sessionId, path.branch)).toBeNull();
-  expect(memory.store.pendingVersions(pool, path).map(item => item.revisionId)).toContain(lateCommit);
-});
-
 test("2026-09-07: one operation shape, inapplicable fields rejected", () => {
   const { create, write } = memoryWriter();
   write([create]);
@@ -793,14 +650,12 @@ test("2026-09-07: one operation shape, inapplicable fields rejected", () => {
   }
 });
 
-test("2026-09-07: supports replaces, history keeps the old set", async () => {
+test("2026-09-07: supports replaces, history keeps the old set", () => {
   const { create, write, path, s } = memoryWriter();
   const created = write([create]);
   expect(created.results).toEqual(["ok"]);
   expect(memory.store.getKnowledgeRevision(1, 1)).toMatchObject({ supports: [1], reason: "Initial admission of this conclusion." });
-  const trigger = createDreamerTrigger(memory, path, 2, 1);
-  const updated = await admittedWrite({ ...path, fact: "F2" }, trigger, [{ ...create, op: "update",
-    reason: "Substantive correction of the recorded conclusion.", id: tagged(1, 1), text: "Avoid npm", supports: ["F2"] }]);
+  const updated = curateWrite(path, [{ ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: tagged(1, 1), text: "Avoid npm", supports: ["F2"] }]);
   const commit = commitOf(updated.committed[0]);
   expect(memory.store.getKnowledgeRevision(1, commit)).toMatchObject({ supports: [2], reason: "Substantive correction of the recorded conclusion." });
   expect(memory.store.getKnowledgeRevision(1, 1)?.supports).toEqual([1]);
@@ -810,35 +665,8 @@ test("2026-09-07: supports replaces, history keeps the old set", async () => {
   expect(runs.at(-1)!.id).toBe(memory.store.getKnowledgeRevision(1, commit)!.runId);
 });
 
-// 127 lifts 116's 「D 先不改」: the Dreamer's memory takes one item per call, like the Noter's.
-test("2026-10-06, 127: '为什么不能分成并行的一批工具调用' and '每条跳过也是一次单独的调用' — one Dreamer memory call is one operation or one skip", () => {
-  const schema = dreamingToolDefinitions().find(tool => tool.name === "memory")!.parameters as Record<string, any>;
-  for (const batch of ["operations", "skipped"]) expect(schema.properties).not.toHaveProperty(batch);
-  expect(schema.else.then.required).toEqual(["skip", "because"]);
-  expect(schema.else.else.required).toEqual(["op", "supports", "reason"]);
-});
-
-test("2026-10-06, 127: 'A，你派工' — a refused Dreamer operation still blocks after a later sibling commits, until slot resubmits it", async () => {
-  const { create, write, path } = memoryWriter();
-  const created = write([create]).committed[0];
-  const trigger = createDreamerTrigger(memory, path, 1, 1);
-  const request = { fixture: "127 option A" };
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request);
-    const tool = input.tools.find(item => item.name === "memory")!, check = () => input.tools.find(item => item.name === "check")!.execute({});
-    const update = { ...create, op: "update", id: tagged(created.knowledgeId, commitOf(created)), reason: "Clarify the rule." };
-    expect(tool.execute({ ...update, id: `K${created.knowledgeId}#zzzz` })).toContain("rejected: M1: ");
-    expect(tool.execute({ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire the trigger." })).toContain('"committed"');
-    expect(check()).toMatch(/\nBlockers: M1: /);
-    expect(tool.execute({ slot: "M1", ...update })).toContain('"committed"');
-    expect(check()).toContain("Blockers: none");
-    return { outcome: "success", output: "resolved", request };
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-});
-
 // 144 supersedes 86's 1,000-token cap on N and D writes and 135's unlimited manual writes.
-test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要维护两套标准' — one title and body limit for the manual tools and the Dreamer, set in configuration, with updates of old items inside it", async () => {
+test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要维护两套标准' — one title and body limit for the manual tools and the Dreamer's files, set in configuration, with updates of old items inside it", () => {
   expect(DEFAULT_CONFIG.writing).toEqual({ titleTokens: 20, bodyTokens: 200 });
   memory.config.writing.bodyTokens = DEFAULT_CONFIG.writing.bodyTokens; // this file lifts the body cap for its large fixtures
   const { create, write, path, tools } = memoryWriter();
@@ -858,19 +686,10 @@ test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要�
     supports: ["F1"], reason: "Touch an old item", ...body });
   expect(write([update(old, { edits: [{ old: "word", new: "rule" }] })]).results[0]).toContain("over the 200-token limit");
   expect(write([update(old, { text: "Use pnpm", category: "constraint", scope: "project", topics: [] })]).committed).toHaveLength(1);
-  // The Dreamer is checked at its write call by the same limits.
-  const trigger = createDreamerTrigger(memory, path, 1, 1);
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest({ fixture: "144 one standard" });
-    const tool = input.tools.find(item => item.name === "memory")!;
-    const refused = JSON.parse(tool.execute({ ...update(created, { text: long, category: "constraint", scope: "project", topics: [] }), supports: [] }));
-    expect(refused.rejected.M1).toContain("over the 200-token limit");
-    tool.execute({ drop: "M1" });
-    expect(tool.execute({ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire the trigger." })).toContain('"committed"');
-    skipRest(input, [`K${trigger.knowledgeId}@v1`], "Reviewed unchanged");
-    return { outcome: "success", output: "limits held", request: { fixture: "144 one standard" } };
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  // The Dreamer's curate file is checked by the same limits.
+  const refused = checkWorkspace(memory.store, { kind: "curate", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+    file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, commitOf(created))}`, { reason: "Touch an old item" }, long) } });
+  expect(refused.problems.join("\n")).toContain("over the 200-token limit");
   // The limits are configuration, not constants.
   memory.config.writing.bodyTokens = 1_000;
   expect(write([{ ...create, text: long }]).results[0]).toBe("ok");
@@ -878,64 +697,37 @@ test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要�
 
 // A merge that omits its title inherits it from the primary it names, whichever of the two is older; an untitled
 // legacy primary requires one (2026-10-22: the named primary keeps its identity, no older-survivor rule, no swap).
-test("144/2026-10-22: a merge without a title takes the named primary's title, the newer item included; an untitled legacy primary is refused", async () => {
+test("144/2026-10-22: a merge without a title takes the named primary's title, the newer item included; an untitled legacy primary is refused", () => {
   const { create, write, path } = memoryWriter();
   const committed = (title: string, text: string) => write([{ ...create, title, text }]).committed[0] as { knowledgeId: number; version: string };
   const older = committed("Older rule", "Use pnpm"), newer = committed("Newer rule", "Avoid npm");
   const survivor = committed("Survivor rule", "Pin the Node version");
   const legacy = legacyKnowledge(memory.store, path, { text: "Legacy rule body", category: "constraint", scope: "project", supports: [1] });
-  const trigger = createDreamerTrigger(memory, path, 2, 1);
-  let merged: Pick<MemoryReceipt, "results" | "committed"> | undefined;
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest({ fixture: "merge title" });
-    const writeTool = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    const addresses = [older, newer, survivor].map(item => `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, commitOf(item))}`);
-    const legacyAddress = tagged(legacy.knowledgeId, legacy.commit);
-    for (const address of [...addresses, legacyAddress, tagged(trigger.knowledgeId, trigger.commit)]) readHandle(file => files.read(file).content, address);
-    const { title: _title, ...untitled } = create;
-    const withoutTitle = (id: string, absorb: string) => ({ ...untitled, op: "merge", reason: "Merged duplicate knowledge.", id, absorb: [absorb], supports: ["F1", "F2"] });
-    merged = JSON.parse(dreamerWrite(writeTool, { operations: [
-      withoutTitle(addresses[1]!, addresses[0]!),             // names the newer one: it keeps its identity and its title
-      withoutTitle(legacyAddress, addresses[2]!),             // names an untitled legacy primary: a title is required
-      { op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: ["F2"], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
-    return { outcome: "success", output: "merged", request: { fixture: "merge title" } };
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("failure");
-  expect(merged?.results[0], JSON.stringify(merged)).toBe("ok");
-  expect(merged?.results[1]).toContain("the base version has no title");
+  const merge = (primary: string, absorb: string) => ({ kind: "curate" as const, sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+    file: { name: "curate.md", text: workspaceBlock(`merge ${primary}`, { absorb, reason: "Merged duplicate knowledge." }, "Merged body.") } });
+  // Names the newer one: it keeps its identity and its title.
+  const merged = applyWorkspace(memory.store, merge(history(newer.knowledgeId, commitOf(newer)), history(older.knowledgeId, commitOf(older))));
+  expect(merged.ok, JSON.stringify(merged)).toBe(true);
+  // Names an untitled legacy primary: a title is required.
+  const refused = applyWorkspace(memory.store, merge(history(legacy.knowledgeId, legacy.commit), history(survivor.knowledgeId, commitOf(survivor))));
+  expect(refused.ok).toBe(false);
+  expect(refused.ok ? "" : refused.problems.join("\n")).toContain("no title");
   const titleOf = (item: { knowledgeId: number }) => memory.store.currentCommit(item.knowledgeId).map(revision => revision.title);
   expect(titleOf(newer)).toEqual(["Newer rule"]);
   expect(titleOf(older)).toEqual([]);
 });
 
 // 2026-10-22 (supersedes tickets 44 and 135): the primary a merge names keeps its identity, newer or not.
-test("2026-10-22: a merge keeps the identity of the primary it names even when that is the newer item", async () => {
+test("2026-10-22: a merge keeps the identity of the primary it names even when that is the newer item", () => {
   const { create, write, path } = memoryWriter();
   const created = (write([create, { ...create, text: "Avoid npm", supports: ["F2"] }]).committed as Array<{ knowledgeId: number; version: string }>)
     .map(item => ({ ...item, commit: commitOf(item) }));
   const first = created[0], second = created[1];
   if (!first || !second) throw new Error(`merge fixture needs two identities: ${JSON.stringify(created)}`);
-  const trigger = createDreamerTrigger(memory, path, 2, 1);
-  const request = { fixture: "merge primary" };
-  let merged: Pick<MemoryReceipt, "results" | "committed"> | undefined;
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request); const writeTool = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    for (const item of [first, second]) readHandle(file => files.read(file).content, item.version);
-    const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the primary.",
-      id: tagged(second.knowledgeId, second.commit), absorb: [tagged(first.knowledgeId, first.commit)], supports: ["F1", "F2"] };
-    const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
-    readHandle(file => files.read(file).content, triggerAddress);
-    merged = JSON.parse(dreamerWrite(writeTool, { operations: [merge, { op: "archive", kind: "budget", id: triggerAddress, supports: ["F2"],
-      reason: "Retire the explicit fixture trigger." }], skipped: [] }));
-    return { outcome: "success", output: "merged", request };
-  });
-  expect(result.outcome).toBe("success");
-  if (!merged) throw new Error(`merge fixture did not submit: ${JSON.stringify(result)}`);
-  expect(merged.results).toEqual(["ok", "ok"]);
+  const merged = curateWrite(path, [{ ...create, op: "merge", reason: "Merged duplicate knowledge into the primary.",
+    id: tagged(second.knowledgeId, second.commit), absorb: [tagged(first.knowledgeId, first.commit)], supports: ["F1", "F2"] }]);
+  expect(merged.results).toEqual(["ok"]);
   const primary = merged.committed[0];
-  if (!primary) throw new Error(`merge fixture committed nothing: ${JSON.stringify(merged)}`);
   expect(primary).toMatchObject({ knowledgeId: second.knowledgeId });
   expect(primary).not.toHaveProperty("swappedFrom");
   const mergeCommit = commitOf(primary);
@@ -947,35 +739,24 @@ test("2026-10-22: a merge keeps the identity of the primary it names even when t
 });
 
 // 2026-10-22: a split keeps the item as its primary part; only the children are new identities.
-test("2026-10-22: a split keeps the original identity as the primary part, creates the children and does not archive the original", async () => {
+test("2026-10-22: a split keeps the original identity as the primary part, creates the children and does not archive the original", () => {
   const { create, write, path } = memoryWriter();
   const original = (write([{ ...create, text: "Use pnpm and keep the lockfile" }]).committed as Array<{ knowledgeId: number; version: string }>)
     .map(item => ({ ...item, commit: commitOf(item) }))[0]!;
-  const trigger = createDreamerTrigger(memory, path, 2, 1);
-  const request = { fixture: "split primary" };
-  let split: Pick<MemoryReceipt, "results" | "committed"> | undefined;
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request); const writeTool = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
-    for (const address of [original.version, triggerAddress]) readHandle(file => files.read(file).content, address);
-    split = JSON.parse(dreamerWrite(writeTool, { operations: [{ op: "split", id: tagged(original.knowledgeId, original.commit),
-      text: "Use pnpm", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "Two independent rules.",
-      children: [{ title: "Lockfile", text: "Keep the lockfile", category: "reference", topics: [] }, { title: "Registry", text: "Use the mirror", category: "goal", topics: [] }] },
-      { op: "archive", kind: "budget", id: triggerAddress, supports: ["F2"], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
-    return { outcome: "success", output: "split", request };
-  });
-  expect(result.outcome).toBe("success");
-  if (!split) throw new Error(`split fixture did not submit: ${JSON.stringify(result)}`);
-  const [primary, ...children] = split.committed.filter(item => item.knowledgeId !== trigger.knowledgeId);
-  expect(primary).toMatchObject({ op: "split", knowledgeId: original.knowledgeId });
-  expect(children.map(child => child.knowledgeId)).not.toContain(original.knowledgeId);
+  const child = (title: string, category: string, text: string) => `\n### child\ntitle: ${title}\ncategory: ${category}\nscope: project\ntopics:\nsupports: F1\nreason: split out\n\n${text}\n`;
+  const result = applyWorkspace(memory.store, { kind: "curate", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+    file: { name: "curate.md", text: workspaceBlock(`split ${history(original.knowledgeId, original.commit)}`, { reason: "Two independent rules." }, "Use pnpm")
+      + child("Lockfile", "reference", "Keep the lockfile") + child("Registry", "goal", "Use the mirror") } });
+  if (!result.ok) throw new Error(result.problems.join("\n"));
+  const [primary, ...children] = result.blocks[0]!.versions.map(version => Number(/^K(\d+)/.exec(version)![1]));
+  expect(primary).toBe(original.knowledgeId);
+  expect(children).not.toContain(original.knowledgeId);
   expect(children).toHaveLength(2);
   // The original is not archived: it continues with the primary part's text, and only the children are new.
   expect(memory.store.currentCommit(original.knowledgeId).map(revision => [revision.op, revision.text])).toEqual([["split", "Use pnpm"]]);
-  expect(children.map(child => memory.store.currentCommit(child.knowledgeId)[0]!.category)).toEqual(["reference", "goal"]);
+  expect(children.map(id => memory.store.currentCommit(id)[0]!.category)).toEqual(["reference", "goal"]);
   expect(memory.store.listKnowledgeLinks(original.knowledgeId).map(link => [link.kind, link.fromCommit, link.toKnowledge]))
-    .toEqual(children.map(child => ["split_from", original.commit, child.knowledgeId]));
+    .toEqual(children.map(id => ["split_from", original.commit, id]));
   expect(memory.store.listKnowledgeRevisions(original.knowledgeId).some(revision => revision.op === "archive")).toBe(false);
 });
 
@@ -1054,10 +835,10 @@ function commitPaths() {
   const content = (fact: string, text = "Use blue tiles") => ({ text, category: "constraint", scope: "project", supports: [fact] });
   expect(root.writeCommitted([{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }])[0]!.version).toBe("K1@v1");
   const c = node(s.id, t.id, "C"), d = node(s.id, t.id, "D");
-  const edit = async (who: typeof root, text: string, trigger: { knowledgeId: number; commit: number }, fact = who.fact) => {
+  const edit = async (who: typeof root, text: string, fact = who.fact) => {
     publish(who);
     const current = memory.store.currentCommit(1, who).at(-1)!;
-    return admittedWrite(who, trigger, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
+    return curateWrite(who, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
       id: tagged(1, current.id), ...content(fact, text) }]);
   };
   const tips = (path: { sessionId: number; headTurnId: number }) => memory.store.currentCommit(1, path).map(r => r.id);
@@ -1068,31 +849,33 @@ function commitPaths() {
   return { root, c, d, node, peer, content, edit, tips, publish };
 }
 
-async function admittedWrite(
-  path: { sessionId: number; headTurnId: number; branch: string; fact: string },
-  trigger: { knowledgeId: number; commit: number }, operations: any[], skipped: string[] = [],
-) {
-  const request = { fixture: "rulings admitted maintenance", trigger: history(trigger.knowledgeId, trigger.commit) };
-  let receipt: any;
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request);
-    const files = memoryFiles(memory, input.reader!);
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const exact = new Set<string>();
-    for (const operation of operations) {
-      if (typeof operation.id === "string" && /^K\d+#[a-z]+$/.test(operation.id)) exact.add(operation.id);
-      for (const parent of operation.absorb ?? []) if (/^K\d+#[a-z]+$/.test(parent)) exact.add(parent);
-    }
-    for (const address of exact) readHandle(file => files.read(file).content, address);
-    const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
-    readHandle(file => files.read(file).content, triggerAddress);
-    receipt = JSON.parse(dreamerWrite(write, { operations: [...operations, { op: "archive", kind: "budget", id: triggerAddress,
-      supports: [path.fact], reason: "Retire the explicit fixture trigger." }],
-      skipped: skipped.map(knowledge => ({ knowledge, because: "This supplied identity is unrelated to the asserted maintenance." })) }));
-    return { outcome: "success", output: "maintenance complete", request };
+/** A Dreamer maintenance write as the Dreamer now makes it: one curate file for the path, checked and applied by core. The operations are
+ * written in the memory tool's shape (`id` a tag, `supports` F ids); an archive takes no evidence of its own and states Retired plus its reason. */
+function curateWrite(path: { sessionId: number; headTurnId: number; branch: string }, operations: any[]) {
+  const store = memory.store;
+  const address = (tag: string) => {
+    const [, id, version] = /^K(\d+)#([a-z]+)$/.exec(tag)!;
+    return `K${id}@v${store.versionOrdinal(Number(id), store.resolveVersionTag(Number(id), version!))}`;
+  };
+  const blocks = operations.map(op => {
+    if (op.op === "archive") return workspaceBlock(`archive ${address(op.id)}`, { kind: "inadmissible", reason: op.reason }, op.text ?? `Retired: ${op.reason}`);
+    const fields: Record<string, string> = { reason: op.reason };
+    for (const key of ["title", "category", "scope"]) if (op[key] !== undefined) fields[key] = op[key];
+    if (op.topics) fields.topics = op.topics.join(", ");
+    if (op.supports?.length) fields.supports = op.supports.join(", ");
+    if (op.op === "merge") fields.absorb = op.absorb.map(address).join(", ");
+    return workspaceBlock(`${op.op} ${address(op.id)}`, fields, op.text);
   });
-  if (result.outcome !== "success" || !receipt?.committed) throw new Error(JSON.stringify({ result, receipt }));
-  return { ...receipt, committed: receipt.committed.map((item: { knowledgeId: number; version: string }) => ({ ...item, commit: commitOf(item) })) };
+  const result = applyWorkspace(store, { kind: "curate", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+    file: { name: "curate.md", text: blocks.join("\n") } });
+  if (!result.ok) throw new Error(result.problems.join("\n"));
+  const refused = result.blocks.filter(entry => entry.status !== "applied");
+  if (refused.length) throw new Error(refused.map(entry => entry.reason).join("\n"));
+  const committed = result.blocks.flatMap(entry => entry.versions).map(version => {
+    const [, id, ordinal] = /^K(\d+)@v(\d+)$/.exec(version)!;
+    return { knowledgeId: Number(id), version, commit: store.resolveVersionOrdinal(Number(id), Number(ordinal)) };
+  });
+  return { results: result.blocks.map(() => "ok"), committed: committed as [typeof committed[number], ...typeof committed] };
 }
 
 test("2026-09-07 A: sibling-branch facts are readable but supports requires an adoption fact on this path", () => {
@@ -1127,8 +910,8 @@ test("2026-09-07: supports obeys the session/project/global scope table", () => 
 // Deferred to 64c: processed/unprocessed knowledge partitions and certification counters are removed there.
 test.skip("footer progress retains total current-tip semantics while exposing its exact-version split", async () => {
   const { c, d, peer, edit, tips } = commitPaths();
-  await edit(c, "C version", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1));
-  await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2));
+  await edit(c, "C version");
+  await edit(d, "D version");
   const third = peer();
   expect(tips(third)).toEqual([2, 3]); // two divergent tips of K1 on this path
   const counted = memory.progress(third.sessionId, third.branch, third.headTurnId);
@@ -1143,9 +926,8 @@ test.skip("footer progress retains total current-tip semantics while exposing it
 });
 
 test("2026-09-07 B: store rechecks every base inside the transaction and rolls back an earlier create", async () => {
-  const { root, content, edit } = commitPaths();
-  const trigger = createDreamerTrigger(memory, root, Number(root.fact.slice(1)), 1);
-  const updated = await edit(root, "Use blue tiles", trigger);
+  const { root, edit } = commitPaths();
+  const updated = await edit(root, "Use blue tiles");
   const successor = commitOf(updated.committed[0]);
   const origin = memory.store.triggerOrigin(root, root.triggerEntryId);
   const run = memory.store.bindRunOrigin({ kind: "manual", sessionId: root.sessionId, createdAt: time }, origin);
@@ -1156,72 +938,29 @@ test("2026-09-07 B: store rechecks every base inside the transaction and rolls b
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("stale batch committed");
   expect(result.problems.join(" ")).toContain(`K1@${successor}`);
-  expect(memory.store.getKnowledge(trigger.knowledgeId + 1)).toBeNull();
+  expect(memory.store.getKnowledge(2)).toBeNull();
   expect(memory.store.listKnowledgeRevisions(1)).toHaveLength(2);
 });
 
-test("2026-09-07 B: reading a historical commit never refreshes the base to an unread successor", async () => {
+test("92/118: search previews are tagless, and a stale base is refused naming the current version", () => {
   const { root, peer, content } = commitPaths();
   const other = peer();
-  const path = { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId };
-  const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1);
-  const request = { fixture: "historical exact-read scenario" };
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request);
-    const files = memoryFiles(memory, input.reader!);
-    const memoryTool = input.tools.find(tool => tool.name === "memory")!;
-    expect(files.read("trace://K1@v1").content).not.toContain("Unread successor");
-    const first = JSON.parse(dreamerWrite(memoryTool, { operations: [{ op: "update", id: tagged(1, 1), topics: [],
-      reason: "Substantive correction of the recorded conclusion.", ...content(root.fact, "Unread successor") }], skipped: [] }));
-    const successor = first.committed[0];
-    expect(dreamerWrite(memoryTool, { operations: [{ op: "update", id: tagged(1, 1), topics: [],
-      reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }], skipped: [] })).toContain(`current: ${history(successor.knowledgeId, commitOf(successor))}`);
-    expect(files.read(`trace://${successor.version}`).content).toContain("Unread successor");
-    const corrected = JSON.parse(dreamerWrite(memoryTool, { operations: [{ slot: "M1", op: "update", id: tagged(1, commitOf(successor)), topics: [],
-      reason: "Substantive correction of the recorded conclusion.", ...content(other.fact) }, { op: "archive", kind: "budget",
-      id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
-    expect(corrected.committed[0].knowledgeId).toBe(1);
-    return { outcome: "success", output: "scenario complete", request };
-  });
-  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  expect(memory.store.currentCommit(1, path)[0]!.text).toBe("Use blue tiles");
-  expect(memory.store.listKnowledgeRevisions(1).at(-1)!.text).toBe("Use blue tiles");
-});
-
-test("92/118: search previews are tagless and do not authorize a stale base", async () => {
-  const { root, peer, content } = commitPaths();
-  const other = peer(), path = { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId };
-  const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1);
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest({ fixture: "search previews and tagged bases" });
-    const search = input.tools.find(tool => tool.name === "search")!;
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    readHandle(file => files.read(file).content, "K1@v1");
-    const successor = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: tagged(1, 1), topics: [], reason: "A substantive correction.",
-      ...content(root.fact, `Unread successor ${"中文😀".repeat(350)}`) }], skipped: [] })).committed[0];
-    const preview = search.execute({ query: "Unread successor", layer: "knowledge" });
-    expect(preview).not.toContain("rejected:"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
-    const edit = (id: string, slot?: string) => JSON.parse(dreamerWrite(write, { operations: [{ ...slot ? { slot } : {}, op: "update", topics: [], reason: "A substantive correction.", id,
-      ...content(other.fact) }], skipped: [] }));
-    expect(edit(tagged(1, 1)).results[0]).toContain(`current: ${history(1, commitOf(successor))}`);
-    const successorTag = tagged(1, commitOf(successor));
-    expect(readHandle(file => files.read(file).content, successor.version)).toContain(successorTag);
-    expect(edit(successorTag, "M1").committed[0].knowledgeId).toBe(1);
-    readHandle(file => files.read(file).content, history(trigger.knowledgeId, trigger.commit));
-    expect(JSON.parse(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit),
-      supports: [other.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] })).committed).toHaveLength(1);
-    return { outcome: "success", output: "scenario complete", request: { fixture: "search previews and tagged bases" } };
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  readHandle(file => memoryFiles(memory, other).read(file).content, "K1@v1");
+  const successor = other.writeCommitted([{ op: "update", id: tagged(1, 1), topics: [], reason: "A substantive correction.",
+    ...content(root.fact, `Unread successor ${"中文😀".repeat(350)}`) }])[0]!;
+  const preview = other.tools.find(tool => tool.name === "search")!.execute({ query: "Unread successor", layer: "knowledge" });
+  expect(preview).not.toContain("rejected:"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
+  const edit = (id: string) => other.write([{ op: "update", topics: [], reason: "A substantive correction.", id, ...content(other.fact) }]);
+  expect(edit(tagged(1, 1)).results[0]).toContain(`current: ${history(1, successor.commit)}`);
+  const successorTag = tagged(1, successor.commit);
+  expect(readHandle(file => memoryFiles(memory, other).read(file).content, successor.version)).toContain(successorTag);
+  expect(edit(successorTag).committed![0]!.knowledgeId).toBe(1);
 });
 
 test("41a/118: search lists the versions applicable on the reader's path, and exact trace:// versions preserve read scope", async () => {
   const { c, d, edit, publish } = commitPaths();
-  const cTrigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1);
-  const cCommit = (await edit(c, "FILTER-C", cTrigger)).committed[0].commit as number;
-  const dTrigger = createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2);
-  const dCommit = (await edit(d, "FILTER-D", dTrigger)).committed[0].commit as number;
+  const cCommit = (await edit(c, "FILTER-C")).committed[0].commit as number;
+  const dCommit = (await edit(d, "FILTER-D")).committed[0].commit as number;
   publish(c);
   const current = memory.search("FILTER", "knowledge", c);
   expect(current).toContain(`[${history(1, cCommit)}]`);
@@ -1306,49 +1045,35 @@ test("41 review: fact and knowledge previews are one physical line with head-onl
   expect(files.read(`trace://${history(created.knowledgeId, created.commit)}`).content).toContain(longKnowledgeText);
 });
 
-test("41b/92/118: search previews omit tags, while exact tags need no read ledger", async () => {
+test("41b/92/118: search previews omit tags, while an exact tag read from the version's address is a valid base", () => {
   const { peer, content } = commitPaths(); const other = peer();
-  const path = { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId };
-  const trigger = createDreamerTrigger(memory, path, Number(other.fact.slice(1)), 1), request = { fixture: "fields select tag display" };
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest(request); const search = input.tools.find(tool => tool.name === "search")!;
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    const update = (id: string, text: string) => JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id,
-      ...content(other.fact, text), topics: [], reason: "41b update" }], skipped: [] }));
-    const successor = update(tagged(1, 1), "BASE-SUCCESSOR").committed[0];
-    const exact = tagged(1, commitOf(successor));
-    const preview = search.execute({ query: "BASE-SUCCESSOR", layer: "knowledge" });
-    expect(preview).toContain("BASE-SUCCESSOR"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
-    // The search preview is tagless; exact base and scope, not read history, authorize this write.
-    const finite = update(exact, "FINITE-COMPLETE").committed[0];
-    const finiteTag = tagged(1, commitOf(finite));
-    expect(readHandle(file => files.read(file).content, finite.version)).toContain(finiteTag);
-    expect(update(finiteTag, "FULL-COMPLETE").committed[0].knowledgeId).toBe(1);
-    dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: [other.fact],
-      reason: "Retire the explicit fixture trigger." }], skipped: [] });
-    return { outcome: "success", output: "scenario complete", request };
-  });
-  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
+  const update = (id: string, text: string) => other.writeCommitted([{ op: "update", id, ...content(other.fact, text), topics: [], reason: "41b update" }])[0]!;
+  const successor = update(tagged(1, 1), "BASE-SUCCESSOR");
+  const preview = other.tools.find(tool => tool.name === "search")!.execute({ query: "BASE-SUCCESSOR", layer: "knowledge" });
+  expect(preview).toContain("BASE-SUCCESSOR"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
+  // The search preview is tagless; the exact base, not read history, authorizes this write.
+  const finite = update(tagged(1, successor.commit), "FINITE-COMPLETE");
+  const finiteTag = tagged(1, finite.commit);
+  expect(readHandle(file => memoryFiles(memory, other).read(file).content, finite.version)).toContain(finiteTag);
+  expect(update(finiteTag, "FULL-COMPLETE").knowledgeId).toBe(1);
 });
 
-test("64b/34a: global current scope hides the identity without visible fallback", async () => {
+test("64b/34a: global current scope hides the identity without visible fallback", () => {
   const { root, peer, content, publish } = commitPaths();
   publish(root);
-  const maintain = async (text: string, scope: "global" | "project" | "session", sequence: number) => {
+  const maintain = (text: string, scope: "global" | "project" | "session") => {
     const current = memory.store.currentCommit(1, root)[0]!;
-    const trigger = createDreamerTrigger(memory, root, Number(root.fact.slice(1)), sequence, current.scope);
-    const receipt = await admittedWrite(root, trigger, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
+    const receipt = curateWrite(root, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
       id: tagged(1, current.id), ...content(root.fact, text), scope }]);
-    return receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1).commit as number;
+    return receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!.commit as number;
   };
-  await maintain("Shared globally", "global", 1);
+  maintain("Shared globally", "global");
   const outsideProject = memory.store.createProject({ name: "outside", declaredBy: "mark" });
   const outside = peer(outsideProject.id);
-  const projectCommit = await maintain("Project only", "project", 2);
+  const projectCommit = maintain("Project only", "project");
   expect(memory.inject({ projectId: outsideProject.id })).not.toMatch(/K1[#@]/);
   expect(memoryFiles(memory, outside).read("trace://K1").content.split("\n")[0]).toBe("K1 path current: none");
-  const sessionCommit = await maintain("Session only", "session", 3);
+  const sessionCommit = maintain("Session only", "session");
   const ownProject = memory.store.getSession(root.sessionId)!.projectId;
   expect(memory.inject({ projectId: ownProject })).not.toContain(tagged(1, projectCommit));
   expect(memory.inject({ projectId: ownProject })).not.toContain(tagged(1, sessionCommit));
@@ -1370,47 +1095,30 @@ test("2026-09-07: commit schema removes mutable heads and binds parents and link
   ]) expect(() => memory.store.db.exec(sql)).toThrow(/FOREIGN KEY/);
 });
 
-test("64b: stale absorbed bases name the surviving current commit across merge links", async () => {
+test("64b: stale absorbed bases name the surviving current commit across merge links", () => {
   const { root, peer, content, publish } = commitPaths();
   const second = root.writeCommitted([{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }])[0]!;
   const other = peer(); other.read(second.version);
   publish(root);
-  const mergeTrigger = createDreamerTrigger(memory, root, Number(root.fact.slice(1)), 1);
-  const mergedReceipt = await admittedWrite(root, mergeTrigger, [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.",
+  const mergedReceipt = curateWrite(root, [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.",
     id: tagged(1, 1), absorb: [tagged(second.knowledgeId, second.commit)], ...content(root.fact) }]);
   const merged = mergedReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
-  const updateTrigger = createDreamerTrigger(memory, root, Number(root.fact.slice(1)), 2);
-  const updatedReceipt = await admittedWrite(root, updateTrigger, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
+  const updatedReceipt = curateWrite(root, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
     id: tagged(1, merged.commit), ...content(root.fact, "Surviving current conclusion") }]);
   const survivor = updatedReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
   publish(other);
-  const staleTrigger = createDreamerTrigger(memory, other, Number(other.fact.slice(1)), 3);
-  const request = { fixture: "absorbed stale handle" }; let rejected = "";
-  const result = await admittedScenarios.run(memory, other, input => {
-    input.reportRequest(request); const write = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    readHandle(file => files.read(file).content, second.version);
-    readHandle(file => files.read(file).content, history(staleTrigger.knowledgeId, staleTrigger.commit));
-    rejected = dreamerWrite(write, { operations: [{ op: "update", id: tagged(second.knowledgeId, second.commit), topics: [],
-      reason: "Substantive correction of the recorded conclusion.", ...content(other.fact, "Invalid absorbed edit") }], skipped: [] });
-    expect(rejected).toContain(`current: ${history(survivor.knowledgeId, commitOf(survivor))}`);
-    expect(write.execute({ drop: "M1" })).toContain("dropped: M1"); // 127: a refusal blocks until withdrawn
-    const supplied = suppliedHandles(input.material.changed)
-      .filter((knowledge: string) => knowledge !== history(staleTrigger.knowledgeId, staleTrigger.commit))
-      .map((knowledge: string) => ({ knowledge, because: "The stale absorbed edit was correctly refused." }));
-    dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tagged(staleTrigger.knowledgeId, staleTrigger.commit), supports: [other.fact],
-      reason: "Retire explicit trigger." }], skipped: supplied });
-    return { outcome: "success", output: "stale absorbed handle checked", request };
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const stale = applyWorkspace(memory.store, { kind: "curate", sessionId: other.sessionId, path: { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId },
+    file: { name: "curate.md", text: workspaceBlock(`update ${history(second.knowledgeId, second.commit)}`, { reason: "Substantive correction of the recorded conclusion.", supports: other.fact }, "Invalid absorbed edit") } });
+  const rejected = stale.ok ? stale.blocks.map(entry => entry.reason ?? "").join("\n") : stale.problems.join("\n");
+  expect(rejected).toContain(`current: ${history(survivor.knowledgeId, survivor.commit)}`);
   expect(memory.store.getKnowledge(second.knowledgeId)).not.toBeNull();
   expect(memory.store.currentCommit(second.knowledgeId, other)).toEqual([]);
 });
 
 test("16b: path trace separates applicable history, parents, children and sibling tips", async () => {
   const { root, c, d, edit, publish } = commitPaths();
-  const cCommit = (await edit(c, "C version", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1))).committed[0].commit as number;
-  const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
+  const cCommit = (await edit(c, "C version")).committed[0].commit as number;
+  const dCommit = (await edit(d, "D version")).committed[0].commit as number;
   publish(c);
   const trace = memory.trace("K1", { ...c, versions: "all" });
   expect(trace).toContain(`K1 path current: K1@${cCommit}`);
@@ -1430,8 +1138,8 @@ test("16b: path trace separates applicable history, parents, children and siblin
 
 test("16b: search marks versions against the supplied path, including archives and unrestricted siblings", async () => {
   const { root, c, d, edit, publish } = commitPaths();
-  const cCommit = (await edit(c, "C version", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1))).committed[0].commit as number;
-  const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
+  const cCommit = (await edit(c, "C version")).committed[0].commit as number;
+  const dCommit = (await edit(d, "D version")).committed[0].commit as number;
   publish(c);
   const line = (result: unknown, label: string) => (result as string).split("\n").find(l => l.startsWith(`[${label}]`));
   expect(line(memory.search("Use blue tiles", "knowledge", c), history(1, 1))).toContain("(superseded)");
@@ -1439,9 +1147,8 @@ test("16b: search marks versions against the supplied path, including archives a
   expect(memory.search("D version", "knowledge", c)).not.toContain("D version"); // another branch's version is not applicable here
   expect(line(memory.search("C version", "knowledge", root), history(1, cCommit))).toBeDefined();
   expect(c.read("K1")).toContain("C version");
-  const archiveTrigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3);
-  const archived = await admittedWrite(c, archiveTrigger, [{ op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.",
-    id: tagged(1, cCommit), supports: [c.fact] }]);
+  const archived = curateWrite(c, [{ op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.",
+    id: tagged(1, cCommit), text: "C version is withdrawn: the cited evidence no longer supports this conclusion." }]);
   expect(archived.committed[0].knowledgeId).toBe(1);
   expect(memory.search("C version", "knowledge", c)).toContain("(archived)");
   expect(memory.search("D version", "knowledge", d)).not.toContain("[K1@v1]");
@@ -1451,8 +1158,8 @@ test("16b: search marks versions against the supplied path, including archives a
 
 test("64b: compaction follows the owner's published foreground across a branch switch", async () => {
   const { c, d, edit, publish } = commitPaths();
-  const cCommit = (await edit(c, "C version", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1))).committed[0].commit as number;
-  const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
+  const cCommit = (await edit(c, "C version")).committed[0].commit as number;
+  const dCommit = (await edit(d, "D version")).committed[0].commit as number;
   publish(c);
   const onC = compacted(memory.compact(c.sessionId, c.branch, c.headTurnId));
   expect(onC).toContain(`[${tagged(1, cCommit)}]`); expect(onC).not.toContain(`[${tagged(1, dCommit)}]`);
@@ -1463,8 +1170,8 @@ test("64b: compaction follows the owner's published foreground across a branch s
 
 test("16b: branch carry fixture uses evidence ancestry, includes commits and raw; tags delimit and lines stay byte for byte", async () => {
   const { c, d, node, edit, publish } = commitPaths();
-  const cCommit = (await edit(c, "C version", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1))).committed[0].commit as number;
-  const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
+  const cCommit = (await edit(c, "C version")).committed[0].commit as number;
+  const dCommit = (await edit(d, "D version")).committed[0].commit as number;
   publish(c);
   recorded(memory, c.sessionId, c.branch, c.headTurnId);
   const tail = memory.store.appendTurn({ sessionId: c.sessionId, parentTurnId: c.headTurnId, kind: "turn", userPrompt: "Unrecorded <work> & more", assistantText: "Pending", startedAt: time });
@@ -1502,10 +1209,9 @@ test("64b/16b: every raw source of a multi-source fact constrains carry, current
     currentTurnId: c.headTurnId, triggerEntryId: entries.at(-1)!.id });
   const fact = JSON.parse(tools.find(tool => tool.name === "note")!.execute({ title: "Violet tile decision", sources: `[T${root.headTurnId}#E1] Initial tile rule\n[T${c.headTurnId}#E2] Use violet tiles` })).factIds[0] as number;
   publish(c);
-  const trigger = createDreamerTrigger(memory, c, fact, 1);
-  const updated = await admittedWrite(c, trigger, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
+  const updated = curateWrite(c, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
     id: tagged(1, 1), ...content(`F${fact}`, "Use violet tiles") }]);
-  const commit = updated.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1).commit;
+  const commit = updated.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!.commit;
   for (const path of [root, d]) {
     publish(path);
     expect(memory.branchSummary(path.sessionId, path.branch, path.headTurnId)).not.toContain(`[F${fact}]`);
@@ -1631,27 +1337,10 @@ test("73/133: core material uses independent windows, truncates newest-first and
 
 // 92 §8 replaces C's database-derived capacity with D's K window; the old C-only
 // knowledgeTokens override is retired, not mapped onto either N or D.
-test("45/92: D freezes the database-owned K capacity; later Settings edits cannot reprice an admitted run", async () => {
-  const { path } = memoryWriter();
-  createDreamerTrigger(memory, path, 1, 1);
+test("45/92: the per-consolidation knowledge-token settings are removed", () => {
   for (const override of [{ render: { knowledgeBlockTokens: 10_000 } }, { consolidation: { knowledgeTokens: 10_000 } }])
     expect(() => api.validateConfig(override as never)).toThrow(/Removed setting .*knowledge.*Tokens/);
   expect(Object.hasOwn(memory.config, "consolidation")).toBe(false);
-  setKnowledgeCapacity(memory, 10_000);
-  let frozenCap = 0, frozenMaterial = "";
-  const result = await admittedScenarios.run(memory, path, task => {
-    frozenCap = task.admittedProcessedInputCap + tokens(task.material.changed) + 1;
-    frozenMaterial = task.text;
-    expect(frozenCap).toBe(10_000);
-    expect(tokens([task.material.processed, task.material.changed].join("\n\n"))).toBeLessThanOrEqual(frozenCap);
-    setKnowledgeCapacity(memory, 20_000);
-    expect(task.admittedProcessedInputCap + tokens(task.material.changed) + 1).toBe(10_000);
-    expect(task.text).toBe(frozenMaterial);
-    return { outcome: "failure", output: "retain the pending range", request: { fake: true } };
-  });
-  expect(result.outcome).toBe("failure");
-  expect(frozenCap).toBe(10_000);
-  expect(memory.config.compaction.sharedAllowanceTokens).toBe(20_000);
 });
 
 // ---- 20c 2026-09-08: the compaction rule is superseded, recorded here by its own name ----
@@ -2017,78 +1706,43 @@ test("19c 2026-09-08: a stored branch-mode run reads as legacy request-copy exec
 // the evidence it cites, so its applicability is read from the same field as every other commit.
 // User, 2026-09-07: "supports proves only the new text". Superseded: supports supplies the commit's
 // evidence, including the complete result's basis and the correction or withdrawal that justified it.
-test("21a/116/127: single-item write keeps supports and reason; a Dreamer skip keeps because", async () => {
+test("21a/116: single-item write keeps supports and reason; an archive in a curate file inherits its parent's evidence", () => {
   const { create, write, path } = memoryWriter();
   const operation = toolDefinitions.find(t => t.name === "memory")!.parameters.properties as Record<string, any>;
   expect(operation.op.enum).toEqual(["create", "update", "archive"]);
   expect(operation).not.toHaveProperty("because");
   expect(operation.reason).toEqual({ type: "string", minLength: 1 });
   expect(operation).not.toHaveProperty("skipped");
-  const dream = dreamingToolDefinitions().find(t => t.name === "memory")!.parameters.properties as Record<string, any>;
-  expect(dream.because).toEqual({ type: "string", minLength: 1 });
   const factSchema = toolDefinitions.find(t => t.name === "note")!.parameters.properties as Record<string, any>;
   expect(factSchema).not.toHaveProperty("reason"); // facts gain no commit metadata and the surface stays four tools
   expect(write([create]).committed).toHaveLength(1);
-  const trigger = createDreamerTrigger(memory, path, 1, 1);
-  const archived = await admittedWrite({ ...path, fact: "F1" }, trigger,
-    [{ op: "archive", kind: "budget", id: tagged(1, 1), supports: ["F1"], reason: "Withdrawn by the user." }]);
+  const archived = curateWrite(path, [{ op: "archive", kind: "budget", id: tagged(1, 1), reason: "Withdrawn by the user." }]);
   const archiveCommit = archived.committed[0].commit as number;
   expect(memory.store.getKnowledgeRevision(1, archiveCommit)?.supports).toEqual([1]); // no longer cleared
 });
 
-// Ticket 21 "Applicability" and "Branch scenario", scenario 5: one citation rule for every commit.
-test("64b/21a: an archive's supports face the same session/project/global table as any other commit", async () => {
+// Ticket 21 "Applicability" and "Branch scenario", scenario 5: one citation rule for every commit. An archive block takes no evidence of
+// its own (it keeps its parent's), so the Dreamer's citing commits are its update, merge, split and create blocks.
+test("64b/21a: a curate update's supports face the same session/project/global table as any other commit", () => {
   const { c, peer, content, publish } = commitPaths();
   const same = peer(), outside = peer(memory.store.createProject({ name: "outside 21a", declaredBy: "mark" }).id);
-  let sequence = 0;
   for (const scope of ["session", "project", "global"] as const) for (const origin of [c, same, outside]) {
     publish(c);
-    const created = c.writeCommitted([{ op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope, reason: "Admitted for the archive scope check." }])[0]!;
-    const address = tagged(created.knowledgeId, created.commit);
-    const trigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), ++sequence, scope);
+    const created = c.writeCommitted([{ op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope, reason: "Admitted for the scope check." }])[0]!;
     const allowed = origin === c || scope === "global" || (scope === "project" && origin === same);
-    const request = { fixture: "archive scope table", scope, origin: origin.sessionId }; let first = "";
-    const result = await admittedScenarios.run(memory, c, input => {
-      input.reportRequest(request); const write = input.tools.find(tool => tool.name === "memory")!;
-      const files = memoryFiles(memory, input.reader!);
-      const triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
-      readHandle(file => files.read(file).content, address); readHandle(file => files.read(file).content, triggerAddress);
-      const otherSupplied = suppliedHandles(input.material.changed)
-        .filter((knowledge: string) => knowledge !== created.version && knowledge !== history(trigger.knowledgeId, trigger.commit))
-        .map((knowledge: string) => ({ knowledge, because: "Unrelated current knowledge is unchanged by the archive scope check." }));
-      first = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: address, supports: [origin.fact], reason: `Retired on ${origin.branch} evidence.` },
-        { op: "archive", kind: "budget", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }], skipped: otherSupplied });
-      if (allowed) return { outcome: "success", output: "archived", request };
-      expect(first).toContain("rejected: M1");
-      // 127: the trigger archive and the skips were their own calls and committed; only the refused archive is withdrawn.
-      expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
-      const corrected = dreamerWrite(write, { skipped: [{ knowledge: created.version, because: "Foreign support is outside this archive's scope." }] });
-      expect(corrected).toContain('"committed"');
-      return { outcome: "success", output: "scope refusal checked", request };
-    });
-    expect(result.outcome, JSON.stringify(result)).toBe("success");
-    expect(first.includes('"committed"')).toBe(allowed);
+    const checked = checkWorkspace(memory.store, { kind: "curate", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
+      file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `Retired on ${origin.branch} evidence.`, supports: origin.fact }, "Changed body.") } });
+    expect(checked.problems.length === 0, `${scope} from ${origin.branch}: ${checked.problems.join("; ")}`).toBe(allowed);
   }
+  // Reason prose cannot adopt a foreign fact.
   const created = c.writeCommitted([{ op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope: "session", reason: "Admitted for the reason-bypass check." }])[0]!;
-  const trigger = createDreamerTrigger(memory, c, Number(c.fact.slice(1)), ++sequence, "session");
-  const request = { fixture: "archive reason is not adoption" }; let rejected = "";
-  const result = await admittedScenarios.run(memory, c, input => {
-    input.reportRequest(request); const write = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    const address = tagged(created.knowledgeId, created.commit), triggerAddress = tagged(trigger.knowledgeId, trigger.commit);
-    readHandle(file => files.read(file).content, address); readHandle(file => files.read(file).content, triggerAddress);
-    const otherSupplied = suppliedHandles(input.material.changed)
-      .filter((knowledge: string) => knowledge !== created.version && knowledge !== history(trigger.knowledgeId, trigger.commit))
-      .map((knowledge: string) => ({ knowledge, because: "Unrelated current knowledge is unchanged by the reason-bypass check." }));
-    rejected = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: address, supports: [outside.fact],
-      reason: `The user adopted ${outside.fact} on this path.` }], skipped: [] });
-    expect(rejected).toContain("rejected:");
-    expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
-    dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: triggerAddress, supports: [c.fact], reason: "Retire explicit trigger." }],
-      skipped: [{ knowledge: created.version, because: "Reason prose cannot adopt a foreign fact." }, ...otherSupplied] });
-    return { outcome: "success", output: "reason refusal checked", request };
-  });
-  expect(result.outcome).toBe("success");
+  const prose = checkWorkspace(memory.store, { kind: "curate", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
+    file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `The user adopted ${outside.fact} on this path.` }, "Changed body.") } });
+  expect(prose.problems).toEqual([]); // it inherits the parent's evidence; the fact named in the reason is not a citation
+  const applied = applyWorkspace(memory.store, { kind: "curate", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
+    file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `The user adopted ${outside.fact} on this path.` }, "Changed body.") } });
+  if (!applied.ok) throw new Error(applied.problems.join("\n"));
+  expect(memory.store.currentCommit(created.knowledgeId, c)[0]!.supports).toEqual([Number(c.fact.slice(1))]);
 });
 
 // ---- 21b 2026-09-08: topics classify revisions and change nothing else ----
@@ -2097,55 +1751,35 @@ test("64b/21a: an archive's supports face the same session/project/global table 
 test("64b/21b: a shared label changes no applicability and follows the owner's published foreground", async () => {
   const { c, d, peer, content, tips, publish } = commitPaths();
   const third = peer();
-  const label = (who: typeof c, text: string, trigger: { knowledgeId: number; commit: number }) => {
+  const label = (who: typeof c, text: string) => {
     publish(who);
-    return admittedWrite(who, trigger,
-      [{ op: "update", id: tagged(1, 1), topics: ["tiling"], reason: "Substantive correction, filed under its subject.", ...content(who.fact, text) }]);
+    return curateWrite(who, [{ op: "update", id: tagged(1, 1), topics: ["tiling"], reason: "Substantive correction, filed under its subject.", ...content(who.fact, text) }]);
   };
-  const cCommit = (await label(c, "C version", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1))).committed[0].commit as number;
-  const dCommit = (await label(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
+  const cCommit = label(c, "C version").committed[0].commit as number;
+  const dCommit = label(d, "D version").committed[0].commit as number;
   expect(tips(third)).toEqual([dCommit]);
   const groups = (who: { sessionId: number; headTurnId: number; branch: string }) => memory.topicGroups(who.sessionId, who.headTurnId, who.branch);
   expect(groups(third).topics).toEqual([{ topic: "tiling", commits: [{ knowledgeId: 1, commit: dCommit }] }]);
   expect(groups(c).topics).toEqual(groups(third).topics);
   publish(c);
   expect(groups(third).topics).toEqual([{ topic: "tiling", commits: [{ knowledgeId: 1, commit: cCommit }] }]);
-  // An archive inherits the label; explicit search keeps its history labels, automatic material drops it.
-  const archiveTrigger = createDreamerTrigger(memory, third, Number(third.fact.slice(1)), 3);
-  const request = { fixture: "topic archive tagged base" }; let archiveCommit = 0, topicReceipt: any;
-  const archiveRun = await admittedScenarios.run(memory, third, input => {
-    input.reportRequest(request); const write = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    const op = { op: "archive", kind: "budget", id: tagged(1, cCommit), supports: [third.fact], reason: "Retired on this path." };
-    // Read the globally selected base; labels do not grant write authority.
-    readHandle(file => files.read(file).content, history(1, cCommit));
-    readHandle(file => files.read(file).content, history(archiveTrigger.knowledgeId, archiveTrigger.commit));
-    const receipt = topicReceipt = JSON.parse(dreamerWrite(write, { operations: [op, { op: "archive", kind: "budget", id: tagged(archiveTrigger.knowledgeId, archiveTrigger.commit),
-      supports: [third.fact], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
-    const archived = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1);
-    if (!archived) throw new Error(`topic archive did not commit: ${JSON.stringify(receipt)}`);
-    return { outcome: "success", output: "archived", request };
-  });
-  if (!topicReceipt) throw new Error(`topic archive was not admitted: ${JSON.stringify(archiveRun)}`);
-  expect(topicReceipt.committed.some((item: { knowledgeId: number }) => item.knowledgeId === archiveTrigger.knowledgeId), JSON.stringify(topicReceipt)).toBe(true);
-  expect(memory.store.currentCommit(archiveTrigger.knowledgeId, third).at(-1)?.op, JSON.stringify(topicReceipt)).toBe("archive");
-  const archiveRevision = memory.store.listKnowledgeRevisions(1).find(revision => revision.op === "archive")!;
-  archiveCommit = archiveRevision.id;
+  // An archive inherits the label (and the evidence of its parent, so it applies where the parent did); explicit search keeps its
+  // history labels, automatic material drops it.
+  const archiveCommit = curateWrite(c, [{ op: "archive", kind: "budget", id: tagged(1, cCommit), reason: "Retired on this path." }]).committed[0].commit as number;
+  const archiveRevision = memory.store.getKnowledgeRevision(1, archiveCommit)!;
+  expect(archiveRevision.op).toBe("archive");
   expect(archiveRevision.topics).toEqual(["tiling"]);
   const hits = (memory.search("tiling", "knowledge", { topk: 100 }) as string).split("\n").filter(l => l.startsWith("[K"));
   // The archive inherits the label, so it is found by it, and every version is marked against the latest one.
   expect(hits.find(l => l.startsWith(`[${history(1, archiveCommit)}]`))).toContain("(archived)");
   expect(memory.search("C version", "knowledge")).toContain("(superseded)");
+  expect(tips(c)).toEqual([archiveCommit]);
+  expect(groups(c).topics).toEqual([]);
+  expect(memory.inject(c)).not.toContain(`[${tagged(1, archiveCommit)}]`);
+  // Sharing a topic neither revives D nor lets the archive reach D's path.
   publish(d);
-  // The archive cites the independent peer's fact, not C's. Switching C/D therefore leaves the
-  // later archive applicable; sharing a topic cannot revive D or inherit the archive parent's path.
-  expect(tips(third)).toEqual([archiveCommit]);
-  const dHistory = memory.search("D version", "knowledge");
-  expect(dHistory).toContain(`[${history(1, dCommit)}] (superseded)`);
-  expect(groups(third).topics).toEqual([]);
-  expect(groups(c).topics).toEqual(groups(third).topics);
-  expect(memory.inject(third)).not.toContain(`[${tagged(1, dCommit)}]`);
-  expect(memory.inject(third)).not.toContain(`[${tagged(1, archiveCommit)}]`);
+  expect(tips(d)).toEqual([dCommit]);
+  expect(groups(d).topics).toEqual([{ topic: "tiling", commits: [{ knowledgeId: 1, commit: dCommit }] }]);
   // The label is metadata beside the conclusion, never new factual prose inside it.
   expect(memory.store.getKnowledgeRevision(1, dCommit)!.text).toBe("D version");
 });
@@ -2160,14 +1794,14 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   expect(tools.find(tool => tool.name === "note")!.execute({ text: "Labelled fact", source: ["T1#E1"], topics: ["packaging"] })).toContain("rejected:");
   const schema = toolDefinitions.find(t => t.name === "memory")!.parameters.properties as Record<string, any>;
   expect(schema.topics).toEqual({ type: "array", items: { type: "string", minLength: 1 } });
-  // Topics stay inherited on archives; the archive branch requires an explicit kind.
-  const dreamSchema = (dreamingToolDefinitions().find(t => t.name === "memory")!.parameters as Record<string, any>).else.else; // 127: the operation branch
-  expect(dreamSchema.allOf[2].then.required).toContain("kind");
-  expect(dreamSchema.allOf[2].then.allOf[0].not.anyOf).toContainEqual({ required: ["topics"] });
-  expect(dreamSchema.allOf[2].else).toHaveProperty("not", { required: ["kind"] });
   expect(schema.reason).toEqual({ type: "string", minLength: 1 });
   // A label is written by the ordinary manual call, with no model call and no independent catalog block.
   expect(write([{ ...create, topics: ["packaging"] }]).committed).toHaveLength(1);
+  // Topics stay inherited on archives; the archive block requires an explicit kind and takes no topics.
+  const archiveFile = (fields: Record<string, string>) => checkWorkspace(memory.store, { kind: "curate", sessionId: s.id,
+    path: { sessionId: s.id, branch: "main", headTurnId: 1 }, file: { name: "curate.md", text: workspaceBlock("archive K1@v1", fields, "No longer holds.") } }).problems.join("\n");
+  expect(archiveFile({ reason: "r" })).toContain("missing required field `kind`");
+  expect(archiveFile({ kind: "invalid", reason: "r", topics: "packaging" })).toContain("field `topics` is not allowed here");
   const injected = memory.inject(s.id);
   expect(injected).toContain('· topics: ["packaging"]');
   expect(injected.match(/topics:/g)).toHaveLength(1); // the label rides its own knowledge line, nothing more
@@ -2459,49 +2093,46 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
   let enteredDreaming = () => {};
   const dreamingStarted = new Promise<void>(resolve => { enteredDreaming = resolve; });
   const submissions: unknown[] = [];
+  const dreamer = scriptedDreamer({ instead: { curate: async input => {
+    input.acknowledgeRequest();
+    enteredDreaming();
+    await heldDreaming;
+    await writeCurateBatch(input, "## none\n");
+    return ok([]);
+  } } });
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    if ((raw as { kind: string }).kind === "dreaming") {
-      const task = raw as import("../../../src/core/api/index.ts").DreamingAgentInput;
-      task.acknowledgeRequest();
-      enteredDreaming();
-      await heldDreaming;
-      const skipped = suppliedHandles(task.material.changed).map(knowledge => ({ knowledge, because: "Reviewed unchanged" }));
-      expect(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [], skipped })).toContain("committed");
-      return ok([]);
-    }
+    if ((raw as { kind: string }).kind === "dreaming") return dreamer.agent(raw);
     const input = raw as NotingAgentInput;
     await heldNoting; // still in flight when the signal fires
     submissions.push(input.tools.find(tool => tool.name === "check")!.execute({}));
     return ok([]);
   });
+  memory.config.dreaming.triggerTokens = 1;
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const fact = JSON.parse(memory.tools({ kind: "manual", ...target, currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute({ title: "Independent evidence", sources: `[T${t.id}#E1] D's independent evidence` })).factIds[0] as number;
-  const trigger = createDreamerTrigger(memory, target, fact, 1);
+  const trigger = seedKnowledge(memory.store, target, "project", "constraint", [fact], "Independent rule");
   const controller = new AbortController();
   const cancelled = memory.noting({ ...target, signal: controller.signal });
   const untouched = memory.dream(target);
   await dreamingStarted;
   expect(memory.store.getClaim(s.id, "noting")).not.toBeNull();
   const dreamClaim = memory.store.getClaim(s.id, "dreaming");
-  const dreamRange = memory.store.openDreamingRange(s.id, "main");
   expect(dreamClaim).not.toBeNull();
-  expect(dreamRange).not.toBeNull();
 
   controller.abort();
   releaseNoting();
   const result = await cancelled;
-  // N's late write is rejected while the independent D run keeps its claim and frozen range.
+  // N's late write is rejected while the independent D run keeps its claim.
   expect(String(submissions[0])).toContain("rejected: run has finished");
   expect(memory.store.listSessionFacts(s.id).map(f => f.text)).toEqual(["D's independent evidence"]);
   expect(result.outcome).not.toBe("success");
   expect(memory.store.getClaim(s.id, "noting")).toBeNull();
   expect(memory.store.getClaim(s.id, "dreaming")).toEqual(dreamClaim);
-  expect(memory.store.openDreamingRange(s.id, "main")).toEqual(dreamRange);
   releaseDreaming();
   expect((await untouched).outcome).toBe("success");
   expect(memory.store.getClaim(s.id, "dreaming")).toBeNull();
-  expect(memory.store.pendingVersions(`project:${memory.store.getSession(s.id)!.projectId}`, target).map(item => item.revisionId)).not.toContain(trigger.commit);
+  expect(memory.store.db.prepare("SELECT revision_id FROM knowledge_processed").all().map(row => Number(row.revision_id))).toContain(trigger.commit);
   expect(memory.taskEligibility("noting", target)).toBeDefined();
 });
 
@@ -2527,11 +2158,10 @@ test("28 amendment 3: a signal already aborted at admission cancels that task be
 
 test("64b/29/31: archived divergent history follows the owner's shared foreground", async () => {
   const { c, d, peer, edit, publish } = commitPaths();
-  const cCommit = (await edit(c, "C version", createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 1))).committed[0].commit as number;
-  const dCommit = (await edit(d, "D version", createDreamerTrigger(memory, d, Number(d.fact.slice(1)), 2))).committed[0].commit as number;
+  const cCommit = (await edit(c, "C version")).committed[0].commit as number;
+  const dCommit = (await edit(d, "D version")).committed[0].commit as number;
   publish(c);
-  const archived = await admittedWrite(c, createDreamerTrigger(memory, c, Number(c.fact.slice(1)), 3),
-    [{ op: "archive", kind: "budget", id: tagged(1, cCommit), reason: "Withdraw C only.", supports: [c.fact] }]);
+  const archived = curateWrite(c, [{ op: "archive", kind: "budget", id: tagged(1, cCommit), reason: "Withdraw C only." }]);
   expect(archived.committed[0].knowledgeId).toBe(1);
   publish(d);
   const selected = peer();
@@ -2874,31 +2504,8 @@ test("2026-10-21/22: a file holds at most one record per knowledge item, an abso
   } finally { b.memory.close(); }
 });
 
-// The rule is enforced where every merge passes: the Dreamer's `memory` tool and a workspace file both reach it.
-test("2026-10-21: merged items share one category and scope, through the memory tool and through a workspace file", async () => {
-  const { create, write, path } = memoryWriter();
-  const item = (over: Record<string, unknown>) => (write([{ ...create, text: `Rule ${Object.values(over).join(" ")}`, ...over }]).committed as Array<{ knowledgeId: number; version: string }>)[0]!;
-  const primary = item({ category: "constraint" }), sameKind = item({ category: "constraint", topics: ["same"] }),
-    otherCategory = item({ category: "reference" }), otherScope = item({ scope: "global" });
-  const trigger = createDreamerTrigger(memory, path, 2, 1);
-  let merged: Pick<MemoryReceipt, "results" | "committed"> | undefined;
-  await admittedScenarios.run(memory, path, input => {
-    input.reportRequest({ fixture: "merge sameness" });
-    const writeTool = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    const address = (found: { knowledgeId: number; version: string }) => tagged(found.knowledgeId, commitOf(found));
-    for (const found of [primary, sameKind, otherCategory, otherScope]) readHandle(file => files.read(file).content, found.version);
-    readHandle(file => files.read(file).content, tagged(trigger.knowledgeId, trigger.commit));
-    const merge = (other: { knowledgeId: number; version: string }) => ({ ...create, op: "merge", reason: "Merged.", id: address(primary), absorb: [address(other)], supports: ["F1"] });
-    merged = JSON.parse(dreamerWrite(writeTool, { operations: [merge(otherCategory), merge(otherScope), merge(sameKind),
-      { op: "archive", kind: "budget", id: tagged(trigger.knowledgeId, trigger.commit), supports: ["F2"], reason: "Retire the explicit fixture trigger." }], skipped: [] }));
-    return { outcome: "success", output: "merged", request: { fixture: "merge sameness" } };
-  });
-  expect(merged?.results[0], JSON.stringify(merged)).toContain("merge parents and result must share one category");
-  expect(merged?.results[1]).toContain("merge parents and result must share one scope");
-  expect(merged?.results[2]).toBe("ok");
-  expect(memory.store.currentCommit(otherCategory.knowledgeId)).toHaveLength(1);
-
+// The rule is enforced where every merge passes: a workspace file reaches it (the memory tool refuses merges outright).
+test("2026-10-21: merged items share one category and scope, through a workspace file", () => {
   const b = workspaceBatch();
   try {
     const first = b.item("Rule p", { category: "constraint", scope: "project" });
