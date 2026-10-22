@@ -141,6 +141,9 @@ export function checkVerify(store: Store, path: KnowledgePath, file: WorkspaceFi
     if (seen.has(number)) { problems.push(fmt(block.line, `change ${number} already has a verdict (${describeBlock(seen.get(number)!)}); one verdict for each change`)); continue; }
     seen.set(number, block);
     if (block.op !== "edit" && block.body) problems.push(fmt(block.line, `a \`${block.op}\` block has no body`));
+    // Children are the split edit's alone; a verdict that carries them elsewhere is refused whole, never accepted with them dropped.
+    const strayChildren = block.children.length > 0 && !(block.op === "edit" && proposal.operation.op === "split");
+    if (strayChildren) problems.push(fmt(block.children[0]!.line, `\`### child\` sections belong only to an edit of a split; change ${number} is ${proposal.operation.op === "split" ? "a split, which takes them in an edit" : `${proposal.operation.op === "archive" ? "an" : "a"} ${proposal.operation.op}`}, and this is a \`${block.op}\``));
     const refs = list(block.fields.get("evidence")?.value);
     if (block.op !== "confirm") {
       if (!block.fields.has("evidence")) problems.push(fmt(block.line, "missing required field `evidence`"));
@@ -158,7 +161,7 @@ export function checkVerify(store: Store, path: KnowledgePath, file: WorkspaceFi
       problems.push(...mismatch.map(message => fmt(block.line, message)));
       for (const child of block.children) for (const [name, field] of child.fields) if (!CHILD_FIELDS.includes(name))
         problems.push(fmt(field.line, `field \`${name}\` is not allowed in a child; it takes ${CHILD_FIELDS.map(f => `\`${f}\``).join(", ")}`));
-      if (!mismatch.length) {
+      if (!mismatch.length && !strayChildren) {
         if (!block.body) problems.push(fmt(block.line, "missing the complete body after the blank line"));
         else {
           const synthetic: WorkspaceFile = { name: "edit", text: overlay(proposal, block, at) };

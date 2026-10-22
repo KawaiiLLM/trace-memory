@@ -71,3 +71,23 @@ describe("evidence (5.4)", () => {
     expect(resolveRepositoryPath("anything", [])).toMatchObject({ reason: "this session has no repository to read" });
   });
 });
+
+describe("children belong to an edit of a split", () => {
+  test("a confirm, a revert or an edit of anything but a split that carries a `### child` section is refused, not accepted with the child dropped", () => {
+    const b = batch();
+    const item = b.item("Rule one"), evidence = `trace://F${item.supports[0]}`;
+    const proposals = proposalsOf(b.memory, b.path, ["update", block(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")]);
+    const child = "\n### child\ntitle: Extra\ncategory: reference\nscope: project\ntopics:\nsupports: F1\nreason: extra\n\nExtra body.\n";
+    const refuse = (text: string) => {
+      const checked = checkVerify(b.store, b.path, { name: "verify.md", text }, proposals, () => null);
+      expect(checked.ok).toBe(false);
+      expect(checked.problems.join("\n")).toMatch(/`### child` sections belong only to an edit of a split/);
+      expect(checked.problems.join("\n")).not.toMatch(/does not pass/); // refused before the overlay is compiled
+    };
+    refuse(block("confirm 1", { reason: "fine" }) + child);
+    refuse(block("revert 1", { reason: "wrong", evidence }) + child);
+    refuse(block(`edit 1 update ${item.ref}`, { evidence }, "Rule one, corrected.") + child);
+    // The same edit without the child still passes.
+    expect(checkVerify(b.store, b.path, { name: "verify.md", text: block(`edit 1 update ${item.ref}`, { evidence }, "Rule one, corrected.") }, proposals, () => null).problems).toEqual([]);
+  });
+});
