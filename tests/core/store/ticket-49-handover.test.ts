@@ -140,21 +140,20 @@ test("86: moved current revision becomes uncovered and counts as a Noter change,
   expect(store.noterChangedItems(author.path)).toBe(1);
 });
 
-// Contract of 64c/126 that the new coverage code does not keep: the spec (2.1) says "a moved version is not covered in its destination
-// pool", but a curate pass writes the ids its prefix showed under their owner at commit time, which after the move is the destination.
-// `test.fails` records the gap without a red suite; it turns red the day the pass skips a version that left the run's pools.
-test.fails("126: a frozen version that a sibling's declaration moves out of the run's pools mid-run stays uncovered in its new pool", () => {
+// 64c/126, spec 2.1: coverage records the pool a version had when the run's input was frozen, so a version that a sibling's
+// declaration moves to another pool mid-run is not covered in its new pool and counts there again.
+test("126: a frozen version that a sibling's declaration moves out of the run's pools mid-run stays uncovered in its new pool", () => {
   const store = new Store(":memory:"); stores.push(store);
   const source = store.createProject({ name: "shared-source", declaredBy: "mark" });
   const target = store.createProject({ name: "moved-target", declaredBy: "mark" });
   const runner = session(store, source.id), mover = session(store, source.id);
   const moved = create(store, mover, "item written by the session that moves");
-  const shown = store.curateItems(runner.path).map(item => item.value.revision.id);
-  expect(shown).toEqual([moved.commit]);
+  const shown = store.curateItems(runner.path).map(item => ({ id: item.value.revision.id, pool: item.pool }));
+  expect(shown).toEqual([{ id: moved.commit, pool: `project:${source.id}` }]);
   store.declareProject(mover.value.id, target.name, "mark", ready(mover.path));
   const claim = store.acquireClaim(runner.path, "dreaming", "runner")!;
   store.commitTaskPass({ run: { kind: "dreaming", sessionId: runner.value.id, branch: "main", createdAt: "now", claim, projectId: source.id }, path: runner.path,
     cover: () => shown, handoff: () => null });
-  expect(store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
+  expect(store.db.prepare("SELECT pool FROM knowledge_processed WHERE revision_id = ?").all(moved.commit).map(row => row.pool)).toEqual([`project:${source.id}`]);
   expect(uncovered(store, mover.path, `project:${target.id}`)).toEqual([moved.commit]);
 });

@@ -25,6 +25,8 @@ import { classifyAnchors, classifyMessage, classifySet } from "./classify.ts";
 import { allowedRoots, repositoryEvidenceProblem } from "./roots.ts";
 
 export type DreamingTask = "curate" | "verify" | "classify";
+/** One version a passing task covers; `pool` is the pool it had when the run's input was frozen, absent for a version the run wrote. */
+type Cover = { id: number; pool?: string };
 export const DREAMING_TASKS: readonly DreamingTask[] = ["curate", "verify", "classify"];
 
 /** The allowance for core's own work between two model calls (§1.3): the execution backstop is set this far past the last task deadline. */
@@ -131,7 +133,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   let lastRunId = 0;
 
   /** A task that does no model call: its run is recorded and the hand-off moves (§3.2 no-work run). */
-  const noWork = (task: DreamingTask, next: DreamingTask | null, cover?: () => number[]): TaskOutcome => {
+  const noWork = (task: DreamingTask, next: DreamingTask | null, cover?: () => Cover[]): TaskOutcome => {
     const run = template(task, frozen.models.main.model);
     const bound = bind(context, run, { check: () => "no work" });
     bound.close(); // the run record only; it has no tools to run
@@ -142,8 +144,8 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
 
   const runCurate = async (): Promise<TaskOutcome> => {
     const batches = KNOWLEDGE_CATEGORIES.filter(category => frozen.byCategory.get(category)!.length && !detail.doneCategories.includes(category));
-    const written = (runIds: number[]) => runIds.flatMap(id => store.listCommitsByRun(id).map(revision => revision.id));
-    const coveredBy = (runIds: number[]) => runIds.flatMap(id => (JSON.parse(store.getRun(id)?.response ?? "{}").covers ?? []) as number[]);
+    const written = (runIds: number[]): Cover[] => runIds.flatMap(id => store.listCommitsByRun(id).map(revision => ({ id: revision.id })));
+    const coveredBy = (runIds: number[]) => runIds.flatMap(id => (JSON.parse(store.getRun(id)?.response ?? "{}").covers ?? []) as Cover[]);
     if (!batches.length) return noWork("curate", "verify", () => [...coveredBy(detail.curateRuns), ...written(detail.curateRuns)]);
 
     const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, "curate").open();
@@ -171,7 +173,8 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         problem = `check failed twice: batch ${at + 1}/${batches.length} (${category})`;
         return undefined;
       }
-      const covers = frozen.byCategory.get(category)!.filter(item => !item.covered).map(item => item.value.revision.id);
+      // The pool each shown version had when the input was frozen: a version moved meanwhile stays uncovered in its new pool (§2.1).
+      const covers: Cover[] = frozen.byCategory.get(category)!.filter(item => !item.covered).map(item => ({ id: item.value.revision.id, pool: item.pool }));
       const lastBatch = at === batches.length - 1;
       let results: Parameters<NonNullable<Parameters<Store["commitTaskPass"]>[0]["response"]>>[0] = [];
       try {
@@ -179,7 +182,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
           response: out => { results = out; return JSON.stringify({ task: "curate", category, file: files[at], covers,
             blocks: checked.planned.map((entry, i) => ({ block: describeBlock(entry.block), line: entry.block.line, result: out[i] })) }); },
           cover: lastBatch ? ({ runId, results: out }) => [...coveredBy(detail.curateRuns), ...covers, ...written(detail.curateRuns),
-            ...out.flatMap(result => result.ok ? result.committed.map(item => item.commit) : [])] : undefined,
+            ...out.flatMap(result => result.ok ? result.committed.map(item => ({ id: item.commit })) : [])] : undefined,
           handoff: ({ runId }) => ({ nextTask: lastBatch ? "verify" : "curate",
             detail: { curateRuns: [...detail.curateRuns, runId], doneCategories: [...detail.doneCategories, category] } }) });
         detail.curateRuns.push(done.runId); detail.doneCategories.push(category);
@@ -283,7 +286,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       : { class: `ended before ${spec.label} was applied`, transient: false };
     return { ok: false, outcome, problems, ...classified, runId: store.recordRun({ ...run, outcome }).id };
   };
-  const written = (results: { ok: boolean; committed?: { commit: number }[] }[]) => results.flatMap(result => result.ok ? result.committed!.map(item => item.commit) : []);
+  const written = (results: { ok: boolean; committed?: { commit: number }[] }[]): Cover[] => results.flatMap(result => result.ok ? result.committed!.map(item => ({ id: item.commit })) : []);
 
   /** §5: verify checks curate's changes against the facts, Raw and the repositories, under the authority curate's results give it. */
   const runVerify = async (): Promise<TaskOutcome> => {

@@ -3753,7 +3753,8 @@ export class Store {
   }
 
   /** 144 stage 4 §3.2: one Dreamer task pass in one transaction, fenced by the claim. The run (with its operations, if any) is
-   * recorded; `cover` versions become processed in their own pools (coverage, §2.1); `handoff` replaces the session's row
+   * recorded; `cover` versions become processed in the pool they had when the run's input was frozen (coverage, §2.1: a version
+   * moved to another pool meanwhile stays uncovered there); a version this pass wrote has no `pool` and is placed at commit; `handoff` replaces the session's row
    * (`null` deletes it); a pass resets the failure count. A refused claim throws before anything is written, so the hand-off
    * moves only with a committed pass. */
   commitTaskPass(input: { run: RunInput; path: KnowledgePath; operations?: readonly KnowledgeOperationInput[];
@@ -3761,7 +3762,7 @@ export class Store {
     /** Classify scores (§6.6): written only for an item whose current version is the one shown (`commit`); the rest wait for the next run. */
     scores?: readonly { knowledgeId: number; commit: number; score: number }[];
     /** Both are decided once the run exists: the hand-off's curate runs include this run, the coverage includes what it wrote. */
-    cover?: (done: { runId: number; results: WorkspaceOperationResult[] }) => readonly number[];
+    cover?: (done: { runId: number; results: WorkspaceOperationResult[] }) => readonly { id: number; pool?: string }[];
     handoff: (done: { runId: number; results: WorkspaceOperationResult[] }) => { nextTask: string; detail: NonNullable<Handoff["detail"]> } | null }): { runId: number; results: WorkspaceOperationResult[] } {
     return this.transaction(() => {
       const done = this.commitWorkspaceRun({ run: input.run, path: input.path, operations: input.operations ?? [], response: input.response });
@@ -3773,10 +3774,10 @@ export class Store {
       }
       const cover = input.cover?.(done) ?? [];
       const metadata = cover.length ? this.commitGraphInput(undefined, sessionId).metadata : undefined;
-      for (const id of cover) {
+      for (const { id, pool } of cover) {
         const revision = this.knowledgeRevision(id);
         if (revision) this.db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)")
-          .run(placementOwner(this, { revision }, metadata), id, done.runId);
+          .run(pool ?? placementOwner(this, { revision }, metadata), id, done.runId);
       }
       const handoff = input.handoff(done);
       if (handoff) writeHandoff(this, { sessionId, phase: "dreaming", nextTask: handoff.nextTask, runId: done.runId,
