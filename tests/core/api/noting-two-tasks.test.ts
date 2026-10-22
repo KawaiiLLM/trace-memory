@@ -365,6 +365,33 @@ test("each step has its own repair, and step 2 may not change the facts file tha
   expect(g.published().map(item => item.title)).toEqual(["Rule evidence"]);
 });
 
+test("both steps passed, facts rewritten before the host returns: the task fails and nothing is published, in each task", async () => {
+  const frozen = /changed after step 1 passed/;
+  const rewritten = () => factsFile([{ ...fact(), title: "Rewritten after both steps passed" }]);
+  const w: Fixture = fixture([], async input => {
+    if (input.task === "verify") throw new Error("task 2 must not start");
+    await submit(input, w.memory, { noteInput: [fact()], memoryInput: create() });
+    put(input.workspace.facts, rewritten());
+    return OK;
+  });
+  const wrote = await w.run();
+  expect(wrote.outcome === "failure" && wrote.problems.join("\n")).toMatch(frozen);
+  expect(w.published()).toEqual([]);
+  expect(w.memory.store.handoff(w.session.id, "noting")).toBeNull();
+  const v: Fixture = fixture([], async input => {
+    if (input.task === "write") return normalWrite(() => v)(input);
+    await check(input);
+    expect(input.passEnd()).toContain("Step 1 passed.");
+    expect(input.passEnd()).toBeUndefined();
+    put(input.workspace.facts, rewritten());
+    return OK;
+  });
+  const verified = await v.run();
+  expect(verified.outcome === "failure" && verified.problems.join("\n")).toMatch(frozen);
+  expect(v.published()).toEqual([]);
+  expect(v.memory.store.handoff(v.session.id, "noting")).toMatchObject({ nextTask: "verify" });
+});
+
 test("a step's second failure is terminal: a later stop that finds the file fixed advances nothing and the run fails", async () => {
   // Step 1: the model stops twice with a bad facts file, then fixes it and stops again.
   const one: Fixture = fixture([], async input => {
