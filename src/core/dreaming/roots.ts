@@ -3,7 +3,7 @@
 
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Store } from "../store/index.ts";
 
 /** The roots are the working directories of the project's sessions (user rulings, 2026-10-22 and 2026-10-23): a session's
@@ -28,18 +28,29 @@ const DENIED_TREES = [".trace-memory", ".pi/agent"];
 const SECRET = new RegExp(`^(?:${SECRET_FILES.map(name => name.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")).join("|")})$`, "i");
 /** ripgrep's `--glob` is case-sensitive, so each letter becomes a class (`.env` -> `.[eE][nN][vV]`) to match `SECRET`'s case-insensitivity. */
 const anyCase = (name: string) => name.replace(/[a-z]/gi, letter => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
-/** The same list as a ripgrep exclusion, for a Grep call (a hook can only allow or rewrite a call, never filter its output). */
-export const SECRET_GLOB = `!**/{${[...SECRET_FILES, ...SECRET_DIRS.map(name => `${name}/**`), ...DENIED_TREES.map(tree => `${tree}/**`)].map(anyCase).join(",")}}`;
+/** The protected directories as named under the home directory and as they really are (a protected directory may be a symbolic link). */
+function protectedTrees(): string[] {
+  const trees = new Set<string>();
+  for (const home of new Set([homedir(), real(homedir())]))
+    for (const tree of DENIED_TREES) { const named = join(home, ...tree.split("/")); trees.add(named); trees.add(real(named)); }
+  return [...trees];
+}
+/** A path as a glob that matches itself: the characters a glob reads specially become one-character classes. */
+const literalGlob = (path: string) => path.replace(/[*?[\]{},]/g, character => (character === "]" ? "[]]" : `[${character}]`));
+/** The same list as a ripgrep exclusion, for a Grep call (a hook can only allow or rewrite a call, never filter its output). `below` adds
+ * directories to skip, as paths below the searched one. ripgrep matches a glob against the path relative to its own working directory
+ * when that holds the searched path, else the absolute path, and a host's working directory is not known here; a leading `**` plus slash matches in both,
+ * so a directory with the same relative path elsewhere under the search is skipped too (as the `.trace-memory` entry skips any such name). */
+const secretGlob = (below: readonly string[] = []) => `!{${[...SECRET_FILES, ...SECRET_DIRS.map(name => `${name}/**`), ...DENIED_TREES.map(tree => `${tree}/**`)]
+  .map(name => `**/${anyCase(name)}`).concat(below.map(path => `**/${literalGlob(path)}/**`)).join(",")}}`;
+export const SECRET_GLOB = secretGlob();
 
 /** The one deny list: the production memory directory, the Pi agent directory and secret files, by name in any letter case. A protected
  * directory is denied both where it is named and where it really is (it may be a symbolic link into a root). A symlink out of the roots
  * is refused by `resolveRepositoryPath`, which tests the resolved path. */
 export function deniedPath(path: string): string | null {
   const lower = path.toLowerCase();
-  const forbidden = new Set<string>();
-  for (const home of new Set([homedir(), real(homedir())]))
-    for (const tree of DENIED_TREES) { const named = join(home, ...tree.split("/")); forbidden.add(named.toLowerCase()); forbidden.add(real(named).toLowerCase()); }
-  for (const tree of forbidden)
+  for (const tree of protectedTrees().map(tree => tree.toLowerCase()))
     if (lower === tree || lower.startsWith(tree + sep)) return "that directory holds the memory database or agent configuration and is never read";
   if (SECRET.test(basename(path)) || path.split(sep).some(part => SECRET_DIRS.includes(part.toLowerCase()))) return "that looks like a secret file and is never read";
   return null;
@@ -82,5 +93,6 @@ export function confineSearch(input: { path?: unknown; glob?: unknown; pattern?:
     return { path: resolved.path };
   }
   if (input.glob !== undefined) throw new Error("a Grep glob is not available here: narrow the search with path");
-  return { path: resolved.path, glob: SECRET_GLOB };
+  // A protected directory that is a symbolic link into the searched tree is searched through its target, whose name the glob does not know.
+  return { path: resolved.path, glob: secretGlob(protectedTrees().filter(tree => tree.startsWith(resolved.path + sep)).map(tree => relative(resolved.path, tree))) };
 }
