@@ -394,3 +394,61 @@ test("two groups act on one item in one run: exactly one update applies, the oth
   expect(["from group 1", "from group 2"]).toContain(textOf(f, b.knowledgeId));
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
 });
+
+// ---- the failure streak with groups (Q16): only the commit that finishes the run resets it ---------------------------------
+
+async function failTwice(f: DreamerFixture) {
+  for (let i = 0; i < 2; i++) { for (let call = 0; call < 2; call++) f.next(async () => ({ outcome: "failure", output: "bad request" })); await f.dream(); }
+  expect(count(f)).toBe(2);
+}
+
+test("2026-10-22, 146: from a streak of 2, an applied group verify resets nothing; the run's failure is the third and switches memory off", async () => {
+  const { f, constraint } = twoGroups();
+  await failTwice(f);
+  f.dreamer.script.curate = { constraint: update({ ref: ref(f, constraint[0]!) }, "group 1 tidied"), reference: ["## bogus\n", "## bogus\n"] };
+  const result = await f.dream();
+  expect(groupsOf(f)[0]!.verifyRun).toEqual(expect.any(Number)); // group 1's verify applied
+  expect(result).toMatchObject({ outcome: "failure", automaticOff: expect.stringContaining("dreaming off after three failures") });
+  expect(count(f)).toBe(3);
+  expect(f.store.enabled(f.session.id)).toBe(false);
+});
+
+test("2026-10-22, 146: from a streak of 2, an applied non-final classify pass resets nothing", async () => {
+  const f = dreamerFixture();
+  items(f, "reference", 105);
+  noterWrittenItem(f.memory, f.path as never, f.existingFact("trigger").id);
+  await failTwice(f);
+  f.dreamer.script.instead = { classify: async raw => {
+    const input = raw as DreamingAgentInput;
+    input.reportRequest(REQUEST);
+    const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
+    if (/pass 2\//.test(report)) return { outcome: "failure", output: "bad request", request: REQUEST } as RunAgentResult; // pass 2 fails before it stops
+    const ids = [...(/Items: (.*)/.exec(report)![1]!).matchAll(/K(\d+)/g)].map(match => match[1]!);
+    writeFileSync(/File: (\S+?\.md)/.exec(report)![1]!, ids.map(id => `K${id} 50`).join("\n") + "\n");
+    input.passEnd(); input.passEnd();
+    return { outcome: "success", output: "Done.", request: REQUEST } as RunAgentResult;
+  } };
+  expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { task: "classify" }, automaticOff: expect.any(String) });
+  expect(count(f)).toBe(3); // pass 1 applied without resetting the streak from 2
+});
+
+test("a frozen group that no longer fits fails the run as a capacity refusal on the resume: no model call, the groups are not re-formed, and the failure counts", async () => {
+  const { pricedToolDefinitions, dreamingWorkspaceToolDefinitions } = await import("../../../src/core/api/tools.ts");
+  const { canonicalToolNames } = await import("../../../src/core/prompts/tool-names.ts");
+  const { loadPrompt } = await import("../../../src/core/prompts/load.ts");
+  const { tokens } = await import("../../../src/core/render/index.ts");
+  const { f } = twoGroups();
+  f.dreamer.script.curate = { reference: ["## bogus\n", "## bogus\n"] };
+  await f.dream();
+  const before = JSON.stringify(f.store.handoff(f.session.id, "dreaming")!.detail);
+  const input = f.dreamer.inputs.filter(i => i.task === "curate").at(-1)!;
+  const taskPrompt = Math.max(...(["curate", "verify"] as const).map(task => tokens(loadPrompt(`tasks/${task}-update.md`, canonicalToolNames, f.memory.config.writing))));
+  const price = tokens(input.prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingWorkspaceToolDefinitions, canonicalToolNames))) + tokens(input.text) + taskPrompt;
+  const calls = f.dreamer.inputs.length;
+  const resumed = await f.memory.dream({ ...f.target, capacity: { inputTokens: price - 1 } });
+  expect(resumed).toMatchObject({ outcome: "failure", failure: { class: "capacity" } });
+  expect(resumed.outcome === "failure" && resumed.problems.join(" ")).toMatch(/group \d/);
+  expect(f.dreamer.inputs).toHaveLength(calls);
+  expect(JSON.stringify(f.store.handoff(f.session.id, "dreaming")!.detail)).toBe(before);
+  expect(count(f)).toBe(2);
+});
