@@ -1,14 +1,13 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { seedSourceEntry } from "../../source-fixture.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite } from "../../dreaming-skips.ts";
+import { applyWorkspace, checkWorkspace } from "../../../src/core/workspace/index.ts";
+import { block } from "../../support/workspace.ts";
 
 const all: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const m of all.splice(0)) m.close(); });
 function setup(second = false, initialText = "body A") {
-  const scenarios = new AdmittedDreamerScenarios(async () => ({ outcome: "success", output: "unused", request: {} }));
-  const m = TraceMemory(":memory:", scenarios.agent); all.push(m);
+  const m = TraceMemory(":memory:", async () => ({ outcome: "success", output: "unused", request: {} })); all.push(m);
   const p = m.store.createProject({ name: "A", declaredBy: "mark" });
   const s = m.store.createSession({ host: "pi:handles", projectId: p.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "facts", startedAt: "now" });
@@ -30,70 +29,8 @@ function setup(second = false, initialText = "body A") {
   if (second) expect(write([{ op: "create", title: "Fixture title", ...content, text: "second" }])).not.toContain("rejected:");
   Object.assign(m.config.writing, limits);
   const tag = (id: number, ordinal = 1) => `K${id}#${m.store.versionTag(id, m.store.resolveVersionOrdinal(id, ordinal))}`;
-  return { m, context, scenarios, path: { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: rootEntry.id }, content, tools, write, t, rootEntry, tag };
+  return { m, context, path: { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: rootEntry.id }, content, tools, write, t, rootEntry, tag };
 }
-
-test("Dreamer invalidation body observes the new-write cap; budget can retain an oversized parent", async () => {
-  const a = setup(false, "Prior archived content ".repeat(700));
-  const trigger = createDreamerTrigger(a.m, a.path, 1, 1);
-  const result = await a.scenarios.run(a.m, a.path, input => {
-    const request = { fixture: "archive new-body cap" }; input.reportRequest(request);
-    const memory = input.tools.find(tool => tool.name === "memory")!;
-    const id = a.tag(trigger.knowledgeId);
-    const oversized = "Substantive evidence and grounds ".repeat(1000);
-    expect(dreamerWrite(memory, { operations: [{ op: "archive", kind: "invalid", id, text: oversized,
-      supports: ["F1"], reason: "Invalidated after evidence changed" }], skipped: [] })).toContain("over the 200-token limit");
-    expect(dreamerWrite(memory, { operations: [{ op: "archive", kind: "budget", id: a.tag(1),
-      supports: ["F1"], reason: "Budget retirement retains full parent" }], skipped: [] })).toContain("committed");
-    expect(a.m.store.currentCommit(1, a.path)[0]).toMatchObject({ op: "archive", archiveKind: "budget", text: a.content.text });
-    expect(dreamerWrite(memory, { operations: [{ slot: "M1", op: "archive", kind: "budget", id,
-      supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] })).toContain("committed");
-    return { outcome: "success", output: "cap checked", request };
-  });
-  expect(result.outcome).toBe("success");
-});
-
-test("99: Dreamer invalidation commits immediately and an ordinary update revives the identity", async () => {
-  const a = setup();
-  const trigger = createDreamerTrigger(a.m, a.path, 1, 1);
-  const result = await a.scenarios.run(a.m, a.path, input => {
-    const request = { fixture: "archive then revive" }; input.reportRequest(request);
-    const memory = input.tools.find(tool => tool.name === "memory")!;
-    expect(dreamerWrite(memory, { operations: [{ op: "archive", kind: "invalid", id: a.tag(1),
-      text: "The old claim no longer holds because the user withdrew the evidence; nothing replaces it.",
-      supports: [], reason: "Withdraw prior understanding" }], skipped: [] })).toContain("committed");
-    const archived = a.m.store.currentCommit(1, a.path)[0]!;
-    expect(archived).toMatchObject({ op: "archive", archiveKind: "invalid", supports: [1] });
-    expect(a.m.store.currentKnowledge(a.path).some(item => item.knowledge.id === 1)).toBe(false);
-    expect(dreamerWrite(memory, { operations: [{ op: "update", id: a.tag(1, 2), ...a.content,
-      text: "A new user decision revives this identity", supports: [] }], skipped: [] })).toContain("committed");
-    expect(a.m.store.currentCommit(1, a.path)[0]!.op).toBe("update");
-    expect(dreamerWrite(memory, { operations: [{ op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId),
-      supports: [], reason: "Retire fixture trigger" }], skipped: [] })).toContain("committed");
-    return { outcome: "success", output: "revived", request };
-  });
-  expect(result.outcome).toBe("success");
-  expect(a.m.store.currentKnowledge(a.path).some(item => item.knowledge.id === 1)).toBe(true);
-});
-
-test("92 supersedes 32: mutations require exact tags, not bare identities or human commit addresses", async () => {
-  const a = setup(), trigger = createDreamerTrigger(a.m, a.path, 1, 1);
-  const result = await a.scenarios.run(a.m, a.path, input => {
-    const request = { fixture: "exact maintenance address" }; input.reportRequest(request);
-    const write = input.tools.find(t => t.name === "memory")!;
-    let refused = 0;
-    for (const op of ["update", "archive"]) for (const id of ["K1", "K1@1", "K1@v1"]) {
-      const value = op === "archive" ? { supports: ["F1"], reason: "retire" } : a.content;
-      expect(dreamerWrite(write, { operations: [{ op, id, ...value }], skipped: [] })).toContain("supply an exact K#tag version");
-      expect(write.execute({ drop: `M${++refused}` })).toContain("dropped"); // 127: each refusal blocks until withdrawn
-    }
-    const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: a.tag(1), ...a.content },
-      { op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId), supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] }));
-    expect(updated.committed).toHaveLength(2);
-    return { outcome: "success", output: "corrected", request };
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-});
 
 test("92: previews carry no tag; a valid tag works across bindings without a read ledger", () => {
   const a = setup(true);
@@ -107,48 +44,6 @@ test("92: previews carry no tag; a valid tag works across bindings without a rea
   // No trace call: possessing the correct version metadata is enough, subject to authority.
   expect(archive(a.tag(1))).toContain("committed");
   expect(archive(a.tag(2))).toContain("committed");
-});
-
-test("92: ABA keeps different tags and archive invalidates old bases without substitution", async () => {
-  const a = setup(), trigger = createDreamerTrigger(a.m, a.path, 1, 1);
-  const result = await a.scenarios.run(a.m, a.path, input => {
-    const request = { fixture: "ABA tags" }; input.reportRequest(request);
-    const write = input.tools.find(t => t.name === "memory")!;
-    const original = a.tag(1);
-    expect(dreamerWrite(write, { operations: [{ op: "update", id: original, ...a.content, text: "body B" }], skipped: [] })).toContain("committed");
-    const middle = a.tag(1, 2);
-    expect(dreamerWrite(write, { operations: [{ op: "update", id: middle, ...a.content }], skipped: [] })).toContain("committed");
-    const restored = a.tag(1, 3);
-    expect(new Set([original, middle, restored]).size).toBe(3);
-    expect(dreamerWrite(write, { operations: [{ op: "update", id: original, ...a.content }], skipped: [] })).toContain("current: K1@v3");
-    expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
-    expect(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: restored, supports: ["F1"], reason: "retired" }], skipped: [] })).toContain("committed");
-    expect(dreamerWrite(write, { operations: [{ op: "update", id: restored, ...a.content }], skipped: [] })).toContain("current: K1@v4");
-    expect(write.execute({ drop: "M2" })).toContain("dropped: M2");
-    expect(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId), supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [] })).toContain("committed");
-    return { outcome: "success", output: "ABA checked", request };
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-});
-
-// 127: one operation per call, so a bad base refuses its own merge whole; a sibling archive is its own call.
-test("92: every merge participant is tagged and current; one bad base refuses the whole merge", async () => {
-  const a = setup(true), trigger = createDreamerTrigger(a.m, a.path, 1, 1);
-  const result = await a.scenarios.run(a.m, a.path, input => {
-    const request = { fixture: "merge tagged participants" }; input.reportRequest(request);
-    const write = input.tools.find(t => t.name === "memory")!;
-    expect(dreamerWrite(write, { operations: [{ op: "update", id: a.tag(2), ...a.content, text: "later merge parent" }], skipped: [] })).toContain("committed");
-    const merge = { op: "merge", id: a.tag(1), absorb: [a.tag(2, 2)], ...a.content };
-    const archive = { op: "archive", kind: "budget", id: a.tag(trigger.knowledgeId), supports: ["F1"], reason: "Retire fixture trigger" };
-    expect(write.execute({ ...merge, absorb: [a.tag(2)] })).toContain("current: K2@v2");
-    expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");
-    expect(a.m.store.currentCommit(2)[0]!.op).toBe("update");
-    expect(write.execute({ ...merge, absorb: ["K2"] })).toContain("supply an exact K#tag");
-    expect(write.execute({ drop: "M2" })).toContain("dropped: M2");
-    expect(JSON.parse(dreamerWrite(write, { operations: [{ slot: "M1", ...merge }, archive], skipped: [] })).committed).toHaveLength(2);
-    return { outcome: "success", output: "merged", request };
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
 });
 
 test("manual writers freeze fact sources and knowledge supports at the exact trigger prefix", () => {
@@ -178,4 +73,61 @@ test("92 supersedes named-read grants: copied Raw tags do not prove reading, but
   expect(archive("K1#unknown")).toContain("knowledge version does not exist");
   expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");
   expect(archive(a.tag(1))).toContain("committed");
+});
+
+// The Dreamer names a base by its exact version address `K<id>@v<n>` in a curate file (ticket 144 Stage 4); each operation commits
+// or is refused on its own, a base that is no longer current is refused as stale and left for the next run.
+const curate = (a: ReturnType<typeof setup>, text: string) => applyWorkspace(a.m.store, { kind: "curate", sessionId: a.path.sessionId, path: a.path, file: { name: "curate.md", text } });
+const applied = (a: ReturnType<typeof setup>, text: string) => { const result = curate(a, text); if (!result.ok) throw new Error(result.problems.join("\n")); return result.blocks; };
+
+test("99: Dreamer invalidation commits immediately and an ordinary update revives the identity", () => {
+  const a = setup();
+  const [archived] = applied(a, block("archive K1@v1", { kind: "invalid", reason: "Withdraw prior understanding" },
+    "The old claim no longer holds because the user withdrew the evidence; nothing replaces it."));
+  expect(archived).toMatchObject({ status: "applied", versions: ["K1@v2"] });
+  expect(a.m.store.currentCommit(1, a.path)[0]).toMatchObject({ op: "archive", archiveKind: "invalid", supports: [1] });
+  expect(a.m.store.currentKnowledge(a.path).some(item => item.knowledge.id === 1)).toBe(false);
+  expect(applied(a, block("update K1@v2", { reason: "Revive" }, "A new user decision revives this identity"))[0]).toMatchObject({ status: "applied", versions: ["K1@v3"] });
+  expect(a.m.store.currentCommit(1, a.path)[0]!.op).toBe("update");
+  expect(a.m.store.currentKnowledge(a.path).some(item => item.knowledge.id === 1)).toBe(true);
+});
+
+test("92 supersedes 32: mutations require an exact version address, not a bare identity, a numeric commit or a manual tag", () => {
+  const a = setup();
+  const check = (text: string) => checkWorkspace(a.m.store, { kind: "curate", sessionId: a.path.sessionId, file: { name: "curate.md", text } }).problems.join("\n");
+  for (const id of ["K1", "K1@1", `K1#${a.m.store.versionTag(1, 1)}`]) {
+    expect(check(block(`update ${id}`, { reason: "r" }, "body A, again"))).toContain("is not a version address");
+    expect(check(block(`archive ${id}`, { kind: "invalid", reason: "r" }, "The user withdrew it the same day."))).toContain("is not a version address");
+  }
+  expect(check(block("update K1@v1", { reason: "r" }, "body A, again"))).toBe("");
+  expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");
+});
+
+test("92: ABA keeps different versions and archive invalidates old bases without substitution", () => {
+  const a = setup();
+  const stale = (text: string) => applied(a, text)[0]!;
+  expect(applied(a, block("update K1@v1", { reason: "B" }, "body B"))[0]).toMatchObject({ status: "applied", versions: ["K1@v2"] });
+  expect(applied(a, block("update K1@v2", { reason: "A again" }, "body A"))[0]).toMatchObject({ status: "applied", versions: ["K1@v3"] });
+  expect(a.m.store.currentCommit(1)[0]!.text).toBe("body A"); // same content as v1, a different version
+  const old = stale(block("update K1@v1", { reason: "from the original" }, "body C"));
+  expect(old).toMatchObject({ status: "refused", stale: true });
+  expect(old.reason).toContain("current: K1@v3");
+  expect(applied(a, block("archive K1@v3", { kind: "invalid", reason: "retired" }, "The user withdrew it; nothing replaces it."))[0]).toMatchObject({ status: "applied", versions: ["K1@v4"] });
+  const afterArchive = stale(block("update K1@v3", { reason: "from before the archive" }, "body D"));
+  expect(afterArchive).toMatchObject({ status: "refused", stale: true });
+  expect(afterArchive.reason).toContain("current: K1@v4");
+  expect(a.m.store.currentCommit(1)[0]).toMatchObject({ op: "archive" });
+});
+
+test("92: every merge participant is an exact current version; one bad base refuses the whole merge", () => {
+  const a = setup(true);
+  expect(applied(a, block("update K2@v1", { reason: "later merge parent" }, "later merge parent"))[0]).toMatchObject({ status: "applied", versions: ["K2@v2"] });
+  const merge = (absorbed: string) => applied(a, block("merge K1@v1", { absorb: absorbed, reason: "same rule" }, "merged rule"))[0]!;
+  const refused = merge("K2@v1");
+  expect(refused).toMatchObject({ status: "refused", stale: true });
+  expect(refused.reason).toContain("current: K2@v2");
+  expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");
+  expect(a.m.store.currentCommit(2)[0]!.op).toBe("update");
+  expect(merge("K2@v2")).toMatchObject({ status: "applied", versions: ["K1@v2"] });
+  expect(a.m.store.currentCommit(2)).toEqual([]);
 });
