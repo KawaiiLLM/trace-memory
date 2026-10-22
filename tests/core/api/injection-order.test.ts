@@ -151,7 +151,8 @@ test("compaction spends the one temporary allowance in order: pending Raw, then 
   expect(roomy.supplied.knowledgeCommitIds).toEqual([unscored.commit]);
   expect(roomy.supplied.knowledgeTitleCommitIds).toEqual([scoredBig.commit]);
   expect(roomy.supplied.temporaryTokens).toBe(roomy.charged!.temporary);
-  expect(roomy.charged!.envelope).toBe(roomy.charged!.envelope); // sum of three bases and one temporary allowance
+  expect(roomy.charged!.envelope).toBe(f.memory.knowledgeBase() + f.memory.config.compaction.factsTokens + f.memory.config.compaction.rawTokens + f.memory.config.compaction.temporaryTokens); // three windows and one temporary allowance
+  expect(roomy.charged!.temporary).toBeLessThanOrEqual(f.memory.config.compaction.temporaryTokens);
   // The Raw walk goes first: with the allowance all consumed by pending Raw nothing is left for knowledge.
   f.memory.config.compaction.temporaryTokens = 1;
   const none = f.memory.compact(f.session.id, "main", f.target.headTurnId);

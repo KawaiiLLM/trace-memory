@@ -2726,19 +2726,48 @@ test("2026-10-21, 144: injection follows scores, not age", () => {
   expect(delivery.knowledgeTitleCommitIds).toEqual([fresh.commit]); // the newer one is a title, not a body
 });
 
-test("2026-10-22, 144: allowance order: pending Raw, unscored knowledge, titles, then user words and fact titles", () => {
-  const f = injectionFixture();
-  const scoredBig = f.create("SCOREDBIG", 3_000, 60), unscored = f.create("UNSCORED", 300, null);
-  setKnowledgeBase(f.memory, 1_000);
-  f.memory.appendEntry({ sessionId: f.session.id, turnId: f.target.headTurnId, nativeLineage: "fixture", nativeId: "pending", role: "assistant", text: "pending " + "other ".repeat(700), raw: "", calls: [] });
-  f.memory.config.compaction.rawTokens = 40;
-  const full = f.memory.compact(f.session.id, "main", f.target.headTurnId);
-  if ("native" in full) throw new Error(full.reason);
-  // Everything fits: Raw borrowed first, then the unscored body whole, then the scored misfit as a title.
-  expect(full.supplied.entries.length).toBeGreaterThan(0);
-  expect(full.supplied.knowledgeCommitIds).toEqual([unscored.commit]);
-  expect(full.supplied.knowledgeTitleCommitIds).toEqual([scoredBig.commit]);
-  expect(full.charged!.knowledge).toBe(0); // the base carried nothing: only scored items fit it, and the big one did not
-  expect(full.charged!.temporary).toBe(full.supplied.temporaryTokens);
-  expect(full.charged!.knowledge + full.charged!.facts + full.charged!.raw + full.charged!.temporary).toBeLessThanOrEqual(full.charged!.envelope);
+test("2026-10-22, 144: allowance order — unextracted Raw, then unscored bodies, then titles of scored misfits, then fact titles and user words; the room an earlier kind uses is not left to a later one", () => {
+  // Kinds 1..4. `build(n)` offers the first n kinds only, so its cost at a roomy allowance is what those n kinds need.
+  const build = (kinds: number) => {
+    const f = injectionFixture(), { memory, session } = f;
+    setKnowledgeBase(memory, 1_000); // a scored 3,000-word item cannot enter the base
+    const unscored = kinds >= 2 ? f.create("UNSCORED", 300, null) : null;
+    const misfit = kinds >= 3 ? f.create("MISFIT", 3_000, 60) : null;
+    let head = f.target.headTurnId;
+    const entryIds = memory.store.sourcePath(session.id, "main", head).map(entry => entry.id);
+    for (let i = 0; i < 6; i++) { // present in every build so that Raw's receipt is the same; only kind 4 may use them
+      const turn = memory.store.appendTurn({ sessionId: session.id, parentTurnId: head, kind: "turn", startedAt: "now", userPrompt: `user-${i} ${"word ".repeat(20)}` });
+      head = turn.id;
+      const source = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: `user-${i}`, role: "user", text: `user-${i} ${"word ".repeat(20)}`, raw: "", calls: [] });
+      entryIds.push(source.id);
+      memory.selectEntries(session.id, "main", entryIds);
+      seedFacts(memory, { sessionId: session.id, branch: "main", headTurnId: turn.id }, [{ title: `Episode ${i}`, sources: [{ entry: source, text: `evidence-${i} `.repeat(100) }] }]);
+    }
+    recorded(memory, session.id, "main", head);
+    const pending = memory.appendEntry({ sessionId: session.id, turnId: head, nativeLineage: "fixture", nativeId: "pending", role: "assistant", text: "pending " + "other ".repeat(600), raw: "", calls: [] }); // (a)
+    memory.selectEntries(session.id, "main", [...entryIds, pending.id]);
+    Object.assign(memory.config.compaction, { rawTokens: 200, factsTokens: 1, ...(kinds < 4 ? { userTurns: 0, titleTurns: 0 } : {}) });
+    return (allowance: number) => {
+      memory.config.compaction.temporaryTokens = allowance;
+      const result = memory.compact(session.id, "main", head);
+      if ("native" in result) throw new Error(`native at ${allowance}: ${result.reason}`);
+      const delivered = [result.supplied.entries.length > 0, !!unscored && result.supplied.knowledgeCommitIds.includes(unscored.commit),
+        !!misfit && (result.supplied.knowledgeTitleCommitIds ?? []).includes(misfit.commit),
+        (result.material!.earlierUsers?.length ?? 0) + (result.material!.factTitles?.length ?? 0) > 0];
+      return { delivered, temporary: result.charged!.temporary };
+    };
+  };
+  const need = [1, 2, 3, 4].map(kinds => {
+    const roomy = build(kinds)(100_000);
+    expect(roomy.delivered, `kinds 1..${kinds} all present when there is room`).toEqual([0, 1, 2, 3].map(index => index < kinds));
+    return roomy.temporary;
+  });
+  expect(need[0]).toBeLessThan(need[1]!); expect(need[1]).toBeLessThan(need[2]!); expect(need[2]).toBeLessThan(need[3]!); // each kind costs something
+  const full = build(4);
+  for (const kinds of [1, 2, 3]) {
+    const exact = full(need[kinds - 1]!);
+    expect(exact.delivered, `allowance of exactly kinds 1..${kinds}`).toEqual([0, 1, 2, 3].map(index => index < kinds)); // the later kinds compete and get nothing
+    expect(exact.temporary).toBeLessThanOrEqual(need[kinds - 1]!);
+    expect(full(need[kinds]!).delivered[kinds], `kind ${kinds + 1} arrives once its room is added`).toBe(true);
+  }
 });
