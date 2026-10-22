@@ -2,26 +2,21 @@
 // its native occurrences once and reuses them across its tool ordinals. Nothing here changes what the
 // reads print.
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { receiptCommit } from "../../support/seed.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
-import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { countSourceReads } from "../../perf/fixture.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
+import { curateNow, versionRef } from "../../support/dreamer.ts";
+import { block } from "../../support/workspace.ts";
 
 const time = "2026-09-09T00:00:00Z";
 
-function fullRead(sessionId: number, headTurnId: number, address: string) {
-  return memoryFiles(memory, { sessionId, branch: "main", headTurnId }).read(`trace://${address}`).content;
-}
-let dir: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios;
+let dir: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "trace-memory-22c-"));
   dbPath = join(dir, "trace.db");
-  scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("these cases call no model"); });
-  memory = sourceSeededMemory(dbPath, scenarios.agent);
+  memory = sourceSeededMemory(dbPath, async () => { throw new Error("these cases call no model"); });
 });
 afterEach(() => { memory.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -92,7 +87,7 @@ test("22c: a full trace obtains the Turn's occurrences once, whatever the sessio
 
 /** `knowledge` commits, each with `revisions` commits on this path: one create and its updates, so
  * every commit but the last of a chain is historical. All of them match one literal query. */
-async function knowledgeCorpus(knowledge: number, revisions: number) {
+function knowledgeCorpus(knowledge: number, revisions: number) {
   const store = memory.store, { sessionId, headTurnId } = conversation(3, 1);
   const path = { sessionId, branch: "main", headTurnId };
   store.selectSourcePath(sessionId, "main", store.listSourceEntries(sessionId).map(e => e.id));
@@ -111,32 +106,17 @@ async function knowledgeCorpus(knowledge: number, revisions: number) {
     if (!created.ok) throw new Error(created.problems.join("; "));
     tips.push({ knowledgeId: created.committed[0]!.knowledgeId, commit: created.committed[0]!.commit });
   }
-  const trigger = createDreamerTrigger(memory, path, supports[0]!, knowledge + revisions, "session");
-  const dreamed = await scenarios.run(memory, path, input => {
-    const request = { fixture: "paged read corpus" }; input.reportRequest(request);
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const consumed = new Set<string>();
-    for (let i = 0; i < tips.length; i++) for (let j = 1; j < revisions; j++) {
-      const tip = tips[i]!, address = `K${tip.knowledgeId}#${store.versionTag(tip.knowledgeId, tip.commit)}`;
-      consumed.add(`K${tip.knowledgeId}@v${j}`);
-      expect(fullRead(sessionId, headTurnId, address)).toContain(`K${tip.knowledgeId}#`);
-      const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: address,
-        text: `SEARCHNEEDLE conclusion ${i} revision ${j}`, category: "understanding", scope: "session", supports: supports.map(id => `F${id}`), reason: "corpus", topics: [] }], skipped: [] }));
-      tip.commit = receiptCommit(store, updated.committed[0]!);
-    }
-    const triggerAddress = `K${trigger.knowledgeId}#${store.versionTag(trigger.knowledgeId, trigger.commit)}`;
-    const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(`K${trigger.knowledgeId}@v1`); for (const address of consumed) supplied.delete(address);
-    dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit paged-read trigger." }],
-      skipped: [...supplied].map(knowledge => ({ knowledge, because: "No further corpus maintenance is needed." })) });
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return { outcome: "success", output: "corpus revisions complete", request };
-  });
-  if (dreamed.outcome !== "success") throw new Error(JSON.stringify(dreamed));
+  // One round of updates per revision: a curate file holds one record per item.
+  for (let j = 1; j < revisions; j++) {
+    curateNow(memory, path, tips.map((tip, i) => block(`update ${versionRef(store, tip.knowledgeId, tip.commit)}`, { reason: "corpus" },
+      `SEARCHNEEDLE conclusion ${i} revision ${j}`)).join("\n"));
+    for (const tip of tips) tip.commit = store.currentCommit(tip.knowledgeId, path)[0]!.id;
+  }
   return { sessionId, headTurnId, path, supports, tips, query: "SEARCHNEEDLE" };
 }
 
 test("a continuation nobody comes back for is dropped: sixteen are outstanding at once, the oldest expires", async () => {
-  const corpus = await knowledgeCorpus(4, 3);
+  const corpus = knowledgeCorpus(4, 3);
   const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, cap: 1 };
   const targets = corpus.tips.map(tip => `K${tip.knowledgeId}`).join(",");
   const cursorOf = (page: string) => /cursor=(\S+)/.exec(page)![1]!;

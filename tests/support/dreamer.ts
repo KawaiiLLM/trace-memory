@@ -3,6 +3,8 @@ import type { DreamingAgentInput, RunAgentResult } from "../../src/core/api/inde
 import type { RunAgent, TraceMemory } from "../source-fixture.ts";
 import { REQUEST } from "./noter.ts";
 import { workspaceBatch } from "./workspace.ts";
+import { applyWorkspace } from "../../src/core/workspace/index.ts";
+import type { KnowledgePath, Store } from "../../src/core/store/index.ts";
 
 /** A scripted Dreamer (ticket 144, stage 4): the stand-in for the model behind `runAgent` in tests that run the real Dreaming
  * tasks. Like a host, it calls `check`, writes the file `check` names, meets the stop hook after every pass and follows the next
@@ -77,3 +79,14 @@ export function dreamerFixture(memories: TraceMemory[], script: DreamerScript = 
   return { ...b, dreamer, target, dream, next: (agent: RunAgent) => { runners.push(agent); } };
 }
 export type DreamerFixture = ReturnType<typeof dreamerFixture>;
+
+/** Part 4b: the vehicle for tests whose subject is what a merge, split, archive or update leaves in the Store, not the Dreamer's run.
+ * It applies a curate (or verify) file to a path through the same check and `commitWorkspaceRun` a Dreamer's pass uses, and throws on a
+ * file that fails its check. Each operation still commits or is refused on its own: read `blocks` for a stale base. */
+export function curateNow(memory: { store: Store }, path: KnowledgePath, text: string, kind: "curate" | "verify" = "curate") {
+  const result = applyWorkspace(memory.store, { kind, sessionId: path.sessionId, path, file: { name: `${kind}.md`, text } });
+  if (!result.ok) throw new Error(result.problems.join("\n"));
+  return result;
+}
+/** `K<id>@v<n>` of a committed version. */
+export const versionRef = (store: Store, knowledgeId: number, commit: number) => `K${knowledgeId}@v${store.versionOrdinal(knowledgeId, commit)}`;
