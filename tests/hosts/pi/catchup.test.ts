@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { expect, test, vi } from "vitest";
 import { TraceMemory, type NotingAgentInput } from "../../../src/core/api/index.ts";
-import { createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { host, reply, notingFact, NOTER_BATCH_REQUESTS, type Reply } from "./test-host.ts";
+import { host, reply, notingFact, dreamerFiles, NOTER_BATCH_REQUESTS, type Reply } from "./test-host.ts";
+import { knowledge } from "../../support/seed.ts";
 import { submit } from "../../support/noter.ts";
 import { submitEmpty } from "../../support/noter.ts";
 
@@ -26,6 +26,17 @@ function target(memory: Memory, options: { closed?: boolean; enabled?: boolean; 
   if (options.enabled === false) memory.store.setEnrollment(session.id, false);
   return { ...path, projectId: project.id, entryId: entry.id };
 }
+/** A Noter-written item over the session's first fact: it makes a Dreamer due (2026-10-22). */
+function dueItem(h: ReturnType<typeof host>) {
+  const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!
+    .execute({ title: "Package choice", sources: "[T1#E1] User chose pnpm" });
+  expect(JSON.parse(receipt).factIds).toHaveLength(1);
+  const path = { sessionId: 1, branch: "main", headTurnId: 1 };
+  const item = knowledge(h.memory.store, path, "project", "reference", [1], "The user chose pnpm", { operation: { title: "Package choice" } });
+  expect(h.memory.store.dreamingDueByNoterChanges(path, 1)).toBe(true);
+  return item;
+}
+const isDreamer = (c: { systemPrompt?: string }) => !!c.systemPrompt && (c.systemPrompt.startsWith("# Dreamer") || c.systemPrompt.startsWith("# Classifying"));
 const tick = async (h: ReturnType<typeof host>) => { await h.prompt("next main turn"); await h.answer("eligible completion"); await h.drain(); };
 function hold(h: ReturnType<typeof host>) {
   const releases: ((reply: Reply) => void)[] = [];
@@ -149,37 +160,28 @@ test("borrowed N publishes both layers to its target without a special executor 
   } finally { await h.dispose(); }
 });
 
-test("an owned D pool uses a real pending version and keeps its global seat separate from borrowed N", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerTokens": 5_000 });
+test("an owned Dreamer run shows its Noter-written item and keeps its global seat separate from borrowed N", async () => {
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerTokens": 1 });
   try {
     await h.turn();
-    const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!
-      .execute({ title: "Package choice", sources: "[T1#E1] User chose pnpm" });
-    expect(JSON.parse(receipt).factIds).toHaveLength(1);
-    const path = { sessionId: 1, branch: "main", headTurnId: 1 };
-    const due = createDreamerTrigger(h.memory, path, 1, 1);
-    expect(h.memory.taskEligibility("dreaming", path)).toEqual({ due: true });
+    const due = dueItem(h);
     const borrowed = target(h.memory);
-    const pending: { conversation: { systemPrompt?: string; messages: { content: unknown }[] }; resolve: (value: Reply) => void }[] = [];
+    const pending: { resolve: (value: Reply) => void }[] = [];
+    let openGate!: () => void, firstDreamer = "";
+    const gate = new Promise<void>(resolve => { openGate = resolve; });
     h.provider(async c => {
-      if (c.systemPrompt?.startsWith("# Dreamer") && c.messages.some(m => m.role === "toolResult")) return reply("Done");
-      return new Promise<Reply>(resolve => pending.push({ conversation: c, resolve }));
+      if (isDreamer(c)) { firstDreamer ||= String(c.messages[0]!.content); await gate; return dreamerFiles(c) ?? reply("Done"); }
+      return new Promise<Reply>(resolve => pending.push({ resolve }));
     });
     await tick(h);
     await vi.waitFor(() => expect(h.requests).toHaveLength(2));
     expect(h.memory.store.getClaim(1, "dreaming")).not.toBeNull();
     expect(h.memory.store.getClaim(borrowed.sessionId, "noting")?.borrowed).toBe(true);
     expect(h.memory.store.getClaim(borrowed.sessionId, "dreaming")).toBeNull();
-    for (const item of pending) {
-      if (!item.conversation.systemPrompt?.startsWith("# Dreamer")) { item.resolve(reply("Done")); continue; }
-      const material = String(item.conversation.messages[0]!.content);
-      const version = material.match(/New (K\d+@v\d+)/)?.[1];
-      if (version !== `K${due.knowledgeId}@v1`) throw new Error(`unexpected D frozen range: ${material.slice(0, 400)}`);
-      item.resolve({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
-        arguments: { skip: version, because: "Reviewed; retain" } }] });
-    }
+    expect(firstDreamer).toContain(`K${due.knowledgeId}`);
+    openGate(); for (const item of pending) item.resolve(reply("Done"));
     await h.drain();
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success"]);
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success", "success", "success"]); // curate, verify, classify
     expect(h.memory.store.getKnowledge(due.knowledgeId)).not.toBeNull();
   } finally { await h.dispose(); }
 });
@@ -230,13 +232,10 @@ test("reopening a closed target replaces borrowed N token and prevents stale pub
 });
 
 test("one shutdown deadline fences borrowed N and owned D even when both providers hang", async () => {
-  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerTokens": 5_000 });
+  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerTokens": 1 });
   try {
     await h.turn();
-    const receipt = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!
-      .execute({ title: "Package choice", sources: "[T1#E1] User chose pnpm" });
-    expect(JSON.parse(receipt).factIds).toHaveLength(1);
-    const due = createDreamerTrigger(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1, 1);
+    const due = dueItem(h);
     const t = target(h.memory);
     h.provider(async () => new Promise<Reply>(() => {}), { ignoreAbort: true });
     await tick(h);
