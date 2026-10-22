@@ -11,7 +11,7 @@ const menu = {
     spend: { session: 0, noting: { runs: 0, cost: 0 }, consolidation: { runs: 0, cost: 0 }, dreaming: { runs: 0, cost: 0 }, today: 0 },
     notices: [], actions: { enabled: true },
   },
-  settings: { database: "/tmp/test-trace.db", budgets: { global: 4000, project: 15000, session: 1000, temporaryTokens: 10000 },
+  settings: { database: "/tmp/test-trace.db", budgets: { base: 20000, temporaryTokens: 10000 },
     workers: [{ phase: "Noter", model: "sonnet", thinking: "high" }, { phase: "Dreamer", model: "opus", thinking: "high" }],
     closedSessionScope: "project" },
   models: ["sonnet", "opus"],
@@ -59,12 +59,12 @@ test("local command renders headless text and a mountable narrow pane, then disp
   const ui = await $.ui.mount({ plugin: "trace-memory", surface: "terminal", component: "Pane", requestId: "trace-memory-menu", props: pane });
   expect(await ui.find({ type: "Text", text: "Pending / trigger" }), `main mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
   await ui.select({ key: "actions", value: "settings" });
-  expect(await ui.find({ type: "Text", text: "Knowledge budgets" }), `settings mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
-  await ui.select({ key: "setting-rows", value: "budget.global" });
-  await ui.input({ key: "edit-budget.global", text: "5000" });
+  expect(await ui.find({ type: "Text", text: "Knowledge base" }), `settings mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
+  await ui.select({ key: "setting-rows", value: "knowledgeBase" });
+  await ui.input({ key: "edit-knowledgeBase", text: "5000" });
   expect(await ui.find({ type: "Text", text: "saved; not applied" }), `saved-not-applied mount: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
-  expect(seen.some(args => args.includes("setting budget.global 5000"))).toBe(true);
-  for (const row of ["budget.project", "budget.session", "noting.model", "noting.thinking", "dreaming.model", "dreaming.thinking", "closedSessionScope"]) {
+  expect(seen.some(args => args.includes("setting knowledgeBase 5000"))).toBe(true);
+  for (const row of ["noting.model", "noting.thinking", "dreaming.model", "dreaming.thinking", "closedSessionScope"]) {
     await ui.select({ key: "setting-rows", value: row });
     expect(await ui.find({ key: row === "closedSessionScope" ? "scope-choice" : row.endsWith(".model") ? "model-choice" : `edit-${row}` }), `setting row ${row}: ${JSON.stringify(await ui.drawn())}`).toBeDefined();
     await ui.select({ key: row === "closedSessionScope" ? "scope-back" : row.endsWith(".model") ? "model-back" : "edit-back", value: "back" });
