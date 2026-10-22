@@ -212,3 +212,38 @@ test("29a case 9 / the memoized view: one computation per context position, and 
     expect(built).toBe(2);
   } finally { await h.dispose(); }
 });
+
+// 144 stage 4 §7.4: a title-only delivery goes through Pi's carrier and the delivery records; a later body upgrades it.
+test("144 title-only injection: carried, recorded once, not re-sent, and a later body upgrades it", async () => {
+  const h = host(quiet);
+  try {
+    const commit = seedKnowledge(h, "big rule " + "word ".repeat(1_500));
+    for (const field of ["global", "project", "session"] as const) h.memory.setKnowledgeBudget(field, 0); // the base holds nothing: a title
+    const first = await h.prompt("first");
+    expect(first.message.content).toContain("(title only)");
+    const supplied = carrierOf(first.message).supplied;
+    expect(supplied.knowledgeCommitIds).toEqual([]);
+    expect(supplied.knowledgeTitleCommitIds).toEqual([commit]);
+    expect(supplied.temporaryTokens).toBeGreaterThan(0);
+    const owner = `pi:${h.ctx.sessionManager.getSessionId()}`;
+    const delivered = h.memory.store.deliveredKnowledge({ owner, sessionId: null, headTurnId: null, pending: [{ key: carrierOf(customMessages(h)[0]!).prompt! }] });
+    expect([...delivered.knowledgeTitleCommitIds]).toEqual([commit]);
+    expect(delivered.temporaryTokens).toBe(supplied.temporaryTokens);
+    await h.answer(); await h.emit("agent_settled"); await h.drain();
+    expect(await h.prompt("second")).toBeUndefined(); // a title is never re-sent for the same version
+    await h.answer(); await h.emit("agent_settled"); await h.drain();
+    h.memory.setKnowledgeBudget("project", 20_000); // base room appears
+    const third = await h.prompt("third");
+    expect(carrierOf(third.message).supplied.knowledgeCommitIds).toEqual([commit]);
+  } finally { await h.dispose(); }
+});
+
+test("144 a Pi carrier names its title-only versions and temporary charge validly or is ignored", () => {
+  const binding: VisibleBinding = { db: "d", session: 1, pi: "p" };
+  const entryWith = (supplied: object): ContextEntry => ({ id: "c", type: "compaction", details: { traceMemory: { db: "d", session: 1, pi: "p",
+    supplied: { entries: [], factIds: [9], knowledgeCommitIds: [], ...supplied } } } });
+  expect(visibleView([entryWith({ knowledgeTitleCommitIds: [2], temporaryTokens: 5 })], binding).factIds.has(9)).toBe(true);
+  expect(visibleView([entryWith({})], binding).factIds.has(9)).toBe(true); // absent means none
+  expect(visibleView([entryWith({ knowledgeTitleCommitIds: [0] })], binding).factIds.has(9)).toBe(false);
+  expect(visibleView([entryWith({ temporaryTokens: -1 })], binding).factIds.has(9)).toBe(false);
+});

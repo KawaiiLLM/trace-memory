@@ -426,7 +426,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const material = { knowledge: selection.groups, receipts: selection.receipts, knowledgeNotice: notice, readingGuide: guide };
       const text = injectionText(material, statesText);
       const windowText = injectionText({ ...material, readingGuide: "" }, statesText);
-      const total = tokens(windowText), baseUsed = Math.max(0, total - selection.temporaryCharge);
+      // The base is priced exactly as the window of its own items, state notices and receipts; the temporary allowance pays the rest.
+      const total = tokens(windowText), baseUsed = selection.baseGroups.length || selectedStates.length || selection.baseReceipts.length
+        ? tokens(injectionText({ knowledge: selection.baseGroups, receipts: selection.baseReceipts, knowledgeNotice: notice }, statesText)) : 0;
       if (baseUsed > baseLeft && selection.ranked.some(item => item.allowance === "base")) { slackBase += baseUsed - baseLeft; continue; }
       if (total - baseUsed > temporaryLeft && selection.ranked.some(item => item.allowance === "temporary")) { slackTemporary += total - baseUsed - temporaryLeft; continue; }
       if (!selection.ranked.length && !selectedStates.length) return empty();
@@ -932,8 +934,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.bodyCommits,
           ...(active.titleCommits.length ? { knowledgeTitleCommitIds: active.titleCommits } : {}),
           // The base part of the delivered Knowledge window; what only the temporary allowance's items needed is in `temporaryTokens`.
-          knowledgeTokens: Math.max(0, tokens(injectionText({ knowledge: active.groups,
-            receipts: [...active.receipts, ...noteOmittedReceipt], knowledgeNotice: notice }, notes)) - active.temporaryCharge),
+          knowledgeTokens: active.baseGroups.length || notes.length || active.baseReceipts.length || noteOmittedReceipt.length
+            ? tokens(injectionText({ knowledge: active.baseGroups, receipts: [...active.baseReceipts, ...noteOmittedReceipt], knowledgeNotice: notice }, notes)) : 0,
           temporaryTokens: temporaryCharged,
           ...(noteKept ? { knowledgeStates: allNotes.slice(0, noteKept).map(note => note.receipt) } : {}) },
         // The per-window accounting beside the text, for the acceptance probe; diagnostics only.

@@ -884,6 +884,9 @@ export interface SelectedKnowledge extends BudgetedKnowledge {
   temporaryCharge: number;
   /** Who pays for the omission receipts: the base when it has room (as before 144), else the temporary allowance. */
   receiptAllowance: "base" | "temporary";
+  /** The window of the base items alone (and the receipts it pays for): what a host prices exactly as the base charge. */
+  baseGroups: { category: string; text: string }[];
+  baseReceipts: string[];
 }
 
 /** Ticket 144 §7.2: knowledge in score order within the base, then the temporary allowance's two
@@ -917,7 +920,8 @@ export function selectKnowledge(candidates: KnowledgeWithRevision[], options: { 
   const baseValues = scored.filter(value => baseSet.has(value.revision.id));
   const whole = (values: KnowledgeWithRevision[], shownLine: (value: KnowledgeWithRevision) => string) =>
     ({ ...knowledgeBody(orderedKnowledge(values, shownLine), recencyNotice), receipts: [] as string[] });
-  const baseCharge = baseValues.length ? whole(baseValues, line).cost : 0;
+  const baseWindow = whole(baseValues, line);
+  const baseCharge = baseValues.length ? baseWindow.cost : 0;
   const ceiling = baseCharge + temporaryCap;
   const unscoredKept = budgetKnowledge([...baseValues, ...unscored], ceiling, line, budget, baseSet, undefined, recencyNotice).commits
     .filter(commit => !baseSet.has(commit));
@@ -940,8 +944,11 @@ export function selectKnowledge(candidates: KnowledgeWithRevision[], options: { 
   if (!receiptsToBase && window.cost + receiptCost() - baseCharge > temporaryCap) receipts = [];
   const receiptPrice = receiptCost();
   const rankOf = new Map<number, number>();
-  [...base, ...unscoredKept, ...titles].forEach((commit, index) => rankOf.set(commit, index));
-  return { ...window, receipts, cost: window.cost + receiptPrice, receiptAllowance: receiptsToBase ? "base" : "temporary", bodyCommits: window.commits.filter(commit => wholeSet.has(commit)),
+  // Selection order, not presentation order: scored base items, then unscored ones, then titles, each in its own priority.
+  const selectionOrder = [...scored.filter(value => baseSet.has(value.revision.id)), ...unscored.filter(value => wholeSet.has(value.revision.id)),
+    ...missed.filter(value => titleSet.has(value.revision.id))].map(value => value.revision.id);
+  selectionOrder.forEach((commit, index) => rankOf.set(commit, index));
+  return { ...window, receipts, cost: window.cost + receiptPrice, receiptAllowance: receiptsToBase ? "base" : "temporary", baseGroups: baseWindow.groups, baseReceipts: receiptsToBase ? receipts : [], bodyCommits: window.commits.filter(commit => wholeSet.has(commit)),
     titleCommits: titles, baseCharge: baseCharge + (receiptsToBase ? receiptPrice : 0),
     temporaryCharge: window.cost + (receiptsToBase ? 0 : receiptPrice) - baseCharge,
     ranked: items.map(value => ({ value, form: titleSet.has(value.revision.id) ? "title" as const : "body" as const,
