@@ -33,7 +33,7 @@ function barrier(f: DreamerFixture, n: number) {
   for (let i = 0; i < n; i++) f.next(async raw => { open(); await all; return f.dreamer.agent(raw); });
 }
 
-// 「相同的知识类型尽量分在一起」
+// keep the same knowledge category together as far as possible (maintainer, translated)
 test("2026-10-22, 146 — 230 items (90/80/60) are three groups run side by side; each item is shown whole in exactly one group's first message and its verify's equals its curate's", async () => {
   const f = dreamerFixture();
   const constraint = items(f, "constraint", 90), reference = items(f, "reference", 80), open = items(f, "open", 60);
@@ -51,7 +51,7 @@ test("2026-10-22, 146 — 230 items (90/80/60) are three groups run side by side
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
 }, 60_000);
 
-// 「以20条为一批，且不代表只能处理这20条，例如合并一定要看其他知识」
+// batches of 20, which do not limit the agent to those 20; a merge, for example, must look at other knowledge (maintainer, translated)
 test("2026-10-22, 146 — the first check lists batches of 20, 20 and 5; a merge in batch 1 absorbs a same-category item of batch 3, a merge that absorbs another category's item is refused", async () => {
   const f = dreamerFixture();
   const rules = items(f, "constraint", 45);
@@ -70,7 +70,7 @@ test("2026-10-22, 146 — the first check lists batches of 20, 20 and 5; a merge
   expect(live).not.toContain(rules[42]!.knowledgeId); // absorbed after verify passed
 }, 60_000);
 
-// 「合并还需要同类别」
+// a merge still needs one category (maintainer, translated)
 test("2026-10-22, 146 — a merge that absorbs another category's item is refused by the merge rule", async () => {
   const f = dreamerFixture();
   const [rule] = items(f, "constraint", 2);
@@ -94,7 +94,7 @@ function threeBatches() {
 }
 const textOf = (f: DreamerFixture, knowledgeId: number) => f.store.currentCommit(knowledgeId, f.path)[0]!.text;
 
-// 「让agent自己分批处理，每批交付一个文件」
+// let the agent pace its own batches and deliver one file per batch (maintainer, translated)
 test("2026-10-22, 146 (a) — the agent writes three files in order and stops once; one final check covers all three, `check` reports on every file, no next-batch message exists, and the three files are kept", async () => {
   const { f, firsts, files } = threeBatches();
   const reports: string[] = [];
@@ -123,7 +123,7 @@ test("2026-10-22, 146 (a) — the agent writes three files in order and stops on
   for (const [i, first] of firsts.entries()) expect(textOf(f, first.knowledgeId)).toBe(`batch ${i + 1} text`); // applied after verify passed
 });
 
-// 「让agent自己分批处理，每批交付一个文件」
+// let the agent pace its own batches and deliver one file per batch (maintainer, translated)
 test("2026-10-22, 146 (b) — one repair message lists the failing file only; if it still fails the task fails naming batch 2 and files 1 and 3 are kept", async () => {
   const fixed = threeBatches();
   fixed.f.dreamer.script.curate = { batch1: fixed.files[0]!, batch2: ["## bogus\n", fixed.files[1]!], batch3: fixed.files[2]! };
@@ -144,7 +144,7 @@ test("2026-10-22, 146 (b) — one repair message lists the failing file only; if
   expect(batches.map(batch => batch.run !== undefined)).toEqual([true, false, true]); // kept batches need not be a prefix
 });
 
-// 「失败时前面的产出保留」
+// on a failure, earlier outputs are kept (maintainer, translated)
 test("2026-10-22, 146 (c, d) — files that passed are kept when the task fails or times out; the next check does only the remaining batch, verify sees all three in batch order, and the run finishes once", async () => {
   for (const ending of ["failure", "timeout"] as const) {
     const { f, firsts, files } = threeBatches();
@@ -180,7 +180,7 @@ test("2026-10-22, 146 (c, d) — files that passed are kept when the task fails 
   }
 });
 
-// 「失败时前面的产出保留」
+// on a failure, earlier outputs are kept (maintainer, translated)
 test("2026-10-22, 146 — a deadline after all three files pass keeps all three, and the resume starts at verify; a cancellation keeps nothing", async () => {
   const { f, files } = threeBatches();
   f.memory.config.dreaming.timeoutMs = 200;
@@ -199,7 +199,7 @@ test("2026-10-22, 146 — a deadline after all three files pass keeps all three,
   expect(f.dreamer.inputs.map(input => input.task)).toEqual(["verify", "classify"]); // curate did not run again
 });
 
-// 「让agent自己分批处理，每批交付一个文件」
+// let the agent pace its own batches and deliver one file per batch (maintainer, translated)
 test("2026-10-22, 146 (e) — an earlier file revised after a later one passed is accepted with no repair, and the kept run holds the revised text; order is not enforced", async () => {
   const { f, rules, files } = threeBatches();
   const messages: (string | undefined)[] = [];
@@ -219,7 +219,7 @@ test("2026-10-22, 146 (e) — an earlier file revised after a later one passed i
   expect(textOf(f, rules[1]!.knowledgeId)).toBe("batch 1 revised");
 });
 
-// 「让agent自己分批处理，每批交付一个文件」
+// let the agent pace its own batches and deliver one file per batch (maintainer, translated)
 test("2026-10-22, 146 (f) — a file never written fails the final check as `not written` and is not read as `## none`", async () => {
   const { f, files } = threeBatches();
   const messages: (string | undefined)[] = [];
@@ -256,7 +256,7 @@ function twoGroups() {
   return { f, pathB, constraint, reference };
 }
 
-// 「知识可能处理失败」
+// processing may fail for some knowledge (maintainer, translated)
 test("2026-10-22, 146 (processed means verified) — a group whose curate fails keeps counting in the other session; the group that passed counts 0; after the resume everything counts 0", async () => {
   const { f, pathB, constraint, reference } = twoGroups();
   expect(f.store.noterOperations(pathB)).toBe(110);
@@ -275,7 +275,7 @@ test("2026-10-22, 146 (processed means verified) — a group whose curate fails 
   expect(count(f)).toBe(0);
 });
 
-// 「重试等下一个检查点」
+// retry at the next checkpoint (maintainer, translated)
 test("2026-10-22, 146 across groups — group 2's final check fails twice on batch 1 only; groups pass and fail independently, classify does not run, the next check redoes only group 2's batch 1, then its verify, then classify, and the run finishes once", async () => {
   const { f, constraint } = twoGroups();
   f.dreamer.script.curate = { constraint: update({ ref: ref(f, constraint[0]!) }, "group 1 tidied"), reference: ["## bogus\n"] };
@@ -299,7 +299,7 @@ test("2026-10-22, 146 across groups — group 2's final check fails twice on bat
   expect(finished).toHaveLength(1);
 });
 
-// 「连续失败自动关闭trace」
+// consecutive failures switch trace off (maintainer, translated)
 test("2026-10-22, 146 — two groups fail in one run: the reason names both, the streak grows by one; a lost claim joins the reason", async () => {
   const { f } = twoGroups();
   f.dreamer.script.curate = { constraint: ["## bogus\n"], reference: ["## bogus\n"] };

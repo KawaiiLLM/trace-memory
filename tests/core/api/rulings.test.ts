@@ -2389,7 +2389,7 @@ test("2026-10-22, 144: 「合并实际没有发生，核查通过后才发生」
   expect(g.dreamer.messages[0]).toContain("is not a verdict");
 });
 
-test("2026-10-22, 144: 「D不创建知识，那是N的职责」 — a curate file refuses create in either pair", async () => {
+test("2026-10-22, 144: Dreaming creates no knowledge, that is the Noter's job (maintainer, translated) — a curate file refuses create in either pair", async () => {
   const f = dreamerFixture();
   const item = f.item("Rule one", { category: "constraint" });
   const created = { title: "Fresh rule", category: "constraint", scope: "project", topics: "", supports: `F${item.supports[0]}`, reason: "new" };
@@ -2397,7 +2397,7 @@ test("2026-10-22, 144: 「D不创建知识，那是N的职责」 — a curate fi
     expect(checkWorkspace(f.store, workspaceCurate(f, workspaceBlock("create", created, "A fresh rule."), pair)).problems.join("\n")).toContain("`## create` is not allowed in a curate file");
 });
 
-// Maintainer, 2026-10-22 (ticket 146 ruling 13, superseding 144 stage 5's four-step rotation): 「D 的轮换可以减少为两种，第一种是更新+归档，第二种是合并+拆分」, then 「B」 over two parallel agents.
+// Maintainer, 2026-10-22 (ticket 146 ruling 13, superseding 144 stage 5's four-step rotation): the rotation can shrink to two kinds, update+archive and merge+split, then B (maintainer, translated) over two parallel agents.
 test("2026-10-22, 146 ruling 13: a run performs one pair, update+archive then merge+split; the one curate agent may propose either operation of its pair per item, and none outside it", async () => {
   const f = dreamerFixture();
   const a = f.item("Rule A", { category: "constraint" }), b = f.item("Rule B", { category: "constraint" }), c = f.item("Rule C", { category: "constraint" });
@@ -2782,7 +2782,7 @@ test("2026-10-21: merged items share one category and scope, through a workspace
   } finally { b.memory.close(); }
 });
 
-test("2026-10-21/22: update keeps the identity and adds a version; Dreaming makes no new identity (2026-10-22 「D不创建知识」: the Noter's create is pinned by the Noter group)", () => {
+test("2026-10-21/22: update keeps the identity and adds a version; Dreaming makes no new identity (2026-10-22 Dreaming creates no knowledge (maintainer, translated): the Noter's create is pinned by the Noter group)", () => {
   const b = workspaceBatch();
   try {
     const item = b.item("Rule one");
@@ -2843,7 +2843,7 @@ const dreamerFixture = (script: DreamerScript = {}) => makeDreamerFixture(dreame
 const taskNames = (f: ReturnType<typeof dreamerFixture>) => f.dreamer.inputs.map(input => input.task);
 const executionReasons = (f: ReturnType<typeof dreamerFixture>) => (f.store.db.prepare("SELECT reason FROM task_executions ORDER BY rowid").all() as { reason: string }[]).map(row => row.reason);
 
-// 「N更新或新建一次知识算一次，同条多次各算；默认30次触发」
+// each Noter update or create counts once, and repeats on one item each count; due at 30 by default (maintainer, translated)
 test("2026-10-22, 146 — Dreaming is due at the 30th Noter operation and not the 29th; a second update of one item counts again; a manual write does not", () => {
   expect(DEFAULT_CONFIG.dreaming.triggerOperations).toBe(30);
   // The token trigger is removed by name, not read as a count.
@@ -2885,7 +2885,7 @@ test("2026-10-21, 144: '整理 → 核查 → 评级；先不轮换' — one run
   expect(Number(covered)).toBeGreaterThanOrEqual(2); // no rotation: both categories were covered by this run
 });
 
-// 「重试等下一个检查点，不清空计数，连续失败自动关闭trace，不要等下一个阈值」
+// retry at the next checkpoint, keep the count, switch trace off after consecutive failures, do not wait for the next threshold (maintainer, translated)
 test("2026-10-22, 146 — a failed run is retried at the next check with no new Noter operation, no threshold and no wait, the operation count is not reset, and curate's output stays as a proposal until verify passes", async () => {
   const f = dreamerFixture();
   const rule = f.item("Use pnpm everywhere", { category: "constraint" });
@@ -2911,7 +2911,7 @@ test("2026-10-22, 146 — a failed run is retried at the next check with no new 
   expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere, tidied"); // published once the resumed verify passed
 });
 
-// 「连续失败自动关闭trace」 「就参考MC的做法」
+// consecutive failures switch trace off; follow Magic Context's practice (maintainer, translated)
 test("2026-10-22, 146 supersedes the 2026-10-21 failure-handling ruling — the third consecutive Dreamer failure switches memory off like the Noter's, the first two do not, and the Dreamer's streak is its own row", async () => {
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
