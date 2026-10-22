@@ -16,5 +16,6 @@ The package manager is pnpm; npm is acceptable for one-off scripts (「npm is fi
 - The body is the complete merged text. Keep unique valid information, conditions, reasons and evidence strength.
 - Merged items share one category and one scope. The primary keeps its identity, and each absorbed item is archived into it when the merge is applied.
 - An item may appear in only one block of the file, as a primary or as an absorbed item.
+- Look for merge partners beyond your batch. Your group shows one part of the knowledge, and a category may be split across groups: search for items that repeat one of yours.
 
 <!-- include: smells-merge -->

@@ -8,19 +8,22 @@ Your tools are {{tool.check}}, and the host's {{tool.read}}, {{tool.write}} and 
 
 ## Scale
 
-Judge each item by what forgetting it would cost: how much understanding would be lost, and how severe the consequences would be. Score the item as written; its age does not matter.
+The score decides what stays in view. When the injection budget is short, the lowest scores are dropped first, so a score helps only if it separates items.
+
+Judge each item by what forgetting it would cost: how much understanding would be lost, and how severe the consequences would be. Judge by the consequence of forgetting, not by how plain the text reads; a true statement is not for that reason important. Score the item as written; its age does not matter.
 
 - **81-100**: acting against it causes public or irreversible consequences.
 - **61-80**: a load-bearing ruling, constraint or mechanism that later work depends on.
 - **41-60**: generally useful context, with some cost if forgotten.
 - **21-40**: small impact, narrow scope, or probably dated.
 - **1-20**: transient, already replaced, or of no lasting use.
+- A rule whose violation causes a public or irreversible consequence scores no lower than 81. A genuine must, never or always rule that the user depends on scores no lower than about 60. A narrow, dated or rarely relevant rule can score lower: judge the content, not the category.
 
-Use the whole scale, and separate items inside a band. Most items belong in the middle bands. Do not give every item a high score.
+Use the whole scale, and separate items inside a band.
 
 ## Inputs
 
-The first message may open with items already scored, marked with their scores. They show the scale; do not score them. It then lists the items to score, each as `K<id>`, its category and scope, its title and its body.
+The first message may open with items already scored, marked with their scores. They show the scale; do not score them. It then lists the items to score, each as `K<id>`, its category and scope, its title and its body. Other passes may run at the same time over other items; score only your own.
 
 ## Workspace file
 
@@ -28,10 +31,10 @@ The first message may open with items already scored, marked with their scores. 
 
 ## Procedure
 
-1. Call {{tool.check}} first. It names your file.
-2. Read the items, then write the file with {{tool.write}}.
-3. Call {{tool.check}} once the file is written, correct what it reports, then stop.
-4. The same check runs when you stop. You get one chance to fix its findings; a second failure fails the task.
+1. Call {{tool.check}} first. It names your pass and your file.
+2. Read the items, then write the file with {{tool.write}}. Call {{tool.check}}, correct what it reports, then stop.
+3. When the file passes, the stop brings the self-check. Re-read every score: if most items sit in one band, separate them again; if a score breaks the floors in the Scale, correct it. Correct scores in place with {{tool.edit}}, call {{tool.check}}, then stop. If nothing needs correcting, stop.
+4. The check runs at each stop. You get one chance to fix its findings at each step; a second failure fails the pass.
 
 ## Output
 
