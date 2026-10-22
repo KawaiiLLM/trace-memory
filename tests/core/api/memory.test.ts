@@ -2,20 +2,19 @@ import { readHandle } from "../../read-handle-fixture.ts";
 import { fact as seedFact, legacyKnowledge, receiptCommit } from "../../support/seed.ts";
 import { afterEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite, skipRest } from "../../dreaming-skips.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
 import { submit, verifyUnchanged } from "../../support/noter.ts";
 import { tokens } from "../../../src/core/render/index.ts";
-let memory: ReturnType<typeof sourceSeededMemory>, admittedScenarios: AdmittedDreamerScenarios, triggerEntryId: number;
+import { applyWorkspace } from "../../../src/core/workspace/index.ts";
+import { block } from "../../support/workspace.ts";
+let memory: ReturnType<typeof sourceSeededMemory>, triggerEntryId: number;
 afterEach(() => memory?.close());
 const create = { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
 const batch = create;
 /** `reply` is what the verify task answers; the scripted `agent` is the write task. */
 function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>, reply?: Partial<RunAgentResult>) {
-  admittedScenarios = new AdmittedDreamerScenarios(raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify"
+  memory = sourceSeededMemory(":memory:", async raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify"
     ? verifyUnchanged(raw, reply) : agent(raw as NotingAgentInput));
-  memory = sourceSeededMemory(":memory:", admittedScenarios.agent);
   const project = memory.store.createProject({ name: "test", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use pnpm", assistantText: "Okay", startedAt: "now" });
@@ -31,6 +30,12 @@ const success = (): RunAgentResult => ({ outcome: "success", output: "Done", req
 const integrate = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
 const read = (id: number, version = 1) => readHandle(path => memoryFiles(memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(path).content, `K${id}@v${version}`);
 const dreamPath = () => ({ sessionId: 1, branch: "main", headTurnId: 1, triggerEntryId });
+/** A curate file applied as a Dreamer's batch would be: the Dreamer's writes are files, checked and applied by core. */
+const curate = (text: string) => {
+  const result = applyWorkspace(memory.store, { kind: "curate", sessionId: 1, path: dreamPath(), file: { name: "curate.md", text } });
+  if (!result.ok) throw new Error(result.problems.join("\n"));
+  return result;
+};
 
 test("payload-free acknowledgement preserves explicit native request-audit unavailability", async () => {
   setup(async input => {
@@ -133,27 +138,18 @@ test.each([
   { old: "absent clause", matches: /nothing|0 occurrences/ },
   { old: "duplicate", matches: /several|multiple occurrences/ },
   { old: "aa", matches: /several|multiple occurrences/ },
-])("135: D refuses edit 2 matching $old atomically, including overlapping matches", async ({ old, matches }) => {
+])("135: a manual update refuses edit 2 matching $old atomically, including overlapping matches", ({ old, matches }) => {
   const write = setup(async () => success());
   const original = "Use pnpm; aaa; duplicate duplicate.";
   write.execute({ ...create, text: original });
-  const base = read(1), path = dreamPath();
-  createDreamerTrigger(memory, path, 1, 1);
+  const base = read(1);
   const before = memory.store.listKnowledgeRevisions();
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest({ fixture: "135 exact match refusal" });
-    const tool = input.tools.find(tool => tool.name === "memory")!;
-    const refused = JSON.parse(tool.execute({ op: "update", id: base, supports: [], reason: "Attempt an exact edit",
-      edits: [{ old: "Use", new: "Prefer" }, { old, new: "replacement" }] }));
-    expect(refused.rejected.M1).toContain("edit 2");
-    expect(refused.rejected.M1).toMatch(matches);
-    expect(memory.store.listKnowledgeRevisions()).toEqual(before);
-    expect(memory.store.currentCommit(1)[0]!.text).toBe(original);
-    tool.execute({ drop: "M1" });
-    skipRest(input);
-    return success();
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const refused = JSON.parse(write.execute({ op: "update", id: base, supports: ["F1"], reason: "Attempt an exact edit",
+    edits: [{ old: "Use", new: "Prefer" }, { old, new: "replacement" }] }));
+  expect(refused.results[0]).toContain("rejected:");
+  expect(refused.results[0]).toContain("edit 2");
+  expect(refused.results[0]).toMatch(matches);
+  expect(memory.store.listKnowledgeRevisions()).toEqual(before);
   expect(memory.store.currentCommit(1)[0]!.text).toBe(original);
 });
 
@@ -193,60 +189,36 @@ test("135: supplied edit metadata replaces the inherited fields", () => {
   });
 });
 
-test("135: D checks the edited full-body cap (144: 200 tokens) and a numbered resubmission inherits metadata and parent supports", async () => {
+test("135: an edited full body is held to the cap (144: 200 tokens) and a corrected resubmission inherits metadata and parent supports", () => {
   const write = setup(async () => success());
   write.execute({ ...create, topics: ["packaging"] });
-  const base = read(1), path = dreamPath();
-  createDreamerTrigger(memory, path, 1, 1);
+  const base = read(1);
   const before = memory.store.listKnowledgeRevisions();
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest({ fixture: "135 immediate exact edits" });
-    const tool = input.tools.find(tool => tool.name === "memory")!;
-    const update = { op: "update", id: base, supports: [], reason: "Clarify the invocation" };
-    const refused = JSON.parse(tool.execute({ ...update, edits: [{ old: "pnpm", new: "word ".repeat(300) }] }));
-    expect(refused.rejected.M1).toContain("text: 301 tokens, over the 200-token limit");
-    expect(memory.store.listKnowledgeRevisions()).toEqual(before);
-    const committed = JSON.parse(tool.execute({ ...update, slot: "M1", edits: [{ old: "pnpm", new: "corepack pnpm" }] }));
-    expect(committed.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);
-    expect(committed.tokens.before).toHaveLength(1);
-    expect(committed.tokens.after).toHaveLength(1);
-    expect(committed.rejected).toBeUndefined();
-    expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, committed.committed[0]))).toMatchObject({
-      text: "Use corepack pnpm", category: "constraint", scope: "project", topics: ["packaging"], supports: [1],
-    });
-    expect(committed.committed[0]).not.toHaveProperty("text");
-    skipRest(input, ["K1@v1"]);
-    return success();
+  const update = { op: "update", id: base, supports: ["F1"], reason: "Clarify the invocation" };
+  const refused = write.execute({ ...update, edits: [{ old: "pnpm", new: "word ".repeat(300) }] });
+  expect(refused).toContain("text: 301 tokens, over the 200-token limit");
+  expect(memory.store.listKnowledgeRevisions()).toEqual(before);
+  const committed = JSON.parse(write.execute({ ...update, edits: [{ old: "pnpm", new: "corepack pnpm" }] }));
+  expect(committed.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);
+  expect(committed.tokens.before).toHaveLength(1);
+  expect(committed.tokens.after).toHaveLength(1);
+  expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, committed.committed[0]))).toMatchObject({
+    text: "Use corepack pnpm", category: "constraint", scope: "project", topics: ["packaging"], supports: [1],
   });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  expect(committed.committed[0]).not.toHaveProperty("text");
 });
 
-test("134: an update receipt carries its new tag for another write and counts metadata in pool cost", async () => {
+test("134: an update receipt carries its new tag for another write and counts metadata in its cost", () => {
   const write = setup(async () => success());
   const created = JSON.parse(write.execute(create));
-  const path = dreamPath();
-  createDreamerTrigger(memory, path, 1, 1, "project");
-  const result = await admittedScenarios.run(memory, path, input => {
-    const request = { fixture: "receipt tag reuse and metadata cost" }; input.reportRequest(request);
-    const tool = input.tools.find(tool => tool.name === "memory")!;
-    const base = /\[(K1#[a-z]+)\]/.exec(input.material.changed)![1];
-    expect(input.material.changed).toMatch(new RegExp(`\\[K1#[a-z]+\\] \\[[^\\]]+\\] \\(${created.tokens.after[0]} tokens\\)`));
-    const before = memory.store.knowledgePools(path).find(pool => pool.pool === "project:1")!.tokens;
-    const first = JSON.parse(tool.execute({ ...create, op: "update", id: base,
-      topics: ["classification ".repeat(200).trim()], reason: "Retain retrieval context" }));
-    expect(first.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);
-    const after = memory.store.knowledgePools(path).find(pool => pool.pool === "project:1")!.tokens;
-    const difference = first.tokens.after[0] - first.tokens.before[0];
-    expect(difference).toBeGreaterThan(100);
-    expect(Math.abs(difference - (after - before))).toBeLessThanOrEqual(1);
-    const second = JSON.parse(tool.execute({ ...create, op: "update", id: first.committed[0].version,
-      text: "Use pnpm and keep the lockfile", reason: "Clarify the result just written" }));
-    expect(second.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);
-    expect(second.committed[0].version).not.toBe(first.committed[0].version);
-    skipRest(input, ["K1@v1"]);
-    return { outcome: "success", output: "updated twice without Read", request };
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const first = JSON.parse(write.execute({ ...create, op: "update", id: read(1), topics: ["classification ".repeat(200).trim()], reason: "Retain retrieval context" }));
+  expect(first.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);
+  expect(first.tokens.before).toEqual(created.tokens.after);
+  expect(first.tokens.after[0] - first.tokens.before[0]).toBeGreaterThan(100);
+  const second = JSON.parse(write.execute({ ...create, op: "update", id: first.committed[0].version,
+    text: "Use pnpm and keep the lockfile", reason: "Clarify the result just written" }));
+  expect(second.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);
+  expect(second.committed[0].version).not.toBe(first.committed[0].version);
   expect(memory.store.currentCommit(1)[0]!.text).toBe("Use pnpm and keep the lockfile");
 });
 
@@ -336,67 +308,22 @@ test("N post-success claim-release failure reports cleanup without undoing termi
 
 // ---- 21a 2026-09-08: one evidence list per knowledge commit, with a reason as its message ----
 
-test("21a 2026-09-08: create, update, merge and archive all carry nonempty supports and a reason", async () => {
+test("21a 2026-09-08: merge and archive of a curate file carry their supports and a reason", () => {
   const write = setup(async () => success());
-  const first = JSON.parse(write.execute(create));
-  const second = JSON.parse(write.execute({ ...create, text: "Commit the lockfile" }));
-  expect(first.results).toEqual(["ok"]);
-  expect(second.results).toEqual(["ok"]);
-  const path = dreamPath();
-  createDreamerTrigger(memory, path, 1, 1, "project");
-  const result = await admittedScenarios.run(memory, path, input => {
-    const request = { fixture: "supports on merge and archive" }; input.reportRequest(request);
-    const dream = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, path);
-    expect(files.read("trace://K1@v1").content).toContain("Use pnpm");
-    expect(files.read("trace://K2@v1").content).toContain("Commit the lockfile");
-    const merge = JSON.parse(dream.execute({ op: "merge", id: read(1), absorb: [read(2)], text: "Use pnpm",
-      category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Two readings of one packaging rule." }));
-    expect(merge.committed).toHaveLength(1);
-    expect(merge.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);
-    expect(merge.tokens.before).toEqual([first.tokens.after[0], second.tokens.after[0]]);
-    const archived = JSON.parse(dream.execute({ op: "archive", kind: "budget", id: merge.committed[0].version,
-      supports: ["F1"], reason: "The user withdrew the rule." }));
-    expect(archived.tokens.before).toEqual(merge.tokens.after);
-    expect(archived.tokens.after).toEqual([0]);
-    expect(archived.committed).toHaveLength(1);
-    expect(skipRest(input, ["K1@v1", "K2@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
-    return { outcome: "success", output: "maintained", request };
-  });
-  expect(result.outcome).toBe("success");
+  expect(JSON.parse(write.execute(create)).results).toEqual(["ok"]);
+  expect(JSON.parse(write.execute({ ...create, text: "Commit the lockfile" })).results).toEqual(["ok"]);
+  expect(memory.store.getFact(1)!.text).toBe("Use pnpm");
+  const merged = curate(block("merge K1@v1", { absorb: "K2@v1", supports: "F1", reason: "Two readings of one packaging rule." }, "Use pnpm"));
+  expect(merged.blocks).toMatchObject([{ status: "applied", versions: ["K1@v2"] }]);
+  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "merge", text: "Use pnpm", supports: [1], reason: "Two readings of one packaging rule." });
+  expect(memory.store.currentCommit(2)).toEqual([]);
+  curate(block("archive K1@v2", { kind: "invalid", reason: "The user withdrew the rule." }, "The user withdrew the rule; nothing replaces it."));
   // The archive keeps its own evidence and inherits category and scope from the parent revision.
-  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", archiveKind: "budget", text: "Use pnpm", supports: [1],
-    reason: "The user withdrew the rule.", category: "constraint", scope: "project" });
-});
-
-for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D ${mode} after an immediate update preserves the committed revision`, async () => {
-  const manual = setup(async () => success());
-  expect(JSON.parse(manual.execute(create)).committed).toHaveLength(1);
-  createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
-  let finished = false;
-  const result = await admittedScenarios.run(memory, dreamPath(), input => {
-    input.reportRequest({ exact: "D request" });
-    const receipt = JSON.parse(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [{
-      ...create, op: "update", id: read(1), text: "Use pnpm and its lockfile", reason: "Clarified rule",
-    }], skipped: [] }));
-    expect(receipt.committed).toHaveLength(1);
-    expect(memory.store.currentCommit(1)[0]!.text).toBe("Use pnpm and its lockfile");
-    finished = true; // the run's expected failure must not hide an assertion error above
-    if (mode === "throw" || mode === "abort") {
-      const error = new Error("provider stopped after D commit");
-      if (mode === "abort") error.name = "AbortError";
-      throw error;
-    }
-    return { outcome: mode, output: "provider stopped after D commit", request: { exact: "D request" } };
-  });
-  expect(finished).toBe(true);
-  expect(result.outcome).toBe(mode === "cancelled" || mode === "abort" ? "cancelled" : "failure");
-  expect(memory.store.listKnowledgeRevisions(1)).toHaveLength(2);
-  const revision = memory.store.currentCommit(1)[0]!;
-  expect(revision.text).toBe("Use pnpm and its lockfile");
-  expect(memory.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? AND revision_id = ?")
-    .get("project:1", revision.id)).toEqual({ revision_id: revision.id });
-  expect(memory.store.getClaim(1, "dreaming")).toBeNull();
+  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", archiveKind: "invalid", text: "The user withdrew the rule; nothing replaces it.",
+    supports: [1], reason: "The user withdrew the rule.", category: "constraint", scope: "project" });
+  // A block without a reason is a check problem, and nothing is written.
+  const bare = applyWorkspace(memory.store, { kind: "curate", sessionId: 1, path: dreamPath(), file: { name: "curate.md", text: block("update K1@v3", {}, "Use pnpm") } });
+  expect(bare).toMatchObject({ ok: false, problems: [expect.stringContaining("missing required field `reason`")] });
 });
 
 test("21a 2026-09-08: an omitted, wrongly typed or empty reason or supports rejects the whole batch", () => {
@@ -430,7 +357,7 @@ test("21a/116: removed because is rejected and cannot satisfy a required N memor
   expect((await integrate()).outcome).toBe("failure");
 });
 
-test("21a 2026-09-08: one supports list holds both the text's grounds and the fact that prompted the change", async () => {
+test("21a 2026-09-08: one supports list holds both the text's grounds and the fact that prompted the change", () => {
   const write = setup(async () => success());
   const source = memory.store.getSourceEntry(memory.store.listSourceEntries(1)[0]!.id)!;
   const correction = seedFact(memory, { sessionId: 1, branch: "main", headTurnId: 1 }, "npm is banned outright",
@@ -438,58 +365,22 @@ test("21a 2026-09-08: one supports list holds both the text's grounds and the fa
   expect(correction.id).toBe(2);
   expect(memory.store.listFactRelations(correction.id)).toContainEqual({ fromFact: 2, toFact: 1, kind: "negate", strength: "strong" });
   expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
-  const update = { ...create, op: "update", id: read(1), text: "Use pnpm; npm is banned outright", supports: ["F1", "F2"],
-    reason: "The user withdrew the softer rule; F2 corrects F1." };
-  createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
-  const result = await admittedScenarios.run(memory, dreamPath(), input => {
-    const request = { fixture: "multi-fact supports" }; input.reportRequest(request);
-    expect(memoryFiles(memory, dreamPath()).read("trace://K1@v1").content).toContain("Use pnpm");
-    expect(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [update], skipped: [] })).toContain("committed");
-    expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
-    return { outcome: "success", output: "updated", request };
-  });
-  expect(result.outcome).toBe("success");
+  curate(block("update K1@v1", { supports: "F1, F2", reason: "The user withdrew the softer rule; F2 corrects F1." }, "Use pnpm; npm is banned outright"));
   // A negating fact among supports is evidence for this commit, not a contradiction, and the
   // addresses in the reason add nothing: the stored evidence is exactly what supports listed.
   expect(memory.store.currentCommit(1)[0]?.supports).toEqual([1, 2]);
 });
 
-test("21a 2026-09-08: reason shows in commit history, diffs and the run, never in the knowledge line or the numeric diagnostic", async () => {
+test("21a 2026-09-08: reason shows in commit history, diffs and the run, never in the knowledge line or the numeric diagnostic", () => {
   const write = setup(async () => success());
   write.execute(batch);
-  createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
-  let updatedCommit = 0;
-  const result = await admittedScenarios.run(memory, dreamPath(), input => {
-    const request = { fixture: "reason history" }; input.reportRequest(request);
-    expect(memoryFiles(memory, dreamPath()).read("trace://K1@v1").content).toContain("Use pnpm");
-    const receipt = JSON.parse(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [{ op: "update", id: read(1), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
-    updatedCommit = receiptCommit(memory.store, receipt.committed[0]);
-    expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
-    return { outcome: "success", output: "updated", request };
-  });
-  expect(result.outcome).toBe("success");
+  curate(block("update K1@v1", { reason: "Re-checked 42 files; wording unchanged." }, "Use pnpm"));
+  const updatedCommit = memory.store.currentCommit(1)[0]!.id;
   expect(memory.trace("K1", { versions: "history", fields: ["reason"] })).toContain("reason: Re-checked 42 files; wording unchanged.");
   expect(memory.trace("K1@v1..v2", { fields: ["reason"] })).toContain("reason: Initial admission of this conclusion. -> Re-checked 42 files; wording unchanged.");
   expect(memory.trace(`R${memory.store.listRuns(1).at(-1)!.id}`)).toContain(`K1@${updatedCommit} (update: Re-checked 42 files; wording unchanged.)`);
   const automatic = memory.inject({ sessionId: 1, headTurnId: 1, branch: "main" });
   expect(automatic).toContain("Use pnpm"); expect(automatic).not.toContain("Re-checked 42 files");
-});
-
-test("21a 2026-09-08: a reason-only update on a stale base is rejected like any other commit", async () => {
-  const write = setup(async () => success());
-  write.execute(batch);
-  createDreamerTrigger(memory, dreamPath(), 1, 1, "project");
-  const result = await admittedScenarios.run(memory, dreamPath(), input => {
-    const request = { fixture: "stale reason-only update" }; input.reportRequest(request);
-    const original = read(1);
-    dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [{ op: "update", id: original, text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Sharpened wording." }], skipped: [] });
-    expect(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [{ op: "update", id: original, text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Classification cleanup only." }], skipped: [] })).toContain("base is not the latest effective applicable revision; current: K1@v2");
-    expect(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [{ slot: "M1", op: "update", id: read(1, 2), text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Corrected the stale address without changing the conclusion." }], skipped: [] })).toContain("committed");
-    expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
-    return { outcome: "success", output: "stale corrected", request };
-  });
-  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  expect(memory.store.currentCommit(1)[0]!.text).toBe("Use pnpm, never npm");
 });
 
 // ---- 21b 2026-09-08: subject labels on the immutable knowledge revision ----
@@ -525,72 +416,44 @@ test("21b 2026-09-08: reordering the same label set stores the same topics; an e
   expect(memory.store.currentCommit(3)[0]!.supports).toEqual([1]);
 });
 
-test("21b 2026-09-08: a topic-only update is an ordinary update; old commits keep their labels, clearing is explicit, merge states the survivor's set and archive inherits", async () => {
+test("21b 2026-09-08: a topic-only update is an ordinary update; old commits keep their labels, clearing is explicit, merge states the survivor's set and archive inherits", () => {
   const write = setup(async () => success());
   write.execute({ ...create, topics: ["packaging"] });
   write.execute({ ...create, text: "Commit the lockfile", topics: ["lockfile"] });
-  const path = dreamPath();
-  // Classification cleanup is a normal update: the complete unchanged text, category, scope and
-  // evidence, with a reason. There is no metadata-only path around review or conflict checking.
-  createDreamerTrigger(memory, path, 1, 1, "project");
-  let cleanupCommit = 0, clearedCommit = 0, mergedCommit = 0;
-  const result = await admittedScenarios.run(memory, path, input => {
-    const request = { fixture: "topic maintenance sequence" }; input.reportRequest(request);
-    const dream = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, path);
-    expect(files.read("trace://K1@v1").content).toContain("Use pnpm");
-    expect(files.read("trace://K2@v1").content).toContain("Commit the lockfile");
-    const cleanup = JSON.parse(dreamerWrite(dream, { operations: [{ op: "update", id: read(1), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: ["packaging", "tooling"], reason: "Classification cleanup: the rule also concerns tooling." }], skipped: [] }));
-    cleanupCommit = receiptCommit(memory.store, cleanup.committed[0]);
-    const cleared = JSON.parse(dreamerWrite(dream, { operations: [{ op: "update", id: read(1, 2), text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Classification cleanup: the labels named no subject." }], skipped: [] }));
-    clearedCommit = receiptCommit(memory.store, cleared.committed[0]);
-    const merged = JSON.parse(dreamerWrite(dream, { operations: [{ op: "merge", id: read(1, 3), absorb: [read(2)], topics: ["packaging"], text: "Use pnpm and commit the lockfile", category: "constraint", scope: "project", supports: ["F1"], reason: "Two readings of one packaging rule." }], skipped: [] }));
-    mergedCommit = receiptCommit(memory.store, merged.committed[0]);
-    dreamerWrite(dream, { operations: [{ op: "archive", kind: "budget", id: read(1, 4), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] });
-    expect(skipRest(input, ["K1@v1", "K2@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
-    return { outcome: "success", output: "maintained", request };
-  });
-  expect(result.outcome).toBe("success");
+  // Classification cleanup is a normal update: the complete unchanged text with a reason. There is no
+  // metadata-only path around review or conflict checking.
+  const cleanup = curate(block("update K1@v1", { topics: "packaging, tooling", reason: "Classification cleanup: the rule also concerns tooling." }, "Use pnpm"));
+  const cleanupCommit = memory.store.currentCommit(1)[0]!.id;
+  const cleared = curate(block("update K1@v2", { topics: "", reason: "Classification cleanup: the labels named no subject." }, "Use pnpm"));
+  const clearedCommit = memory.store.currentCommit(1)[0]!.id;
+  const merged = curate(block("merge K1@v3", { absorb: "K2@v1", topics: "packaging", reason: "Two readings of one packaging rule." }, "Use pnpm and commit the lockfile"));
+  const mergedCommit = memory.store.currentCommit(1)[0]!.id;
+  expect([cleanup, cleared, merged].map(result => result.blocks[0]!.status)).toEqual(["applied", "applied", "applied"]);
+  curate(block("archive K1@v4", { kind: "inadmissible", reason: "The user withdrew the rule." }, "The user withdrew the rule; nothing replaces it."));
   expect(memory.store.getKnowledgeRevision(1, cleanupCommit)!.text).toBe(memory.store.getKnowledgeRevision(1, 1)!.text);
   expect(memory.store.getKnowledgeRevision(1, 1)!.topics).toEqual(["packaging"]); // the old commit keeps its old classification
   expect(memory.store.getKnowledgeRevision(1, cleanupCommit)!.topics).toEqual(["packaging", "tooling"]);
-  // Clearing is explicit: an empty array, never an omitted field.
+  // Clearing is explicit: an empty list, never an omitted field.
   expect(memory.store.getKnowledgeRevision(1, clearedCommit)!.topics).toEqual([]);
   // Merge supplies the survivor's complete set; no implicit union of every parent's labels.
-  expect(memory.store.currentCommit(1)[0]!.topics).toEqual(["packaging"]);
+  expect(memory.store.getKnowledgeRevision(1, mergedCommit)!.topics).toEqual(["packaging"]);
   expect(memory.store.getKnowledgeRevision(2, 2)!.topics).toEqual(["lockfile"]); // the absorbed parent keeps its own
-  // Archive accepts no labels of its own and inherits the selected parent's array.
-  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", archiveKind: "budget", topics: ["packaging"] });
-  const archivedCommit = memory.store.currentCommit(1)[0]!.id;
-  expect(archivedCommit).toBeGreaterThan(mergedCommit);
+  // Archive takes no labels of its own and inherits the selected parent's list.
+  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", archiveKind: "inadmissible", topics: ["packaging"] });
+  expect(memory.store.currentCommit(1)[0]!.id).toBeGreaterThan(mergedCommit);
 });
 
-test.each(["authored", "later-parent"] as const)("a merge keeps the identity of the primary it names, the newer one included, with $0 text", async body => {
+test("a merge keeps the identity of the primary it names, the newer one included", () => {
   const write = setup(async () => success());
   const older = JSON.parse(write.execute({ ...create, text: "Use pnpm.", topics: ["old"] }));
   const newer = JSON.parse(write.execute({ ...create, text: "Use corepack pnpm.", topics: ["new"] }));
-  const olderTag = read(1), newerTag = read(2), path = dreamPath();
   const olderCommit = receiptCommit(memory.store, older.committed[0]), newerCommit = receiptCommit(memory.store, newer.committed[0]);
-  const expected = body === "authored" ? "Use pnpm and retain the lockfile." : "Use corepack pnpm.";
-  createDreamerTrigger(memory, path, 1, 1);
-  const result = await admittedScenarios.run(memory, path, input => {
-    input.reportRequest({ fixture: "merge primary identity" });
-    const receipt = JSON.parse(input.tools.find(tool => tool.name === "memory")!.execute({
-      op: "merge", id: newerTag, absorb: [olderTag], supports: [], reason: "Unify without losing the older identity",
-      category: "constraint", scope: "project", topics: ["packages"], ...(body === "authored" ? { text: expected } : {}),
-    }));
-    expect(receipt.committed).toMatchObject([{ op: "merge", knowledgeId: 2, version: expect.stringMatching(/^K2#[a-z]{4,}$/) }]);
-    expect(receipt.committed[0]).not.toHaveProperty("swappedFrom");
-    expect(receipt.tokens.before).toEqual([newer.tokens.after[0], older.tokens.after[0]]);
-    const commit = receiptCommit(memory.store, receipt.committed[0]);
-    expect(memory.store.getKnowledgeRevision(2, commit)).toMatchObject({ parentId: newerCommit, text: expected, supports: [1],
-      reason: "Unify without losing the older identity", category: "constraint", scope: "project", topics: ["packages"] });
-    expect(memory.store.listKnowledgeLinks(1)).toContainEqual({ fromKnowledge: 1, fromCommit: olderCommit, kind: "merged_into", toKnowledge: 2, toCommit: commit });
-    expect(memory.store.currentCommit(1)).toEqual([]);
-    expect(receipt.committed[0]).not.toHaveProperty("text");
-    skipRest(input, ["K1@v1", "K2@v1"]);
-    return success();
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const expected = "Use pnpm and retain the lockfile.";
+  const applied = curate(block("merge K2@v1", { absorb: "K1@v1", reason: "Unify without losing the older identity", topics: "packages" }, expected));
+  expect(applied.blocks).toMatchObject([{ status: "applied", versions: ["K2@v2"] }]);
+  const commit = memory.store.currentCommit(2)[0]!.id;
+  expect(memory.store.getKnowledgeRevision(2, commit)).toMatchObject({ op: "merge", parentId: newerCommit, text: expected, supports: [1],
+    reason: "Unify without losing the older identity", category: "constraint", scope: "project", topics: ["packages"] });
+  expect(memory.store.listKnowledgeLinks(1)).toContainEqual({ fromKnowledge: 1, fromCommit: olderCommit, kind: "merged_into", toKnowledge: 2, toCommit: commit });
+  expect(memory.store.currentCommit(1)).toEqual([]);
 });
-

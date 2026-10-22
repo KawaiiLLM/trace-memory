@@ -174,18 +174,26 @@ test("64c cancellation before the first batch covers nothing and leaves the work
   expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
 });
 
-test("64c cancellation after a batch keeps the batch and covers nothing", async () => {
+for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D ${mode} after an applied batch keeps its revision, covers nothing and releases the claim`, async () => {
   const f = dreamerFixture();
   const rule = f.item("Rule", { category: "constraint" });
   f.item("Reference", { category: "reference" });
   f.next(async raw => {
     await writeBatch(raw as DreamingTaskInput, update(rule, "Rule, moved by the batch"));
-    return { outcome: "cancelled", output: "cancelled after the first batch", request: REQUEST };
+    expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Rule, moved by the batch");
+    if (mode === "throw" || mode === "abort") {
+      const error = new Error("provider stopped after the batch");
+      if (mode === "abort") error.name = "AbortError";
+      throw error;
+    }
+    return { outcome: mode, output: "provider stopped after the batch", request: REQUEST };
   });
-  expect((await f.dream()).outcome).toBe("cancelled");
+  expect((await f.dream()).outcome).toBe(mode === "cancelled" || mode === "abort" ? "cancelled" : "failure");
+  expect(f.store.listKnowledgeRevisions(rule.knowledgeId)).toHaveLength(2);
   expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Rule, moved by the batch");
   expect(covered(f)).toEqual([]); // coverage is written when curate passes, never before
   expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate", detail: { doneCategories: ["constraint"] } });
+  expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
 });
 
 test("64c a fault in the final transaction of curate rolls back its batch and its coverage together, and keeps the exact audit", async () => {
