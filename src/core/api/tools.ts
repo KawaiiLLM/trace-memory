@@ -3,7 +3,6 @@ import { bindMemory } from "../knowledge-write/bind.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput, KnowledgePath, SourceEntry } from "../store/index.ts";
 import { searchToolDefinition, validateSearchInput, type SearchLayer, type SearchOptions } from "./search.ts";
-import { Slots } from "../noting/held.ts";
 import { tokens } from "../render/index.ts";
 import { overLimit } from "../knowledge-write/prepare.ts";
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
@@ -30,10 +29,10 @@ const updateBodySchema = { oneOf: [
   { required: ["text", "category", "scope", "topics"], not: { required: ["edits"] } },
   { required: ["edits"], not: { required: ["text"] } },
 ] };
-/** An archive of these kinds states its grounds as the new version's body; a `budget` archive keeps its parent's. */
+/** An archive states its grounds as the new version's body. */
 const explainedKind = { enum: ["invalid", "inadmissible"] };
 const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "archive"] }, id: knowledgeId, title: titleSchema,
-  absorb: { type: "array", items: knowledgeId, minItems: 1, uniqueItems: true }, kind: { enum: ["budget", "invalid", "inadmissible"] }, text: { type: "string", minLength: 1 },
+  absorb: { type: "array", items: knowledgeId, minItems: 1, uniqueItems: true }, kind: { enum: ["invalid", "inadmissible"] }, text: { type: "string", minLength: 1 },
   edits: { type: "array", minItems: 1, items: object({ old: { type: "string", minLength: 1 }, new: { type: "string" } }, ["old", "new"]) },
   category: { enum: KNOWLEDGE_CATEGORIES }, scope: { enum: KNOWLEDGE_SCOPES }, supports: { type: "array", items: { ...factId, description: "An existing F fact." }, minItems: 1 },
   reason: { type: "string", minLength: 1 }, topics: { type: "array", items: { type: "string", minLength: 1 } } }, ["op", "supports", "reason"]), allOf: [
@@ -52,7 +51,7 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   searchToolDefinition,
   { name: "note", description: "Write one topic's episodic slice with a nonempty single-line title and one top-level sources string: each segment starts on a line with [T12#E3@user] and a space (role suffix optional), followed by authored text until the next marker. No text may precede the first marker. Give each contributing whole native entry its own segment; Core orders segments by path and joins their texts as the body. End a slice at a topic pivot, batch end or the configured writing limits (title, and the segments summed as the body); preserve the reasoning arc and name the actual harness in agent segments. Do not put later interpretations in an earlier source or tool-result segment. Block selectors and fact-level text are not allowed. No model-supplied category, status, quote or actor. Thinking alone is not evidence. Relations are optional and cite existing F facts. Each call commits one fact immediately. An empty call {} writes nothing.", parameters: { ...object(factSchema.properties as Record<string, unknown>),
     if: { minProperties: 1 }, then: { required: factSchema.required } } },
-  { name: "memory", description: "Role-bound knowledge writing. Manual writers may create/update/archive and commit one valid operation immediately; rejected calls write nothing. Merge/split remain D-only. Every operation has nonempty fact supports and reason (commit message, not evidence). Create supplies a title and complete text/category/scope/topics. Update inherits the base's title when none is given; a base without one requires it. Title and body must fit the configured writing limits (every writer, including manual); a refusal states the field, its count and the limit. Update supplies exactly one of complete text (with category/scope/topics) or nonempty edits:[{old,new}]. Edits apply in order to the exact base body; each nonempty old must match exactly once at that step, and empty new deletes. A failed edit refuses the whole operation naming its position and zero/multiple matches. Omitted category/scope/topics inherit from the base only with edits; supplied fields replace them. The complete update result passes the existing admission, supports, scope and length checks. Only the complete result is stored; immediate update receipts give its new K#tag and pool item tokens before/after without echoing the body. Archive requires kind budget (retains exact parent body), invalid or inadmissible (each requires substantive text explaining grounds, evidence and replacement if any). Archive inherits category/scope/topics. Update/archive requires exact K#tag. Tagged bases still require valid scope, path and evidence. An empty call {} writes nothing.", parameters: { ...object(memoryOperationSchema.properties as Record<string, unknown>),
+  { name: "memory", description: "Role-bound knowledge writing. Manual writers may create/update/archive and commit one valid operation immediately; rejected calls write nothing. Merge/split remain D-only. Every operation has nonempty fact supports and reason (commit message, not evidence). Create supplies a title and complete text/category/scope/topics. Update inherits the base's title when none is given; a base without one requires it. Title and body must fit the configured writing limits (every writer, including manual); a refusal states the field, its count and the limit. Update supplies exactly one of complete text (with category/scope/topics) or nonempty edits:[{old,new}]. Edits apply in order to the exact base body; each nonempty old must match exactly once at that step, and empty new deletes. A failed edit refuses the whole operation naming its position and zero/multiple matches. Omitted category/scope/topics inherit from the base only with edits; supplied fields replace them. The complete update result passes the existing admission, supports, scope and length checks. Only the complete result is stored; immediate update receipts give its new K#tag and pool item tokens before/after without echoing the body. Archive requires kind invalid or inadmissible (each requires substantive text explaining grounds, evidence and replacement if any). Archive inherits category/scope/topics. Update/archive requires exact K#tag. Tagged bases still require valid scope, path and evidence. An empty call {} writes nothing.", parameters: { ...object(memoryOperationSchema.properties as Record<string, unknown>),
     if: { minProperties: 1 }, then: { required: memoryOperationSchema.required, allOf: memoryOperationSchema.allOf } } },
 ];
 
@@ -73,42 +72,6 @@ export function renderToolDefinitions(definitions: readonly Omit<ToolDefinition,
 /** Price the descriptions and actual exposed names that the host advertises. */
 export function pricedToolDefinitions(definitions: readonly Omit<ToolDefinition, "execute">[], names: ToolNames) {
   return renderToolDefinitions(definitions, names).map(definition => ({ ...definition, name: names[definition.name] }));
-}
-
-export function dreamingToolDefinitions(): Omit<ToolDefinition, "execute">[] {
-  const tools = structuredClone(toolDefinitions.filter(t => t.name !== "note"));
-  const memory = tools.find(t => t.name === "memory")!;
-  memory.description = "One Dreamer item per call, committed at once when legal: one operation with its fields as top-level arguments, or one skip. Allowed operations are update, a merge, a split, and archive; create is forbidden. Update supplies exactly one of complete text (with category/scope/topics) or nonempty edits:[{old,new}]. Edits apply in order to the exact base body; each nonempty old must match exactly once at that step, and empty new deletes. A failed edit refuses the whole operation naming its position and zero/multiple matches. Omitted category/scope/topics inherit from the base only with edits; supplied fields replace them. The complete update result passes the existing admission, length, supports and scope checks; title and body obey the configured writing limits, and a refusal states the field, its count and the limit. Only the complete result is stored; update receipts give its new K#tag and pool item tokens before/after without echoing the body. A merge names its primary in id, which keeps its identity and gains the merged version, and lists one or more other parents in absorb, which it consumes; it supplies the complete body and inherits the primary's title when none is given. Merge may omit text to copy the latest exact parent's body verbatim. A split names the item in id, which keeps its identity: the call's own text/edits and fields are that item's new version, and children (one or more, each with title, complete text, category and topics, inheriting the item's scope and sharing the operation's supports and reason) become new identities recorded as split from it; the item is not archived. Non-empty supports are the exact evidence for the change; empty supports request Store-side inheritance from every exact parent. Every parent requires an exact K#tag base and must belong to one of this session's pools: global, its project's or its own. A base that is not the latest effective applicable revision on the writer path is rejected naming the current revision. skip with because names an exact untagged K@vN history address for a frozen version that was deliberated and intentionally left unchanged; it requires no full-body read and grants no mutation authority; it marks that version processed without changing it. Never skip an untouched reference or an item you did not deliberate. Archive requires kind budget (keeps parent's complete body), invalid or inadmissible (each a substantive statement of grounds, evidence and replacement if any); category/scope/topics carry over. A refused item, including one missing required fields, is numbered Mn (numbers never recycle) and blocks success until slot:Mn resubmits it (a legal resubmission commits) or drop:Mn withdraws it in its own call; another call's commit never clears it. A call that is not structurally one item gets no number and is a top-level call error until a subsequent structurally valid call. Committed items survive later refusals.";
-  const operation = structuredClone(memoryOperationSchema) as any;
-  operation.properties.op.enum = ["update", "merge", "split", "archive"];
-  operation.properties.supports.minItems = 0;
-  operation.properties.supports.items = factId;
-
-  operation.properties.children = { type: "array", minItems: 1, items: object({
-    title: titleSchema, text: { type: "string", minLength: 1 }, category: { enum: KNOWLEDGE_CATEGORIES },
-    topics: { type: "array", items: { type: "string", minLength: 1 } },
-  }, ["title", "text", "category", "topics"]) };
-  operation.allOf[2] = { if: { properties: { op: { const: "archive" } } },
-    then: { required: ["kind"], allOf: [
-      { not: { anyOf: ["title", "category", "scope", "topics", "children"].map(key => ({ required: [key] })) } },
-      { if: { properties: { kind: explainedKind } }, then: { required: ["text"] }, else: { not: { required: ["text"] } } }] },
-    else: { not: { required: ["kind"] }, if: { properties: { op: { enum: ["update", "split"] } } }, then: updateBodySchema,
-      else: { required: ["category", "scope", "topics"] } } };
-  operation.allOf[3] = { if: { properties: { op: { enum: ["update", "split"] } } }, then: {}, else: { not: { required: ["edits"] } } };
-  operation.allOf.push({ if: { properties: { op: { const: "split" } } }, then: { required: ["children"] }, else: { not: { required: ["children"] } } });
-  // 127: one item per call, like the Noter's (116): an operation's fields, or {skip, because}; slot/drop address a refused item.
-  // No root anyOf/oneOf/allOf: Claude Code skips an MCP tool whose input schema has one.
-  memory.parameters = { ...object({ ...operation.properties,
-    skip: { type: "string", pattern: "^K[1-9][0-9]*@v[1-9][0-9]*$", description: "A deliberated frozen version left unchanged; its own call with because." },
-    because: { type: "string", minLength: 1 },
-    slot: { type: "string", pattern: "^M[1-9][0-9]*$", description: "Resubmit one refused item under its number." },
-    drop: { type: "string", pattern: "^M[1-9][0-9]*$", description: "Withdraw one refused item in a separate call." } }),
-    if: { required: ["drop"] }, then: { maxProperties: 1 },
-    else: { if: { required: ["skip"] },
-      then: { required: ["skip", "because"], not: { anyOf: Object.keys(operation.properties).map(key => ({ required: [key] })) } },
-      else: { required: operation.required, allOf: operation.allOf, not: { required: ["because"] } } } };
-  tools.push({ name: "check", description: "Read-only pool check. Returns frozen and own revision counts, newly pending revisions, current pool sizes and blockers: refused memory items (Mn) not yet resubmitted with slot or withdrawn with drop, a pending memory call error, any pool over its budget, and frozen versions neither operated on nor skipped. The run succeeds only with no blocker. This receipt never grants a complete-body handle or commits knowledge.", parameters: object({}) });
-  return tools;
 }
 
 /** The model-facing result format, read back. A tool result is a refusal when it is a `rejected:`
@@ -208,9 +171,8 @@ export function factValidator(store: Store, scope: { sessionId: number; noting: 
 }
 
 export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput,
-  dreaming?: { path: KnowledgePath; check(): string; /** 59: why a commit may not be skipped, or undefined when it is a supplied untouched handle. */ skippable(commit: number): string | undefined },
   exposedNames: ToolNames = canonicalToolNames,
-  /** The Noter's workspace check (ticket 144): its only writer-side tool. */
+  /** The Noter's and the Dreamer's workspace check (ticket 144): their only writer-side tool. */
   noting?: { check(): string }) {
   const names = validateToolNames(supplied.toolNames ?? exposedNames);
   const { spill, ...cloneable } = supplied; // a function cannot be cloned; the rest is frozen against later mutation
@@ -219,19 +181,18 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
   if (context.kind === "manual") {
     if (store.getTurn(context.currentTurnId)?.sessionId !== session.id) throw new Error("current turn must belong to the calling session");
-  } else if (context.kind === "noting" || (context.kind === "dreaming" && !dreaming)) {
+  } else if (context.kind === "noting" || context.kind === "dreaming") {
     if (!noting) throw new Error("Noter and Dreamer workspace tools require their workspace check");
     if (context.kind === "noting") frozenTurnIds(store, session.id, context.range); // a range that is not this session's ancestry is refused at binding
   }
   // The branch rides on the path so applicability is judged per source entry (review 2026-09-08 P1).
   const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId, branch: context.branch }
     : context.kind === "noting" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]), branch: context.branch }
-    : dreaming ? dreaming.path : { sessionId: session.id, headTurnId: context.headTurnId ?? null, branch: context.branch };
+    : { sessionId: session.id, headTurnId: context.headTurnId ?? null, branch: context.branch };
   const plain: RunInput = { kind: context.kind, sessionId: session.id, branch: context.branch,
     rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
     rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
   const run = metadata ?? store.bindRunOrigin(plain, store.triggerOrigin(path, context.triggerEntryId));
-  if (context.kind === "dreaming" && dreaming && !store.isDreamingRun(run)) throw new Error("Dreamer tools require an admitted trusted run binding");
   // Source resolution, range checks and candidate applicability share one binding-time database/path
   // membership. Later tree movement and same-Turn entry ingestion cannot change any half of the run.
   const sourceTurns = store.pathTurns(path);
@@ -251,13 +212,12 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       if (!fact) return false;
       const entries = store.factEntries(factId);
       return entries.length ? entries.every(entryId => manualEntryIds.has(entryId)) : fact.turnId !== path.headTurnId;
-    } : undefined, dreaming?.skippable, names);
+    } : undefined, names);
   const sequence = memory.sequence;
   // Historical run audits retain their read field; public trace calls no longer populate it.
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false;
   let problems: string[] = [];
-  const rejectedNativeCalls = new Set<string>();
   // Reads resolve any existing address (user ruling 2026-09-07: no visibility limits on reads);
   // injection and Consolidation keep their scope rules elsewhere. Writes still bind sources to the run.
   const facts = factValidator(store, { sessionId: session.id, noting: false, frozenIds: new Set<number>(), sourceTurns, initialPath: [] });
@@ -297,24 +257,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       return results.length ? JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }) : `rejected: ${problems.join("; ")}`; }
     return receipt(committedRun.facts.map((f) => f.id));
   };
-  // Exceptions outside memory's batch validator must also block Dreamer completion until
-  // that tool is used legally; tool text is diagnostic, never a conflict classification.
-  const toolProblems = new Map<string, string>();
-  const definitions = renderToolDefinitions(dreaming ? dreamingToolDefinitions() : context.kind === "noting" ? notingToolDefinitions
+  const definitions = renderToolDefinitions(context.kind === "noting" ? notingToolDefinitions
     : context.kind === "dreaming" ? dreamingWorkspaceToolDefinitions : toolDefinitions, names);
-  // 127: D commits each legal item at once; a refused one keeps its M slot (116).
-  const dreamer = dreaming ? new Slots<object>(names,
-    Object.keys(definitions.find(t => t.name === "memory")!.parameters.properties as object)) : undefined;
-  const dream = (raw: unknown) => {
-    const content = raw as Record<string, unknown>, { skip, because, ...operation } = content;
-    const skipping = "skip" in content || "because" in content;
-    if (skipping && Object.keys(operation).length) throw new Error("a skip call carries only skip and because");
-    if (skipping && typeof skip !== "string") throw new Error("skip: expected an exact K@vN version");
-    const { results: [result], ...receipt } = memory.execute(skipping ? { operations: [], skipped: [{ knowledge: skip, because }] }
-      : { operations: [content], skipped: [] }, content);
-    if (result!.startsWith("rejected: ")) throw new Error(result!.slice("rejected: ".length));
-    return receipt;
-  };
   const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string | Promise<string>): ToolDefinition => ({ ...definitions.find(t => t.name === name)!,
     execute: (raw) => {
       if (closed) return "rejected: run has finished";
@@ -324,9 +268,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         if ((name === "note" || name === "memory") && !store.enabled(session.id)) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
         result = execute(raw as Record<string, unknown>);
-        toolProblems.delete(name);
       } catch (error) { result = `rejected: ${error instanceof Error ? error.message : String(error)}`;
-        if (dreaming) toolProblems.set(name, result);
         if (name === "note") problems = [result]; }
       if (typeof result !== "string") {
         const input = structuredClone(raw), settle = (text: string) => { sequence.push({ name, input, result: text }); return text; };
@@ -337,30 +279,22 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       if (context.kind === "manual" && (name === "note" || name === "memory") && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });
       return result;
     } }) as ToolDefinition;
-  const checkOf = dreaming ?? noting;
   const tools = [
     definition("search", input => {
       const { query, layer, options } = validateSearchInput(input);
       return read.search(query, layer, { ...options, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch,
         ...(spill ? { spill } : {}) });
     }),
-    ...(checkOf ? [definition("check", input => { if (Object.keys(input).length) throw new Error(`${names.check} expects {} only`); return checkOf.check(); })] : [definition("note", note)]),
-    ...(context.kind === "noting" || (context.kind === "dreaming" && !dreaming) ? [] : [definition("memory", input => dreamer ? dreamer.call(input, dream, () => {})
-      : Object.keys(input).length && ("slot" in input || "drop" in input || "operations" in input || "skipped" in input)
+    ...(noting ? [definition("check", input => { if (Object.keys(input).length) throw new Error(`${names.check} expects {} only`); return noting.check(); })] : [definition("note", note)]),
+    ...(context.kind === "noting" || context.kind === "dreaming" ? [] : [definition("memory", input =>
+      Object.keys(input).length && ("slot" in input || "drop" in input || "operations" in input || "skipped" in input)
         ? `rejected: manual ${names.memory} expects one create/update/archive operation or {}`
         : JSON.stringify(memory.execute({ operations: Object.keys(input).length ? [input] : [], skipped: [] }, input)))]),
   ];
   const acknowledgeRequest = () => {
     if (closed) throw new Error("noting run has finished");
   };
-  return { tools, sequence, fetched, memory, get toolProblems() { return [...toolProblems.values()]; }, get problems() { return dreamer ? [...toolProblems.values(), ...dreamer.problems()] : problems; },
-    get cancelled() { return closed; },
-    reportToolRejection: (id: string, name: "note" | "memory", input: unknown, reason: string) => {
-      if (closed || !dreamer || rejectedNativeCalls.has(id)) return;
-      rejectedNativeCalls.add(id);
-      // 127: a host-refused Dreamer call takes the numbered slot, or a call error when shapeless.
-      const receipt = dreamer.call(input, dream, () => {}, reason);
-      sequence.push({ name, input: structuredClone(input), result: `rejected: ${reason}`, problems: [receipt] });
-    }, close: () => { closed = true; }, acknowledgeRequest,
+  return { tools, sequence, fetched, memory,
+    get cancelled() { return closed; }, close: () => { closed = true; }, acknowledgeRequest,
     reportRequest: (request: unknown) => { acknowledgeRequest(); run.request = JSON.stringify(request); } };
 }

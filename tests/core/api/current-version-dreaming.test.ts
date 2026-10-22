@@ -2,7 +2,7 @@
 // a memory-off or an executor exit fences a model that keeps working, and a merge that names its primary.
 import { afterEach, expect, test } from "vitest";
 import { writeFileSync } from "node:fs";
-import type { DreamingTaskInput } from "../../../src/core/dreaming/index.ts";
+import type { DreamingAgentInput } from "../../../src/core/dreaming/index.ts";
 import type { TraceMemory } from "../../source-fixture.ts";
 import { dreamerFixture as makeDreamerFixture, writeCurateBatch } from "../../support/dreamer.ts";
 import { REQUEST } from "../../support/noter.ts";
@@ -32,14 +32,14 @@ test.each([
   { committed: false, stopping: true, disabled: false }, { committed: true, stopping: true, disabled: false },
   { committed: false, stopping: false, disabled: true }, { committed: true, stopping: false, disabled: true },
 ])("64c executor cancellation fences the model's files and keeps the claim until the task ends ($committed/$stopping/$disabled)", async ({ committed, stopping, disabled }) => {
-  let task!: DreamingTaskInput, release!: () => void, entered!: () => void;
+  let task!: DreamingAgentInput, release!: () => void, entered!: () => void;
   const ready = new Promise<void>(resolve => { entered = resolve; });
   const held = new Promise<void>(resolve => { release = resolve; });
   const f = makeDreamerFixture(memories);
   const item = f.item("project rule", { category: "constraint" }), original = f.store.getKnowledgeRevision(item.knowledgeId, item.commit)!.text;
   f.item("reference", { category: "reference" }); // a second batch, so that the committed case is still inside curate when it is cancelled
   f.next(async raw => {
-    task = raw as DreamingTaskInput; task.acknowledgeRequest();
+    task = raw as DreamingAgentInput; task.acknowledgeRequest();
     if (committed) await writeCurateBatch(task, block(`update ${item.ref}`, { reason: "maintain" }, "maintained rule"));
     entered(); await held;
     return { outcome: "cancelled", output: "stopped", request: REQUEST };

@@ -124,7 +124,7 @@ export const MAX_TASK_RETRIES = 3;
 
 /** Caller owns the terminal decision.
  * Dreamer calls it alongside completeDreaming in the final-check transaction, not at a write. */
-export function settleExecution(store: Store, id: string, outcome: ExecutionOutcome, runId: number, reason = "", dreamingAuthority?: RunInput, failure?: TaskFailure): { automaticOff?: string } {
+export function settleExecution(store: Store, id: string, outcome: ExecutionOutcome, runId: number, reason = "", failure?: TaskFailure): { automaticOff?: string } {
   return store.transaction(() => {
     const row = store.db.prepare("SELECT * FROM task_executions WHERE id = ?").get(id);
     if (!row) throw new Error("Unknown execution");
@@ -132,16 +132,11 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
     const run = store.getRun(runId);
     if (!run || !store.db.prepare("SELECT 1 FROM execution_runs WHERE execution_id = ? AND run_id = ?").get(id, runId))
       throw new Error("Terminal run must belong to the execution");
-    // Only the core's live Dreamer capability can issue the exception. Public settlement,
-    // a fabricated run outcome/response, or another run's capability cannot waive a failure.
-    if (outcome === "conflict") {
-      if (!dreamingAuthority || store.dreamingRunId(dreamingAuthority) !== runId || dreamingAuthority.executionId !== id || run.outcome !== "conflict")
-        throw new Error("Conflict settlement requires the core Dreamer termination authority");
-    }
+    // `conflict` is the retired Dreamer exception: only old rows carry it, and nothing settles a new run that way.
+    if (outcome === "conflict") throw new Error("Conflict settlement is retired");
     // 144 stage 4 §3.2: a Dreamer run is complete when its last run is a classify pass (or the no-work classify run) and no
-    // hand-off remains for the session. LEGACY: a run closing an old-protocol range also completes (part 4 deletes that arm).
-    const dreamerDone = () => (JSON.parse(run!.response ?? "{}").task === "classify" && !store.handoff(Number(row.session_id), "dreaming"))
-      || !!store.db.prepare("SELECT 1 FROM dreaming_ranges WHERE completed_run = ? AND closed_at IS NOT NULL").get(runId);
+    // hand-off remains for the session.
+    const dreamerDone = () => JSON.parse(run!.response ?? "{}").task === "classify" && !store.handoff(Number(row.session_id), "dreaming");
     if (outcome === "success" && (run.outcome !== "success" || (row.phase === "dreaming" && !dreamerDone())))
       throw new Error("Execution success requires established business completion");
     const now = new Date().toISOString();
@@ -149,7 +144,7 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
       .run(outcome, runId, reason, now, id);
     const key = [row.session_id!, row.phase!, row.head ?? null, row.pool ?? null] as const;
     const task = "session_id = ? AND phase = ? AND head IS ? AND pool IS ?";
-    if (outcome === "cancelled" || outcome === "conflict") return {};
+    if (outcome === "cancelled") return {};
     // 144 stage 4 §3.4: the counter and the hand-off belong to the latest execution admitted for this task key. A later
     // row, still running or already finished, took the cycle over; this one writes only its own row.
     if (store.db.prepare(`SELECT 1 FROM task_executions WHERE ${task} AND rowid > (SELECT rowid FROM task_executions WHERE id = ?)`).get(...key, id)) return {};
@@ -167,12 +162,7 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
     const count = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${task}`).get(...key)!.count);
     if (count !== 3 || !store.enabled(Number(row.session_id))) return {};
     store.setEnrollment(Number(row.session_id), false);
-    // Off blocks new writes, but an admitted Dreamer still needs its exact token to settle
-    // skipped/own revisions on cancellation, just as in ordinary stop/off handling.
-    store.db.prepare(`UPDATE task_claims AS c SET expires_at = 0 WHERE session_id = ?
-      AND NOT (phase = 'dreaming' AND reserved = 0 AND expires_at > ? AND EXISTS (
-        SELECT 1 FROM dreaming_ranges r WHERE r.session_id = c.session_id AND r.claim_token = c.token
-          AND r.pool IS NOT NULL AND r.completed_run IS NULL AND r.closed_at IS NULL))`).run(row.session_id!, Date.now());
+    store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE session_id = ?").run(row.session_id!);
     const runs = store.db.prepare(`SELECT terminal_run FROM task_executions WHERE ${task}
       AND outcome = 'failure' ORDER BY updated_at DESC, rowid DESC LIMIT 3`).all(...key).reverse();
     return { automaticOff: `Trace Memory: S${row.session_id} ${row.phase} off after three failures (${runs.map(r => `R${r.terminal_run}`).join(", ")}); ${reason || "business completion failed"}. Use /trace on to resume.` };

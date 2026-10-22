@@ -68,7 +68,7 @@ test("73: zero Knowledge base borrows only the configured shared allowance", () 
   const item = f.create("body ".repeat(6_000));
   zeroBase(f.memory);
   expect(f.memory.knowledgeBudgets()).toEqual({
-    global: 0, project: 0, session: 0, applicable: 0, injection: 0, dreamingProcessedInput: 0,
+    global: 0, project: 0, session: 0, applicable: 0, injection: 0,
   });
   f.memory.config.compaction.sharedAllowanceTokens = 20_000;
   const borrowed = f.memory.injection(f.target);

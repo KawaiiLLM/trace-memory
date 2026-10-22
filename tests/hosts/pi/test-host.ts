@@ -415,12 +415,6 @@ export function holdFirstRequest(h: Pick<ReturnType<typeof host>, "provider">): 
   return value => release(value);
 }
 
-/** 127: one scripted Dreamer response, one `memory` tool call per operation and then one per skip. */
-export const dreamerReply = (id: string, { operations = [], skipped = [] }: { operations?: readonly unknown[];
-  skipped?: readonly { knowledge: string; because: string }[] }): Reply => ({ ...reply(""), stopReason: "toolUse",
-  content: [...operations, ...skipped.map(({ knowledge, because }) => ({ skip: knowledge, because }))]
-    .map((input, index) => ({ type: "toolCall" as const, id: `${id}-${index + 1}`, name: "memory", arguments: input as JsonObject })) });
-
 export const consolidationBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
 export const consolidationReply = (conversation?: Conversation): Reply => {
   const range = conversation ? String(conversation.messages[0]!.content).split("Range facts:\n")[1]?.split("\nNegated-evidence")[0] ?? "" : "";

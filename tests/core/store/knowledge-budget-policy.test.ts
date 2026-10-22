@@ -184,20 +184,20 @@ test("35d defaults and derived capacities are one exact safe-integer policy", ()
   const store = open();
   expect(store.knowledgeBudgets()).toEqual({
     global: 4_000, project: 15_000, session: 1_000,
-    applicable: 20_000, injection: 20_000, dreamingProcessedInput: 20_000,
+    applicable: 20_000, injection: 20_000,
   });
   expect(deriveKnowledgeBudgets({ global: 4_000, project: 15_000, session: 1_000 })).toEqual({
     global: 4_000, project: 15_000, session: 1_000,
-    applicable: 20_000, injection: 20_000, dreamingProcessedInput: 20_000,
+    applicable: 20_000, injection: 20_000,
   });
   expect(deriveKnowledgeBudgets({ global: 0, project: 0, session: 0 })).toEqual({
     global: 0, project: 0, session: 0,
-    applicable: 0, injection: 0, dreamingProcessedInput: 0,
+    applicable: 0, injection: 0,
   });
   for (const value of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
     expect(() => deriveKnowledgeBudgets({ global: value, project: 0, session: 0 })).toThrow(/Global Knowledge budget.*nonnegative safe integer/);
   expect(deriveKnowledgeBudgets({ global: Number.MAX_SAFE_INTEGER, project: 0, session: 0 })).toMatchObject({
-    applicable: Number.MAX_SAFE_INTEGER, injection: Number.MAX_SAFE_INTEGER, dreamingProcessedInput: Number.MAX_SAFE_INTEGER,
+    applicable: Number.MAX_SAFE_INTEGER, injection: Number.MAX_SAFE_INTEGER,
   });
   expect(() => deriveKnowledgeBudgets({ global: Number.MAX_SAFE_INTEGER, project: 1, session: 0 })).toThrow(/applicable.*safe integer/);
 });
@@ -303,7 +303,7 @@ test("64c overlapping edits serialize and preserve both latest policy fields", a
   expect(result.lost).toMatchObject({ ok: true });
   expect(open(path).knowledgeBudgets()).toEqual({
     global: 4_000, project: 16_000, session: 2_000,
-    applicable: 22_000, injection: 22_000, dreamingProcessedInput: 22_000,
+    applicable: 22_000, injection: 22_000,
   });
 });
 
@@ -335,7 +335,7 @@ test("35d concurrent constructors observe the initialization lock and publish ex
     const results = await Promise.all([holder.next(), observer.next()]);
     const defaults = {
       global: 4_000, project: 15_000, session: 1_000,
-      applicable: 20_000, injection: 20_000, dreamingProcessedInput: 20_000,
+      applicable: 20_000, injection: 20_000,
     };
     expect(results).toEqual([
       { type: "result", ok: true, value: defaults },

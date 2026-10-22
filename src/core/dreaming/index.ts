@@ -24,7 +24,6 @@ import { buildChanges, checkVerify } from "./changes.ts";
 import { classifyAnchors, classifyMessage, classifySet } from "./classify.ts";
 import { allowedRoots, repositoryEvidenceProblem } from "./roots.ts";
 
-export { freezeDreaming } from "./legacy.ts"; // LEGACY: tests and perf scripts of the old protocol; part 4 deletes it
 export type DreamingTask = "curate" | "verify" | "classify";
 export const DREAMING_TASKS: readonly DreamingTask[] = ["curate", "verify", "classify"];
 
@@ -49,27 +48,19 @@ export type DreamingResult = { automaticOff?: string } & (
       failure?: { task: DreamingTask; class: string; transient: boolean } });
 
 /** What core builds for one Dreaming task call. */
-export interface DreamingTaskInput extends AgentControl {
+export interface DreamingAgentInput extends AgentControl {
   kind: "dreaming"; task: DreamingTask; sessionId: number; branch: string; model: string; thinking?: string; mode: "subagent";
   prompt: string; promptHash: string; text: string;
   tools: import("../api/tools.ts").ToolDefinition[];
   /** The task's directory and the files its host-side tools may read and write; `roots` are repositories verify may read (part 3). */
   workspace: { dir: string; read: string[]; write: string[]; roots: string[] };
   /** The stop hook, called after every normally completed pass: a string authorizes one more pass, `undefined` ends the task. */
-  passEnd(rounds?: number): string | undefined;
+  passEnd(): string | undefined;
   acknowledgeRequest(): void;
   reportRequest(request: unknown): void;
   /** Absolute epoch ms; read by core's runner wrapper (§1.3). */
   deadline: number;
 }
-/** LEGACY (old Dreamer protocol): these members are declared so the old protocol's tests still compile. Core sets none of them and no
- * host reads them. Part 4 deletes the intersection with those tests. */
-export type DreamingAgentInput = DreamingTaskInput & {
-  material: { bound: string; processed: string; changed: string; facts: string };
-  admittedProcessedInputCap: number;
-  reportToolRejection(id: string, name: "note" | "memory", input: unknown, reason: string): void;
-  reportRounds(rounds: number): void;
-};
 
 export interface DreamingFrozen {
   sessionId: number; branch: string; path: KnowledgePath; claim: TaskClaim; names: ToolNames;
@@ -112,7 +103,7 @@ export interface DreamingRunOptions {
   /** Registers a workspace with the cancellation fence (§1.5): closing the task closes it. */
   registerFence(workspace: { close(): void }): void;
 }
-type Bind = (context: Parameters<typeof bindTools>[2], run: RunInput, dreaming?: Parameters<typeof bindTools>[4], writer?: Parameters<typeof bindTools>[6]) => ReturnType<typeof bindTools>;
+type Bind = (context: Parameters<typeof bindTools>[2], run: RunInput, writer?: Parameters<typeof bindTools>[5]) => ReturnType<typeof bindTools>;
 type TaskOutcome = { ok: true; runId: number } | { ok: false; outcome: "failure" | "cancelled"; runId: number; problems: string[]; class: string; transient: boolean };
 
 /** Magic Context's `classifyFailure`: a provider, network, store or deadline error is transient; anything else is not. */
@@ -142,7 +133,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   /** A task that does no model call: its run is recorded and the hand-off moves (§3.2 no-work run). */
   const noWork = (task: DreamingTask, next: DreamingTask | null, cover?: () => number[]): TaskOutcome => {
     const run = template(task, frozen.models.main.model);
-    const bound = bind(context, run, undefined, { check: () => "no work" });
+    const bound = bind(context, run, { check: () => "no work" });
     bound.close(); // the run record only; it has no tools to run
     const done = store.commitTaskPass({ run: { ...run, response: JSON.stringify({ task, passes: 0 }) }, path, cover,
       handoff: () => next ? { nextTask: next, detail: { ...detail } } : null });
@@ -166,7 +157,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       `Task: curate (batch ${at + 1} of ${batches.length}, category ${batches[at]}). File: ${files[at]}`,
       result.problems.length ? `Problems: ${result.problems.length}\n${result.problems.join("\n")}` : "Problems: none",
       ...(result.lengths.length ? ["Lengths:", ...lengthLines(batchFileName(at, batches[at]!), result.lengths)] : [])].join("\n");
-    const binding = bind(context, run, undefined, { check: () => report() });
+    const binding = bind(context, run, { check: () => report() });
     const stopChecks: { ok: boolean; problems: string[] }[] = [];
 
     /** The stop hook: apply the batch when it passes and return the next one; one repair for a batch that fails (§4.5). */
@@ -207,7 +198,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       return at < batches.length ? `${receipt}\n\nNext: batch ${at + 1} of ${batches.length}, category ${batches[at]}. File: ${files[at]}. ${renderToolNames("Call {{tool.check}} to see its problems.", frozen.names)}` : undefined;
     };
 
-    const input: DreamingTaskInput = { kind: "dreaming", task: "curate", sessionId, branch, model: frozen.models.main.model, thinking: frozen.models.main.thinking,
+    const input: DreamingAgentInput = { kind: "dreaming", task: "curate", sessionId, branch, model: frozen.models.main.model, thinking: frozen.models.main.thinking,
       mode: "subagent", prompt: frozen.prompt, promptHash: frozen.promptHash, text: frozen.text, tools: binding.tools,
       workspace: { dir: workspace.dir, read: files, write: files, roots: [] }, passEnd, deadline,
       acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
@@ -248,7 +239,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const started = Date.now(), run = template(spec.task, spec.model.model, spec.promptHash);
     let repaired = false, problem: string | undefined, lost = false, appliedRun = 0;
     const stopChecks: { ok: boolean; problems: string[] }[] = [];
-    const binding = bind(context, run, undefined, { check: () => spec.check().report });
+    const binding = bind(context, run, { check: () => spec.check().report });
     const passEnd = (): string | undefined => {
       if (spec.workspace.closed || appliedRun) return undefined;
       const checked = spec.check();
@@ -266,7 +257,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       }
       return undefined;
     };
-    const input: DreamingTaskInput = { kind: "dreaming", task: spec.task, sessionId, branch, model: spec.model.model, thinking: spec.model.thinking,
+    const input: DreamingAgentInput = { kind: "dreaming", task: spec.task, sessionId, branch, model: spec.model.model, thinking: spec.model.thinking,
       mode: "subagent", prompt: spec.prompt, promptHash: spec.promptHash, text: spec.text,
       tools: spec.task === "classify" ? binding.tools.filter(tool => tool.name === "check") : binding.tools, // §6.4: the scorer has check, read, write and edit
       workspace: { dir: spec.workspace.dir, read: spec.read, write: spec.write, roots: spec.roots }, passEnd, deadline: spec.deadline,

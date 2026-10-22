@@ -137,9 +137,6 @@ export class CcResponseOrigins {
     });
   }
 
-  /** LEGACY (old Dreamer protocol; part 4 deletes it with its test): the Dreamer no longer has a write tool to dispatch. */
-  requireDispatchedWrites(): void {}
-
   rounds(): number { return this.toolRoundIds.size; }
   error(): Error | null { return this.failure; }
 

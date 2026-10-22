@@ -5,7 +5,7 @@ import { canonicalToolNames, type ToolNames } from "../prompts/tool-names.ts";
 
 export type ConsolidationDiagnostic = { kind: "unsupported_numbers"; knowledge: string; numbers: string[] };
 
-/** An archive of these kinds keeps its explanation as the new version's body; a `budget` archive keeps its parent's. */
+/** An archive of these kinds keeps its explanation as the new version's body. */
 const explained = (kind: unknown): boolean => kind === "invalid" || kind === "inadmissible";
 /** A field over its cap, as the refusal states it: the field, its count and the limit (ticket 144). */
 export const overLimit = (field: string, count: number, limit: number): string =>
@@ -15,7 +15,7 @@ const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 /** Validate the complete batch before writes, including every merge participant. */
 export function prepareMemory(store: Store, sessionId: number, raw: unknown, run: RunInput,
   path: KnowledgePath = store.knowledgePath(sessionId),
-  eligibleSupport?: (factId: number) => boolean, skippable?: (commit: number) => string | undefined,
+  eligibleSupport?: (factId: number) => boolean,
   localFacts?: ReadonlyMap<number, { text: string; quote?: string | null }>, names: ToolNames = canonicalToolNames,
   /** A workspace update may leave supports empty: the Store then inherits the parents' (ticket 144). */
   emptySupports = false) {
@@ -23,14 +23,13 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
   const batch = raw as MemoryBatch;
   const projectId = store.getSession(sessionId)!.projectId;
   const touched = new Set<number>();
-  const dreaming = store.isDreamingRun(run);
   const limits = store.writing;
   if (run.kind !== "noting" && batch && typeof batch === "object" && "drop" in batch)
     return { results: ["rejected: drop is N-only; this role uses immediate memory writes"], operations, batch,
-      diagnostics: [] as ConsolidationDiagnostic[], declinedCommits: new Map<MemoryBatch["skipped"][number], number>() };
+      diagnostics: [] as ConsolidationDiagnostic[] };
   if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some(k => !["operations", "skipped"].includes(k))) {
     return { results: [`rejected: ${names.memory} expects {operations: [...], skipped: [...]} only`], operations, batch,
-      diagnostics: [] as ConsolidationDiagnostic[], declinedCommits: new Map<MemoryBatch["skipped"][number], number>() };
+      diagnostics: [] as ConsolidationDiagnostic[] };
   }
   const facts = (raw: unknown, errors: string[], nonempty = false): number[] => {
     if (!Array.isArray(raw) || (nonempty && !raw.length)) { errors.push("expected fact array" + (nonempty ? "; supports must not be empty" : "")); return []; }
@@ -60,8 +59,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const errors: string[] = [];
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
-    const allowed = dreaming ? ["update", "merge", "split", "archive"]
-      : ["create", "update", "archive"];
+    const allowed = ["create", "update", "archive"];
     if (!allowed.includes(op)) errors.push(
       ["update", "merge", "split", "archive"].includes(op)
         ? `${op} belongs to the Dreamer and is not available to ${run.kind === "noting" ? "the Noter" : "manual memory"}`
@@ -110,7 +108,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       return { title: child.title!, text: child.text!, category: child.category!, topics: labels(child.topics, errors) };
     }) : op === "split" ? (errors.push("split requires its primary part and one or more complete children"), []) : [];
     if (op === "archive") {
-      if (value.kind !== "budget" && !explained(value.kind)) errors.push("archive kind must be budget, invalid or inadmissible");
+      if (!explained(value.kind)) errors.push("archive kind must be invalid or inadmissible");
       if (explained(value.kind) && !substantiveArchiveStatement(value.text))
         errors.push(`${value.kind} archive requires a substantive statement of grounds and evidence`);
     }
@@ -163,7 +161,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       ? store.knowledgeRevision(Math.max(dest.baseCommit, ...absorb.map(parent => parent.baseCommit)))?.text
       : op === "archive" ? (explained(value.kind) ? value.text : undefined) : text;
     if (typeof body === "string" && tokens(body) > limits.bodyTokens) errors.push(overLimit("text", tokens(body), limits.bodyTokens));
-    const content = { title: title!, text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !dreaming && !emptySupports), reason: value.reason!,
+    const content = { title: title!, text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !emptySupports), reason: value.reason!,
       topics, createdAt: run.createdAt };
     const scope = op === "archive" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : contentScope;
     if (scope && content.supports.every(Number.isSafeInteger)) {
@@ -177,35 +175,12 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       : { op: "update", ...dest!, ...content });
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });
-  const declined = new Set<number>();
-  // Carries each dreaming skip's already-resolved numeric revision to bindMemory, so a later consumer
-  // (runDreaming) never has to re-derive it by re-parsing the rendered `K<id>@<commit>` handle.
-  const declinedCommits = new Map<MemoryBatch["skipped"][number], number>();
   for (const skipped of batch.skipped) {
-    const errors: string[] = [];
-    if (!skipped || typeof skipped !== "object" || Array.isArray(skipped)) errors.push("invalid skipped item");
-    else if (dreaming) {
-      // 59: a Dreamer skip accounts for one supplied handle (a frozen-block version or an own result)
-      // without processing it; an unknown or consumed handle is an illegal write like any other.
-      const handle = "knowledge" in skipped ? skipped.knowledge : undefined;
-      const match = typeof handle === "string" ? /^K([1-9]\d*)@v([1-9]\d*)$/.exec(handle) : null;
-      let commit = NaN;
-      if (match) try { commit = store.resolveVersionOrdinal(Number(match[1]), Number(match[2])); } catch { /* reported as an unknown supplied handle */ }
-      if (Object.keys(skipped).some(k => !["knowledge", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skip requires a non-empty because and no other field");
-      const problem = !match || store.knowledgeRevision(commit)?.knowledgeId !== Number(match[1]) ? "not a supplied handle of this run"
-        : touched.has(commit) ? "already consumed by an operation of this batch" : skippable ? skippable(commit) : "not a supplied handle of this run";
-      if (problem) errors.push(`${handle}: ${problem}`);
-      else if (declined.has(commit)) errors.push("duplicate skipped knowledge");
-      declined.add(commit);
-      declinedCommits.set(skipped, commit);
-    } else {
-      errors.push("skipped must be empty outside Dreamer maintenance");
-    }
-    results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
+    // Only the retired Dreamer protocol skipped an item; every other writer sends none.
+    results.push(`rejected: ${skipped && typeof skipped === "object" ? "skipped must be empty" : "invalid skipped item"}`);
   }
   const diagnostics: ConsolidationDiagnostic[] = [];
   for (const op of operations) {
-    if (op.op === "archive" && op.kind === "budget") continue;
     const label = op.op === "create" ? op.handle : `K${op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId}`;
     const grounding = new Set(op.supports);
     const cited = new Set([...grounding].flatMap(id => {
@@ -220,5 +195,5 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (unsupported.length) diagnostics.push({ kind: "unsupported_numbers", knowledge: body.label, numbers: unsupported });
     }
   }
-  return { results, operations, batch, diagnostics, declinedCommits };
+  return { results, operations, batch, diagnostics };
 }

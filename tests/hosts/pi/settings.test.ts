@@ -74,7 +74,7 @@ test("35d Settings edits the bound database row, shows derived diagnostics, and 
   ]);
   await edit(h, "Project Knowledge budget: 15000 tokens per project owner pool (database)", "16000");
   expect(h.memory.knowledgeBudgets()).toMatchObject({ global: 4000, project: 16000, session: 1000,
-    applicable: 21000, injection: 21000, dreamingProcessedInput: 21000 });
+    applicable: 21000, injection: 21000 });
   expect(h.notices.at(-1)).toContain("saved Project Knowledge budget = 16000 tokens");
   expect(h.notices.at(-1)).toContain("Knowledge base window 21000; shared material allowance 10000; maximum Knowledge input 31000");
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);

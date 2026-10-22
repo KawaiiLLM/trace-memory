@@ -323,18 +323,17 @@ export interface TraceMemory {
   readonly resultText: ResultExtractor;
   taskEligibility(phase: Phase, target: TaskTarget): { due: boolean };
   /** On-demand, read-only trigger material estimates; no admission, grants or cache writes. Covers
-   * Noting only — Dreaming has two conditions, so its projection is `dreamingPending`. With `upToTrigger`, Noting is counted only up to its trigger
+   * Noting only — Dreaming has its own projection, `dreamingPending`. With `upToTrigger`, Noting is counted only up to its trigger
    * (maintainer, 2026-09-25, for the `/trace` menus): a larger backlog reports `atLeast` with its
    * exact pending entry count, because rendering every entry of a long backlog took seconds. */
   pendingTokens(phase: "noting", target?: TaskTarget, upToTrigger?: boolean):
     | { tokens: number; trigger: number; state: "known"; atLeast?: true; entries?: number }
     | { tokens: null; trigger: number | null; state: "no session" | "unavailable" };
-  /** Same read-only contract as `pendingTokens`, for the session's two Dreamer conditions (104):
-   * pending weight summed across its applicable pools against the trigger, and their knowledge
-   * total, as `check` measures it, against the injection base plus the shared allowance. */
+  /** Same read-only contract as `pendingTokens`, for the Dreamer's one trigger (144 stage 4 §2.3): the tokens of knowledge the
+   * Noter changed since the last Dreamer run, counting up to the trigger. */
   dreamingPending(target?: TaskTarget):
-    | { state: "known"; pending: { tokens: number; trigger: number }; knowledge: { tokens: number; window: number } }
-    | { state: "no session" | "unavailable"; pending: null; knowledge: null };
+    | { state: "known"; pending: { tokens: number; trigger: number } }
+    | { state: "no session" | "unavailable"; pending: null };
   /** Terminal worker settlement, including Dreamer's future worker: persist first, then abort
    * locally owned target tasks on automatic off. Attempt refusal is not terminal settlement. */
   settleExecution(id: string, outcome: import("../store/executions.ts").ExecutionOutcome, runId: number, reason?: string): ReturnType<Store["settleExecution"]>;
@@ -774,21 +773,17 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
     } catch { return { tokens: null, trigger, state: "unavailable" }; }
   };
+  // Stage 4 §2.3: the Noter-changed tokens since the last D (or since a failed run's wait began), toward the trigger.
   const dreamingPending: TraceMemory["dreamingPending"] = target => {
-    if (!target) return { state: "no session", pending: null, knowledge: null };
+    if (!target) return { state: "no session", pending: null };
     try {
-      if (store.closed || !store.getSession(target.sessionId)) return { state: "unavailable", pending: null, knowledge: null };
-      const pools = store.knowledgePools(target);
-      return { state: "known",
-        pending: { tokens: pools.reduce((sum, pool) => sum + pool.pending.reduce((total, value) => total + value.tokens, 0), 0),
-          trigger: cfg.dreaming.triggerTokens },
-        knowledge: { tokens: pools.reduce((sum, pool) => sum + pool.tokens, 0),
-          window: store.knowledgeBudgets().injection + cfg.compaction.sharedAllowanceTokens } };
-    } catch { return { state: "unavailable", pending: null, knowledge: null }; }
+      if (store.closed || !store.getSession(target.sessionId)) return { state: "unavailable", pending: null };
+      const trigger = cfg.dreaming.triggerTokens;
+      return { state: "known", pending: { tokens: store.noterChangedTokens(target, store.handoff(target.sessionId, "dreaming")?.detail?.waitFrom ?? 0, trigger), trigger } };
+    } catch { return { state: "unavailable", pending: null }; }
   };
-  // Stage 4 §2.4: a Dreamer run is due on Noter-changed tokens (or a hand-off). The old budget trigger, `Store.dreamingDue`
-  // and its `dueProjection`, is unreachable from here; part 4 deletes it.
-  const dreamingDue = (target: TaskTarget) => store.dreamingDueByNoterChanges(target, cfg.dreaming.triggerTokens);
+  // Stage 4 §2.4: a Dreamer run is due on Noter-changed tokens (or a hand-off).
+  const dreamingDue = (target: TaskTarget) => store.dreamingDue(target, cfg.dreaming.triggerTokens);
   // 29d: eligibility is the trigger threshold and nothing else. Phase slots, enrollment, the host's
   // readiness wait and claim checks are untouched.
   const taskEligibility = (phase: Phase, target: TaskTarget) => {
@@ -816,7 +811,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (phase === "dreaming") {
         // 144 stage 4: one admission is one claim and one execution for the tasks left, whatever the budget of any pool.
         if (!store.enabled(target.sessionId) || (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId))) return null;
-        if (!store.dreamingDueByNoterChanges(target, cfg.dreaming.triggerTokens)) { empty = true; return null; }
+        if (!dreamingDue(target)) { empty = true; return null; }
         executionLimit = executionLimitMs(remainingTasks(store.handoff(target.sessionId, "dreaming")?.nextTask), cfg.dreaming.timeoutMs);
         claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerTokens, executionLimit + CLAIM_LEASE_MARGIN_MS);
         if (!claim) return null;
@@ -901,13 +896,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     else external?.addEventListener("abort", onExternalAbort, { once: true });
     let hostSpill: ((text: string) => string) | undefined;
     const spill = (text: string) => (hostSpill ?? (() => { throw new Error("this run has no place to save output"); }))(text);
-    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, dreaming?: Parameters<typeof bindTools>[4], writer?: Parameters<typeof bindTools>[6]) => {
+    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, writer?: Parameters<typeof bindTools>[5]) => {
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
       run.executionId = executionId!;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
       Object.assign(run, store.bindRunOrigin(run, origin));
       const binding = bindTools(store, read, { ...context, ...(input.maxReadChars === undefined ? {} : { maxReadChars: input.maxReadChars }), spill },
-        run, dreaming, frozen!.names, writer);
+        run, frozen!.names, writer);
       currentBinding = binding;
       return binding;
     };

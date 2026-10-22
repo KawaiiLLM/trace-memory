@@ -45,10 +45,7 @@ interface NativeCommon {
    * force-cancels at its cleanup deadline still audits the level it was really sent at. */
   onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: { requested?: ThinkingLevel; effective: ThinkingLevel } }): void;
   /** Dreamer's host check at a completed pass, with one same-child repair. */
-  /** `rounds` is the old protocol's argument; core's hook ignores it. */
-  passEnd?(rounds: number): string | undefined;
-  /** LEGACY (old Dreamer protocol; part 4 deletes it with its tests): nothing calls it now. */
-  reportRounds?(rounds: number): void;
+  passEnd?(): string | undefined;
   /** Pi's own retry policy (settings.json `retry`, read by the child's SettingsManager) scheduled a
    * backoff, and ended one. The host surfaces them; this module neither retries nor sleeps itself. */
   onRetry?(event: { attempt: number; maxAttempts: number; delayMs: number; error: string }): void;
@@ -251,7 +248,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       // Only a normally ended pass gets a follow-up, so a truncated one stays the run's failure (125).
       const normal = terminal !== undefined && terminal.stopReason !== "length" && !terminal.errorMessage;
       // The Noter's one repair needs a normally ended pass; a Dreaming task is asked after every pass, truncated or not (125).
-      const followup = task.kind === "dreaming" || (pass === 1 && normal) ? task.passEnd(rounds) : undefined;
+      const followup = task.kind === "dreaming" || (pass === 1 && normal) ? task.passEnd() : undefined;
       if (!(followup && normal && (task.kind === "dreaming" ? task.maxToolRounds === 0 || rounds < task.maxToolRounds : true))) break;
       // A new public prompt reapplies before_agent_start. An idle custom-message turn skips it,
       // so Pi's next-turn refresh would replace the worker instructions with its base prompt.

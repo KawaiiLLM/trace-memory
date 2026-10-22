@@ -325,7 +325,7 @@ export interface NotingRunOptions {
  * leaves a hand-off, so a task 2 that fails is resumed on the same files at the next trigger. */
 export async function runNoting(
   store: Store, frozen: ReturnType<typeof freezeNoting>, runAgent: RunAgent,
-  config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput, dreaming?: undefined, noting?: { check(): string }) => ReturnType<typeof bindTools>,
+  config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput, noting?: { check(): string }) => ReturnType<typeof bindTools>,
   options: NotingRunOptions,
 ): Promise<NotingResult> {
   const { sessionId, branch, entries, turns, model } = frozen;
@@ -354,7 +354,7 @@ export async function runNoting(
     const started = Date.now();
     const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
       promptHash: frozen.promptHash, model, entryAudit, createdAt: new Date().toISOString() };
-    const binding = tools({ kind: "noting", sessionId, branch, range, entryIds }, run, undefined, { check: () => workspace.report(task) });
+    const binding = tools({ kind: "noting", sessionId, branch, range, entryIds }, run, { check: () => workspace.report(task) });
     workspace.stopChecks.length = 0;
     const agentInput: NotingAgentInput = { kind: "noting", task, entryIds, sessionId, branch, range,
       model, prompt: frozen.prompt!, promptHash: frozen.promptHash!,

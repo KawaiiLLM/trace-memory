@@ -1,12 +1,13 @@
 import { writeFileSync } from "node:fs";
-import type { DreamingAgentInput, RunAgentResult } from "../../src/core/api/index.ts";
-import type { DreamingTaskInput } from "../../src/core/dreaming/index.ts";
+import type { RunAgentResult } from "../../src/core/api/index.ts";
+import type { DreamingAgentInput } from "../../src/core/dreaming/index.ts";
 import type { RunAgent, TraceMemory } from "../source-fixture.ts";
 import { REQUEST } from "./noter.ts";
 import { block, workspaceBatch } from "./workspace.ts";
 import { applyWorkspace } from "../../src/core/workspace/index.ts";
 import type { KnowledgePath, Store } from "../../src/core/store/index.ts";
 import { knowledge as seedKnowledge } from "./seed.ts";
+import { placementOwner } from "../../src/core/store/processing.ts";
 
 /** A scripted Dreamer (ticket 144, stage 4): the stand-in for the model behind `runAgent` in tests that run the real Dreaming
  * tasks. Like a host, it calls `check`, writes the file `check` names, meets the stop hook after every pass and follows the next
@@ -84,7 +85,7 @@ export type DreamerFixture = ReturnType<typeof dreamerFixture>;
 
 /** The curate model of a test that does something the scripted one does not: it calls `check`, writes the batch file `check` names
  * with `text`, and meets the stop hook once. Returns the hook's answer (the next batch, or undefined when the task is over). */
-export async function writeCurateBatch(input: DreamingTaskInput, text: string): Promise<string | undefined> {
+export async function writeCurateBatch(input: DreamingAgentInput, text: string): Promise<string | undefined> {
   const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
   writeFileSync(FILE.curate!.exec(report)![1]!, text);
   return input.passEnd();
@@ -144,4 +145,13 @@ export function commitDreamerOps(memory: { store: Store }, path: KnowledgePath, 
 export function noterWrittenItem(memory: TraceMemory, path: { sessionId: number; branch: string; headTurnId: number }, factId: number,
   scope: "global" | "project" | "session" = "project", category: "constraint" | "reference" = "constraint") {
   return seedKnowledge(memory.store, path, scope, category, [factId], `Fixture trigger item ${factId}`, { operation: { title: `Trigger item ${factId}` } });
+}
+
+/** Coverage as a passed curate leaves it (stage 4 §2.1): each of these versions is processed in its own pool, under one Dreamer run.
+ * It replaces the retired range-freeze-and-complete sequence that tests used to mark knowledge processed. */
+export function coverKnowledge(store: Store, path: KnowledgePath, revisionIds: readonly number[]): number {
+  const run = store.recordRun({ kind: "dreaming", sessionId: path.sessionId, branch: path.branch ?? null, createdAt: new Date().toISOString(), outcome: "success" });
+  for (const id of revisionIds) store.db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)")
+    .run(placementOwner(store, { revision: store.knowledgeRevision(id)! }), id, run.id);
+  return run.id;
 }

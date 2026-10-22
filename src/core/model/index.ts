@@ -280,7 +280,7 @@ export const DEFAULT_WRITING_LIMITS: WritingLimits = { titleTokens: 20, bodyToke
 export interface MemoryOperation {
   op: "create" | "update" | "merge" | "split" | "archive";
   title?: string;
-  kind?: "budget" | "invalid" | "inadmissible";
+  kind?: "invalid" | "inadmissible";
   id?: string;
   absorb?: string[];
   children?: { title: string; text: string; category: KnowledgeCategory; topics: string[] }[];

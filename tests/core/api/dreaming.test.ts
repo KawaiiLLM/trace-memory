@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "vitest";
 import type { RunAgentResult } from "../../../src/core/api/index.ts";
-import type { DreamingTaskInput } from "../../../src/core/dreaming/index.ts";
+import type { DreamingAgentInput } from "../../../src/core/dreaming/index.ts";
 import { dreamingWorkspaceToolDefinitions, pricedToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
@@ -24,16 +24,16 @@ const covered = (f: Fixture) => f.store.db.prepare("SELECT revision_id FROM know
 const revisions = (f: Fixture) => Number(f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions").get()!.n);
 const curateRun = (f: Fixture) => f.store.listRuns(f.session.id).find(run => run.rangeFrom === `S${f.session.id}/curate`)!;
 const update = (item: { ref: string }, text: string) => block(`update ${item.ref}`, { reason: "tidy" }, text);
-const writeBatch = (input: DreamingTaskInput, text: string) => writeCurateBatch(input, text);
+const writeBatch = (input: DreamingAgentInput, text: string) => writeCurateBatch(input, text);
 
 // ---- Capacity, prompt and tools ------------------------------------------------------------------------------------------------
 
 test("native Read token estimate counts in Dreamer capacity before dispatch", async () => {
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
-  let base: DreamingTaskInput | undefined;
-  const stop = (input: DreamingTaskInput): RunAgentResult => { input.acknowledgeRequest(); return { outcome: "cancelled", output: "capacity fixture stopped without writes", request: REQUEST }; };
-  f.next(async raw => { base = raw as DreamingTaskInput; return stop(base); });
+  let base: DreamingAgentInput | undefined;
+  const stop = (input: DreamingAgentInput): RunAgentResult => { input.acknowledgeRequest(); return { outcome: "cancelled", output: "capacity fixture stopped without writes", request: REQUEST }; };
+  f.next(async raw => { base = raw as DreamingAgentInput; return stop(base); });
   await f.dream();
   if (!base) throw new Error("missing baseline Dreamer dispatch");
   const nativeReadToolTokens = 402;
@@ -44,7 +44,7 @@ test("native Read token estimate counts in Dreamer capacity before dispatch", as
   f.next(() => { throw new Error("over-cap dispatch"); });
   await expect(f.memory.dream(bounded)).rejects.toThrow(/Dreaming capacity/);
   expect(f.store.listRuns(f.session.id)).toHaveLength(runs);
-  f.next(async raw => { const input = raw as DreamingTaskInput;
+  f.next(async raw => { const input = raw as DreamingAgentInput;
     expect(tokens(input.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(input.text)).toBe(price);
     return stop(input); });
   await f.memory.dream({ ...bounded, capacity: { inputTokens: price } });
@@ -58,7 +58,7 @@ test("136 review SPEC4: a Dreamer's over-long search output is saved where its h
   const saved: string[] = [];
   let answer = "";
   f.next(async raw => {
-    const input = raw as DreamingTaskInput;
+    const input = raw as DreamingAgentInput;
     input.setSpill!(text => { saved.push(text); return "/where/the/host/saved/it"; });
     answer = await input.tools.find(tool => tool.name === "search")!.execute({ layer: "knowledge", code: "text('HEAD ' + 'word '.repeat(60000) + ' TAIL')" });
     input.acknowledgeRequest();
@@ -119,7 +119,7 @@ test("64c exact provider request and terminal audit are preserved while a passin
 test("64c payload-free acknowledgement preserves unavailable audit without fabricating a request", async () => {
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
-  f.next(async raw => { (raw as DreamingTaskInput).acknowledgeRequest();
+  f.next(async raw => { (raw as DreamingAgentInput).acknowledgeRequest();
     return { outcome: "failure", output: "provider body unavailable", audit: { available: false, reason: "no provider body" } }; });
   const result = await f.dream();
   expect(result.outcome).toBe("failure");
@@ -133,7 +133,7 @@ test("64c payload-free acknowledgement preserves unavailable audit without fabri
 test("64c missing request without an unavailable-audit acknowledgement is an explicit failure", async () => {
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
-  f.next(async raw => { await writeBatch(raw as DreamingTaskInput, "## none\n"); return { outcome: "success", output: "request omitted" }; });
+  f.next(async raw => { await writeBatch(raw as DreamingAgentInput, "## none\n"); return { outcome: "success", output: "request omitted" }; });
   const result = await f.dream();
   expect(result.outcome).toBe("failure");
   if (!("runId" in result)) throw new Error("missing run id");
@@ -144,7 +144,7 @@ test("64c missing request without an unavailable-audit acknowledgement is an exp
 test.each(["failure", "cancelled"] as const)("64c %s terminal transaction persists the audit and covers nothing", async terminal => {
   const f = dreamerFixture();
   const item = f.item(`${terminal} rule`, { category: "constraint" });
-  f.next(async raw => { (raw as DreamingTaskInput).acknowledgeRequest(); return { outcome: terminal, output: `${terminal} output`, request: { terminal }, nativeLog: `/tmp/${terminal}.jsonl` }; });
+  f.next(async raw => { (raw as DreamingAgentInput).acknowledgeRequest(); return { outcome: terminal, output: `${terminal} output`, request: { terminal }, nativeLog: `/tmp/${terminal}.jsonl` }; });
   const result = await f.dream();
   if (!("runId" in result)) throw new Error("missing run");
   const run = f.store.getRun(result.runId)!;
@@ -159,7 +159,7 @@ test("64c a rejected terminal transaction rolls back the batch and its coverage 
   const f = dreamerFixture();
   const rule = f.item("fenced rule", { category: "constraint" });
   f.next(async raw => {
-    const input = raw as DreamingTaskInput;
+    const input = raw as DreamingAgentInput;
     input.acknowledgeRequest();
     f.store.invalidateExecutor(f.memory.executorId); // the claim is gone before the batch is applied
     await writeBatch(input, update(rule, "fenced rewrite"));
@@ -179,7 +179,7 @@ test("64c a rejected terminal transaction rolls back the batch and its coverage 
 test("68 provider failure covers nothing and leaves the hand-off at curate", async () => {
   const f = dreamerFixture();
   f.item("failed base", { category: "constraint" });
-  f.next(async raw => { (raw as DreamingTaskInput).acknowledgeRequest(); return { outcome: "failure", output: "provider failed", request: REQUEST }; });
+  f.next(async raw => { (raw as DreamingAgentInput).acknowledgeRequest(); return { outcome: "failure", output: "provider failed", request: REQUEST }; });
   expect((await f.dream()).outcome).toBe("failure");
   expect(covered(f)).toEqual([]);
   expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate" });
@@ -190,7 +190,7 @@ test("64c cancellation before the first batch covers nothing and leaves the work
   f.item("project source", { category: "constraint" });
   const before = revisions(f), controller = new AbortController();
   f.next(raw => new Promise<RunAgentResult>(resolve => {
-    const input = raw as DreamingTaskInput;
+    const input = raw as DreamingAgentInput;
     input.acknowledgeRequest();
     input.signal!.addEventListener("abort", () => resolve({ outcome: "cancelled", output: "cancelled", request: REQUEST }), { once: true });
   }));
@@ -207,7 +207,7 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D 
   const rule = f.item("Rule", { category: "constraint" });
   f.item("Reference", { category: "reference" });
   f.next(async raw => {
-    await writeBatch(raw as DreamingTaskInput, update(rule, "Rule, moved by the batch"));
+    await writeBatch(raw as DreamingAgentInput, update(rule, "Rule, moved by the batch"));
     expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Rule, moved by the batch");
     if (mode === "throw" || mode === "abort") {
       const error = new Error("provider stopped after the batch");

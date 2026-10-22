@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { Store, type SourceInput } from "../../src/core/store/index.ts";
 import { piSourceBlocks } from "../../src/hosts/pi/source.ts";
 import { tokens } from "../../src/core/render/index.ts";
-import { toolDefinitions, dreamingToolDefinitions } from "../../src/core/api/tools.ts";
+import { toolDefinitions } from "../../src/core/api/tools.ts";
 
 const baseline = process.argv[2];
 if (!baseline) throw Error("Pass an isolated baseline archive directory");
@@ -60,5 +60,4 @@ for (let sample = 0; sample < 3; sample++) {
   } finally { console.warn = warn; store.close(); rmSync(dir, { recursive: true, force: true }); }
 }
 console.log(JSON.stringify({ baseline: "862e40684b07bbe2be349d95139038facf9834c6", runtime: process.version,
-  tools: { shared: { before: metadata(oldTools.toolDefinitions), after: metadata(toolDefinitions) },
-    dreaming: { before: metadata(oldTools.dreamingToolDefinitions()), after: metadata(dreamingToolDefinitions()) } }, prompts, migration: samples }, null, 2));
+  tools: { shared: { before: metadata(oldTools.toolDefinitions), after: metadata(toolDefinitions) } }, prompts, migration: samples }, null, 2));

@@ -245,7 +245,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
     };
     /** The memory tool's own validation of one update-like or create-like piece, as a Store operation. */
     const piece = (raw: Record<string, unknown>, label: string, at: number, prefix: string, mapping?: ReadonlyMap<number, number>, inherits = false): Made => {
-      const result = prepareMemory(store, sessionId, { operations: [raw], skipped: [] }, run, path, undefined, undefined,
+      const result = prepareMemory(store, sessionId, { operations: [raw], skipped: [] }, run, path, undefined,
         mapping || !noting ? undefined : localFacts, undefined, inherits);
       const rejected = result.results[0]!;
       return rejected.startsWith("rejected: ") ? { problems: [problem(file, at, label, `${prefix}${rejected.slice("rejected: ".length)}`)] }

@@ -14,19 +14,15 @@ export interface MemoryReceipt {
 export function bindMemory(store: Store, sessionId: number, run: RunInput,
   path: KnowledgePath = store.knowledgePath(sessionId),
   eligibleSupport?: (factId: number) => boolean,
-  skippable?: (commit: number) => string | undefined, names: ToolNames = canonicalToolNames) {
+  names: ToolNames = canonicalToolNames) {
   const allCommitted: CommittedKnowledgeOp[] = [];
-  // Accepted Dreamer skips become exact processing records when the frozen range settles.
-  const skipped: { knowledge: string; because: string }[] = [];
-  // Parallel to `skipped`: each entry's already-resolved numeric revision (68 fix 4 — no re-parsing).
-  const skippedCommits: number[] = [];
   let committed: { runId: number; committed: CommittedKnowledgeOp[];
     diagnostics: ConsolidationDiagnostic[]; output: MemoryBatch } | undefined;
   let failure: { runId: number; problems: string[] } | undefined;
   const sequence: { name: string; input: unknown; result: string; problems?: string[] }[] = [];
   /** One immediate submission; its receipt object is the model-facing result before serialization. */
   const execute = (input: unknown, request: unknown = input) => {
-    const prepared = prepareMemory(store, sessionId, input, run, path, eligibleSupport, skippable, undefined, names);
+    const prepared = prepareMemory(store, sessionId, input, run, path, eligibleSupport, undefined, names);
     if (prepared.results.some(r => r.startsWith("rejected:"))) { failure = undefined; return { results: prepared.results }; }
     const diagnostics = prepared.diagnostics;
     let receipt: MemoryReceipt | undefined;
@@ -68,12 +64,9 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput,
       return { results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }; }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch) };
     allCommitted.push(...result.committed);
-    if (skippable) for (const skip of prepared.batch.skipped) if ("knowledge" in skip) {
-      skipped.push(skip); skippedCommits.push(prepared.declinedCommits.get(skip)!);
-    }
     failure = undefined;
     return receipt!;
   };
-  return { execute, sequence, allCommitted, skipped, skippedCommits,
+  return { execute, sequence, allCommitted,
     get committed() { return committed; }, get failure() { return failure; } };
 }

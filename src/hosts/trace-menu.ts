@@ -121,12 +121,10 @@ const pendingRow = (label: string, value: PendingInput): PendingRow => {
   return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio), amount };
 };
 
-/** 104: Dreaming's two session conditions — pending weight summed across the applicable pools
- * against the trigger, and their knowledge total against the injection base plus the shared
- * allowance (its `trigger` here). */
+/** Dreaming's one condition (144 stage 4 §2.3): the tokens of knowledge the Noter changed since the last run, against the trigger. */
 export interface PendingSectionInput {
   noting: PendingInput;
-  dreaming: { pending: PendingInput; knowledge: PendingInput };
+  dreaming: { pending: PendingInput };
 }
 export interface PendingSection {
   heading: string;
@@ -139,7 +137,7 @@ export function buildPendingSection(input: PendingSectionInput): PendingSection 
     heading: "Pending / trigger",
     noting: pendingRow("Noting", input.noting),
     dreamingHeading: "Dreaming",
-    dreaming: [pendingRow("pending", input.dreaming.pending), pendingRow("knowledge", input.dreaming.knowledge)],
+    dreaming: [pendingRow("pending", input.dreaming.pending)],
   };
 }
 
@@ -310,10 +308,7 @@ export const TRACE_MENU_FIXTURE: TraceMenuInput = {
   },
   pending: {
     noting: { tokens: 3_200, trigger: 10_000 },
-    dreaming: {
-      pending: { tokens: 1_819, trigger: 5_000 },
-      knowledge: { tokens: 17_300, trigger: 30_000 },
-    },
+    dreaming: { pending: { tokens: 1_819, trigger: 10_000 } },
   },
   spend: {
     session: 1.23,
