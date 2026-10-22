@@ -43,10 +43,10 @@ function zeroBase(memory: ReturnType<typeof TraceMemory>) {
   memory.setKnowledgeBudget("session", 0);
 }
 
-test("73: foreground and compact Knowledge share the base plus the configured shared allowance", () => {
+test("144: an unscored item beyond the base rides the temporary allowance, in foreground and compact alike", () => {
   const f = fixture();
-  f.memory.config.compaction.sharedAllowanceTokens = 25_000;
-  const cap = f.memory.knowledgeBudgets().injection + f.memory.config.compaction.sharedAllowanceTokens;
+  f.memory.config.compaction.temporaryTokens = 45_000;
+  const cap = f.memory.knowledgeBudgets().injection + f.memory.config.compaction.temporaryTokens;
   const large = f.create("body ".repeat(30_000), "project", ["charged-topic"]);
   const delivery = f.memory.injection(f.target);
   expect(tokens(delivery.text)).toBeGreaterThan(20_000);
@@ -58,24 +58,25 @@ test("73: foreground and compact Knowledge share the base plus the configured sh
   expect("native" in compact).toBe(false);
   if ("native" in compact) return;
   expect(compact.supplied.knowledgeCommitIds).toEqual([large.commit]);
-  expect(compact.charged!.knowledge).toBeGreaterThan(20_000);
-  expect(compact.charged!.knowledge).toBeLessThanOrEqual(cap);
+  expect(compact.charged!.knowledge).toBe(0); // unscored: the base carries scored items only
+  expect(compact.charged!.temporary).toBeGreaterThan(20_000);
+  expect(compact.charged!.temporary).toBeLessThanOrEqual(f.memory.config.compaction.temporaryTokens);
   expect(compact.text).toContain('topics: ["charged-topic"]');
 });
 
-test("73: zero Knowledge base borrows only the configured shared allowance", () => {
+test("144: with a zero Knowledge base an unscored item rides only the temporary allowance", () => {
   const f = fixture();
   const item = f.create("body ".repeat(6_000));
   zeroBase(f.memory);
   expect(f.memory.knowledgeBudgets()).toEqual({
     global: 0, project: 0, session: 0, applicable: 0, injection: 0,
   });
-  f.memory.config.compaction.sharedAllowanceTokens = 20_000;
+  f.memory.config.compaction.temporaryTokens = 20_000;
   const borrowed = f.memory.injection(f.target);
   expect(borrowed.knowledgeCommitIds).toEqual([item.commit]);
   expect(tokens(borrowed.text)).toBeLessThanOrEqual(20_000);
 
-  f.memory.config.compaction.sharedAllowanceTokens = 0;
+  f.memory.config.compaction.temporaryTokens = 0;
   expect(f.memory.injection(f.target).text).toBe("");
   const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId);
   expect("native" in compact).toBe(false);
@@ -89,7 +90,7 @@ test("73: zero Knowledge base borrows only the configured shared allowance", () 
 test("73: an unsafe combined envelope refuses instead of wrapping, not a trigger sum any more", () => {
   const f = fixture();
   f.create("changed");
-  f.memory.config.compaction.sharedAllowanceTokens = Number.MAX_SAFE_INTEGER;
+  f.memory.config.compaction.temporaryTokens = Number.MAX_SAFE_INTEGER;
   expect(() => f.memory.injection(f.target)).toThrow(/derived foreground Knowledge capacity must be a safe integer/);
   expect(() => f.memory.compact(f.session.id, "main", f.target.headTurnId)).toThrow(/compact envelope must be a safe integer/);
 });

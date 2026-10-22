@@ -8,7 +8,7 @@ import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, SourceEntryMeta, PathSnapshot } from "../store/index.ts";
 import type { HumanUserDetector } from "../model/source.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, knowledgeCategoryGroup, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
-import { formatCost, budgetKnowledge, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, sessionKnowledgeNotice, renderKnowledge, renderFact, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
+import { formatCost, budgetKnowledge, selectKnowledge, renderKnowledgeTitle, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, sessionKnowledgeNotice, renderKnowledge, renderFact, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { injectionText, compactText, measuredMemory, type MemoryComposition, type SharedMaterial, type TransportItem, type RunningTask, rawWindowTokens, FACTS_TITLE, FACT_TITLES_TITLE, RAW_TITLE, EARLIER_USERS_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
@@ -68,10 +68,10 @@ export interface TopicGroups {
 }
 
 /** Ticket 133: one complete custom replacement from a frozen read snapshot. Knowledge fills its
- * base plus the Knowledge-only shared allowance; pending Raw can borrow from the separate temporary
- * allowance. Already-noted Raw and full facts remain in their bases with unchanged selection and
- * coverage. Missing human user words and uncovered titles fill the remaining temporary allowance
- * within their path-turn reaches. Compact never falls back:
+ * base in score order; the one temporary allowance (144 §7.1) then carries, in order, pending Raw
+ * overflow, unscored knowledge, titles of scored knowledge that missed the base, and missing human user
+ * words and uncovered fact titles within their path-turn reaches. Already-noted Raw and full facts remain
+ * in their bases with unchanged selection and coverage. Compact never falls back:
  * over-budget material is truncated — newest kept, oldest omitted with a receipt — rather than
  * escalated to a native delegation. Omitted pending Raw stays pending for Noting; fact omission
  * creates no extraction work. `native` remains only for a host-caught error unrelated to capacity (a
@@ -81,7 +81,7 @@ export interface TopicGroups {
  * carries — every supplied entry, pending and refilled alike, plus the facts and knowledge commits
  * that survived budgeting. What a budget dropped is absent here. A native delegation supplies
  * nothing, so it has no `supplied` at all. */
-export type CompactResult = { text: string; material?: SharedMaterial; supplied: SuppliedMaterial; knowledgeAllowance?: number; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt;
+export type CompactResult = { text: string; material?: SharedMaterial; supplied: SuppliedMaterial; knowledgeAllowance?: number; temporaryAllowance?: number; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt;
   /** Material exists before capacity selection, even if no body or omission receipt fits. */
   hasMaterialCandidates?: boolean }
   | { native: true; reason: string };
@@ -93,14 +93,16 @@ export type CompactResult = { text: string; material?: SharedMaterial; supplied:
  * small, so facts keep both a count and a token figure. */
 export interface TruncationReceipt { raw?: { entries: number }; facts?: { count: number; tokens: number } }
 
-/** Per-window accounting beside the replacement text. `envelope` sums the three bases, the
- * Knowledge-only shared allowance and the temporary allowance. Charged Raw is capped at its base;
- * pending overflow is charged to temporary along with user words, titles and their framing.
+/** Per-window accounting beside the replacement text. `envelope` sums the three bases and the one
+ * temporary allowance. Charged Raw is capped at its base; pending overflow is charged to temporary along with
+ * unscored knowledge, knowledge titles, fact titles, user words and the framing only those need (144 §7).
  * The reading guide and live running-task block are outside these windows but inside measured text
  * and model-input capacity. Every window is optional and truncates. */
 export interface ChargedWindows { knowledge: number; facts: number; raw: number; temporary: number; envelope: number }
 /** Foreground Knowledge delivery and the exact body/state identities its carrier may persist. */
-export interface Injection { text: string; knowledgeTokens?: number; knowledgeAllowance?: number; knowledgeCommitIds: number[]; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
+export interface Injection { text: string; knowledgeTokens?: number; knowledgeAllowance?: number; knowledgeCommitIds: number[];
+  /** 144 §7: versions shown as a title only; what the part charged to the temporary allowance and what that allowance had left. */
+  knowledgeTitleCommitIds?: number[]; temporaryTokens?: number; temporaryAllowance?: number; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
 
 /** One component of a `trace` comma list, in request order, rendered over frozen metadata. */
 type TaggedBody = { lines: string[]; taggedHeader: string; plainHeader: string; tag: string };
@@ -340,9 +342,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility(),
     transport = false, toolNames: ToolNames = canonicalToolNames): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
-    const budgets = store.knowledgeBudgets();
-    const knowledgeCap = budgets.injection + config.compaction.sharedAllowanceTokens;
-    if (!Number.isSafeInteger(knowledgeCap)) throw new Error("derived foreground Knowledge capacity must be a safe integer");
+    const baseCap = store.knowledgeBudgets().injection, temporaryCap = config.compaction.temporaryTokens;
+    if (!Number.isSafeInteger(baseCap + temporaryCap)) throw new Error("derived foreground Knowledge capacity must be a safe integer");
     const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
     if (id !== undefined && !store.enabled(id)) return empty();
     const projectId = id === undefined ? (target as { projectId: number }).projectId : session(id).projectId;
@@ -378,8 +379,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         .filter(state => acknowledged.has(knowledgeStateKey(state.receipt))).map(state => state.text);
       return tokens(injectionText({ knowledge: groups, receipts: [] }, notes));
     };
-    const remaining = knowledgeCap - (visible.knowledgeTokens ?? unaccountedCost());
-    if (remaining <= 0) return empty();
+    // 144 §7.3: the base and the context's one temporary allowance are separate caps; each is spent by what earlier
+    // deliveries on the path charged to it.
+    const baseLeft = Math.max(0, baseCap - (visible.knowledgeTokens ?? unaccountedCost()));
+    // PENDING Q5: an ordinary prompt may spend what the context's 10k has left since its last compaction, /clear or
+    // session start. The other option (ordinary prompts use the base only) makes this 0 for a context that already holds a delivery.
+    const temporaryLeft = Math.max(0, temporaryCap - (visible.temporaryTokens ?? 0));
+    if (baseLeft <= 0 && temporaryLeft <= 0) return empty();
 
     // State transitions retain priority over optional bodies. Then the shared selector preserves
     // the newest commits and receipts omitted older items, without publishing a receipt alone.
@@ -398,39 +404,44 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       return { kind: "state", text: state.text, receipt: state.receipt,
         address: `K${from.knowledgeId}@v${store.versionOrdinal(from.knowledgeId, from.id)}` };
     };
-    const stateCount = longest(states.length, count => tokens(buildStates(count, false)) <= remaining);
+    const stateCount = longest(states.length, count => tokens(buildStates(count, false)) <= baseLeft);
     if (stateCount < states.length) {
       if (!stateCount) return empty();
       const material = { knowledge: [], receipts: [], readingGuide: guide };
       const rendered = measuredMemory(buildStates(stateCount), material);
-      return { ...rendered, knowledgeTokens: tokens(buildStates(stateCount, false)), knowledgeAllowance: remaining, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
+      return { ...rendered, knowledgeTokens: tokens(buildStates(stateCount, false)), knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
         ...(transport ? { transportItems: states.slice(0, stateCount).map(transportState) } : {}) };
     }
     const selectedStates = states.slice(0, stateCount);
-    const ordered = [...delta].sort((a, b) => b.revision.id - a.revision.id);
-    const build = (count: number) => {
-      const selected = budgetKnowledge(ordered.slice(0, count), Infinity, line);
-      const material = { knowledge: selected.groups,
-        receipts: count ? renderKnowledgeOmissions(ordered.slice(count)) : [], knowledgeNotice: notice, readingGuide: guide };
-      const text = injectionText(material, selectedStates.map(state => state.text));
-      const windowText = injectionText({ ...material, readingGuide: "" }, selectedStates.map(state => state.text));
-      return { selected, material, text, windowText };
-    };
-    // Foreground allowance is charged to the exact rendered body, not the selector's conservative
-    // cost estimate: retained context and state notices already consume part of the same window.
-    const count = longest(ordered.length, count => tokens(build(count).windowText) <= remaining);
-    const { selected, material, text, windowText } = build(count);
-    if (tokens(windowText) > remaining || (!selected.commits.length && !selectedStates.length)) return empty();
-    const rendered = measuredMemory(text, material);
-    return { ...rendered, knowledgeTokens: tokens(windowText), knowledgeAllowance: remaining, knowledgeCommitIds: selected.commits,
-      ...(transport ? { transportItems: [
-        ...delta.filter(item => selected.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
-          text: knowledgeLine(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
-          address: `K${item.knowledge.id}@v${store.versionOrdinal(item.knowledge.id, item.revision.id)}` })),
-        ...selectedStates.map(transportState),
-        ...material.receipts.map(text => ({ kind: "receipt" as const, text })),
-      ] } : {}),
-      ...(selectedStates.length ? { knowledgeStates: selectedStates.map(state => state.receipt) } : {}) };
+    const titleLine = (value: KnowledgeWithRevision) => renderKnowledgeTitle(value,
+      `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, store.writing);
+    const statesText = selectedStates.map(state => state.text);
+    const statesCost = tokens(injectionText({ knowledge: [], receipts: [] }, statesText));
+    // The selector prices parts conservatively; the exact rendered window is checked afterwards and the caps
+    // are tightened by any overshoot, so both allowances hold on the text actually emitted.
+    let slackBase = 0, slackTemporary = 0;
+    for (;;) {
+      const selection = selectKnowledge(delta, { baseCap: Math.max(0, baseLeft - statesCost - slackBase), temporaryCap: Math.max(0, temporaryLeft - slackTemporary),
+        line, titleLine, recencyNotice: undefined, titled: visible.knowledgeTitleCommitIds });
+      const material = { knowledge: selection.groups, receipts: selection.receipts, knowledgeNotice: notice, readingGuide: guide };
+      const text = injectionText(material, statesText);
+      const windowText = injectionText({ ...material, readingGuide: "" }, statesText);
+      const total = tokens(windowText), baseUsed = Math.max(0, total - selection.temporaryCharge);
+      if (baseUsed > baseLeft && selection.ranked.some(item => item.allowance === "base")) { slackBase += baseUsed - baseLeft; continue; }
+      if (total - baseUsed > temporaryLeft && selection.ranked.some(item => item.allowance === "temporary")) { slackTemporary += total - baseUsed - temporaryLeft; continue; }
+      if (!selection.ranked.length && !selectedStates.length) return empty();
+      const rendered = measuredMemory(text, material);
+      return { ...rendered, knowledgeTokens: baseUsed, temporaryTokens: total - baseUsed, knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft,
+        knowledgeCommitIds: selection.bodyCommits, ...(selection.titleCommits.length ? { knowledgeTitleCommitIds: selection.titleCommits } : {}),
+        ...(transport ? { transportItems: [
+          ...selection.ranked.map(({ value, form, allowance, rank }) => ({ kind: "knowledge" as const,
+            text: form === "title" ? titleLine(value) : knowledgeLine(value), category: knowledgeCategoryGroup(value.revision.category), commitId: value.revision.id,
+            address: `K${value.knowledge.id}@v${store.versionOrdinal(value.knowledge.id, value.revision.id)}`, form, allowance, rank })),
+          ...selectedStates.map(transportState),
+          ...material.receipts.map(text => ({ kind: "receipt" as const, text, allowance: selection.receiptAllowance })),
+        ] } : {}),
+        ...(selectedStates.length ? { knowledgeStates: selectedStates.map(state => state.receipt) } : {}) };
+    }
   };
   const trace = (address: string, options: ListingOptions = {}): string => {
     validateBudgets(options);
@@ -659,9 +670,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // One allocator: required state notices/facts/Raw first, then optional current knowledge and
     // Raw-first historical refill in each own base remainder. Scheduling pairs never affect it.
     // No worker, processing mark or coverage persistence is performed by this synchronous render.
-    // 133: Knowledge owns the shared allowance. Pending Raw borrows from temporary; already-noted
-    // Raw and full facts keep their base-only selection. Missing user words precede titles in the
-    // remaining temporary allowance. Nothing
+    // 144 §7.1: the temporary allowance is spent in order: pending Raw overflow, unscored knowledge,
+    // knowledge titles, then user words and fact titles; already-noted Raw and full facts keep their
+    // base-only selection. Nothing
     // is required any more: every window truncates — newest kept, oldest omitted with a receipt —
     // rather than escalating to a native delegation. Omitted material stays pending in the store.
     compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = [],
@@ -702,11 +713,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const owners = new Map(sessionFacts.map(fact => [fact.turnId, sessionId]));
       const applicable = sessionFacts.filter(f => store.factOnPath(f, path, snapshot, undefined, owners, boundEntries));
       const factTurns = store.factTurnTimes(applicable);
-      const budgets = store.knowledgeBudgets();
-      const sharedAllowance = config.compaction.sharedAllowanceTokens;
-      const caps = { knowledge: budgets.injection, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
+      const caps = { knowledge: store.knowledgeBudgets().injection, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
       const temporaryCap = config.compaction.temporaryTokens;
-      const envelope = caps.knowledge + caps.facts + caps.raw + sharedAllowance + temporaryCap;
+      const envelope = caps.knowledge + caps.facts + caps.raw + temporaryCap;
       if (!Number.isSafeInteger(envelope)) throw new Error("compact envelope must be a safe integer");
       // Every emitted component is charged inside the window that owns it, and a window that emits
       // nothing is charged nothing: the `<episodic>` tag once, with the first of Raw and facts that
@@ -719,13 +728,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const receiptCharge = (receipts: string[]) => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
       const view = (entry: SourceEntry) => renderEntry(entry, config.render, resultText);
 
-      // ---- 1. Knowledge first: required status notices, newest kept, then bodies newest-first. ----
+      // ---- 1. Knowledge's required status notices come first, charged to the base; its items follow Raw (below), because
+      // the temporary allowance is spent in order: pending Raw, then unscored items, then titles, then fact titles and user words (144 §7.1). ----
       const guide = options.readingGuide === false ? "" : readingGuide(sessionId, options.toolNames ?? canonicalToolNames);
-      const knowledgeEnvelope = caps.knowledge + sharedAllowance;
+      const knowledgeEnvelope = caps.knowledge;
       const allNotes = options.knowledge === false ? [] : knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, undefined, undefined, true)
         .sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit);
       const noteReceipt = (omitted: number) => omitted
-        ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base plus shared allowance is full`] : [];
+        ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base is full`] : [];
       const noteTextCost = (kept: number) => kept ? charge([KNOWLEDGE_STATUS_TITLE, ...allNotes.slice(0, kept).map(note => note.text)]) : 0;
       const noteCost = (kept: number) => noteTextCost(kept) + receiptCharge(noteReceipt(allNotes.length - kept));
       let noteKept = allNotes.length;
@@ -738,9 +748,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // The count is part of the rendered line, so the budget below charges it like any other text.
       const line = options.showKnowledgeSize ? (value: KnowledgeWithRevision) => renderKnowledge(value,
         `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, true, store.writing) : knowledgeLine;
-      const active = budgetKnowledge(knowledge, Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
-        line, "Knowledge base plus shared allowance", new Set(), undefined, notice);
-      const knowledgeUsed = knowledgeNoticeCost + active.cost;
+      const titleLine = (value: KnowledgeWithRevision) => renderKnowledgeTitle(value,
+        `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, store.writing);
 
       // ---- 2. Raw second: the newest contiguous span. Pending entries borrow from temporary;
       // noted entries only fill the Raw base remainder. The walk never skips to an older entry. ----
@@ -799,6 +808,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const rawOmittedPending = rawOmitted.filter(e => pendingIds.has(e.id));
       const rawBorrowed = Math.max(0, rawCharged - caps.raw);
 
+      // Knowledge items: score order in the base, then the temporary allowance's unscored items and titles (§7.6).
+      const active = selectKnowledge(knowledge, { baseCap: Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
+        temporaryCap: Math.max(0, temporaryCap - rawBorrowed), line, titleLine, recencyNotice: notice });
+      const knowledgeUsed = knowledgeNoticeCost + active.baseCharge;
+
       // Full facts and their source coverage retain ticket 73's selection unchanged.
       const coverage = new Set([...sourced.filter(e => retained.has(e.nativeId)).map(e => e.id), ...suppliedRaw.map(s => s.entry.id)]);
       const factCandidates = applicable.filter(f => !visible.factIds.has(f.id));
@@ -843,7 +857,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       };
       const userCost = (receipts: string[]) => (earlierUsers.length
         ? (rawKept || factsKept ? charge([EARLIER_USERS_TITLE]) : opener(EARLIER_USERS_TITLE)) + charge(earlierUsers.map(entry => entry.view)) : 0) + receiptCharge(receipts);
-      const afterRaw = temporaryCap - rawBorrowed;
+      const afterRaw = temporaryCap - rawBorrowed - active.temporaryCharge;
 
       const titleCandidates = eligibleFacts.slice(factsKept).filter(fact => titleTurns.has(fact.turnId) && fact.title);
       const selectedTitles: Fact[] = [];
@@ -882,7 +896,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (selectedTitles.length) finalFactReceipts = omission(eligibleFacts.slice(factsKept).filter(fact => !titleIds.has(fact.id)));
       // Title fitting reserves room for the shared fact omission receipt, but facts charge it once.
       const titlesCharged = titleCost();
-      const temporaryCharged = rawBorrowed + usersCharged + titlesCharged;
+      const temporaryCharged = rawBorrowed + active.temporaryCharge + usersCharged + titlesCharged;
 
       const truncated: TruncationReceipt = {};
       if (rawOmittedPending.length) truncated.raw = { entries: rawOmittedPending.length };
@@ -894,28 +908,33 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         knowledgeNotice: notice, readingGuide: guide };
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material), material,
         // Transport may repeat K framing, but cannot borrow bases reserved for facts/Raw.
-        knowledgeAllowance: knowledgeEnvelope,
+        knowledgeAllowance: knowledgeEnvelope, temporaryAllowance: temporaryCap,
         ...(transport ? { transportItems: [
-          ...knowledge.filter(item => active.commits.includes(item.revision.id)).map(item => ({ kind: "knowledge" as const,
-            text: line(item), category: knowledgeCategoryGroup(item.revision.category), commitId: item.revision.id,
-            address: `K${item.knowledge.id}@v${store.versionOrdinal(item.knowledge.id, item.revision.id)}` })),
+          ...active.ranked.map(({ value, form, allowance, rank }) => ({ kind: "knowledge" as const,
+            text: form === "title" ? titleLine(value) : line(value), category: knowledgeCategoryGroup(value.revision.category), commitId: value.revision.id,
+            address: `K${value.knowledge.id}@v${store.versionOrdinal(value.knowledge.id, value.revision.id)}`, form, allowance, rank })),
           ...allNotes.slice(0, noteKept).map(note => ({ kind: "state" as const, text: note.text, receipt: note.receipt,
             address: `K${store.knowledgeRevision(note.receipt.fromCommit)!.knowledgeId}` })),
           ...factGroupLayout(finalFacts, factTurns).map(({ fact, header }) => ({ kind: "fact" as const,
             text: header + factLine(fact.id, factRelations.get(fact.id) ?? []), factId: fact.id,
             pending: false })),
           ...suppliedRaw.map(step => ({ kind: "raw" as const, text: step.content, entryId: step.entry.id,
-            address: `T${step.entry.turnId}#E${step.entry.entryOrdinal}`, pending: pendingIds.has(step.entry.id) })),
+            address: `T${step.entry.turnId}#E${step.entry.entryOrdinal}`, pending: pendingIds.has(step.entry.id),
+            ...(step.fromAllowance ? { allowance: "temporary" as const, charge: step.fromAllowance } : {}) })),
           ...material.receipts.map(text => ({ kind: "receipt" as const, text,
-            knowledge: active.receipts.includes(text) || noteOmittedReceipt.includes(text) })),
+            knowledge: active.receipts.includes(text) || noteOmittedReceipt.includes(text),
+            ...(active.receipts.includes(text) ? { allowance: active.receiptAllowance } : {}) })),
         ] } : {}),
         // 29a "Renderers return what they kept": exactly the identities this replacement carries.
         // What a budget left out is absent here (28a item 7) and stays pending in the store.
         // Earlier-user excerpts use a smaller profile and are not Raw coverage.
         supplied: { entries: suppliedRaw.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),
-          factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.commits,
-          knowledgeTokens: tokens(injectionText({ knowledge: active.groups,
-            receipts: [...active.receipts, ...noteOmittedReceipt], knowledgeNotice: notice }, notes)),
+          factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.bodyCommits,
+          ...(active.titleCommits.length ? { knowledgeTitleCommitIds: active.titleCommits } : {}),
+          // The base part of the delivered Knowledge window; what only the temporary allowance's items needed is in `temporaryTokens`.
+          knowledgeTokens: Math.max(0, tokens(injectionText({ knowledge: active.groups,
+            receipts: [...active.receipts, ...noteOmittedReceipt], knowledgeNotice: notice }, notes)) - active.temporaryCharge),
+          temporaryTokens: temporaryCharged,
           ...(noteKept ? { knowledgeStates: allNotes.slice(0, noteKept).map(note => note.receipt) } : {}) },
         // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
         charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts),

@@ -224,7 +224,7 @@ export function buildTraceMenu(input: TraceMenuInput): TraceMenuModel {
 
 // ---- Settings screen -------------------------------------------------------------------------------
 
-export interface SettingsBudgetsInput { global: number; project: number; session: number; sharedAllowanceTokens: number }
+export interface SettingsBudgetsInput { global: number; project: number; session: number; temporaryTokens: number }
 export interface SettingsBudgetRow { label: string; value: string; qualifier?: string }
 export interface SettingsBudgets { rows: SettingsBudgetRow[]; derivedLine: string }
 export function buildSettingsBudgets(input: SettingsBudgetsInput): SettingsBudgets {
@@ -235,7 +235,7 @@ export function buildSettingsBudgets(input: SettingsBudgetsInput): SettingsBudge
       { label: "Project", value: formatTokens(input.project), qualifier: "per project" },
       { label: "Session", value: formatTokens(input.session), qualifier: "per session" },
     ],
-    derivedLine: `→ knowledge window ${formatTokens(window)} + shared allowance ${formatTokens(input.sharedAllowanceTokens)} = ${formatTokens(window + input.sharedAllowanceTokens)} max input`,
+    derivedLine: `→ knowledge window ${formatTokens(window)} + temporary allowance ${formatTokens(input.temporaryTokens)} = ${formatTokens(window + input.temporaryTokens)} max input`,
   };
 }
 
@@ -290,7 +290,7 @@ export function buildTraceSettings(input: SettingsInput): SettingsModel {
 // default, `DEFAULT_KNOWLEDGE_BUDGETS` in core/store/processing.ts), Dreaming trigger 5,000 on the
 // summed pending weight and 30,000 on the knowledge total (104: the 20,000 base plus the shared
 // allowance), Noting trigger 10,000 and Consolidation trigger 5,000 (`DEFAULT_CONFIG` in core/api/index.ts),
-// shared allowance 10,000 (`compaction.sharedAllowanceTokens`). The derived knowledge window is the
+// temporary allowance 10,000 (`compaction.temporaryTokens`). The derived knowledge window is the
 // budgets' sum, 20,000 (`deriveKnowledgeBudgets`) — the ticket's mockup shows "10,000" and shows
 // "Project 5,000"; both disagree with the code default and are corrected here (see the delegation
 // report for the full list of mockup/code disagreements).
@@ -334,7 +334,7 @@ export const TRACE_MENU_FIXTURE_WITH_NOTICE: TraceMenuInput = {
 
 export const TRACE_SETTINGS_FIXTURE: SettingsInput = {
   database: "~/.trace-memory/trace.db",
-  budgets: { global: 4_000, project: 15_000, session: 1_000, sharedAllowanceTokens: 10_000 },
+  budgets: { global: 4_000, project: 15_000, session: 1_000, temporaryTokens: 10_000 },
   workers: [
     { phase: "Noter", model: "follow foreground", thinking: "inherit" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" },

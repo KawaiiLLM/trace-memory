@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { freezeNoting, NOTING_CAPACITY } from "../../../src/core/noting/index.ts";
 import { renderKnowledge, renderKnowledgeBlock, sessionKnowledgeNotice, tokens, budgetKnowledge } from "../../../src/core/render/index.ts";
 import { recorded, seedSourceEntry, sourceSeededMemory } from "../../source-fixture.ts";
+import { scoreAll } from "../../support/seed.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
@@ -28,6 +29,8 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
     scope: "project" as const, topics: [], supports: [noted.facts[0]!.id], reason: "Capacity fixture", createdAt: "2026-09-16T00:00:00Z",
   })) });
   if (!created.ok) throw new Error(created.problems.join("; "));
+  scoreAll(memory.store); // the Knowledge base carries scored items
+  memory.config.compaction.temporaryTokens = 0; // these tests are about the base window: no titles
   recorded(memory, session.id, "main", evidence.id);
   const pending = Array.isArray(pendingText) ? pendingText : [pendingText];
   const turn = memory.store.appendTurn({ sessionId: session.id, parentTurnId: evidence.id, kind: "turn", userPrompt: pending[0]!, startedAt: "2026-09-16T00:01:00Z" });

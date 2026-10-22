@@ -122,6 +122,8 @@ export interface Knowledge {
   projectId: number | null; // stable identity attribution; each commit carries its scope
   originSessionId: number;
   author: string;
+  /** Classify score 1-100 (144 stage 4 §6), null until classified. It orders injection and belongs to the identity, not to a version. */
+  score: number | null;
 }
 
 export interface KnowledgeRevision {

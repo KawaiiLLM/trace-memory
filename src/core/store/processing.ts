@@ -8,14 +8,13 @@ export interface KnowledgeBudgets extends KnowledgeBudgetValues {
 }
 export const DEFAULT_KNOWLEDGE_BUDGETS: KnowledgeBudgetValues = { global: 4_000, project: 15_000, session: 1_000 };
 export const DEFAULT_DREAMING_TRIGGER_TOKENS = 10_000;
-export const DEFAULT_SHARED_ALLOWANCE_TOKENS = 10_000;
 
 /** 126: the fixed pool key of a Dreamer range, execution and failure streak that covers all of a
  * session's pools. Rows written before 126 keep the one pool they named. */
 export const ALL_POOLS = "all";
 
-/** Database policy owns the base window only. The shared allowance is a fixed configuration value
- * (`compaction.sharedAllowanceTokens`), never derived from the maintenance triggers (73). */
+/** Database policy owns the base window only. The temporary allowance is a fixed configuration value
+ * (`compaction.temporaryTokens`), never derived from the maintenance triggers (73). */
 export function deriveKnowledgeBudgets(values: KnowledgeBudgetValues, stored = false): KnowledgeBudgets {
   const label = (field: KnowledgeBudgetField) => `${field[0]!.toUpperCase()}${field.slice(1)} Knowledge budget`;
   for (const field of ["global", "project", "session"] as const) if (!Number.isSafeInteger(values[field]) || values[field] < 0)

@@ -14,7 +14,7 @@ import { KNOWLEDGE_RECENCY_NOTICE, sessionKnowledgeNotice, budgetFacts, budgetKn
 import { budgetMaterial, compactText, rawWindowTokens, injectionText, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { curateWrite } from "../../support/dreamer.ts";
-import { fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts, receiptCommit } from "../../support/seed.ts";
+import { fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts, receiptCommit, scoreAll } from "../../support/seed.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { canonicalToolNames, validateToolNames } from "../../../src/core/prompts/tool-names.ts";
@@ -61,6 +61,7 @@ function seeded() {
   expect(seedFact(memory, path, "Package manager decision", [{ entry: user, text: "Use pnpm" }]).id).toBe(1);
   expect(seedKnowledge(memory.store, path, "project", "constraint", [1], "The project uses pnpm",
     { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [], title: "Package manager" } }).knowledgeId).toBe(1);
+  scoreAll(memory.store); // the Knowledge base carries scored items; unscored ones ride the temporary allowance (144 §7)
   // 118: identity framing stays in the block; the complete injection carries one guide.
   knowledgeBlock = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n## constraint (1)\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] Package manager\nThe project uses pnpm\n  change supports: F1\n</knowledge>`;
   return { s, t, user, read: (address: string) => memoryFiles(memory, path).read(`trace://${address}`).content };
@@ -156,6 +157,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [],
     reason: "Exercise a database-derived omission boundary.", text: "The project uses pnpm " + "word ".repeat(5_200),
     category: "constraint", scope: "project", supports: ["F1"] });
+  scoreAll(memory.store);
   setKnowledgeCapacity(memory, 5_000);
   seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Package manager retained", [{ entry: user, text: "Keep pnpm" }]);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
@@ -234,6 +236,7 @@ function overloaded() {
     `rule ${i} ` + "word ".repeat(500), { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [] } });
   for (let i = 0; i < 6; i++) memory.appendEntry({ sessionId: s.id, nativeLineage: "big", nativeId: `b${i}`, turnId: t.id,
     role: "assistant", text: `entry ${i} ` + "word ".repeat(3000), raw: "", calls: [] });
+  scoreAll(memory.store);
   return { s, t };
 }
 
@@ -246,7 +249,7 @@ test("25a/92: default N material has independent 10k facts and Raw windows plus 
   expect(factReceipts).toHaveLength(1); // the history cap really binds
   expect(material.receipts.some(r => r.includes(" knowledge; expand: "))).toBe(false); // the default K fits this fixture
   expect(knowledgeBlockOf(material)).toContain("<knowledge>");
-  expect(tokens(knowledgeBlockOf(material))).toBeLessThanOrEqual(memory.knowledgeBudgets().injection + memory.config.compaction.sharedAllowanceTokens);
+  expect(tokens(knowledgeBlockOf(material))).toBeLessThanOrEqual(memory.knowledgeBudgets().injection + memory.config.compaction.temporaryTokens);
   const historyCap = memory.config.compaction.factsTokens;
   expect(historyCap).toBe(10_000);
   expect(tokens(compactText({ facts: material.facts, receipts: factReceipts }))).toBeLessThanOrEqual(historyCap);
@@ -326,6 +329,7 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   // Pool budgets trigger maintenance; they do not reject a policy change. Foreground selection
   // omits a whole body that no longer fits without removing it from storage or dropping its topics.
   setKnowledgeCapacity(memory, exactForeground - 1);
+  memory.config.compaction.temporaryTokens = 0; // with a temporary allowance the misfit would show as a title
   expect(memory.inject(s.id)).not.toContain(`[${tag(1, changed.commit)}]`);
   expect(memory.store.knowledgeRevision(changed.commit)!.topics).toEqual(["packaging", "storage"]);
   // Restore enough room for the subject and the explicitly accounted worker trigger.
@@ -445,7 +449,6 @@ test("29b/92: compact filters retained facts before budgeting", async () => {
     + charge(["Receipts:", "omitted 3 older facts; expand: trace://F3, trace://F2, trace://F1"]);
   memory.config.compaction.factsTokens = room;
   memory.config.compaction.rawTokens = 0;
-  memory.config.compaction.sharedAllowanceTokens = 0;
   const supplied = (factIds: number[]) => {
     const compact = memory.compact(s.id, "main", t.id, { ...noVisibility(), factIds: new Set(factIds) });
     if ("native" in compact) throw new Error(compact.reason);
@@ -519,6 +522,7 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   // Knowledge publication belongs to the foreground, not to the retired C fork.
   const delivery = (commits: number[]) => memory.injection({ sessionId: s.id, branch: "main", headTurnId: t.id },
     { ...noVisibility(), knowledgeCommitIds: new Set(commits), knowledgeTokens: 0 });
+  scoreAll(memory.store);
   const stale = delivery([1]);
   expect(stale.text).toContain(`[${tag(1, current)}]`);
   expect(stale.text).toContain("K1@v1 is superseded by K1@v2");
@@ -585,6 +589,8 @@ test("64c/92: foreground and fresh N keep the same newer items and receipt omitt
   const commits = committed.map((value: { knowledgeId: number; version: string }) =>
     receiptCommit(memory.store, value));
   setKnowledgeCapacity(memory, 5_000);
+  scoreAll(memory.store);
+  memory.config.compaction.temporaryTokens = 0; // nothing for titles: what misses the base is omitted with a receipt
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const injected = memory.injection(target);
   const frozen = freezeNoting(memory.store, { ...target }, memory.config);

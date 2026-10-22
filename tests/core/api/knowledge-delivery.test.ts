@@ -7,7 +7,7 @@ import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { curateWrite } from "../../support/dreamer.ts";
-import { receiptCommit } from "../../support/seed.ts";
+import { receiptCommit, scoreAll } from "../../support/seed.ts";
 
 const time = "2026-09-12T00:00:00Z";
 
@@ -17,6 +17,8 @@ afterEach(() => { while (memories.length) memories.pop()!.close(); });
 function fixture(config: Record<string, unknown> = {}) {
   const memory = TraceMemory(":memory:", async () => { throw new Error("offline only"); }, { writing: { bodyTokens: 1_000_000 }, ...config });
   memories.push(memory);
+  // These tests pin the Knowledge base's arithmetic; titles and unscored items in the temporary allowance have their own tests.
+  if (!("compaction" in config)) memory.config.compaction.temporaryTokens = 0;
   const project = memory.store.createProject({ name: "delivery", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: time });
@@ -32,6 +34,7 @@ function fixture(config: Record<string, unknown> = {}) {
       run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ op: "create", title: "Fixture title", handle: `$${text}`,
         author: "fixture", text, category: "constraint", scope: "project", supports, topics: [], reason: "record conclusion", createdAt: time }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
+    scoreAll(memory.store); // the Knowledge base carries scored items
     return result.committed[0]!;
   };
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
@@ -66,7 +69,9 @@ async function maintain(f: ReturnType<typeof fixture>, operation: Record<string,
     : operation.op === "merge" ? { op: "merge" as const, intoKnowledgeId: base.knowledgeId, intoBaseCommit: base.baseCommit,
       absorb: (operation.absorb as string[]).map(address => { const { knowledgeId, baseCommit } = parse(address); return { knowledgeId, baseCommit }; }), ...common }
     : { op: "split" as const, ...base, children: operation.children as { title: string; text: string; category: "constraint" | "goal"; topics: string[] }[], ...common };
-  return curateWrite(f.memory, f.target, [op]);
+  const committed = await curateWrite(f.memory, f.target, [op]);
+  scoreAll(f.memory.store); // the Knowledge base carries scored items
+  return committed;
 }
 
 test("92 facts and original/bounded Raw do not substitute for missing exact Knowledge bodies", () => {
@@ -238,7 +243,7 @@ test("34c a retained state-only receipt consumes allowance without granting body
     operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: parent.knowledgeId, baseCommit: parent.commit,
       supports: [f.facts[0]!.id], reason: "retire", createdAt: time }] });
   if (!archive.ok) throw new Error(archive.problems.join());
-  f.create("remaining candidate ".repeat(6_000), [f.facts[1]!.id]);
+  f.create("remaining candidate ".repeat(3_000), [f.facts[1]!.id]);
   const candidate = f.memory.injection(f.target);
   setKnowledgeCapacity(f.memory, windowCost(f.session.id, candidate));
   const state = { fromCommit: parent.commit, toCommits: [archive.committed[0]!.commit] };

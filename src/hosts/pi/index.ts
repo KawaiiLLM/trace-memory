@@ -254,9 +254,10 @@ export default function (pi: ExtensionAPI) {
       ? { owner: owner(), sessionId: target.sessionId, branch: target.branch, headTurnId: target.headTurnId }
       : { owner: owner(), sessionId: null, headTurnId: null, pending: ctx.sessionManager.getBranch().flatMap(entry =>
         entry.type === "custom_message" && entry.customType === tag ? [deliveryKey(entry)].filter(key => key !== undefined).map(key => ({ key })) : []) }));
-  const deliveryPart = (block: { knowledgeCommitIds: number[]; knowledgeStates?: { fromCommit: number; toCommits: number[] }[]; knowledgeTokens?: number; text: string }) =>
-    ({ knowledgeCommitIds: block.knowledgeCommitIds, knowledgeStates: (block.knowledgeStates ?? []).map(knowledgeStateKey),
-      knowledgeTokens: block.knowledgeTokens ?? tokens(block.text) });
+  const deliveryPart = (block: { knowledgeCommitIds: number[]; knowledgeTitleCommitIds?: number[]; knowledgeStates?: { fromCommit: number; toCommits: number[] }[];
+    knowledgeTokens?: number; temporaryTokens?: number; text: string }) =>
+    ({ knowledgeCommitIds: block.knowledgeCommitIds, knowledgeTitleCommitIds: block.knowledgeTitleCommitIds ?? [], knowledgeStates: (block.knowledgeStates ?? []).map(knowledgeStateKey),
+      knowledgeTokens: block.knowledgeTokens ?? tokens(block.text), temporaryTokens: block.temporaryTokens ?? 0 });
   const modelNameOf = (key: string) => {
     const configured = flat[key];
     return String(configured && configured !== "session" ? configured : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
@@ -737,7 +738,8 @@ export default function (pi: ExtensionAPI) {
     const sameProject = !state.sessionId || memory.store.getSession(state.sessionId)?.projectId === authority.projectId;
     if (!enabled() || !sameBinding || !sameTarget || !sameProject) return;
     const supplied: SuppliedMaterial = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
-      knowledgeTokens: block.knowledgeTokens,
+      ...(block.knowledgeTitleCommitIds?.length ? { knowledgeTitleCommitIds: block.knowledgeTitleCommitIds } : {}),
+      knowledgeTokens: block.knowledgeTokens, ...(block.temporaryTokens ? { temporaryTokens: block.temporaryTokens } : {}),
       ...(block.knowledgeStates?.length ? { knowledgeStates: block.knowledgeStates } : {}) };
     // 97 "Record at emission": this prompt's node owns the delivery once Pi persists the prompt.
     const prompt = randomUUID();
@@ -1046,7 +1048,8 @@ export default function (pi: ExtensionAPI) {
         if (!knowledge) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
         const block = memory.injection({ projectId: state.projectId });
         return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
-          knowledgeTokens: block.knowledgeTokens, knowledgeStates: block.knowledgeStates } };
+          ...(block.knowledgeTitleCommitIds?.length ? { knowledgeTitleCommitIds: block.knowledgeTitleCommitIds } : {}),
+          knowledgeTokens: block.knowledgeTokens, ...(block.temporaryTokens ? { temporaryTokens: block.temporaryTokens } : {}), knowledgeStates: block.knowledgeStates } };
       } catch (error) { return { native: true, reason: String(error) }; } // 133 R2: store and live-task lookup errors delegate.
     };
     // 28 "Failure and persistence": user cancellation publishes nothing and starts no native fallback.
@@ -1420,7 +1423,7 @@ export default function (pi: ExtensionAPI) {
       return { phase, model: effective(model), thinking: effective(thinking),
         sources: { model: source(model), thinking: source(thinking) } };
     };
-    return { database: dbPath, budgets: { ...memory.knowledgeBudgets(), sharedAllowanceTokens: memory.config.compaction.sharedAllowanceTokens },
+    return { database: dbPath, budgets: { ...memory.knowledgeBudgets(), temporaryTokens: memory.config.compaction.temporaryTokens },
       workers: [worker("Noter", "noting"), worker("Dreamer", "dreaming"), worker("Classifier", "classify")],
       closedSessionScope: memory.config.closedSessionScope,
       closedSessionSource: sources.closedSessionScope && sources.closedSessionScope !== "Global"
@@ -1445,9 +1448,9 @@ export default function (pi: ExtensionAPI) {
         const saved = memory.setKnowledgeBudget(budget.field, value);
         if (saved.changed) armDreaming();
         const base = saved.policy.global + saved.policy.project + saved.policy.session;
-        const shared = memory.config.compaction.sharedAllowanceTokens;
+        const shared = memory.config.compaction.temporaryTokens;
         ctx.ui.notify(saved.changed
-          ? `Trace Memory: saved ${budget.name} = ${value} tokens in database ${dbPath}. Knowledge base window ${base}; shared material allowance ${shared}; maximum Knowledge input ${base + shared}. New admissions use these capacities; running inputs remain frozen.`
+          ? `Trace Memory: saved ${budget.name} = ${value} tokens in database ${dbPath}. Knowledge base window ${base}; temporary allowance ${shared}; maximum Knowledge input ${base + shared}. New admissions use these capacities; running inputs remain frozen.`
           : `Trace Memory: ${budget.name} is already ${value} tokens in database ${dbPath}; nothing was written.`, "info");
       } catch (error) { ctx.ui.notify(`Trace Memory: ${budget.name} unchanged — ${String(error)}`, "error"); }
       return;

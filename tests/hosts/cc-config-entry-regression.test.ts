@@ -40,7 +40,7 @@ function fixture(): { raw: CcHostConfig; path: string; dir: string } {
   const raw: CcHostConfig = { dbPath: join(dir, "trace.sqlite"), stateDir: join(dir, "state"),
     "noting.triggerTokens": 13,
     "dreaming.triggerTokens": 29, "dreaming.timeoutMs": 47_000,
-    "compaction.sharedAllowanceTokens": 1_789 };
+    "compaction.temporaryTokens": 1_789 };
   const path = join(dir, "cc.config.json"); writeFileSync(path, JSON.stringify(raw));
   return { raw, path, dir };
 }
@@ -49,7 +49,7 @@ function expectControls(config: ResolvedCcHostConfig) {
   expect(config.coreConfig).toMatchObject({
     noting: { triggerTokens: 13 },
     dreaming: { triggerTokens: 29, timeoutMs: 47_000 },
-    compaction: { sharedAllowanceTokens: 1_789 },
+    compaction: { temporaryTokens: 1_789 },
   });
 }
 

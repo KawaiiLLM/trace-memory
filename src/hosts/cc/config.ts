@@ -56,8 +56,7 @@ export interface CcHostConfig {
   "noting.triggerTokens"?: number;
   "dreaming.triggerTokens"?: number;
   "dreaming.timeoutMs"?: number;
-  /** Knowledge-only shared allowance; pending Raw borrows the separate temporary allowance (133). */
-  "compaction.sharedAllowanceTokens"?: number;
+  /** The one temporary allowance of a context (144 stage 4 §7.3). */
   "compaction.temporaryTokens"?: number;
   "compaction.userTurns"?: number;
   "compaction.titleTurns"?: number;
@@ -190,7 +189,6 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       ...(input["dreaming.timeoutMs"] === undefined ? {} : { timeoutMs: input["dreaming.timeoutMs"] }),
     } }),
     compaction: {
-      ...(input["compaction.sharedAllowanceTokens"] === undefined ? {} : { sharedAllowanceTokens: input["compaction.sharedAllowanceTokens"] }),
       ...(input["compaction.temporaryTokens"] === undefined ? {} : { temporaryTokens: input["compaction.temporaryTokens"] }),
       ...(input["compaction.userTurns"] === undefined ? {} : { userTurns: input["compaction.userTurns"] }),
       ...(input["compaction.titleTurns"] === undefined ? {} : { titleTurns: input["compaction.titleTurns"] }),

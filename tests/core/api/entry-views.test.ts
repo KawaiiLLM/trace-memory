@@ -8,7 +8,7 @@ import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { memoryPath } from "../../../src/core/model/address.ts";
 import { renderTrace, renderFactPreview, renderEntry, tokens } from "../../../src/core/render/index.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
-import { factSources } from "../../support/seed.ts";
+import { factSources, scoreAll } from "../../support/seed.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => cleanup.splice(0).reverse().forEach(fn => fn()));
@@ -130,6 +130,7 @@ test("knowledge injection charges IDs only while an explicit trace displays supp
     scope: "project", topics: [], reason: "user choice", supports: ["F1"] }));
   expect(result.committed).toHaveLength(1);
   const id = result.committed[0].knowledgeId;
+  scoreAll(m.store); // the Knowledge base carries scored items
   const injected = m.injection(session.id);
   expect(injected.text).toContain("supports: F1");
   expect(injected.text).not.toContain("A descriptive episode title");

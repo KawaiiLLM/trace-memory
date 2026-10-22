@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { TraceMemory, noVisibility } from "../../../src/core/api/index.ts";
 import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
-import { fact as seedFact } from "../../support/seed.ts";
+import { fact as seedFact, scoreAll } from "../../support/seed.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
@@ -29,6 +29,7 @@ function fixture(file = false) {
   const create = (text: string) => {
     const result = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ ...content, op: "create", title: "Fixture title", handle: "$new", text }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
+    scoreAll(store); // the Knowledge base carries scored items
     return result.committed[0]!;
   };
   return { memory, store, project, session, turn, target, fact, content, create, path };
@@ -89,6 +90,7 @@ test("92 actual retained costs, including obsolete bodies and repeated carriers,
   expect(offered.text.startsWith(prefix)).toBe(true);
   expect(cost).toBe(tokens(offered.text.slice(prefix.length)));
   setKnowledgeCapacity(f.memory, 5000);
+  f.memory.config.compaction.temporaryTokens = 0; // this test pins the base arithmetic: no title for what the base cannot hold
   const retained = { ...noVisibility(), knowledgeCommitIds: new Set([old.commit]), knowledgeTokens: 5000 - cost };
   const tag = vi.spyOn(f.store, "versionTag");
   try {

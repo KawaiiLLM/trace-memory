@@ -92,7 +92,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     });
     const settings: SettingsInput = { database: config.dbPath,
       budgets: { global: budgets.global, project: budgets.project, session: budgets.session,
-        sharedAllowanceTokens: active.coreConfig.compaction.sharedAllowanceTokens }, workers,
+        temporaryTokens: active.coreConfig.compaction.temporaryTokens }, workers,
       closedSessionScope: active.closedSessionScope,
       ...(!effective ? { closedSessionSource: "saved file; effective configuration unavailable" }
         : active.closedSessionScope !== config.closedSessionScope
@@ -125,9 +125,10 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     };
     // 102: a compaction's carrier, framed (Trace Memory's compaction) or bare (the supplement), is attributed by its compaction's recorded delivery (97).
     const recorded = store.db.prepare(`SELECT 1 FROM knowledge_deliveries WHERE owner = ? AND follows IS NOT NULL
-      AND commits = ? AND states = ? AND knowledge_tokens = ? LIMIT 1`);
+      AND commits = ? AND states = ? AND knowledge_tokens = ? AND titles = ? AND temporary_tokens = ? LIMIT 1`);
     const context = ccContextEvidence(binding, config.dbPath, current, header => recorded.get(coreHostOf(binding),
-      JSON.stringify(header.commits), JSON.stringify(header.states.map(knowledgeStateKey)), header.knowledgeTokens ?? 0) !== undefined);
+      JSON.stringify(header.commits), JSON.stringify(header.states.map(knowledgeStateKey)), header.knowledgeTokens ?? 0,
+      JSON.stringify(header.titles), header.temporaryTokens ?? 0) !== undefined);
     return { menu: data, settings, models: Object.keys(config.worker?.contextWindows ?? {}), context, runs };
   } finally { memory.store.close(); }
 }

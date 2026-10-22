@@ -867,6 +867,87 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   return { ...body, receipts: emittedReceipts(kept), cost: cost(kept) };
 }
 
+/** One title-only line (144 §7.4): the same header as a body line, marked, with the title in place of the body. */
+export function renderKnowledgeTitle({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`,
+  limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
+  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] (title only) ${knowledgeTitle(r, limits.titleTokens)}`;
+}
+
+export interface SelectedKnowledge extends BudgetedKnowledge {
+  /** Commits shown whole, and commits shown as a title only; `commits` is the union in presentation order. */
+  bodyCommits: number[];
+  titleCommits: number[];
+  /** Core's selection order across both allowances: rank 0 is delivered first and dropped last (§7.5). */
+  ranked: { value: KnowledgeWithRevision; form: "body" | "title"; allowance: "base" | "temporary"; rank: number }[];
+  /** What the window charges the Knowledge base, and what only the temporary allowance's material needs (§7.2). */
+  baseCharge: number;
+  temporaryCharge: number;
+  /** Who pays for the omission receipts: the base when it has room (as before 144), else the temporary allowance. */
+  receiptAllowance: "base" | "temporary";
+}
+
+/** Ticket 144 §7.2: knowledge in score order within the base, then the temporary allowance's two
+ * knowledge kinds. It calls `budgetKnowledge` for every prefix selection, so grouping, framing and
+ * the stop-at-first-misfit rule are its own; this adds only the orchestration over two caps.
+ *
+ * Order: (base) scored items whole, score descending, ties newer version first; (b) unscored items
+ * whole, newest first; (c) titles of scored items that missed the base, score descending. Framing is
+ * charged by who needs it: `baseCharge` is the window rendered with the base items alone, and
+ * `temporaryCharge` is everything else the window adds, so both caps hold even with the base full.
+ * Omission receipts go to the base when it has room for them, else to the temporary allowance.
+ * `titled` holds versions an earlier delivery already showed as a title; they are not offered again. */
+export function selectKnowledge(candidates: KnowledgeWithRevision[], options: { baseCap: number; temporaryCap: number;
+  line: (value: KnowledgeWithRevision) => string; titleLine: (value: KnowledgeWithRevision) => string; budget?: string;
+  recencyNotice?: string; titled?: ReadonlySet<number> }): SelectedKnowledge {
+  const { baseCap, temporaryCap, line, titleLine, budget = "Knowledge base plus temporary allowance", recencyNotice = KNOWLEDGE_RECENCY_NOTICE } = options;
+  const score = (value: KnowledgeWithRevision) => value.knowledge.score ?? null;
+  const byScore = (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => (score(b)! - score(a)!) || b.revision.id - a.revision.id;
+  const scored = candidates.filter(value => score(value) !== null).sort(byScore);
+  const unscored = candidates.filter(value => score(value) === null).sort((a, b) => b.revision.id - a.revision.id);
+  const noRequired = new Set<number>();
+  // PENDING Q4: a scored item that does not fit the rest of the base stops this kind, and the rest become
+  // titles (c). The other option skips the misfit and keeps filling; that is a skip mode in this one call.
+  // The base keeps its receipts mandatory, as foreground selection always did: items give way until the body and the
+  // receipts of what it omits fit together. Only when the receipts alone cannot fit are they optional.
+  const base = (() => {
+    try { return budgetKnowledge(scored, baseCap, line, budget, undefined, byScore, recencyNotice).commits; }
+    catch { return budgetKnowledge(scored, baseCap, line, budget, noRequired, byScore, recencyNotice).commits; }
+  })();
+  const baseSet = new Set(base);
+  const baseValues = scored.filter(value => baseSet.has(value.revision.id));
+  const whole = (values: KnowledgeWithRevision[], shownLine: (value: KnowledgeWithRevision) => string) =>
+    ({ ...knowledgeBody(orderedKnowledge(values, shownLine), recencyNotice), receipts: [] as string[] });
+  const baseCharge = baseValues.length ? whole(baseValues, line).cost : 0;
+  const ceiling = baseCharge + temporaryCap;
+  const unscoredKept = budgetKnowledge([...baseValues, ...unscored], ceiling, line, budget, baseSet, undefined, recencyNotice).commits
+    .filter(commit => !baseSet.has(commit));
+  const wholeSet = new Set([...base, ...unscoredKept]);
+  const missed = scored.filter(value => !baseSet.has(value.revision.id) && !options.titled?.has(value.revision.id));
+  const missedSet = new Set(missed.map(value => value.revision.id));
+  const shown = (value: KnowledgeWithRevision) => missedSet.has(value.revision.id) ? titleLine(value) : line(value);
+  const holding = [...candidates.filter(value => wholeSet.has(value.revision.id)), ...missed];
+  const titles = budgetKnowledge(holding, ceiling, shown, budget, wholeSet, byScore, recencyNotice).commits.filter(commit => !wholeSet.has(commit));
+  const titleSet = new Set(titles);
+  const items = candidates.filter(value => wholeSet.has(value.revision.id) || titleSet.has(value.revision.id));
+  const omitted = candidates.filter(value => !wholeSet.has(value.revision.id) && !titleSet.has(value.revision.id)
+    && !options.titled?.has(value.revision.id)).sort((a, b) => (score(b) ?? 0) - (score(a) ?? 0) || b.revision.id - a.revision.id);
+  let receipts = renderKnowledgeOmissions(omitted);
+  const receiptCost = () => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
+  const mixed = (value: KnowledgeWithRevision) => titleSet.has(value.revision.id) ? titleLine(value) : line(value);
+  const window = whole(items, mixed);
+  // Receipts are optional: the base pays when it has room, else the temporary allowance, else they are dropped.
+  const receiptsToBase = receipts.length > 0 && baseCharge + receiptCost() <= baseCap;
+  if (!receiptsToBase && window.cost + receiptCost() - baseCharge > temporaryCap) receipts = [];
+  const receiptPrice = receiptCost();
+  const rankOf = new Map<number, number>();
+  [...base, ...unscoredKept, ...titles].forEach((commit, index) => rankOf.set(commit, index));
+  return { ...window, receipts, cost: window.cost + receiptPrice, receiptAllowance: receiptsToBase ? "base" : "temporary", bodyCommits: window.commits.filter(commit => wholeSet.has(commit)),
+    titleCommits: titles, baseCharge: baseCharge + (receiptsToBase ? receiptPrice : 0),
+    temporaryCharge: window.cost + (receiptsToBase ? 0 : receiptPrice) - baseCharge,
+    ranked: items.map(value => ({ value, form: titleSet.has(value.revision.id) ? "title" as const : "body" as const,
+      allowance: baseSet.has(value.revision.id) ? "base" as const : "temporary" as const, rank: rankOf.get(value.revision.id)! })).sort((a, b) => a.rank - b.rank) };
+}
+
 /** Turn metadata, read once without loading Raw. Plain times also support metadata-free fixtures. */
 export type FactTurns = ReadonlyMap<number, string | { time: string; harness?: string }>;
 const factTurnTime = (turnId: number, turns: FactTurns): string => {

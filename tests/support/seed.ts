@@ -180,3 +180,9 @@ export function legacyArchive(store: Store, path: KnowledgePath, knowledgeId: nu
   store.db.prepare("UPDATE knowledge_revisions SET text = '', archive_kind = NULL WHERE id = ?").run(commit);
   return commit;
 }
+
+/** Scores every knowledge item that has none (default 50): injection spends the Knowledge base on scored items only,
+ * so a test of the base window scores its items first. A test of unscored knowledge leaves them alone. */
+export function scoreAll(store: Store, score = 50): void {
+  store.db.prepare("UPDATE knowledge SET score = ? WHERE score IS NULL").run(score);
+}

@@ -3,6 +3,7 @@ import { sourceSeededMemory, memoryFiles, type NotingAgentInput } from "../../so
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { tokens } from "../../../src/core/render/index.ts";
+import { scoreAll } from "../../support/seed.ts";
 import { submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
 function fixture(agent?: (input: NotingAgentInput) => Promise<void>) {
@@ -19,9 +20,11 @@ function fixture(agent?: (input: NotingAgentInput) => Promise<void>) {
   tools.find(tool => tool.name === "note")!.execute({ title: "Rule", sources: `[T${turn.id}#E1] rule` });
   const content = { text: "word ".repeat(5_200), category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "test" };
   expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", ...content })).toContain("committed");
+  scoreAll(memory.store); // the Knowledge base carries scored items
   // Derive an exact 5,000-token Knowledge window from the real pool policy.
   // The oversized body then exercises omission without a retired fixed allowance.
   setKnowledgeCapacity(memory, 5_000);
+  memory.config.compaction.temporaryTokens = 0; // omission from the base window, not a title or an unscored item in the temporary allowance
   const target = { sessionId: s.id, branch: "main", headTurnId: turn.id };
   const freeze = (extra = {}) => freezeNoting(memory.store, { ...target, ...extra }, memory.config);
   return { memory, tools, content, target, freeze };
@@ -84,6 +87,7 @@ test("N material shows each knowledge body's cap-check token count; injection do
   try {
     const body = "Short rule. ".repeat(40);
     expect(f.tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", ...f.content, text: body })).toContain("committed");
+    scoreAll(f.memory.store);
     setKnowledgeCapacity(f.memory, 20_000);
     const material = f.freeze().prepared!.text;
     expect(material).toContain(`[constraint/project] (${tokens(body)}/${f.memory.config.writing.bodyTokens} tokens) Fixture title\n${body}`);

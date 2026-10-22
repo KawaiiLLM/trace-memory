@@ -9,6 +9,7 @@ import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import fixture from "../../fixtures/noting/turns.json";
 import memories from "../../fixtures/noting/facts.json";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
+import { scoreAll } from "../../support/seed.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
@@ -369,6 +370,8 @@ test("64c: no knowledge category bypasses the cap, newer commits are kept, and o
   // whole-item omission. Use the real capacity policy rather than empty knowledge.
   memory.close(); open();
   setKnowledgeCapacity(memory, 3_000);
+  scoreAll(memory.store); // the Knowledge base carries scored items
+  memory.config.compaction.temporaryTokens = 0; // this test is about the base window: no titles
   const cap = 3_000;
   const injection = memory.injection({ sessionId, branch: "main", headTurnId: first.id });
   const text = injection.text;

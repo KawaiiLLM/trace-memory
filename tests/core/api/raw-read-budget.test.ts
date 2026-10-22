@@ -46,7 +46,7 @@ const target = (): TaskTarget => ({ sessionId: base.sessionId, branch: base.bran
 test("79 item 2: compact's Raw span hydrates a bounded prefix, not the whole path or backlog", () => {
   const copy = backlogCopy("compact.db");
   const memory = TraceMemory(copy, async () => { throw new Error("no model in this test"); },
-    { compaction: { rawTokens: 5_000, factsTokens: 100, sharedAllowanceTokens: 100, temporaryTokens: 100 } });
+    { compaction: { rawTokens: 5_000, factsTokens: 100, temporaryTokens: 100 } });
   const counter = countSourceReads();
   try {
     const pendingTotal = memory.pendingEntries(base.sessionId, base.branch, base.headTurnId).length;

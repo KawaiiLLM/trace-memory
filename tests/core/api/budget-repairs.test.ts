@@ -2,7 +2,7 @@
 // and for receipts too. Reduce the task and re-freeze, or leave it pending with a capacity error; never
 // receipt an overage and run anyway.
 import { expect, test } from "vitest";
-import { receiptCommit } from "../../support/seed.ts";
+import { receiptCommit, scoreAll } from "../../support/seed.ts";
 import { sourceSeededMemory, tokens, renderEntry, type NotingAgentInput , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { renderFact, renderKnowledgeDiff } from "../../../src/core/render/index.ts";
@@ -26,7 +26,7 @@ function seeded(config: Record<string, unknown> = {}) {
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });
   const tools = m.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ title: "Review evidence", sources: `[T${t.id}#E1] ${text}`, ...extra });
-  const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] });
+  const knowledge = (text: string) => { const receipt = tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] }); scoreAll(m.store); return receipt; };
   return { m, calls, s, t, note, knowledge };
 }
 
@@ -47,7 +47,7 @@ test("92: fresh N has separate fact and knowledge windows without reviving C pro
     const knowledgeReceipts = input.material.receipts.filter(receipt => receipt.includes(" knowledge; expand:"));
     expect(tokens(compactText({ facts: input.material.facts, receipts: factReceipts }))).toBeLessThanOrEqual(f.m.config.compaction.factsTokens);
     expect(tokens(injectionText({ knowledge: input.material.knowledge, receipts: knowledgeReceipts })))
-      .toBeLessThanOrEqual(f.m.knowledgeBudgets().injection + f.m.config.compaction.sharedAllowanceTokens);
+      .toBeLessThanOrEqual(f.m.knowledgeBudgets().injection + f.m.config.compaction.temporaryTokens);
     expect(rawWindowTokens(input.material.entries.map(entry => entry.view), [])).toBeLessThanOrEqual(f.m.config.noting.batchTokens);
     expect(f.m.pendingEntries(f.s.id, "main", f.t.id)).toEqual([]);
   } finally { f.m.close(); }
@@ -69,6 +69,7 @@ test("34c: a knowledge cap that cannot hold a complete foreground item emits not
   const f = seeded();
   try {
     setKnowledgeCapacity(f.m, 5_000);
+    f.m.config.compaction.temporaryTokens = 0; // with a temporary allowance the misfit would show as a title
     f.note("Evidence");
     expect(f.knowledge("A complete rule " + "word ".repeat(6_000))).toContain("committed");
     expect(f.m.inject(f.s.id)).toBe("");
@@ -123,6 +124,7 @@ test("review 2026-09-08: the Receipts heading is charged to the budgets it is em
   const f = seeded();
   try {
     setKnowledgeCapacity(f.m, 5_000);
+    f.m.config.compaction.temporaryTokens = 0; // with a temporary allowance the misfit would show as a title
     f.note("Evidence");
     expect(f.knowledge("word ".repeat(6_000))).toContain("committed");
     // 34c foreground publication emits no omission-only block when no complete item fits.

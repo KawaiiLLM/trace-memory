@@ -170,7 +170,7 @@ test("133: pending Raw has first claim, user words next, and fact titles take on
   } finally { memory.close(); }
 });
 
-test("133: default pending Raw fills its 20k base-plus-temporary window, within the emitted 60k envelope", () => {
+test("133: default pending Raw fills its 20k base-plus-temporary window, within the emitted 50k envelope (the shared allowance is gone)", () => {
   const { memory, session } = setup();
   try {
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: at, userPrompt: "pending source" });
@@ -179,7 +179,7 @@ test("133: default pending Raw fills its 20k base-plus-temporary window, within 
     const source = memory.store.sourcePath(session.id, "main", turn.id);
     const result = memory.compact(session.id, "main", turn.id);
     if ("native" in result) throw new Error("native");
-    expect(result.charged!.envelope).toBe(60_000);
+    expect(result.charged!.envelope).toBe(50_000);
     expect(result.charged!.raw).toBe(10_000);
     const rawCharge = result.charged!.raw + result.charged!.temporary;
     expect(rawCharge).toBeGreaterThan(18_000);

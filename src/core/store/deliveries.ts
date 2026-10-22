@@ -34,7 +34,11 @@ CREATE TABLE IF NOT EXISTS delivery_nodes (
 
 /** What one emitted part carried: exact body versions, canonical state-notice keys, and its own
  * render-time Knowledge cost. */
-export interface DeliveryPart { knowledgeCommitIds: readonly number[]; knowledgeStates: readonly string[]; knowledgeTokens: number }
+export interface DeliveryPart { knowledgeCommitIds: readonly number[]; knowledgeStates: readonly string[]; knowledgeTokens: number;
+  /** Bodies' sibling: versions delivered as a title only (144 §7.4). A title never blocks a later body. */
+  knowledgeTitleCommitIds?: readonly number[];
+  /** What this part charged to the context's one temporary allowance (144 §7.3); `knowledgeTokens` is the base charge. */
+  temporaryTokens?: number }
 
 /** Where a publication is recorded: a Turn, a node key, or neither (the root). `follows` marks the
  * key as a compaction not yet imported and names the native record it follows. */
@@ -48,10 +52,10 @@ export interface PendingNode { key: string | null; compaction?: boolean }
 export interface DeliveryNode { owner: string; sessionId: number | null; branch?: string; headTurnId: number | null;
   pending?: readonly PendingNode[] }
 
-export interface DeliveredState { knowledgeCommitIds: Set<number>; knowledgeStates: Set<string>; knowledgeTokens: number }
+export interface DeliveredState { knowledgeCommitIds: Set<number>; knowledgeTitleCommitIds: Set<number>; knowledgeStates: Set<string>; knowledgeTokens: number; temporaryTokens: number }
 
 export interface DeliveryRow { id: number; owner: string; turnId: number | null; nodeKey: string | null;
-  commits: number[]; states: string[]; tokens: number }
+  commits: number[]; titles: number[]; states: string[]; tokens: number; temporaryTokens: number }
 
 /** One owner's rows by node. A key's rows stay under `byKey` after the key is bound to a Turn. */
 export interface OwnerDeliveries { root: DeliveryRow[]; byTurn: Map<number, DeliveryRow[]>;
@@ -64,18 +68,20 @@ export interface DeliveryCache { row: number; node: number; owners: Map<string, 
 
 export const STATE_KEY = /^[1-9]\d*>[1-9]\d*(?:,[1-9]\d*)*$/;
 
-export const noDelivery = (): DeliveredState => ({ knowledgeCommitIds: new Set(), knowledgeStates: new Set(), knowledgeTokens: 0 });
+export const noDelivery = (): DeliveredState => ({ knowledgeCommitIds: new Set(), knowledgeTitleCommitIds: new Set(), knowledgeStates: new Set(), knowledgeTokens: 0, temporaryTokens: 0 });
 
 /** A state plus some rows. States are shared between nodes, so this copies; without rows it
  * returns the same state. */
 export function withRows(state: DeliveredState, rows: readonly DeliveryRow[] | undefined): DeliveredState {
   if (!rows?.length) return state;
-  const next = { knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeStates: new Set(state.knowledgeStates),
-    knowledgeTokens: state.knowledgeTokens };
+  const next = { knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeTitleCommitIds: new Set(state.knowledgeTitleCommitIds),
+    knowledgeStates: new Set(state.knowledgeStates), knowledgeTokens: state.knowledgeTokens, temporaryTokens: state.temporaryTokens };
   for (const row of rows) {
     for (const id of row.commits) next.knowledgeCommitIds.add(id);
+    for (const id of row.titles) next.knowledgeTitleCommitIds.add(id);
     for (const key of row.states) next.knowledgeStates.add(key);
     next.knowledgeTokens += row.tokens;
+    next.temporaryTokens += row.temporaryTokens;
   }
   return next;
 }

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, compacted } from "../../source-fixture.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
-import { setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
+import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { charge, xmlBlock } from "../../../src/core/render/index.ts";
-import { legacyFacts } from "../../support/seed.ts";
+import { legacyFacts, scoreAll } from "../../support/seed.ts";
 
 const time = "2026-09-06T00:00:00Z";
 const open = () => sourceSeededMemory(":memory:", async () => { throw new Error("allocator calls no worker"); });
@@ -28,6 +28,7 @@ function fixture(extra = { knowledge: 0, facts: 0, raw: 0 }, noted = false, hist
   const k = memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "manual", createdAt: time },
     operations: [{ op: "create", title: "Fixture title", topics: [], handle: "$k", author: "test", text: knowledgeText, category: "constraint", scope: "project", supports: [f.facts[0]!.id], reason: "initial", createdAt: time }] });
   if (!k.ok) throw new Error(JSON.stringify(k));
+  scoreAll(memory.store); // the Knowledge base carries scored items
   return { s, t, f: f.facts[0]!, entries };
 }
 
@@ -39,18 +40,15 @@ function charged(result: ReturnType<typeof memory.compact>) {
 /** Calibrate framing with the real renderers, then create immutable bodies with exact charges. */
 function exactFixture(target: { knowledge: number; facts: number; raw: number }) {
   setKnowledgeInjection(memory, 100_000);
-  setSharedAllowance(memory, 100_000);
   const seed = fixture();
   const floor = charged(memory.compact(seed.s.id, "main", seed.t.id));
   memory.close(); memory = open();
   // Large persisted manual/historical material is read through the fixed 2k entry-view profile.
   setKnowledgeInjection(memory, 100_000);
-  setSharedAllowance(memory, 100_000);
   const result = fixture({ knowledge: target.knowledge - floor.knowledge,
     facts: target.facts - floor.facts, raw: target.raw - floor.raw }, false, true);
   expect(charged(memory.compact(result.s.id, "main", result.t.id))).toMatchObject(target);
   setKnowledgeInjection(memory, 20_000);
-  setSharedAllowance(memory, 20_000);
   return result;
 }
 
@@ -58,7 +56,6 @@ function exactFixture(target: { knowledge: number; facts: number; raw: number })
 test("73: current Knowledge is optional regardless of Dreamer processing state", () => {
   const { s, t } = fixture({ knowledge: 6_000, facts: 0, raw: 0 }, false, true);
   setKnowledgeInjection(memory, 1);
-  setSharedAllowance(memory, 0);
   const result = memory.compact(s.id, "main", t.id);
   expect("native" in result).toBe(false);
   expect(compacted(result)).not.toContain("current complete knowledge");
@@ -68,7 +65,6 @@ test("133/92: pending Raw fits exactly at the temporary boundary; one below omit
   const { s, t, f } = exactFixture({ knowledge: 20_000, facts: 9_000, raw: 1_800 });
   memory.config.compaction.rawTokens = 1_000;
   memory.config.compaction.temporaryTokens = 800;
-  setSharedAllowance(memory, 0);
   const fitted = memory.compact(s.id, "main", t.id);
   if ("native" in fitted) throw new Error(fitted.reason);
   expect(fitted.charged).toMatchObject({ knowledge: 20_000, facts: 9_000, raw: 1_000, temporary: 800 });
@@ -87,23 +83,7 @@ test("133/92: pending Raw fits exactly at the temporary boundary; one below omit
   expect(memory.compact(s.id, "main", t.id)).toEqual(short);
 });
 
-test.each([21_000, 35_000])("133: Knowledge using all its shared allowance (%i tokens) leaves Raw's temporary allowance independent", knowledge => {
-  const { s, t, f } = exactFixture({ knowledge, facts: 9_000, raw: 1_800 });
-  memory.config.compaction.rawTokens = 1_000;
-  memory.config.compaction.temporaryTokens = 800;
-  setSharedAllowance(memory, knowledge - 20_000);
-  const result = memory.compact(s.id, "main", t.id);
-  if ("native" in result) throw new Error(result.reason);
-  expect(result.charged).toMatchObject({ knowledge, facts: 9_000, raw: 1_000, temporary: 800 });
-  expect(result.supplied.factIds).toContain(f.id);
-  expect(result.supplied.entries).toHaveLength(1);
-  expect(result.truncated).toBeUndefined();
-  const charged = result.charged!;
-  expect(charged.knowledge + charged.facts + charged.raw + charged.temporary).toBeLessThanOrEqual(charged.envelope);
-});
-
-
-test("92: a historical unconsolidated fact stays eligible but cannot borrow shared allowance", () => {
+test("92: a historical unconsolidated fact stays eligible but cannot spend the Knowledge base", () => {
   const { s, t } = exactFixture({ knowledge: 5_000, facts: 9_000, raw: 1_800 });
   setKnowledgeInjection(memory, 0);
   const raw = memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeId: "history", nativeLineage: "fixture",
@@ -123,9 +103,8 @@ test("92: a historical unconsolidated fact stays eligible but cannot borrow shar
 
 test("92: processed Raw uses only its base remainder; facts independently keep their base", () => {
   // The old Raw view needs 1,800 tokens, more than the 1k base after a newer pending view.
-  // Facts remain newest-first and cannot spend shared allowance.
+  // Facts remain newest-first and keep their own base.
   const { s, t, f } = exactFixture({ knowledge: 20_000, facts: 9_000, raw: 1_800 });
-  setSharedAllowance(memory, 50_000);
   const primaryEntry = memory.store.sourcePath(s.id, "main", t.id)[0]!;
   expect(memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
     entryIds: [primaryEntry.id], facts: [] }).ok).toBe(true);
@@ -180,7 +159,6 @@ test("32e old pending holes and fully bound facts survive when final Raw does no
   ]);
   const full = memory.compact(s.id, "main", later.id);
   memory.config.compaction.rawTokens = charged(full).raw;
-  memory.config.compaction.sharedAllowanceTokens = 0;
   setKnowledgeInjection(memory, 0);
   const result = memory.compact(s.id, "main", later.id), text = compacted(result);
   for (const marker of ["partly covered", "fully bound fact", "old pending fact hole"]) expect(text).toContain(marker);

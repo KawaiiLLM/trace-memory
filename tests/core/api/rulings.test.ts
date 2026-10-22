@@ -23,7 +23,7 @@ import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-bud
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { dreamerFixture as makeDreamerFixture, scriptedDreamer, writeCurateBatch, type DreamerScript } from "../../support/dreamer.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
-import { receiptCommit } from "../../support/seed.ts";
+import { receiptCommit, scoreAll } from "../../support/seed.ts";
 import { block as workspaceBlock, workspaceBatch } from "../../support/workspace.ts";
 import { applyWorkspace, checkWorkspace } from "../../../src/core/workspace/index.ts";
 import { resolveCcHostConfig } from "../../../src/hosts/cc/config.ts";
@@ -85,17 +85,15 @@ beforeEach(() => {
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
-/** Tight-budget cases bound both independent allowances explicitly; no window can borrow a base. */
-const compactionWindows = (knowledge: number, facts: number, raw: number, allowance = 0, temporary = 0) => {
+/** Tight-budget cases bound the one temporary allowance explicitly; no window can borrow a base. */
+const compactionWindows = (knowledge: number, facts: number, raw: number, temporary = 0) => {
   setKnowledgeInjection(memory, Math.max(0, knowledge));
   memory.config.compaction.factsTokens = facts;
   memory.config.compaction.rawTokens = raw;
-  memory.config.compaction.sharedAllowanceTokens = allowance;
   memory.config.compaction.temporaryTokens = temporary;
 };
 const defaultWindows = () => compactionWindows(memory.knowledgeBudgets().injection,
-  DEFAULT_CONFIG.compaction.factsTokens, DEFAULT_CONFIG.compaction.rawTokens, DEFAULT_CONFIG.compaction.sharedAllowanceTokens,
-  DEFAULT_CONFIG.compaction.temporaryTokens);
+  DEFAULT_CONFIG.compaction.factsTokens, DEFAULT_CONFIG.compaction.rawTokens, DEFAULT_CONFIG.compaction.temporaryTokens);
 /** The per-window accounting of one custom replacement (28a item 6). */
 const charged = (result: ReturnType<typeof memory.compact>) => {
   if ("native" in result) throw new Error(`expected a custom replacement, got: ${result.reason}`);
@@ -1308,7 +1306,7 @@ test("73/133: core material uses independent windows, truncates newest-first and
     role: "assistant", text: "PENDING RAW", raw: "", calls: [] });
   const full = memory.compact(s.id, "main", t.id);
   const text = compacted(full), windows = charged(full);
-  expect(windows.envelope).toBe(60_000);
+  expect(windows.envelope).toBe(50_000); // three bases and the one temporary allowance (144)
   expect(windows.knowledge + windows.facts + windows.raw + windows.temporary).toBeLessThanOrEqual(windows.envelope);
   for (const marker of ["OLDER FACT", "RECENT FACT", "PENDING RAW", "EXTRACTED RAW"]) expect(text).toContain(marker);
   memory.config.render.episodicBlockTokens = 40;
@@ -1541,6 +1539,8 @@ test("64c: the knowledge cap remains hard and recency, not category, selects who
     .execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text, category, scope: "project", supports: ["F1"] })).toContain('"committed"');
   for (let i = 0; i < 6; i++) write("constraint", `constraint ${i} ` + "word ".repeat(1_000));
   write("reference", "reference tail");
+  scoreAll(memory.store); // the Knowledge base carries scored items
+  memory.config.compaction.temporaryTokens = 0; // the base cap is hard; with a temporary allowance a misfit would show as a title
   const cap = 5_000;
   setKnowledgeCapacity(memory, cap);
   const injected = memory.inject(s.id);

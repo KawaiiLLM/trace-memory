@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { memoryFiles } from "../../source-fixture.ts";
-import { fact as seedFact, fixtureTitle, legacyFacts, receiptCommit } from "../../support/seed.ts";
+import { fact as seedFact, fixtureTitle, legacyFacts, receiptCommit, scoreAll } from "../../support/seed.ts";
 import { readFileSync } from "node:fs";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { readFacade } from "../../../src/core/api/read.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION , hydrate } from "../../source-fixture.ts";
-import { setKnowledgeCapacity, setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
+import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { charge, expandList } from "../../../src/core/render/index.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
 import { curateWrite } from "../../support/dreamer.ts";
@@ -51,6 +51,7 @@ function knowledge(sessionId: number, factId: number, category: "constraint" | "
     operations: [{ op: "create", title: fixtureTitle(text), topics, reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
   });
   if (!result.ok) throw new Error(JSON.stringify(result));
+  scoreAll(memory.store); // the Knowledge base carries scored items
   return result.committed[0]!.knowledgeId;
 }
 function populated() {
@@ -67,13 +68,12 @@ const charged = (result: ReturnType<typeof memory.compact>) => {
 /** 133: tight cases bound both independent allowances, without borrowing any other base. */
 const setWindows = (knowledge: number, facts: number, raw: number, allowance = 0) => {
   setKnowledgeCapacity(memory, Math.max(3, knowledge));
-  Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw, sharedAllowanceTokens: allowance, temporaryTokens: allowance });
+  Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw, temporaryTokens: allowance });
 };
 const defaultWindows = () => {
   memory.setKnowledgeBudget("global", 4_000);
   memory.setKnowledgeBudget("project", 15_000);
   memory.setKnowledgeBudget("session", 1_000);
-  memory.config.compaction.sharedAllowanceTokens = 10_000;
   memory.config.compaction.factsTokens = 10_000;
   memory.config.compaction.rawTokens = 10_000;
   memory.config.compaction.temporaryTokens = 10_000;
@@ -100,7 +100,6 @@ test("118 foreground delivery charges its rendered Knowledge without charging th
   const windowText = baseline.text.split("\n\n").slice(1).join("\n\n");
   const capacity = tokens(windowText);
   setKnowledgeInjection(memory, capacity);
-  setSharedAllowance(memory, 0);
   const fitted = memory.injection(s.id);
   expect(fitted.knowledgeCommitIds).toEqual(baseline.knowledgeCommitIds);
   expect(fitted.knowledgeTokens).toBe(capacity);
@@ -149,6 +148,7 @@ test("64c category display and commit recency retain whole newer items; lines ar
   // 34c: the foreground cap is hard, and a zero remainder emits neither a clipped item nor an
   // omission-only block. Receipt accounting for compaction and worker material remains separate.
   setKnowledgeCapacity(memory, 5_000);
+  memory.config.compaction.temporaryTokens = 0; // with a temporary allowance the misfit would show as a title
   expect(memory.inject(s.id)).toBe("");
   // A binding cap drops the oldest commits regardless of category; receipts grant no body visibility.
   const guidePrefix = `${readingGuide(s.id, canonicalToolNames)}\n\n`;
@@ -358,7 +358,7 @@ test("23 conversation-dense acceptance, rescaled by 73: a dozen long replies fit
   const view = (entry: Parameters<typeof renderEntry>[0]) => renderEntry(entry, memory.config.render, memory.resultText).content;
   const total = (views: string[]) => tokens(views.join("\n\n"));
   const capacity = memory.knowledgeBudgets().injection + memory.config.compaction.factsTokens + memory.config.compaction.rawTokens
-    + memory.config.compaction.sharedAllowanceTokens;
+    + memory.config.compaction.temporaryTokens;
   // Long replies with few tool calls: the shape the retired compact-only view handled.
   const dozen = dense(12, 1_000);
   memory.store.appendToolCall({ turnId: dozen.parent, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
@@ -474,7 +474,6 @@ test("64c/92: the independent facts window bounds history while Knowledge and Ra
     role: "assistant", text: "word ".repeat(1_940), raw: "", calls: [] });
   const pending = hydrate(memory.pendingEntries(s.id, "main", t.id), memory.store);
   expect(pending).toHaveLength(10);
-  setSharedAllowance(memory, 20_000); // measure the actual pending Raw cost before isolating its window
   // Exclude processed-Raw refill: carrying the original user would cover every fact's sources,
   // making the facts-window assertion vacuous rather than exercising independent history pressure.
   const assemble = readFacade(memory.store, memory.config).compact;
@@ -791,7 +790,7 @@ const entry = (sessionId: number, turnId: number, nativeId: string, text: string
   memory.appendEntry({ sessionId, nativeLineage: "x", nativeId, turnId, role: "assistant", text, raw: "", calls: [] });
 
 // 133 moves episodic borrowing to temporary; the full-fact base stays independent.
-test("92/133: Knowledge uses shared allowance while full facts remain independently capped at 10k", () => {
+test("92/133: Knowledge fills its base while full facts remain independently capped at 10k", () => {
   const s = session(), t = turn(s.id, "head");
   const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
   for (let i = 0; i < 9; i++) for (let part = 0; part < 2; part++)
@@ -804,7 +803,7 @@ test("92/133: Knowledge uses shared allowance while full facts remain independen
   expect(text).toContain("older facts; expand:");
   expect(windows.knowledge).toBeGreaterThan(17_000);
   expect(windows.raw).toBeGreaterThan(5_000);
-  expect(windows.envelope).toBe(60_000);
+  expect(windows.envelope).toBe(50_000);
   expect(windows.knowledge + windows.facts + windows.raw + windows.temporary).toBeLessThanOrEqual(windows.envelope);
   expect(facts.some(fact => text.includes(`[F${fact.id}]`))).toBe(true);
   expect(facts.some(fact => !text.includes(`[F${fact.id}]`))).toBe(true);

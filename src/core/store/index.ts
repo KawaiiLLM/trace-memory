@@ -14,7 +14,7 @@ export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, Pendin
 import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
-import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
+import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
 import { knowledgeTitle, tokens } from "../render/index.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import type {
@@ -757,7 +757,8 @@ function toFact(row: any): Fact {
 }
 
 function toKnowledge(row: any): Knowledge {
-  return { id: row.id, projectId: row.project_id, originSessionId: row.origin_session_id, author: row.author };
+  return { id: row.id, projectId: row.project_id, originSessionId: row.origin_session_id, author: row.author,
+    score: row.score === null || row.score === undefined ? null : Number(row.score) };
 }
 
 function toKnowledgeRevision(row: any): KnowledgeRevision {
@@ -2515,7 +2516,8 @@ export class Store {
       : withRows(noDelivery(), owner.root);
     for (const pending of node.pending ?? [])
       state = withRows(pending.compaction ? noDelivery() : state, pending.key === null ? undefined : owner.byKey.get(pending.key));
-    return { knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeStates: new Set(state.knowledgeStates), knowledgeTokens: state.knowledgeTokens };
+    return { knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeTitleCommitIds: new Set(state.knowledgeTitleCommitIds),
+      knowledgeStates: new Set(state.knowledgeStates), knowledgeTokens: state.knowledgeTokens, temporaryTokens: state.temporaryTokens };
   }
 
   /** The newest delivery row of an owner; a publisher compares it before recording. */
@@ -2532,23 +2534,27 @@ export class Store {
       throw new Error("a pending compaction's delivery needs its key and the record it follows");
     for (const part of parts) {
       if (!part.knowledgeCommitIds.every(id => Number.isSafeInteger(id) && id > 0) || !part.knowledgeStates.every(key => STATE_KEY.test(key))
-          || !Number.isSafeInteger(part.knowledgeTokens) || part.knowledgeTokens < 0) throw new Error("invalid delivery part");
+          || !Number.isSafeInteger(part.knowledgeTokens) || part.knowledgeTokens < 0
+          || !(part.knowledgeTitleCommitIds ?? []).every(id => Number.isSafeInteger(id) && id > 0)
+          || !Number.isSafeInteger(part.temporaryTokens ?? 0) || (part.temporaryTokens ?? 0) < 0) throw new Error("invalid delivery part");
     }
-    const rows = parts.filter(part => part.knowledgeCommitIds.length || part.knowledgeStates.length || part.knowledgeTokens);
+    const rows = parts.filter(part => part.knowledgeCommitIds.length || part.knowledgeStates.length || part.knowledgeTokens
+      || part.knowledgeTitleCommitIds?.length || part.temporaryTokens);
     if (!rows.length) return [];
     return this.transaction(() => {
       if (target.turnId != null) {
         const host = this.db.prepare("SELECT s.host FROM turns t JOIN sessions s ON s.id = t.session_id WHERE t.id = ?").get(target.turnId) as { host: string } | undefined;
         if (host?.host !== target.owner) throw new Error(`delivery Turn ${target.turnId} does not belong to ${target.owner}`);
       }
-      const commits = [...new Set(rows.flatMap(part => part.knowledgeCommitIds))];
+      const commits = [...new Set(rows.flatMap(part => [...part.knowledgeCommitIds, ...part.knowledgeTitleCommitIds ?? []]))];
       const known = Number((this.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions WHERE id IN (SELECT value FROM json_each(?))")
         .get(JSON.stringify(commits)) as { count: number }).count);
       if (known !== commits.length) throw new Error("delivery names an unknown knowledge version");
-      const insert = this.db.prepare(`INSERT INTO knowledge_deliveries(owner, turn_id, node_key, follows, commits, states, knowledge_tokens, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+      const insert = this.db.prepare(`INSERT INTO knowledge_deliveries(owner, turn_id, node_key, follows, commits, states, knowledge_tokens, titles, temporary_tokens, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       return rows.map(part => Number(insert.run(target.owner, target.turnId ?? null, target.nodeKey ?? null, target.follows ?? null,
-        JSON.stringify(part.knowledgeCommitIds), JSON.stringify(part.knowledgeStates), part.knowledgeTokens, createdAt).lastInsertRowid));
+        JSON.stringify(part.knowledgeCommitIds), JSON.stringify(part.knowledgeStates), part.knowledgeTokens,
+        JSON.stringify(part.knowledgeTitleCommitIds ?? []), part.temporaryTokens ?? 0, createdAt).lastInsertRowid));
     });
   }
 
@@ -2932,11 +2938,12 @@ export class Store {
   }
 
   private readDeliveryRows(where: string, ...values: (string | number)[]): DeliveryRow[] {
-    return (this.db.prepare(`SELECT id, owner, turn_id, node_key, commits, states, knowledge_tokens FROM knowledge_deliveries
+    return (this.db.prepare(`SELECT id, owner, turn_id, node_key, commits, titles, states, knowledge_tokens, temporary_tokens FROM knowledge_deliveries
       WHERE ${where} ORDER BY id`).all(...values) as { id: number; owner: string; turn_id: number | null; node_key: string | null;
-      commits: string; states: string; knowledge_tokens: number }[]).map(row => ({ id: Number(row.id), owner: row.owner,
+      commits: string; titles: string; states: string; knowledge_tokens: number; temporary_tokens: number }[]).map(row => ({ id: Number(row.id), owner: row.owner,
       turnId: row.turn_id === null ? null : Number(row.turn_id), nodeKey: row.node_key, commits: JSON.parse(row.commits) as number[],
-      states: JSON.parse(row.states) as string[], tokens: Number(row.knowledge_tokens) }));
+      titles: JSON.parse(row.titles) as number[], states: JSON.parse(row.states) as string[], tokens: Number(row.knowledge_tokens),
+      temporaryTokens: Number(row.temporary_tokens) }));
   }
 
   /** Bindings of the rows' keys, up to a binding watermark. */

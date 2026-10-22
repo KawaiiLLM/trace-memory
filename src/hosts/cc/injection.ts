@@ -34,35 +34,52 @@ interface EnvelopeHeader {
   slice: readonly [number, number] | null;
   sha256: string;
   knowledgeTokens?: number;
+  /** 144 §7.4: versions carried as a title only, and the temporary allowance the slice charged (§7.3). */
+  titles: number[];
+  temporaryTokens?: number;
 }
-interface WireHeader { d: string; n: string; s: number | null; k: number[]; r: string[]; h: string; t?: number; f?: number[]; e?: number[]; p?: [number, number] }
+interface WireHeader { d: string; n: string; s: number | null; k: number[]; r: string[]; h: string; t?: number; f?: number[]; e?: number[]; p?: [number, number];
+  i?: number[]; u?: number }
 export interface CcInjectionPayload extends Injection { factIds?: number[]; entryIds?: number[]; slice?: [number, number] }
 export interface CcHookOutput { hookSpecificOutput: { hookEventName: "SessionStart"; additionalContext: string };
   /** Internal structured material for the 66 inline-slice transport; never pass to native Hook JSON. */
   transportItems?: TransportItem[];
   transportKnowledgeAllowance?: number;
+  /** What the context's temporary allowance has left (144 §7.3); the base is `transportKnowledgeAllowance`. */
+  transportTemporaryAllowance?: number;
   /** 73 "Truncation is announced in the foreground": Claude Code 2.1.280's hook runner turns this
    * top-level field into a user-visible `hook_system_message`, capped at 4,000 characters. Present
    * only when a slice's transport omitted pending material. */
   systemMessage?: string }
 
 type InjectionMembership = Omit<CcInjectionPayload, "text">;
-const identityCount = (injection: InjectionMembership): number => injection.knowledgeCommitIds.length +
+const identityCount = (injection: InjectionMembership): number => injection.knowledgeCommitIds.length + (injection.knowledgeTitleCommitIds?.length ?? 0) +
   (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0) +
   (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
+
+/** What the header's digest covers: the body, and the accounting that governs later caps. A header with neither
+ * `u` nor `i` keeps the earlier digest, so older carriers still decode. */
+const bodyDigest = (knowledgeTokens: number | undefined, temporaryTokens: number | undefined, titles: readonly number[], body: string): string =>
+  digest(!temporaryTokens && !titles.length
+    ? knowledgeTokens === undefined ? body : JSON.stringify([knowledgeTokens, body])
+    : JSON.stringify([knowledgeTokens ?? null, temporaryTokens ?? null, titles, body]));
 
 /** Shared framing for actual encoding and exact UTF-16 capacity measurement. */
 function injectionFrame(binding: CcVisibleBinding, injection: InjectionMembership, hash: string): string {
   if (injection.knowledgeTokens !== undefined && (!Number.isSafeInteger(injection.knowledgeTokens) || injection.knowledgeTokens < 0))
     throw new Error("invalid Knowledge accounting metadata");
+  if (injection.temporaryTokens !== undefined && (!Number.isSafeInteger(injection.temporaryTokens) || injection.temporaryTokens < 0))
+    throw new Error("invalid temporary allowance accounting metadata");
   const header: WireHeader = { d: binding.db, n: binding.nativeSession, s: binding.coreSession,
     ...(injection.knowledgeTokens === undefined ? {} : { t: injection.knowledgeTokens }),
+    ...(injection.temporaryTokens ? { u: injection.temporaryTokens } : {}),
+    ...(injection.knowledgeTitleCommitIds?.length ? { i: injection.knowledgeTitleCommitIds } : {}),
     k: injection.knowledgeCommitIds, r: (injection.knowledgeStates ?? []).map(knowledgeStateKey), h: hash,
     ...(injection.factIds === undefined ? {} : { f: injection.factIds }),
     ...(injection.entryIds === undefined ? {} : { e: injection.entryIds }),
     ...(injection.slice === undefined ? {} : { p: injection.slice }) };
   const framing = `${BEGIN}\n${CC_INJECTION_HEADER}${JSON.stringify(header)}\n\n${END}`;
-  const bound = 300 + (injection.knowledgeTokens === undefined ? 0 : 22) + (injection.slice ? 16 : 0) + 12 * identityCount(injection);
+  const bound = 300 + (injection.knowledgeTokens === undefined ? 0 : 22) + (injection.temporaryTokens ? 22 : 0) + (injection.slice ? 16 : 0) + 12 * identityCount(injection);
   if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
   return framing;
 }
@@ -74,8 +91,7 @@ export function ccInjectionLength(binding: CcVisibleBinding, injection: Injectio
 
 /** Encode exactly one core block. The host envelope is outside core's allowance but has its own bound. */
 export function encodeCcInjection(binding: CcVisibleBinding, injection: CcInjectionPayload): string {
-  const frame = injectionFrame(binding, injection, digest(injection.knowledgeTokens === undefined
-    ? injection.text : JSON.stringify([injection.knowledgeTokens, injection.text])));
+  const frame = injectionFrame(binding, injection, bodyDigest(injection.knowledgeTokens, injection.temporaryTokens, injection.knowledgeTitleCommitIds ?? [], injection.text));
   const boundary = frame.length - END.length - 1;
   return frame.slice(0, boundary) + injection.text + frame.slice(boundary);
 }
@@ -90,9 +106,11 @@ export function decodeCcInjectionHeader(content: unknown, binding: CcVisibleBind
   if (headerEnd < 0) return null;
   let parsed: unknown;
   try { parsed = JSON.parse(content.slice(prefix.length, headerEnd)); } catch { return null; }
-  const keys = object(parsed) ? Object.keys(parsed).filter(key => key !== "t").sort().join(",") : "";
+  const keys = object(parsed) ? Object.keys(parsed).filter(key => key !== "t" && key !== "u" && key !== "i").sort().join(",") : "";
   if (!object(parsed) || (keys !== "d,h,k,n,r,s" && keys !== "d,e,f,h,k,n,r,s" && keys !== "d,e,f,h,k,n,p,r,s") ||
       (Object.hasOwn(parsed, "t") && (!Number.isSafeInteger(parsed.t) || Number(parsed.t) < 0)) ||
+      (Object.hasOwn(parsed, "u") && (!Number.isSafeInteger(parsed.u) || Number(parsed.u) < 0)) ||
+      (Object.hasOwn(parsed, "i") && (!Array.isArray(parsed.i) || !parsed.i.every(positiveId) || new Set(parsed.i).size !== parsed.i.length)) ||
       typeof parsed.d !== "string" || typeof parsed.n !== "string" ||
       !(parsed.s === null || positiveId(parsed.s)) || typeof parsed.h !== "string" || !/^[0-9a-f]{64}$/.test(parsed.h) ||
       !Array.isArray(parsed.k) || !parsed.k.every(positiveId) || new Set(parsed.k).size !== parsed.k.length ||
@@ -108,6 +126,8 @@ export function decodeCcInjectionHeader(content: unknown, binding: CcVisibleBind
   if (!(parsed.s === binding.coreSession || parsed.s === null && binding.coreSession !== null)) return null;
   return { db: parsed.d, native: parsed.n, core: parsed.s, commits: parsed.k as number[], states,
     ...(Object.hasOwn(parsed, "t") ? { knowledgeTokens: parsed.t as number } : {}),
+    ...(Object.hasOwn(parsed, "u") ? { temporaryTokens: parsed.u as number } : {}),
+    titles: Object.hasOwn(parsed, "i") ? parsed.i as number[] : [],
     factIds: keys !== "d,h,k,n,r,s" ? parsed.f as number[] : [],
     entryIds: keys !== "d,h,k,n,r,s" ? parsed.e as number[] : [],
     slice: keys === "d,e,f,h,k,n,p,r,s" ? parsed.p as [number, number] : null, sha256: parsed.h };
@@ -118,7 +138,7 @@ export function decodeCcInjection(content: unknown, binding: CcVisibleBinding): 
   if (!header || typeof content !== "string" || !content.endsWith(suffix)) return null;
   const headerEnd = content.indexOf("\n", `${BEGIN}\n${CC_INJECTION_HEADER}`.length);
   const body = content.slice(headerEnd + 1, -suffix.length);
-  return digest(header.knowledgeTokens === undefined ? body : JSON.stringify([header.knowledgeTokens, body])) === header.sha256 ? header : null;
+  return bodyDigest(header.knowledgeTokens, header.temporaryTokens, header.titles, body) === header.sha256 ? header : null;
 }
 
 type Memory = ReturnType<typeof TraceMemory>;
@@ -221,7 +241,7 @@ const partOf = (output: CcHookOutput | null, visible: CcVisibleBinding): Deliver
   const header = decodeCcInjection(context, visible);
   if (!header) throw new Error("emitted Claude Code carrier failed its own decoding");
   return [{ knowledgeCommitIds: header.commits, knowledgeStates: header.states.map(knowledgeStateKey),
-    knowledgeTokens: header.knowledgeTokens ?? 0 }];
+    knowledgeTokens: header.knowledgeTokens ?? 0, knowledgeTitleCommitIds: header.titles, temporaryTokens: header.temporaryTokens ?? 0 }];
 };
 
 /** 97 "Record at emission": whatever parts `emit` returns are recorded at their node before the
@@ -252,7 +272,7 @@ async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput,
     const { head, at, injection } = selected;
     const output: CcHookOutput | null = injection.text ? { hookSpecificOutput: { hookEventName: "SessionStart",
       additionalContext: encodeCcInjection(visible, injection) }, transportItems: injection.transportItems,
-      transportKnowledgeAllowance: injection.knowledgeAllowance } : null;
+      transportKnowledgeAllowance: injection.knowledgeAllowance, transportTemporaryAllowance: injection.temporaryAllowance } : null;
     const { outputs, result } = emit(output, visible);
     const parts = outputs.flatMap(value => partOf(value, visible));
     if (parts.length) memory.store.transaction(() => {
@@ -312,6 +332,7 @@ export async function ccPreparedSessionStartInjection(config: ResolvedCcHostConf
       (SELECT IFNULL(MAX(rowid),0) FROM noted_entries) ne,
       (SELECT IFNULL(MAX(id),0) FROM knowledge_revisions) kr,
       (SELECT IFNULL(MAX(rowid),0) FROM knowledge_processed) kp,
+      (SELECT IFNULL(MAX(scored_run),0) FROM knowledge) sr,
       (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) pa,
       (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) pm,
       (SELECT global_tokens || ':' || project_tokens || ':' || session_tokens FROM knowledge_budget_policy WHERE id=1) bp,
@@ -425,6 +446,7 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
     // continue sentence, after the framing; a manual `/compact` gets none.
     const text = COMPACTION_SUMMARY_PREFIX + encodeCcInjection({ db: databaseIdentity(config.dbPath), nativeSession: lineage, coreSession: core }, {
       text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
+      knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds, temporaryTokens: compacted.supplied.temporaryTokens ?? 0,
       knowledgeStates: compacted.supplied.knowledgeStates, factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id) }) +
       COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
     memory.store.transaction(() => {
@@ -434,7 +456,8 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
         throw new Error("the session or its selected path changed while the compaction was built");
       memory.store.recordKnowledgeDelivery({ owner, nodeKey: randomUUID(), follows: leaf }, [{
         knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
-        knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0 }]);
+        knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0, knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds ?? [],
+        temporaryTokens: compacted.supplied.temporaryTokens ?? 0 }]);
     });
     const warning = ccTruncationWarning(compacted.truncated);
     return { text, ...(warning ? { warning } : {}) };

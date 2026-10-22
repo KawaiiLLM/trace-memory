@@ -22,11 +22,16 @@ const knowledgeOrder = (a: Extract<TransportItem, { kind: "knowledge" }>, b: Ext
 const address = (item: TransportItem, sessionId: number | null): string => item.kind === "knowledge" || item.kind === "state" ? `trace://${item.address}`
   : item.kind === "fact" ? `trace://F${item.factId}` : item.kind === "raw" ? `trace://raw/S${sessionId}/${item.address}` : "";
 
+/** Core's selection order for knowledge (144 §7.5): its rank when it ranked the item, otherwise newest commit first. */
+const knowledgeRank = (item: Extract<TransportItem, { kind: "knowledge" }>): number => item.rank ?? -item.commitId;
+/** Whether a knowledge item is charged to the temporary allowance rather than the Knowledge base. */
+const temporaryKnowledge = (item: TransportItem): boolean => item.kind === "knowledge" && item.allowance === "temporary";
+
 /** Transport selection only: core has already selected and rendered whole items. Pack their
  * unchanged texts under the native per-hook limit; never identify members from arbitrary prose.
  * Capacity drops the lowest-priority whole item and names it in a receipt. */
 export function sliceCcInjection(binding: CcVisibleBinding, items: readonly TransportItem[],
-  warning?: string, knowledgeAllowance = Infinity): (CcHookOutput | null)[] {
+  warning?: string, knowledgeAllowance = Infinity, temporaryAllowance = Infinity): (CcHookOutput | null)[] {
   if (binding.coreSession === null && items.some(item => item.kind === "raw"))
     throw new Error("CC Raw transport needs a bound core session");
   const slots: { items: TransportItem[] }[] = Array.from({ length: CC_SLICE_COUNT }, () => ({ items: [] }));
@@ -41,9 +46,10 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   const rank = (item: TransportItem): number => item.kind === "state" ? 0 : item.kind === "knowledge" ? 1
     : item.kind === "raw" ? 2 : item.kind === "fact" ? 3 : 4;
   const ordered = [...items].sort((a, b) => rank(a) - rank(b) ||
-    (a.kind === "knowledge" && b.kind === "knowledge" ? b.commitId - a.commitId : 0));
+    (a.kind === "knowledge" && b.kind === "knowledge" ? knowledgeRank(a) - knowledgeRank(b) : 0));
   const membership = (members: TransportItem[], index: number) => ({
-    knowledgeCommitIds: members.flatMap(item => item.kind === "knowledge" ? [item.commitId] : []),
+    knowledgeCommitIds: members.flatMap(item => item.kind === "knowledge" && item.form !== "title" ? [item.commitId] : []),
+    knowledgeTitleCommitIds: members.flatMap(item => item.kind === "knowledge" && item.form === "title" ? [item.commitId] : []),
     knowledgeStates: members.flatMap(item => item.kind === "state" ? [item.receipt] : []),
     factIds: members.flatMap(item => item.kind === "fact" ? [item.factId] : []),
     entryIds: members.flatMap(item => item.kind === "raw" ? [item.entryId] : []),
@@ -64,12 +70,22 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
       ...(knowledge.length ? [knowledge] : []),
       ...members.filter(item => item.kind !== "state" && item.kind !== "knowledge").map(item => [itemText(item)]),
     ];
-    const knowledgeSections = [
-      ...members.filter(item => item.kind === "state").map(itemText),
-      ...(knowledge.length ? [knowledge.join("")] : []),
-      ...members.filter(item => item.kind === "receipt" && item.knowledge !== false).map(itemText),
-    ];
-    return { membership: { ...membership(members, index), knowledgeTokens: tokens(knowledgeSections.join("\n\n")) },
+    // 144 §7.5: framing is charged by who needs it. The base pays for the window its own items and state notices
+    // make; the temporary allowance pays for everything else the slice's Knowledge adds (its items, the framing only
+    // they bring, and receipts core charged to it) and for the temporary Raw it carries.
+    const knowledgeTokens = (members: TransportItem[]) => {
+      const block = knowledgeBlockParts(knowledgeGroups(members.filter(item => item.kind === "knowledge")), header);
+      const sections = [
+        ...members.filter(item => item.kind === "state").map(itemText),
+        ...(block.length ? [block.join("")] : []),
+        ...members.filter(item => item.kind === "receipt" && item.knowledge !== false).map(itemText),
+      ];
+      return sections.length ? tokens(sections.join("\n\n")) : 0;
+    };
+    const whole = knowledgeTokens(members);
+    const baseCost = knowledgeTokens(members.filter(item => !temporaryKnowledge(item) && !(item.kind === "receipt" && item.allowance === "temporary")));
+    const temporaryCost = whole - baseCost + members.reduce((sum, item) => sum + ((item.kind === "raw" || item.kind === "fact") ? item.charge ?? 0 : 0), 0);
+    return { membership: { ...membership(members, index), knowledgeTokens: baseCost, temporaryTokens: temporaryCost },
       parts: sections.flatMap((section, at) => at ? ["\n\n", ...section] : section) };
   };
   const encode = (members: TransportItem[], index: number) => {
@@ -120,8 +136,8 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     }
     return packed;
   };
-  // Preserve newest-priority admission even though the admitted bodies are placed by category, oldest first.
-  // A rejected older/oversized item cannot evict a newer admitted version.
+  // Preserve rank-order admission even though the admitted bodies are placed by category, oldest first.
+  // A rejected lower-ranked/oversized item cannot evict a higher-ranked admitted version.
   for (const item of ordered) if (item.kind === "knowledge") {
     const packed = packKnowledge([...selected, item]);
     if (!packed) { omit(item); continue; }
@@ -129,18 +145,31 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     packed.forEach((slot, index) => { slots[index] = slot; });
   }
   for (const item of ordered.filter(item => item.kind === "raw" || item.kind === "fact")) if (!tryPlace(item)) omit(item);
-  const knowledgeCost = () => slots.reduce((sum, slot, index) => sum + assemble(slot.items, index).membership.knowledgeTokens, 0);
+  const costs = () => slots.reduce((sum, slot, index) => {
+    const { knowledgeTokens, temporaryTokens } = assemble(slot.items, index).membership;
+    return { base: sum.base + knowledgeTokens, temporary: sum.temporary + temporaryTokens };
+  }, { base: 0, temporary: 0 });
+  const fits = () => { const cost = costs(); return cost.base <= knowledgeAllowance && cost.temporary <= temporaryAllowance; };
   const remove = (item: TransportItem) => {
     const slot = slots.find(slot => slot.items.includes(item))!;
     slot.items.splice(slot.items.indexOf(item), 1);
     omit(item);
   };
-  const lowestKnowledge = () => [...ordered].reverse().find(item => (item.kind === "knowledge" || item.kind === "state")
-    && slots.some(slot => slot.items.includes(item)));
-  // Same admission priorities as character packing: remove oldest bodies before state notices.
-  // Final segment framing belongs to K; host JSON framing and Fact/Raw do not.
-  while (knowledgeCost() > knowledgeAllowance) {
-    const item = lowestKnowledge();
+  const placed = (item: TransportItem) => slots.some(slot => slot.items.includes(item));
+  const lowestBase = () => [...ordered].reverse().find(item => (item.kind === "state" || item.kind === "knowledge" && !temporaryKnowledge(item)) && placed(item));
+  const lowestTemporary = () => [...ordered].reverse().find(item => temporaryKnowledge(item) && placed(item));
+  const lowestKnowledge = () => (costs().base > knowledgeAllowance ? lowestBase() : lowestTemporary()) ?? lowestTemporary() ?? lowestBase();
+  // Same admission priorities as character packing: lowest-ranked first, state notices last. Final segment
+  // framing belongs to K; host JSON framing and Fact/Raw do not. Two loops, base first: removing a slice's last
+  // base item moves its framing to the temporary cost, and removing a temporary item never changes the base cost,
+  // so a temporary item is never evicted for the base cap.
+  while (costs().base > knowledgeAllowance) {
+    const item = lowestBase();
+    if (!item) break;
+    remove(item);
+  }
+  while (costs().temporary > temporaryAllowance) {
+    const item = lowestTemporary();
     if (!item) break;
     remove(item);
   }
@@ -150,23 +179,23 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     while (true) {
       receipt.text = `omitted ${omitted.length} whole items at CC inline capacity; expand: ${expandList(omitted)}`;
       receipt.knowledge = omittedKnowledge;
-      const placed = tryPlace(receipt);
-      if (placed && knowledgeCost() <= knowledgeAllowance) break;
-      if (placed) {
+      const isPlaced = tryPlace(receipt);
+      if (isPlaced && fits()) break;
+      if (isPlaced) {
         const slot = slots.find(slot => slot.items.includes(receipt))!;
         slot.items.splice(slot.items.indexOf(receipt), 1);
       }
-      const retained = placed ? lowestKnowledge() : [...ordered].reverse().find(item => item.kind !== "receipt" &&
+      const retained = isPlaced ? lowestKnowledge() : [...ordered].reverse().find(item => item.kind !== "receipt" &&
         slots.some(slot => slot.items.includes(item)));
       if (!retained) {
-        if (!placed) throw new Error("CC inline envelope cannot carry its omission receipt");
+        if (!isPlaced) throw new Error("CC inline envelope cannot carry its omission receipt");
         break; // No K item remains, and even its omission receipt does not fit this window.
       }
       remove(retained);
     }
   }
   // A window too small even for its pre-existing K receipts emits no K material (73).
-  if (knowledgeCost() > knowledgeAllowance)
+  if (!fits())
     for (const slot of slots) slot.items = slot.items.filter(item => item.kind !== "receipt" || item.knowledge === false);
   const transportWarning = pendingRaw || pendingFacts ? `Trace Memory: inline transport omitted ${[
     ...(pendingRaw ? [`${pendingRaw} pending Raw ${pendingRaw === 1 ? "entry" : "entries"}`] : []),

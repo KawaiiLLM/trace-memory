@@ -22,7 +22,7 @@ export { deliveredView, knowledgeStateKey, noVisibility } from "./visible.ts";
 export type { KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
-import { DEFAULT_DREAMING_TRIGGER_TOKENS, DEFAULT_SHARED_ALLOWANCE_TOKENS } from "../store/processing.ts";
+import { DEFAULT_DREAMING_TRIGGER_TOKENS } from "../store/processing.ts";
 
 import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
@@ -80,7 +80,7 @@ export interface TraceMemoryConfig {
   };
   /** Per-item length caps for every writer (ticket 144), in `tokens()` units. */
   writing: WritingLimits;
-  /** Episodic bases, a Knowledge-only shared allowance, and a separate temporary allowance. */
+  /** Episodic bases and the one temporary allowance of a context (144 §7.3). */
   compaction: {
     factsTokens: number;
     rawTokens: number;
@@ -88,8 +88,6 @@ export interface TraceMemoryConfig {
     userTurns: number;
     titleTurns: number;
     userEntryTokens: number;
-    /** Shared by Knowledge consumers only; pending Raw uses temporaryTokens instead. */
-    sharedAllowanceTokens: number;
   };
 }
 
@@ -119,7 +117,6 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     userTurns: 100,
     titleTurns: 100,
     userEntryTokens: 300,
-    sharedAllowanceTokens: DEFAULT_SHARED_ALLOWANCE_TOKENS,
   },
 };
 
@@ -147,7 +144,9 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "consolidation.maxToolRounds": "Consolidation is retired; remove this key",
   // Ticket 144 stage 4: the Dreamer's tasks are bounded by dreaming.timeoutMs; the only value it ever took was 0.
   "dreaming.maxToolRounds": "the Dreamer has no tool-round limit (each task is bounded by dreaming.timeoutMs); remove this key",
-  "compaction.overflowTokens": "use compaction.sharedAllowanceTokens (a fixed configuration value, default 10,000; no longer derived from the Noting, Consolidation and Dreamer triggers)",
+  "compaction.overflowTokens": "use compaction.temporaryTokens (a fixed configuration value, default 10,000; no longer derived from the Noting, Consolidation and Dreamer triggers)",
+  // Ticket 144 stage 4: one temporary allowance per context replaces the Knowledge-only shared allowance.
+  "compaction.sharedAllowanceTokens": "one temporary allowance, compaction.temporaryTokens, replaces it; remove this key",
   "consolidation.subagentModeDefault": "Consolidation is retired; remove this key",
   "consolidation.knowledgeTokens": "remove it and use Settings to edit the bound database's Global, Project and Session Knowledge budgets",
   "noting.nearThreshold": "remove it; Noting lexical NEAR review no longer exists",
