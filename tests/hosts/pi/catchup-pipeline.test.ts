@@ -114,7 +114,7 @@ for (const success of [true, false]) test(`92: ordinary D ${success ? "success s
   } finally { release(); await h.dispose(); }
 });
 
-test("86: an applied Dreamer batch survives a later terminal failure, with no extra eligibility check", async () => {
+test("86: a kept Dreamer batch survives a later terminal failure, with no extra eligibility check", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerTokens": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -124,19 +124,17 @@ test("86: an applied Dreamer batch survives a later terminal failure, with no ex
     const eligible = vi.spyOn(h.memory, "taskEligibility");
     h.provider(async c => {
       if (!dreaming(c)) return notingFact(c);
-      if (c.messages.length === 1 && c.systemPrompt?.startsWith("# Dreamer") && store.listKnowledgeRevisions().length === 2) { waiting = true; await held; // verify's first request
+      if (c.messages.length === 1 && c.systemPrompt?.startsWith("# Dreamer") && store.listRuns(1).some(r => JSON.parse(r.response ?? "{}").proposed?.length === 1)) { waiting = true; await held; // verify's first request
         return { ...reply(""), stopReason: "error", errorMessage: "terminal D failure after commit" }; }
       return dreamerFiles(c, { curate: block(`update K${initial.knowledgeId}@v1`, { reason: "Update before failure" }, "Maintained rule " + "word ".repeat(120)) }) ?? reply("Done");
     }, { autoStop: false });
     await h.turn(); await vi.waitFor(() => expect(waiting).toBe(true));
-    expect(store.listKnowledgeRevisions()).toHaveLength(2);
-    const revised = store.listKnowledgeRevisions().at(-1)!;
-    expect(revised.parentId).toBe(initial.id);
+    expect(store.listKnowledgeRevisions()).toHaveLength(1); // curate's batch is a proposal: nothing is applied before verify passes
     const before = eligible.mock.calls.length;
     release(); await settle(h);
-    expect(store.listKnowledgeRevisions()).toHaveLength(2);
-    expect(store.listKnowledgeRevisions().at(-1)!.id).toBe(revised.id);
-    expect(store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success", "failure"]); // curate applied, verify failed
+    expect(store.listKnowledgeRevisions()).toHaveLength(1);
+    expect(store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success", "failure"]); // curate kept its proposal, verify failed
+    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "verify", detail: { curateRuns: [expect.any(Number)] } }); // the kept batch survives
     expect(eligible.mock.calls.length).toBe(before);
     eligible.mockRestore();
   } finally { release(); await h.dispose(); }

@@ -1,3 +1,4 @@
+import { confirmEvery } from "../../support/dreamer.ts";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -140,7 +141,7 @@ export function noterReply(conversation: Conversation, plan: { facts?: string; k
   return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content: (step === "1" ? plan.facts : plan.knowledge) ?? "## none\n" } }]);
 }
 /** The scripted Dreamer's side of a run (ticket 144 stage 4), as a model behaves on the wire: call `check`, write the file the latest
- * message names (`## none` for curate and verify, every item 50 for the scorer), stop; a follow-up that names the next batch's file
+ * message names (`## none` for curate, a `## confirm <n>` for every change of verify's change file, every item 50 for the scorer), stop; a follow-up that names the next batch's file
  * is answered the same way. Returns undefined when the model has nothing left to say. */
 export function dreamerFiles(conversation: Conversation, plan: { curate?: string; verify?: string } = {}): Reply | undefined {
   const call = (calls: { id: string; name: string; arguments: JsonObject }[]): Reply => ({ ...reply(""), stopReason: "toolUse",
@@ -154,7 +155,7 @@ export function dreamerFiles(conversation: Conversation, plan: { curate?: string
   if (written.includes(file)) return undefined;
   const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
   return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n"
-    : (/^Task: verify/m.test(report) ? plan.verify : /^Task: curate/m.test(report) ? plan.curate : undefined) ?? "## none\n" } }]);
+    : (/^Task: verify/m.test(report) ? plan.verify ?? confirmEvery(report) : /^Task: curate/m.test(report) ? plan.curate : undefined) ?? "## none\n" } }]);
 }
 /** The requests one scripted Noter batch makes: the write task (check, the facts file, stop, the knowledge file, stop) and the verify task
  * (check, then a stop at each of its two steps). */

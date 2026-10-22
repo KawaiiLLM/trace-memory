@@ -1,19 +1,22 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { RunAgentResult } from "../../src/core/api/index.ts";
 import type { DreamingAgentInput } from "../../src/core/dreaming/index.ts";
 import type { RunAgent, TraceMemory } from "../source-fixture.ts";
 import { REQUEST } from "./noter.ts";
 import { block, workspaceBatch } from "./workspace.ts";
-import { applyWorkspace } from "../../src/core/workspace/index.ts";
+import { applyWorkspace, describeBlock, plan } from "../../src/core/workspace/index.ts";
+import { CURATE_ROTATION, type CurateOperation } from "../../src/core/store/executions.ts";
+import type { Proposal } from "../../src/core/dreaming/changes.ts";
 import type { KnowledgePath, Store } from "../../src/core/store/index.ts";
 import { knowledge as seedKnowledge } from "./seed.ts";
 import { placementOwner } from "../../src/core/store/processing.ts";
 
-/** A scripted Dreamer (ticket 144, stage 4): the stand-in for the model behind `runAgent` in tests that run the real Dreaming
+/** A scripted Dreamer (ticket 144, stages 4 and 5): the stand-in for the model behind `runAgent` in tests that run the real Dreaming
  * tasks. Like a host, it calls `check`, writes the file `check` names, meets the stop hook after every pass and follows the next
  * batch it is handed. The test states only WHAT each file holds: file text, or a list of texts when the first attempt is expected
- * to fail the check and the repair should say something else. A curate category or a verify file with no entry writes `## none`;
- * a classify pass with no entry scores every item 50. */
+ * to fail the check and the repair should say something else. A curate category with no entry writes `## none`; a verify file with
+ * no entry confirms every numbered change (stage 5 §9.8), and a script a test supplies is used exactly as given; a classify pass with no
+ * entry scores every item 50. */
 type Text = string | readonly string[] | ((message: string) => string);
 export interface DreamerScript {
   /** The curate batch files by category. */
@@ -30,6 +33,13 @@ export interface DreamerScript {
 
 const FILE: Record<string, RegExp> = { curate: /File: (\S+?\.md)/, verify: /Your file: (\S+?\.md)/, classify: /File: (\S+?\.md)/ };
 const CATEGORY = /category (\w+)/;
+
+/** The default verify file: `## confirm <n>` for every change numbered in the change file the report names. */
+export const confirmEvery = (report: string): string => {
+  const changes = /Change file: (\S+?\.md)/.exec(report)?.[1];
+  const numbers = changes ? [...readFileSync(changes, "utf8").matchAll(/^## (\d+) · /gm)].map(match => match[1]!) : [];
+  return numbers.length ? numbers.map(n => `## confirm ${n}\n`).join("\n") : "## none\n";
+};
 
 export function scriptedDreamer(script: DreamerScript = {}) {
   script.curate ??= {}; // a test may fill in a batch after the run is built
@@ -52,7 +62,7 @@ export function scriptedDreamer(script: DreamerScript = {}) {
     for (let turn = 0; turn < 50; turn++) {
       const file = FILE[input.task]!.exec(report)![1]!;
       const text = input.task === "curate" ? (() => { const category = CATEGORY.exec(report)![1]!; return pick(`curate:${category}`, script.curate?.[category], report); })()
-        : input.task === "verify" ? pick("verify", script.verify, report)
+        : input.task === "verify" ? pick("verify", script.verify ?? confirmEvery(report), report)
         : (() => {
             const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
             const pass = Number(/pass (\d+)/.exec(report)?.[1] ?? 1);
@@ -79,7 +89,17 @@ export function dreamerFixture(memories: TraceMemory[], script: DreamerScript = 
   b.memory.config.dreaming.triggerTokens = 1;
   const target = { sessionId: b.session.id, branch: "main", headTurnId: b.path.headTurnId!, model: "scripted" };
   const dream = () => b.memory.dream(target);
-  return { ...b, dreamer, target, dream, next: (agent: RunAgent) => { runners.push(agent); } };
+  /** Reach a later operation by real cycles (stage 5 §9.8): Noter-written items that reach the trigger, then one empty `dream()`, until
+   * the project's next operation is `operation`. Never seeds run records or edits the rotation. */
+  const cycleTo = async (operation: CurateOperation) => {
+    for (let guard = 0; b.store.nextCurateOperation(b.project.id) !== operation; guard++) {
+      if (guard > CURATE_ROTATION.length) throw new Error(`cycleTo(${operation}) did not converge`);
+      noterWrittenItem(b.memory, b.path as never, b.existingFact(`Cycle fact ${guard}`).id);
+      const result = await dream();
+      if (result.outcome !== "success") throw new Error(`cycleTo: a cycle ended ${result.outcome}`);
+    }
+  };
+  return { ...b, dreamer, target, dream, cycleTo, next: (agent: RunAgent) => { runners.push(agent); } };
 }
 export type DreamerFixture = ReturnType<typeof dreamerFixture>;
 
@@ -92,43 +112,63 @@ export async function writeCurateBatch(input: DreamingAgentInput, text: string):
 }
 
 /** Part 4b: the vehicle for tests whose subject is what a merge, split, archive or update leaves in the Store, not the Dreamer's run.
- * It applies a curate (or verify) file to a path through the same check and `commitWorkspaceRun` a Dreamer's pass uses, and throws on a
- * file that fails its check. Each operation still commits or is refused on its own: read `blocks` for a stale base. */
-export function curateNow(memory: { store: Store }, path: KnowledgePath, text: string, kind: "curate" | "verify" = "curate") {
-  const result = applyWorkspace(memory.store, { kind, sessionId: path.sessionId, path, file: { name: `${kind}.md`, text } });
-  if (!result.ok) throw new Error(result.problems.join("\n"));
-  return result;
+ * It applies a curate file to a path through the same check and `commitWorkspaceRun` a Dreamer's pass uses, and throws on a file that
+ * fails its check. A curate file holds one operation (stage 5 §3.5): `operation` names it, or a text that mixes operations is split into
+ * consecutive single-operation files, applied in order. Each operation still commits or is refused on its own: read `blocks` for a stale base. */
+export function curateNow(memory: { store: Store }, path: KnowledgePath, text: string, operation?: CurateOperation) {
+  const groups: { operation: CurateOperation; text: string }[] = [];
+  if (operation) groups.push({ operation, text });
+  else for (const segment of text.split(/^(?=## )/m).filter(part => part.trim())) {
+    const op = /^## (\w+)/.exec(segment)?.[1] as CurateOperation;
+    if (groups.at(-1)?.operation === op) groups.at(-1)!.text += segment; else groups.push({ operation: op, text: segment });
+  }
+  const done = groups.map(group => {
+    const result = applyWorkspace(memory.store, { kind: "curate", operation: group.operation, sessionId: path.sessionId, path, file: { name: `curate-${group.operation}.md`, text: group.text } });
+    if (!result.ok) throw new Error(result.problems.join("\n"));
+    return result;
+  });
+  return { ok: true as const, runId: done.at(-1)!.runId, factIds: {}, blocks: done.flatMap(result => result.blocks) };
 }
 /** `K<id>@v<n>` of a committed version. */
 export const versionRef = (store: Store, knowledgeId: number, commit: number) => `K${knowledgeId}@v${store.versionOrdinal(knowledgeId, commit)}`;
 
 type Operation = import("../../src/core/store/index.ts").KnowledgeOperationInput;
-/** The store-level operations a Dreamer's pass would commit, written as one curate file and applied with `curateNow`. For tests that seed
- * lineage (updates, merges, splits) and need the versions back: every block must apply. Returns the committed versions in block order
- * (a split: the primary part, then its children). An `archive` of kind `budget` is written as `invalid`. */
+/** The store-level operations a Dreamer's pass would commit, written as curate files and applied with `curateNow`. For tests that seed
+ * lineage (updates, merges, splits) and need the versions back: every block must apply. Returns the committed versions in operation order
+ * (a split: the primary part, then its children). Dreaming has no create (stage 5): a `create` goes straight to the Store write path
+ * (`commitDreamerOps`), as the Noter's would. A mixed list becomes consecutive single-operation files. An `archive` of kind `budget` is
+ * written as `invalid`. */
 export function curateWrite(memory: { store: Store }, path: KnowledgePath, operations: readonly Operation[]): { knowledgeId: number; commit: number }[] {
   const { store } = memory;
   const ref = (knowledgeId: number, commit: number) => versionRef(store, knowledgeId, commit);
   const F = (ids: readonly number[]) => ids.map(id => `F${id}`).join(", ");
   const shared = (op: { category: string; scope: string; topics: readonly string[]; supports: readonly number[]; reason: string }) =>
     ({ category: op.category, scope: op.scope, topics: op.topics.join(", "), ...(op.supports.length ? { supports: F(op.supports) } : {}), reason: op.reason });
-  const blocks = operations.map(op => {
+  const blockOf = (op: Operation): string => {
     if (op.op === "update") return block(`update ${ref(op.knowledgeId, op.baseCommit)}`, { ...(op.title ? { title: op.title } : {}), ...shared(op) }, op.text);
     if (op.op === "merge") return block(`merge ${ref(op.intoKnowledgeId, op.intoBaseCommit)}`, { absorb: op.absorb.map(parent => ref(parent.knowledgeId, parent.baseCommit)).join(", "), ...(op.title ? { title: op.title } : {}), ...shared(op) }, op.text);
     if (op.op === "split") return block(`split ${ref(op.knowledgeId, op.baseCommit)}`, shared(op), op.text) + op.children.map(child =>
       `\n### child\ntitle: ${child.title}\ncategory: ${child.category}\nscope: ${op.scope}\ntopics: ${child.topics.join(", ")}\nsupports: ${F(op.supports.length ? op.supports : store.knowledgeRevision(op.baseCommit)!.supports)}\nreason: ${op.reason}\n\n${child.text}\n`).join("");
     if (op.op === "archive") return block(`archive ${ref(op.knowledgeId, op.baseCommit)}`, { kind: op.kind === "inadmissible" ? "inadmissible" : "invalid", reason: op.reason },
       op.text ?? "The user withdrew this and nothing replaces it; the grounds are in the cited evidence.");
-    if (op.op === "create") return block("create", { title: op.title ?? "Fixture title", ...shared(op) }, op.text);
     throw new Error(`curateWrite: unsupported operation ${(op as { op: string }).op}`);
-  });
-  const result = curateNow(memory, path, blocks.join("\n"));
-  const refused = result.blocks.filter(entry => entry.status !== "applied");
-  if (refused.length) throw new Error(refused.map(entry => `${entry.block}: ${entry.reason}`).join("\n"));
-  return result.blocks.flatMap(entry => entry.versions).map(version => {
-    const [, id, ordinal] = /^K(\d+)@v(\d+)$/.exec(version)!;
-    return { knowledgeId: Number(id), commit: store.resolveVersionOrdinal(Number(id), Number(ordinal)) };
-  });
+  };
+  const out: { knowledgeId: number; commit: number }[] = [];
+  for (let at = 0; at < operations.length;) {
+    const op = operations[at]!;
+    if (op.op === "create") { out.push(...commitDreamerOps(memory, path, [op])); at++; continue; }
+    let end = at;
+    while (end < operations.length && operations[end]!.op === op.op) end++;
+    const result = curateNow(memory, path, operations.slice(at, end).map(blockOf).join("\n"), op.op);
+    const refused = result.blocks.filter(entry => entry.status !== "applied");
+    if (refused.length) throw new Error(refused.map(entry => `${entry.block}: ${entry.reason}`).join("\n"));
+    out.push(...result.blocks.flatMap(entry => entry.versions).map(version => {
+      const [, id, ordinal] = /^K(\d+)@v(\d+)$/.exec(version)!;
+      return { knowledgeId: Number(id), commit: store.resolveVersionOrdinal(Number(id), Number(ordinal)) };
+    }));
+    at = end;
+  }
+  return out;
 }
 
 /** The same, for a test whose operation needs a field the file format does not carry (an archive with its own supports on one branch):
@@ -154,4 +194,22 @@ export function coverKnowledge(store: Store, path: KnowledgePath, revisionIds: r
   for (const id of revisionIds) store.db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)")
     .run(placementOwner(store, { revision: store.knowledgeRevision(id)! }), id, run.id);
   return run.id;
+}
+
+/** The operation a curate file of one operation names, from its first block's heading (for a test helper that takes the file's text only). */
+export const operationOfText = (text: string): CurateOperation => /^## (update|merge|split|archive)\b/m.exec(text)?.[1] as CurateOperation ?? "update";
+
+/** The proposals a curate run kept (stage 5 §4.2), compiled from curate blocks the way the batch check does: one entry per block, in change order. */
+export function proposalsOf(memory: { store: Store }, path: KnowledgePath, ...entries: [CurateOperation, string][]): Proposal[] {
+  return entries.flatMap(([operation, text]) => {
+    const planned = plan(memory.store, { kind: "curate", operation, sessionId: path.sessionId, path, file: { name: "curate.md", text } });
+    if (planned.problems.length) throw new Error(planned.problems.join("\n"));
+    return planned.knowledge.map(entry => ({ run: 0, category: "constraint", block: describeBlock(entry.block), operation: entry.make().operation as Proposal["operation"] }));
+  }).map((proposal, i) => ({ ...proposal, n: i + 1 }));
+}
+/** A curate batch run as `commitTaskPass` records it, for tests of the change file: the proposals, and nothing applied. */
+export function keptBatch(memory: { store: Store }, path: KnowledgePath, category: string, ...entries: [CurateOperation, string][]): number {
+  const proposed = proposalsOf(memory, path, ...entries).map(({ block, operation }) => ({ block, operation }));
+  return memory.store.recordRun({ kind: "dreaming", sessionId: path.sessionId, branch: path.branch ?? null, createdAt: new Date().toISOString(), outcome: "success",
+    response: JSON.stringify({ task: "curate", category, proposed }) }).id;
 }

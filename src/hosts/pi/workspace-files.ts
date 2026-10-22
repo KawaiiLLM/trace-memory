@@ -25,7 +25,7 @@ export function workspaceFileTools(cwd: string, workspace: Workspace, search = f
     // Pi's write tool makes the file's directory first; the run's directory exists, so that is the only one allowed.
     mkdir: async (dir: string) => { if (dir !== workspace.dir) throw new Error("Trace Memory: this task may not create directories"); await mkdir(dir, { recursive: true }); },
   };
-  // Stage 4 §5.4: curate and verify list grep and find so their requests are alike; only verify has roots, and a call outside them is
+  // Stage 4 §5.4: curate and verify have the same roots, and a call outside them is
   // refused (the deny list applies to a search as to a read).
   const roots = "roots" in workspace ? workspace.roots : [];
   const grep = createGrepToolDefinition(cwd), find = createFindToolDefinition(cwd);

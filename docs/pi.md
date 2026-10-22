@@ -254,9 +254,9 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   project and this session together. A run is due when the Noter-changed tokens since the last covered Dreamer pass reach
   `dreaming.triggerTokens` (10,000 by default; each changed live item counted once at its title plus body, manual and
   Dreamer revisions never counted), or when a hand-off row asks for a retry or resume. One run covers all three pools and
-  runs three tasks: **curate** (per category, `update`, `merge`, `split`, `archive` and `create` blocks in a file, applied
-  batch by batch), **verify** (only curate's changes, against facts, Raw and the session's repositories, with `update`,
-  `revert` or `archive`) and **classify** (importance scores 1 to 100, in fresh passes of at most 100 items). Each task writes a
+  runs three tasks: **curate** (per category, blocks of the run's one operation, rotating `update`, `merge`, `split`, `archive`, kept
+  batch by batch and never applied before verify), **verify** (one confirm, edit or revert for every proposal, against
+  facts, Raw and the session's repositories; its pass applies the confirmed and edited ones) and **classify** (importance scores 1 to 100, in fresh passes of at most 100 items). Each task writes a
   file in its own workspace with Pi's `write`/`edit` and `check`, and ends when the model stops; a task with nothing to do
   makes no model call. A passed task leaves a hand-off, so a stop or failure resumes where it left off; a transient
   failure is retried at later checks up to three times, any other waits for a further trigger's worth of changes, and a

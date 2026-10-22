@@ -11,7 +11,7 @@ import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, mig
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
-import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
+import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome, CURATE_ROTATION, type CurateOperation } from "./executions.ts";
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_TOKENS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
@@ -546,8 +546,6 @@ export type KnowledgeOperationInput =
       category: KnowledgeCategory;
       scope: KnowledgeScope;
       supports: number[];
-      /** Set only by a verify `revert` (stage 4 §5.6): `supports` is the exact result, empty included, never the base's. */
-      replaceSupports?: boolean;
       reason: string;
       topics: string[];
       createdAt: string;
@@ -3798,7 +3796,10 @@ export class Store {
     scores?: readonly { knowledgeId: number; commit: number; score: number }[];
     /** Both are decided once the run exists: the hand-off's curate runs include this run, the coverage includes what it wrote. */
     cover?: (done: { runId: number; results: WorkspaceOperationResult[] }) => readonly { id: number; pool?: string }[];
-    handoff: (done: { runId: number; results: WorkspaceOperationResult[] }) => { nextTask: string; detail: NonNullable<Handoff["detail"]> } | null }): { runId: number; results: WorkspaceOperationResult[] } {
+    handoff: (done: { runId: number; results: WorkspaceOperationResult[] }) => { nextTask: string; detail: NonNullable<Handoff["detail"]> } | null;
+    /** 144 stage 5 §3.2: the run's operation, given by the pass that may end the run. When `handoff` returns null the run is finished in this
+     * same transaction: `finished: { operation, advanced }` joins the run's body, `advanced` only if the operation is the one due (Q13). */
+    finish?: { operation: CurateOperation } }): { runId: number; results: WorkspaceOperationResult[] } {
     return this.transaction(() => {
       const done = this.commitWorkspaceRun({ run: input.run, path: input.path, operations: input.operations ?? [], response: input.response });
       const sessionId = input.run.sessionId!;
@@ -3817,10 +3818,27 @@ export class Store {
       const handoff = input.handoff(done);
       if (handoff) writeHandoff(this, { sessionId, phase: "dreaming", nextTask: handoff.nextTask, runId: done.runId,
         branch: null, entryIds: [], detail: handoff.detail });
-      else this.db.prepare("DELETE FROM task_handoffs WHERE session_id = ? AND phase = 'dreaming'").run(sessionId);
+      else {
+        this.db.prepare("DELETE FROM task_handoffs WHERE session_id = ? AND phase = 'dreaming'").run(sessionId);
+        if (input.finish) {
+          const advanced = input.finish.operation === this.nextCurateOperation(this.getSession(sessionId)!.projectId);
+          const body = JSON.parse(String(this.db.prepare("SELECT response FROM run_bodies WHERE run_id = ?").get(done.runId)?.response ?? "{}"));
+          this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify({ ...body, finished: { operation: input.finish.operation, advanced } }), done.runId);
+        }
+      }
       this.db.prepare("UPDATE task_failures SET count = 0 WHERE session_id = ? AND phase = 'dreaming' AND pool = ?").run(sessionId, ALL_POOLS);
       return done;
     });
+  }
+
+  /** 144 stage 5 §3.2: the operation the project's next Dreamer run performs. The newest run of the project's sessions that finished
+   * and advanced the rotation names the operation just done; none (or only runs from before Stage 5) starts at `update`. */
+  nextCurateOperation(projectId: number): CurateOperation {
+    const row = this.db.prepare(`SELECT json_extract(b.response, '$.finished.operation') AS operation FROM runs r
+      JOIN run_bodies b ON b.run_id = r.id JOIN sessions s ON s.id = r.session_id
+      WHERE s.project_id = ? AND r.kind = 'dreaming' AND json_extract(b.response, '$.finished.advanced') = 1 ORDER BY r.id DESC LIMIT 1`).get(projectId);
+    const at = CURATE_ROTATION.indexOf(row?.operation as CurateOperation);
+    return CURATE_ROTATION[(at + 1) % CURATE_ROTATION.length]!;
   }
 
   /** The admission of a due Dreamer run that was waiting for a threshold ends the wait (§3.3). */
@@ -3912,11 +3930,10 @@ export class Store {
       }
     }
     const scope = op.op === "archive" ? prior!.scope : op.scope;
-    const replaced = op.op === "update" && op.replaceSupports === true;
-    const supports = op.supports.length || replaced ? op.supports : dreaming
+    const supports = op.supports.length ? op.supports : dreaming
       ? [...new Set(targets.flatMap(target => this.getKnowledgeRevision(target.knowledgeId, target.baseCommit)!.supports))]
       : [];
-    if ((!supports.length && !replaced && (!dreaming || op.op === "create")) || supports.some(id => !Number.isSafeInteger(id) || id <= 0))
+    if ((!supports.length && (!dreaming || op.op === "create")) || supports.some(id => !Number.isSafeInteger(id) || id <= 0))
       return { ok: false, reason: "supports must not be empty" };
     if (typeof op.reason !== "string" || !op.reason.trim()) return { ok: false, reason: "reason must be a non-empty commit message" };
     if (op.op === "archive") {

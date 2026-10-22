@@ -374,9 +374,9 @@ export class CcAgentWorker {
       } catch (error) { return { reason: error instanceof Error ? error.message : String(error) }; }
       return { path: file };
     };
-    // Stage 4 §5.4: verify alone may read repositories, through Read, Grep and Glob confined to its roots (one function, one deny list).
-    // curate and verify list the same tools so their first requests are alike; curate's roots are empty, so its calls are refused.
-    const roots = task.kind === "dreaming" && task.task === "verify" ? task.workspace.roots : [];
+    // Stage 5 §3.7: curate and verify may read repositories, through Read, Grep and Glob confined to their roots (one function, one deny
+    // list); classify has no roots, so its calls are refused. Equal roots keep curate's and verify's first requests alike.
+    const roots = task.kind === "dreaming" ? task.workspace?.roots ?? [] : [];
     const searches = task.kind === "dreaming" && task.task !== "classify";
     const onSearch = async (raw: unknown) => {
       const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown> };
@@ -409,7 +409,7 @@ export class CcAgentWorker {
             permissionDecision: "allow" as const, permissionDecisionReason: "read trace:// rendering",
             updatedInput: { ...event.tool_input, file_path: path } } };
         }
-        // verify: a file under its roots, past the deny list (a rendering of this run is checked below).
+        // curate and verify: a file under their roots, past the deny list (a rendering of this run is checked below).
         if (roots.length && isAbsolute(file) && !rendered.has(file)) {
           const resolved = resolveRepositoryPath(file, roots);
           return "path" in resolved ? allow("repository file") : deny(resolved.reason);
@@ -487,7 +487,7 @@ export class CcAgentWorker {
         // plugin-free, as assertInit requires. 129: 2.1.293 adds `cc-plugin-plugin-authoring@builtin` the same way.
         extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking,
           settings: JSON.stringify({ enabledPlugins: { "agents-md@builtin": false, "cc-plugin-plugin-authoring@builtin": false },
-            // verify: `--restricted` confines the file tools to the working directories, `additionalDirectories` included.
+            // curate and verify: `--restricted` confines the file tools to the working directories, `additionalDirectories` included.
             ...(roots.length ? { permissions: { additionalDirectories: roots } } : {}) }) },
       } });
       for await (const message of execution) {

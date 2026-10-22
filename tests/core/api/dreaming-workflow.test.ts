@@ -33,6 +33,7 @@ test("35c reviewed fixtures label semantic judgments and non-semantic limits hon
 test("35c faithful merge keeps authority, conditions, exception and rendered topics through a real Dreamer run", async () => {
   const reviewed = example("faithful-authority-merge"), body = reviewed.result as unknown as ParentExample;
   const f = dreamerFixture(active);
+  await f.cycleTo("merge");
   const items = reviewed.parents.map(parent => f.item(parent.text, { category: parent.category as "constraint", scope: parent.scope }));
   f.dreamer.script.curate!.constraint = block(`merge ${items[0]!.ref}`, { absorb: items[1]!.ref, category: body.category, scope: body.scope,
     topics: body.topics.join(", "), reason: "Reviewed complete claims retain authority, condition, exception, and subjects" }, body.text);

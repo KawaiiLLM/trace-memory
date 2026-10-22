@@ -8,6 +8,9 @@ import { ALL_POOLS } from "./processing.ts";
  * key `ALL_POOLS`. Rows written before 104 keep their revision `head`; rows from 104 to 126 keep the
  * one pool they named. */
 export interface LogicalTask { sessionId: number; phase: Phase; head?: number; origin?: TriggerOrigin | null }
+/** 144 stage 5 §3.1: one curate operation per run, in this order; the project's rotation (`Store.nextCurateOperation`) walks it. */
+export const CURATE_ROTATION = ["update", "merge", "split", "archive"] as const;
+export type CurateOperation = (typeof CURATE_ROTATION)[number];
 export type ExecutionOutcome = "success" | "failure" | "cancelled" | "conflict";
 const TASK_KEY_SQL = `head INTEGER CHECK(head > 0), pool TEXT CHECK(pool IS NULL OR phase = 'dreaming' AND head IS NULL)`;
 export const TASK_EXECUTIONS_TABLE = `CREATE TABLE IF NOT EXISTS task_executions (
@@ -91,7 +94,7 @@ export function beginExecution(store: Store, task: LogicalTask): string {
  * borrowing executor finds them with this one indexed read. */
 export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; nextTask: string; runId: number; branch: string | null; entryIds: number[]; createdAt: string;
   /** 144 stage 4, Dreamer rows only: which batches are applied and, after a failure, the revision id from which Noter changes count again. */
-  detail?: { curateRuns: number[]; doneCategories: string[]; waitFrom?: number } }
+  detail?: { curateRuns: number[]; doneCategories: string[]; waitFrom?: number; operation?: CurateOperation } }
 export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"]): Handoff | null {
   const row = store.db.prepare("SELECT * FROM task_handoffs WHERE session_id = ? AND phase = ?").get(sessionId, phase);
   return row ? { sessionId, phase, nextTask: String(row.next_task), runId: Number(row.run_id), branch: row.branch === null ? null : String(row.branch),
@@ -118,7 +121,7 @@ export function linkExecutionRun(store: Store, runId: number, input: RunInput): 
 }
 
 /** What a failed Dreamer task tells settlement (144 stage 4 §3.3): the task that failed and whether Magic Context's rule retries it. */
-export interface TaskFailure { task: string; transient: boolean }
+export interface TaskFailure { task: string; transient: boolean; operation?: CurateOperation }
 /** MC allows three retries of a transient failure per threshold (`MAX_TASK_RETRIES`); a permanent one waits at once. */
 export const MAX_TASK_RETRIES = 3;
 
@@ -145,6 +148,13 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
     const key = [row.session_id!, row.phase!, row.head ?? null, row.pool ?? null] as const;
     const task = "session_id = ? AND phase = ? AND head IS ? AND pool IS ?";
     if (outcome === "cancelled") return {};
+    // 144 stage 5 §3.2: a Dreamer run whose final commit wrote `finished` is complete. A failure after it is recorded above and
+    // nothing more: no hand-off is recreated and the retry counter stays as the commit reset it (Q14: not counted).
+    if (outcome === "failure" && row.phase === "dreaming" && store.db.prepare(`SELECT 1 FROM execution_runs er JOIN run_bodies b ON b.run_id = er.run_id
+      WHERE er.execution_id = ? AND json_extract(b.response, '$.finished') IS NOT NULL`).get(id)) {
+      store.db.prepare("UPDATE task_executions SET reason = ? WHERE id = ?").run(`${reason}, run already finished`, id);
+      return {};
+    }
     // 144 stage 4 §3.4: the counter and the hand-off belong to the latest execution admitted for this task key. A later
     // row, still running or already finished, took the cycle over; this one writes only its own row.
     if (store.db.prepare(`SELECT 1 FROM task_executions WHERE ${task} AND rowid > (SELECT rowid FROM task_executions WHERE id = ?)`).get(...key, id)) return {};
@@ -175,7 +185,7 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
 function dreamerWaits(store: Store, sessionId: number, runId: number, failure: TaskFailure | undefined, pool: string | null): string {
   const transient = failure?.transient ?? false;
   const handoff = store.handoff(sessionId, "dreaming");
-  const detail = handoff?.detail ?? { curateRuns: [], doneCategories: [] };
+  const detail = { ...(handoff?.detail ?? { curateRuns: [], doneCategories: [] }), ...(handoff?.detail?.operation || !failure?.operation ? {} : { operation: failure.operation }) };
   // Rows from before 126 keep the pool they were counted under; the key is the execution's own.
   const key = "session_id = ? AND phase = 'dreaming' AND pool IS ?";
   const count = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${key}`).get(sessionId, pool ?? null)?.count ?? 0);

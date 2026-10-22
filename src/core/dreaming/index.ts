@@ -1,10 +1,11 @@
-// Dreaming as curate, verify and classify (ticket 144, stage 4). One run is one admission, one claim and one execution; it
-// runs from the hand-off's next task to the end, each task through `runAgent`. This module owns the run shape (§1), the
-// hand-off and resume (§3), the curate task (§4), verify (§5) and classify (§6).
+// Dreaming as curate, verify and classify (ticket 144, stages 4 and 5). One run is one admission, one claim and one execution; it
+// runs from the hand-off's next task to the end, each task through `runAgent`. One run performs one curate operation (the project's
+// rotation, stage 5 §3); curate only proposes, verify gives every proposal a verdict and applies, classify scores. This module owns
+// the run shape (§1), the hand-off and resume (§3), the curate task (§4), verify (§5) and classify (§6).
 
 import { createHash } from "node:crypto";
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
-import { loadPrompt } from "../prompts/load.ts";
+import { loadPrompt, type PromptFile } from "../prompts/load.ts";
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import { readingGuide } from "../render/reading-guide.ts";
 import { withRetrievalPolicy } from "../render/retrieval-policy.ts";
@@ -17,9 +18,9 @@ import { lengthLines } from "../noting/workspace.ts";
 import type { Length } from "../workspace/index.ts";
 import type { Handoff } from "../store/executions.ts";
 import type { KnowledgePath, RunInput, Store, TaskClaim } from "../store/index.ts";
-import { checkWorkspace, describeBlock, parseScores } from "../workspace/index.ts";
+import { checkWorkspace, describeBlock, overCaps, parseScores } from "../workspace/index.ts";
 import { TaskWorkspace, defaultWorkspaceRoot } from "../workspace/run.ts";
-import { batchFileName, checkBatch, curatePrefix, type Category, type CurateItem } from "./curate.ts";
+import { batchFileName, checkBatch, curatePrefix, type Category, type CurateItem, type CurateOperation } from "./curate.ts";
 import { buildChanges, checkVerify } from "./changes.ts";
 import { classifyAnchors, classifyMessage, classifySet } from "./classify.ts";
 import { allowedRoots, repositoryEvidenceProblem } from "./roots.ts";
@@ -35,6 +36,8 @@ export const TASK_GAP_MS = 15_000;
 export const CLAIM_LEASE_MARGIN_MS = 60_000;
 /** The one line that ends the first message of every task (§1.4): task, batch and files reach the model only through `check`. */
 const CHECK_FIRST = "Call {{tool.check}} first: it names your task and your files.";
+/** curate and verify share one first message; the task's own instructions arrive with `check`'s first result (stage 5 §0). */
+const CHECK_FIRST_TASK = "Call {{tool.check}} first: it names your task and your files, and its first result carries the task's instructions.";
 
 /** A Dreamer task's frozen model settings (§1.2); `thinking` is opaque to core. */
 export interface DreamingTaskConfig { model: string; thinking?: string; capacity?: { inputTokens: number } }
@@ -46,8 +49,8 @@ export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
   | { outcome: "success" | "failure" | "cancelled"; runId: number; problems: string[];
-      /** A failure's task, its class (§3.3) and whether Magic Context's rule retries it. */
-      failure?: { task: DreamingTask; class: string; transient: boolean } });
+      /** A failure's task, its class (§3.3), whether Magic Context's rule retries it, and the operation a resumed run repeats. */
+      failure?: { task: DreamingTask; class: string; transient: boolean; operation: CurateOperation } });
 
 /** What core builds for one Dreaming task call. */
 export interface DreamingAgentInput extends AgentControl {
@@ -69,6 +72,10 @@ export interface DreamingFrozen {
   prompt: string; promptHash: string; text: string;
   models: { main: DreamingTaskConfig; classify: DreamingTaskConfig };
   items: CurateItem[]; byCategory: Map<Category, CurateItem[]>;
+  /** This run's one curate operation (stage 5 §3.1): the hand-off's when it resumes, else the project's next in the rotation. */
+  operation: CurateOperation;
+  /** The task prompts curate and verify deliver with their first `check` result. */
+  taskPrompts: Record<"curate" | "verify", { text: string; hash: string }>;
   /** The hand-off row read at admission: where this run resumes, and which curate batches are applied. */
   handoff: Handoff | null;
 }
@@ -85,7 +92,14 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
     throw new Error("Invalid native Read token estimate: expected a nonnegative safe integer");
   const names = validateToolNames(input.toolNames ?? canonicalToolNames);
   const { text: knowledge, byCategory } = curatePrefix(store, path);
-  const text = [readingGuide(path.sessionId, names), knowledge, renderToolNames(CHECK_FIRST, names)].join("\n\n");
+  const text = [readingGuide(path.sessionId, names), knowledge, renderToolNames(CHECK_FIRST_TASK, names)].join("\n\n");
+  const handoff = store.handoff(path.sessionId, "dreaming");
+  const operation = handoff?.detail?.operation ?? store.nextCurateOperation(store.getSession(path.sessionId)!.projectId);
+  const taskPrompt = (task: "curate" | "verify") => {
+    const body = loadPrompt(`tasks/${task}-${operation}.md` as PromptFile, names, config.writing);
+    return { text: body, hash: createHash("sha256").update(body).digest("hex") };
+  };
+  const taskPrompts = { curate: taskPrompt("curate"), verify: taskPrompt("verify") };
   // curate and verify share this prompt (and the first message) so verify's first request reads the cache curate wrote (§1.4).
   const prompt = withRetrievalPolicy(loadPrompt("dreaming.md", names, config.writing), names);
   const main: DreamingTaskConfig = { model: input.model ?? "session", thinking: input.subagentThinkingLevel ?? input.thinkingLevel, capacity: input.capacity };
@@ -93,11 +107,11 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
     capacity: input.classify?.capacity ?? main.capacity };
   if (main.capacity) {
     const tools = tokens(JSON.stringify(pricedToolDefinitions(dreamingWorkspaceToolDefinitions, names))) + (input.nativeReadToolTokens ?? 0) + (input.nativeWriteToolTokens ?? 0);
-    if (!Number.isSafeInteger(main.capacity.inputTokens) || main.capacity.inputTokens < 0 || tokens(prompt) + tools + tokens(text) > main.capacity.inputTokens)
+    if (!Number.isSafeInteger(main.capacity.inputTokens) || main.capacity.inputTokens < 0 || tokens(prompt) + tools + tokens(text) + Math.max(tokens(taskPrompts.curate.text), tokens(taskPrompts.verify.text)) > main.capacity.inputTokens)
       throw new Error("Dreaming capacity: the knowledge prefix and tools exceed the model input allowance; left pending");
   }
   return { sessionId: path.sessionId, branch: path.branch, path, claim, names, prompt, promptHash: createHash("sha256").update(prompt).digest("hex"),
-    text, models: { main, classify }, items: [...byCategory.values()].flat(), byCategory, handoff: store.handoff(path.sessionId, "dreaming") };
+    text, models: { main, classify }, items: [...byCategory.values()].flat(), byCategory, operation, taskPrompts, handoff };
 }
 
 export interface DreamingRunOptions {
@@ -125,7 +139,8 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   options: DreamingRunOptions): Promise<DreamingResult> {
   const { sessionId, branch, path } = frozen;
   const first = Math.max(0, DREAMING_TASKS.indexOf((frozen.handoff?.nextTask ?? "curate") as DreamingTask));
-  const detail = { curateRuns: [...(frozen.handoff?.detail?.curateRuns ?? [])], doneCategories: [...(frozen.handoff?.detail?.doneCategories ?? [])] };
+  const { operation } = frozen;
+  const detail = { curateRuns: [...(frozen.handoff?.detail?.curateRuns ?? [])], doneCategories: [...(frozen.handoff?.detail?.doneCategories ?? [])], operation };
   const root = options.workspaceRoot ?? defaultWorkspaceRoot();
   const template = (task: DreamingTask, model: string, promptHash = frozen.promptHash): RunInput => ({ kind: "dreaming", sessionId, branch, model, mode: "subagent",
     promptHash, createdAt: new Date().toISOString(), rangeFrom: `S${sessionId}/${task}`, rangeTo: `S${sessionId}/${task}` });
@@ -137,86 +152,89 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const run = template(task, frozen.models.main.model);
     const bound = bind(context, run, { check: () => "no work" });
     bound.close(); // the run record only; it has no tools to run
-    const done = store.commitTaskPass({ run: { ...run, response: JSON.stringify({ task, passes: 0 }) }, path, cover,
-      handoff: () => next ? { nextTask: next, detail: { ...detail } } : null });
+    const done = store.commitTaskPass({ run: { ...run, response: JSON.stringify({ task, passes: 0, operation }) }, path, cover,
+      handoff: () => next ? { nextTask: next, detail: { ...detail } } : null, ...(next ? {} : { finish: { operation } }) });
     return { ok: true, runId: lastRunId = done.runId };
+  };
+
+  /** Stage 5 §0: a task prompt counts as delivered once a message that goes to the model carries it (a `check` result, a repair or the next
+   * batch). The file checks are pure and deliver nothing. */
+  const delivery = (task: "curate" | "verify" | "classify") => {
+    const prompt = task === "classify" ? undefined : frozen.taskPrompts[task];
+    let sent = false;
+    return { give: (message: string) => { if (!prompt || sent) return message; sent = true; return `${message}\n\n${prompt.text}`; },
+      hashes: () => prompt && sent ? [prompt.hash] : [] };
   };
 
   const runCurate = async (): Promise<TaskOutcome> => {
     const batches = KNOWLEDGE_CATEGORIES.filter(category => frozen.byCategory.get(category)!.length && !detail.doneCategories.includes(category));
-    const written = (runIds: number[]): Cover[] => runIds.flatMap(id => store.listCommitsByRun(id).map(revision => ({ id: revision.id })));
-    const coveredBy = (runIds: number[]) => runIds.flatMap(id => (JSON.parse(store.getRun(id)?.response ?? "{}").covers ?? []) as Cover[]);
-    if (!batches.length) return noWork("curate", "verify", () => [...coveredBy(detail.curateRuns), ...written(detail.curateRuns)]);
+    if (!batches.length) return noWork("curate", "verify");
 
     const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, "curate").open();
     options.registerFence(workspace);
     const files = batches.map((category, i) => workspace.path(batchFileName(i, category)));
     const started = Date.now(), deadline = started + config.dreaming.timeoutMs;
     const run = template("curate", frozen.models.main.model);
+    const roots = allowedRoots(store, sessionId), delivered = delivery("curate");
     let at = 0, repaired = false, problem: string | undefined, lost = false, lastBatchRun = 0;
     const read = (): { name: string; text: string } => ({ name: batchFileName(at, batches[at]!), text: workspace.text(batchFileName(at, batches[at]!)) });
-    const report = (result = checkBatch(store, path, batches[at]!, read())) => [
-      `Task: curate (batch ${at + 1} of ${batches.length}, category ${batches[at]}). File: ${files[at]}`,
+    const report = (result = checkBatch(store, path, batches[at]!, read(), operation)) => [
+      `Task: curate ${operation} (batch ${at + 1} of ${batches.length}, category ${batches[at]}). File: ${files[at]}`,
+      `Repositories you may read: ${roots.join(", ") || "none"}`,
       result.problems.length ? `Problems: ${result.problems.length}\n${result.problems.join("\n")}` : "Problems: none",
       ...(result.lengths.length ? ["Lengths:", ...lengthLines(batchFileName(at, batches[at]!), result.lengths)] : [])].join("\n");
-    const binding = bind(context, run, { check: () => report() });
+    const binding = bind(context, run, { check: () => delivered.give(report()) });
     const stopChecks: { ok: boolean; problems: string[] }[] = [];
 
-    /** The stop hook: apply the batch when it passes and return the next one; one repair for a batch that fails (§4.5). */
+    /** The stop hook: keep the batch when it passes and return the next one; one repair for a batch that fails (§4.5). Nothing is applied: verify decides. */
     const passEnd = (): string | undefined => {
       if (workspace.closed || at >= batches.length) return undefined;
-      const category = batches[at]!, checked = checkBatch(store, path, category, read());
+      const category = batches[at]!, checked = checkBatch(store, path, category, read(), operation);
       stopChecks.push({ ok: checked.ok, problems: checked.problems });
       if (!checked.ok) {
         if (!repaired) { repaired = true;
-          return `Your file does not pass the check. Correct every problem below, then stop. If it still fails, curate fails and this batch is not applied.\n\n${report(checked)}`; }
+          return delivered.give(`Your file does not pass the check. Correct every problem below, then stop. If it still fails, curate fails and this batch is not kept.\n\n${report(checked)}`); }
         problem = `check failed twice: batch ${at + 1}/${batches.length} (${category})`;
         return undefined;
       }
       // The pool each shown version had when the input was frozen: a version moved meanwhile stays uncovered in its new pool (§2.1).
       const covers: Cover[] = frozen.byCategory.get(category)!.filter(item => !item.covered).map(item => ({ id: item.value.revision.id, pool: item.pool }));
       const lastBatch = at === batches.length - 1;
-      let results: Parameters<NonNullable<Parameters<Store["commitTaskPass"]>[0]["response"]>>[0] = [];
       try {
-        const done = store.commitTaskPass({ run: { ...run }, path, operations: checked.planned.map(entry => entry.make().operation!),
-          response: out => { results = out; return JSON.stringify({ task: "curate", category, file: files[at], covers,
-            blocks: checked.planned.map((entry, i) => ({ block: describeBlock(entry.block), line: entry.block.line, result: out[i] })) }); },
-          cover: lastBatch ? ({ runId, results: out }) => [...coveredBy(detail.curateRuns), ...covers, ...written(detail.curateRuns),
-            ...out.flatMap(result => result.ok ? result.committed.map(item => ({ id: item.commit })) : [])] : undefined,
+        const done = store.commitTaskPass({ run: { ...run }, path,
+          response: () => JSON.stringify({ task: "curate", operation, category, file: files[at], text: read().text, covers,
+            proposed: checked.planned.map(entry => ({ block: describeBlock(entry.block), operation: entry.make().operation })) }),
           handoff: ({ runId }) => ({ nextTask: lastBatch ? "verify" : "curate",
-            detail: { curateRuns: [...detail.curateRuns, runId], doneCategories: [...detail.doneCategories, category] } }) });
+            detail: { ...detail, curateRuns: [...detail.curateRuns, runId], doneCategories: [...detail.doneCategories, category] } }) });
         detail.curateRuns.push(done.runId); detail.doneCategories.push(category);
         lastBatchRun = lastRunId = done.runId;
       } catch (error) {
         if (CLAIM_LOST.test(String(error))) lost = true;
-        problem = `batch ${at + 1}/${batches.length} could not be applied: ${error instanceof Error ? error.message : String(error)}`;
+        problem = `batch ${at + 1}/${batches.length} could not be kept: ${error instanceof Error ? error.message : String(error)}`;
         workspace.close();
         return undefined;
       }
-      const versions = results.flatMap(result => result.ok ? result.committed.map(item => `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`) : []);
-      const stale = results.flatMap(result => !result.ok ? [result.reason] : []);
-      const receipt = `Applied batch ${at + 1} of ${batches.length} (${category}). Versions written: ${versions.join(", ") || "none"}.`
-        + (stale.length ? ` Refused, left for the next run: ${stale.join("; ")}.` : "");
+      const receipt = `Batch ${at + 1} of ${batches.length} (${category}) kept for verify: ${checked.planned.length} proposed change${checked.planned.length === 1 ? "" : "s"}. Nothing is applied before verify.`;
       at++; repaired = false;
-      return at < batches.length ? `${receipt}\n\nNext: batch ${at + 1} of ${batches.length}, category ${batches[at]}. File: ${files[at]}. ${renderToolNames("Call {{tool.check}} to see its problems.", frozen.names)}` : undefined;
+      return at < batches.length ? delivered.give(`${receipt}\n\nNext: batch ${at + 1} of ${batches.length}, category ${batches[at]}. File: ${files[at]}. ${renderToolNames("Call {{tool.check}} to see its problems.", frozen.names)}`) : undefined;
     };
 
     const input: DreamingAgentInput = { kind: "dreaming", task: "curate", sessionId, branch, model: frozen.models.main.model, thinking: frozen.models.main.thinking,
       mode: "subagent", prompt: frozen.prompt, promptHash: frozen.promptHash, text: frozen.text, tools: binding.tools,
-      workspace: { dir: workspace.dir, read: files, write: files, roots: [] }, passEnd, deadline,
+      workspace: { dir: workspace.dir, read: files, write: files, roots }, passEnd, deadline,
       acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
     let result: RunAgentResult;
     try { result = await runAgent(input); } catch (error) { result = agentException(error); }
     binding.close();
     if (store.closed) return { ok: false, outcome: "cancelled", runId: 0, problems: ["store closed"], class: "cancelled", transient: false };
-    // A fence closed by a stop, memory off or executor exit while the model ignored it: its late pass applied nothing.
+    // A fence closed by a stop, memory off or executor exit while the model ignored it: its late pass kept nothing.
     if (result.outcome === "success" && workspace.closed && !problem)
       result = { ...result, outcome: "cancelled", output: "Dreamer cancelled before its pass ended" };
     const success = result.outcome === "success" && !requestMissing(result) && !problem && at === batches.length;
     const problems = problem ? [problem] : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
       : requestMissing(result) ? ["runAgent must return the exact provider request"]
       : at < batches.length ? [`ended before batch ${at + 1}/${batches.length}`] : [];
-    recordAttempt(run, result, { task: "curate", stopChecks, toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
+    recordAttempt(run, result, { task: "curate", operation, taskPrompts: delivered.hashes(), stopChecks, toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
     if (success) {
       // The conversation's request and usage ride on the last batch's run, which holds the same task's last pass.
       const previous = JSON.parse(store.getRun(lastBatchRun)?.response ?? "{}");
@@ -241,15 +259,15 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   const filePass = async (spec: FilePass): Promise<TaskOutcome> => {
     const started = Date.now(), run = template(spec.task, spec.model.model, spec.promptHash);
     let repaired = false, problem: string | undefined, lost = false, appliedRun = 0;
-    const stopChecks: { ok: boolean; problems: string[] }[] = [];
-    const binding = bind(context, run, { check: () => spec.check().report });
+    const stopChecks: { ok: boolean; problems: string[] }[] = [], delivered = delivery(spec.task);
+    const binding = bind(context, run, { check: () => delivered.give(spec.check().report) });
     const passEnd = (): string | undefined => {
       if (spec.workspace.closed || appliedRun) return undefined;
       const checked = spec.check();
       stopChecks.push({ ok: !checked.problems.length, problems: checked.problems });
       if (checked.problems.length) {
         if (!repaired) { repaired = true;
-          return `Your file does not pass the check. Correct every problem below, then stop. If it still fails, ${spec.label} fails and nothing from it is applied.\n\n${checked.report}`; }
+          return delivered.give(`Your file does not pass the check. Correct every problem below, then stop. If it still fails, ${spec.label} fails and nothing from it is applied.\n\n${checked.report}`); }
         problem = `check failed twice: ${spec.label}`;
         return undefined;
       }
@@ -274,7 +292,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const success = result.outcome === "success" && !requestMissing(result) && !problem && appliedRun !== 0;
     const problems = problem ? [problem] : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
       : requestMissing(result) ? ["runAgent must return the exact provider request"] : appliedRun === 0 ? [`ended before ${spec.label} was applied`] : [];
-    recordAttempt(run, result, { task: spec.task, stopChecks, toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
+    recordAttempt(run, result, { task: spec.task, operation, taskPrompts: delivered.hashes(), stopChecks, toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
     if (success) {
       const previous = JSON.parse(store.getRun(appliedRun)?.response ?? "{}");
       store.updateRun(appliedRun, { ...run, response: JSON.stringify({ ...previous, ...JSON.parse(run.response!) }), outcome: "success" });
@@ -288,18 +306,21 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   };
   const written = (results: { ok: boolean; committed?: { commit: number }[] }[]): Cover[] => results.flatMap(result => result.ok ? result.committed!.map(item => ({ id: item.commit })) : []);
 
-  /** §5: verify checks curate's changes against the facts, Raw and the repositories, under the authority curate's results give it. */
+  /** §5 (stage 5 §4): verify gives every proposed change one verdict against the facts, Raw and the repositories; its pass then applies the
+   * confirmed and edited operations, the first time anything curate proposed reaches the Store. */
   const runVerify = async (): Promise<TaskOutcome> => {
-    const changes = buildChanges(store, detail.curateRuns);
-    if (!changes.blocks) return noWork("verify", "classify"); // nothing was changed: no model call
+    const changes = buildChanges(store, path, detail.curateRuns);
+    // Coverage is written at verify's pass: what the batches showed, and what this pass wrote.
+    const coveredBy = () => detail.curateRuns.flatMap(id => (JSON.parse(store.getRun(id)?.response ?? "{}").covers ?? []) as Cover[]);
+    if (!changes.blocks) return noWork("verify", "classify", coveredBy); // nothing was proposed: no model call
     const roots = allowedRoots(store, sessionId);
-    const authority = { results: changes.results, bases: changes.bases, resolveRepository: (reference: string) => repositoryEvidenceProblem(reference, roots) };
     const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, "verify").open({ "changes.md": changes.text });
     options.registerFence(workspace);
     const changesFile = workspace.path("changes.md"), file = workspace.path("verify.md");
-    const checked = () => checkVerify(store, path, { name: "verify.md", text: workspace.text("verify.md") }, authority);
+    const resolveRepository = (reference: string) => repositoryEvidenceProblem(reference, roots);
+    const checked = () => checkVerify(store, path, { name: "verify.md", text: workspace.text("verify.md") }, changes.proposals, resolveRepository);
     const report = (result = checked()) => [
-      `Task: verify. Change file: ${changesFile} (${changes.blocks} blocks, ${changes.lines} lines; read it in pages). Your file: ${file}`,
+      `Task: verify ${operation}. Change file: ${changesFile} (${changes.blocks} blocks, ${changes.lines} lines; read it in pages). Your file: ${file}`,
       `Repositories you may read: ${roots.join(", ") || "none"}`,
       result.problems.length ? `Problems: ${result.problems.length}\n${result.problems.join("\n")}` : "Problems: none",
       ...(result.lengths.length ? ["Lengths:", ...lengthLines("verify.md", result.lengths as Length[])] : [])].join("\n");
@@ -308,9 +329,14 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       check: () => { const result = checked(); return { problems: result.problems, report: report(result) }; },
       apply: run => {
         const result = checked();
-        return store.commitTaskPass({ run: { ...run }, path, operations: result.planned.map(entry => entry.make().operation!),
-          response: out => JSON.stringify({ task: "verify", file, blocks: result.planned.map((entry, i) => ({ block: describeBlock(entry.block), line: entry.block.line, result: out[i] })) }),
-          cover: ({ results }) => written(results), handoff: () => ({ nextTask: "classify", detail: { ...detail } }) }).runId;
+        // The caps in force now (§4.5): an operation over them is refused with its counts and left for the next run; the rest apply.
+        const over = result.verdicts.map(verdict => verdict.operation ? overCaps(store, verdict.operation) : []);
+        const applying = result.verdicts.flatMap((verdict, i) => verdict.operation && !over[i]!.length ? [i] : []);
+        return store.commitTaskPass({ run: { ...run }, path, operations: applying.map(i => result.verdicts[i]!.operation!),
+          response: out => JSON.stringify({ task: "verify", operation, file, verdicts: result.verdicts.map((verdict, i) => ({ n: verdict.n, verdict: verdict.verdict,
+            ...(verdict.reason ? { reason: verdict.reason } : {}), ...(verdict.evidence ? { evidence: verdict.evidence } : {}),
+            ...(verdict.operation ? { result: over[i]!.length ? { ok: false, stale: false, reason: over[i]!.join("; ") } : out[applying.indexOf(i)] } : {}) })) }),
+          cover: ({ results }) => [...coveredBy(), ...written(results)], handoff: () => ({ nextTask: "classify", detail: { ...detail } }) }).runId;
       } });
   };
 
@@ -340,8 +366,9 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
           const scores = parseScores({ name, text: workspace.text(name) }).scores;
           const shown = new Map(pass.map(item => [item.value.revision.knowledgeId, item.value.revision.id]));
           return store.commitTaskPass({ run: { ...run }, path, scores: scores.map(line => ({ knowledgeId: line.knowledgeId, commit: shown.get(line.knowledgeId)!, score: line.score })),
-            response: () => JSON.stringify({ task: "classify", pass: at + 1, passes: passes.length, file, scores: scores.map(line => [line.knowledgeId, line.score]) }),
-            handoff: () => at === passes.length - 1 ? null : { nextTask: "classify", detail: { ...detail } } }).runId;
+            response: () => JSON.stringify({ task: "classify", operation, pass: at + 1, passes: passes.length, file, scores: scores.map(line => [line.knowledgeId, line.score]) }),
+            handoff: () => at === passes.length - 1 ? null : { nextTask: "classify", detail: { ...detail } },
+            ...(at === passes.length - 1 ? { finish: { operation } } : {}) }).runId;
         } });
       if (!outcome.ok) return outcome;
     }
@@ -358,10 +385,10 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       const message = error instanceof Error ? error.message : String(error);
       const classified = lost ? { class: "claim lost", transient: true } : classifyFailure(message);
       return { outcome: "failure", runId: store.recordRun({ ...template(task, frozen.models.main.model), outcome: "failure", response: JSON.stringify({ task, problems: [message] }) }).id,
-        problems: [message], failure: { task, class: classified.class, transient: classified.transient } };
+        problems: [message], failure: { task, class: classified.class, transient: classified.transient, operation } };
     }
     if (!outcome.ok) return { outcome: outcome.outcome, runId: outcome.runId, problems: outcome.problems,
-      failure: { task, class: outcome.class, transient: outcome.transient } };
+      failure: { task, class: outcome.class, transient: outcome.transient, operation } };
   }
   return { outcome: "success", runId: lastRunId, problems: [] };
 }

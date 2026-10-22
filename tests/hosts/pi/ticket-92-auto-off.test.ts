@@ -28,7 +28,7 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     const rewrite = block(`update K${changed!.knowledgeId}@v1`, { reason: "maintenance" }, "Rule 1 maintained");
     const late = (conversation: { messages: unknown[] }): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "late", name: "write", arguments: {
       path: /Your file: (\S+?\.md)/.exec(JSON.stringify(conversation.messages))![1]!,
-      content: block(`update K${changed!.knowledgeId}@v2`, { reason: "late forbidden write", evidence: `trace://F${noted.factIds[0]}` }, "Late rewrite") } as never }] });
+      content: block(`edit 1 update K${changed!.knowledgeId}@v1`, { evidence: `trace://F${noted.factIds[0]}` }, "Late rewrite") } as never }] });
     f.provider(async (conversation, signal): Promise<Reply> => {
       if (conversation.systemPrompt?.startsWith("# Noting")) {
         await dreamReady; nCalls++;
@@ -59,15 +59,12 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     await vi.waitFor(() => expect(store.getClaim(session.id, "dreaming")).toBeNull());
     expect(abortChecked).toBe(true);
     expect(nCalls).toBe(3);
-    // Curate's batch was applied before the stop and stays; the late verify write after the abort changes nothing.
+    // Curate's batch was kept as a proposal before the stop (nothing is applied before verify passes); the late verify write after the abort changes nothing.
     expect(revisions()).toBe(revisionsAtAbort);
-    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1 maintained");
+    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1");
     expect(store.currentCommit(untouched!.knowledgeId, target)[0]!.id).toBe(untouched!.commit);
-    const processed = store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool=? ORDER BY revision_id")
-      .all(`session:${session.id}`).map(row => Number(row.revision_id));
-    const own = store.currentCommit(changed!.knowledgeId, target)[0]!.id;
-    expect(own).not.toBe(changed!.commit);
-    expect(processed).toEqual([changed!.commit, skipped!.commit, untouched!.commit, own].sort((a, b) => a - b)); // curate passed: it covered what its batch showed and wrote
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`session:${session.id}`)!.n).toBe(0); // coverage is written when verify passes, and it did not
+    expect(store.currentCommit(changed!.knowledgeId, target)[0]!.id).toBe(changed!.commit);
     expect(f.memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id)).toEqual(entries);
     expect(store.taskFailures(session.id).filter(item => item.phase === "dreaming")).toEqual([]);
     expect(store.listRuns(session.id).filter(run => run.kind === "dreaming").at(-1)?.outcome).toBe("cancelled");

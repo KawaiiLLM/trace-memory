@@ -111,12 +111,14 @@ test("an empty frozen set passes through a no-work run: above 100 items, all sco
   const f = dreamerFixture();
   manyItems(f, 101);
   await f.dream(); // scores all 101
+  await f.cycleTo("archive"); // the rotation, run for real, reaches the archive operation
   const fresh = f.item("A new rule", { category: "reference", title: "New rule" });
   f.dreamer.script.curate!.reference = block(`archive ${fresh.ref}`, { kind: "invalid", reason: "does not meet admission" },
     "The facts show this only records an implementation step, which fails admission; no other item replaces it.");
   f.dreamer.inputs.length = 0;
   expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(f.dreamer.inputs.map(input => input.task)).toEqual(["curate", "verify"]); // curate changed something, so verify runs; classify has no model call
+  expect(f.dreamer.inputs.map(input => input.task)).toEqual(["curate", "verify"]); // curate proposed something, so verify runs; classify has no model call
+  expect(JSON.parse(f.store.getRun(f.store.db.prepare("SELECT MAX(id) AS id FROM runs WHERE kind = 'dreaming'").get()!.id as number)!.response!)).toMatchObject({ task: "classify", passes: 0, operation: "archive", finished: { operation: "archive", advanced: true } });
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
   expect(f.store.db.prepare("SELECT outcome FROM task_executions ORDER BY rowid DESC LIMIT 1").get()).toEqual({ outcome: "success" });
 });

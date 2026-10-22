@@ -2,6 +2,7 @@
 // prompt and request, and the Store state after a failure, a cancellation or a fault in the final transaction. The run shape
 // itself (hand-off, resume, retries, the cancellation fence) is `dreaming-run.test.ts`.
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { afterEach, expect, test } from "vitest";
 import type { RunAgentResult } from "../../../src/core/api/index.ts";
 import type { DreamingAgentInput } from "../../../src/core/dreaming/index.ts";
@@ -38,14 +39,16 @@ test("native Read token estimate counts in Dreamer capacity before dispatch", as
   if (!base) throw new Error("missing baseline Dreamer dispatch");
   const nativeReadToolTokens = 402;
   const definitions = pricedToolDefinitions(dreamingWorkspaceToolDefinitions, canonicalToolNames);
-  const price = tokens(base.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(base.text);
+  // The largest task prompt the run can send (curate's or verify's, delivered with `check`) is priced with the first message (stage 5 §0).
+  const taskPrompt = Math.max(...(["curate", "verify"] as const).map(task => tokens(loadPrompt(`tasks/${task}-update.md`, canonicalToolNames, f.memory.config.writing))));
+  const price = tokens(base.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(base.text) + taskPrompt;
   const bounded = { ...f.target, nativeReadToolTokens, capacity: { inputTokens: price - 1 } };
   const runs = f.store.listRuns(f.session.id).length;
   f.next(() => { throw new Error("over-cap dispatch"); });
   await expect(f.memory.dream(bounded)).rejects.toThrow(/Dreaming capacity/);
   expect(f.store.listRuns(f.session.id)).toHaveLength(runs);
   f.next(async raw => { const input = raw as DreamingAgentInput;
-    expect(tokens(input.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(input.text)).toBe(price);
+    expect(tokens(input.prompt) + tokens(JSON.stringify(definitions)) + nativeReadToolTokens + tokens(input.text) + taskPrompt).toBe(price);
     return stop(input); });
   await f.memory.dream({ ...bounded, capacity: { inputTokens: price } });
   expect(f.store.listRuns(f.session.id)).toHaveLength(runs + 1);
@@ -202,13 +205,13 @@ test("64c cancellation before the first batch covers nothing and leaves the work
   expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
 });
 
-for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D ${mode} after an applied batch keeps its revision, covers nothing and releases the claim`, async () => {
+for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D ${mode} after a kept batch keeps its proposal, applies nothing, covers nothing and releases the claim`, async () => {
   const f = dreamerFixture();
   const rule = f.item("Rule", { category: "constraint" });
   f.item("Reference", { category: "reference" });
   f.next(async raw => {
     await writeBatch(raw as DreamingAgentInput, update(rule, "Rule, moved by the batch"));
-    expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Rule, moved by the batch");
+    expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Rule"); // a kept batch is a proposal, not a version
     if (mode === "throw" || mode === "abort") {
       const error = new Error("provider stopped after the batch");
       if (mode === "abort") error.name = "AbortError";
@@ -217,14 +220,13 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`D 
     return { outcome: mode, output: "provider stopped after the batch", request: REQUEST };
   });
   expect((await f.dream()).outcome).toBe(mode === "cancelled" || mode === "abort" ? "cancelled" : "failure");
-  expect(f.store.listKnowledgeRevisions(rule.knowledgeId)).toHaveLength(2);
-  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Rule, moved by the batch");
-  expect(covered(f)).toEqual([]); // coverage is written when curate passes, never before
-  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate", detail: { doneCategories: ["constraint"] } });
+  expect(f.store.listKnowledgeRevisions(rule.knowledgeId)).toHaveLength(1);
+  expect(covered(f)).toEqual([]); // coverage is written when verify passes, never before
+  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate", detail: { doneCategories: ["constraint"], operation: "update" } }); // the kept batch survives
   expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
 });
 
-test("64c a fault in the final transaction of curate rolls back its batch and its coverage together, and keeps the exact audit", async () => {
+test("64c a fault in the final transaction of verify rolls back its applied operations and its coverage together, and keeps the exact audit", async () => {
   const f = dreamerFixture();
   const rule = f.item("terminal rollback base", { category: "constraint" });
   f.dreamer.script.curate!.constraint = update(rule, "committed before the terminal fault");
@@ -242,4 +244,46 @@ test("64c a fault in the final transaction of curate rolls back its batch and it
   const run = f.store.getRun(result.runId)!;
   expect(run.request).toBe(JSON.stringify(REQUEST));
   expect(JSON.parse(run.response!).problems.join(" ")).toContain("injected processing insert failure");
+});
+
+// ---- Task instructions (stage 5 §0): delivered once, with the first check result ---------------------------------------------------
+
+test("2026-10-22, 144: 「任务说明由第一次 check 结果告知」 — a Dreamer task's instructions arrive once, with its first check result; the first message and system prompt carry none; the run records the hash", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Rule", { category: "constraint" });
+  f.dreamer.script.curate!.constraint = ["## bogus\n", update(rule, "Rule, tidied")];
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  const prompt = (task: "curate" | "verify") => loadPrompt(`tasks/${task}-update.md`, canonicalToolNames, f.memory.config.writing);
+  const count = (text: string, part: string) => text.split(part).length - 1;
+  const [curate, verify] = f.dreamer.inputs;
+  for (const input of [curate!, verify!]) for (const task of ["curate", "verify"] as const) { expect(input.prompt).not.toContain(prompt(task)); expect(input.text).not.toContain(prompt(task)); }
+  expect(count(f.dreamer.reports[0]!, prompt("curate"))).toBe(1); // curate's first check result
+  expect(count(f.dreamer.messages[0]!, prompt("curate"))).toBe(0); // its repair does not repeat it
+  expect(count(f.dreamer.reports[1]!, prompt("verify"))).toBe(1);
+  expect(f.dreamer.reports[1]).not.toContain(prompt("curate"));
+  const hash = (task: "curate" | "verify") => createHash("sha256").update(prompt(task)).digest("hex");
+  const bodies = f.store.listRuns(f.session.id).map(run => JSON.parse(run.response ?? "{}") as { task?: string; taskPrompts?: string[] });
+  expect(bodies.find(body => body.task === "curate")?.taskPrompts).toEqual([hash("curate")]);
+  expect(bodies.find(body => body.task === "verify")?.taskPrompts).toEqual([hash("verify")]);
+  expect(bodies.find(body => body.task === "classify")?.taskPrompts ?? []).toEqual([]);
+});
+
+test("a model that never calls check still gets its task's instructions, in the first message that goes to it, and only once", async () => {
+  const f = dreamerFixture();
+  const rule = f.item("Rule", { category: "constraint" });
+  const seen: string[] = [];
+  f.next(async raw => {
+    const input = raw as DreamingAgentInput;
+    input.reportRequest(REQUEST);
+    writeFileSync(input.workspace.write[0]!, "## bogus\n");
+    seen.push(input.passEnd()!); // the repair is the first message that carries the instructions
+    writeFileSync(input.workspace.write[0]!, update(rule, "Rule, tidied"));
+    seen.push(String(await input.tools.find(tool => tool.name === "check")!.execute({}))); // a later check does not repeat them
+    input.passEnd();
+    return { outcome: "success", output: "Done.", request: REQUEST } as RunAgentResult;
+  });
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  const instructions = loadPrompt("tasks/curate-update.md", canonicalToolNames, f.memory.config.writing);
+  expect(seen[0]).toContain(instructions);
+  expect(seen[1]).not.toContain(instructions);
 });

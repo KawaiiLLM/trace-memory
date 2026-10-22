@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { checkWorkspace } from "../../../src/core/workspace/index.ts";
+import { checkVerify, type Proposal } from "../../../src/core/dreaming/changes.ts";
+import type { CurateOperation } from "../../../src/core/store/executions.ts";
 import { block, workspaceBatch, type WorkspaceBatch } from "../../support/workspace.ts";
+import { proposalsOf } from "../../support/dreamer.ts";
 
 const opened: WorkspaceBatch[] = [];
 const batch = (options?: Parameters<typeof workspaceBatch>[0]) => { const b = workspaceBatch(options); opened.push(b); return b; };
@@ -13,8 +16,7 @@ const create = { title: "Use pnpm", category: "constraint", scope: "project", to
 const noterFacts = (b: WorkspaceBatch, text: string) => checkWorkspace(b.store, { kind: "noting-facts", scope: b.scope, file: file(text, "facts.md") });
 const noterKnowledge = (b: WorkspaceBatch, text: string, factsText = factText(b)) =>
   checkWorkspace(b.store, { kind: "noting-knowledge", scope: b.scope, file: file(text, "knowledge.md"), facts: file(factsText, "facts.md") });
-const curate = (b: WorkspaceBatch, text: string) => checkWorkspace(b.store, { kind: "curate", sessionId: b.session.id, file: file(text, "curate.md") });
-const verify = (b: WorkspaceBatch, text: string) => checkWorkspace(b.store, { kind: "verify", sessionId: b.session.id, file: file(text, "verify.md") });
+const curate = (b: WorkspaceBatch, text: string, operation: CurateOperation = "update") => checkWorkspace(b.store, { kind: "curate", operation, sessionId: b.session.id, file: file(text, "curate.md") });
 const joined = (result: { problems: string[] }) => result.problems.join("\n");
 
 describe("file format", () => {
@@ -152,134 +154,192 @@ describe("noting-knowledge", () => {
 });
 
 describe("curate", () => {
-  test("create, update, merge, split and archive pass", () => {
+  test("a file holds blocks of the run's one operation; each operation's file passes", () => {
     const b = batch();
     const [update, primary, absorbed, parent, old] = ["u", "p", "a", "s", "o"].map(name => b.item(`Rule ${name}`, { title: `Rule ${name}` }));
     const support = `F${update!.supports[0]}`;
-    const text = [
-      block("create", { ...create, supports: support }, "A new rule."),
-      block(`update ${update!.ref}`, { reason: "tidy" }, "Rule u, rewritten."),
-      block(`merge ${primary!.ref}`, { absorb: absorbed!.ref, reason: "same rule" }, "Rules p and a, merged."),
-      block(`split ${parent!.ref}`, { reason: "two topics" }, "Rule s, primary part."),
-    ].join("\n") + "\n### child\ntitle: Child rule\ncategory: reference\nscope: project\ntopics: split\nsupports: " + support + "\nreason: split out\n\nA child.\n\n" +
-      block(`archive ${old!.ref}`, { kind: "inadmissible", reason: "a running log" }, "A running log of one session, not an understanding.");
-    const result = curate(b, text);
-    expect(result.problems).toEqual([]);
-    expect(result.ok).toBe(true);
-    expect(result.lengths.some(item => item.block.includes("child 1") && item.field === "body")).toBe(true);
+    expect(curate(b, block(`update ${update!.ref}`, { reason: "tidy" }, "Rule u, rewritten."), "update").problems).toEqual([]);
+    expect(curate(b, block(`merge ${primary!.ref}`, { absorb: absorbed!.ref, reason: "same rule" }, "Rules p and a, merged."), "merge").problems).toEqual([]);
+    const split = curate(b, block(`split ${parent!.ref}`, { reason: "two topics" }, "Rule s, primary part.")
+      + "\n### child\ntitle: Child rule\ncategory: reference\nscope: project\ntopics: split\nsupports: " + support + "\nreason: split out\n\nA child.\n", "split");
+    expect(split.problems).toEqual([]);
+    expect(split.lengths.some(item => item.block.includes("child 1") && item.field === "body")).toBe(true);
+    expect(curate(b, block(`archive ${old!.ref}`, { kind: "inadmissible", reason: "a running log" }, "A running log of one session, not an understanding."), "archive").problems).toEqual([]);
+  });
+
+  test("a block of another operation, and any create, are refused in a curate file (Dreaming creates no knowledge)", () => {
+    const b = batch();
+    const item = b.item("Rule one"), other = b.item("Rule two");
+    const make = { ...create, supports: `F${item.supports[0]}` };
+    for (const operation of ["update", "merge", "split", "archive"] as const)
+      expect(joined(curate(b, block("create", make, "A new rule."), operation))).toContain(`\`## create\` is not allowed in a curate file; allowed: \`${operation}\``);
+    expect(joined(curate(b, block(`merge ${item.ref}`, { absorb: other.ref, reason: "same" }, "Merged."), "update"))).toContain("`## merge` is not allowed in a curate file; allowed: `update`");
+    expect(joined(curate(b, block(`update ${item.ref}`, { reason: "r" }, "Rule."), "archive"))).toContain("`## update` is not allowed in a curate file; allowed: `archive`");
   });
 
   test("an update inherits what it omits, and may leave supports out", () => {
     const b = batch();
     const item = b.item("Rule one");
-    expect(curate(b, block(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")).problems).toEqual([]);
+    expect(curate(b, block(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied."), "update").problems).toEqual([]);
     // The commit message is never inherited: the check names the field.
-    expect(joined(curate(b, block(`update ${item.ref}`, {}, "Rule one, tidied.")))).toContain("missing required field `reason`");
+    expect(joined(curate(b, block(`update ${item.ref}`, {}, "Rule one, tidied."), "update"))).toContain("missing required field `reason`");
   });
 
   test("merged items share one category and scope; changing a category is an earlier update", () => {
     const b = batch();
     const primary = b.item("Rule p", { category: "constraint" }), other = b.item("Rule a", { category: "reference" });
-    const mixed = curate(b, block(`merge ${primary.ref}`, { absorb: other.ref, reason: "same" }, "Merged."));
+    const mixed = curate(b, block(`merge ${primary.ref}`, { absorb: other.ref, reason: "same" }, "Merged."), "merge");
     expect(joined(mixed)).toContain(`merged items share one category: K${primary.knowledgeId}@v1 is \`constraint\`, K${other.knowledgeId}@v1 is \`reference\``);
     expect(joined(mixed)).toContain("change a category with an update in an earlier run first");
     const wide = b.item("Rule w", { scope: "global" });
-    expect(joined(curate(b, block(`merge ${primary.ref}`, { absorb: wide.ref, reason: "same" }, "Merged.")))).toContain("merged items share one scope");
+    expect(joined(curate(b, block(`merge ${primary.ref}`, { absorb: wide.ref, reason: "same" }, "Merged."), "merge"))).toContain("merged items share one scope");
     const same = b.item("Rule s");
-    expect(joined(curate(b, block(`merge ${primary.ref}`, { absorb: same.ref, category: "reference", reason: "same" }, "Merged.")))).toContain("the result says `reference`");
+    expect(joined(curate(b, block(`merge ${primary.ref}`, { absorb: same.ref, category: "reference", reason: "same" }, "Merged."), "merge"))).toContain("the result says `reference`");
   });
 
   test("an absorbed item counts toward one record per item", () => {
     const b = batch();
-    const primary = b.item("Rule p"), absorbed = b.item("Rule a");
-    const text = `${block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same" }, "Merged.")}\n${block(`update ${absorbed.ref}`, { reason: "again" }, "Rule a again.")}`;
-    expect(joined(curate(b, text))).toContain(`K${absorbed.knowledgeId} already has a record in this file (block 1 \`## merge ${primary.ref}\`); a file holds at most one record per item, and an absorbed item counts`);
-    expect(joined(curate(b, block(`merge ${primary.ref}`, { absorb: primary.ref, reason: "same" }, "Merged.")))).toContain(`K${primary.knowledgeId} cannot absorb itself`);
+    const primary = b.item("Rule p"), absorbed = b.item("Rule a"), third = b.item("Rule t");
+    const text = `${block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same" }, "Merged.")}\n${block(`merge ${third.ref}`, { absorb: absorbed.ref, reason: "again" }, "Merged again.")}`;
+    expect(joined(curate(b, text, "merge"))).toContain(`K${absorbed.knowledgeId} already has a record in this file (block 1 \`## merge ${primary.ref}\`); a file holds at most one record per item, and an absorbed item counts`);
+    expect(joined(curate(b, block(`merge ${primary.ref}`, { absorb: primary.ref, reason: "same" }, "Merged."), "merge"))).toContain(`K${primary.knowledgeId} cannot absorb itself`);
   });
 
   test("split children may take their own category; a split needs children", () => {
     const b = batch();
     const parent = b.item("Rule s", { category: "constraint" });
     const child = (category: string) => `\n### child\ntitle: Child ${category}\ncategory: ${category}\nscope: project\ntopics:\nsupports: F${parent.supports[0]}\nreason: split\n\nChild body.\n`;
-    expect(curate(b, block(`split ${parent.ref}`, { reason: "r" }, "Primary part.") + child("reference") + child("goal")).problems).toEqual([]);
-    expect(joined(curate(b, block(`split ${parent.ref}`, { reason: "r" }, "Primary part.")))).toContain("a `split` block needs one or more `### child` sections");
-    expect(joined(curate(b, block(`split ${parent.ref}`, { reason: "r" }, "Primary part.") + "\n### child\ntitle: Only a title\n\nBody.\n"))).toContain("child 1: missing required field `category`");
+    expect(curate(b, block(`split ${parent.ref}`, { reason: "r" }, "Primary part.") + child("reference") + child("goal"), "split").problems).toEqual([]);
+    expect(joined(curate(b, block(`split ${parent.ref}`, { reason: "r" }, "Primary part."), "split"))).toContain("a `split` block needs one or more `### child` sections");
+    expect(joined(curate(b, block(`split ${parent.ref}`, { reason: "r" }, "Primary part.") + "\n### child\ntitle: Only a title\n\nBody.\n", "split"))).toContain("child 1: missing required field `category`");
   });
 
   test("an archive says its kind (invalid or inadmissible) and the explanation; a merged archive is refused in favour of `merge`", () => {
     const b = batch();
     const old = b.item("Rule o");
-    expect(curate(b, block(`archive ${old.ref}`, { kind: "inadmissible", reason: "r" }, "A running log, not an understanding.")).problems).toEqual([]);
-    expect(joined(curate(b, block(`archive ${old.ref}`, { kind: "gone", reason: "r" }, "No longer holds.")))).toContain("kind must be invalid | inadmissible, got `gone`");
-    expect(joined(curate(b, block(`archive ${old.ref}`, { kind: "invalid", reason: "r" }, "invalid")))).toContain("must state the grounds");
-    const merged = joined(curate(b, block(`archive ${old.ref}`, { kind: "merged", reason: "r" }, "Held by another.")));
+    const archive = (fields: Record<string, string>, body: string) => curate(b, block(`archive ${old.ref}`, fields, body), "archive");
+    expect(archive({ kind: "inadmissible", reason: "r" }, "A running log, not an understanding.").problems).toEqual([]);
+    expect(joined(archive({ kind: "gone", reason: "r" }, "No longer holds."))).toContain("kind must be invalid | inadmissible, got `gone`");
+    expect(joined(archive({ kind: "invalid", reason: "r" }, "invalid"))).toContain("must state the grounds");
+    const merged = joined(archive({ kind: "merged", reason: "r" }, "Held by another."));
     expect(merged).toContain("kind must be invalid | inadmissible, got `merged`");
     expect(merged).toContain("write a `merge` block with `absorb:`");
-    const successor = joined(curate(b, block(`archive ${old.ref}`, { kind: "invalid", successor: "K1", reason: "r" }, "No longer holds.")));
+    const successor = joined(archive({ kind: "invalid", successor: "K1", reason: "r" }, "No longer holds."));
     expect(successor).toContain("field `successor` is not allowed here");
     expect(successor).toContain("write a `merge` block with `absorb:`");
   });
 
-  test("evidence is a verify field only, and a task writes only its own operations", () => {
+  test("evidence is a verdict field only: a curate block that carries it is refused", () => {
     const b = batch();
     const item = b.item("Rule one");
-    expect(joined(curate(b, block(`update ${item.ref}`, { reason: "r", evidence: "trace://F1" }, "Rule.")))).toContain("field `evidence` is not allowed here");
-    expect(joined(curate(b, block(`revert ${item.ref} -> ${item.ref}`, { reason: "r" })))).toContain("`## revert` is not allowed in a curate file");
+    expect(joined(curate(b, block(`update ${item.ref}`, { reason: "r", evidence: "trace://F1" }, "Rule."), "update"))).toContain("field `evidence` is not allowed here");
+    expect(joined(curate(b, block(`revert ${item.ref} -> ${item.ref}`, { reason: "r" }), "update"))).toContain("`## revert` is not allowed in a curate file");
   });
 });
 
-describe("verify", () => {
-  test("update, archive and revert pass with evidence; a trace address must resolve and a repository reference is taken as is", () => {
+describe("verify's verdict file", () => {
+  const proposals = (b: WorkspaceBatch, ...entries: [CurateOperation, string][]): Proposal[] => proposalsOf(b.memory, b.path, ...entries);
+  const verdicts = (b: WorkspaceBatch, text: string, changes: Proposal[], resolve: (reference: string) => string | null = () => null) =>
+    checkVerify(b.store, b.path, file(text, "verify.md"), changes, resolve);
+
+  test("confirm, edit and revert pass with evidence; a trace address must resolve and a repository reference goes to the resolver", () => {
     const b = batch();
     const [first, second, third] = ["a", "b", "c"].map(name => b.item(`Rule ${name}`));
     const evidence = `trace://F${first!.supports[0]}`;
-    const text = [
-      block(`update ${first!.ref}`, { reason: "attribution", evidence: `${evidence}, src/core/store/index.ts:120` }, "Rule a, corrected."),
-      block(`archive ${second!.ref}`, { kind: "invalid", reason: "contradicted", evidence }, "The repository shows it does not hold."),
-    ].join("\n");
-    expect(verify(b, text).problems).toEqual([]);
-    expect(joined(verify(b, block(`update ${first!.ref}`, { reason: "r", evidence: "trace://F99999" }, "Rule.")))).toContain("evidence `trace://F99999`: no such fact");
-    expect(joined(verify(b, block(`update ${first!.ref}`, { reason: "r", evidence: "trace://raw/S999/T1" }, "Rule.")))).toContain("no such session");
-    expect(joined(verify(b, block(`update ${first!.ref}`, { reason: "r", evidence: "trace://K99999" }, "Rule.")))).toContain("no such knowledge item");
-    expect(verify(b, block(`update ${first!.ref}`, { reason: "r", evidence: `trace://raw/S${b.session.id}/T${b.entries[0]!.turnId}#E1` }, "Rule.")).problems).toEqual([]);
-    expect(joined(verify(b, block(`update ${first!.ref}`, { reason: "r", evidence: `trace://raw/S${b.session.id}/T${b.entries[0]!.turnId}#E9` }, "Rule.")))).toContain("no entry E9 in that turn");
-    void third;
+    const changes = proposals(b, ["update", block(`update ${first!.ref}`, { reason: "tidy" }, "Rule a, tidied.")], ["update", block(`update ${second!.ref}`, { reason: "tidy" }, "Rule b, tidied.")],
+      ["update", block(`update ${third!.ref}`, { reason: "tidy" }, "Rule c, tidied.")]);
+    const text = [block("confirm 1", { reason: "fine" }), block(`edit 2 update ${second!.ref}`, { evidence: `${evidence}, src/core/store/index.ts:120` }, "Rule b, corrected."),
+      block("revert 3", { evidence, reason: "contradicted" })].join("\n");
+    const seen: string[] = [];
+    const ok = verdicts(b, text, changes, reference => { seen.push(reference); return null; });
+    expect(ok.problems).toEqual([]);
+    expect(ok.verdicts.map(verdict => verdict.verdict)).toEqual(["confirm", "edit", "revert"]);
+    expect(seen).toEqual(["src/core/store/index.ts:120"]);
+    expect(verdicts(b, text, changes, () => "is not a file").problems.join("\n")).toContain("evidence `src/core/store/index.ts:120`: is not a file");
+    const edit = (evidenceValue: string) => joined(verdicts(b, [block("confirm 1"), block(`edit 2 update ${second!.ref}`, { evidence: evidenceValue }, "Rule b."), block("confirm 3")].join("\n"), changes));
+    expect(edit("trace://F99999")).toContain("evidence `trace://F99999`: no such fact");
+    expect(edit("trace://raw/S999/T1")).toContain("no such session");
+    expect(edit("trace://K99999")).toContain("no such knowledge item");
+    expect(edit(`trace://raw/S${b.session.id}/T${b.entries[0]!.turnId}#E1`)).toBe("");
+    expect(edit(`trace://raw/S${b.session.id}/T${b.entries[0]!.turnId}#E9`)).toContain("no entry E9 in that turn");
+    expect(edit("F1")).toContain("write `trace://F1`");
   });
 
-  test("a revert restores an earlier version of the same item", () => {
+  test("an edit or revert without evidence, a revert without a reason, and anything but confirm, edit and revert are refused", () => {
     const b = batch();
     const item = b.item("Rule one");
-    b.store.commitConsolidationRun({ path: b.path, run: { kind: "manual", sessionId: b.session.id, branch: "main", createdAt: "now" }, operations: [{ op: "update",
-      knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "Rule one, changed", category: "constraint", scope: "project", supports: item.supports,
-      topics: [], reason: "change", createdAt: "now" }] });
-    const evidence = `trace://F${item.supports[0]}`;
-    expect(verify(b, block(`revert K${item.knowledgeId}@v2 -> K${item.knowledgeId}@v1`, { reason: "restore", evidence })).problems).toEqual([]);
-    expect(joined(verify(b, block(`revert K${item.knowledgeId}@v1 -> K${item.knowledgeId}@v2`, { reason: "restore", evidence })))).toContain("restores an earlier version");
-    expect(joined(verify(b, block(`revert K${item.knowledgeId}@v2 -> K9@v1`, { reason: "restore", evidence })))).toContain("K9@v1 does not exist");
-    expect(joined(verify(b, block("revert nonsense", { reason: "restore", evidence })))).toContain("expected `## revert K<id>@v<n> -> K<id>@v<m>`");
+    const changes = proposals(b, ["update", block(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")]);
+    expect(joined(verdicts(b, block(`edit 1 update ${item.ref}`, {}, "Rule."), changes))).toContain("missing required field `evidence`");
+    expect(joined(verdicts(b, block(`edit 1 update ${item.ref}`, { evidence: "" }, "Rule."), changes))).toContain("evidence is empty");
+    expect(joined(verdicts(b, block("revert 1", { evidence: `trace://F${item.supports[0]}` }), changes))).toContain("missing required field `reason`");
+    for (const heading of [`update ${item.ref}`, `archive ${item.ref}`, "create"])
+      expect(joined(verdicts(b, block(heading, { reason: "r" }, "Rule."), changes)), heading).toContain("is not a verdict");
+    expect(joined(verdicts(b, block(`revert ${item.ref} -> ${item.ref}`, { reason: "r" }), changes))).toContain("expected `## revert <n>`"); // the version-restoring form is gone
+    expect(joined(verdicts(b, block("confirm 1", { evidence: "trace://F1" }), changes))).toContain("field `evidence` is not allowed in a `confirm` block");
   });
 
-  test("a revert reports the lengths of the restored version and is refused over the caps, as an update is", () => {
+  test("every change needs exactly one verdict, and a verdict needs a change", () => {
+    const b = batch();
+    const [first, second] = [b.item("Rule a"), b.item("Rule b")];
+    const changes = proposals(b, ["update", block(`update ${first.ref}`, { reason: "tidy" }, "Rule a, tidied.")], ["update", block(`update ${second.ref}`, { reason: "tidy" }, "Rule b, tidied.")]);
+    expect(joined(verdicts(b, block("confirm 1"), changes))).toContain("no verdict for change 2");
+    expect(joined(verdicts(b, [block("confirm 1"), block("confirm 1"), block("confirm 2")].join("\n"), changes))).toContain("change 1 already has a verdict");
+    expect(joined(verdicts(b, [block("confirm 1"), block("confirm 2"), block("confirm 3")].join("\n"), changes))).toContain("there is no change 3; the change file has 2");
+    expect(joined(verdicts(b, [block("confirm 1"), block("confirm x")].join("\n"), changes))).toContain("expected `## confirm <n>`");
+    expect(verdicts(b, [block("confirm 1"), block("confirm 2")].join("\n"), changes)).toMatchObject({ ok: true, problems: [] });
+  });
+
+  test("an edit keeps its change's kind, target, absorbed items and number of children, and may change the item's body, title, category, scope, topics and supports", () => {
+    const b = batch();
+    const [rule, primary, absorbed, third, parent, old] = ["r", "p", "a", "t", "s", "o"].map(name => b.item(`Rule ${name}`, { title: `Rule ${name}` }));
+    const evidence = `trace://F${rule!.supports[0]}`;
+    const child = (title: string) => `\n### child\ntitle: ${title}\ncategory: reference\nscope: project\ntopics:\nsupports: F${parent!.supports[0]}\nreason: split\n\nChild body.\n`;
+    const changes = proposals(b,
+      ["update", block(`update ${rule!.ref}`, { reason: "tidy" }, "Rule r, tidied.")],
+      ["merge", block(`merge ${primary!.ref}`, { absorb: absorbed!.ref, reason: "same" }, "Merged.")],
+      ["split", block(`split ${parent!.ref}`, { reason: "two" }, "Primary part.") + child("Child")],
+      ["archive", block(`archive ${old!.ref}`, { kind: "inadmissible", reason: "log" }, "A running log, not an understanding.")]);
+    const all = (...edits: string[]) => joined(verdicts(b, edits.join("\n"), changes));
+    // Free: every field of the produced item.
+    const update = block(`edit 1 update ${rule!.ref}`, { evidence, title: "New title", category: "reference", scope: "session", topics: "a, b", supports: `F${rule!.supports[0]}` }, "Rule r, corrected.");
+    const tail = [block("confirm 2"), block("confirm 3"), block("confirm 4")].join("\n");
+    expect(joined(verdicts(b, `${update}\n${tail}`, changes))).toBe("");
+    // Fixed: kind, target, absorbed items, number of children, and an archive takes no edit.
+    expect(all(block(`edit 1 merge ${rule!.ref}`, { evidence }, "x"), tail)).toContain("cannot change an operation's kind");
+    expect(all(block(`edit 1 update ${primary!.ref}`, { evidence }, "x"), tail)).toContain(`change 1 is on ${rule!.ref}`);
+    expect(all(block("confirm 1"), block(`edit 2 merge ${primary!.ref}`, { evidence, absorb: `${absorbed!.ref}, ${third!.ref}` }, "x"), block("confirm 3"), block("confirm 4")))
+      .toContain("cannot change which items the merge absorbs");
+    expect(all(block("confirm 1"), block("confirm 2"), block(`edit 3 split ${parent!.ref}`, { evidence }, "x") + child("A") + child("B"), block("confirm 4")))
+      .toContain("keeps the proposal's 1 children; it has 2");
+    expect(all(block("confirm 1"), block("confirm 2"), block("confirm 3"), block(`edit 4 archive ${old!.ref}`, { evidence }, "A different statement of the grounds.")))
+      .toContain("change 4 is an archive; an archive takes only confirm or revert");
+    expect(all(block("confirm 1"), block("confirm 2"), block("confirm 3"), block("revert 4", { evidence, reason: "still holds" }))).toBe("");
+    // A merge edit cannot change the result's category: the merge rule refuses it and the message names the rule.
+    expect(all(block("confirm 1"), block(`edit 2 merge ${primary!.ref}`, { evidence, category: "reference" }, "x"), block("confirm 3"), block("confirm 4")))
+      .toContain("merged items share one category");
+  });
+
+  test("an edit that omits a field keeps the proposal's value; one that names it, even empty, overrides it", () => {
+    const b = batch();
+    const item = b.item("Rule one", { title: "Base title" });
+    const evidence = `trace://F${item.supports[0]}`;
+    const changes = proposals(b, ["update", block(`update ${item.ref}`, { reason: "retitle", title: "Proposed title", category: "reference", topics: "tooling" }, "Rule one, tidied.")]);
+    const compiled = (fields: Record<string, string>) => {
+      const result = verdicts(b, block(`edit 1 update ${item.ref}`, { evidence, ...fields }, "Rule one, corrected."), changes);
+      expect(result.problems).toEqual([]);
+      return result.verdicts[0]!.operation as Extract<Proposal["operation"], { op: "update" }>;
+    };
+    expect(compiled({})).toMatchObject({ title: "Proposed title", category: "reference", topics: ["tooling"], text: "Rule one, corrected." });
+    expect(compiled({ title: "Mine", topics: "" })).toMatchObject({ title: "Mine", category: "reference", topics: [] });
+  });
+
+  test("an over-cap edit is refused with its count and limit, and the counts are still reported", () => {
     const b = batch({ bodyTokens: 4 });
     const item = b.item("one two three four five six seven eight"); // seeded before the caps, as production rows are
-    b.store.commitConsolidationRun({ path: b.path, run: { kind: "manual", sessionId: b.session.id, branch: "main", createdAt: "now" }, operations: [{ op: "update",
-      knowledgeId: item.knowledgeId, baseCommit: item.commit, title: "Short rule", text: "Short.", category: "constraint", scope: "project", supports: item.supports,
-      topics: [], reason: "shorten", createdAt: "now" }] });
-    const result = verify(b, block(`revert K${item.knowledgeId}@v2 -> K${item.knowledgeId}@v1`, { reason: "restore", evidence: `trace://F${item.supports[0]}` }));
+    const changes = proposals(b, ["update", block(`update ${item.ref}`, { title: "Short rule", reason: "shorten" }, "Short.")]);
+    const result = verdicts(b, block(`edit 1 update ${item.ref}`, { evidence: `trace://F${item.supports[0]}` }, "one two three four five six seven eight"), changes);
     expect(joined(result)).toMatch(/text: 8 tokens, over the 4-token limit/);
-    expect(result.lengths).toEqual([
-      { block: `block 1 \`## revert K${item.knowledgeId}@v2 -> K${item.knowledgeId}@v1\``, field: "title", count: expect.any(Number), limit: 20 },
-      { block: `block 1 \`## revert K${item.knowledgeId}@v2 -> K${item.knowledgeId}@v1\``, field: "body", count: 8, limit: 4 },
-    ]);
-  });
-
-  test("a correction without evidence is refused, and only update, archive and revert may be written", () => {
-    const b = batch();
-    const item = b.item("Rule one");
-    expect(joined(verify(b, block(`update ${item.ref}`, { reason: "r" }, "Rule.")))).toContain("missing required field `evidence`");
-    expect(joined(verify(b, block(`archive ${item.ref}`, { kind: "invalid", reason: "r" }, "Does not hold, per the facts.")))).toContain("missing required field `evidence`");
-    expect(joined(verify(b, block(`update ${item.ref}`, { reason: "r", evidence: "" }, "Rule.")))).toContain("evidence is empty");
-    expect(joined(verify(b, block("create", { ...create, evidence: "trace://F1" }, "Rule.")))).toContain("`## create` is not allowed in a verify file; allowed: `update`, `archive`, `revert`");
+    expect(result.lengths).toContainEqual({ block: "block 1 `## edit 1 update " + item.ref + "`", field: "body", count: 8, limit: 4 });
   });
 });
 

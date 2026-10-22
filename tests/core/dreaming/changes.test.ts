@@ -1,79 +1,80 @@
 import { afterEach, expect, test } from "vitest";
 import { buildChanges } from "../../../src/core/dreaming/changes.ts";
-import { curateNow } from "../../support/dreamer.ts";
-import { archive } from "../../support/seed.ts";
+import { keptBatch } from "../../support/dreamer.ts";
+import { archive, updateKnowledge } from "../../support/seed.ts";
 import { block, workspaceBatch, type WorkspaceBatch } from "../../support/workspace.ts";
 
-// The change file verify reads (ticket 144 Stage 4 §5.1): one block per curate operation that applied, with the complete before and
-// after bodies. It replaces the Dreamer's end review (spec 10.2 split table "dreaming/end-review.test.ts").
+// The change file verify reads (ticket 144 stage 5 §4.3): one numbered block per proposal curate kept, with the complete current and
+// proposed bodies. It is built from the kept proposals, applies nothing, and replaces the Dreamer's end review.
 const opened: WorkspaceBatch[] = [];
 const batch = () => { const b = workspaceBatch(); opened.push(b); return b; };
 afterEach(() => { for (const b of opened.splice(0)) b.memory.close(); });
 const longBody = (head: string, tail: string) =>
   `${head}。这条规则的背景是：多个会话反复遇到同类问题，所以把处理方式固定下来，并且要求每次都先核对来源再动手，避免凭印象改写。${tail}`;
-const ref = (item: { knowledgeId: number; ordinal: number }) => `K${item.knowledgeId}@v${item.ordinal}`;
 
-test("an update lists the complete body it started from and the complete body it wrote", () => {
+test("an update lists the complete body it started from and the complete body it proposes, and changes nothing", () => {
   const b = batch();
   const before = longBody("规则甲", "结尾甲"), after = longBody("规则甲", "结尾甲，新增一条边界：不 stash／reset");
   const item = b.item(before, { title: "规则甲" });
-  const run = curateNow(b.memory, b.path, block(`update ${ref(item)}`, { reason: "boundary" }, after)).runId;
-  const changes = buildChanges(b.store, [run]);
+  const run = keptBatch(b.memory, b.path, "constraint", ["update", block(`update ${item.ref}`, { reason: "boundary" }, after)]);
+  const changes = buildChanges(b.store, b.path, [run]);
   expect(changes.blocks).toBe(1);
-  expect(changes.text).toContain(`update K${item.knowledgeId}`);
-  expect(changes.text).toContain(`base: ${ref(item)}`);
-  const [, beforePart, afterPart] = /before:\n([\s\S]*?)\n\nafter:\n([\s\S]*)/.exec(changes.text)!;
-  expect(beforePart).toContain(before);
-  expect(afterPart).toContain(after);
+  expect(changes.text).toContain(`## 1 · update K${item.knowledgeId} · batch constraint`);
+  expect(changes.text).toContain(`current: ${item.ref}`);
+  const [, currentPart, proposedPart] = /current text:\n([\s\S]*?)\n\nproposed:\n([\s\S]*)/.exec(changes.text)!;
+  expect(currentPart).toContain(before);
+  expect(proposedPart).toContain(after);
   expect(changes.text).not.toContain("[...]"); // nothing is truncated
+  expect(b.store.currentCommit(item.knowledgeId, b.path)[0]!.text).toBe(before); // a change file is not an application
 });
 
-test("a merge lists the absorbed items with their bodies and says they are consumed; a split lists its children", () => {
+test("a merge lists the absorbed items with their bodies; a split lists its children; changes are numbered across batches", () => {
   const b = batch();
   const survivor = b.item("Survivor body.", { title: "Survivor" }), absorbed = b.item("Absorbed body to disappear.", { title: "Absorbed" });
   const parent = b.item("Parent body to split.", { title: "Parent" });
   const child = (title: string, text: string) => `\n### child\ntitle: ${title}\ncategory: reference\nscope: project\ntopics:\nsupports: F${parent.supports[0]}\nreason: two rules\n\n${text}\n`;
-  const run = curateNow(b.memory, b.path, [
-    block(`merge ${ref(survivor)}`, { absorb: ref(absorbed), reason: "same rule" }, "Survivor body, with the absorbed rule."),
-    block(`split ${ref(parent)}`, { reason: "two rules" }, "Primary part.") + child("Child one", "Child one.") + child("Child two", "Child two."),
-  ].join("\n")).runId;
-  const text = buildChanges(b.store, [run]).text;
-  expect(text).toContain(`absorbed ${ref(absorbed)}:`);
+  const first = keptBatch(b.memory, b.path, "constraint", ["merge", block(`merge ${survivor.ref}`, { absorb: absorbed.ref, reason: "same rule" }, "Survivor body, with the absorbed rule.")]);
+  const second = keptBatch(b.memory, b.path, "reference", ["split", block(`split ${parent.ref}`, { reason: "two rules" }, "Primary part.") + child("Child one", "Child one.") + child("Child two", "Child two.")]);
+  const text = buildChanges(b.store, b.path, [first, second]).text;
+  expect(text).toContain(`## 1 · merge K${survivor.knowledgeId} · batch constraint`);
+  expect(text).toContain(`## 2 · split K${parent.knowledgeId} · batch reference`);
+  expect(text).toContain(`absorbed ${absorbed.ref} (archived into the primary if confirmed):`);
   expect(text).toContain("Absorbed body to disappear.");
-  expect(text).toContain(`K${absorbed.knowledgeId}: consumed by this merge`);
   expect(text).toContain("Survivor body, with the absorbed rule.");
-  expect(text.match(/child K\d+@v1:/g)).toHaveLength(2);
+  expect(text.match(/proposed child \d:/g)).toHaveLength(2);
   expect(text).toContain("Child one.");
-  expect(text).toContain("Child two.");
   expect(text).toContain("Primary part."); // the split item continues as its primary part
 });
 
-test("a rewrite made earlier in the cycle is not shown as the original: the later block's before is the earlier result", () => {
+test("title, scope and topics are shown only when the proposal changes them; supports show what the proposal writes, inherited ones included", () => {
   const b = batch();
-  const original = "Keep the routine. Never stash or reset the user's work.", rewritten = "Keep the routine.";
-  const item = b.item(original, { title: "Routine" });
-  const first = curateNow(b.memory, b.path, block(`update ${ref(item)}`, { reason: "trim" }, rewritten));
-  const second = curateNow(b.memory, b.path, block(`archive K${item.knowledgeId}@v2`, { kind: "invalid", reason: "contradicted" }, "The user contradicted this rule on the same day; nothing replaces it."));
-  const changes = buildChanges(b.store, [first.runId, second.runId]);
-  expect(changes.blocks).toBe(2);
-  const [updateBlock, archiveBlock] = changes.text.split("\n\n## ").map((part, i) => i === 0 ? part : `## ${part}`);
-  expect(updateBlock).toContain(original); // the first block started from the original
-  expect(archiveBlock).toContain(`base: K${item.knowledgeId}@v2`);
-  expect(archiveBlock).toContain("archive: invalid");
-  expect(archiveBlock).toContain("reason: contradicted");
-  expect(archiveBlock).not.toContain(original); // the archive's before is the trimmed body, never the original
-  expect(archiveBlock).toContain(`\n${rewritten}`);
-  expect(changes.results.get(item.knowledgeId)).toBe(b.store.currentCommit(item.knowledgeId, b.path)[0]!.id);
+  const item = b.item("Rule one", { title: "Old title" });
+  const kept = (fields: Record<string, string>) => buildChanges(b.store, b.path, [keptBatch(b.memory, b.path, "constraint", ["update", block(`update ${item.ref}`, { reason: "tidy", ...fields }, "Rule one, tidied.")])]).text;
+  const plain = kept({});
+  expect(plain).not.toMatch(/^(title|scope|topics):/m);
+  expect(plain).toContain(`supports: F${item.supports[0]}`); // inherited from the base, shown as what is written
+  const changed = kept({ title: "New title", topics: "tooling" });
+  expect(changed).toContain("title: Old title -> New title");
+  expect(changed).toContain('topics: [] -> ["tooling"]');
 });
 
-test("an archived item revived with a body is listed from its archive explanation to the full new body", () => {
+test("the current version is the live one: a proposal whose base a later write replaced is shown as stale", () => {
+  const b = batch();
+  const item = b.item("Rule one");
+  const run = keptBatch(b.memory, b.path, "constraint", ["update", block(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")]);
+  updateKnowledge(b.store, b.path, item.knowledgeId, item.commit, "Rule one, by hand", item.supports);
+  const text = buildChanges(b.store, b.path, [run]).text;
+  expect(text).toContain(`current: K${item.knowledgeId}@v2`);
+  expect(text).toContain(`curate proposed from ${item.ref}; this change will be refused at apply`);
+});
+
+test("an update of an archived base lists the archive explanation as the current text", () => {
   const b = batch();
   const item = b.item("Rule A body.", { title: "Rule A title" });
   const archived = archive(b.store, b.path, item.knowledgeId, item.commit, item.supports, "invalid", "No longer holds, per the user's later correction, which replaces it");
   expect(b.store.versionOrdinal(item.knowledgeId, archived)).toBe(2);
-  const run = curateNow(b.memory, b.path, block(`update K${item.knowledgeId}@v2`, { reason: "revived" }, "Rule A body.")).runId;
-  const text = buildChanges(b.store, [run]).text;
-  expect(text).toContain(`base: K${item.knowledgeId}@v2`);
+  const run = keptBatch(b.memory, b.path, "constraint", ["update", block(`update K${item.knowledgeId}@v2`, { reason: "revived" }, "Rule A body.")]);
+  const text = buildChanges(b.store, b.path, [run]).text;
   expect(text).toContain("No longer holds, per the user's later correction");
-  expect(text).toMatch(/after:\nRule A title\nRule A body\./);
+  expect(text).toMatch(/proposed:\nRule A title\nRule A body\./);
 });

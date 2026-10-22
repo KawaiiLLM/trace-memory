@@ -156,16 +156,22 @@ schema migration in parent-before-child order; an all-empty ancestry remains emp
 
 **curate** runs one conversation over the whole pool. Its first message is the knowledge prefix (at most 50,000
 tokens; items whole, the lowest-scored ones reduced to a title when the cap is exceeded) and tells the model to call
-`check`. It then works one category per batch, each batch a file of blocks (`update`, `merge`, `split`, `archive`,
-`create`; one block per item), and a passing batch is applied before the next is handed over. A merge names its
-primary, which keeps its identity; a split keeps the named item as its primary part. An archive is `invalid` or
-`inadmissible` with a statement; no archive is made to fit a budget. Each operation commits or is refused on its own: a
-stale base is refused for that operation and left for the next run. A batch that fails its check twice fails curate.
+`check`, whose first result carries the task's instructions (`prompts/tasks/curate-<op>.md`, priced in the capacity
+check). A run performs **one operation**, rotating per project `update` → `merge` → `split` → `archive`
+(`Store.nextCurateOperation`, derived from the newest finished run that advanced it; the hand-off's `detail.operation`
+repeats a failed run's operation on resume). Curate works one category per batch, each batch a file of blocks of that
+operation only (never `create`; one block per item), and a passing batch is **kept** in its run record as a proposal.
+Nothing is applied before verify passes. A merge names its primary, which keeps its identity; a split keeps the named
+item as its primary part. An archive is `invalid` or `inadmissible` with a statement. A batch that fails its check
+twice fails curate. It reads the repositories of the session's directories like verify.
 
-**verify** checks only curate's changes, in a second conversation with the same first request (so it reads the cache
-curate wrote), against facts, Raw and the repositories of the session's directories. Its change file lists each applied
-operation with its before and after; verify may `update` or `revert` only a curate result and `archive` with evidence
-that resolves. It makes no model call when curate changed nothing.
+**verify** gives every proposal one verdict, in a second conversation with the same first request (so it reads the
+cache curate wrote). Its change file numbers each proposal with its current and proposed text (a stale base is shown);
+its file holds `## confirm <n>`, `## edit <n> <op> <K@v>` (same operation and target; body, title, category, scope,
+topics and supports of what the change produces; omitted fields keep the proposal's) or `## revert <n>`. Its pass applies
+the confirmed and edited operations in change order in one transaction: a stale base or an operation over the caps in
+force now is refused for that operation and left for the next run. It makes no model call when curate proposed nothing,
+and it writes coverage.
 
 **classify** scores items 1 to 100 by what forgetting them would cost, in passes of at most 100 items, each in a fresh
 conversation. The set is fixed when the task starts: all items up to 100, above that the unscored and changed ones with
@@ -180,7 +186,9 @@ transient failure (provider, network, store, deadline) is retried at later check
 rule); any other failure, or the fourth, waits until a further trigger's worth of Noter changes arrives. A Dreamer
 failure is never counted toward switching memory off. Each task has the wall-clock bound `dreaming.timeoutMs`
 (1,800,000 ms by default, no tool-round ceiling), clamped by the execution backstop; expiry fences the task and fails it.
-A run completes when classify has finished and no hand-off remains.
+A run completes when classify has finished and no hand-off remains: the final classify pass (or the no-work classify) commits
+`finished: { operation, advanced }` into its run body in the same transaction that removes the hand-off, and settlement
+never reopens a run that carries it (a later failure is recorded and nothing more).
 
 Evidence rules, titles and lengths are the Noter's (`src/core/workspace/`). Pending changes, change files and range reads
 use the same lossless sentence-first unified diff. Project relabelling creates no processing event or revision; it

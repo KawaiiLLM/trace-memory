@@ -1,4 +1,4 @@
-// The repositories verify may read (ticket 144 stage 4 §5.4, §12 Q3): one function names the allowed roots, one deny list applies to
+// The repositories curate and verify may read (ticket 144 stage 4 §5.4, stage 5 §3.7): one function names the allowed roots, one deny list applies to
 // Read, Grep, Glob and to the files `evidence:` cites. Both hosts and the file check call these and nothing else.
 
 import { realpathSync, statSync } from "node:fs";
@@ -59,10 +59,10 @@ export function repositoryEvidenceProblem(reference: string, roots: readonly str
   return statSync(resolved.path).isFile() ? null : `${match[1]} is not a file`;
 }
 
-/** One Grep or Glob call confined to the roots (verify only): the directory it searches, resolved, and for a Grep the exclusion of secret
+/** One Grep or Glob call confined to the roots (curate and verify): the directory it searches, resolved, and for a Grep the exclusion of secret
  * files. Throws the reason a call is refused. */
 export function confineSearch(input: { path?: unknown; glob?: unknown; pattern?: unknown }, roots: readonly string[], tool: "grep" | "glob"): { path: string; glob?: string } {
-  if (!roots.length) throw new Error("Grep and Glob read repositories during verify only, and this session has none");
+  if (!roots.length) throw new Error("Grep and Glob read repositories during curate and verify only, and this session has none");
   if (typeof input.path !== "string" || !isAbsolute(input.path)) throw new Error(`name an absolute directory in path; allowed: ${roots.join(", ")}`);
   const resolved = resolveRepositoryPath(input.path, roots);
   if ("reason" in resolved) throw new Error(resolved.reason);

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { knowledgeFile } from "../../support/noter.ts";
 import { host as createHost, reply, notingFact, NOTER_BATCH_REQUESTS, holdFirstRequest, noteHeld, usage, dreamerFiles, type Reply } from "./test-host.ts";
 import { compacted, seedSourceEntry } from "../../source-fixture.ts";
-import { noterWrittenItem } from "../../support/dreamer.ts";
+import { curateNow } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 
@@ -812,18 +812,10 @@ test("64b/16b: Pi tree switch drives injection and prompt delivery", async () =>
   const update = async (text: string, factId: number, sequence: number) => {
     const path = target(); h.memory.store.setCurrentPath(1, path.branch, path.headTurnId, "pi-test");
     const current = h.memory.store.currentCommit(1, path)[0]!;
-    // The Dreamer is due on a Noter-written item (2026-10-22); its curate batch rewrites the base item for this branch.
-    noterWrittenItem(h.memory, path, factId);
-    expect(h.memory.store.dreamingDue(path, 1)).toBe(true);
-    expect(h.memory.store.getClaim(1, "dreaming")).toBeNull();
+    // The branch's version is a Dreamer-style update of the base item, applied through the curate vehicle: the subject here is which version each
+    // branch sees, and since 2026-10-22 a Dreamer run performs one rotating operation, so a run is not a reliable way to make two updates.
     const rewrite = block(`update K1@v${h.memory.store.versionOrdinal(1, current.id)}`, { supports: `F${factId}`, reason: `Update from ${path.branch}.` }, text);
-    h.provider(async conversation => {
-      expect(conversation.systemPrompt).toMatch(/^# (Dreamer|Classifying)/);
-      return dreamerFiles(conversation, { curate: rewrite }) ?? reply("Done.");
-    });
-    await h.turn();
-    const run = h.memory.store.listRuns(1).filter(item => item.kind === "dreaming").at(-1)!;
-    expect(run.outcome, JSON.stringify(run)).toBe("success");
+    curateNow(h.memory, path, rewrite, "update");
     return h.memory.store.currentCommit(1, h.memory.store.knowledgePath(1))[0]!.id;
   };
 

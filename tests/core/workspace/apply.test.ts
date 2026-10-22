@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { memoryFiles } from "../../../src/core/api/files.ts";
-import { applyWorkspace, type ApplyResult } from "../../../src/core/workspace/index.ts";
+import { applyWorkspace, overCaps, plan, type ApplyResult } from "../../../src/core/workspace/index.ts";
+import type { CurateOperation } from "../../../src/core/store/executions.ts";
 import { block, workspaceBatch, type WorkspaceBatch } from "../../support/workspace.ts";
 
 const opened: WorkspaceBatch[] = [];
@@ -10,8 +11,8 @@ afterEach(() => { for (const b of opened.splice(0)) b.memory.close(); });
 const file = (text: string, name = "file.md") => ({ name, text });
 const noting = (b: WorkspaceBatch, facts: string, knowledge: string) =>
   applyWorkspace(b.store, { kind: "noting", scope: b.scope, facts: file(facts, "facts.md"), knowledge: file(knowledge, "knowledge.md") });
-const dreaming = (b: WorkspaceBatch, kind: "curate" | "verify", text: string) =>
-  applyWorkspace(b.store, { kind, sessionId: b.session.id, path: b.path, file: file(text, `${kind}.md`) });
+const dreaming = (b: WorkspaceBatch, operation: CurateOperation, text: string) =>
+  applyWorkspace(b.store, { kind: "curate", operation, sessionId: b.session.id, path: b.path, file: file(text, `curate-${operation}.md`) });
 const ok = (result: ApplyResult) => { if (!result.ok) throw new Error(result.problems.join("\n")); return result; };
 const current = (b: WorkspaceBatch, knowledgeId: number) => b.store.currentCommit(knowledgeId, b.path);
 const read = (b: WorkspaceBatch, address: string) => memoryFiles(b.memory, b.path).read(address).content;
@@ -80,22 +81,19 @@ describe("the Noter's two files", () => {
 });
 
 describe("curate", () => {
-  test("update keeps the identity and adds a version; create gets a new identity", () => {
+  test("update keeps the identity and adds a version", () => {
     const b = batch();
     const item = b.item("Rule one");
-    const result = ok(dreaming(b, "curate", `${block(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")}\n${block("create", { ...create, supports: support(item) }, "A new rule.")}`));
-    expect(result.blocks.map(entry => entry.status)).toEqual(["applied", "applied"]);
+    const result = ok(dreaming(b, "update", block(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")));
+    expect(result.blocks.map(entry => entry.status)).toEqual(["applied"]);
     expect(result.blocks[0]!.versions).toEqual([`K${item.knowledgeId}@v2`]);
     expect(current(b, item.knowledgeId)[0]).toMatchObject({ op: "update", text: "Rule one, tidied.", supports: item.supports, actorRole: "dreaming" });
-    const created = Number(result.blocks[1]!.versions[0]!.match(/^K(\d+)/)![1]);
-    expect(created).not.toBe(item.knowledgeId);
-    expect(current(b, created)[0]).toMatchObject({ op: "create", title: "Use pnpm" });
   });
 
   test("a merge keeps the primary's identity, even the newer one, and consumes the absorbed items with successor links", () => {
     const b = batch();
     const older = b.item("Rule a"), newer = b.item("Rule b"), third = b.item("Rule c");
-    const result = ok(dreaming(b, "curate", block(`merge ${newer.ref}`, { absorb: `${older.ref}, ${third.ref}`, reason: "same rule" }, "Rules a, b and c, merged.")));
+    const result = ok(dreaming(b, "merge", block(`merge ${newer.ref}`, { absorb: `${older.ref}, ${third.ref}`, reason: "same rule" }, "Rules a, b and c, merged.")));
     expect(result.blocks[0]).toMatchObject({ status: "applied", versions: [`K${newer.knowledgeId}@v2`] });
     expect(current(b, newer.knowledgeId)[0]).toMatchObject({ op: "merge", text: "Rules a, b and c, merged." });
     for (const absorbed of [older, third]) {
@@ -112,7 +110,7 @@ describe("curate", () => {
     const visible = () => [...b.store.visibleKnowledgeVersions(b.path)].map(commit => b.store.knowledgeRevision(commit)!)
       .filter(revision => [older.knowledgeId, newer.knowledgeId].includes(revision.knowledgeId));
     expect(visible()).toHaveLength(2); // warms the graph cache before the merge
-    ok(dreaming(b, "curate", block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same rule" }, "Rules a and b, merged.")));
+    ok(dreaming(b, "merge", block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same rule" }, "Rules a and b, merged.")));
     expect(visible().map(revision => [revision.knowledgeId, revision.op])).toEqual([[primary.knowledgeId, "merge"]]);
     expect(current(b, absorbed.knowledgeId)).toEqual([]);
     expect(current(b, primary.knowledgeId)).toHaveLength(1);
@@ -122,7 +120,7 @@ describe("curate", () => {
     const b = batch();
     const item = b.item("Rule one and rule two");
     const child = (category: string, title: string) => `\n### child\ntitle: ${title}\ncategory: ${category}\nscope: project\ntopics: split\nsupports: ${support(item)}\nreason: split out\n\n${title} body.\n`;
-    const result = ok(dreaming(b, "curate", block(`split ${item.ref}`, { reason: "two topics" }, "Rule one.") + child("reference", "Child ref") + child("goal", "Child goal")));
+    const result = ok(dreaming(b, "split", block(`split ${item.ref}`, { reason: "two topics" }, "Rule one.") + child("reference", "Child ref") + child("goal", "Child goal")));
     expect(result.blocks[0]).toMatchObject({ status: "applied" });
     const [primary, ...children] = result.blocks[0]!.versions;
     expect(primary).toBe(`K${item.knowledgeId}@v2`);
@@ -140,7 +138,7 @@ describe("curate", () => {
   test("archives: invalid and inadmissible write an archive version with the explanation", () => {
     const b = batch();
     const [invalid, inadmissible] = ["i", "n"].map(name => b.item(`Rule ${name}`));
-    const result = ok(dreaming(b, "curate", [
+    const result = ok(dreaming(b, "archive", [
       block(`archive ${invalid!.ref}`, { kind: "invalid", reason: "contradicted" }, "The user withdrew the rule on the same day."),
       block(`archive ${inadmissible!.ref}`, { kind: "inadmissible", reason: "a running log" }, "A running log of one session, not an understanding."),
     ].join("\n")));
@@ -153,7 +151,7 @@ describe("curate", () => {
     const b = batch();
     const stale = b.item("Rule a"), fresh = b.item("Rule b");
     concurrentUpdate(b, stale, "Rule a, changed by another writer");
-    const result = ok(dreaming(b, "curate", `${block(`update ${stale.ref}`, { reason: "tidy" }, "Rule a, tidied.")}\n${block(`update ${fresh.ref}`, { reason: "tidy" }, "Rule b, tidied.")}`));
+    const result = ok(dreaming(b, "update", `${block(`update ${stale.ref}`, { reason: "tidy" }, "Rule a, tidied.")}\n${block(`update ${fresh.ref}`, { reason: "tidy" }, "Rule b, tidied.")}`));
     expect(result.blocks[0]).toMatchObject({ status: "refused", stale: true, versions: [] });
     expect(result.blocks[0]!.reason).toContain(`K${stale.knowledgeId}@v1: base is not the latest effective applicable revision`);
     expect(result.blocks[0]!.reason).toContain("left for the next run");
@@ -164,67 +162,53 @@ describe("curate", () => {
 
   test("a merge or split with any stale base is refused whole; the rest of the file is applied", () => {
     const b = batch();
-    const primary = b.item("Rule p"), absorbed = b.item("Rule a"), parent = b.item("Rule s"), fine = b.item("Rule f");
+    const primary = b.item("Rule p"), absorbed = b.item("Rule a"), other = b.item("Rule q"), another = b.item("Rule r");
     concurrentUpdate(b, absorbed, "Rule a, changed by another writer");
-    const child = `\n### child\ntitle: Child\ncategory: reference\nscope: project\ntopics:\nsupports: ${support(parent)}\nreason: split out\n\nChild body.\n`;
-    const result = ok(dreaming(b, "curate", [
-      block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same rule" }, "Rules p and a."),
-      block(`split ${parent.ref}`, { reason: "two" }, "Rule s.") + child,
-      block(`archive ${fine.ref}`, { kind: "invalid", reason: "r" }, "Does not hold any more, per the user."),
-    ].join("\n")));
-    expect(result.blocks.map(entry => entry.status)).toEqual(["refused", "applied", "applied"]);
-    expect(result.blocks[0]).toMatchObject({ stale: true });
+    const merged = ok(dreaming(b, "merge", [block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "same rule" }, "Rules p and a."),
+      block(`merge ${other.ref}`, { absorb: another.ref, reason: "same rule" }, "Rules q and r.")].join("\n")));
+    expect(merged.blocks.map(entry => entry.status)).toEqual(["refused", "applied"]);
+    expect(merged.blocks[0]).toMatchObject({ stale: true });
     expect(current(b, primary.knowledgeId)[0]!.text).toBe("Rule p");
     expect(current(b, absorbed.knowledgeId)[0]!.text).toBe("Rule a, changed by another writer");
     // A stale split is refused the same way.
-    const other = b.item("Rule x");
-    concurrentUpdate(b, other, "Rule x, changed by another writer");
-    const again = ok(dreaming(b, "curate", block(`split ${other.ref}`, { reason: "two" }, "Rule x.") + child));
-    expect(again.blocks[0]).toMatchObject({ status: "refused", stale: true });
+    const parent = b.item("Rule s"), fine = b.item("Rule x");
+    concurrentUpdate(b, parent, "Rule s, changed by another writer");
+    const child = `\n### child\ntitle: Child\ncategory: reference\nscope: project\ntopics:\nsupports: ${support(parent)}\nreason: split out\n\nChild body.\n`;
+    const split = ok(dreaming(b, "split", block(`split ${parent.ref}`, { reason: "two" }, "Rule s.") + child + block(`split ${fine.ref}`, { reason: "two" }, "Rule x.") + child));
+    expect(split.blocks.map(entry => entry.status)).toEqual(["refused", "applied"]);
+    expect(split.blocks[0]).toMatchObject({ stale: true });
   });
 
   test("a file with problems writes nothing", () => {
     const b = batch();
     const item = b.item("Rule one");
-    const result = dreaming(b, "curate", `${block(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")}\n${block("archive K9999@v1", { kind: "invalid", reason: "r" }, "Gone for good.")}`);
+    const result = dreaming(b, "update", `${block(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")}\n${block("update K9999@v1", { reason: "r" }, "Gone for good.")}`);
     expect(result.ok).toBe(false);
     expect(current(b, item.knowledgeId)[0]!.text).toBe("Rule one");
   });
 });
 
-describe("verify", () => {
-  test("a revert writes a new version whose content is the earlier version's", () => {
-    const b = batch();
-    const item = b.item("Rule one");
-    const changed = concurrentUpdate(b, item, "Rule one, wrongly changed");
-    const result = ok(dreaming(b, "verify", block(`revert K${item.knowledgeId}@v2 -> K${item.knowledgeId}@v1`, { reason: "the change misread the user", evidence: `trace://F${item.supports[0]}` })));
-    expect(result.blocks[0]).toMatchObject({ status: "applied", versions: [`K${item.knowledgeId}@v3`] });
-    expect(current(b, item.knowledgeId)[0]).toMatchObject({ text: "Rule one", parentId: changed.commit, title: b.store.getKnowledgeRevision(item.knowledgeId, item.commit)!.title });
-  });
-
-  test("a revert to a version over the current caps is refused with the counts; nothing is written", () => {
+describe("the caps in force at apply", () => {
+  // Superseded 2026-10-22: verify's version-restoring revert and its archive are gone (verify only confirms, edits or reverts a proposal),
+  // so the old "revert over the caps" and "verify archives" apply tests are deleted; an edited operation applies at verify's pass
+  // (`dreaming-verify.test.ts`). What stays is the cap contract itself, now one function `plan`'s lengths and apply's refusal share.
+  test("a title, a body, an archive explanation and each split child are counted against the caps now in force", () => {
     const b = workspaceBatch({ bodyTokens: 4 });
     opened.push(b);
-    const item = b.item("one two three four five six seven eight"); // seeded before the caps, as production rows are
-    concurrentUpdate(b, item, "Short.");
-    const evidence = `trace://F${item.supports[0]}`;
-    const result = dreaming(b, "verify", block(`revert K${item.knowledgeId}@v2 -> K${item.knowledgeId}@v1`, { reason: "restore", evidence }));
-    expect(result.ok).toBe(false);
-    expect(result.ok === false && result.problems.join("\n")).toMatch(/text: \d+ tokens, over the 4-token limit/);
-    expect(current(b, item.knowledgeId)[0]!.text).toBe("Short.");
-  });
-
-  test("a correction and an archive with evidence are applied", () => {
-    const b = batch();
-    const [wrong, gone] = [b.item("Rule w"), b.item("Rule g")];
-    const evidence = `trace://F${wrong.supports[0]}`;
-    const result = ok(dreaming(b, "verify", [
-      block(`update ${wrong.ref}`, { reason: "attribution", evidence }, "Rule w, as the user said it."),
-      block(`archive ${gone.ref}`, { kind: "invalid", reason: "contradicted", evidence }, "The repository shows it does not hold."),
-    ].join("\n")));
-    expect(result.blocks.map(entry => entry.status)).toEqual(["applied", "applied"]);
-    expect(current(b, wrong.knowledgeId)[0]!.text).toBe("Rule w, as the user said it.");
-    expect(current(b, gone.knowledgeId)[0]!.op).toBe("archive");
+    const operation = (kind: CurateOperation, text: string) => plan(b.store, { kind: "curate", operation: kind, sessionId: b.session.id, path: b.path, file: file(text, "curate.md") }).knowledge[0]!.make().operation!;
+    const item = b.item("one two");
+    const small = operation("update", block(`update ${item.ref}`, { reason: "r" }, "one two"));
+    expect(overCaps(b.store, small)).toEqual([]);
+    b.store.writing.bodyTokens = 1;
+    expect(overCaps(b.store, small)).toEqual(["body: 2 tokens, over the 1-token limit"]);
+    const archived = operation("archive", block(`archive ${item.ref}`, { kind: "invalid", reason: "r" }, "The user withdrew it; nothing replaces it."));
+    expect(overCaps(b.store, archived)[0]).toMatch(/^body: \d+ tokens, over the 1-token limit$/);
+    const child = `\n### child\ntitle: Child\ncategory: reference\nscope: project\ntopics:\nsupports: ${support(item)}\nreason: split\n\nTwo words.\n`;
+    b.store.writing.bodyTokens = 4;
+    const split = operation("split", block(`split ${item.ref}`, { reason: "two" }, "one") + child);
+    expect(overCaps(b.store, split)).toEqual([]);
+    b.store.writing.bodyTokens = 1;
+    expect(overCaps(b.store, split)).toEqual(["child 1 body: 3 tokens, over the 1-token limit"]);
   });
 });
 
