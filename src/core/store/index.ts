@@ -680,7 +680,8 @@ export interface CommittedKnowledgeOp {
 }
 
 /** One workspace operation's outcome: the versions it wrote, or why it was refused (`stale`: its base is no longer current). */
-export type WorkspaceOperationResult = { ok: true; committed: CommittedKnowledgeOp[] } | { ok: false; stale: boolean; reason: string };
+/** `reason` is what the model sees (`K@v` addresses); `diagnostic` is audit-only and names the refused version by its exact commit. */
+export type WorkspaceOperationResult = { ok: true; committed: CommittedKnowledgeOp[] } | { ok: false; stale: boolean; reason: string; diagnostic?: string };
 
 export type CommitConsolidationResult =
   | { ok: true; runId: number; committed: CommittedKnowledgeOp[] }
@@ -3739,8 +3740,10 @@ export class Store {
           const outcome = this.transaction(() => this.applyKnowledgeOperation(op, runId, projectId, sessionId, input.path, true, "dreaming"));
           if (outcome.ok) return { ok: true, committed: outcome.value };
           const stale = outcome.reason instanceof KnowledgeVersionProblem;
-          return { ok: false, stale, reason: outcome.reason instanceof KnowledgeVersionProblem
-            ? outcome.reason.describe((knowledgeId, commitId) => `K${knowledgeId}@v${this.versionOrdinal(knowledgeId, commitId)}`) : outcome.reason };
+          return outcome.reason instanceof KnowledgeVersionProblem
+            ? { ok: false, stale, reason: outcome.reason.describe((knowledgeId, commitId) => `K${knowledgeId}@v${this.versionOrdinal(knowledgeId, commitId)}`),
+                diagnostic: outcome.reason.message }
+            : { ok: false, stale, reason: outcome.reason };
         } catch (error) { return { ok: false, stale: false, reason: error instanceof Error ? error.message : String(error) }; }
       })());
       if (input.response) {

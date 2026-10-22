@@ -7,7 +7,7 @@ import { block } from "../../support/workspace.ts";
 const memories: TraceMemory[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 
-test("92: refusals name version addresses, never internal commit ids; a base outside the session's pools is refused and the audit keeps the applied commit id", async () => {
+test("92: refusals name version addresses, never internal commit ids; a base outside the session's pools is refused and the audit keeps the refused item's exact commit and the applied commit id", async () => {
   const f = dreamerFixture(memories);
   const a = f.item("Rule 1"), b = f.item("Rule 2");
   // Another project's item: the session's three pools are writable, another project's is not (126).
@@ -32,8 +32,11 @@ test("92: refusals name version addresses, never internal commit ids; a base out
   expect(results[0]!.reason).toContain(`K${out.knowledgeId}@v1`);
   expect(results[0]!.reason).toMatch(/outside the writer's scope/);
   expect(results[0]!.reason).not.toMatch(/K\d+@\d/); // never `K<id>@<commit>`
-  // The audit keeps the internal diagnostics: the applied block's exact commit id, beside the refusal in version addresses.
+  // The audit keeps the internal diagnostics beside the refusal in version addresses: the refused item's own exact commit, and the applied block's.
+  expect(run.response!).toContain(`K${out.knowledgeId}@${out.commit}`);
+  expect((JSON.parse(run.response!).blocks[0].result as { diagnostic: string }).diagnostic).toContain(`K${out.knowledgeId}@${out.commit}`);
   expect(run.response!).toContain(`"commit":${f.store.currentCommit(b.knowledgeId, f.path)[0]!.id}`);
+  expect(f.dreamer.messages.join("\n")).not.toContain(`K${out.knowledgeId}@${out.commit}`); // the model never sees the commit id
   expect(f.store.currentCommit(out.knowledgeId, otherTarget)[0]!.id).toBe(out.commit);
   expect(f.store.currentCommit(b.knowledgeId, f.path)[0]!.text).toBe("Rule 2, tidied");
   expect(a.knowledgeId).not.toBe(b.knowledgeId);
