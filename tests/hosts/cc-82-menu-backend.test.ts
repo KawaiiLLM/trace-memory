@@ -231,6 +231,7 @@ test("authenticated control reports actual applied snapshot, and failed apply le
     beforeCancel: () => {}, holdImport: () => () => {}, effectiveConfig: () => effective,
     catchupSnapshot: () => { snapshotReads++; return { state: "waiting", phase: "noting",
       entriesDone: 2, entriesTotal: 5, factsDone: 1, factsTotal: 3 }; },
+    dreamSnapshot: () => ({ state: "failed", diagnostic: "a Dreamer is already running in this session" }),
     applyConfig: next => { applications++; effective = next; },
   });
   try {
@@ -238,6 +239,8 @@ test("authenticated control reports actual applied snapshot, and failed apply le
     expect(snapshot.config.worker?.phases.noting.thinking).toBe("high");
     expect(readCcMenu(f.config, f.session, snapshot.config, 10, snapshot.catchup).menu.notices)
       .toContain("Catchup: waiting for noting (2/5 entries)");
+    expect(readCcMenu(f.config, f.session, snapshot.config, 10, snapshot.catchup, undefined, snapshot.dream).menu.notices)
+      .toContain("Dream: failed — a Dreamer is already running in this session");
     expect(snapshotReads).toBe(1);
     expect(catchupActions).toBe(0);
     const edited = editedCcConfig(f.text, "noting.thinking", "medium");
