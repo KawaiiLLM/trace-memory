@@ -2632,7 +2632,7 @@ test("N and D compose shared definitions and principles with their permitted mai
     expect(dreaming).toContain(principle);
   }
   expect(dreaming).toContain("Comparison is within one scope; items of different scopes are never merged.");
-  expect(dreaming).toContain("A merge may omit `text`: the latest parent's body then becomes the primary's next version verbatim.");
+  // 2026-10-22 files: a merge block carries the complete merged body, so the tool protocol's "a merge may omit text" no longer exists.
 });
 
 
@@ -2676,7 +2676,7 @@ test("61: every stage prompt is composed from the shared blocks in one section o
 test("61: sentences are short, paragraphs are not walls, and no internal reference or internal vocabulary leaks into the prompts", () => {
   const banned = [/\bv1\.\d\b/, /\b\d\d[a-z]?'s\b/, /\bticket\s+\d+/, /\bcase \d\b/, /\buncertified\b/, /\bcertificate\b/, /\bneutral conflict\b/, /\bpost-freeze\b/,
     /\beffective grounding\b/, /\bfrozen family\b/, /\bfamily\b/, /\bCONTEXT\.md\b/];
-  for (const file of STAGE_PROMPTS) {
+  for (const file of [...STAGE_PROMPTS, "classifying.md"] as const) {
     const prompt = loadPrompt(file);
     const sentences = promptSentences(prompt);
     const walls = sentences.filter(s => s.startsWith("WALL:"));

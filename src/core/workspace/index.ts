@@ -14,4 +14,4 @@ export function checkWorkspace(store: Store, task: WorkspaceTask): CheckResult {
 export { applyWorkspace, type ApplyInput, type ApplyResult, type BlockResult } from "./apply.ts";
 export { parseBlocks, parseScores, describeBlock, problem, type WorkspaceFile } from "./parse.ts";
 export { plan } from "./plan.ts";
-export type { CheckResult, Length, NotingScope, TaskKind, WorkspaceTask } from "./plan.ts";
+export type { CheckResult, Length, NotingScope, TaskKind, VerifyAuthority, WorkspaceTask } from "./plan.ts";

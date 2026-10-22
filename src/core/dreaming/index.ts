@@ -1,6 +1,6 @@
 // Dreaming as curate, verify and classify (ticket 144, stage 4). One run is one admission, one claim and one execution; it
 // runs from the hand-off's next task to the end, each task through `runAgent`. This module owns the run shape (§1), the
-// hand-off and resume (§3) and the curate task (§4). verify and classify are marked stubs for part 3.
+// hand-off and resume (§3), the curate task (§4), verify (§5) and classify (§6).
 
 import { createHash } from "node:crypto";
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
@@ -14,11 +14,15 @@ import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import type { NotingInput } from "../noting/index.ts";
 import { lengthLines } from "../noting/workspace.ts";
+import type { Length } from "../workspace/index.ts";
 import type { Handoff } from "../store/executions.ts";
 import type { KnowledgePath, RunInput, Store, TaskClaim } from "../store/index.ts";
-import { describeBlock } from "../workspace/index.ts";
+import { checkWorkspace, describeBlock, parseScores } from "../workspace/index.ts";
 import { TaskWorkspace, defaultWorkspaceRoot } from "../workspace/run.ts";
 import { batchFileName, checkBatch, curatePrefix, type Category, type CurateItem } from "./curate.ts";
+import { buildChanges, checkVerify } from "./changes.ts";
+import { classifyAnchors, classifyMessage, classifySet } from "./classify.ts";
+import { allowedRoots, repositoryEvidenceProblem } from "./roots.ts";
 
 export { freezeDreaming } from "./legacy.ts"; // LEGACY: tests and perf scripts of the old protocol; part 4 deletes it
 export type DreamingTask = "curate" | "verify" | "classify";
@@ -130,8 +134,8 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   const first = Math.max(0, DREAMING_TASKS.indexOf((frozen.handoff?.nextTask ?? "curate") as DreamingTask));
   const detail = { curateRuns: [...(frozen.handoff?.detail?.curateRuns ?? [])], doneCategories: [...(frozen.handoff?.detail?.doneCategories ?? [])] };
   const root = options.workspaceRoot ?? defaultWorkspaceRoot();
-  const template = (task: DreamingTask, model: string): RunInput => ({ kind: "dreaming", sessionId, branch, model, mode: "subagent",
-    promptHash: frozen.promptHash, createdAt: new Date().toISOString(), rangeFrom: `S${sessionId}/${task}`, rangeTo: `S${sessionId}/${task}` });
+  const template = (task: DreamingTask, model: string, promptHash = frozen.promptHash): RunInput => ({ kind: "dreaming", sessionId, branch, model, mode: "subagent",
+    promptHash, createdAt: new Date().toISOString(), rangeFrom: `S${sessionId}/${task}`, rangeTo: `S${sessionId}/${task}` });
   const context = { kind: "dreaming" as const, sessionId, branch, headTurnId: path.headTurnId, range: { from: `S${sessionId}`, to: `S${sessionId}` } };
   let lastRunId = 0;
 
@@ -232,14 +236,128 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     return { ok: false, outcome, problems, ...classified, runId: store.recordRun({ ...run, outcome }).id };
   };
 
-  // PART 3 STUB: verify and classify run no model call and pass. Part 3 replaces these with the change file, the checks
-  // against facts and repositories, and the scoring passes of §5 and §6.
-  const stubs: Record<DreamingTask, () => Promise<TaskOutcome> | TaskOutcome> = {
-    curate: runCurate, verify: () => noWork("verify", "classify"), classify: () => noWork("classify", null) };
+  /** One conversation that writes one file and stops (§1.1): verify's, and each pass of classify. The stop hook checks the file, allows
+   * one repair, then applies it through `apply` (one `commitTaskPass`, which returns the pass's run id) or fails the task. */
+  interface FilePass {
+    task: "verify" | "classify"; label: string; workspace: TaskWorkspace; read: string[]; write: string[]; roots: string[];
+    model: DreamingTaskConfig; prompt: string; promptHash: string; text: string; deadline: number;
+    check(): { problems: string[]; report: string };
+    apply(run: RunInput): number;
+  }
+  const filePass = async (spec: FilePass): Promise<TaskOutcome> => {
+    const started = Date.now(), run = template(spec.task, spec.model.model, spec.promptHash);
+    let repaired = false, problem: string | undefined, lost = false, appliedRun = 0;
+    const stopChecks: { ok: boolean; problems: string[] }[] = [];
+    const binding = bind(context, run, undefined, { check: () => spec.check().report });
+    const passEnd = (): string | undefined => {
+      if (spec.workspace.closed || appliedRun) return undefined;
+      const checked = spec.check();
+      stopChecks.push({ ok: !checked.problems.length, problems: checked.problems });
+      if (checked.problems.length) {
+        if (!repaired) { repaired = true;
+          return `Your file does not pass the check. Correct every problem below, then stop. If it still fails, ${spec.label} fails and nothing from it is applied.\n\n${checked.report}`; }
+        problem = `check failed twice: ${spec.label}`;
+        return undefined;
+      }
+      try { appliedRun = lastRunId = spec.apply(run); } catch (error) {
+        if (CLAIM_LOST.test(String(error))) lost = true;
+        problem = `${spec.label} could not be applied: ${error instanceof Error ? error.message : String(error)}`;
+        spec.workspace.close();
+      }
+      return undefined;
+    };
+    const input: DreamingTaskInput = { kind: "dreaming", task: spec.task, sessionId, branch, model: spec.model.model, thinking: spec.model.thinking,
+      mode: "subagent", prompt: spec.prompt, promptHash: spec.promptHash, text: spec.text, tools: binding.tools,
+      workspace: { dir: spec.workspace.dir, read: spec.read, write: spec.write, roots: spec.roots }, passEnd, deadline: spec.deadline,
+      acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
+    let result: RunAgentResult;
+    try { result = await runAgent(input); } catch (error) { result = agentException(error); }
+    binding.close();
+    if (store.closed) return { ok: false, outcome: "cancelled", runId: 0, problems: ["store closed"], class: "cancelled", transient: false };
+    if (result.outcome === "success" && spec.workspace.closed && !problem)
+      result = { ...result, outcome: "cancelled", output: "Dreamer cancelled before its pass ended" };
+    const success = result.outcome === "success" && !requestMissing(result) && !problem && appliedRun !== 0;
+    const problems = problem ? [problem] : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
+      : requestMissing(result) ? ["runAgent must return the exact provider request"] : appliedRun === 0 ? [`ended before ${spec.label} was applied`] : [];
+    recordAttempt(run, result, { task: spec.task, stopChecks, toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
+    if (success) {
+      const previous = JSON.parse(store.getRun(appliedRun)?.response ?? "{}");
+      store.updateRun(appliedRun, { ...run, response: JSON.stringify({ ...previous, ...JSON.parse(run.response!) }), outcome: "success" });
+      return { ok: true, runId: appliedRun };
+    }
+    const outcome = result.outcome === "cancelled" ? "cancelled" : "failure";
+    const classified = lost ? { class: "claim lost", transient: true } : problem?.startsWith("check failed twice") ? { class: "check failed twice", transient: false }
+      : result.outcome !== "success" ? classifyFailure(result.output, (result as { failureClass?: string }).failureClass)
+      : { class: `ended before ${spec.label} was applied`, transient: false };
+    return { ok: false, outcome, problems, ...classified, runId: store.recordRun({ ...run, outcome }).id };
+  };
+  const written = (results: { ok: boolean; committed?: { commit: number }[] }[]) => results.flatMap(result => result.ok ? result.committed!.map(item => item.commit) : []);
+
+  /** §5: verify checks curate's changes against the facts, Raw and the repositories, under the authority curate's results give it. */
+  const runVerify = async (): Promise<TaskOutcome> => {
+    const changes = buildChanges(store, detail.curateRuns);
+    if (!changes.blocks) return noWork("verify", "classify"); // nothing was changed: no model call
+    const roots = allowedRoots(store, sessionId);
+    const authority = { results: changes.results, bases: changes.bases, resolveRepository: (reference: string) => repositoryEvidenceProblem(reference, roots) };
+    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, "verify").open({ "changes.md": changes.text });
+    options.registerFence(workspace);
+    const changesFile = workspace.path("changes.md"), file = workspace.path("verify.md");
+    const checked = () => checkVerify(store, path, { name: "verify.md", text: workspace.text("verify.md") }, authority);
+    const report = (result = checked()) => [
+      `Task: verify. Change file: ${changesFile} (${changes.blocks} blocks, ${changes.lines} lines; read it in pages). Your file: ${file}`,
+      `Repositories you may read: ${roots.join(", ") || "none"}`,
+      result.problems.length ? `Problems: ${result.problems.length}\n${result.problems.join("\n")}` : "Problems: none",
+      ...(result.lengths.length ? ["Lengths:", ...lengthLines("verify.md", result.lengths as Length[])] : [])].join("\n");
+    return filePass({ task: "verify", label: "verify", workspace, read: [changesFile, file], write: [file], roots, model: frozen.models.main,
+      prompt: frozen.prompt, promptHash: frozen.promptHash, text: frozen.text, deadline: Date.now() + config.dreaming.timeoutMs,
+      check: () => { const result = checked(); return { problems: result.problems, report: report(result) }; },
+      apply: run => {
+        const result = checked();
+        return store.commitTaskPass({ run: { ...run }, path, operations: result.planned.map(entry => entry.make().operation!),
+          response: out => JSON.stringify({ task: "verify", file, blocks: result.planned.map((entry, i) => ({ block: describeBlock(entry.block), line: entry.block.line, result: out[i] })) }),
+          cover: ({ results }) => written(results), handoff: () => ({ nextTask: "classify", detail: { ...detail } }) }).runId;
+      } });
+  };
+
+  /** §6: score the items frozen when the task starts, 100 to a conversation; every pass has a clean context of its own. */
+  const runClassify = async (): Promise<TaskOutcome> => {
+    const items = store.curateItems(path), passes = classifySet(items);
+    if (!passes.length) return noWork("classify", null); // nothing to score: no model call
+    const anchors = classifyAnchors(items), model = frozen.models.classify;
+    const prompt = loadPrompt("classifying.md", frozen.names, config.writing), promptHash = createHash("sha256").update(prompt).digest("hex");
+    // One deadline for the whole task: a later pass gets only the time left (§1.3).
+    const deadline = Date.now() + config.dreaming.timeoutMs;
+    let outcome: TaskOutcome = { ok: true, runId: lastRunId };
+    for (const [at, pass] of passes.entries()) {
+      const text = classifyMessage(anchors, pass, store.writing, frozen.names, CHECK_FIRST);
+      if (model.capacity && tokens(prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingWorkspaceToolDefinitions, frozen.names))) + tokens(text) > model.capacity.inputTokens)
+        throw new Error("Dreaming capacity: a classify pass exceeds the model input allowance");
+      const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `classify-${at + 1}`).open();
+      options.registerFence(workspace);
+      const name = `classify-${at + 1}.md`, file = workspace.path(name), label = `classify pass ${at + 1}/${passes.length}`;
+      const ids = pass.map(item => item.value.revision.knowledgeId);
+      const checked = () => checkWorkspace(store, { kind: "classify", items: ids, file: { name, text: workspace.text(name) } });
+      const report = (result = checked()) => [`Task: ${label}. File: ${file}`, `Items: ${ids.map(id => `K${id}`).join(", ")}`,
+        result.problems.length ? `Problems: ${result.problems.length}\n${result.problems.join("\n")}` : "Problems: none"].join("\n");
+      outcome = await filePass({ task: "classify", label, workspace, read: [file], write: [file], roots: [], model, prompt, promptHash, text, deadline,
+        check: () => { const result = checked(); return { problems: result.problems, report: report(result) }; },
+        apply: run => {
+          const scores = parseScores({ name, text: workspace.text(name) }).scores;
+          const shown = new Map(pass.map(item => [item.value.revision.knowledgeId, item.value.revision.id]));
+          return store.commitTaskPass({ run: { ...run }, path, scores: scores.map(line => ({ knowledgeId: line.knowledgeId, commit: shown.get(line.knowledgeId)!, score: line.score })),
+            response: () => JSON.stringify({ task: "classify", pass: at + 1, passes: passes.length, file, scores: scores.map(line => [line.knowledgeId, line.score]) }),
+            handoff: () => at === passes.length - 1 ? null : { nextTask: "classify", detail: { ...detail } } }).runId;
+        } });
+      if (!outcome.ok) return outcome;
+    }
+    return outcome;
+  };
+
+  const tasks: Record<DreamingTask, () => Promise<TaskOutcome> | TaskOutcome> = { curate: runCurate, verify: runVerify, classify: runClassify };
 
   for (const task of DREAMING_TASKS.slice(first)) {
     let outcome: TaskOutcome;
-    try { outcome = await stubs[task](); } catch (error) {
+    try { outcome = await tasks[task](); } catch (error) {
       if (store.closed) return { outcome: "dropped" };
       const lost = CLAIM_LOST.test(String(error));
       const message = error instanceof Error ? error.message : String(error);

@@ -21,8 +21,20 @@ export type WorkspaceTask =
   | { kind: "noting-facts"; scope: NotingScope; file: WorkspaceFile }
   /** `facts` is the run's facts file; its labels are what `supports:` may cite besides `F<id>`. */
   | { kind: "noting-knowledge"; scope: NotingScope; file: WorkspaceFile; facts: WorkspaceFile }
-  | { kind: "curate" | "verify"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile }
+  | { kind: "curate"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile }
+  /** `authority` binds a Dreaming verify file to curate's results (§5.3) and its evidence to the allowed roots (§5.4); without it
+   * (the Stage 2 contract tests) any current version may be named and a repository reference is taken as is. */
+  | { kind: "verify"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile; authority?: VerifyAuthority }
   | { kind: "classify"; items: readonly number[]; file: WorkspaceFile };
+
+export interface VerifyAuthority {
+  /** Each item curate wrote this cycle: the version its latest curate operation produced. */
+  results: ReadonlyMap<number, number>;
+  /** The version that same operation was written from; absent for a `create`, a split child and a merge's absorbed item. */
+  bases: ReadonlyMap<number, number>;
+  /** The roots a repository reference in `evidence:` must resolve under (§5.4). */
+  resolveRepository(reference: string): string | null;
+}
 
 /** The host-measured length of one title or body, whether or not it is over its limit. */
 export interface Length { block: string; field: "title" | "body"; count: number; limit: number }
@@ -74,6 +86,8 @@ const ARCHIVE_KINDS = ["invalid", "inadmissible"] as const;
 /** Merging has one form; an archive that names a successor is the old, refused way to say it. */
 const USE_MERGE = "to merge an item into another current item, write a `merge` block with `absorb:`";
 const VERSION = /^K([1-9]\d*)@v([1-9]\d*)$/;
+/** An address the evidence field takes only as `trace://...`: a fact, a version or a Raw turn written bare. */
+const BARE_ADDRESS = /^(?:F[1-9]\d*|K[1-9]\d*(?:@v[1-9]\d*|#\w+)?|S[1-9]\d*(?:\/\S*)?)$/;
 const list = (value: string | undefined): string[] => (value ?? "").split(",").map(item => item.trim()).filter(Boolean);
 
 type Made = { operation?: KnowledgeOperationInput; problems: string[] };
@@ -168,6 +182,7 @@ function planFacts(store: Store, task: Extract<WorkspaceTask, { kind: "noting-fa
 
 function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "noting-facts" | "classify" }>, blocks: Block[], out: Plan) {
   const file = task.file, noting = task.kind === "noting-knowledge", verify = task.kind === "verify";
+  const authority = task.kind === "verify" ? task.authority : undefined;
   const path: KnowledgePath = noting ? { sessionId: task.scope.sessionId, headTurnId: Number(task.scope.range.to.split("/T")[1]), branch: task.scope.branch }
     : task.path ?? store.knowledgePath(task.sessionId);
   out.path = path;
@@ -204,6 +219,14 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
         const commit = store.resolveVersionOrdinal(knowledgeId, ordinal);
         return { knowledgeId, ordinal, commit, revision: store.getKnowledgeRevision(knowledgeId, commit)! };
       } catch { add(fmt(at, `${ref} does not exist`)); return null; }
+    };
+    /** §5.3: verify may change only an item's latest curate result. */
+    const curated = (b: Base, at: number): boolean => {
+      const result = authority?.results.get(b.knowledgeId);
+      if (!authority || result === b.commit) return true;
+      add(fmt(at, result === undefined ? `K${b.knowledgeId} was not changed by curate this cycle; verify checks only curate's changes`
+        : `K${b.knowledgeId}@v${b.ordinal} is not curate's latest result for K${b.knowledgeId}, which is K${b.knowledgeId}@v${store.versionOrdinal(b.knowledgeId, result)}; name that version`));
+      return false;
     };
     const lengths = (section: Section, label: string) => {
       if (value(section, "title") !== undefined) out.lengths.push({ block: label, field: "title", count: tokens(value(section, "title")!), limit: store.writing.titleTokens });
@@ -255,9 +278,12 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
     if (verify) {
       const refs = list(value(block, "evidence"));
       if (block.fields.has("evidence") && !refs.length) add(fmt(line("evidence"), "evidence is empty; name the fact, Raw or repository address the change rests on"));
-      // A trace address must resolve; any other value is a repository reference and is not resolved.
-      for (const ref of refs) if (ref.startsWith("trace://")) {
-        const bad = traceProblem(store, ref);
+      // A trace address must resolve; a bare id is refused; any other value is a repository reference, resolved when the task
+      // names its roots (§5.4).
+      for (const ref of refs) {
+        const bad = ref.startsWith("trace://") ? traceProblem(store, ref)
+          : BARE_ADDRESS.test(ref) ? `write \`trace://${ref}\``
+          : task.kind === "verify" ? task.authority?.resolveRepository(ref) ?? null : null;
         if (bad) add(fmt(line("evidence"), `evidence \`${ref}\`: ${bad}`));
       }
     }
@@ -277,7 +303,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
         lengths(child, label);
       });
       const primary = base(block.target, block.line);
-      if (!primary) continue;
+      if (!primary || !curated(primary, block.line)) continue;
       record(primary.knowledgeId, block.line);
       const absorbed: Base[] = [];
       if (block.op === "merge") {
@@ -322,7 +348,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       if (kind !== undefined && !ARCHIVE_KINDS.includes(kind as never))
         add(fmt(line("kind"), `kind must be ${ARCHIVE_KINDS.join(" | ")}, got \`${kind}\`${kind === "merged" ? `; ${USE_MERGE}` : ""}`));
       const target = base(block.target, block.line);
-      if (!target) continue;
+      if (!target || !curated(target, block.line)) continue;
       record(target.knowledgeId, block.line);
       planned({
         make: () => ({ problems: [], operation: { op: "archive", knowledgeId: target.knowledgeId, baseCommit: target.commit, kind: (kind ?? "invalid") as "invalid",
@@ -332,7 +358,13 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       if (!match) { add(fmt(block.line, "expected `## revert K<id>@v<n> -> K<id>@v<m>`")); continue; }
       if (block.body) add(fmt(block.line, "a `revert` block has no body"));
       const from = base(match[1]!, block.line), to = base(match[2]!, block.line);
-      if (!from || !to) continue;
+      if (!from || !to || !curated(from, block.line)) continue;
+      if (from.knowledgeId === to.knowledgeId && authority && authority.bases.get(from.knowledgeId) !== to.commit) {
+        const origin = authority.bases.get(from.knowledgeId);
+        add(fmt(block.line, origin === undefined ? `K${from.knowledgeId}@v${from.ordinal} was written without an earlier version of this item, so it has nothing to revert to; write an \`update\` instead`
+          : `a revert may restore only the version curate wrote K${from.knowledgeId} from, K${from.knowledgeId}@v${store.versionOrdinal(from.knowledgeId, origin)}; older state is reached by an \`update\` with \`evidence:\``));
+        continue;
+      }
       if (from.knowledgeId !== to.knowledgeId) { add(fmt(block.line, `a revert restores a version of the same item; K${from.knowledgeId} and K${to.knowledgeId} differ`)); continue; }
       if (to.ordinal >= from.ordinal) add(fmt(block.line, `a revert restores an earlier version; v${to.ordinal} is not earlier than v${from.ordinal}`));
       if (to.revision.title === null) add(fmt(block.line, `K${to.knowledgeId}@v${to.ordinal} has no title (it predates titles) and a new version needs one; write an \`update\` with a title instead`));
@@ -341,10 +373,14 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       const restored = to.revision;
       out.lengths.push({ block: where, field: "title", count: tokens(restored.title ?? ""), limit: store.writing.titleTokens },
         { block: where, field: "body", count: tokens(restored.text), limit: store.writing.bodyTokens });
-      planned({ make: () => !isKnowledgeCategory(restored.category)
-        ? { problems: [fmt(block.line, `K${to.knowledgeId}@v${to.ordinal} has the legacy category \`${restored.category}\`; write an \`update\` that supplies one of ${KNOWLEDGE_CATEGORIES.join(", ")}`)] }
-        : piece({ op: "update", id: `K${from.knowledgeId}#${store.versionTag(from.knowledgeId, from.commit)}`, title: restored.title, text: restored.text, category: restored.category,
-          scope: restored.scope, topics: restored.topics, supports: [], reason: value(block, "reason") ?? "" }, where, block.line, "", undefined, true) });
+      // §5.6: the new version carries the target's supports exactly, even none (`replaceSupports`), not the base's.
+      planned({ make: () => {
+        if (!isKnowledgeCategory(restored.category))
+          return { problems: [fmt(block.line, `K${to.knowledgeId}@v${to.ordinal} has the legacy category \`${restored.category}\`; write an \`update\` that supplies one of ${KNOWLEDGE_CATEGORIES.join(", ")}`)] };
+        const made = piece({ op: "update", id: `K${from.knowledgeId}#${store.versionTag(from.knowledgeId, from.commit)}`, title: restored.title, text: restored.text, category: restored.category,
+          scope: restored.scope, topics: restored.topics, supports: restored.supports.map(id => `F${id}`), reason: value(block, "reason") ?? "" }, where, block.line, "", undefined, true);
+        return made.operation?.op === "update" ? { ...made, operation: { ...made.operation, supports: restored.supports, replaceSupports: true } } : made;
+      } });
     }
   }
 

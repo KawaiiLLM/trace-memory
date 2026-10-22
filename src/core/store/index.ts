@@ -550,6 +550,8 @@ export type KnowledgeOperationInput =
       category: KnowledgeCategory;
       scope: KnowledgeScope;
       supports: number[];
+      /** Set only by a verify `revert` (stage 4 §5.6): `supports` is the exact result, empty included, never the base's. */
+      replaceSupports?: boolean;
       reason: string;
       topics: string[];
       createdAt: string;
@@ -3889,12 +3891,19 @@ export class Store {
    * moves only with a committed pass. */
   commitTaskPass(input: { run: RunInput; path: KnowledgePath; operations?: readonly KnowledgeOperationInput[];
     response?: (results: WorkspaceOperationResult[]) => string;
+    /** Classify scores (§6.6): written only for an item whose current version is the one shown (`commit`); the rest wait for the next run. */
+    scores?: readonly { knowledgeId: number; commit: number; score: number }[];
     /** Both are decided once the run exists: the hand-off's curate runs include this run, the coverage includes what it wrote. */
     cover?: (done: { runId: number; results: WorkspaceOperationResult[] }) => readonly number[];
     handoff: (done: { runId: number; results: WorkspaceOperationResult[] }) => { nextTask: string; detail: NonNullable<Handoff["detail"]> } | null }): { runId: number; results: WorkspaceOperationResult[] } {
     return this.transaction(() => {
       const done = this.commitWorkspaceRun({ run: input.run, path: input.path, operations: input.operations ?? [], response: input.response });
       const sessionId = input.run.sessionId!;
+      if (input.scores?.length) {
+        const current = new Map(this.liveKnowledge(input.path).map(revision => [revision.knowledgeId, revision.id]));
+        const set = this.db.prepare("UPDATE knowledge SET score = ?, scored_commit = ?, scored_run = ? WHERE id = ?");
+        for (const { knowledgeId, commit, score } of input.scores) if (current.get(knowledgeId) === commit) set.run(score, commit, done.runId, knowledgeId);
+      }
       const cover = input.cover?.(done) ?? [];
       const metadata = cover.length ? this.commitGraphInput(undefined, sessionId).metadata : undefined;
       for (const id of cover) {
@@ -4023,10 +4032,11 @@ export class Store {
       }
     }
     const scope = op.op === "archive" ? prior!.scope : op.scope;
-    const supports = op.supports.length ? op.supports : dreaming
+    const replaced = op.op === "update" && op.replaceSupports === true;
+    const supports = op.supports.length || replaced ? op.supports : dreaming
       ? [...new Set(targets.flatMap(target => this.getKnowledgeRevision(target.knowledgeId, target.baseCommit)!.supports))]
       : [];
-    if ((!supports.length && (!dreaming || op.op === "create")) || supports.some(id => !Number.isSafeInteger(id) || id <= 0))
+    if ((!supports.length && !replaced && (!dreaming || op.op === "create")) || supports.some(id => !Number.isSafeInteger(id) || id <= 0))
       return { ok: false, reason: "supports must not be empty" };
     if (typeof op.reason !== "string" || !op.reason.trim()) return { ok: false, reason: "reason must be a non-empty commit message" };
     if (op.op === "archive") {
@@ -4297,7 +4307,7 @@ export class Store {
   /** 144 stage 4 §4.1: the live items of the session's three pools (global, its project, itself), oldest change first, each with
    * its address, whether its current version is covered (processed in its pool), the UTC dates of its supporting facts
    * and its score (null until classified). */
-  curateItems(path: KnowledgePath): { value: KnowledgeWithRevision; address: string; pool: string; covered: boolean; dates?: string; score: number | null }[] {
+  curateItems(path: KnowledgePath): { value: KnowledgeWithRevision; address: string; pool: string; covered: boolean; dates?: string; score: number | null; scoredCommit: number | null }[] {
     const input = this.commitGraphInput(undefined, path.sessionId);
     const projectId = this.getSession(path.sessionId)!.projectId;
     const pools = new Set(["global", `project:${projectId}`, `session:${path.sessionId}`]);
@@ -4305,15 +4315,15 @@ export class Store {
       .filter(item => pools.has(item.pool)).sort((a, b) => a.revision.id - b.revision.id);
     const knowledge = new Map(this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify([...new Set(live.map(item => item.revision.knowledgeId))])).map(row => [Number(row.id), toKnowledge(row)]));
-    const scores = new Map(this.db.prepare("SELECT id, score FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
-      .all(JSON.stringify([...knowledge.keys()])).map(row => [Number(row.id), row.score === null ? null : Number(row.score)]));
+    const scores = new Map(this.db.prepare("SELECT id, score, scored_commit FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify([...knowledge.keys()])).map(row => [Number(row.id), { score: row.score === null ? null : Number(row.score), commit: row.scored_commit === null ? null : Number(row.scored_commit) }]));
     const covered = this.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?");
     const day = (id: number) => { const time = input.metadata.facts.get(id)?.fact.createdAt; return time && !isNaN(Date.parse(time)) ? new Date(time).toISOString().slice(0, 10) : undefined; };
     return live.map(({ revision, pool }) => {
       const days = revision.supports.flatMap(id => day(id) ?? []).sort();
       return { value: { knowledge: knowledge.get(revision.knowledgeId)!, revision }, pool,
         address: `K${revision.knowledgeId}@v${this.versionOrdinal(revision.knowledgeId, revision.id)}`,
-        covered: !!covered.get(pool, revision.id), score: scores.get(revision.knowledgeId) ?? null,
+        covered: !!covered.get(pool, revision.id), score: scores.get(revision.knowledgeId)?.score ?? null, scoredCommit: scores.get(revision.knowledgeId)?.commit ?? null,
         ...(days.length ? { dates: days[0] === days.at(-1) ? days[0] : `${days[0]}..${days.at(-1)}` } : {}) };
     });
   }
