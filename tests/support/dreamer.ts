@@ -24,8 +24,9 @@ export interface DreamerScript {
   curate?: Partial<Record<string, Text>>;
   /** Verify's file. */
   verify?: Text;
-  /** Classify's file for each pass (1-based); `ids` are the pass's items. */
-  classify?: (pass: number, ids: number[], message: string) => Text | undefined;
+  /** Classify's file for each pass (1-based); `ids` are the pass's items. A pass writes its file and then meets the self-check step (146): by
+   * default it stops again without editing; `{ write, edit }` gives the file of step 1 and the text an Edit leaves in step 2. */
+  classify?: (pass: number, ids: number[], message: string) => Text | { write: Text; edit?: Text } | undefined;
   /** Result of the curate conversation (a failure, a cancellation); absent: success. */
   curateResult?: Partial<RunAgentResult>;
   /** Run instead of the scripted conversation for one task (a runner that hangs, ignores abort, or records its input). */
@@ -46,7 +47,7 @@ export const confirmEvery = (report: string): string => {
 
 export function scriptedDreamer(script: DreamerScript = {}) {
   script.curate ??= {}; // a test may fill in a batch after the run is built
-  const inputs: DreamingAgentInput[] = [], messages: string[] = [], reports: string[] = [], attempts = new Map<string, number>();
+  const inputs: DreamingAgentInput[] = [], messages: string[] = [], selfChecks: string[] = [], reports: string[] = [], attempts = new Map<string, number>();
   const pick = (key: string, planned: Text | undefined, report: string): string => {
     const attempt = attempts.get(key) ?? 0;
     attempts.set(key, attempt + 1);
@@ -78,23 +79,28 @@ export function scriptedDreamer(script: DreamerScript = {}) {
         const failing = new Set(listedBatches(message).map(batch => batch.file));
         listed = all.filter(batch => failing.has(batch.file));
       }
-    } else for (let turn = 0; turn < 50; turn++) {
+    } else for (let turn = 0, step2 = false, planned: ReturnType<NonNullable<DreamerScript["classify"]>> | undefined, asked = false; turn < 50; turn++) {
       const file = FILE[input.task]!.exec(report)![1]!;
-      const text = input.task === "verify" ? pick(`verify:${/group (\d+)/.exec(report)?.[1] ?? 1}`, script.verify ?? confirmEvery(report), report)
-        : (() => {
-            const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
-            const pass = Number(/pass (\d+)/.exec(report)?.[1] ?? 1);
-            return pick(`classify:${pass}`, script.classify?.(pass, ids, report) ?? ids.map(id => `K${id} 50`).join("\n") + "\n", report);
-          })();
-      writeFileSync(file, text);
+      let text: string | undefined;
+      if (input.task === "verify") text = pick(`verify:${/group (\d+)/.exec(report)?.[1] ?? 1}`, script.verify ?? confirmEvery(report), report);
+      else {
+        const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
+        const pass = Number(/pass (\d+)/.exec(report)?.[1] ?? 1);
+        if (!asked) { asked = true; planned = script.classify?.(pass, ids, report); }
+        const plan: { write?: Text; edit?: Text } = planned !== undefined && typeof planned === "object" && "write" in planned ? planned : { write: planned as Text | undefined };
+        if (step2) text = plan.edit === undefined ? undefined : pick(`classify:${pass}:edit`, plan.edit, report);
+        else text = pick(`classify:${pass}`, plan.write ?? ids.map(id => `K${id} 50`).join("\n") + "\n", report);
+      }
+      if (text !== undefined) writeFileSync(file, text);
       const message = input.passEnd();
       if (message === undefined) break;
+      if (input.task === "classify" && /Step 2 of 2/.test(message)) { selfChecks.push(message); step2 = true; continue; }
       messages.push(message);
       report = message;
     }
     return { outcome: "success", output: "Done.", request: REQUEST, usage: { tokens: 12 }, ...(input.task === "curate" ? script.curateResult : {}) } as RunAgentResult;
   };
-  return { agent, inputs, messages, reports, script };
+  return { agent, inputs, messages, selfChecks, reports, script };
 }
 
 /** A session whose Dreamer is `scriptedDreamer`, due at the first check. `memories` collects what the test must close. A test swaps in

@@ -35,6 +35,8 @@ export const TASK_GAP_MS = 15_000;
 export const CLAIM_LEASE_MARGIN_MS = 60_000;
 /** The one line that ends the first message of every task (§1.4): task, batch and files reach the model only through `check`. */
 const CHECK_FIRST = "Call {{tool.check}} first: it names your task and your files.";
+/** The message the stop hook sends when a classify file first passes (146 §9.2): the criteria are in `classifying.md`. */
+const CLASSIFY_SELF_CHECK = "Your file passes the check. Step 2 of 2: the self-check in your Procedure. Correct scores with {{tool.edit}} where needed, call {{tool.check}}, then stop.";
 /** curate and verify share one first message; the task's own instructions arrive with `check`'s first result (stage 5 §0). */
 const CHECK_FIRST_TASK = "Call {{tool.check}} first: it names your task and your files, and its first result carries the task's instructions.";
 
@@ -310,23 +312,27 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     model: DreamingTaskConfig; prompt: string; promptHash: string; text: string; deadline: number;
     check(): { problems: string[]; report: string };
     apply(run: RunInput): number;
+    /** A second step (146 §9.2): when the file first passes, `selfCheck` goes to the model as one more message, and the file is applied only when it
+     * passes again after that step. `snapshot` reads what the first step wrote, for the run record. */
+    selfCheck?: string; snapshot?(): unknown;
   }
   const filePass = async (spec: FilePass): Promise<TaskOutcome> => {
     const started = Date.now(), run = template(spec.task, spec.model.model, spec.promptHash);
-    let repaired = false, problem: string | undefined, lost = false, appliedRun = 0;
-    const stopChecks: { ok: boolean; problems: string[] }[] = [], delivered = delivery(spec.task);
+    let repaired = false, step = 1, firstWritten: unknown, problem: string | undefined, lost = false, appliedRun = 0;
+    const stopChecks: { step: number; ok: boolean; problems: string[] }[] = [], delivered = delivery(spec.task);
     const binding = bind(context, run, { check: () => delivered.give(spec.check().report) });
     binding.call.fence(spec.workspace);
     const passEnd = (): string | undefined => {
-      if (spec.workspace.closed || appliedRun) return undefined;
+      if (spec.workspace.closed || appliedRun || problem) return undefined;
       const checked = spec.check();
-      stopChecks.push({ ok: !checked.problems.length, problems: checked.problems });
+      stopChecks.push({ step, ok: !checked.problems.length, problems: checked.problems });
       if (checked.problems.length) {
         if (!repaired) { repaired = true;
           return delivered.give(`Your file does not pass the check. Correct every problem below, then stop. If it still fails, ${spec.label} fails and nothing from it is applied.\n\n${checked.report}`); }
         problem = `check failed twice: ${spec.label}`;
         return undefined;
       }
+      if (spec.selfCheck && step === 1) { step = 2; repaired = false; firstWritten = spec.snapshot?.(); return delivered.give(spec.selfCheck); }
       try { appliedRun = lastRunId = spec.apply(run); } catch (error) {
         if (CLAIM_LOST.test(String(error))) lost = true;
         problem = `${spec.label} could not be applied: ${error instanceof Error ? error.message : String(error)}`;
@@ -348,7 +354,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const success = result.outcome === "success" && !requestMissing(result) && !problem && appliedRun !== 0;
     const problems = problem ? [problem] : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
       : requestMissing(result) ? ["runAgent must return the exact provider request"] : appliedRun === 0 ? [`ended before ${spec.label} was applied`] : [];
-    recordAttempt(run, result, { task: spec.task, operation, ...(spec.group ? { group: spec.group } : {}), taskPrompts: delivered.hashes(), stopChecks, toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
+    recordAttempt(run, result, { task: spec.task, operation, ...(spec.group ? { group: spec.group } : {}), taskPrompts: delivered.hashes(), stopChecks, ...(spec.selfCheck ? { firstScores: firstWritten ?? null } : {}), toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
     if (success) {
       const previous = JSON.parse(store.getRun(appliedRun)?.response ?? "{}");
       store.updateRun(appliedRun, { ...run, response: JSON.stringify({ ...previous, ...JSON.parse(run.response!) }), outcome: "success" });
@@ -403,39 +409,47 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       } });
   };
 
-  /** §6: score the items frozen when the task starts, 100 to a conversation; every pass has a clean context of its own. */
+  /** §6 (146 §9): score the items frozen when the task starts, 100 to a conversation. Every pass is a clean conversation of its own and all start
+   * together under one absolute deadline. Each pass writes its file and then a self-check step. The pass whose commit finds every other pass
+   * applied finishes the run (§8); a failed pass leaves the hand-off at classify. */
   const runClassify = async (): Promise<TaskOutcome> => {
     const items = store.curateItems(path), passes = classifySet(items);
     if (!passes.length) return noWork("classify", null); // nothing to score: no model call
     const anchors = classifyAnchors(items), model = frozen.models.classify;
     const prompt = loadPrompt("classifying.md", frozen.names, config.writing), promptHash = createHash("sha256").update(prompt).digest("hex");
-    // One deadline for the whole task: a later pass gets only the time left (§1.3).
-    const deadline = Date.now() + config.dreaming.timeoutMs;
-    let outcome: TaskOutcome = { ok: true, runId: lastRunId };
-    for (const [at, pass] of passes.entries()) {
-      const text = classifyMessage(anchors, pass, store.writing, frozen.names, CHECK_FIRST);
-      if (model.capacity && tokens(prompt) + tokens(JSON.stringify(pricedToolDefinitions(dreamingWorkspaceToolDefinitions, frozen.names))) + tokens(text) > model.capacity.inputTokens)
-        throw new Error("Dreaming capacity: a classify pass exceeds the model input allowance");
-      const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `classify-${at + 1}`).open();
-      options.registerFence(workspace);
-      const name = `classify-${at + 1}.md`, file = workspace.path(name), label = `classify pass ${at + 1}/${passes.length}`;
-      const ids = pass.map(item => item.value.revision.knowledgeId);
-      const checked = () => checkWorkspace(store, { kind: "classify", items: ids, file: { name, text: workspace.text(name) } });
-      const report = (result = checked()) => [`Task: ${label}. File: ${file}`, `Items: ${ids.map(id => `K${id}`).join(", ")}`,
-        result.problems.length ? `Problems: ${result.problems.length}\n${result.problems.join("\n")}` : "Problems: none"].join("\n");
-      outcome = await filePass({ task: "classify", label, workspace, read: [file], write: [file], roots: [], model, prompt, promptHash, text, deadline,
-        check: () => { const result = checked(); return { problems: result.problems, report: report(result) }; },
-        apply: run => {
-          const scores = parseScores({ name, text: workspace.text(name) }).scores;
-          const shown = new Map(pass.map(item => [item.value.revision.knowledgeId, item.value.revision.id]));
-          return store.commitTaskPass({ run: { ...run }, path, scores: scores.map(line => ({ knowledgeId: line.knowledgeId, commit: shown.get(line.knowledgeId)!, score: line.score })),
-            response: () => JSON.stringify({ task: "classify", operation, pass: at + 1, passes: passes.length, file, scores: scores.map(line => [line.knowledgeId, line.score]) }),
-            handoff: () => at === passes.length - 1 ? null : { nextTask: "classify", detail: detailOf() },
-            ...(at === passes.length - 1 ? { finish: { operation } } : {}) }).runId;
-        } });
-      if (!outcome.ok) return outcome;
-    }
-    return outcome;
+    const deadline = Date.now() + config.dreaming.timeoutMs, tools = tokens(JSON.stringify(pricedToolDefinitions(dreamingWorkspaceToolDefinitions, frozen.names)));
+    const selfCheck = renderToolNames(CLASSIFY_SELF_CHECK, frozen.names);
+    const texts = passes.map(pass => classifyMessage(anchors, pass, store.writing, frozen.names, CHECK_FIRST));
+    if (model.capacity && texts.some(text => tokens(prompt) + tools + tokens(text) > model.capacity!.inputTokens))
+      throw new Error("Dreaming capacity: a classify pass exceeds the model input allowance");
+    let applied = 0;
+    const outcomes = await Promise.all(passes.map(async (pass, at): Promise<TaskOutcome> => {
+      try {
+        const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `classify-${at + 1}`).open();
+        options.registerFence(workspace);
+        const name = `classify-${at + 1}.md`, file = workspace.path(name), label = `classify pass ${at + 1}/${passes.length}`;
+        const ids = pass.map(item => item.value.revision.knowledgeId);
+        const checked = () => checkWorkspace(store, { kind: "classify", items: ids, file: { name, text: workspace.text(name) } });
+        const report = (result = checked()) => [`Task: ${label}. File: ${file}`, `Items: ${ids.map(id => `K${id}`).join(", ")}`,
+          result.problems.length ? `Problems: ${result.problems.length}\n${result.problems.join("\n")}` : "Problems: none"].join("\n");
+        const scoresOf = () => parseScores({ name, text: workspace.text(name) }).scores.map(line => [line.knowledgeId, line.score]);
+        return await filePass({ task: "classify", label, workspace, read: [file], write: [file], roots: [], model, prompt, promptHash, text: texts[at]!, deadline,
+          check: () => { const result = checked(); return { problems: result.problems, report: report(result) }; },
+          selfCheck, snapshot: scoresOf,
+          apply: run => {
+            const scores = parseScores({ name, text: workspace.text(name) }).scores;
+            const shown = new Map(pass.map(item => [item.value.revision.knowledgeId, item.value.revision.id]));
+            const last = applied + 1 === passes.length;
+            const done = store.commitTaskPass({ run: { ...run }, path, scores: scores.map(line => ({ knowledgeId: line.knowledgeId, commit: shown.get(line.knowledgeId)!, score: line.score })),
+              response: () => JSON.stringify({ task: "classify", operation, pass: at + 1, passes: passes.length, file, scores: scores.map(line => [line.knowledgeId, line.score]) }),
+              handoff: () => last ? null : { nextTask: "classify", detail: detailOf() },
+              ...(last ? { finish: { operation } } : {}) });
+            applied++;
+            return done.runId;
+          } });
+      } catch (error) { return thrown("classify", undefined, error); }
+    }));
+    return outcomes.find(outcome => !outcome.ok) ?? outcomes.at(-1)!;
   };
 
   /** A task that threw (a claim lost mid-commit, a store error, a capacity refusal): a failed run linked to the execution. */

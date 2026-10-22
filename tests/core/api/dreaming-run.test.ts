@@ -361,7 +361,8 @@ const classifyThen = (after: (input: import("../../source-fixture.ts").DreamingA
     if (Number(/pass (\d+)/.exec(report)?.[1] ?? 1) === failBefore) return { outcome: "failure", output: "429 rate limit", request: REQUEST } as import("../../source-fixture.ts").RunAgentResult; // fails before its stop: nothing committed
     const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => match[1]!);
     writeFileSync(/File: (\S+?\.md)/.exec(report)![1]!, ids.map(id => `K${id} 50`).join("\n") + "\n");
-    input.passEnd();
+    input.passEnd(); // step 1: the file passes and the self-check message comes back
+    input.passEnd(); // step 2: no edit; the file is applied
     const pass = Number(/pass (\d+)/.exec(report)?.[1] ?? 1);
     return { outcome: "success", output: "Done.", request: REQUEST, usage: { tokens: 12 }, ...(await after(input, pass) ?? {}) } as import("../../source-fixture.ts").RunAgentResult;
   };
@@ -532,6 +533,7 @@ test("a lost lease at the final pass commits no finish, and the next run repeats
     const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
     const ids = [...(/Items: (.*)/.exec(report)![1]!).matchAll(/K(\d+)/g)].map(match => match[1]!);
     writeFileSync(/File: (\S+?\.md)/.exec(report)![1]!, ids.map(id => `K${id} 50`).join("\n") + "\n");
+    input.passEnd(); // step 1 passes; the self-check message comes back
     f.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE phase = 'dreaming'").run(); // the lease lapses before the final commit
     input.passEnd();
     return { outcome: "success", output: "Done.", request: REQUEST } as never;
