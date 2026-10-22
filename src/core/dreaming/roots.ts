@@ -6,13 +6,15 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import type { Store } from "../store/index.ts";
 
-/** The roots are the working directories of the project's sessions (`sessions.directory`; user ruling, 2026-10-22). A directory
- * that is gone cannot be read and is left out. */
+/** The roots are the working directories of the project's sessions (user rulings, 2026-10-22 and 2026-10-23): a session's
+ * `directory` (the repository root ticket 62 resolved) when it has one, otherwise the directory it started in
+ * (`start_directory`, so a session started in the home directory reads the whole home directory). A directory that is gone
+ * cannot be read and is left out. */
 export function allowedRoots(store: Store, sessionId: number): string[] {
   const projectId = store.getSession(sessionId)!.projectId;
   const roots = new Set<string>();
-  for (const row of store.db.prepare("SELECT DISTINCT directory FROM sessions WHERE project_id = ? AND directory IS NOT NULL").all(projectId)) {
-    try { roots.add(realpathSync(String(row.directory))); } catch { /* a directory that is gone cannot be read */ }
+  for (const row of store.db.prepare("SELECT DISTINCT COALESCE(directory, start_directory) AS root FROM sessions WHERE project_id = ? AND COALESCE(directory, start_directory) IS NOT NULL").all(projectId)) {
+    try { roots.add(realpathSync(String(row.root))); } catch { /* a directory that is gone cannot be read */ }
   }
   return [...roots].sort();
 }
@@ -20,15 +22,18 @@ export function allowedRoots(store: Store, sessionId: number): string[] {
 const real = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
 const SECRET_FILES = [".env", ".env.*", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".netrc", ".npmrc", "credentials", "credentials.json", "*.pem", "*.key", "*.p12", "*.pfx", "*.keystore"];
 const SECRET_DIRS = [".ssh", ".aws", ".gnupg"];
+/** The production memory directory and the Pi agent directory, relative to home (`deniedPath` holds them to the exact home). A Grep rooted
+ * at home would otherwise search them, so the exclusion names them too (any directory of the same name is skipped as well). */
+const DENIED_TREES = [".trace-memory", ".pi/agent"];
 const SECRET = new RegExp(`^(?:${SECRET_FILES.map(name => name.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")).join("|")})$`, "i");
 /** The same list as a ripgrep exclusion, for a Grep call (a hook can only allow or rewrite a call, never filter its output). */
-export const SECRET_GLOB = `!**/{${[...SECRET_FILES, ...SECRET_DIRS.map(name => `${name}/**`)].join(",")}}`;
+export const SECRET_GLOB = `!**/{${[...SECRET_FILES, ...SECRET_DIRS.map(name => `${name}/**`), ...DENIED_TREES.map(tree => `${tree}/**`)].join(",")}}`;
 
 /** The one deny list: the production memory directory, the Pi agent directory and secret files. A symlink out of the roots is
  * refused by `resolveRepositoryPath`, which tests the resolved path. */
 export function deniedPath(path: string): string | null {
   const home = real(homedir());
-  for (const forbidden of [join(home, ".trace-memory"), join(home, ".pi", "agent")])
+  for (const forbidden of DENIED_TREES.map(tree => join(home, ...tree.split("/"))))
     if (path === forbidden || path.startsWith(forbidden + sep)) return "that directory holds the memory database or agent configuration and is never read";
   if (SECRET.test(basename(path)) || path.split(sep).some(part => SECRET_DIRS.includes(part))) return "that looks like a secret file and is never read";
   return null;

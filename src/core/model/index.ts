@@ -67,6 +67,7 @@ export interface Session {
   projectId: number;
   parentSessionId: number | null;
   directory: string | null; // 62: the repository root or cwd the session started in; NULL when excluded or pre-62
+  startDirectory: string | null; // 148: the real path of cwd at session creation, for the Dreamer's reads only; NULL when unknown
 }
 
 export interface Turn {
