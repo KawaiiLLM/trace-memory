@@ -1747,3 +1747,39 @@ test("scheduler borrows an eligible closed target only at the executor turn end"
   expect(memory.pendingEntries(closed.id, "main", tail.turn.id)).toEqual([]);
   memory.close();
 });
+
+test.each(["curate", "classify"] as const)("2026-10-22, 144: a %s task's Read, Grep and Glob hooks follow its roots: curate reads under them past the deny list, classify has none", async dreamingTask => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-roots-")); dirs.push(directory);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-root-"))), outside = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-outside-")));
+  dirs.push(root, outside);
+  writeFileSync(join(root, "a.ts"), "export {};\n"); writeFileSync(join(root, ".env"), "SECRET=1\n"); writeFileSync(join(outside, "b.txt"), "x\n");
+  const workspace = { dir: directory, read: [], write: [], roots: dreamingTask === "curate" ? [root] : [] };
+  const decisions: Record<string, string> = {};
+  let additional: unknown;
+  const fakeQuery = ((request: { options: Record<string, any> }) => {
+    const stream = (async function* () {
+      const hooks = request.options.hooks.PreToolUse;
+      const read = hooks.find((entry: { matcher: string }) => entry.matcher === "Read").hooks[0], search = hooks.find((entry: { matcher: string }) => /Grep/.test(entry.matcher))?.hooks[0];
+      additional = JSON.parse(request.options.extraArgs.settings).permissions?.additionalDirectories;
+      for (const [name, path] of [["under", join(root, "a.ts")], ["env", join(root, ".env")], ["outside", join(outside, "b.txt")]] as const)
+        decisions[name] = (await read({ tool_name: "Read", tool_input: { file_path: path } })).hookSpecificOutput.permissionDecision;
+      if (search) decisions.grep = (await search({ tool_name: "Grep", tool_input: { path: root, pattern: "x" } })).hookSpecificOutput.permissionDecision;
+      yield { type: "system", subtype: "init", session_id: "roots", claude_code_version: TEST_CC_VERSION, cwd: directory,
+        tools: ["Read"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "success", session_id: "roots", is_error: false, result: "ok", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "dreaming", task: dreamingTask, text: "material", prompt: "instructions", tools: [], workspace, acknowledgeRequest: vi.fn(),
+    passEnd: vi.fn(() => undefined), reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
+  await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0);
+  if (dreamingTask === "curate") {
+    expect(decisions).toMatchObject({ under: "allow", env: "deny", outside: "deny", grep: "allow" });
+    expect(additional).toEqual([root]);
+  } else {
+    expect(decisions).toMatchObject({ under: "deny", env: "deny", outside: "deny" });
+    expect(additional).toBeUndefined();
+  }
+});

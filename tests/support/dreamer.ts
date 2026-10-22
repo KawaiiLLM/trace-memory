@@ -4,8 +4,9 @@ import type { DreamingAgentInput } from "../../src/core/dreaming/index.ts";
 import type { RunAgent, TraceMemory } from "../source-fixture.ts";
 import { REQUEST } from "./noter.ts";
 import { block, workspaceBatch } from "./workspace.ts";
-import { applyWorkspace } from "../../src/core/workspace/index.ts";
+import { applyWorkspace, describeBlock, plan } from "../../src/core/workspace/index.ts";
 import { CURATE_ROTATION, type CurateOperation } from "../../src/core/store/executions.ts";
+import type { Proposal } from "../../src/core/dreaming/changes.ts";
 import type { KnowledgePath, Store } from "../../src/core/store/index.ts";
 import { knowledge as seedKnowledge } from "./seed.ts";
 import { placementOwner } from "../../src/core/store/processing.ts";
@@ -34,7 +35,7 @@ const FILE: Record<string, RegExp> = { curate: /File: (\S+?\.md)/, verify: /Your
 const CATEGORY = /category (\w+)/;
 
 /** The default verify file: `## confirm <n>` for every change numbered in the change file the report names. */
-const confirmEvery = (report: string): string => {
+export const confirmEvery = (report: string): string => {
   const changes = /Change file: (\S+?\.md)/.exec(report)?.[1];
   const numbers = changes ? [...readFileSync(changes, "utf8").matchAll(/^## (\d+) · /gm)].map(match => match[1]!) : [];
   return numbers.length ? numbers.map(n => `## confirm ${n}\n`).join("\n") : "## none\n";
@@ -193,4 +194,19 @@ export function coverKnowledge(store: Store, path: KnowledgePath, revisionIds: r
   for (const id of revisionIds) store.db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)")
     .run(placementOwner(store, { revision: store.knowledgeRevision(id)! }), id, run.id);
   return run.id;
+}
+
+/** The proposals a curate run kept (stage 5 §4.2), compiled from curate blocks the way the batch check does: one entry per block, in change order. */
+export function proposalsOf(memory: { store: Store }, path: KnowledgePath, ...entries: [CurateOperation, string][]): Proposal[] {
+  return entries.flatMap(([operation, text]) => {
+    const planned = plan(memory.store, { kind: "curate", operation, sessionId: path.sessionId, path, file: { name: "curate.md", text } });
+    if (planned.problems.length) throw new Error(planned.problems.join("\n"));
+    return planned.knowledge.map(entry => ({ run: 0, category: "constraint", block: describeBlock(entry.block), operation: entry.make().operation as Proposal["operation"] }));
+  }).map((proposal, i) => ({ ...proposal, n: i + 1 }));
+}
+/** A curate batch run as `commitTaskPass` records it, for tests of the change file: the proposals, and nothing applied. */
+export function keptBatch(memory: { store: Store }, path: KnowledgePath, category: string, ...entries: [CurateOperation, string][]): number {
+  const proposed = proposalsOf(memory, path, ...entries).map(({ block, operation }) => ({ block, operation }));
+  return memory.store.recordRun({ kind: "dreaming", sessionId: path.sessionId, branch: path.branch ?? null, createdAt: new Date().toISOString(), outcome: "success",
+    response: JSON.stringify({ task: "curate", category, proposed }) }).id;
 }

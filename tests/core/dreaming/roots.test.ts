@@ -20,6 +20,6 @@ test("a Grep or Glob call must name a directory inside a root; a Grep never sear
   expect(() => confineSearch({ path: "src" }, [root], "grep")).toThrow("name an absolute directory");
   expect(() => confineSearch({ path: root, pattern: "../*" }, [root], "glob")).toThrow("stay inside path");
   expect(() => confineSearch({ path: root, pattern: "/etc/*" }, [root], "glob")).toThrow("stay inside path");
-  expect(() => confineSearch({ path: root }, [], "grep")).toThrow("during verify only");
+  expect(() => confineSearch({ path: root }, [], "grep")).toThrow("during curate and verify only");
   expect(SECRET_GLOB).toContain(".env");
 });

@@ -2,7 +2,8 @@ import { expect, test, vi } from "vitest";
 import type { JsonObject } from "@earendil-works/pi-ai";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { host, reply, emptyNote, dreamerFiles, type Reply } from "./test-host.ts";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 import { knowledge, legacyFacts } from "../../support/seed.ts";
@@ -139,7 +140,7 @@ test("136 review SPEC4: a Pi Dreamer's over-long search output is saved and its 
   } finally { await h.dispose(); }
 });
 
-test("32d native host: intermediate tool turns do not end a pass; the batch applies once the file is written and the model stops", async () => {
+test("32d native host: intermediate tool turns do not end a pass; the batch is kept once the file is written and the model stops, and applied at verify's pass", async () => {
   const { h, store, item, pool } = await seeded();
   try {
     let requests = 0, atStop: number | undefined;
@@ -186,7 +187,7 @@ function curateThen(h: ReturnType<typeof host>, item: { heading: string }, after
   }, { autoStop: false });
 }
 
-test("64c native host: stop after a batch applies keeps the batch, is not a failure and resumes at the next task on the next trigger", async () => {
+test("64c native host: stop after a kept batch keeps it, applies nothing, is not a failure and resumes at the next task on the next trigger", async () => {
   const { h, store, item } = await seeded();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -200,9 +201,9 @@ test("64c native host: stop after a batch applies keeps the batch, is not a fail
     expect(store.getClaim(1, "dreaming")).toBeNull();
     const curate = dreamingRuns(store)[0]!;
     expect(curate.outcome).toBe("success");
-    const changed = store.listCommitsByRun(curate.id)[0]!;
-    expect(changed.parentId).toBe(item.commit);
-    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint, tidied"]);
+    expect(store.listCommitsByRun(curate.id)).toEqual([]); // a kept batch is a proposal, not a version
+    expect(JSON.parse(curate.response!).proposed).toHaveLength(1);
+    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint"]);
     expect(store.taskFailures(1).every(f => f.count === 0)).toBe(true);
     const runsAfterStop = dreamingRuns(store).length;
     expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "verify" }); // the stop keeps the hand-off
@@ -213,19 +214,20 @@ test("64c native host: stop after a batch applies keeps the batch, is not a fail
     await h.turn(); await h.drain();
     // The next trigger resumes at the task that was cut off; curate does not run again.
     expect(dreamingRuns(store).slice(runsAfterStop).map(run => [JSON.parse(run.response!).task, run.outcome])).toEqual([["verify", "success"], ["classify", "success"]]);
+    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint, tidied"]); // applied at the resumed verify's pass
   } finally { release(); await h.dispose(); }
 });
 
-test("64c native host: provider overflow in the next task keeps the applied batch, fails the run and does not compact", async () => {
+test("64c native host: provider overflow in the next task keeps the kept batch, fails the run and does not compact", async () => {
   const { h, store, item } = await seeded({ compaction: { enabled: true }, retry: { enabled: false } });
   try {
     curateThen(h, item, async () => ({ ...reply(""), stopReason: "error", errorMessage: "maximum context length exceeded" }));
     await h.turn(); await h.drain();
     const runs = dreamingRuns(store);
     expect(runs.map(run => run.outcome)).toEqual(["success", "failure"]);
-    const changed = store.listCommitsByRun(runs[0]!.id)[0]!;
-    expect(changed.op).toBe("update");
-    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint, tidied"]);
+    expect(store.listCommitsByRun(runs[0]!.id)).toEqual([]);
+    expect(JSON.parse(runs[0]!.response!).proposed).toHaveLength(1); // kept for verify
+    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint"]);
     const entries = readFileSync(JSON.parse(runs[1]!.response!).nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(entries.some(e => e.type === "compaction")).toBe(false);
   } finally { await h.dispose(); }
@@ -263,4 +265,31 @@ test("an empty change file completes verify without a model call (3.2)", async (
     expect(wire.some(body => body.includes("Task: verify"))).toBe(false); // no request ever named the verify task
     expect(wire.some(body => body.includes("Task: classify"))).toBe(true);
   } finally { await h.dispose(); }
+});
+
+test("2026-10-22, 144: curate reads repository files through the real worker's Read, past the one deny list, as verify does", async () => {
+  const { h, store } = await seeded();
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "tm-144-pi-curate-"))), outside = realpathSync(mkdtempSync(join(tmpdir(), "tm-144-pi-outside-")));
+  try {
+    writeFileSync(join(root, "a.ts"), "export const marker = 1;\n"); writeFileSync(join(root, ".env"), "SECRET=1\n"); writeFileSync(join(outside, "b.txt"), "x\n");
+    store.db.prepare("UPDATE sessions SET directory = ? WHERE id = 1").run(root);
+    const reads = [join(root, "a.ts"), join(root, ".env"), join(outside, "b.txt")];
+    const text = (message: { content?: unknown } | undefined) => ((message?.content as { text?: string }[] | undefined) ?? []).map(part => part.text ?? "").join("");
+    let curate: Parameters<Parameters<typeof h.provider>[0]>[0] | undefined;
+    h.provider(async c => {
+      const isCurate = c.messages.some(m => m.role === "toolResult" && /^Task: curate/m.test(text(m)));
+      if (isCurate) {
+        curate = c;
+        const done = c.messages.filter(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "read").length;
+        if (done < reads.length) return call(`r${done}`, "read", { path: reads[done] });
+      }
+      return dreamerFiles(c) ?? reply("Done");
+    }, { autoStop: false });
+    await h.turn(); await h.drain();
+    const results = curate!.messages.filter(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "read").map(text);
+    expect(results[0]).toContain("marker");
+    expect(results[1]).toContain("secret file");
+    expect(results[2]).toContain("outside the repositories you may read");
+    expect(dreamingRuns(store).map(run => run.outcome)).toEqual(["success", "success", "success"]);
+  } finally { await h.dispose(); rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
 });
