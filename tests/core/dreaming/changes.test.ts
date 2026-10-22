@@ -78,6 +78,9 @@ test("the current version is the live one: a proposal whose base a later write r
   const text = buildChanges(b.store, b.path, [run]).text;
   expect(text).toContain(`current: K${item.knowledgeId}@v2`);
   expect(text).toContain(`curate proposed from ${item.ref}; this change will be refused at apply`);
+  // The proposal's base and the live version are shown apart, each with its own text; the proposed body is neither.
+  expect(text).toMatch(new RegExp(`proposal base ${item.ref} text:\\n[^\\n]*\\nRule one\\n\\ncurrent K${item.knowledgeId}@v2 text:\\n[^\\n]*\\nRule one, by hand\\n\\nproposed:\\n[^\\n]*\\nRule one, tidied`));
+  expect(text).not.toContain("current text:");
 });
 
 test("an update of an archived base lists the archive explanation as the current text", () => {

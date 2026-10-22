@@ -31,23 +31,32 @@ export function buildChanges(store: Store, path: KnowledgePath, curateRuns: read
   const blocks = proposals.map(({ n, category, operation }) => {
     const target = targetOf(operation), base = store.getKnowledgeRevision(target.knowledgeId, target.baseCommit)!;
     const bases = operation.op === "merge" ? operation.absorb : [];
-    const stale = [target, ...bases].flatMap(item => {
+    /** Each item whose base is no longer the live version: the proposal's base stays what it was, the live version is shown beside it. */
+    const staleItems = [target, ...bases].filter(item => live.get(item.knowledgeId)?.id !== item.baseCommit);
+    const stale = staleItems.map(item => {
       const current = live.get(item.knowledgeId);
-      return current?.id === item.baseCommit ? [] : [`current: ${current ? `${version(current)} (${current.actorRole ?? "unrecorded"})` : `K${item.knowledgeId} is no longer current`} — curate proposed from ${at(item.knowledgeId, item.baseCommit)}; this change will be refused at apply`];
+      return `current: ${current ? `${version(current)} (${current.actorRole ?? "unrecorded"})` : `K${item.knowledgeId} is no longer current`} — curate proposed from ${at(item.knowledgeId, item.baseCommit)}; this change will be refused at apply`;
     });
+    /** The current text of an item: its base when still live, else the proposal's base and the live version, each with its own text. */
+    const currentText = (item: { knowledgeId: number; baseCommit: number }, revision: KnowledgeRevision, label: string) => {
+      const current = live.get(item.knowledgeId);
+      if (current?.id === item.baseCommit) return [`${label}:`, titled(revision)];
+      return [`proposal base ${version(revision)} text:`, titled(revision), "",
+        ...(current ? [`current ${version(current)} text:`, titled(current)] : ["current: no live version"])];
+    };
     const attribute = (name: string, from: string, to: string) => `${name}: ${from === to ? to : `${from} -> ${to}`}`;
     const head = [`## ${n} · ${operation.op} K${target.knowledgeId} · batch ${category}`, ...(stale.length ? stale : [`current: ${version(base)}`])];
     if (operation.op === "archive")
-      return [...head, `archive: ${operation.kind}`, `reason: ${operation.reason}`, "", "current text:", titled(base), "", "proposed explanation:", operation.text ?? ""].join("\n");
+      return [...head, `archive: ${operation.kind}`, `reason: ${operation.reason}`, "", ...currentText(target, base, "current text"), "", "proposed explanation:", operation.text ?? ""].join("\n");
     const changed = (name: string, from: string, to: string | undefined) => to !== undefined && to !== from ? [`${name}: ${from} -> ${to}`] : [];
     const lines = [...head, attribute("category", base.category, operation.category),
       ...changed("scope", base.scope, operation.scope), ...changed("topics", JSON.stringify(base.topics), JSON.stringify(operation.topics)),
       ...changed("title", knowledgeTitle(base, store.writing.titleTokens), operation.title),
       attribute("supports", base.supports.map(f => `F${f}`).join(", "), supportsOf(operation, base).map(f => `F${f}`).join(", ")), `reason: ${operation.reason}`,
-      "", "current text:", titled(base)];
+      "", ...currentText(target, base, "current text")];
     if (operation.op === "merge") for (const item of operation.absorb) {
       const revision = store.getKnowledgeRevision(item.knowledgeId, item.baseCommit)!;
-      lines.push("", `absorbed ${version(revision)} (archived into the primary if confirmed):`, titled(revision));
+      lines.push("", ...currentText(item, revision, `absorbed ${version(revision)} (archived into the primary if confirmed)`));
     }
     lines.push("", "proposed:", `${operation.title ?? knowledgeTitle(base, store.writing.titleTokens)}\n${operation.text ?? ""}`);
     // A child is written with its own category, topics, scope and supports, else the operation's (supports resolved as the store does).
