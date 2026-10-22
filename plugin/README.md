@@ -27,8 +27,8 @@ Core phase bounds use optional top-level keys in the same file:
 | `compaction.userTurns` | 100 | User-word reach including the anchor, counted along its path |
 | `compaction.titleTurns` | 100 | Fact-title reach including the anchor, counted along its path |
 | `compaction.userEntryTokens` | 300 | Middle-cut cap for each earlier human user entry |
-| `writing.titleWords` | 20 | Title target of a fact or knowledge item in 字/词 (each CJK character, and each run of letters and digits, counts 1), for every writer; a check refuses only above target + 10%, rounded up (22) |
-| `writing.bodyWords` | 200 | Body target of a fact (its segments summed) or knowledge item in 字/词, for every writer; refused only above 220 |
+| `writing.titleWords` | 20 | Title target of a fact or knowledge item in units (each CJK character, and each run of letters and digits, counts 1), for every writer; a check refuses only above target + 10%, rounded up (22) |
+| `writing.bodyWords` | 200 | Body target of a fact (its segments summed) or knowledge item in units, for every writer; refused only above 220 |
 
 The shared material allowance is this configured value, not derived from the N or D triggers.
 Noter publishes facts and knowledge together; facts have no later processing queue. Database pool

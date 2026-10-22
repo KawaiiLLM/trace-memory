@@ -69,7 +69,7 @@ function seeded() {
 }
 let knowledgeBlock: string;
 /** Fresh N alone shows the body's cap-check token count after the category tag. */
-const withSize = (block: string) => block.replace("[constraint/project] Package manager", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} 字/词) Package manager`);
+const withSize = (block: string) => block.replace("[constraint/project] Package manager", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} units) Package manager`);
 const views = (sessionId: number, head: number) =>
   hydrate(memory.pendingEntries(sessionId, "main", head), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
 

@@ -56,12 +56,12 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
 ];
 
 /** The Noter's `check` (identical in both of its tasks): the stop hook's check on the current step's file, on demand. */
-const notingCheckDefinition: Omit<ToolDefinition, "execute"> = { name: "check", description: "Checks the file of your current step with the check that runs when you stop: block format, source addresses in this batch, one segment per entry per fact, roles, required fields, base versions, one record per knowledge item, allowed operations, and the title and body limits. Returns your task, step and file path, each problem with file and line, and the host-measured 字/词 of every title and body against its target; the first result of a step also carries that step's instructions. Writes and publishes nothing.", parameters: object({}) };
+const notingCheckDefinition: Omit<ToolDefinition, "execute"> = { name: "check", description: "Checks the file of your current step with the check that runs when you stop: block format, source addresses in this batch, one segment per entry per fact, roles, required fields, base versions, one record per knowledge item, allowed operations, and the title and body limits. Returns your task, step and file path, each problem with file and line, and the host-measured units of every title and body against its target; the first result of a step also carries that step's instructions. Writes and publishes nothing.", parameters: object({}) };
 /** The Noter's own tools; its native read, write and edit are the host's. */
 export const notingToolDefinitions: Omit<ToolDefinition, "execute">[] = [searchToolDefinition, notingCheckDefinition];
 
 /** The Dreamer's own tools (ticket 144 stage 4): `search`, and `check` on the task's workspace files. One list for every task of a run. */
-const dreamingCheckDefinition: Omit<ToolDefinition, "execute"> = { name: "check", description: "Names your task and your workspace files, and checks them with the check that runs when you stop: block format, allowed operations, base versions, one record per knowledge item, and the title and body limits. Returns your task and file paths, each problem with file and line, and the host-measured 字/词 of every title and body against its target. Writes and publishes nothing.", parameters: object({}) };
+const dreamingCheckDefinition: Omit<ToolDefinition, "execute"> = { name: "check", description: "Names your task and your workspace files, and checks them with the check that runs when you stop: block format, allowed operations, base versions, one record per knowledge item, and the title and body limits. Returns your task and file paths, each problem with file and line, and the host-measured units of every title and body against its target. Writes and publishes nothing.", parameters: object({}) };
 export const dreamingWorkspaceToolDefinitions: Omit<ToolDefinition, "execute">[] = [searchToolDefinition, dreamingCheckDefinition];
 
 export function renderToolDefinitions(definitions: readonly Omit<ToolDefinition, "execute">[], names: ToolNames) {
@@ -157,7 +157,7 @@ export function factValidator(store: Store, scope: { sessionId: number; noting: 
     }
     const ordered = candidates.flatMap(entry => cited.has(entry.id) ? [cited.get(entry.id)!] : []);
     const text = ordered.map(segment => segment.text).join("\n");
-    // Tickets 144, 145: one cap for every writer, in 字/词. The body is the sum of its segments, each counted on its own.
+    // Tickets 144, 145: one cap for every writer, in units. The body is the sum of its segments, each counted on its own.
     if (fact && words(fact.title) > wordLimit(store.writing.titleWords)) errors.push(overLimit("title", words(fact.title), store.writing.titleWords));
     const bodyWords = ordered.reduce((sum, segment) => sum + words(segment.text), 0);
     if (fact && bodyWords > wordLimit(store.writing.bodyWords)) errors.push(`${overLimit("sources", bodyWords, store.writing.bodyWords)} (segments counted one by one)`);

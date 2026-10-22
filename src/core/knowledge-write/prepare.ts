@@ -7,9 +7,9 @@ export type ConsolidationDiagnostic = { kind: "unsupported_numbers"; knowledge: 
 
 /** An archive of these kinds keeps its explanation as the new version's body. */
 const explained = (kind: unknown): boolean => kind === "invalid" || kind === "inadmissible";
-/** A field over its limit, as the refusal states it: the field, its count in 字/词, the limit and the target (ticket 145). */
+/** A field over its limit, as the refusal states it: the field, its count in units, the limit and the target (ticket 145). */
 export const overLimit = (field: string, count: number, target: number): string =>
-  `${field}: ${count} 字/词, over the limit of ${wordLimit(target)} (target ${target})`;
+  `${field}: ${count} units, over the limit of ${wordLimit(target)} (target ${target})`;
 const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 
 /** Validate the complete batch before writes, including every merge participant. */

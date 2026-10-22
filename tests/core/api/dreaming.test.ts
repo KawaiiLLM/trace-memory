@@ -80,7 +80,7 @@ test("the Dreamer's audited prompt carries the configured title and body limits"
   Object.assign(f.memory.config.writing, { titleWords: 13, bodyWords: 321 });
   expect((await f.dream()).outcome).toBe("success");
   const prompt = f.dreamer.inputs[0]!.prompt;
-  expect(prompt).toContain("a title of a fact or knowledge is at most 13 字/词 and a body at most 321 字/词");
+  expect(prompt).toContain("a title of a fact or knowledge is at most 13 units and a body at most 321 units");
   expect(prompt).not.toContain("{{limit.");
 });
 

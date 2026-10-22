@@ -82,7 +82,7 @@ test("92: omitted knowledge stays fully readable while N has a distinct create i
   } finally { f.memory.close(); }
 });
 
-test("N material shows each knowledge body's cap-check 字/词 count; injection does not", () => {
+test("N material shows each knowledge body's cap-check units count; injection does not", () => {
   const f = fixture();
   try {
     const body = "Short rule. ".repeat(40);
@@ -90,7 +90,7 @@ test("N material shows each knowledge body's cap-check 字/词 count; injection 
     scoreAll(f.memory.store);
     setKnowledgeCapacity(f.memory, 20_000);
     const material = f.freeze().prepared!.text;
-    expect(material).toContain(`[constraint/project] (${words(body)}/${f.memory.config.writing.bodyWords} 字/词) Fixture title\n${body}`);
+    expect(material).toContain(`[constraint/project] (${words(body)}/${f.memory.config.writing.bodyWords} units) Fixture title\n${body}`);
     expect(material).not.toMatch(/\(\d+ tokens\)/); // 134: the Dreamer's pool-cost form never joins it for the same item
     expect(f.memory.injection(f.target).text).not.toContain("tokens) ");
   } finally { f.memory.close(); }

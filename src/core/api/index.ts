@@ -78,7 +78,7 @@ export interface TraceMemoryConfig {
     /** Cooperative wall-clock deadline shared by every host. */
     timeoutMs: number;
   };
-  /** Per-item length targets for every writer, in 字/词 (ticket 145). */
+  /** Per-item length targets for every writer, in units (ticket 145). */
   writing: WritingLimits;
   /** Episodic bases and the one temporary allowance of a context (144 §7.3). */
   compaction: {
@@ -175,9 +175,9 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "render.secondaryToolCallTokens": `removed with the tier-2 view: ${PART_BUDGETS} — one bounded view everywhere`,
   "render.secondaryEntryTokens": "removed with the tier-2 view: use render.entryTokens — one bounded view everywhere",
   "render.knowledgeBlockTokens": "remove it and use Settings to edit the bound database's Knowledge base",
-  // Ticket 145: the caps are counted in 字/词, so an old token count is not read as a word count.
-  "writing.titleTokens": "use writing.titleWords (the title target in 字/词, default 20; the check allows 10% more)",
-  "writing.bodyTokens": "use writing.bodyWords (the body target in 字/词, default 200; the check allows 10% more)",
+  // Ticket 145: the caps are counted in units, so an old token count is not read as a word count.
+  "writing.titleTokens": "use writing.titleWords (the title target in units, default 20; the check allows 10% more)",
+  "writing.bodyTokens": "use writing.bodyWords (the body target in units, default 200; the check allows 10% more)",
 };
 const removedSetting = (key: string) => new Error(`Removed setting ${key}: ${REMOVED_SETTINGS[key]}`);
 

@@ -193,14 +193,14 @@ test("135: supplied edit metadata replaces the inherited fields", () => {
   });
 });
 
-test("135: an edited full body is held to the cap (144, counted in 字/词 since 145: target 200, limit 220) and a corrected resubmission inherits metadata and parent supports", () => {
+test("135: an edited full body is held to the cap (144, counted in units since 145: target 200, limit 220) and a corrected resubmission inherits metadata and parent supports", () => {
   const write = setup(async () => success());
   write.execute({ ...create, topics: ["packaging"] });
   const base = read(1);
   const before = memory.store.listKnowledgeRevisions();
   const update = { op: "update", id: base, supports: ["F1"], reason: "Clarify the invocation" };
   const refused = write.execute({ ...update, edits: [{ old: "pnpm", new: "word ".repeat(300) }] });
-  expect(refused).toContain("text: 301 字/词, over the limit of 220 (target 200)");
+  expect(refused).toContain("text: 301 units, over the limit of 220 (target 200)");
   expect(memory.store.listKnowledgeRevisions()).toEqual(before);
   const committed = JSON.parse(write.execute({ ...update, edits: [{ old: "pnpm", new: "corepack pnpm" }] }));
   expect(committed.committed[0].version).toMatch(/^K1#[a-z]{4,}$/);

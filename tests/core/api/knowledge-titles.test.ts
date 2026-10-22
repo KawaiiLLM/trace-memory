@@ -1,5 +1,5 @@
 // Where a knowledge version's title appears: on the header line after the id and category tags, with the body on
-// the following lines. A legacy version has none and shows its body's leading characters, cut to the title target in 字/词 (145).
+// the following lines. A legacy version has none and shows its body's leading characters, cut to the title target in units (145).
 import { afterEach, expect, test } from "vitest";
 import { sourceSeededMemory, compacted } from "../../source-fixture.ts";
 import { fact as seedFact, knowledge as seedKnowledge, legacyKnowledge } from "../../support/seed.ts";
@@ -34,7 +34,7 @@ function header(view: string, id: number): [string, string] {
   return [lines[at]!, lines[at + 1]!];
 }
 
-test("a legacy version shows its body's leading characters, cut to the title target in 字/词, as its title", () => {
+test("a legacy version shows its body's leading characters, cut to the title target in units, as its title", () => {
   const { legacy, limit } = setup();
   const title = knowledgeTitle(memory.store.getKnowledgeRevision(legacy.knowledgeId, legacy.commit)!, limit);
   expect(legacyBody.startsWith(title)).toBe(true);

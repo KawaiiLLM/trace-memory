@@ -74,7 +74,7 @@ test("N rejects an assembled body above the cap, and a manual note does too (144
   const x = setup(task => {
     const note = task.tools.find((t: any) => t.name === "note")!;
     const address = `T${x.turn.id}#E1`;
-    expect(note.execute(f([{ address, text: "word ".repeat(300) }]))).toContain("sources: 300 字/词, over the limit of 220 (target 200)");
+    expect(note.execute(f([{ address, text: "word ".repeat(300) }]))).toContain("sources: 300 units, over the limit of 220 (target 200)");
     first = note.execute({ slot: "$1", ...f([{ address, text: "valid" }]) });
     expect(first).toContain("held: $1");
     expect(note.execute({ slot: "$1", ...f([{ address, text: "changed" }, { address: `${address}@user`, text: "duplicate" }]) })).toContain("rejected:");

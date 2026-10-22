@@ -202,15 +202,15 @@ describe("the caps in force at apply", () => {
     b.store.writing.bodyWords = 2; // target 2, limit 3: three words are within the tolerance
     expect(overCaps(b.store, small)).toEqual([]);
     b.store.writing.bodyWords = 1; // limit 2
-    expect(overCaps(b.store, small)).toEqual(["body: 3 字/词, over the limit of 2 (target 1)"]);
+    expect(overCaps(b.store, small)).toEqual(["body: 3 units, over the limit of 2 (target 1)"]);
     const archived = operation("archive", block(`archive ${item.ref}`, { kind: "invalid", reason: "r" }, "The user withdrew it; nothing replaces it."));
-    expect(overCaps(b.store, archived)[0]).toMatch(/^body: \d+ 字\/词, over the limit of 2 \(target 1\)$/);
+    expect(overCaps(b.store, archived)[0]).toMatch(/^body: \d+ units, over the limit of 2 \(target 1\)$/);
     const child = `\n### child\ntitle: Child\ncategory: reference\nscope: project\ntopics:\nsupports: ${support(item)}\nreason: split\n\nThree little words.\n`;
     b.store.writing.bodyWords = 4;
     const split = operation("split", block(`split ${item.ref}`, { reason: "two" }, "one") + child);
     expect(overCaps(b.store, split)).toEqual([]);
     b.store.writing.bodyWords = 1;
-    expect(overCaps(b.store, split)).toEqual(["child 1 body: 3 字/词, over the limit of 2 (target 1)"]);
+    expect(overCaps(b.store, split)).toEqual(["child 1 body: 3 units, over the limit of 2 (target 1)"]);
   });
 });
 

@@ -79,7 +79,7 @@ test("the estimate counts characters, never UTF-16 code units", () => {
   expect(tokens("𝕏".repeat(10))).toBe(tokens("𝕏".repeat(10)));
 });
 
-test("length caps count 字/词: a CJK character is 1, a run of letters and digits is 1 (a path or identifier stays whole), punctuation and spaces are 0", () => {
+test("length caps count units: a CJK character is 1, a run of letters and digits is 1 (a path or identifier stays whole), punctuation and spaces are 0", () => {
   expect(words("")).toBe(0);
   expect(words("修改 src/core/x.ts 的 parseFoo 函数")).toBe(2 + 1 + 1 + 1 + 2);
   expect(words("Use pnpm, never npm.")).toBe(4);

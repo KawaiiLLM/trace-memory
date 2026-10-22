@@ -61,7 +61,7 @@ export interface CcHostConfig {
   "compaction.userTurns"?: number;
   "compaction.titleTurns"?: number;
   "compaction.userEntryTokens"?: number;
-  /** Per-item length targets of every fact and knowledge title and body, in 字/词 (145). */
+  /** Per-item length targets of every fact and knowledge title and body, in units (145). */
   "writing.titleWords"?: number;
   "writing.bodyWords"?: number;
   /** Installation baseline. Unknown or malformed values keep provisional enrollment disabled. */
@@ -141,7 +141,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   const retired = retireConsolidationSettings(input);
   input = retired.values;
   // Ruling 2026-10-22: the Noter runs fresh only; one temporary allowance replaces the Knowledge-only shared allowance;
-  // the length caps are counted in 字/词 (ticket 145).
+  // the length caps are counted in units (ticket 145).
   // A leftover key of any of them fails the load with core's removed-setting message.
   for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds", "writing.titleTokens", "writing.bodyTokens"])
     if (Object.hasOwn(input, key)) canonicalFlatConfig({ [key]: true });

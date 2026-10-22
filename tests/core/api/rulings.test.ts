@@ -398,7 +398,7 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
 
 /** Knowledge to lead the block with: one manually written fact, consolidated by hand into K1. */
 /** Fresh N alone shows each body's token count after the category tag; everything else in the block is the shared layout. */
-const withSize = (block: string) => block.replace("[constraint/project] Fixture title", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} 字/词) Fixture title`);
+const withSize = (block: string) => block.replace("[constraint/project] Fixture title", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} units) Fixture title`);
 function seededKnowledge(sessionId: number, turnId: number) {
   const tools = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId });
   const entry = hydrate(memory.store.listSourceEntries(sessionId, turnId), memory.store).find(value => value.role === "user")!;
@@ -670,7 +670,7 @@ test("2026-09-07: supports replaces, history keeps the old set", () => {
 });
 
 // 144 supersedes 86's 1,000-token cap on N and D writes and 135's unlimited manual writes; 145 (2026-10-22) changes the unit
-// of the 20 + 200 caps from tokens to 字/词 and keeps the rest of this ruling: one standard, updates capped.
+// of the 20 + 200 caps from tokens to units and keeps the rest of this ruling: one standard, updates capped.
 test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要维护两套标准' — one title and body limit for the manual tools and the Dreamer's files, set in configuration, with updates of old items inside it", () => {
   expect(DEFAULT_CONFIG.writing).toEqual({ titleWords: 20, bodyWords: 200 });
   memory.config.writing.bodyWords = DEFAULT_CONFIG.writing.bodyWords; // this file lifts the body cap for its large fixtures
@@ -701,7 +701,7 @@ test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要�
 });
 
 // 145 supersedes the unit of 144's 20 + 200 caps (tokens) and the 10-21 wording "20 + 200 token" above; option A of the dispatcher's three.
-test("2026-10-22, 145: '原则上要求不超过200 字/词，但实际check不超过250 token就不再警告，标题同理' (option A) — the prompts state 200 and 20 字/词, and every check counts 字/词 and refuses only above 220 and 22", () => {
+test("2026-10-22, 145: '原则上要求不超过200 [units]，但实际check不超过250 token就不再警告，标题同理' (option A) — the prompts state 200 and 20 units, and every check counts units and refuses only above 220 and 22", () => {
   expect(DEFAULT_CONFIG.writing).toEqual({ titleWords: 20, bodyWords: 200 });
   memory.config.writing.bodyWords = DEFAULT_CONFIG.writing.bodyWords; // this file lifts the body cap for its large fixtures
   const { create, write, path, tools } = memoryWriter();
@@ -710,17 +710,17 @@ test("2026-10-22, 145: '原则上要求不超过200 字/词，但实际check不�
   expect(words("修改 src/core/x.ts 的 parseFoo 函数")).toBe(7);
   // A body of 215 and a title of 22 pass; 221 and 23 are refused. The count is the same for the manual tools, the Noter's and the Dreamer's.
   expect(write([{ ...create, text: text(215), title: text(22) }]).results[0]).toBe("ok");
-  expect(write([{ ...create, text: text(221) }]).results[0]).toContain("text: 221 字/词, over the limit of 220 (target 200)");
-  expect(write([{ ...create, title: text(23) }]).results[0]).toContain("title: 23 字/词, over the limit of 22 (target 20)");
+  expect(write([{ ...create, text: text(221) }]).results[0]).toContain("text: 221 units, over the limit of 220 (target 200)");
+  expect(write([{ ...create, title: text(23) }]).results[0]).toContain("title: 23 units, over the limit of 22 (target 20)");
   expect(note.execute({ title: text(22), sources: `[T${turn}#E1] ${text(215)}` })).toContain("ok: F");
-  expect(note.execute({ title: "Long evidence", sources: `[T${turn}#E1] ${text(221)}` })).toContain("sources: 221 字/词, over the limit of 220 (target 200)");
+  expect(note.execute({ title: "Long evidence", sources: `[T${turn}#E1] ${text(221)}` })).toContain("sources: 221 units, over the limit of 220 (target 200)");
   // The limit is the target plus 10%, rounded up: 4 allows 5 and 5 allows 6.
   expect([20, 200, 4, 5, 1].map(wordLimit)).toEqual([22, 220, 5, 6, 2]);
   // The prompts state the target and the unit and never the tolerance.
   for (const file of ["noting.md", "dreaming.md"] as const) {
     const prompt = loadPrompt(file, canonicalToolNames);
-    expect(prompt).toContain("a title of a fact or knowledge is at most 20 字/词 and a body at most 200 字/词");
-    expect(prompt).not.toMatch(/\b220\b|\b22 字|tolerance|10 ?%/);
+    expect(prompt).toContain("a title of a fact or knowledge is at most 20 units and a body at most 200 units");
+    expect(prompt).not.toMatch(/\b220\b|\b22 units|tolerance|10 ?%/);
   }
   // The token caps' settings are removed, not read as word counts.
   for (const key of ["titleTokens", "bodyTokens"])
@@ -2043,7 +2043,7 @@ test("2026-10-22: `check` is callable at any time and returns the task, the prob
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   expect(reports[0]).toContain("Task: verify");
   expect(reports[0]).toContain("Problems: none");
-  expect(reports[0]).toMatch(/facts\.md block 1 `## fact f1`: title \d+\/20 字\/词 \(limit 22\), body \d+\/200 字\/词 \(limit 220\)/);
+  expect(reports[0]).toMatch(/facts\.md block 1 `## fact f1`: title \d+\/20 units \(limit 22\), body \d+\/200 units \(limit 220\)/);
 });
 
 /** 26 amendment 2 (26c design §1, defect D3): one shared prefix and two children — a fact on the
@@ -2560,7 +2560,7 @@ test("61: sentences are short, paragraphs are not walls, and no internal referen
     expect(longest, `${file}: sentences over 35 words`).toEqual([]);
     expect(lengths.reduce((a, b) => a + b, 0) / lengths.length, `${file}: mean sentence length`).toBeLessThanOrEqual(18);
     for (const pattern of banned) expect(prompt.match(pattern), `${file}: ${pattern}`).toBeNull();
-    expect(prompt.replaceAll("字/词", "")).not.toMatch(/[一-鿿]/); // English prompts; the one exception is the length unit the model is told in the maintainer's words (145)
+    expect(prompt).not.toMatch(/[一-鿿]/);
   }
 });
 

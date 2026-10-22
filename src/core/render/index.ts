@@ -554,7 +554,7 @@ export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap =
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
 
 /** The title a knowledge version shows (ticket 144): its own, or for a legacy untitled version the
- * leading characters of its body, flattened to one line and cut to the title target in 字/词 (145). */
+ * leading characters of its body, flattened to one line and cut to the title target in units (145). */
 export function knowledgeTitle(r: Pick<KnowledgeRevision, "title" | "text">, titleWords: number): string {
   return r.title ?? leadingWords(r.text.replace(/\s+/g, " ").trim(), titleWords);
 }
@@ -562,7 +562,7 @@ export function knowledgeTitle(r: Pick<KnowledgeRevision, "title" | "text">, tit
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`, showSize = false,
   limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  const size = showSize ? ` (${words(r.text)}/${limits.bodyWords} 字/词)` : "";
+  const size = showSize ? ` (${words(r.text)}/${limits.bodyWords} units)` : "";
   const tags = `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size}`;
   return `${tags} ${knowledgeTitle(r, limits.titleWords)}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }

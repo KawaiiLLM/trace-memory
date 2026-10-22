@@ -26,7 +26,7 @@ export type WorkspaceTask =
   | { kind: "curate"; operation: CurateOperation; sessionId: number; path?: KnowledgePath; file: WorkspaceFile }
   | { kind: "classify"; items: readonly number[]; file: WorkspaceFile };
 
-/** The host-measured length of one title or body in 字/词, whether or not it is over its limit; the limit is the target plus 10% (145). */
+/** The host-measured length of one title or body in units, whether or not it is over its limit; the limit is the target plus 10% (145). */
 export interface Length { block: string; field: "title" | "body"; count: number; target: number; limit: number }
 const measured = (block: string, field: Length["field"], count: number, target: number): Length => ({ block, field, count, target, limit: wordLimit(target) });
 
@@ -362,7 +362,7 @@ export function traceProblem(store: Store, address: string): string | null {
 }
 
 /** 144 stage 5 §4.5: the limits in force now against one compiled operation (title and body of what it writes, an archive's explanation,
- * each split child), in 字/词 (145). `plan` reports the same counts as `Length`; apply refuses an operation over them, per operation. */
+ * each split child), in units (145). `plan` reports the same counts as `Length`; apply refuses an operation over them, per operation. */
 export function overCaps(store: Store, operation: KnowledgeOperationInput): string[] {
   const { titleWords, bodyWords } = store.writing;
   const out: string[] = [];

@@ -230,7 +230,7 @@ test("`check` names the task, step and file, lists problems and every length, an
   expect(withoutKnowledge).toContain("Problems: none");
   // The follow-up message is the same report: the over-limit body is named with its count against the limit.
   expect(f.noter.stopMessages[0]).toContain("Lengths:");
-  expect(f.noter.stopMessages[0]).toMatch(/body \d+\/200 字\/词 \(limit 220, over\)/);
+  expect(f.noter.stopMessages[0]).toMatch(/body \d+\/200 units \(limit 220, over\)/);
 });
 
 // ---- A lost claim (stage 4 §3.4, ruling 2026-10-22) -------------------------------------------------------------------------
