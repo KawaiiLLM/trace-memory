@@ -593,7 +593,7 @@ export class CcImporter {
     let memory!: TraceMemoryFacade;
     this.workerDependencies = workerDependencies;
     this.runAgent = config.worker ? createCcRunAgent(config, workerDependencies,
-      kind => memory.config[kind].maxToolRounds) : undefined;
+      kind => kind === "noting" ? memory.config.noting.maxToolRounds : 0) : undefined;
     memory = TraceMemory(config.dbPath, input => this.dispatch(input), config.coreConfig, ccResultText,
       entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined, ccHumanUser);
     this.memory = memory;
@@ -626,7 +626,7 @@ export class CcImporter {
    * holds its invoked worker Promise; only a later task reads this replacement. */
   applyWorker(config: ResolvedCcHostConfig): void {
     this.runAgent = config.worker ? createCcRunAgent(config, this.workerDependencies,
-      kind => this.memory.config[kind].maxToolRounds) : undefined;
+      kind => kind === "noting" ? this.memory.config.noting.maxToolRounds : 0) : undefined;
   }
   persistedCall(toolUseId: string, toolName: "note" | "memory"): CcPersistedCall | null {
     return this.projection.persistedCall(toolUseId, toolName);

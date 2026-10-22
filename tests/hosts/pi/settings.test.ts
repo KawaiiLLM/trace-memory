@@ -136,8 +136,7 @@ test("32d: Dreamer preferences reuse Settings with no mode or advanced page", as
   expect(preferences.filter(p => p.phase === "dreaming").map(p => p.kind)).toEqual(["model", "thinking"]);
   expect(() => parseLayer({ "dreaming.forkModeDefault": true })).toThrow(/Unknown setting/);
   expect(() => parseLayer({ "dreaming.thinking": "unknown" })).toThrow(/dreaming.thinking/);
-  expect(validateConfig({ dreaming: { maxToolRounds: 0 } }).dreaming.maxToolRounds).toBe(0);
-  expect(() => validateConfig({ dreaming: { maxToolRounds: 51 } })).toThrow(/dreaming.maxToolRounds/);
+  expect(() => parseLayer({ "dreaming.maxToolRounds": 0 })).toThrow(/Removed setting dreaming\.maxToolRounds/); // 144: a leftover key fails the load by name
   expect(parseLayer({ "dreaming.triggerTokens": 6000, "dreaming.timeoutMs": 120000 }).dreaming)
     .toMatchObject({ triggerTokens: 6000, timeoutMs: 120000 });
   expect(parseLayer({}).dreaming).toMatchObject({ timeoutMs: 1_800_000 }); // 103: default rises to thirty minutes

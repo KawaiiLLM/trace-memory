@@ -45,14 +45,11 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput,
         const before: number[] = [];
         for (const operation of prepared.operations) {
           if (operation.op === "create") continue;
-          if (operation.op === "merge") {
-            before.push(view(operation.intoKnowledgeId, operation.intoBaseCommit).count);
-            for (const parent of operation.absorb) before.push(view(parent.knowledgeId, parent.baseCommit).count);
-          } else before.push(view(operation.knowledgeId, operation.baseCommit).count);
+          before.push(view(operation.knowledgeId, operation.baseCommit).count);
         }
         const after = committed.map(item => view(item.knowledgeId, item.commit).count);
         const published = committed.map(item => ({ ...item,
-          version: item.op === "update" || item.op === "merge" || item.op === "split"
+          version: item.op === "update"
             ? view(item.knowledgeId, item.commit).tagged!
             : `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}` }));
         receipt = { results: prepared.results, committed: published.map(({ commit, ...item }) => item), diagnostics,

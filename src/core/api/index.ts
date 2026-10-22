@@ -75,8 +75,6 @@ export interface TraceMemoryConfig {
   dreaming: {
     /** The session's pending weight, summed across its pools, that makes a Dreamer run due (104). */
     triggerTokens: number;
-    /** 0 = unlimited. Dreaming is bounded by timeoutMs instead. */
-    maxToolRounds: number;
     /** Cooperative wall-clock deadline shared by every host. */
     timeoutMs: number;
   };
@@ -112,7 +110,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     triggerTokens: 10_000,
     maxToolRounds: 0,
   },
-  dreaming: { triggerTokens: DEFAULT_DREAMING_TRIGGER_TOKENS, maxToolRounds: 0, timeoutMs: 1_800_000 },
+  dreaming: { triggerTokens: DEFAULT_DREAMING_TRIGGER_TOKENS, timeoutMs: 1_800_000 },
   writing: { ...DEFAULT_WRITING_LIMITS },
   compaction: {
     factsTokens: 10_000,
@@ -147,6 +145,8 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "consolidation.triggerTokens": "Consolidation is retired; remove this key",
   "consolidation.batchTokens": "Consolidation is retired; remove this key",
   "consolidation.maxToolRounds": "Consolidation is retired; remove this key",
+  // Ticket 144 stage 4: the Dreamer's tasks are bounded by dreaming.timeoutMs; the only value it ever took was 0.
+  "dreaming.maxToolRounds": "the Dreamer has no tool-round limit (each task is bounded by dreaming.timeoutMs); remove this key",
   "compaction.overflowTokens": "use compaction.sharedAllowanceTokens (a fixed configuration value, default 10,000; no longer derived from the Noting, Consolidation and Dreamer triggers)",
   "consolidation.subagentModeDefault": "Consolidation is retired; remove this key",
   "consolidation.knowledgeTokens": "remove it and use Settings to edit the bound database's Global, Project and Session Knowledge budgets",
@@ -231,7 +231,6 @@ export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
     if (name === "render.entryTokens" && (value as number) > 2_000) throw new Error(`Invalid ${name}: at most 2000`);
     if ((key === "toolInputTokens" || key === "toolResultTokens") && (value as number) > TOOL_CALL_CEILING) throw new Error(`Invalid ${name}: at most ${TOOL_CALL_CEILING}`);
   }
-  if (cfg.dreaming.maxToolRounds !== 0) throw new Error("Invalid dreaming.maxToolRounds: Dreamer requires 0 (unlimited); use dreaming.timeoutMs for the run bound");
   if (cfg.dreaming.timeoutMs > 2_147_483_647) throw new Error("Invalid dreaming.timeoutMs: expected at most 2147483647 for the native timer");
   return cfg;
 }

@@ -79,7 +79,6 @@ For example, either settings file can contain:
     "noting.nearThreshold": 0.4,
     "consolidation.triggerTokens": 5000,
     "dreaming.triggerTokens": 10000,
-    "dreaming.maxToolRounds": 0,
     "dreaming.timeoutMs": 600000,
     "dreaming.model": "session",
     "dreaming.thinking": "inherit",
@@ -123,7 +122,7 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - `dreaming.model` and `dreaming.thinking` use the same model/thinking Settings selectors,
   defaults and precedence as the other phases. Dreamer has no new settings page. The classify task has its own
   `dreaming.classifyModel` and `dreaming.classifyThinking` rows in the same Settings; admission resolves both triples and freezes them for the run.
-  `dreaming.maxToolRounds` is fixed at 0 (unlimited). The shared `dreaming.timeoutMs` default is
+  `dreaming.maxToolRounds` is a removed setting (the Dreamer has no tool-round limit); a leftover key fails the load by name. The shared `dreaming.timeoutMs` default is
   1,800,000 milliseconds, applied to each of the Dreamer's three tasks (curate, verify, classify). Expiry fails the
   task, fences its workspace and releases its claim. Provider retries do not reset the deadline. After a pass the host asks
   for one repair of a file that fails its check, then ends the task.

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { DEFAULT_CONFIG, validateConfig, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
+import { DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import type { TraceMemory } from "../../source-fixture.ts";
 import { dreamerFixture as makeDreamerFixture } from "../../support/dreamer.ts";
 
@@ -15,9 +15,12 @@ function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, tim
 }
 const revisions = (f: ReturnType<typeof setup>) => f.store.listKnowledgeRevisions().length;
 
-test("68 defaults pin flat Dreamer trigger, unlimited rounds and thirty-minute deadline (103)", () => {
-  expect(DEFAULT_CONFIG.dreaming).toEqual({ triggerTokens: 10_000, maxToolRounds: 0, timeoutMs: 1_800_000 });
-  expect(() => validateConfig({ dreaming: { maxToolRounds: 1 } })).toThrow(/Dreamer requires 0/);
+test("68 defaults pin the flat Dreamer trigger and the thirty-minute deadline (103); 144: dreaming.maxToolRounds is a removed setting", () => {
+  expect(DEFAULT_CONFIG.dreaming).toEqual({ triggerTokens: 10_000, timeoutMs: 1_800_000 });
+  for (const value of [0, 1]) {
+    expect(() => validateConfig({ dreaming: { maxToolRounds: value } } as never)).toThrow(/Removed setting dreaming\.maxToolRounds/);
+    expect(() => canonicalFlatConfig({ "dreaming.maxToolRounds": value })).toThrow(/Removed setting dreaming\.maxToolRounds.*timeoutMs/);
+  }
   expect(() => validateConfig({ dreaming: { timeoutMs: 2_147_483_648 } })).toThrow(/dreaming.timeoutMs.*at most 2147483647/);
 });
 
