@@ -600,25 +600,20 @@ export class CcImporter {
     this.projection = new CcProjection(config, binding, memory);
   }
 
-  /** One execution is one worker (stage 4 §1.2): the first dispatch of an execution stores the runner it ran on and later dispatches of
-   * that execution take it, so a configuration applied mid-run reaches only the next execution. A resumed run is a new execution and
-   * takes the then-current worker. The pin is released when a dispatch fails, is cancelled or times out (the execution ends there), and
-   * otherwise at the first later dispatch that finds the execution settled (a success, a no-work task, or a runner still running after
-   * its deadline); closing the importer drops the map. */
+  /** One execution is one worker (stage 4 §1.2): the first dispatch of an execution stores the runner it ran on, before it awaits, and later
+   * dispatches of that execution take it, so a configuration applied mid-run reaches only the next execution. A resumed run is a new
+   * execution and takes the then-current worker. Dreaming runs several calls of one execution side by side (146 §3.3), and one group's
+   * failure does not end the execution, so the pin is released only when a later dispatch finds the execution settled; closing the importer
+   * drops the map. */
   private readonly executionRunners = new Map<string, RunAgent>();
-  private async dispatch(input: unknown) {
+  private dispatch(input: unknown) {
     const { executionId } = input as { executionId?: string };
     if (executionId !== undefined && this.executionRunners.size)
       for (const id of this.memory.store.settledExecutions([...this.executionRunners.keys()])) this.executionRunners.delete(id);
     const run = (executionId !== undefined ? this.executionRunners.get(executionId) : undefined) ?? this.runAgent;
     if (!run) return unavailableRunner();
-    let result: Awaited<ReturnType<RunAgent>> | undefined;
-    try {
-      result = await run(input);
-      return result;
-    } finally {
-      if (executionId !== undefined) { if (result?.outcome === "success") this.executionRunners.set(executionId, run); else this.executionRunners.delete(executionId); }
-    }
+    if (executionId !== undefined) this.executionRunners.set(executionId, run);
+    return run(input);
   }
 
   currentBinding(): CcSessionBinding { return this.projection.currentBinding(); }
@@ -640,7 +635,7 @@ export class CcImporter {
     }
     return result;
   }
-  close(): void { this.memory.close(); }
+  close(): void { this.executionRunners.clear(); this.memory.close(); }
 }
 
 export function openBoundImporter(config: ResolvedCcHostConfig, nativeSessionId: string): CcImporter | null {

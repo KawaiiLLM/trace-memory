@@ -37,14 +37,35 @@ test("an execution keeps the worker its first dispatch ran on; a new execution t
   } finally { f.subject.memory.close(); }
 });
 
-test.each(["failure", "cancelled"] as const)("a %s dispatch drops the pin: the execution ended there", async outcome => {
+// 146 §3.3: Dreaming runs groups side by side, so one failing dispatch must not release the pin its siblings share.
+test.each(["failure", "cancelled"] as const)("a %s dispatch keeps the pin: its sibling dispatches stay on the same worker", async outcome => {
   const f = await importer();
   try {
     f.use("old", outcome);
     await f.dispatch("e1");
     f.use("new");
     await f.dispatch("e1");
-    expect(f.seen).toEqual(["old", "new"]);
+    expect(f.seen).toEqual(["old", "old"]);
+  } finally { f.subject.memory.close(); }
+});
+
+test("the pin is set when the first dispatch starts, so a sibling that starts while it runs takes the same worker", async () => {
+  const f = await importer();
+  try {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let calls = 0;
+    (f.subject as unknown as { runAgent: unknown }).runAgent = async () => {
+      f.seen.push("first");
+      if (calls++ === 0) await held;
+      return { outcome: "failure", output: "first", request: {} };
+    };
+    const first = f.dispatch("e1");
+    f.use("new"); // a configuration change while the first dispatch is still running
+    await f.dispatch("e1");
+    release();
+    await first;
+    expect(f.seen).toEqual(["first", "first"]);
   } finally { f.subject.memory.close(); }
 });
 
