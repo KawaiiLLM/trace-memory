@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
-import { TraceMemory } from "../../../src/core/api/index.ts";
 import type { KnowledgeCategory, KnowledgeScope } from "../../../src/core/model/index.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite } from "../../dreaming-skips.ts";
+import type { TraceMemory } from "../../source-fixture.ts";
+import { dreamerFixture } from "../../support/dreamer.ts";
+import { block } from "../../support/workspace.ts";
 
 interface ParentExample { text: string; category: KnowledgeCategory; scope: KnowledgeScope; topics: string[] }
 interface WorkflowExample {
@@ -17,31 +17,7 @@ interface WorkflowFixture {
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as WorkflowFixture;
 const active: TraceMemory[] = [];
 afterEach(() => { for (const memory of active.splice(0)) memory.close(); });
-const success = { outcome: "success", output: "scripted fixture complete", request: { fixture: "dreaming-workflow" } } as const;
 const example = (id: string) => { const found = fixture.examples.find(value => value.id === id); if (!found) throw new Error(`Missing ${id}`); return found; };
-const handle = (state: ReturnType<typeof seeded>, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${state.store.versionTag(item.knowledgeId, item.commit)}`;
-const history = (state: ReturnType<typeof seeded>, item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@v${state.store.versionOrdinal(item.knowledgeId, item.commit)}`;
-
-function seeded(parents: ParentExample[]) {
-  const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected phase"); });
-  const memory = TraceMemory(":memory:", scenarios.agent); active.push(memory);
-  const store = memory.store, project = store.createProject({ name: "workflow-fixture", declaredBy: "mark" });
-  const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-  const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "review", startedAt: "now" });
-  const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "workflow", role: "user", text: "review", raw: "review", calls: [] });
-  memory.selectEntries(session.id, "main", [entry.id]);
-  const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: parents.map(parent => ({
-    turnId: turn.id, entryIds: [entry.id], actor: "user" as const, category: "decision" as const, text: parent.text, source: [`T${turn.id}#E1`], createdAt: "now",
-  })) });
-  if (!facts.ok) throw new Error(facts.problems.join("; "));
-  const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
-  const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: parents.map((parent, index) => ({
-    op: "create" as const, title: "Fixture title", handle: `$${index + 1}`, author: "workflow-fixture", ...parent, supports: [facts.facts[index]!.id], reason: "Seed reviewed parent", createdAt: "now",
-  })) });
-  if (!created.ok) throw new Error(created.problems.join("; "));
-  const trigger = createDreamerTrigger(memory, path, facts.facts[0]!.id, 1, "project");
-  return { memory, store, scenarios, items: created.committed, trigger, target: path };
-}
 
 test("35c reviewed fixtures label semantic judgments and non-semantic limits honestly", () => {
   expect(fixture.semanticReview.authority).toContain("historical human semantic-review");
@@ -54,67 +30,19 @@ test("35c reviewed fixtures label semantic judgments and non-semantic limits hon
   expect(fixture.provenance).toContain("pi-observational-memory ce9fc982b3a219a7839f07c9f4a3e054e81a2b21");
 });
 
-test("85: a pending-triggered deterministic Dreamer still archives until its selected pool fits", async () => {
-  const state = seeded([{ text: "Routine progress record ".repeat(600), category: "reference", scope: "project", topics: [] }]);
-  const pool = `project:${state.store.getSession(state.target.sessionId)!.projectId}`;
-  const size = state.store.poolSizes(state.target).find(value => value.pool === pool)!.tokens;
-  const weight = state.store.pendingPoolWeight(pool, state.target);
-  expect(weight).toBeGreaterThan(5_000);
-  state.store.setKnowledgeBudget("project", Math.max(5_700, Math.floor(size * 0.75)));
-  expect(state.store.poolSizes(state.target).find(value => value.pool === pool)!.tokens).toBeGreaterThan(state.store.knowledgeBudgets().project);
-  expect(state.store.dreamingDue(state.target, state.memory.config.dreaming.triggerTokens)).toBe(true);
-  const outcome = await state.scenarios.run(state.memory, state.target, task => {
-    task.acknowledgeRequest();
-    const receipt = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [
-      { op: "archive", kind: "budget", id: handle(state, state.items[0]!), supports: [], reason: "Reviewed low-value routine progress retired to fit budget" }],
-      skipped: [{ knowledge: history(state, state.trigger), because: "fixture trigger has no maintenance meaning" }] }));
-    expect(receipt.committed).toHaveLength(1);
-    expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return success;
-  });
+test("35c faithful merge keeps authority, conditions, exception and rendered topics through a real Dreamer run", async () => {
+  const reviewed = example("faithful-authority-merge"), body = reviewed.result as unknown as ParentExample;
+  const f = dreamerFixture(active);
+  const items = reviewed.parents.map(parent => f.item(parent.text, { category: parent.category as "constraint", scope: parent.scope }));
+  f.dreamer.script.curate!.constraint = block(`merge ${items[0]!.ref}`, { absorb: items[1]!.ref, category: body.category, scope: body.scope,
+    topics: body.topics.join(", "), reason: "Reviewed complete claims retain authority, condition, exception, and subjects" }, body.text);
+  const outcome = await f.dream();
   expect(outcome.outcome, JSON.stringify(outcome)).toBe("success");
-  const final = state.store.poolSizes(state.target).find(value => value.pool === pool)!;
-  expect(final.tokens).toBeLessThanOrEqual(final.budget);
-  expect(state.store.currentCommit(state.items[0]!.knowledgeId, state.target)[0]!.op).toBe("archive");
-});
-
-test("35c faithful merge keeps authority, conditions, exception and rendered topics through a real pool run", async () => {
-  const reviewed = example("faithful-authority-merge"), body = reviewed.result as unknown as ParentExample, state = seeded(reviewed.parents);
-  let merged!: { knowledgeId: number; version: string };
-  const outcome = await state.scenarios.run(state.memory, state.target, task => {
-    const write = task.tools.find(tool => tool.name === "memory")!;
-    merged = JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: handle(state, state.items[0]!), absorb: [handle(state, state.items[1]!)],
-      ...body, supports: [], reason: "Reviewed complete claims retain authority, condition, exception, and subjects" }],
-      skipped: [{ knowledge: history(state, state.trigger), because: "fixture trigger has no maintenance meaning" }] })).committed[0];
-    expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return success;
-  });
-  expect(outcome.outcome).toBe("success");
-  const current = state.store.currentCommit(merged.knowledgeId, state.target)[0]!;
-  expect(current).toMatchObject({ text: body.text, category: body.category, scope: body.scope, topics: [...body.topics].sort() });
-  const rendered = state.memory.trace(merged.version);
+  const current = f.store.currentCommit(items[0]!.knowledgeId, f.path)[0]!;
+  expect(current).toMatchObject({ op: "merge", text: body.text, category: body.category, scope: body.scope, topics: [...body.topics].sort() });
+  const rendered = f.memory.trace(`K${items[0]!.knowledgeId}@v2`);
   expect(rendered).toContain("artifacts may be prepared before deployment");
   expect(rendered).toContain('topics: ["artifact-preparation","deployment","offline-runtime"]');
-});
-
-test("35c archive and no-op skip preserve the compared survivor and original no-op body", async () => {
-  const reviewed = example("equivalent-information-retirement");
-  const disposition = reviewed.result as { archiveParent: number; survivorParent: number; reason: string };
-  const state = seeded(reviewed.parents), archived = state.items[disposition.archiveParent]!, survivor = state.items[disposition.survivorParent]!;
-  const outcome = await state.scenarios.run(state.memory, state.target, task => {
-    const receipt = JSON.parse(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [{ op: "archive", kind: "budget", id: handle(state, archived), supports: [], reason: disposition.reason }],
-      skipped: [{ knowledge: history(state, survivor), because: "Compared survivor already states the claim" },
-        { knowledge: history(state, state.trigger), because: "fixture trigger has no maintenance meaning" }] }));
-    expect(receipt.committed).toHaveLength(1);
-    return success;
-  });
-  expect(outcome.outcome).toBe("success");
-  expect(state.store.currentCommit(survivor.knowledgeId, state.target)[0]).toMatchObject({ text: reviewed.parents[disposition.survivorParent]!.text });
-  expect(state.store.currentCommit(archived.knowledgeId, state.target)[0]).toMatchObject({ op: "archive", archiveKind: "budget", text: reviewed.parents[disposition.archiveParent]!.text });
-  const processed = state.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id")
-    .all(`project:${state.store.getSession(state.target.sessionId)!.projectId}`).map(row => Number(row.revision_id));
-  expect(processed).toContain(survivor.commit); // accepted skip
-  expect(processed).not.toContain(archived.commit); // superseded parent needs no processing row
 });
 
 test("58 reconstructed decision-provenance fixtures remain split by object and never archive the design", () => {

@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
-import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
-import { legacyFacts, receiptCommit } from "../../support/seed.ts";
+import { legacyFacts } from "../../support/seed.ts";
+import { curateWrite } from "../../support/dreamer.ts";
 import fixture from "../../fixtures/trace.json";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
-let memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios;
+let memory: ReturnType<typeof sourceSeededMemory>;
 let sessionId: number, headTurnId: number, triggerEntryId: number;
 const time = "2026-09-07T00:00:00Z";
 const reader = () => ({ sessionId, branch: "main", headTurnId });
@@ -17,44 +16,7 @@ async function consolidation(...operations: Operation[]) {
     if (!result.ok) throw new Error(result.problems.join(", "));
     return result.committed;
   }
-  const path = { sessionId, branch: "main", headTurnId, triggerEntryId };
-  const first = operations.find(op => op.op !== "create")!;
-  const base = first.op === "merge" ? first.intoBaseCommit : first.baseCommit;
-  const trigger = createDreamerTrigger(memory, path, 1, memory.store.listKnowledgeRevisions().length + 1, memory.store.knowledgeRevision(base)!.scope);
-  let committed: { knowledgeId: number; commit: number }[] = [];
-  const dreamed = await scenarios.run(memory, path, input => {
-    const request = { fixture: "knowledge maintenance" }; input.reportRequest(request);
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const addressed = new Set<string>();
-    const exact = (id: number, commit: number) => {
-      const address = `K${id}#${memory.store.versionTag(id, commit)}`;
-      addressed.add(`K${id}@v${memory.store.versionOrdinal(id, commit)}`);
-      expect(memoryFiles(memory, input.reader!).read(`trace://${address}`).content).toContain(address);
-      return address;
-    };
-    const converted = operations.map(operation => {
-      if (operation.op === "update") return { op: "update", id: exact(operation.knowledgeId, operation.baseCommit), text: operation.text,
-        category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason };
-      if (operation.op === "archive") return { op: "archive", kind: "budget", id: exact(operation.knowledgeId, operation.baseCommit),
-        supports: operation.supports.map(id => `F${id}`), reason: operation.reason };
-      if (operation.op === "merge") return { op: "merge", id: exact(operation.intoKnowledgeId, operation.intoBaseCommit),
-        absorb: operation.absorb.map(parent => exact(parent.knowledgeId, parent.baseCommit)), text: operation.text,
-        category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason };
-      return operation;
-    });
-    const triggerAddress = exact(trigger.knowledgeId, trigger.commit);
-    const supplied = new Set(suppliedHandles(input.material.changed));
-    for (const address of addressed) supplied.delete(address);
-    const receipt = JSON.parse(dreamerWrite(write, { operations: [...converted, { op: "archive", kind: "budget", id: triggerAddress,
-      supports: ["F1"], reason: "Retire fixture trigger" }], skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied fixture item." })) }));
-    committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
-      .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId,
-        commit: receiptCommit(memory.store, item) }));
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return { outcome: "success", output: "maintenance complete", request };
-  });
-  if (dreamed.outcome !== "success") throw new Error(JSON.stringify(dreamed));
-  return committed;
+  return curateWrite(memory, { sessionId, branch: "main", headTurnId }, operations); // the Dreamer's pass
 }
 async function create(text = "use red tiles now") {
   return (await consolidation({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission", handle: "$e1", author: "test", text,
@@ -66,8 +28,7 @@ async function update(id: number, base: number, text: string) {
 }
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(new Date(time));
-  scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("memory read must not call model"); });
-  memory = sourceSeededMemory(":memory:", scenarios.agent);
+  memory = sourceSeededMemory(":memory:", async () => { throw new Error("memory read must not call model"); });
   const project = memory.store.createProject({ name: "trace", declaredBy: "mark" });
   sessionId = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: time, firstReplyAt: time }).id;
   const turn = memory.store.appendTurn({ sessionId, kind: "turn", userPrompt: "fixture trigger", startedAt: time });
@@ -96,7 +57,7 @@ test("current and exact knowledge retain evidence and version links", async () =
   expect(read(`K${id}.history`)).toContain("Correction");
 });
 
-test("merge and archive keep exact historical bodies while current archive has no body", async () => {
+test("merge and archive keep exact historical bodies while the current archive shows no live body", async () => {
   const survivor = await create("survivor"), absorbed = await create("absorbed");
   const merged = (await consolidation({ op: "merge", topics: [], reason: "Merge", intoKnowledgeId: survivor, intoBaseCommit: 1,
     absorb: [{ knowledgeId: absorbed, baseCommit: 2 }], text: "combined", category: "reference", scope: "project", supports: [1, 2], createdAt: time }))[0]!;
@@ -109,7 +70,10 @@ test("merge and archive keep exact historical bodies while current archive has n
   expect(read(`K${survivor}`)).not.toContain(`[K${survivor}@v${memory.store.versionOrdinal(survivor, archived.commit)}]`);
   expect(read(`K${survivor}`)).not.toContain("later survivor");
   expect(read(`K${survivor}.history`)).toContain("Retired");
-  expect(read(`K${survivor}@v${memory.store.versionOrdinal(survivor, archived.commit)}`)).toContain("later survivor");
+  // A budget archive kept the parent's body (kind retired 2026-10-21); an invalid archive carries its own statement, and the exact
+  // parent version keeps the body it had.
+  expect(read(`K${survivor}@v${memory.store.versionOrdinal(survivor, archived.commit)}`)).toContain("nothing replaces it");
+  expect(read(`K${survivor}@v${memory.store.versionOrdinal(survivor, later.commit)}`)).toContain("later survivor");
 });
 
 test("exact facts retain strong and weak relations; removed intervals are refused", () => {

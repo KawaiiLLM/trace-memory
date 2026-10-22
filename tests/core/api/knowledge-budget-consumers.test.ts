@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
+import { dreamerFixture } from "../../support/dreamer.ts";
 import { tokens } from "../../../src/core/render/index.ts";
-import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
 import { fixtureTitle, legacyFacts } from "../../support/seed.ts";
 
-const memories: ReturnType<typeof TraceMemory>[] = [];
+const memories: Parameters<typeof dreamerFixture>[0] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 
 function fixture(runAgent?: Parameters<typeof TraceMemory>[1]) {
@@ -86,42 +86,6 @@ test("73: zero Knowledge base borrows only the configured shared allowance", () 
   }
 });
 
-test("64c zero changed-pool cap still dispatches the oldest pending revision; failure leaves it pending", async () => {
-  const f = fixture();
-  const created = f.create("changed");
-  zeroBase(f.memory);
-  f.memory.config.dreaming.triggerTokens = 1; // 104: due on the session's summed pending, not on a zero pool budget
-  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
-  expect(f.captured).toHaveLength(1);
-  expect(f.captured[0]!.material.changed).toContain(`New K${created.knowledgeId}@v1`);
-  expect(f.memory.store.pendingVersions(`project:${f.memory.store.getSession(f.session.id)!.projectId}`, f.target)
-    .map(value => value.revisionId)).toEqual([created.commit]);
-  expect(f.memory.store.getClaim(f.session.id, "dreaming")).toBeNull();
-});
-
-test("92: no Knowledge window explicitly rejects a mandatory pending header and leaves it pending", async () => {
-  const f = fixture();
-  const item = f.create("mandatory pending rule");
-  zeroBase(f.memory);
-  f.memory.config.compaction.sharedAllowanceTokens = 0;
-  const pool = `project:${f.memory.store.getSession(f.session.id)!.projectId}`;
-  const pending = f.memory.store.pendingVersions(pool, f.target);
-  const changedCost = tokens(["Pending current knowledge:", ...pending.map(value => value.material)].join("\n"));
-  const knowledgeWindow = f.memory.knowledgeBudgets().injection + f.memory.config.compaction.sharedAllowanceTokens;
-  expect(knowledgeWindow).toBe(0);
-  expect(changedCost).toBe(44); // 35 before 134 added the "(N tokens)" annotation, 39 before 144 added the title line
-  expect(tokens("Current pool knowledge outside this range:\n")).toBe(8);
-  expect(changedCost + 1 + 8).toBe(53);
-  const failure = await f.memory.dream(f.target).then(() => "resolved", error => String(error));
-  expect(f.captured).toEqual([]);
-  expect(f.memory.store.openDreamingRange(f.session.id, "main")).toBeNull();
-  expect(f.memory.store.getClaim(f.session.id, "dreaming")).toBeNull();
-  expect(f.memory.store.db.prepare("SELECT * FROM dreaming_ranges").all()).toEqual([]);
-  expect(f.memory.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
-  expect(f.memory.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([item.commit]);
-  expect(failure).toMatch(/Dreaming capacity: pending Knowledge and required framing cannot fit/);
-});
-
 test("73: an unsafe combined envelope refuses instead of wrapping, not a trigger sum any more", () => {
   const f = fixture();
   f.create("changed");
@@ -131,53 +95,11 @@ test("73: an unsafe combined envelope refuses instead of wrapping, not a trigger
 });
 
 test("64c a larger configured Knowledge window never bypasses actual provider input capacity", async () => {
-  const f = fixture();
-  f.create("changed ".repeat(1_000));
-  const pending = f.memory.store.pendingVersions(`project:${f.memory.store.getSession(f.session.id)!.projectId}`, f.target);
-  f.memory.setKnowledgeBudget("project", pending.reduce((sum, value) => sum + value.tokens, 0) * 2);
-  f.memory.config.dreaming.triggerTokens = 1;
+  const f = dreamerFixture(memories);
+  f.item("changed ".repeat(1_000));
   await expect(f.memory.dream({ ...f.target, capacity: { inputTokens: 100 } })).rejects
-    .toThrow(/frozen material and tools exceed model input allowance/);
-  expect(f.captured).toEqual([]);
-  expect(f.memory.store.pendingVersions(pending[0]!.pool, f.target)).not.toEqual([]);
-});
-
-test("73: real facade freezes D references to base plus the configured shared allowance minus Changed and separator", async () => {
-  let f!: ReturnType<typeof fixture>;
-  const admitted: number[] = [];
-  let firstFinished = false;
-  f = fixture(async raw => {
-    const task = raw as DreamingAgentInput;
-    const budgets = f.memory.knowledgeBudgets();
-    admitted.push(budgets.dreamingProcessedInput + f.memory.config.compaction.sharedAllowanceTokens
-      - tokens(task.material.changed) - 1);
-    if (admitted.length === 1) {
-      expect(dreamerWrite(task.tools.find(tool => tool.name === "memory")!, { operations: [], skipped: suppliedHandles(task.material.changed)
-        .map(knowledge => ({ knowledge, because: "reviewed unchanged" })) })).toContain("committed");
-      const frozen = task.admittedProcessedInputCap;
-      f.memory.setKnowledgeBudget("global", 5_000);
-      f.memory.config.compaction.sharedAllowanceTokens = 6_000;
-      expect(task.admittedProcessedInputCap).toBe(frozen);
-      firstFinished = true; // the run's expected failure must not hide an assertion error above
-    }
-    return { outcome: "failure", output: "capture only", request: {} };
-  });
-  f.memory.setKnowledgeBudget("project", 30_000);
-  f.memory.config.dreaming.triggerTokens = 5_000;
-  f.create("一".repeat(8_000), "project");
-  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
-  expect(firstFinished).toBe(true);
-  const first = f.captured[0]!;
-  expect(first.admittedProcessedInputCap).toBe(admitted[0]);
-
-  f.create("二".repeat(8_000), "project");
-  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
-  const second = f.captured[1]!;
-  const secondBudgets = f.memory.knowledgeBudgets();
-  const secondWindow = secondBudgets.dreamingProcessedInput + f.memory.config.compaction.sharedAllowanceTokens;
-  expect(second.admittedProcessedInputCap).toBe(admitted[1]);
-  expect(second.admittedProcessedInputCap).toBe(secondWindow - tokens(second.material.changed) - 1);
-  expect(tokens(second.material.processed)).toBeGreaterThan(0);
-  expect(tokens(second.material.processed)).toBeLessThanOrEqual(second.admittedProcessedInputCap);
-  expect(tokens(second.material.changed) + 1 + tokens(second.material.processed)).toBeLessThanOrEqual(secondWindow);
+    .toThrow(/Dreaming capacity: the knowledge prefix and tools exceed the model input allowance/);
+  expect(f.dreamer.inputs).toEqual([]);
+  expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
+  expect(await f.dream()).toMatchObject({ outcome: "success" }); // left pending: it runs once the model can take it
 });

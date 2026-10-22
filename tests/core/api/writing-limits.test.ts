@@ -1,15 +1,15 @@
 // What `note`, `memory` and the Noter's check refuse for length and title, for every writer: the Noter (its files),
 // the Dreamer (one operation per call) and the manual tools. Title and body limits come from `writing`.
 import { afterEach, expect, test } from "vitest";
-import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { skipRest } from "../../dreaming-skips.ts";
+import { sourceSeededMemory, type NotingAgentInput, type RunAgent, type RunAgentResult } from "../../source-fixture.ts";
+import { checkWorkspace } from "../../../src/core/workspace/index.ts";
+import { block, workspaceBatch } from "../../support/workspace.ts";
 import { fact as seedFact, legacyKnowledge, receiptCommit } from "../../support/seed.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { writeFileSync } from "node:fs";
 import { factsFile, knowledgeFile, submit, verifyUnchanged, type Files } from "../../support/noter.ts";
 
-let memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios, triggerEntryId: number;
+let memory: ReturnType<typeof sourceSeededMemory>, triggerEntryId: number;
 afterEach(() => memory?.close());
 
 /** Text of exactly `size` estimated tokens. */
@@ -27,9 +27,9 @@ const success = (): RunAgentResult => ({ outcome: "success", output: "done", req
 let script: (input: NotingAgentInput) => Promise<RunAgentResult> = async () => success();
 function setup() {
   script = async () => success();
-  scenarios = new AdmittedDreamerScenarios(raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify"
-    ? verifyUnchanged(raw, { request: { fixture: "writing limits" } }) : script(raw as NotingAgentInput));
-  memory = sourceSeededMemory(":memory:", scenarios.agent);
+  const agent: RunAgent = raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify"
+    ? verifyUnchanged(raw, { request: { fixture: "writing limits" } }) : script(raw as NotingAgentInput);
+  memory = sourceSeededMemory(":memory:", agent);
   const project = memory.store.createProject({ name: "limits", declaredBy: "mark" });
   const session = memory.store.createSession({ enrollmentChoice: true, host: "pi:limits", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Use pnpm", assistantText: "Okay", startedAt: "now" });
@@ -169,48 +169,24 @@ test("a Noter update is checked on its resulting body and needs a title when its
   expect(stored(legacy.knowledgeId)).toMatchObject({ title: "Legacy rule", text: "Rule, compressed." });
 });
 
-test("the Dreamer's operations are refused for length and title, each on its own call", async () => {
-  const { write, dreamPath } = setup();
-  expect(JSON.parse(write.execute(create("Package manager", "Use pnpm"))).committed).toHaveLength(1);
-  const long = legacyKnowledge(memory.store, dreamPath, { text: sized(300, "Legacy rule. "), category: "constraint", scope: "project", supports: [1] });
-  createDreamerTrigger(memory, dreamPath, 1, 1);
-  const result = await scenarios.run(memory, dreamPath, input => {
-    input.reportRequest({ fixture: "dreamer limits" });
-    const tool = input.tools.find(value => value.name === "memory")!;
-    /** The refusal text of one refused call; the numbered item is withdrawn so the run can end. */
-    const refuse = (operation: unknown): string => {
-      const text = tool.execute(operation) as string;
-      const refused = JSON.parse(text).rejected as Record<string, string>;
-      const [slot, message] = Object.entries(refused).at(-1)!;
-      tool.execute({ drop: slot });
-      return message;
-    };
-    const base = tag(1);
-    expect(refuse({ op: "update", id: base, supports: [], reason: "Grow", edits: [{ old: "pnpm", new: sized(250) }] })).toContain("over the 200-token limit");
-    expect(refuse({ op: "update", id: base, title: sized(21), text: "Use pnpm", category: "constraint", scope: "project", topics: [], supports: [], reason: "Retitle" }))
-      .toContain("title: 21 tokens, over the 20-token limit");
-    expect(refuse({ op: "update", id: tag(long.knowledgeId), supports: [], reason: "Shorten", edits: [{ old: "Legacy rule.", new: "Rule." }] }))
-      .toContain("title: the base version has no title; supply one");
-    expect(refuse({ op: "update", id: tag(long.knowledgeId), title: "Legacy rule", supports: [], reason: "Shorten", edits: [{ old: "Legacy rule.", new: "Rule." }] }))
-      .toMatch(/text: \d{3} tokens, over the 200-token limit/);
-    // A merge that omits its text copies the later parent's body, which is a long legacy body here.
-    expect(refuse({ op: "merge", id: base, absorb: [tag(long.knowledgeId)], title: "Merged", category: "constraint", scope: "project",
-      topics: [], supports: [], reason: "Merge" })).toMatch(/text: \d{3} tokens, over the 200-token limit/);
-    expect(refuse({ op: "split", id: base, text: "Primary.", category: "constraint", scope: "project", topics: [], supports: [], reason: "Split",
-      children: [{ title: "One", text: sized(201), category: "constraint", topics: [] }, { title: "Two", text: "Two.", category: "constraint", topics: [] }] }))
-      .toContain("child 1: text: 201 tokens, over the 200-token limit");
-    expect(refuse({ op: "split", id: base, text: "Primary.", category: "constraint", scope: "project", topics: [], supports: [], reason: "Split",
-      children: [{ text: "One.", category: "constraint", topics: [] }, { title: sized(21), text: "Two.", category: "constraint", topics: [] }] }))
-      .toMatch(/child 1: title: expected a nonempty single-line string; child 2: title: 21 tokens, over the 20-token limit/);
-    // The split item continues as its primary part, which obeys the same cap.
-    expect(refuse({ op: "split", id: base, category: "constraint", scope: "project", topics: [], text: sized(201), supports: [], reason: "Split",
-      children: [{ title: "One", text: "One.", category: "constraint", topics: [] }] }))
-      .toContain("text: 201 tokens, over the 200-token limit");
-    expect(refuse({ op: "archive", kind: "invalid", id: base, supports: [], reason: "Withdrawn", text: sized(201, "No longer holds: ") }))
-      .toContain("text: 201 tokens, over the 200-token limit");
-    skipRest(input);
-    return success();
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-  expect(memory.store.listKnowledgeRevisions().map(value => value.op)).toEqual(["create", "create", "create"]); // the manual create, the seeded legacy item, the trigger
+test("the Dreamer's curate operations are refused for length and title, each in its own file", () => {
+  const b = workspaceBatch();
+  memory = b.memory;
+  const base = b.item("Use pnpm", { title: "Package manager" });
+  const long = legacyKnowledge(b.store, b.path, { text: sized(300, "Legacy rule. "), category: "constraint", scope: "project", supports: [base.supports[0]!] });
+  const longRef = `K${long.knowledgeId}@v1`;
+  const problems = (text: string) => checkWorkspace(b.store, { kind: "curate", sessionId: b.session.id, file: { name: "curate.md", text } }).problems.join("\n");
+  const child = (fields: Record<string, string>, text: string) => `\n### child\n${Object.entries({ category: "constraint", scope: "project", topics: "", supports: `F${base.supports[0]}`, reason: "split", ...fields }).map(([key, value]) => `${key}: ${value}`).join("\n")}\n\n${text}\n`;
+  expect(problems(block(`update ${base.ref}`, { reason: "Grow" }, sized(201)))).toContain("over the 200-token limit");
+  expect(problems(block(`update ${base.ref}`, { title: sized(21), reason: "Retitle" }, "Use pnpm"))).toContain("title: 21 tokens, over the 20-token limit");
+  expect(problems(block(`update ${longRef}`, { reason: "Shorten" }, "Rule."))).toContain("the base version has no title; supply one");
+  expect(problems(block(`update ${longRef}`, { title: "Legacy rule", reason: "Shorten" }, sized(300)))).toMatch(/text: \d{3} tokens, over the 200-token limit/);
+  expect(problems(block(`merge ${base.ref}`, { absorb: longRef, title: "Merged", reason: "Merge" }, sized(201)))).toMatch(/text: 201 tokens, over the 200-token limit/);
+  expect(problems(block(`split ${base.ref}`, { reason: "Split" }, "Primary.") + child({ title: "One" }, sized(201)) + child({ title: "Two" }, "Two.")))
+    .toContain("child 1: text: 201 tokens, over the 200-token limit");
+  expect(problems(block(`split ${base.ref}`, { reason: "Split" }, "Primary.") + child({}, "One.") + child({ title: sized(21) }, "Two.")))
+    .toMatch(/child 1: .*title.*child 2: title: 21 tokens, over the 20-token limit/s);
+  // The split item continues as its primary part, which obeys the same cap.
+  expect(problems(block(`split ${base.ref}`, { reason: "Split" }, sized(201)) + child({ title: "One" }, "One."))).toContain("text: 201 tokens, over the 200-token limit");
+  expect(problems(block(`archive ${base.ref}`, { kind: "invalid", reason: "Withdrawn" }, sized(201, "No longer holds: ")))).toContain("body: 201 tokens, over the 200-token limit");
 });

@@ -13,8 +13,7 @@ import { noVisibility } from "../../../src/core/api/visible.ts";
 import { KNOWLEDGE_RECENCY_NOTICE, sessionKnowledgeNotice, budgetFacts, budgetKnowledge, charge, finish, renderFact, renderFactGroups, renderKnowledge, renderKnowledgeBlock, wholeKnowledge, xmlBlock } from "../../../src/core/render/index.ts";
 import { budgetMaterial, compactText, rawWindowTokens, injectionText, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
+import { curateWrite } from "../../support/dreamer.ts";
 import { fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyFacts, receiptCommit } from "../../support/seed.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
@@ -34,7 +33,7 @@ test("the reading guide names only available native tools within its framing cei
   }
 });
 
-let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: NotingAgentInput[], scenarios: AdmittedDreamerScenarios;
+let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: NotingAgentInput[];
 const time = "2026-09-08T00:00:00Z";
 const tag = (knowledgeId: number, commit: number) => `K${knowledgeId}#${memory.store.versionTag(knowledgeId, commit)}`;
 
@@ -46,8 +45,7 @@ const ok = (): RunAgentResult => ({ outcome: "success", output: "[]", request: {
 const uncapped: ConfigOverride = { writing: { bodyTokens: 1_000_000 } };
 function open(config: ConfigOverride = uncapped) {
   // The default stand-in writes no files, so each run fails its check and leaves its batch pending for the next call.
-  scenarios = new AdmittedDreamerScenarios(async raw => { calls.push(raw as NotingAgentInput); return ok(); });
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), scenarios.agent, config);
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => { calls.push(raw as NotingAgentInput); return ok(); }, config);
 }
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "trace-memory-material-")); calls = []; open(); });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -73,34 +71,19 @@ const withSize = (block: string) => block.replace("[constraint/project] Package 
 const views = (sessionId: number, head: number) =>
   hydrate(memory.pendingEntries(sessionId, "main", head), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
 
+/** A Dreamer's pass: one operation on the item `address` names (`K<id>#<tag>`), applied as a curate file. */
 async function maintain(path: { sessionId: number; branch: string; headTurnId: number }, operation: Record<string, unknown>, address: string) {
-  const factId = Number(/F(\d+)/.exec(JSON.stringify(operation.supports))?.[1] ?? 1);
   const selectedEntries = hydrate(memory.store.sourcePath(path.sessionId, path.branch, path.headTurnId), memory.store);
   memory.selectEntries(path.sessionId, path.branch, selectedEntries.map(entry => entry.id));
   const target = { ...path, triggerEntryId: selectedEntries.at(-1)!.id };
-  const trigger = createDreamerTrigger(memory, target, factId, memory.store.listKnowledgeRevisions().length + 1);
-  let committed: { knowledgeId: number; commit: number }[] = [];
-  const dreamed = await scenarios.run(memory, target, input => {
-    const request = { fixture: "material maintenance" }; input.reportRequest(request);
-    memoryFiles(memory, input.reader!).read(`trace://${address}`);
-    const triggerAddress = tag(trigger.knowledgeId, trigger.commit);
-    const supplied = new Set(suppliedHandles(input.material.changed));
-    const operated = /^K(\d+)#([a-z]+)$/.exec(address)!;
-    const operatedId = Number(operated[1]), operatedCommit = memory.store.resolveVersionTag(operatedId, operated[2]!);
-    supplied.delete(`K${operatedId}@v${memory.store.versionOrdinal(operatedId, operatedCommit)}`);
-    supplied.delete(`K${trigger.knowledgeId}@v${memory.store.versionOrdinal(trigger.knowledgeId, trigger.commit)}`);
-    const receipt = JSON.parse(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [operation,
-      { op: "archive", kind: "budget", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit material trigger." }],
-      skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied material item." })) }));
-    expect(receipt.committed).toBeDefined();
-    committed = receipt.committed.filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
-      .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId,
-        commit: receiptCommit(memory.store, item) }));
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return { outcome: "success", output: "material maintenance complete", request };
-  });
-  if (dreamed.outcome !== "success") throw new Error(JSON.stringify(dreamed));
-  return committed;
+  const [, id, versionTag] = /^K(\d+)#([a-z]+)$/.exec(address)!;
+  const knowledgeId = Number(id), baseCommit = memory.store.resolveVersionTag(knowledgeId, versionTag!);
+  const supports = ((operation.supports as string[] | undefined) ?? []).map(value => Number(value.slice(1)));
+  return curateWrite(memory, target, [operation.op === "archive"
+    ? { op: "archive", kind: "invalid", knowledgeId, baseCommit, supports, reason: String(operation.reason), createdAt: time,
+        text: "The user withdrew this and nothing replaces it; the grounds are in the cited evidence." }
+    : { op: "update", knowledgeId, baseCommit, text: String(operation.text), category: operation.category as "constraint", scope: operation.scope as "project",
+        topics: operation.topics as string[], supports, reason: String(operation.reason), createdAt: time }]);
 }
 
 test("92: fresh N names its target and range, then shares compact Knowledge, facts and Raw layout", async () => {

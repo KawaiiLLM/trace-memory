@@ -9,14 +9,13 @@ import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION 
 import { setKnowledgeCapacity, setKnowledgeInjection, setSharedAllowance } from "../../knowledge-budget-fixture.ts";
 import { charge, expandList } from "../../../src/core/render/index.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite } from "../../dreaming-skips.ts";
+import { curateWrite } from "../../support/dreamer.ts";
 import { submitEmpty } from "../../support/noter.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/turns.json", import.meta.url), "utf8"));
 const time = "2026-09-06T00:00:00Z";
-let memory: ReturnType<typeof sourceSeededMemory>, calls: number, admittedScenarios: AdmittedDreamerScenarios;
+let memory: ReturnType<typeof sourceSeededMemory>, calls: number;
 // 26a: a Noting run completes its batch by submitting; with nothing to record it sends `{facts: []}`.
 beforeEach(() => { calls = 0;
   const fallback = async (raw: unknown) => { calls++;
@@ -26,8 +25,7 @@ beforeEach(() => { calls = 0;
     }
     return { outcome: "success" as const, output: [], request: {} };
   };
-  admittedScenarios = new AdmittedDreamerScenarios(fallback);
-  memory = sourceSeededMemory(":memory:", admittedScenarios.agent);
+  memory = sourceSeededMemory(":memory:", fallback);
 });
 afterEach(() => memory.close());
 function session(projectId?: number, declaration: "marker" | "undeclared" = "marker") {
@@ -688,7 +686,7 @@ test("first-prompt injection by project needs no session: global and project kno
   expect(() => memory.inject({ projectId: 999 })).toThrow("does not exist");
 });
 
-test("search marks historical, merged and archived knowledge hits so they do not read like current rules", async () => {
+test("search marks historical, merged and archived knowledge hits so they do not read like current rules", () => {
   const s = session(), t = turn(s.id, "rule raw"), n = noting(s.id, t.id, "pnpm rule fact");
   const a = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "Use pnpm for installs");
   const b = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm is the package manager");
@@ -696,36 +694,12 @@ test("search marks historical, merged and archived knowledge hits so they do not
   const selectedEntries = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store);
   memory.selectEntries(s.id, "main", selectedEntries.map(entry => entry.id));
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: selectedEntries.at(-1)!.id };
-  const trigger1 = createDreamerTrigger(memory, path, n.facts[0]!.id, 1);
-  let updated!: { knowledgeId: number; commit: number }, merged!: { knowledgeId: number; commit: number };
-  const maintained = await admittedScenarios.run(memory, path, input => {
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
-    for (const address of [tag(a, 1), tag(b, b), tag(c, c), tag(trigger1.knowledgeId, trigger1.commit)])
-      expect(memoryFiles(memory, input.reader!).read(`trace://${address}`).content).toContain(address);
-    const receipt = JSON.parse(dreamerWrite(write, { operations: [
-      { op: "update", id: tag(a, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: ["F1"] },
-      { op: "merge", id: tag(b, b), absorb: [tag(c, c)], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: ["F1"] },
-      { op: "archive", kind: "budget", id: tag(trigger1.knowledgeId, trigger1.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
-    ], skipped: [] }));
-    updated = { knowledgeId: a, commit: receiptCommit(memory.store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === a)) };
-    merged = { knowledgeId: b, commit: receiptCommit(memory.store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === b)) };
-    return { outcome: "success", output: "maintenance complete", request: { fixture: "history statuses", trigger: trigger1 } };
-  });
-  expect(maintained.outcome, JSON.stringify(maintained)).toBe("success");
-  const trigger2 = createDreamerTrigger(memory, path, n.facts[0]!.id, 2);
-  const retired = await admittedScenarios.run(memory, path, input => {
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
-    for (const address of [tag(b, merged.commit), tag(trigger2.knowledgeId, trigger2.commit)])
-      expect(memoryFiles(memory, input.reader!).read(`trace://${address}`).content).toContain(address);
-    dreamerWrite(write, { operations: [
-      { op: "archive", kind: "budget", id: tag(b, merged.commit), supports: ["F1"], reason: "Retired: the cited evidence withdraws this conclusion." },
-      { op: "archive", kind: "budget", id: tag(trigger2.knowledgeId, trigger2.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
-    ], skipped: [] });
-    return { outcome: "success", output: "maintenance complete", request: { fixture: "archive merged result", trigger: trigger2 } };
-  });
-  expect(retired.outcome, JSON.stringify(retired)).toBe("success");
+  const [updated, merged] = curateWrite(memory, path, [
+    { op: "update", knowledgeId: a, baseCommit: a, topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], createdAt: time },
+    { op: "merge", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], createdAt: time },
+  ]);
+  expect(updated!.knowledgeId).toBe(a);
+  curateWrite(memory, path, [{ op: "archive", kind: "invalid", knowledgeId: b, baseCommit: merged!.commit, supports: [1], reason: "Retired: the cited evidence withdraws this conclusion.", createdAt: time }]);
   const hits = (memory.search("pnpm", "knowledge", { topk: 100 }) as string).split("\n");
   const line = (label: string) => hits.find(l => l.startsWith(`[${label}]`))!;
   expect(line(`K${a}@v1`)).toContain("(superseded)"); // updated away
@@ -741,28 +715,14 @@ test("search marks historical, merged and archived knowledge hits so they do not
   expect(installs[0]).toMatch(/^\[K\d+@v2\] \[constraint\/project\] .+ — Use npm for installs/);
 });
 
-test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", async () => {
+test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", () => {
   const s = session(), t = turn(s.id, "scope raw"), n = noting(s.id, t.id, "scoped fact");
   const k = knowledge(s.id, n.facts[0]!.id, "goal", "project", "shared-then-private goal");
   const selectedEntries = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store);
   memory.selectEntries(s.id, "main", selectedEntries.map(entry => entry.id));
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: selectedEntries.at(-1)!.id };
-  const trigger = createDreamerTrigger(memory, path, n.facts[0]!.id, 1);
-  let privateRevision!: { knowledgeId: number; commit: number };
-  const scoped = await admittedScenarios.run(memory, path, input => {
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const tag = (id: number, commit: number) => `K${id}#${memory.store.versionTag(id, commit)}`;
-    for (const address of [tag(k, 1), tag(trigger.knowledgeId, trigger.commit)])
-      expect(memoryFiles(memory, input.reader!).read(`trace://${address}`).content).toContain(address);
-    const receipt = JSON.parse(dreamerWrite(write, { operations: [
-      { op: "update", id: tag(k, 1), topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
-        category: "goal", scope: "session", supports: ["F1"] },
-      { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: ["F1"], reason: "Retire the explicit fixture trigger." },
-    ], skipped: [] }));
-    privateRevision = { knowledgeId: k, commit: receiptCommit(memory.store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === k)) };
-    return { outcome: "success", output: "maintenance complete", request: { fixture: "cross-session history", trigger } };
-  });
-  expect(scoped.outcome, JSON.stringify(scoped)).toBe("success");
+  curateWrite(memory, path, [{ op: "update", knowledgeId: k, baseCommit: k, topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
+    category: "goal", scope: "session", supports: [1], createdAt: time }]);
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
   const files = memoryFiles(memory, { sessionId: peer.id, branch: "main", headTurnId: pt.id });

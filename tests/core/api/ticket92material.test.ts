@@ -3,7 +3,6 @@ import { sourceSeededMemory, seedSourceEntry, recorded, type NotingAgentInput } 
 import { readFacade } from "../../../src/core/api/read.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
-import { freezeDreaming } from "../../../src/core/dreaming/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { validateConfig, toolDefinitions } from "../../../src/core/api/index.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
@@ -204,26 +203,6 @@ test("ticket92material native prefix uses path position, rejects empty/corrupt/s
   f.memory.selectEntries(f.session.id, "main", order);
   f.store.db.prepare("UPDATE source_paths SET length = length + 1 WHERE session_id = ? AND branch = 'main'").run(f.session.id);
   expect(() => read.compact(f.session.id, "main", f.turn.id, [], false, { endpointEntryId: all[2]!.id })).toThrow();
-});
-
-test("ticket92material D pending slice is 10k inside K, direct facts are separate and due remains pending-only", () => {
-  const f = fixture();
-  f.memory.setKnowledgeBudget("project", 1_000);
-  for (let index = 0; index < 18; index++) {
-    const committed = f.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
-      operations: [{ op: "create", title: "Fixture title", handle: "$new", author: "fixture", category: "understanding", scope: "project",
-        text: `${index} ${"knowledge ".repeat(320)}`, supports: [f.fact], topics: [], reason: "fixture", createdAt: "now" }] });
-    if (!committed.ok) throw new Error(committed.problems.join("; "));
-  }
-  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
-  const claim = f.store.acquireClaim(f.target, "dreaming", f.memory.executorId, false)!;
-  const frozen = freezeDreaming(f.store, f.target, f.memory.config, claim);
-  expect(tokens(frozen.material.changed)).toBeLessThanOrEqual(10_000);
-  expect(tokens(frozen.material.changed)).toBeGreaterThan(1_000);
-  expect(tokens(`${frozen.material.processed}\n\n${frozen.material.changed}`)).toBeLessThanOrEqual(f.store.knowledgeBudgets().injection + f.memory.config.compaction.sharedAllowanceTokens);
-  expect(tokens(frozen.material.facts)).toBeLessThanOrEqual(10_000);
-  expect(frozen.material.facts).toContain(`F${f.fact}`);
-  expect(frozen.frozenIds.length).toBeLessThan(18);
 });
 
 test("ticket92material configuration cannot raise the fixed Raw entry cap", () => {

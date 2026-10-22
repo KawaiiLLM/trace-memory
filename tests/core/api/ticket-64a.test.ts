@@ -5,8 +5,8 @@ import { readHandle } from "../../read-handle-fixture.ts";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { renderKnowledgeChange } from "../../../src/core/render/index.ts";
 import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, memoryFiles, validateConfig, type NotingAgentInput } from "../../source-fixture.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite } from "../../dreaming-skips.ts";
+import { curateNow } from "../../support/dreamer.ts";
+import { block } from "../../support/workspace.ts";
 import { submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
 // Ticket 92 transfers ticket 76's create/update/archive authority from C to N.
@@ -134,64 +134,25 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     expect(memory.store.currentCommit(first.knowledgeId)[0]!.id).toBe(third.commit);
   });
 
-  test("D stale writes still refuse after N advances the frozen base; N's new version remains pending", async () => {
+  test("D stale writes still refuse after N advances the base; N's new version stays current", () => {
     const f = fixture(() => {});
     const base = publishN(f.session.id, [{ op: "create", title: "Fixture title", handle: "$base", author: "noting", text: "frozen base",
       category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
     if (!base.ok) throw new Error(base.problems.join("; "));
-    const first = base.committed[0]!;
-    const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unused"); });
-    memory.close();
-    memory = sourceSeededMemory(":memory:", scenarios.agent);
-    // Rebuild the fixture against the scripted-Dreamer memory instance.
-    const project = memory.store.createProject({ name: "p2", declaredBy: "mark" });
-    const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
-    const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "seed", startedAt: time });
-    const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
-      entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id),
-      facts: [{ turnId: turn.id, entryIds: memory.store.listSourceEntries(session.id, turn.id).map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
-    if (!noted.ok) throw new Error(noted.problems.join("; "));
-    const fact = noted.facts[0]!.id;
-    const created0 = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
-      operations: [{ op: "create", title: "Fixture title", handle: "$base", author: "consolidation", text: "frozen base", category: "reference", scope: "project",
-        topics: [], supports: [fact], reason: "Initial.", createdAt: time }] });
-    if (!created0.ok) throw new Error(created0.problems.join("; "));
-    const k5 = created0.committed[0]!;
-    const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
-    const trigger = createDreamerTrigger(memory, path, fact, 1);
-
-    // D freezes the base before N publishes its successor; the D tool must refuse the old base.
-    let cMoved: { knowledgeId: number; commit: number } | undefined;
-    const dreamed = await scenarios.run(memory, path, input => {
-      input.reportRequest({});
-      // N advances the base after D has frozen its material.
-      const moved = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
-        operations: [{ op: "update", knowledgeId: k5.knowledgeId, baseCommit: k5.commit, text: "C moved it", category: "reference",
-          scope: "project", topics: [], supports: [fact], reason: "C moved it.", createdAt: time }] });
-      if (!moved.ok) throw new Error(moved.problems.join("; "));
-      cMoved = moved.committed[0]!;
-      const write = input.tools.find(tool => tool.name === "memory")!;
-      // D's operation on the frozen (now stale) base is refused; nothing else happens to it — no
-      // fallback conversion, no automatic retry against the new base.
-      const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(k5)), text: "D's edit",
-        category: "reference", scope: "project", topics: [], supports: [`F${fact}`], reason: "D edit." }], skipped: [] }));
-      expect(receipt.results[0]).toContain("after this run's freeze");
-      expect(receipt.results[0]).toContain(history(cMoved));
-      // D finishes the run through its own separate, valid submission (the per-item discipline: one
-      // rejection's blast radius stays one item). 127: it first withdraws the refused item, which blocks until then.
-      // 143: the superseded frozen base leaves this run and needs no skip.
-      expect(write.execute({ drop: "M1" })).toContain("dropped: M1");
-      const closed = JSON.parse(dreamerWrite(write, { operations: [], skipped: [
-        { knowledge: history(trigger), because: "No maintenance needed for the explicit fixture trigger." }] }));
-      expect(closed.committed).toEqual([]);
-      return { outcome: "success", output: "D saw the refusal", request: {} };
-    });
-    expect(dreamed.outcome).toBe("success");
-    // The frozen predecessor is superseded; N's new version remains pending.
-    const pool = `project:${session.projectId}`;
-    const pending = memory.store.pendingVersions(pool, path).map(v => v.revisionId);
-    expect(pending).not.toContain(k5.commit);
-    expect(pending).toContain(cMoved!.commit);
+    const k5 = base.committed[0]!;
+    const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
+    // N advances the base after D has read it; D's operation on the old base is refused and nothing else happens to it -
+    // no fallback conversion, no automatic retry against the new base.
+    const moved = commitNoterKnowledge(memory.store, { run: { sessionId: f.session.id, branch: "main", createdAt: time },
+      operations: [{ op: "update", knowledgeId: k5.knowledgeId, baseCommit: k5.commit, text: "C moved it", category: "reference",
+        scope: "project", topics: [], supports: [f.fact], reason: "C moved it.", createdAt: time }] });
+    if (!moved.ok) throw new Error(moved.problems.join("; "));
+    const cMoved = moved.committed[0]!;
+    const refused = curateNow(memory, path, block(`update ${history(k5)}`, { supports: `F${f.fact}`, reason: "D edit." }, "D's edit")).blocks[0]!;
+    expect(refused).toMatchObject({ status: "refused", stale: true });
+    expect(refused.reason).toContain(history(cMoved));
+    expect(memory.store.currentCommit(k5.knowledgeId, path).map(v => v.id)).toEqual([cMoved.commit]);
+    expect(memory.store.currentCommit(k5.knowledgeId, path)[0]!.text).toBe("C moved it");
   });
 
   test("scope and applicability: a project-scope N update is visible across the project's sessions and follows its own facts, not its parent's", () => {
@@ -248,10 +209,8 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       .toEqual([updated.committed[0]!.commit]);
   });
 
-  test("92 tagged bases need no read ledger; stale refusal names history without a body or tag, and a current tag commits", async () => {
-    const fallback = async () => ({ outcome: "success" as const, output: "unused", request: { unused: true } });
-    const scenarios = new AdmittedDreamerScenarios(fallback);
-    memory = sourceSeededMemory(":memory:", scenarios.agent);
+  test("92 version bases need no read ledger; stale refusal names history without a body or tag, and a current version commits", () => {
+    memory = sourceSeededMemory(":memory:", async () => ({ outcome: "success" as const, output: "unused", request: { unused: true } }));
     const project = memory.store.createProject({ name: "reads", declaredBy: "mark" });
     const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "rule", startedAt: time });
@@ -276,29 +235,17 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     if (!moved.ok) throw new Error(moved.problems.join("; "));
     const current = moved.committed[0]!;
     const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId };
-    const trigger = createDreamerTrigger(memory, path, fact, 1);
 
-    const result = await scenarios.run(memory, path, input => {
-      const request = { fixture: "reads" };
-      input.reportRequest(request);
-      const memoryTool = input.tools.find(tool => tool.name === "memory")!;
-      // Inject an exact tag without a trace call: authority depends on the current base, not read history.
-      const staleTag = `K${base.knowledgeId}#${memory.store.versionTag(base.knowledgeId, base.commit)}`;
-      const currentTag = `K${current.knowledgeId}#${memory.store.versionTag(current.knowledgeId, current.commit)}`;
-      const blind = dreamerWrite(memoryTool, { operations: [{ op: "update", id: staleTag, text: "blind edit",
-        category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: "Blind." }], skipped: [] });
-      expect(blind).toContain("base is not the latest effective applicable revision");
-      expect(blind).toContain(history(current));
-      expect(blind).not.toContain(currentTag);
-      expect(blind).not.toContain("base rule");
-      expect(blind).not.toContain("moved rule");
-      const corrected = dreamerWrite(memoryTool, { operations: [{ slot: "M1", op: "update", id: currentTag, text: "corrected rule",
-        category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: "Correct." },
-        { op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(trigger)), supports: [`F${fact}`], reason: "Retire the explicit fixture trigger." }], skipped: [] });
-      expect(corrected).toContain('"committed"');
-      return { outcome: "success", output: "scenario complete", request };
-    });
-    if (result.outcome !== "success") throw new Error(JSON.stringify(result));
+    // Naming an exact version without having read it: authority depends on the current base, not read history.
+    const blind = curateNow(memory, path, block(`update ${history(base)}`, { supports: `F${fact}`, reason: "Blind." }, "blind edit")).blocks[0]!;
+    expect(blind).toMatchObject({ status: "refused", stale: true });
+    expect(blind.reason).toContain("base is not the latest effective applicable revision");
+    expect(blind.reason).toContain(history(current));
+    expect(blind.reason).not.toContain(`K${current.knowledgeId}#${memory.store.versionTag(current.knowledgeId, current.commit)}`);
+    expect(blind.reason).not.toContain("base rule");
+    expect(blind.reason).not.toContain("moved rule");
+    const corrected = curateNow(memory, path, block(`update ${history(current)}`, { supports: `F${fact}`, reason: "Correct." }, "corrected rule")).blocks[0]!;
+    expect(corrected).toMatchObject({ status: "applied" });
     expect(memory.store.currentCommit(base.knowledgeId, path)[0]?.text).toBe("corrected rule");
   });
 
@@ -429,89 +376,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
       expect(pending.tokens).toBeGreaterThan(0);
     });
 
-    test("D's own archives are never pending", async () => {
-      const fallback = async () => ({ outcome: "success" as const, output: "unused", request: {} });
-      const scenarios = new AdmittedDreamerScenarios(fallback);
-      memory = sourceSeededMemory(":memory:", scenarios.agent);
-      const project = memory.store.createProject({ name: "d-archive", declaredBy: "mark" });
-      const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
-      const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "seed", startedAt: time });
-      const selectedEntries = memory.store.listSourceEntries(session.id);
-      memory.selectEntries(session.id, "main", selectedEntries.map(entry => entry.id));
-      const triggerEntryId = selectedEntries.at(-1)!.id;
-      const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
-        entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id),
-        facts: [{ turnId: turn.id, entryIds: selectedEntries.map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
-      if (!noted.ok) throw new Error(noted.problems.join("; "));
-      const fact = noted.facts[0]!.id;
-      const createdRun = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time }, operations: [{
-        op: "create", title: "Fixture title", handle: "$x", author: "consolidation", text: "to be archived by D", category: "reference", scope: "project",
-        topics: [], supports: [fact], reason: "Initial.", createdAt: time,
-      }] });
-      if (!createdRun.ok) throw new Error(createdRun.problems.join("; "));
-      const item = createdRun.committed[0]!;
-      const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId };
-      const trigger = createDreamerTrigger(memory, path, fact, 1);
-      const dreamed = await scenarios.run(memory, path, input => {
-        input.reportRequest({});
-        const write = input.tools.find(tool => tool.name === "memory")!;
-        const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(item)), supports: [`F${fact}`], reason: "D retires it." },
-          { op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
-        expect(receipt.committed).toHaveLength(2);
-        return { outcome: "success", output: "D archived it", request: {} };
-      });
-      expect(dreamed.outcome).toBe("success");
-      const pool = `project:${project.id}`;
-      const pending = memory.store.pendingVersions(pool, path);
-      expect(pending.some(p => p.knowledgeId === item.knowledgeId)).toBe(false);
-    });
 
-    test("a D skip marks an archive processed; a D update of the archived version makes the identity visible again", async () => {
-      const fallback = async () => ({ outcome: "success" as const, output: "unused", request: {} });
-      const scenarios = new AdmittedDreamerScenarios(fallback);
-      memory = sourceSeededMemory(":memory:", scenarios.agent);
-      const project = memory.store.createProject({ name: "revive", declaredBy: "mark" });
-      const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
-      const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "seed", startedAt: time });
-      const selectedEntries = memory.store.listSourceEntries(session.id);
-      memory.selectEntries(session.id, "main", selectedEntries.map(entry => entry.id));
-      const triggerEntryId = selectedEntries.at(-1)!.id;
-      const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: time },
-        entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id),
-        facts: [{ turnId: turn.id, entryIds: selectedEntries.map(entry => entry.id), text: "seed", source: [`T${turn.id}#E1`], createdAt: time }] });
-      if (!noted.ok) throw new Error(noted.problems.join("; "));
-      const fact = noted.facts[0]!.id;
-      const createdRun = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time }, operations: [{
-        op: "create", title: "Fixture title", handle: "$r", author: "consolidation", text: "revivable body", category: "reference", scope: "project",
-        topics: [], supports: [fact], reason: "Initial.", createdAt: time,
-      }] });
-      if (!createdRun.ok) throw new Error(createdRun.problems.join("; "));
-      const item = createdRun.committed[0]!;
-      const cArchived = commitNoterKnowledge(memory.store, { run: { sessionId: session.id, branch: "main", createdAt: time },
-        operations: [{ op: "archive", kind: "budget", knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [fact], reason: "C retires it.", createdAt: time }] });
-      if (!cArchived.ok) throw new Error(cArchived.problems.join("; "));
-      const archiveCommit = cArchived.committed[0]!;
-      const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId };
-      const trigger = createDreamerTrigger(memory, path, fact, 1);
-      const pool = `project:${project.id}`;
-
-      const dreamed = await scenarios.run(memory, path, input => {
-        input.reportRequest({});
-        // Archive history is inspectable, but only its own exact tag can revive the current archive.
-        expect(input.material.changed).toContain("revivable body");
-        const write = input.tools.find(tool => tool.name === "memory")!;
-        const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(archiveCommit)),
-          text: "revived body", category: "reference", scope: "project", topics: [], supports: [`F${fact}`], reason: "Revived." },
-          { op: "archive", kind: "budget", id: readHandle(address => memoryFiles(memory, path).read(address).content, history(trigger)), supports: [`F${fact}`], reason: "Retire the trigger." }], skipped: [] }));
-        expect(receipt.committed).toHaveLength(2);
-        return { outcome: "success", output: "revived", request: {} };
-      });
-      expect(dreamed.outcome).toBe("success");
-      const revived = memory.store.currentCommit(item.knowledgeId, path)[0]!;
-      expect(revived.op).toBe("update");
-      expect(revived.text).toBe("revived body");
-      expect(memory.store.pendingVersions(pool, path).some(p => p.knowledgeId === item.knowledgeId)).toBe(false);
-    });
   });
 
   describe("diff material and weight", () => {

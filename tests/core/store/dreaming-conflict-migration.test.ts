@@ -78,12 +78,13 @@ test("old runs/execution CHECKs migrate together, preserving audits, streaks, re
 
 test("failed conflict CHECK migration rolls back both tables and restores foreign-key enforcement", () => {
   const f = legacy();
+  const streaks = f.store.taskFailures(f.sessionId);
   f.store.db.exec("PRAGMA foreign_keys = OFF; INSERT INTO migration_child VALUES (99999, 'missing'); PRAGMA foreign_keys = ON");
   expect(() => migrateDreaming(f.store.db)).toThrow("foreign key violations");
   expect(f.store.db.isTransaction).toBe(false);
   expect(f.store.db.prepare("PRAGMA foreign_keys").get()?.foreign_keys).toBe(1);
   for (const name of ["runs", "task_executions"]) expect(String(f.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(name)!.sql)).not.toContain("'conflict'");
   expect(f.store.getRun(f.runId)?.outcome).toBe("failure");
-  expect(f.store.taskFailures(f.sessionId)[0]?.count).toBe(1);
+  expect(f.store.taskFailures(f.sessionId)).toEqual(streaks); // a Dreamer failure no longer counts (Stage 4 2026-10-22), so the row is kept as it was
   expect(f.store.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%_32b'").all()).toEqual([]);
 });

@@ -8,6 +8,7 @@ import { Store } from "../../../src/core/store/index.ts";
 import { tokens } from "../../../src/core/render/index.ts";
 import { REQUEST, scriptedNoter, type NoterOutput } from "../../support/noter.ts";
 import { block } from "../../support/workspace.ts";
+import { curateNow, versionRef } from "../../support/dreamer.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -231,19 +232,23 @@ test.each([
   expect(f.memory.store.currentKnowledge(f.path).map(item => item.revision.text)).toEqual(["Old rule"]);
 });
 
+/** What a Dreamer's curate pass wrote: the same file check and commit, applied to the session's path. */
+const structure = (f: ReturnType<typeof fixture>, kind: "merge" | "split") => {
+  const current = f.memory.store.currentKnowledge(f.path).sort((a, b) => a.knowledge.id - b.knowledge.id);
+  const ref = (index: number) => versionRef(f.memory.store, current[index]!.knowledge.id, current[index]!.revision.id);
+  const child = (title: string, body: string) => `\n### child\ntitle: ${title}\ncategory: constraint\nscope: session\ntopics:\nsupports: F${current[0]!.revision.supports[0]}\nreason: separate\n\n${body}\n`;
+  curateNow(f.memory, f.path, kind === "merge"
+    ? block(`merge ${ref(0)}`, { absorb: ref(1), reason: "Reconciled concurrent proposal with current evidence" }, kind === "merge" ? "Resolved rule" : "")
+    : block(`split ${ref(0)}`, { reason: "separate" }, "Primary part.") + child("Fixture child", "First rule") + child("Fixture child", "Second rule"));
+};
+
 test("04: a converted new identity is reconciled by ordinary D merge without a special queue", async () => {
-  const f = fixture(() => { seed.advance(); return { noteInput: [fact("User supplied a refinement")], memoryInput: { ...knowledge(), op: "update", id: seed.tag } }; }, task => {
-    const current = f.memory.store.currentKnowledge(f.path).sort((a, b) => a.knowledge.id - b.knowledge.id);
-    expect(current).toHaveLength(2);
-    const address = (index: number) => `K${current[index]!.knowledge.id}#${f.memory.store.versionTag(current[index]!.knowledge.id, current[index]!.revision.id)}`;
-    expect(call(task, "memory", { op: "merge", id: address(0), absorb: [address(1)], text: "Resolved rule",
-      category: "constraint", scope: "session", topics: [], supports: [], reason: "Reconciled concurrent proposal with current evidence" })).not.toContain("rejected:");
-    task.tools.find(tool => tool.name === "check")!.execute({});
-  });
+  const f = fixture(() => { seed.advance(); return { noteInput: [fact("User supplied a refinement")], memoryInput: { ...knowledge(), op: "update", id: seed.tag } }; });
   const seed = seedKnowledge(f);
   expect((await f.run()).outcome).toBe("success");
   expect(f.memory.store.listRuns(f.session.id).filter(run => run.kind === "dreaming")).toEqual([]);
-  expect((await f.memory.dream(f.path)).outcome).toBe("success");
+  expect(f.memory.store.currentKnowledge(f.path)).toHaveLength(2);
+  structure(f, "merge");
   expect(f.memory.store.currentKnowledge(f.path)).toHaveLength(1);
   expect(f.memory.store.currentKnowledge(f.path)[0]!.revision.text).toBe("Resolved rule");
 });
@@ -272,17 +277,9 @@ test("04: failure after execution-success update rolls back warmed views and eve
 
 for (const structural of ["merge", "split"] as const)
   test(`04: legitimate D ${structural} descendants permit concurrency conversion`, async () => {
-    const f = fixture(async () => {
-      expect((await f.memory.dream(f.path)).outcome).toBe("success");
+    const f = fixture(() => {
+      structure(f, structural); // the Dreamer's pass lands between the Noter's freeze and its publication
       return { noteInput: [fact("User refinement")], memoryInput: { ...knowledge(), op: "update", id: seed.tag } };
-    }, task => {
-      const current = f.memory.store.currentKnowledge(f.path).sort((a, b) => a.knowledge.id - b.knowledge.id);
-      const tag = (index: number) => `K${current[index]!.knowledge.id}#${f.memory.store.versionTag(current[index]!.knowledge.id, current[index]!.revision.id)}`;
-      const operation = structural === "merge"
-        ? { op: "merge", id: tag(0), absorb: [tag(1)], text: "Merged rule", category: "constraint", scope: "session", topics: [], supports: [], reason: "combine" }
-        : { op: "split", id: tag(0), text: "Primary part.", category: "constraint", scope: "project", topics: [], children: [{ title: "Fixture child", text: "First rule", category: "constraint", topics: [] }, { title: "Fixture child", text: "Second rule", category: "constraint", topics: [] }], supports: [], reason: "separate" };
-      expect(call(task, "memory", operation)).not.toContain("rejected:");
-      task.tools.find(tool => tool.name === "check")!.execute({});
     });
     const seed = seedKnowledge(f);
     if (structural === "merge") {

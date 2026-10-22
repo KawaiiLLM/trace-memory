@@ -56,17 +56,11 @@ test("104: an existing database gains the Dreamer's pool key with every executio
       { phase: "dreaming", head: 7, pool: null, count: 3 }, { phase: "noting", head: 5, pool: null, count: 2 }]);
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(String(store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'idx_execution_task'").get()!.sql)).toContain("pool");
-    // 126: a new Dreamer failure counts on the session's one Dreamer key, beside the kept revision-keyed streak.
-    const execution = store.beginExecution({ sessionId: f.sessionId, phase: "dreaming" });
-    const run = store.recordRun({ kind: "dreaming", sessionId: f.sessionId, executionId: execution, outcome: "failure", createdAt: "new" });
-    store.settleExecution(execution, "failure", run.id, "pool failed");
-    expect(store.taskFailures(f.sessionId).filter(row => row.phase === "dreaming").map(({ head, pool, count }) => ({ head, pool, count })))
-      .toEqual([{ head: null, pool: ALL_POOLS, count: 1 }, { head: 7, pool: null, count: 3 }]);
     expect(() => store.beginExecution({ sessionId: f.sessionId, phase: "dreaming", head: 9 })).toThrow("Dreamer logical task has no backlog head");
     const schema = store.db.prepare("PRAGMA schema_version").get()!.schema_version;
     store.close(); store = new Store(f.file);
     expect(store.db.prepare("PRAGMA schema_version").get()!.schema_version).toBe(schema);
-    expect(store.taskFailures(f.sessionId)).toHaveLength(3);
+    expect(store.taskFailures(f.sessionId)).toHaveLength(2);
   } finally { store.close(); }
 });
 
@@ -130,11 +124,6 @@ test("126: a session's per-pool Dreamer streaks become one at their largest coun
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     store.close(); store = new Store(f.file);
     expect(streak(store, f.first)[0]).toMatchObject({ pool: ALL_POOLS, count: 2 });
-    // The carried count continues: one more Dreamer failure of the session is its third.
-    const execution = store.beginExecution({ sessionId: f.first, phase: "dreaming" });
-    const run = store.recordRun({ kind: "dreaming", sessionId: f.first, executionId: execution, outcome: "failure", createdAt: "new" });
-    expect(store.settleExecution(execution, "failure", run.id, "global over budget").automaticOff).toContain(`S${f.first} dreaming off after three failures`);
-    expect(store.enabled(f.first)).toBe(false);
   } finally { store.close(); }
 });
 

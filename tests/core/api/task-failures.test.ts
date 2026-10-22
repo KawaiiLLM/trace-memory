@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { dreamerWrite, skipRest, suppliedHandles } from "../../dreaming-skips.ts";
+import { writeFileSync } from "node:fs";
+import { block } from "../../support/workspace.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,7 +69,7 @@ test("32c: borrowed failures continue across executors, disable only the target 
   expect(streaks(first)).toEqual([]);
 });
 
-test("92: N auto-off fences late D writes, settles skips and own output, and preserves untouched pending", async () => {
+test("92: N auto-off fences a running D: its late pass changes nothing, its claim is released only at settlement, manual notes are refused", async () => {
   let scenario!: (input: DreamingAgentInput) => ReturnType<RunAgent>;
   let dreamCalls = 0;
   const m = open(":memory:", raw => {
@@ -79,43 +80,34 @@ test("92: N auto-off fences late D writes, settles skips and own output, and pre
   const target = seed(m), other = seed(m);
   await note(m, target); await note(m, target);
   const noted = decision(m, target, "retained evidence");
-  const created = m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, path: target, operations: [1, 2, 3].map(n => ({
-    op: "create", title: "Fixture title", handle: `$${n}`, author: "test", text: `pending maintenance ${n}`, category: "constraint", scope: "session",
-    supports: [noted.facts[0]!.id], reason: "evidence", topics: [], createdAt: "now",
-  })) });
-  if (!created.ok) throw Error(created.problems.join("; "));
-  const [first, second, untouched] = created.committed;
+  const [first] = [1, 2].map(n => knowledge(m.store, target, "session", "constraint", [noted.facts[0]!.id], `pending maintenance ${n}`));
   const manual = m.tools({ kind: "manual", ...target, currentTurnId: target.headTurnId }).find(t => t.name === "note")!;
-  let late!: () => string, own = 0;
-  scenario = input => {
-    const tool = input.tools.find(t => t.name === "memory")!;
-    const update = { op: "update", id: `K${first!.knowledgeId}#${m.store.versionTag(first!.knowledgeId, first!.commit)}`,
-      text: "maintained rule", category: "constraint", scope: "session", supports: [], reason: "maintenance", topics: [] };
-    expect(tool.execute(update)).not.toContain("rejected:");
-    own = m.store.currentCommit(first!.knowledgeId, target)[0]!.id;
-    expect(own).not.toBe(first!.commit);
-    expect(dreamerWrite(tool, { operations: [], skipped: [{ knowledge: `K${second!.knowledgeId}@v1`, because: "reviewed unchanged" }] })).not.toContain("rejected:");
+  const revisions = () => m.store.listKnowledgeRevisions().length;
+  let late!: () => string | undefined;
+  scenario = async input => {
+    input.reportRequest(request);
+    const report = String(await input.tools.find(t => t.name === "check")!.execute({}));
+    writeFileSync(/File: (\S+?\.md)/.exec(report)![1]!, block(`update K${first!.knowledgeId}@v1`, { reason: "maintenance" }, "maintained rule"));
     const claim = m.store.getClaim(target.sessionId, "dreaming")!;
-    late = () => tool.execute(update);
+    late = () => input.passEnd();
     expect(input.signal?.aborted).toBe(false);
     return new Promise(resolve => input.signal!.addEventListener("abort", () => {
-      expect(m.store.getClaim(target.sessionId, "dreaming")).toEqual(claim);
-      expect(late()).toContain("rejected:");
+      // The lease is fenced (expired) by the auto-off, but the claim is not released or taken over before the run settles.
+      expect(m.store.getClaim(target.sessionId, "dreaming")).toMatchObject({ executorId: claim.executorId, token: claim.token });
+      expect(late()).toBeUndefined();
       expect(manual.execute({ title: "Late note", sources: `[T${target.headTurnId}#E1] late note` })).toContain("Disabled");
       resolve({ outcome: "cancelled", output: "aborted", request });
     }, { once: true }));
   };
   m.config.dreaming.triggerTokens = 1;
+  const before = revisions();
   const held = m.dream({ ...target, model: "fake" });
   expect((await note(m, target)).automaticOff).toBeTruthy();
   const cancelled = await held;
   expect(cancelled.outcome, JSON.stringify(cancelled)).toBe("cancelled");
-  expect(late()).toContain("rejected:");
-  expect(m.store.openDreamingRange(target.sessionId, target.branch)).toBeNull();
+  expect(late()).toBeUndefined();
+  expect(revisions()).toBe(before);
   expect(m.store.getClaim(target.sessionId, "dreaming")).toBeNull();
-  const processed = m.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool=? ORDER BY revision_id").all(`session:${target.sessionId}`).map(row => Number(row.revision_id));
-  expect(processed).toEqual([second!.commit, own].sort((a, b) => a - b));
-  expect(m.store.pendingVersions(`session:${target.sessionId}`, target).map(r => r.revisionId)).toEqual([untouched!.commit]);
   expect(m.store.listSessionFacts(target.sessionId)).toHaveLength(1);
   expect(m.store.enabled(other.sessionId)).toBe(true);
   expect(streaks(m).filter(r => r.phase === "dreaming")).toEqual([]);
@@ -180,181 +172,6 @@ test("92: Noting failure identity stays at the oldest pending entry while the li
     expect(streaks(m)[0]!.count).toBe(i);
   }
   expect(m.pendingEntries(target.sessionId, target.branch, head)[0]!.id).toBe(oldest);
-});
-
-test("68: Dreamer terminal outcomes consume accepted skips; a later range settles independently", async () => {
-  let outcome: "failure" | "success" = "failure";
-  const m = open(":memory:", async raw => {
-    const input = raw as DreamingAgentInput;
-    if (input.kind !== "dreaming") return { outcome, output: outcome, request };
-    const handles = suppliedHandles(input.material.changed);
-    dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [],
-      skipped: handles.map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
-    return { outcome, output: outcome, request };
-  });
-  m.config.dreaming.triggerTokens = 1;
-  const target = seed(m);
-  const facts = decision(m, target, "evidence");
-  const create = (handle: string) => {
-    const result = m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, path: target, operations: [
-      { op: "create", title: "Fixture title", handle, author: "test", text: `${handle} ${"work ".repeat(600)}`, category: "constraint", scope: "session",
-        supports: [facts.facts[0]!.id], reason: "test", topics: [], createdAt: "now" }] });
-    if (!result.ok) throw Error(result.problems.join("; "));
-    return result.committed[0]!;
-  };
-  const first = create("$first"), pool = `session:${target.sessionId}`;
-  m.store.setKnowledgeBudget("session", m.store.pendingPoolWeight(pool, target) * 2);
-  const failed = await m.dream(target);
-  expect(failed.outcome).toBe("failure");
-  if (!("runId" in failed)) throw Error("missing failed run");
-  expect(m.store.db.prepare("SELECT outcome FROM task_executions WHERE id = ?").get(execution(m, failed.runId))!.outcome).toBe("failure");
-  expect(m.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ?").all(pool).map(row => Number(row.revision_id))).toEqual([first.commit]);
-  expect(m.store.openDreamingRange(target.sessionId, target.branch)).toBeNull();
-  expect((await m.dream(target)).outcome).toBe("empty");
-
-  outcome = "success";
-  const second = create("$second");
-  m.store.setKnowledgeBudget("session", m.store.pendingPoolWeight(pool, target) * 4); // 104: both items fit the budget
-  const succeeded = await m.dream(target);
-  expect(succeeded.outcome).toBe("success");
-  if (!("runId" in succeeded)) throw Error("missing successful run");
-  expect(m.store.db.prepare("SELECT outcome FROM task_executions WHERE id = ?").get(execution(m, succeeded.runId))!.outcome).toBe("success");
-  expect(m.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool).map(row => Number(row.revision_id)))
-    .toEqual([first.commit, second.commit]);
-  expect(m.store.settleExecution(execution(m, succeeded.runId), "failure", succeeded.runId, "post-success audit")).toEqual({});
-});
-
-test("126: a session is the Dreamer's logical task; three failures turn memory off, success and explicit on reset it", async () => {
-  let mode: "fail" | "skipThenFail" | "skip" = "fail";
-  const m = open(":memory:", async raw => {
-    const input = raw as DreamingAgentInput;
-    if (input.kind !== "dreaming" || mode === "fail") return failed(raw);
-    skipRest(input);
-    return mode === "skip" ? { outcome: "success", output: "processed", request } : failed(raw);
-  });
-  m.config.dreaming.triggerTokens = 1;
-  const target = seed(m), pool = `session:${target.sessionId}`;
-  const facts = decision(m, target, "evidence");
-  const create = (text: string) => {
-    const committed = m.store.commitConsolidationRun({ path: target,
-      run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, operations: [
-        { op: "create", title: "Fixture title", handle: "$1", author: "test", text, category: "constraint", scope: "session",
-          topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" },
-      ] });
-    if (!committed.ok) throw Error(committed.problems.join("; "));
-    return committed.committed[0]!;
-  };
-  const dreamStreak = () => streaks(m).filter(row => row.phase === "dreaming");
-  create("first task");
-  expect((await m.dream(target)).outcome).toBe("failure");
-  expect(dreamStreak()).toMatchObject([{ head: null, pool: ALL_POOLS, count: 1 }]);
-  mode = "skipThenFail"; // the oldest pending item is processed, yet the run fails
-  expect((await m.dream(target)).outcome).toBe("failure");
-  expect(m.store.pendingVersions(pool, target)).toEqual([]);
-  const second = create("later task");
-  mode = "fail"; // a later oldest item continues the session's one streak
-  const third = await m.dream(target);
-  expect(third.outcome).toBe("failure");
-  expect(dreamStreak()).toMatchObject([{ head: null, pool: ALL_POOLS, count: 3 }]);
-  expect(third.automaticOff).toContain(`S${target.sessionId} dreaming off after three failures`);
-  expect(m.store.enabled(target.sessionId)).toBe(false);
-  m.store.setEnrollment(target.sessionId, true);
-  expect(dreamStreak()).toEqual([]);
-  expect((await m.dream(target)).outcome).toBe("failure");
-  mode = "skip";
-  expect((await m.dream(target)).outcome).toBe("success");
-  expect(dreamStreak()).toMatchObject([{ head: null, pool: ALL_POOLS, count: 0 }]);
-  expect(m.store.pendingVersions(pool, target).map(value => value.revisionId)).not.toContain(second.commit);
-});
-
-test("104/126: a timeout, an over-budget end and a run with no pending item each count toward the session's three Dreamer failures", async () => {
-  let mode: "hang" | "skip" | "idle" = "hang";
-  const m = open(":memory:", async raw => {
-    const input = raw as DreamingAgentInput;
-    if (input.kind !== "dreaming") return failed(raw);
-    input.acknowledgeRequest();
-    if (mode === "hang") return new Promise<never>(() => {});
-    if (mode === "skip") skipRest(input);
-    return { outcome: "success", output: "the model reports it is done", request };
-  });
-  m.config.dreaming.triggerTokens = 1;
-  m.config.dreaming.timeoutMs = 50;
-  const target = seed(m), pool = `session:${target.sessionId}`;
-  const facts = decision(m, target, "evidence");
-  const made = m.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" },
-    operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", text: `Session rule ${"word ".repeat(200)}`, category: "constraint",
-      scope: "session", topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" }] });
-  if (!made.ok) throw Error(made.problems.join("; "));
-  const size = m.store.poolSizes(target).find(value => value.pool === pool)!.tokens;
-  m.store.setKnowledgeBudget("session", size - 1);
-  const timedOut = await m.dream(target);
-  expect(timedOut).toMatchObject({ outcome: "failure", problems: expect.arrayContaining([expect.stringContaining("wall-clock limit")]) });
-  mode = "skip"; // every frozen item deliberated, but the pool ends over its budget
-  expect(await m.dream(target)).toMatchObject({ outcome: "failure", problems: [`pool ${pool} over budget: ${size}/${size - 1} tokens`] });
-  expect(m.store.pendingVersions(pool, target)).toEqual([]);
-  // Nothing is pending now; the session is due only because its knowledge overflows the window.
-  for (const scope of ["global", "project"] as const) m.store.setKnowledgeBudget(scope, 0);
-  m.config.compaction.sharedAllowanceTokens = 0;
-  mode = "idle";
-  expect(m.taskEligibility("dreaming", target).due).toBe(true);
-  const budgetOnly = await m.dream(target);
-  expect(budgetOnly).toMatchObject({ outcome: "failure", problems: [`pool ${pool} over budget: ${size}/${size - 1} tokens`] });
-  expect(budgetOnly.automaticOff).toContain(`S${target.sessionId} dreaming off after three failures`);
-  expect(streaks(m).filter(row => row.phase === "dreaming")).toMatchObject([{ head: null, pool: ALL_POOLS, count: 3 }]);
-});
-
-test("126: runs that each leave a different pool over budget continue one streak; the third turns memory off", async () => {
-  const m = open(":memory:", async raw => {
-    const input = raw as DreamingAgentInput;
-    if (input.kind !== "dreaming") return failed(raw);
-    input.acknowledgeRequest(); skipRest(input);
-    return { outcome: "success", output: "every frozen item deliberated", request };
-  });
-  m.config.dreaming.triggerTokens = 1;
-  const target = seed(m), facts = decision(m, target, "evidence");
-  const projectPool = `project:${m.store.getSession(target.sessionId)!.projectId}`, sessionPool = `session:${target.sessionId}`;
-  const roomy = { global: 4_000, project: 15_000, session: 1_000 };
-  const results = [];
-  for (const [scope, pool] of [["global", "global"], ["project", projectPool], ["session", sessionPool]] as const) {
-    for (const field of ["global", "project", "session"] as const) m.store.setKnowledgeBudget(field, roomy[field]);
-    knowledge(m.store, target, scope, "constraint", [facts.facts[0]!.id], `${scope} rule ${"word ".repeat(60)}`,
-      { run: { kind: "manual", createdAt: "now" } });
-    const size = m.store.poolSizes(target).find(value => value.pool === pool)!.tokens;
-    m.store.setKnowledgeBudget(scope, size - 1); // only this pool ends over its budget
-    const result = await m.dream(target);
-    expect(result).toMatchObject({ outcome: "failure", problems: [`pool ${pool} over budget: ${size}/${size - 1} tokens`] });
-    results.push(result);
-  }
-  expect(results.map(result => result.automaticOff === undefined)).toEqual([true, true, false]);
-  expect(streaks(m).filter(row => row.phase === "dreaming")).toMatchObject([{ head: null, pool: ALL_POOLS, count: 3 }]);
-  expect(m.store.enabled(target.sessionId)).toBe(false);
-});
-
-test("104 F1: three consecutive timeouts at the default 30-minute bound settle as failure and turn memory off", async () => {
-  vi.useFakeTimers();
-  try {
-    const m = open(":memory:", async raw => {
-      const input = raw as DreamingAgentInput;
-      input.acknowledgeRequest();
-      return new Promise<never>(() => {}); // never resolves; only the wall-clock bound ends the run
-    });
-    m.config.dreaming.triggerTokens = 1;
-    const target = seed(m);
-    const facts = decision(m, target, "evidence");
-    const made = m.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" },
-      operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", text: `Session rule ${"word ".repeat(200)}`, category: "constraint",
-        scope: "session", topics: [], supports: [facts.facts[0]!.id], reason: "evidence", createdAt: "now" }] });
-    if (!made.ok) throw Error(made.problems.join("; "));
-    const dreamStreak = () => streaks(m).filter(row => row.phase === "dreaming");
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const running = m.dream(target);
-      await vi.advanceTimersByTimeAsync(m.config.dreaming.timeoutMs);
-      const settled = await running;
-      expect(settled.outcome, `attempt ${attempt}: ${JSON.stringify(settled)}`).toBe("failure");
-    }
-    expect(dreamStreak()).toMatchObject([{ head: null, pool: ALL_POOLS, count: 3 }]);
-    expect(m.store.enabled(target.sessionId)).toBe(false);
-  } finally { vi.useRealTimers(); }
 });
 
 test("92: successful N publication resets its own task in the terminal transaction", async () => {

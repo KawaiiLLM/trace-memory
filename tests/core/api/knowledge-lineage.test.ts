@@ -6,8 +6,9 @@ import { DatabaseSync } from "node:sqlite";
 import { TraceMemory, memoryFiles, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { Store, type KnowledgeOperationInput, type KnowledgePath, type SourceInput } from "../../../src/core/store/index.ts";
 import { renderRun } from "../../../src/core/render/index.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
+import { applyWorkspace } from "../../../src/core/workspace/index.ts";
+import { curateNow, curateWrite } from "../../support/dreamer.ts";
+import { block } from "../../support/workspace.ts";
 import { legacyFacts, receiptCommit } from "../../support/seed.ts";
 import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 
@@ -22,8 +23,7 @@ const tagged = (store: Store, id: number, commit: number) => `K${id}#${store.ver
 const history = (store: Store, id: number, commit: number) => `K${id}@v${store.versionOrdinal(id, commit)}`;
 
 function fixture() {
-  const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected fixture phase"); });
-  const memory = TraceMemory(":memory:", scenarios.agent); const store = memory.store; stores.push(store);
+  const memory = TraceMemory(":memory:", async () => { throw new Error("unexpected fixture phase"); }); const store = memory.store; stores.push(store);
   const project = store.createProject({ name: "lineage", declaredBy: "mark" });
   const session = store.createSession({ host: "test", enrollmentChoice: true, projectId: project.id, startedAt: time, firstReplyAt: time });
   const append = (turnId: number, nativeId: string, text: string): SourceInput => ({ sessionId: session.id, turnId, nativeId,
@@ -45,38 +45,7 @@ function fixture() {
       if (!result.ok) throw new Error(result.problems.join("; "));
       return result.committed;
     }
-    const target = { sessionId: path.sessionId, branch: path.branch!, headTurnId: path.headTurnId! };
-    const factId = operations.flatMap(operation => operation.supports ?? [])[0] ?? rootFact;
-    const trigger = createDreamerTrigger(memory, target, factId, store.listKnowledgeRevisions().length + 1);
-    let committed: { knowledgeId: number; commit: number }[] = [];
-    const dreamed = await scenarios.run(memory, target, input => {
-      const request = { fixture: "lineage maintenance" }; input.reportRequest(request);
-      const read = (address: string) => memoryFiles(memory, input.reader!).read(`trace://${address}`).content;
-      const tool = input.tools.find(tool => tool.name === "memory")!;
-      const addressed = new Set<string>();
-      const converted = operations.map(operation => {
-        if (operation.op === "update") { const id = tagged(store, operation.knowledgeId, operation.baseCommit); addressed.add(history(store, operation.knowledgeId, operation.baseCommit)); read(id);
-          return { op: "update", id, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
-        if (operation.op === "split") { const id = tagged(store, operation.knowledgeId, operation.baseCommit); addressed.add(history(store, operation.knowledgeId, operation.baseCommit)); read(id);
-          return { op: "split", id, text: "Primary part.", category: "constraint", scope: "project", topics: [], children: operation.children, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
-        if (operation.op === "merge") { const id = tagged(store, operation.intoKnowledgeId, operation.intoBaseCommit), absorb = operation.absorb.map(parent => tagged(store, parent.knowledgeId, parent.baseCommit));
-          addressed.add(history(store, operation.intoKnowledgeId, operation.intoBaseCommit));
-          for (const parent of operation.absorb) addressed.add(history(store, parent.knowledgeId, parent.baseCommit));
-          for (const address of [id, ...absorb]) read(address);
-          return { op: "merge", id, absorb, text: operation.text, category: operation.category, scope: operation.scope, topics: operation.topics, supports: operation.supports.map(id => `F${id}`), reason: operation.reason }; }
-        return operation;
-      });
-      const triggerAddress = tagged(store, trigger.knowledgeId, trigger.commit), supplied = new Set(suppliedHandles(input.material.changed));
-      supplied.delete(history(store, trigger.knowledgeId, trigger.commit)); for (const address of addressed) supplied.delete(address);
-      const receipt = JSON.parse(dreamerWrite(tool, { operations: [...converted, { op: "archive", kind: "budget", id: triggerAddress, supports: [`F${factId}`], reason: "Retire the explicit lineage trigger." }],
-        skipped: [...supplied].map(knowledge => ({ knowledge, because: "No lineage maintenance is needed for this supplied item." })) }));
-      committed = (receipt.committed ?? []).filter((item: { knowledgeId: number }) => item.knowledgeId !== trigger.knowledgeId)
-        .map((item: { knowledgeId: number; version: string }) => ({ knowledgeId: item.knowledgeId, commit: receiptCommit(store, item) }));
-      expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-      return { outcome: "success", output: "lineage maintenance complete", request };
-    });
-    if (dreamed.outcome !== "success") throw new Error(JSON.stringify(dreamed));
-    return committed;
+    return curateWrite(memory, path, operations); // the Dreamer's pass: one curate file, every block applied
   };
   const content = (text: string, supports: number[], scope = "project" as const) => ({ text, category: "constraint" as const,
     scope, supports, topics: [], reason: `change to ${text}`, createdAt: time });
@@ -85,7 +54,7 @@ function fixture() {
     operations: [{ op: "create", title: "Fixture title", handle: "$root", author: "test", ...content("root conclusion", [rootFact]) }] });
   if (!initial.ok) throw new Error(initial.problems.join("; "));
   const created = initial.committed[0]!;
-  return { memory, scenarios, store, project, session, rootTurn, rootEntry, rootFact, rootPath, append, note, write, content, created };
+  return { memory, store, project, session, rootTurn, rootEntry, rootFact, rootPath, append, note, write, content, created };
 }
 
 test("64b: change revisions use only direct facts and do not inherit historical grounding", async () => {
@@ -148,70 +117,17 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
   expect([...f.store.revisionGrounds(f.store.knowledgeRevision(merged.commit)!)]).toEqual([f.rootFact]);
   f.store.setCurrentPath(f.session.id, "child", childTurn.id, "test-lineage");
   expect(f.store.currentKnowledge(childPath).map(v => v.revision.id)).toEqual([merged.commit]);
-  const trigger = createDreamerTrigger(f.memory, childPath, f.rootFact, 999);
-  const malformedRun = await f.scenarios.run(f.memory, childPath, input => {
-    const request = { fixture: "invalid three-parent merge" }; input.reportRequest(request);
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
-    const tool = input.tools.find(tool => tool.name === "memory")!;
-    for (const address of [tagged(f.store, f.created.knowledgeId, merged.commit), tagged(f.store, childOnly.knowledgeId, childOnly.commit), tagged(f.store, f.created.knowledgeId, f.created.commit)])
-      read(address);
-    const malformed = dreamerWrite(tool, { operations: [{ op: "merge", id: tagged(f.store, f.created.knowledgeId, merged.commit),
-      absorb: [tagged(f.store, childOnly.knowledgeId, childOnly.commit), tagged(f.store, f.created.knowledgeId, f.created.commit)],
-      text: "illegal three-parent merge", category: "constraint", scope: "project", topics: [], supports: [`F${f.rootFact}`], reason: "invalid fixture" }], skipped: [] });
-    // Many-way merges are legal (2026-10-22); this one is refused because an absorbed base is the primary's own superseded version.
-    expect(malformed).toContain("not the latest effective applicable revision");
-    expect(tool.execute({ drop: "M1" })).toContain("dropped: M1"); // 127: a refusal blocks until withdrawn
-    const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(history(f.store, trigger.knowledgeId, trigger.commit));
-    dreamerWrite(tool, { operations: [{ op: "archive", kind: "budget", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [`F${f.rootFact}`], reason: "Retire the explicit invalid-merge trigger." }],
-      skipped: [...supplied].map(knowledge => ({ knowledge, because: "The rejected malformed merge makes no valid change." })) });
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return { outcome: "success", output: "malformed merge rejected", request };
-  });
-  expect(malformedRun.outcome).toBe("success");
+  // Many-way merges are legal (2026-10-22); this one is refused because an absorbed base is the primary's own superseded version.
+  const before = f.store.listKnowledgeRevisions().length;
+  const malformed = applyWorkspace(f.store, { kind: "curate", sessionId: f.session.id, path: childPath, file: { name: "curate.md", text: block(`merge ${history(f.store, f.created.knowledgeId, merged.commit)}`,
+    { absorb: `${history(f.store, childOnly.knowledgeId, childOnly.commit)}, ${history(f.store, f.created.knowledgeId, f.created.commit)}`,
+      supports: `F${f.rootFact}`, reason: "invalid fixture" }, "illegal three-parent merge") } });
+  expect(malformed.ok ? malformed.blocks.map(entry => entry.reason).join("\n") : malformed.problems.join("\n")).toMatch(/not the latest effective applicable revision|cannot absorb itself/);
+  expect(f.store.listKnowledgeRevisions()).toHaveLength(before);
 });
 
-test("64b/34a: trusted Dreamer split is atomic and retains processed current descendants without a frozen family", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "tm-34a-split-")); dirs.push(dir);
-  let parent = { knowledgeId: 0, commit: 0 };
-  let trigger = { knowledgeId: 0, commit: 0 };
-  let attempted = false;
-  const memory = TraceMemory(join(dir, "memory.sqlite"), async raw => {
-    const input = raw as DreamingAgentInput;
-    if (input.kind !== "dreaming") throw new Error("unexpected phase");
-    input.reportRequest({ offline: true });
-    const tool = input.tools.find(t => t.name === "memory")!;
-    const illegalCreate = dreamerWrite(tool, { operations: [{ op: "create", title: "Fixture title", text: "not a split", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "illegal" }], skipped: [] });
-    expect(illegalCreate).toContain("rejected: M1");
-    expect(tool.execute({ drop: "M1" })).toContain("dropped: M1");
-    const invalid = dreamerWrite(tool, { operations: [{ op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), text: "Primary part.", category: "constraint", scope: "project", topics: [], supports: [], reason: "separate independent rules",
-      children: [{ title: "Fixture child", text: "first rule", category: "constraint", topics: [] }, { title: "Fixture child", text: "", category: "goal", topics: [] }] }], skipped: [] });
-    expect(invalid).toContain("rejected: M2");
-    expect(memory.store.listKnowledgeRevisions()).toHaveLength(2);
-    const parentCost = Number(new RegExp(`\\[K${parent.knowledgeId}#[a-z]+\\] \\[[^\\]]+\\] \\((\\d+) tokens(?:; facts [^)]*)?\\)`)
-      .exec(input.material.changed)![1]);
-    const split = JSON.parse(tool.execute({ slot: "M2", op: "split", id: tagged(memory.store, parent.knowledgeId, parent.commit), text: "Primary part.", category: "constraint", scope: "project", topics: [], 
-      supports: [], reason: "separate independent rules",
-      children: [{ title: "Fixture child", text: "first rule", category: "constraint", topics: ["first"] }, { title: "Fixture child", text: "second rule", category: "goal", topics: ["second"] }] }));
-    // The split item continues as its primary part, beside its two children.
-    expect(split.committed).toHaveLength(3);
-    expect(split.tokens.before).toEqual([parentCost]);
-    const [primary, first, second] = split.committed as { knowledgeId: number; version: string }[];
-    expect(primary!.knowledgeId).toBe(parent.knowledgeId);
-    const read = (address: string) => memoryFiles(memory, input.reader!).read(`trace://${address}`).content;
-    expect(read(first!.version)).not.toContain("rejected:");
-    const update = JSON.parse(tool.execute({ op: "update", id: first!.version,
-      text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }));
-    const secondUpdate = JSON.parse(tool.execute({ op: "update", id: second!.version,
-      text: "second rule", category: "goal", scope: "project", topics: ["second"], supports: [], reason: "Keep the second independent ruling" }));
-    expect(split.tokens.after.slice(1)).toEqual([update.tokens.before[0], secondUpdate.tokens.before[0]]);
-    expect(update.committed).toHaveLength(1);
-    read(history(memory.store, trigger.knowledgeId, trigger.commit));
-    expect(dreamerWrite(tool, { operations: [{ op: "archive", kind: "budget", id: tagged(memory.store, trigger.knowledgeId, trigger.commit),
-      supports: [], reason: "Retire the explicit split trigger." }], skipped: [] })).toContain("committed");
-    expect(input.tools.find(t => t.name === "check")!.execute({})).toContain("Blockers: none");
-    attempted = true;
-    return { outcome: "success", output: "done", request: { offline: true } };
-  });
+test("64b/34a: trusted Dreamer split is atomic and keeps the item as its primary part beside its children", () => {
+  const memory = TraceMemory(":memory:", async () => { throw new Error("unexpected phase"); });
   stores.push(memory.store);
   const fstore = memory.store;
   const project = fstore.createProject({ name: "split", declaredBy: "mark" });
@@ -222,47 +138,42 @@ test("64b/34a: trusted Dreamer split is atomic and retains processed current des
   const facts = fstore.commitNotingRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, facts: [{ turnId: turn.id,
     entryIds: [entry.id], category: "decision", actor: "user", text: "compound", source: [`T${turn.id}#E1`], createdAt: time }] });
   if (!facts.ok) throw new Error(facts.problems.join());
-  const created = fstore.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
-    run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ op: "create", title: "Fixture title", handle: "$parent", author: "test",
+  const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
+  const created = fstore.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ op: "create", title: "Fixture title", handle: "$parent", author: "test",
       text: "first rule and second rule", category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: ["compound"], reason: "initial", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join());
-  parent = created.committed[0]!;
-  const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
-  trigger = createDreamerTrigger(memory, path, facts.facts[0]!.id, 1, "project");
+  const parent = created.committed[0]!, ref = `K${parent.knowledgeId}@v1`;
+  const revisions = () => fstore.listKnowledgeRevisions().length;
+  const child = (title: string, category: string, text: string) => `\n### child\ntitle: ${title}\ncategory: ${category}\nscope: project\ntopics: first\nsupports: F${facts.facts[0]!.id}\nreason: separate independent rules\n\n${text}\n`;
+  // One child with no body: the file is refused whole and nothing is written.
+  const before = revisions();
+  const invalid = applyWorkspace(fstore, { kind: "curate", sessionId: session.id, path, file: { name: "curate.md", text: block(`split ${ref}`, { reason: "separate independent rules" }, "Primary part.")
+    + child("Fixture child", "constraint", "first rule") + `\n### child\ntitle: Fixture child\ncategory: goal\nscope: project\ntopics:\nsupports: F${facts.facts[0]!.id}\nreason: x\n\n` } });
+  expect(invalid.ok).toBe(false);
+  expect(revisions()).toBe(before);
 
-  const result = await memory.dream(path);
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
-  expect(attempted).toBe(true);
-  const revisions = fstore.listKnowledgeRevisions();
-  const children = revisions.filter(r => r.op === "split" && r.knowledgeId !== parent.knowledgeId);
-  expect(revisions.filter(r => r.op === "split" && r.knowledgeId === parent.knowledgeId)).toHaveLength(1); // the primary part
+  const [primary, first, second] = curateWrite(memory, path, [{ op: "split", knowledgeId: parent.knowledgeId, baseCommit: parent.commit, text: "Primary part.", category: "constraint", scope: "project",
+    topics: [], supports: [facts.facts[0]!.id], reason: "separate independent rules", createdAt: time,
+    children: [{ title: "Fixture child", text: "first rule", category: "constraint", topics: ["first"] }, { title: "Fixture child", text: "second rule", category: "goal", topics: ["second"] }] }]);
+  expect(primary!.knowledgeId).toBe(parent.knowledgeId);
+  const [update] = curateWrite(memory, path, [{ op: "update", knowledgeId: first!.knowledgeId, baseCommit: first!.commit, text: "first rule, clarified", category: "constraint", scope: "project",
+    topics: ["first"], supports: [], reason: "clarify structure", createdAt: time }]);
+  curateWrite(memory, path, [{ op: "update", knowledgeId: second!.knowledgeId, baseCommit: second!.commit, text: "second rule", category: "goal", scope: "project",
+    topics: ["second"], supports: [], reason: "Keep the second independent ruling", createdAt: time }]);
+  expect(update!.knowledgeId).toBe(first!.knowledgeId);
+
+  const all = fstore.listKnowledgeRevisions();
+  const children = all.filter(r => r.op === "split" && r.knowledgeId !== parent.knowledgeId);
+  expect(all.filter(r => r.op === "split" && r.knowledgeId === parent.knowledgeId)).toHaveLength(1); // the primary part
   expect(children).toHaveLength(2);
   expect(new Set(children.map(r => r.knowledgeId)).size).toBe(2);
   expect(children.every(r => r.parentId === parent.commit && r.scope === "project" && r.supports.length === 1 && r.actorRole === "dreaming")).toBe(true);
-  if (!("runId" in result)) throw new Error("missing Dreamer run");
-  expect(fstore.listFactsByRun(result.runId)).toEqual([]);
   expect(children.every(r => r.supports[0] === facts.facts[0]!.id)).toBe(true);
   expect(fstore.listKnowledgeLinks(parent.knowledgeId).filter(link => link.kind === "split_from")).toHaveLength(2);
-  expect(revisions.some(r => r.op === "archive" && r.knowledgeId !== trigger.knowledgeId)).toBe(false);
-  const current = fstore.currentKnowledge({ sessionId: session.id, branch: "main", headTurnId: turn.id }).map(v => v.revision);
+  expect(all.some(r => r.op === "archive")).toBe(false);
+  const current = fstore.currentKnowledge(path).map(v => v.revision);
   expect(current).toHaveLength(3);
   expect(current.map(r => r.text).sort()).toEqual(["Primary part.", "first rule, clarified", "second rule"]);
-  const pool = `project:${project.id}`;
-  expect(fstore.pendingVersions(pool, { sessionId: session.id, branch: "main", headTurnId: turn.id })).toEqual([]);
-  const retained = fstore.db.prepare("SELECT * FROM dreaming_ranges WHERE id = 1").get()!;
-  const origin = { sessionId: Number(retained.origin_session_id), entryIds: JSON.parse(String(retained.origin_entry_ids)) };
-  expect(retained.pool).toBe(ALL_POOLS);
-  expect(JSON.parse(String(retained.pending_revisions))).toEqual(expect.arrayContaining([parent.commit, trigger.commit]));
-  expect(origin).toEqual({ sessionId: session.id, entryIds: [entry.id] });
-  expect(fstore.getRun(result.runId)!.origin).toEqual(origin);
-  expect(current.every(revision => revision.runId === result.runId)).toBe(true);
-  const execution = fstore.db.prepare("SELECT e.* FROM task_executions e JOIN execution_runs x ON x.execution_id = e.id WHERE x.run_id = ?").get(result.runId)!;
-  expect({ sessionId: execution.origin_session_id, entryIds: JSON.parse(String(execution.origin_entry_ids)) }).toEqual(origin);
-  memory.close();
-  const reopened = new Store(join(dir, "memory.sqlite")); stores.push(reopened);
-  const restoredRange = reopened.db.prepare("SELECT * FROM dreaming_ranges WHERE id = ?").get(retained.id!)!;
-  expect(restoredRange).toEqual(retained);
-  expect(reopened.getRun(result.runId)!.origin).toEqual(origin);
 });
 
 test("34a migration labels legacy supports without changing ids, links or processing history", () => {

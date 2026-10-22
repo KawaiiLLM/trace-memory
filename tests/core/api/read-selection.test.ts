@@ -2,10 +2,9 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
 import { fact, receiptCommit } from "../../support/seed.ts";
-import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
+import { curateWrite } from "../../support/dreamer.ts";
 import { toolDefinitions, type SearchOptions } from "../../../src/core/api/index.ts";
 import type { KnowledgeCategory, KnowledgeScope } from "../../../src/core/model/index.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
 
 const time = "2026-09-15T00:00:00Z";
 
@@ -15,10 +14,9 @@ function history(version: { knowledgeId: number; commit: number }) {
 function committedVersion(item: { knowledgeId: number; version: string }) {
   return { knowledgeId: item.knowledgeId, commit: receiptCommit(memory.store, item) };
 }
-let memory: ReturnType<typeof sourceSeededMemory>, scenarios: AdmittedDreamerScenarios;
+let memory: ReturnType<typeof sourceSeededMemory>;
 beforeEach(() => {
-  scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("no model calls"); });
-  memory = sourceSeededMemory(":memory:", scenarios.agent);
+  memory = sourceSeededMemory(":memory:", async () => { throw new Error("no model calls"); });
 });
 afterEach(() => memory.close());
 const body = (text: string) => text.split("\n\nReceipts:")[0]!;
@@ -38,24 +36,9 @@ function owner(name: string, projectId = memory.store.createProject({ name, decl
       if (!result.ok) throw new Error(result.problems.join("; "));
       return result.committed[0]!;
     }
-    const poolScope = memory.store.knowledgeRevision(base.commit)!.scope;
-    const trigger = createDreamerTrigger(memory, path, supports[0]!, memory.store.listKnowledgeRevisions().length + 1, poolScope);
-    let changed!: { knowledgeId: number; commit: number };
-    const dreamed = await scenarios.run(memory, path, input => {
-      const request = { fixture: "read selection revision" }; input.reportRequest(request);
-      const files = memoryFiles(memory, input.reader!);
-      const baseAddress = readHandle(address => files.read(address).content, history(base)), triggerAddress = readHandle(address => files.read(address).content, history(trigger));
-      const supplied = new Set(suppliedHandles(input.material.changed)); supplied.delete(history(base)); supplied.delete(history(trigger));
-      const receipt = JSON.parse(dreamerWrite(input.tools.find(tool => tool.name === "memory")!, { operations: [
-        { op: "update", id: baseAddress, text, scope, category, topics, supports: supports.map(id => `F${id}`), reason: `Reason ${text}` },
-        { op: "archive", kind: "budget", id: triggerAddress, supports: supports.map(id => `F${id}`), reason: "Retire the explicit selection trigger." },
-      ], skipped: [...supplied].map(knowledge => ({ knowledge, because: "No maintenance is needed for this supplied fixture item." })) }));
-      changed = committedVersion(receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === base.knowledgeId)!);
-      expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-      return { outcome: "success", output: "selection revision complete", request };
-    });
-    if (dreamed.outcome !== "success") throw new Error(JSON.stringify(dreamed));
-    return changed;
+    const [changed] = curateWrite(memory, path, [{ op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, text, scope, category, topics,
+      supports, reason: `Reason ${text}`, createdAt: time }]); // a Dreamer's pass
+    return changed!;
   };
   return { ...path, projectId, turn, run, supports, factId: supports[0]!, put };
 }
@@ -140,31 +123,16 @@ test("41 archives and merged-away identities have no current body but remain can
   const who = owner("lifecycle");
   // Ticket 44: the survivor is created first so its older address remains live.
   const survivor = await who.put("needle survivor"), absorbed = await who.put("needle absorbed");
-  const trigger = createDreamerTrigger(memory, who, who.factId, 1);
-  let result!: { knowledgeId: number; commit: number };
-  const dreamed = await scenarios.run(memory, who, input => {
-    input.reportRequest({ fixture: "lifecycle merge and archive" });
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    const files = memoryFiles(memory, input.reader!);
-    const survivorTag = readHandle(path => files.read(path).content, history(survivor)), absorbedTag = readHandle(path => files.read(path).content, history(absorbed));
-    const merged = JSON.parse(dreamerWrite(write, { operations: [{ op: "merge", id: survivorTag,
-      absorb: [absorbedTag], text: "needle combined", scope: "project", category: "reference",
-      topics: [], supports: who.supports.map(id => `F${id}`), reason: "Merge" }], skipped: [] }));
-    result = committedVersion(merged.committed[0]);
-    const current = (memory.search("needle", "knowledge", who) as string).split("\n").filter(line => !/^\[K\d+@v\d+\] \((superseded|archived)\)/.test(line));
-    expect(identities(current.join("\n"))).toEqual([`K${result.knowledgeId}@v${memory.store.versionOrdinal(result.knowledgeId, result.commit)}`]);
-    expect(memory.search("absorbed", "knowledge", who)).toMatch(new RegExp(`\\[K${absorbed.knowledgeId}@v1\\] \\((superseded|archived)\\)`));
-    const resultTag = readHandle(path => files.read(path).content, history(result));
-    dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: resultTag, supports: who.supports.map(id => `F${id}`), reason: "Archive" },
-      { op: "archive", kind: "budget", id: readHandle(path => files.read(path).content, history(trigger)), supports: who.supports.map(id => `F${id}`), reason: "Retire the explicit lifecycle trigger." }], skipped: [] });
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return { outcome: "success", output: "lifecycle complete", request: { fixture: "lifecycle merge and archive" } };
-  });
-  expect(dreamed.outcome, JSON.stringify(dreamed)).toBe("success");
+  const [result] = curateWrite(memory, who, [{ op: "merge", intoKnowledgeId: survivor.knowledgeId, intoBaseCommit: survivor.commit,
+    absorb: [{ knowledgeId: absorbed.knowledgeId, baseCommit: absorbed.commit }], text: "needle combined", scope: "project", category: "reference",
+    topics: [], supports: who.supports, reason: "Merge", createdAt: time }]);
+  const current = (memory.search("needle", "knowledge", who) as string).split("\n").filter(line => !/^\[K\d+@v\d+\] \((superseded|archived)\)/.test(line));
+  expect(identities(current.join("\n"))).toEqual([`K${result!.knowledgeId}@v${memory.store.versionOrdinal(result!.knowledgeId, result!.commit)}`]);
+  expect(memory.search("absorbed", "knowledge", who)).toMatch(new RegExp(`\\[K${absorbed.knowledgeId}@v1\\] \\((superseded|archived)\\)`));
+  curateWrite(memory, who, [{ op: "archive", kind: "invalid", knowledgeId: result!.knowledgeId, baseCommit: result!.commit, supports: who.supports, reason: "Archive", createdAt: time }]);
   // No version is current any more: every hit is marked, and the archives are labelled as such.
   const historyText = memory.search("", "knowledge", { ...who, topk: 100 }) as string;
   expect(historyText.split("\n").every(line => /^\[K\d+@v\d+\] \((superseded|archived)\)/.test(line))).toBe(true);
-  expect(historyText).toContain(`[K${trigger.knowledgeId}@`);
   expect(historyText).toContain("(archived)");
   expect(memoryFiles(memory, who).read("trace://knowledge-all").content).toContain(`trace://K${survivor.knowledgeId}@v`);
 });

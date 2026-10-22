@@ -2,8 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { type KnowledgeRevision } from "../../../src/core/model/index.ts";
 import { type KnowledgePath, Store } from "../../../src/core/store/index.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite, suppliedHandles } from "../../dreaming-skips.ts";
+import { curateWrite } from "../../support/dreamer.ts";
 import { receiptCommit } from "../../support/seed.ts";
 
 const at = "2026-09-21T12:00:00.000Z";
@@ -90,9 +89,8 @@ test("64b stateless graph: an ineffective merge no longer hides its independent 
   expect(effective(revisions, parents)).toEqual(new Set([1, 2, 3, 5]));
 });
 
-test("64b stateless graph: genuine alternative split operations keep only the operation with the later applicable subtree", async () => {
-  const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected non-Dreamer phase"); });
-  const memory = TraceMemory(":memory:", scenarios.agent); open.push(memory);
+test("64b stateless graph: genuine alternative split operations keep only the operation with the later applicable subtree", () => {
+  const memory = TraceMemory(":memory:", async () => { throw new Error("unexpected non-Dreamer phase"); }); open.push(memory);
   const store = memory.store, project = store.createProject({ name: "alternative-splits", declaredBy: "mark" });
   const a = store.createSession({ enrollmentChoice: true, host: "split-A", startedAt: at, firstReplyAt: at, projectId: project.id });
   const b = store.createSession({ enrollmentChoice: true, host: "split-B", startedAt: at, firstReplyAt: at, projectId: project.id });
@@ -108,33 +106,20 @@ test("64b stateless graph: genuine alternative split operations keep only the op
   const bFact = fact(store, bPath, b1.turn.id, b1.entry.id, "second split support");
   const base = create(store, aPath, rootFact.id, "global", "split base");
   let sequence = 0;
-  const split = async (path: typeof aPath, support: number, labels: [string, string]) => {
-    const trigger = createDreamerTrigger(memory, path, support, ++sequence, "global");
-    let children: number[] = [];
-    const dreamed = await scenarios.run(memory, path, input => {
-      const request = { fixture: `alternative split ${sequence}` }; input.reportRequest(request);
-      const write = input.tools.find(tool => tool.name === "memory")!;
-      memoryFiles(memory, path).read(`trace://${tag(store, base)}`);
-      memoryFiles(memory, path).read(`trace://${tag(store, trigger)}`);
-      const receipt = JSON.parse(dreamerWrite(write, { operations: [
-        { op: "split", id: tag(store, base), text: `primary ${sequence}`, category: "constraint", scope: "global", topics: [],
-          supports: [`F${support}`], reason: "Alternative atomic split.",
-          children: labels.map(text => ({ title: "Fixture child", text, category: "constraint", topics: [] })) },
-        { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
-      ], skipped: [] }));
-      children = receipt.committed.filter((item: { op: string; knowledgeId: number }) => item.op === "split" && item.knowledgeId !== base.knowledgeId).map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
-      expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-      return { outcome: "success", output: labels.join("/"), request };
-    });
-    expect(dreamed.outcome).toBe("success"); expect(children).toHaveLength(2);
+  const split = (path: typeof aPath, support: number, labels: [string, string]) => {
+    const committed = curateWrite(memory, path, [{ op: "split", knowledgeId: base.knowledgeId, baseCommit: store.currentCommit(base.knowledgeId, path)[0]!.id,
+      text: `primary ${++sequence}`, category: "constraint", scope: "global", topics: [], supports: [support], reason: "Alternative atomic split.", createdAt: at,
+      children: labels.map(text => ({ title: "Fixture child", text, category: "constraint" as const, topics: [] })) }]);
+    const children = committed.filter(item => item.knowledgeId !== base.knowledgeId).map(item => item.commit);
+    expect(children).toHaveLength(2);
     return children;
   };
 
-  const first = await split(aPath, aFact.id, ["first A", "first B"]);
+  const first = split(aPath, aFact.id, ["first A", "first B"]);
   compareCommittedGraph(store, aPath);
   store.setCurrentPath(a.id, "rewind", a0.turn.id, "test-lineage");
   compareCommittedGraph(store, bPath);
-  const second = await split(bPath, bFact.id, ["second A", "second B"]);
+  const second = split(bPath, bFact.id, ["second A", "second B"]);
   compareCommittedGraph(store, bPath);
   store.setCurrentPath(a.id, "main", a1.turn.id, "test-lineage");
   compareCommittedGraph(store, bPath);
@@ -143,9 +128,8 @@ test("64b stateless graph: genuine alternative split operations keep only the op
   expect(second.every(id => graph.effective.has(id) && graph.resolved.some(item => item.id === id))).toBe(true);
 });
 
-test("64b stateless graph: admitted deep branch defeats a restored sibling from the common base", async () => {
-  const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected non-Dreamer phase"); });
-  const memory = TraceMemory(":memory:", scenarios.agent); open.push(memory);
+test("64b stateless graph: admitted deep branch defeats a restored sibling from the common base", () => {
+  const memory = TraceMemory(":memory:", async () => { throw new Error("unexpected non-Dreamer phase"); }); open.push(memory);
   const store = memory.store, project = store.createProject({ name: "deep-fork", declaredBy: "mark" });
   const a = store.createSession({ enrollmentChoice: true, host: "deep-A", startedAt: at, firstReplyAt: at, projectId: project.id });
   const b = store.createSession({ enrollmentChoice: true, host: "deep-B", startedAt: at, firstReplyAt: at, projectId: project.id });
@@ -164,39 +148,24 @@ test("64b stateless graph: admitted deep branch defeats a restored sibling from 
   const bFact = fact(store, bPath, b1.turn.id, b1.entry.id, "B sibling support");
   const base = create(store, aPath, rootFact.id, "global", "common base");
   let sequence = 0;
-  const update = async (path: typeof aPath, prior: { knowledgeId: number; commit: number }, support: number, text: string) => {
-    const trigger = createDreamerTrigger(memory, path, support, ++sequence, "global");
-    let result!: { knowledgeId: number; commit: number };
-    const dreamed = await scenarios.run(memory, path, input => {
-      const request = { fixture: `64b deep fork ${sequence}` }; input.reportRequest(request);
-      const write = input.tools.find(tool => tool.name === "memory")!;
-      memoryFiles(memory, path).read(`trace://${tag(store, prior)}`);
-      memoryFiles(memory, path).read(`trace://${tag(store, trigger)}`);
-      const receipt = JSON.parse(dreamerWrite(write, { operations: [
-        { op: "update", id: tag(store, prior), text, category: "constraint", scope: "global",
-          supports: [`F${support}`], reason: "Advance the selected branch.", topics: [] },
-        { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${support}`], reason: "Retire trigger." },
-      ], skipped: [] }));
-      const published = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === prior.knowledgeId);
-      result = { knowledgeId: prior.knowledgeId, commit: publishedCommit(store, published) };
-      expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-      return { outcome: "success", output: text, request };
-    });
-    expect(dreamed.outcome).toBe("success");
-    return result;
+  const update = (path: typeof aPath, prior: { knowledgeId: number; commit: number }, support: number, text: string) => {
+    ++sequence;
+    const [result] = curateWrite(memory, path, [{ op: "update", knowledgeId: prior.knowledgeId, baseCommit: prior.commit, text, category: "constraint", scope: "global",
+      supports: [support], reason: "Advance the selected branch.", topics: [], createdAt: at }]);
+    return result!;
   };
 
-  const second = await update(aPath, base, aFact.id, "A branch second");
+  const second = update(aPath, base, aFact.id, "A branch second");
   compareCommittedGraph(store, aPath);
   store.setCurrentPath(a.id, "rewind", a0.turn.id, "test-lineage");
   compareCommittedGraph(store, bPath);
-  const third = await update(bPath, base, bFact.id, "B sibling third");
+  const third = update(bPath, base, bFact.id, "B sibling third");
   compareCommittedGraph(store, bPath);
   store.setCurrentPath(b.id, "rewind", b0.turn.id, "test-lineage");
   compareCommittedGraph(store, aPath);
   store.setCurrentPath(a.id, "main", a1.turn.id, "test-lineage");
   compareCommittedGraph(store, aPath);
-  const fourth = await update(aPath, second, aFact.id, "A branch fourth");
+  const fourth = update(aPath, second, aFact.id, "A branch fourth");
   compareCommittedGraph(store, aPath);
   store.setCurrentPath(b.id, "main", b1.turn.id, "test-lineage");
   compareCommittedGraph(store, bPath);
@@ -208,9 +177,8 @@ test("64b stateless graph: admitted deep branch defeats a restored sibling from 
   expect(store.currentCommit(base.knowledgeId, bPath).map(item => item.id)).toEqual([fourth.commit]);
 });
 
-test("64b stateless graph: direct-only scope, merge/split provenance and cross-identity stale guidance", async () => {
-  const scenarios = new AdmittedDreamerScenarios(async () => { throw new Error("unexpected non-Dreamer phase"); });
-  const memory = TraceMemory(":memory:", scenarios.agent); open.push(memory);
+test("64b stateless graph: direct-only scope, merge/split provenance and cross-identity stale guidance", () => {
+  const memory = TraceMemory(":memory:", async () => { throw new Error("unexpected non-Dreamer phase"); }); open.push(memory);
   const store = memory.store, project = store.createProject({ name: "stateless-graph", declaredBy: "mark" });
   const a = store.createSession({ enrollmentChoice: true, host: "graph-A", startedAt: at, firstReplyAt: at, projectId: project.id });
   const b = store.createSession({ enrollmentChoice: true, host: "graph-B", startedAt: at, firstReplyAt: at, projectId: project.id });
@@ -237,87 +205,38 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
   const survivor = create(store, aPath, aFact.id, "global", "merge survivor parent");
   const absorbed = create(store, aPath, aFact.id, "global", "merge absorbed parent");
   const splitParent = create(store, aPath, aFact.id, "global", "split parent");
-  const siblingTrigger = createDreamerTrigger(memory, aPath, aFact.id, 1, "global");
-  let absorbedSibling = { commit: 0 }, splitSibling = { commit: 0 };
-  const siblingRun = await scenarios.run(memory, aPath, input => {
-    const request = { fixture: "64b restorable sibling branches" }; input.reportRequest(request);
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    for (const item of [scopedParent, survivor, absorbed, splitParent, siblingTrigger])
-      memoryFiles(memory, aPath).read(`trace://${tag(store, item)}`);
-    const operated = new Set([absorbed, splitParent, siblingTrigger]
-      .map(item => history(store, item)));
-    const unchangedSupplied = suppliedHandles(input.material.changed).filter(knowledge => !operated.has(knowledge));
-    const receipt = JSON.parse(dreamerWrite(write, { operations: [
-      { op: "update", id: tag(store, absorbed), text: "restorable absorbed sibling",
-        category: "constraint", scope: "global", supports: [`F${cFact.id}`], reason: "Create competing merge sibling.", topics: [] },
-      { op: "update", id: tag(store, splitParent), text: "restorable split-source sibling",
-        category: "constraint", scope: "global", supports: [`F${cFact.id}`], reason: "Create competing split sibling.", topics: [] },
-      { op: "archive", kind: "budget", id: tag(store, siblingTrigger), supports: [`F${aFact.id}`], reason: "Retire first trigger." },
-    ], skipped: unchangedSupplied.map(knowledge => ({ knowledge, because: "Not part of the sibling construction." })) }));
-    absorbedSibling = { commit: publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === absorbed.knowledgeId)) };
-    splitSibling = { commit: publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === splitParent.knowledgeId)) };
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return { outcome: "success", output: "siblings created", request };
-  });
-  expect(siblingRun.outcome, JSON.stringify(siblingRun)).toBe("success");
+  const [absorbedSibling, splitSibling] = curateWrite(memory, aPath, [
+    { op: "update", knowledgeId: absorbed.knowledgeId, baseCommit: absorbed.commit, text: "restorable absorbed sibling",
+      category: "constraint", scope: "global", supports: [cFact.id], reason: "Create competing merge sibling.", topics: [], createdAt: at },
+    { op: "update", knowledgeId: splitParent.knowledgeId, baseCommit: splitParent.commit, text: "restorable split-source sibling",
+      category: "constraint", scope: "global", supports: [cFact.id], reason: "Create competing split sibling.", topics: [], createdAt: at },
+  ]) as [{ knowledgeId: number; commit: number }, { knowledgeId: number; commit: number }];
   store.setCurrentPath(c.id, "rewind", c0.turn.id, "test-lineage");
   expect(store.currentCommit(absorbed.knowledgeId, bPath).map(revision => revision.id)).toEqual([absorbed.commit]);
   expect(store.currentCommit(splitParent.knowledgeId, bPath).map(revision => revision.id)).toEqual([splitParent.commit]);
-  const sessionTrigger = createDreamerTrigger(memory, aPath, aFact.id, 1, "session");
-  let scopedChild = 0, mergeCommit = 0, splitChildren: number[] = [];
-  const scopeChange = await scenarios.run(memory, aPath, input => {
-    const request = { fixture: "64b stateless session scope change" }; input.reportRequest(request);
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    for (const item of [scopedParent, sessionTrigger])
-      memoryFiles(memory, aPath).read(`trace://${tag(store, item)}`);
-    // 126: the run also freezes the other pools' pending items; they are deliberated unchanged.
-    const operated = new Set([scopedParent, sessionTrigger].map(item => history(store, item)));
-    const receipt = JSON.parse(dreamerWrite(write, { operations: [
-      { op: "update", id: tag(store, scopedParent), text: "global child with B support",
-        category: "constraint", scope: "global", supports: [`F${bFact.id}`], reason: "Direct child evidence changes scope.", topics: [] },
-      { op: "archive", kind: "budget", id: tag(store, sessionTrigger), supports: [`F${aFact.id}`], reason: "Retire session trigger." },
-    ], skipped: suppliedHandles(input.material.changed).filter(knowledge => !operated.has(knowledge))
-      .map(knowledge => ({ knowledge, because: "Not part of the scope change." })) }));
-    scopedChild = publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === scopedParent.knowledgeId));
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return { outcome: "success", output: "scope changed", request };
-  });
-  expect(scopeChange.outcome, JSON.stringify(scopeChange)).toBe("success");
+  const [scopedResult] = curateWrite(memory, aPath, [{ op: "update", knowledgeId: scopedParent.knowledgeId, baseCommit: scopedParent.commit, text: "global child with B support",
+    category: "constraint", scope: "global", supports: [bFact.id], reason: "Direct child evidence changes scope.", topics: [], createdAt: at }]);
+  const scopedChild = scopedResult!.commit;
   compareCommittedGraph(store, bPath);
 
-  const trigger = createDreamerTrigger(memory, aPath, aFact.id, 2, "global");
-  const commit = vi.spyOn(store, "commitConsolidationRun");
-  const result = await scenarios.run(memory, aPath, input => {
-    const request = { fixture: "64b stateless cross-identity graph" }; input.reportRequest(request);
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    for (const item of [survivor, absorbed, splitParent, trigger])
-      memoryFiles(memory, aPath).read(`trace://${tag(store, item)}`);
-    const receipt = JSON.parse(dreamerWrite(write, { operations: [
-      { op: "merge", id: tag(store, survivor), absorb: [tag(store, absorbed)],
-        text: "merged result with B support", category: "constraint", scope: "global", supports: [`F${bFact.id}`],
-        reason: "Merge distinct identities.", topics: [] },
-      { op: "split", id: tag(store, splitParent), text: "split primary part", category: "constraint", scope: "global", topics: [],
-        supports: [`F${bFact.id}`], reason: "Split into atomic results.",
-        children: [{ title: "Fixture child", text: "split result one", category: "constraint", topics: [] }, { title: "Fixture child", text: "split result two", category: "constraint", topics: [] }] },
-      { op: "archive", kind: "budget", id: tag(store, trigger), supports: [`F${aFact.id}`], reason: "Retire trigger." },
-    ], skipped: [] }));
-    mergeCommit = publishedCommit(store, receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === survivor.knowledgeId));
-    splitChildren = receipt.committed.filter((item: { op: string; knowledgeId: number }) => item.op === "split" && item.knowledgeId !== splitParent.knowledgeId).map((item: { knowledgeId: number; version: string }) => publishedCommit(store, item));
-
-    const admittedRun = commit.mock.calls.at(-1)![0].run;
-    store.setCurrentPath(c.id, "main", c1.turn.id, "test-lineage");
-    const stale = store.commitConsolidationRun({ path: aPath, run: admittedRun, operations: [{ op: "archive", kind: "budget",
-      knowledgeId: absorbed.knowledgeId, baseCommit: absorbedSibling.commit, supports: [bFact.id], reason: "Stale restored merge sibling.", createdAt: at }] });
-    expect(stale.ok).toBe(false);
-    if (!stale.ok) expect(stale.problems.join(" ")).toContain(`current: K${survivor.knowledgeId}@${mergeCommit}`);
-    const staleSplit = store.commitConsolidationRun({ path: aPath, run: admittedRun, operations: [{ op: "archive", kind: "budget",
-      knowledgeId: splitParent.knowledgeId, baseCommit: splitSibling.commit, supports: [bFact.id], reason: "Stale restored split sibling.", createdAt: at }] });
-    expect(staleSplit.ok).toBe(false);
-    if (!staleSplit.ok) for (const child of splitChildren) expect(staleSplit.problems.join(" ")).toContain(`@${child}`);
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
-    return { outcome: "success", output: "graph maintained", request };
-  });
-  expect(result.outcome, JSON.stringify(result)).toBe("success");
+  const [mergeResult, , ...splitResults] = curateWrite(memory, aPath, [
+    { op: "merge", intoKnowledgeId: survivor.knowledgeId, intoBaseCommit: survivor.commit, absorb: [{ knowledgeId: absorbed.knowledgeId, baseCommit: absorbed.commit }],
+      text: "merged result with B support", category: "constraint", scope: "global", supports: [bFact.id], reason: "Merge distinct identities.", topics: [], createdAt: at },
+    { op: "split", knowledgeId: splitParent.knowledgeId, baseCommit: splitParent.commit, text: "split primary part", category: "constraint", scope: "global", topics: [],
+      supports: [bFact.id], reason: "Split into atomic results.", createdAt: at,
+      children: [{ title: "Fixture child", text: "split result one", category: "constraint", topics: [] }, { title: "Fixture child", text: "split result two", category: "constraint", topics: [] }] },
+  ]);
+  const mergeCommit = mergeResult!.commit, splitChildren = splitResults.map(item => item.commit);
+  // The restored siblings' bases are stale now: refused, and the refusal names the current results.
+  store.setCurrentPath(c.id, "main", c1.turn.id, "test-lineage");
+  const stale = store.commitWorkspaceRun({ path: aPath, run: { kind: "dreaming", sessionId: a.id, branch: "main", createdAt: at }, operations: [
+    { op: "archive", kind: "invalid", knowledgeId: absorbed.knowledgeId, baseCommit: absorbedSibling.commit, text: "The restored merge sibling no longer holds; the merge replaces it.", supports: [bFact.id], reason: "Stale restored merge sibling.", createdAt: at },
+    { op: "archive", kind: "invalid", knowledgeId: splitParent.knowledgeId, baseCommit: splitSibling.commit, text: "The restored split sibling no longer holds; the split replaces it.", supports: [bFact.id], reason: "Stale restored split sibling.", createdAt: at }] });
+  const [staleMerge, staleSplit] = stale.results;
+  expect(staleMerge).toMatchObject({ ok: false, stale: true });
+  if (!staleMerge!.ok) expect(staleMerge!.reason).toContain(`current: K${survivor.knowledgeId}@v${store.versionOrdinal(survivor.knowledgeId, mergeCommit)}`);
+  expect(staleSplit).toMatchObject({ ok: false, stale: true });
+  if (!staleSplit!.ok) for (const child of splitChildren) expect(staleSplit!.reason).toContain(`K${store.knowledgeRevision(child)!.knowledgeId}@v1`);
   expect(splitChildren).toHaveLength(2);
   compareCommittedGraph(store, bPath);
 

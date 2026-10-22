@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite, skipRest } from "../../dreaming-skips.ts";
+import { curateNow } from "../../support/dreamer.ts";
+import { block } from "../../support/workspace.ts";
 import type { Store } from "../../../src/core/store/index.ts";
 import { receiptCommit } from "../../support/seed.ts";
 
@@ -16,8 +16,7 @@ type Branch = "root" | "left" | "right";
 type Operation = "archive" | "split" | "merge-into" | "merge-absorb";
 
 function pathFixture(seedOlderSurvivor = false) {
-  const scenarios = new AdmittedDreamerScenarios(async () => success);
-  const memory = TraceMemory(":memory:", scenarios.agent); memories.push(memory);
+  const memory = TraceMemory(":memory:", async () => success); memories.push(memory);
   const store = memory.store;
   const project = store.createProject({ name: "shared", declaredBy: "mark" });
   const session = store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
@@ -56,114 +55,77 @@ function pathFixture(seedOlderSurvivor = false) {
   const base = create("base");
   const entries = { root, left, right };
   const path = (branch: Branch) => ({ sessionId: session.id, branch, headTurnId: turn.id, triggerEntryId: entries[branch].id });
-  return { memory, scenarios, store, project, session, turn, entries, fact, branchFacts, older, base, path, create };
+  return { memory, store, project, session, turn, entries, fact, branchFacts, older, base, path, create };
 }
 
-async function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, sequence: number,
+/** The operation as one curate block on the branch's path (the Dreamer's pass); the base is named by its exact version address. */
+function runOperation(f: ReturnType<typeof pathFixture>, branch: Branch, _sequence: number,
   operation: Operation | "update", text: string) {
   const path = f.path(branch);
   f.store.setCurrentPath(f.session.id, branch, f.turn.id, "test-lineage");
   const mergeOther = operation === "merge-into" ? f.create("merge peer") : f.older;
-  const trigger = createDreamerTrigger(f.memory, path, f.fact, sequence);
-  const currentTriggers = f.store.currentKnowledge(path).filter(item => item.revision.text.startsWith("Fixture trigger"));
-  const result = await f.scenarios.run(f.memory, path, async input => {
-    const request = { operation, branch, trigger }; input.reportRequest(request);
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    read(tagged(f.store, f.base.knowledgeId, f.base.commit));
-    for (const item of currentTriggers) read(tagged(f.store, item.knowledge.id, item.revision.id));
-    const common = { text, category: "constraint", scope: "project", supports: [`F${f.branchFacts[branch]}`], topics: [], reason: `${operation} on ${branch}.` };
-    let operationInput: Record<string, unknown>;
-    if (operation === "archive") operationInput = { op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit), supports: common.supports, reason: common.reason };
-    else if (operation === "split") operationInput = { op: "split", id: tagged(f.store, f.base.knowledgeId, f.base.commit), text: "Primary part.", category: "constraint", scope: "project", topics: [], supports: common.supports, reason: common.reason,
-      children: [{ title: "Fixture child", text: `${text} one`, category: "constraint", topics: [] }, { title: "Fixture child", text: `${text} two`, category: "constraint", topics: [] }] };
-    else if (operation === "merge-into") {
-      const other = mergeOther ?? (() => { throw new Error("missing merge identity"); })();
-      read(tagged(f.store, other.knowledgeId, other.commit));
-      operationInput = { op: "merge", id: tagged(f.store, f.base.knowledgeId, f.base.commit), absorb: [tagged(f.store, other.knowledgeId, other.commit)], ...common };
-    } else if (operation === "merge-absorb") {
-      const survivor = f.older ?? (() => { throw new Error("missing older survivor"); })();
-      read(tagged(f.store, survivor.knowledgeId, survivor.commit));
-      operationInput = { op: "merge", id: tagged(f.store, survivor.knowledgeId, survivor.commit), absorb: [tagged(f.store, f.base.knowledgeId, f.base.commit)], ...common };
-    } else operationInput = { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), ...common };
-    const receipt = dreamerWrite(write, { operations: [operationInput, ...currentTriggers.map(item => ({ op: "archive", kind: "budget",
-      id: tagged(f.store, item.knowledge.id, item.revision.id), supports: [], reason: "Retire explicit trigger." }))], skipped: [] });
-    expect(receipt).toContain('"committed"');
-    const consumed = [history(f.store, f.base.knowledgeId, f.base.commit),
-      ...currentTriggers.map(item => history(f.store, item.knowledge.id, item.revision.id))];
-    if (operation === "merge-into" && mergeOther) consumed.push(history(f.store, mergeOther.knowledgeId, mergeOther.commit));
-    if (operation === "merge-absorb" && f.older) consumed.push(history(f.store, f.older.knowledgeId, f.older.commit));
-    skipRest(input, consumed);
-    return { ...success, request };
-  });
-  if (result.outcome !== "success") throw new Error(JSON.stringify(result));
+  const ref = (item: { knowledgeId: number; commit: number }) => history(f.store, item.knowledgeId, item.commit);
+  const common = { supports: `F${f.branchFacts[branch]}`, reason: `${operation} on ${branch}.` };
+  const child = (title: string, body: string) => `\n### child\ntitle: ${title}\ncategory: constraint\nscope: project\ntopics:\nsupports: ${common.supports}\nreason: ${common.reason}\n\n${body}\n`;
+  let file: string;
+  if (operation === "archive") file = block(`archive ${ref(f.base)}`, { kind: "invalid", reason: common.reason }, "The user withdrew this the same day; nothing replaces it.");
+  else if (operation === "split") file = block(`split ${ref(f.base)}`, common, "Primary part.") + child("Fixture child", `${text} one`) + child("Fixture child", `${text} two`);
+  else if (operation === "merge-into") file = block(`merge ${ref(f.base)}`, { absorb: ref(mergeOther ?? (() => { throw new Error("missing merge identity"); })()), ...common }, text);
+  else if (operation === "merge-absorb") file = block(`merge ${ref(f.older ?? (() => { throw new Error("missing older survivor"); })())}`, { absorb: ref(f.base), ...common }, text);
+  else file = block(`update ${ref(f.base)}`, common, text);
+  const result = curateNow(f.memory, path, file);
+  expect(result.blocks.map(entry => entry.status), JSON.stringify(result.blocks)).toEqual(["applied"]);
   return result;
 }
 
 // The old update-origin test is retired: ticket-64b.test.ts proves divergent updates and their multi-parent join.
 test.each(["archive", "split", "merge-into", "merge-absorb"] as const)(
-  "64b: %s uses the owner foreground for current-base and divergent behavior", async operation => {
+  "64b: %s uses the owner foreground for current-base and divergent behavior", operation => {
     const f = pathFixture(operation === "merge-absorb");
-    await runOperation(f, "left", 1, operation, `${operation} result`);
-    const leftPath = f.path("left");
-    const stale = f.memory.tools({ kind: "manual", sessionId: f.session.id, branch: "left", currentTurnId: f.turn.id, triggerEntryId: f.entries.left.id });
+    runOperation(f, "left", 1, operation, `${operation} result`);
     expect(memoryFiles(f.memory, { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id }).read(`trace://${tagged(f.store, f.base.knowledgeId, f.base.commit)}`).content).toContain("base");
-    expect(stale.find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "budget", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
-      supports: [`F${f.fact}`], reason: "Probe the stale base." })).toContain("base is not the latest effective applicable revision");
-    await runOperation(f, "right", 2, "update", `${operation} divergent result`);
+    const probe = curateNow(f.memory, f.path("left"), block(`archive ${history(f.store, f.base.knowledgeId, f.base.commit)}`, { kind: "invalid", reason: "Probe the stale base." }, "The user withdrew this the same day; nothing replaces it."));
+    expect(probe.blocks[0]).toMatchObject({ status: "refused", stale: true });
+    expect(probe.blocks[0]!.reason).toContain("base is not the latest effective applicable revision");
+    if (operation === "archive") {
+      // A curate archive carries the base's own supports (the root evidence, shared by every branch), so unlike the other operations
+      // it is not left-only: the right branch sees the archive too and its update from the old base is stale.
+      const right = curateNow(f.memory, f.path("right"), block(`update ${history(f.store, f.base.knowledgeId, f.base.commit)}`, { supports: `F${f.branchFacts.right}`, reason: "right" }, "divergent result")).blocks[0]!;
+      expect(right).toMatchObject({ status: "refused", stale: true });
+      return;
+    }
+    runOperation(f, "right", 2, "update", `${operation} divergent result`);
     expect(f.store.currentCommit(f.base.knowledgeId, f.path("right"))[0]!.text).toBe(`${operation} divergent result`);
   },
 );
 
-test("64b: publishing the owner foreground restores an off-path base for every reader", async () => {
+test("64b: publishing the owner foreground restores an off-path base for every reader", () => {
   const f = pathFixture();
-  await runOperation(f, "left", 1, "update", "left-only successor");
+  runOperation(f, "left", 1, "update", "left-only successor");
   expect(f.store.currentCommit(f.base.knowledgeId, f.path("left"))[0]!.text).toBe("left-only successor");
 
   f.store.setCurrentPath(f.session.id, "root", f.turn.id, "test-lineage");
   expect(f.store.currentCommit(f.base.knowledgeId, f.path("left")).map(revision => revision.id)).toEqual([f.base.commit]);
   expect(f.store.currentCommit(f.base.knowledgeId, f.path("right")).map(revision => revision.id)).toEqual([f.base.commit]);
-  await runOperation(f, "root", 2, "update", "restored base correction");
+  runOperation(f, "root", 2, "update", "restored base correction");
   expect(f.store.currentCommit(f.base.knowledgeId, f.path("right"))[0]!.text).toBe("restored base correction");
 });
 
-test.each([false, true])("64b: stale Dreamer completion fails unless corrected (corrected=%s)", async (corrected) => {
+test("64b: a stale second submission is refused naming the current history address, never a tag; the first stays", () => {
   const f = pathFixture();
   const path = f.path("left");
   f.store.setCurrentPath(f.session.id, "left", f.turn.id, "test-lineage");
-  const trigger = createDreamerTrigger(f.memory, path, f.fact, 1);
-  let finished = false;
-  const result = await f.scenarios.run(f.memory, path, input => {
-    const read = (address: string) => memoryFiles(f.memory, input.reader!).read(`trace://${address}`).content;
-    const write = input.tools.find(tool => tool.name === "memory")!;
-    read(tagged(f.store, f.base.knowledgeId, f.base.commit));
-    read(tagged(f.store, trigger.knowledgeId, trigger.commit));
-    const first = JSON.parse(dreamerWrite(write, { operations: [
-      { op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit), text: "first successor", category: "constraint",
-        scope: "project", supports: [], topics: [], reason: "First maintenance." },
-      { op: "archive", kind: "budget", id: tagged(f.store, trigger.knowledgeId, trigger.commit), supports: [], reason: "Retire explicit trigger." },
-    ], skipped: [] })).committed[0] as { knowledgeId: number; version: string };
-    const stale = dreamerWrite(write, { operations: [{ op: "update", id: tagged(f.store, f.base.knowledgeId, f.base.commit),
-      text: "unresolved stale submission", category: "constraint", scope: "project", supports: [], topics: [], reason: "Must fail." }], skipped: [] });
-    const current = receiptCommit(f.store, first);
-    expect(stale).toContain(`base is not the latest effective applicable revision; current: ${history(f.store, f.base.knowledgeId, current)}`);
-    expect(stale).not.toContain(tagged(f.store, f.base.knowledgeId, current));
-    expect(stale).not.toContain("skipped");
-    finished = true; // an expected failure must not hide an assertion error above
-    if (!corrected) return success;
-    read(first.version);
-    expect(dreamerWrite(write, { operations: [{ slot: "M1", op: "update", id: tagged(f.store, f.base.knowledgeId, current),
-      text: "corrected successor", category: "constraint", scope: "project", supports: [], topics: [], reason: "Reread and correct." }], skipped: [] }))
-      .toContain('"committed"');
-    return success;
-  });
-  expect(finished).toBe(true);
-  expect(result.outcome).toBe(corrected ? "success" : "failure");
-  if (!corrected) {
-    if (result.outcome !== "failure") throw new Error("unresolved stale submission must fail completion");
-    expect(result.problems.join("\n")).toContain("base is not the latest effective applicable revision");
-  }
-  expect(f.store.currentCommit(f.base.knowledgeId, path)[0]!.text).toBe(corrected ? "corrected successor" : "first successor");
+  const base = history(f.store, f.base.knowledgeId, f.base.commit);
+  curateNow(f.memory, path, block(`update ${base}`, { reason: "First maintenance." }, "first successor"));
+  const stale = curateNow(f.memory, path, block(`update ${base}`, { reason: "Must fail." }, "unresolved stale submission")).blocks[0]!;
+  const current = f.store.currentCommit(f.base.knowledgeId, path)[0]!.id;
+  expect(stale).toMatchObject({ status: "refused", stale: true });
+  expect(stale.reason).toContain(`base is not the latest effective applicable revision; current: ${history(f.store, f.base.knowledgeId, current)}`);
+  expect(stale.reason).not.toContain(tagged(f.store, f.base.knowledgeId, current));
+  expect(f.store.currentCommit(f.base.knowledgeId, path)[0]!.text).toBe("first successor");
+  // Re-reading and correcting from the current version is a new operation that applies.
+  curateNow(f.memory, path, block(`update ${history(f.store, f.base.knowledgeId, current)}`, { reason: "Reread and correct." }, "corrected successor"));
+  expect(f.store.currentCommit(f.base.knowledgeId, path)[0]!.text).toBe("corrected successor");
 });
 
 // 64c removes settlement/certification and replaces it with one-time pool-event consumption.

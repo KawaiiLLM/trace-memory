@@ -9,8 +9,7 @@ import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { TraceMemory, memoryFiles } from "../../../src/core/api/index.ts";
 import { entry as seedEntry, legacyKnowledge, receiptCommit } from "../../support/seed.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite } from "../../dreaming-skips.ts";
+import { commitDreamerOps } from "../../support/dreamer.ts";
 
 let dir: string;
 let dbPath: string;
@@ -33,19 +32,6 @@ afterEach(() => {
 
 function makeSession(projectId: number, host = "test-host") {
   return store.createSession({ enrollmentChoice: true, host, startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:05Z", projectId });
-}
-
-async function runAdmittedStoreScenario(path: { sessionId: number; branch: string; headTurnId: number }, factId: number, sequence: number,
-  scenario: (input: any, trigger: { knowledgeId: number; commit: number }, memory: ReturnType<typeof TraceMemory>, commit: any) => any,
-  triggerScope: "global" | "project" | "session" = "project") {
-  const scenarios = new AdmittedDreamerScenarios(async () => ({ outcome: "success", output: "unused", request: {} }));
-  const memory = TraceMemory(dbPath, scenarios.agent);
-  const commit = vi.spyOn(memory.store, "commitConsolidationRun");
-  try {
-    const trigger = createDreamerTrigger(memory, path, factId, sequence, triggerScope);
-    const result = await scenarios.run(memory, path, input => scenario(input, trigger, memory, commit));
-    return { result, trigger, commitCalls: commit.mock.calls.length };
-  } finally { memory.close(); }
 }
 
 describe("schema", () => {
@@ -227,7 +213,7 @@ describe("commitNotingRun: local handle resolution", () => {
 });
 
 describe("commitConsolidationRun: revision conflicts", () => {
-  test("a stale expected revision rolls back the whole batch and records failure", async () => {
+  test("a stale expected revision rolls back the whole batch and records failure", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
@@ -271,44 +257,28 @@ describe("commitConsolidationRun: revision conflicts", () => {
     expect(second.ok).toBe(true);
     if (!second.ok) return;
 
-    let updatedCommit = 0;
-    const admitted = await runAdmittedStoreScenario(path, factId, 1, (input, trigger, memory, commit) => {
-      const request = { fixture: "store stale-batch atomicity", trigger }; input.reportRequest(request);
-      const read = (address: string) => memoryFiles(memory, input.reader).read(`trace://${address}`).content;
-      const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
-      const updated = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: tag(knowledgeId, created.committed[0]!.commit),
-        topics: [], reason: "Substantive correction of the recorded conclusion.", text: "The project uses pnpm exclusively.",
-        category: "constraint", scope: "project", supports: [`F${factId}`] }],
-        skipped: [{ knowledge: history(trigger.knowledgeId, trigger.commit), because: "The explicit trigger is retired after the stale-batch assertion." }] })).committed[0];
-      updatedCommit = publishedCommit(updated);
-      const admittedRun = commit.mock.calls.at(-1)![0].run;
-      const revisionsBefore = memory.store.listKnowledgeRevisions();
-      const linksBefore = memory.store.listKnowledgeLinks(second.committed[0]!.knowledgeId);
-      const rejected = memory.store.commitConsolidationRun({ path, run: admittedRun, operations: [
-        { op: "archive", kind: "budget", knowledgeId: second.committed[0]!.knowledgeId, baseCommit: second.committed[0]!.commit,
-          supports: [factId], reason: "Retire the independent fixture item.", createdAt: "2026-01-01T00:02:00Z" },
-        { op: "update", knowledgeId, baseCommit: created.committed[0]!.commit, topics: [],
-          reason: "Substantive correction of the recorded conclusion.", text: "A conflicting edit.", category: "constraint",
-          scope: "project", supports: [factId], createdAt: "2026-01-01T00:02:00Z" },
-      ] });
-      expect(rejected.ok).toBe(false);
-      if (rejected.ok) throw new Error("stale Store batch unexpectedly committed");
-      expect(rejected.problems).toEqual([`K${knowledgeId}@${created.committed[0]!.commit}: base is not the latest effective applicable revision; current: K${knowledgeId}@${updatedCommit}`]);
-      expect(memory.store.getRun(rejected.runId)).toMatchObject({ kind: "dreaming", outcome: "failure" });
-      expect(memory.store.listKnowledgeRevisions()).toEqual(revisionsBefore);
-      expect(memory.store.listKnowledgeLinks(second.committed[0]!.knowledgeId)).toEqual(linksBefore);
-      expect(memory.store.currentCommit(second.committed[0]!.knowledgeId).map(revision => revision.id)).toEqual([second.committed[0]!.commit]);
-      expect(memory.store.currentCommit(knowledgeId).map(revision => revision.id)).toEqual([updatedCommit]);
-      read(tag(trigger.knowledgeId, trigger.commit));
-      read(tag(second.committed[0]!.knowledgeId, second.committed[0]!.commit));
-      const corrected = dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
-        skipped: [{ knowledge: history(second.committed[0]!.knowledgeId, second.committed[0]!.commit), because: "The rejected archive rolled back." }] });
-      expect(corrected).toContain('"committed"');
-      return { outcome: "success", output: "atomicity checked", request };
-    });
-    if (admitted.result.outcome !== "success") throw new Error(JSON.stringify(admitted.result));
-    expect(store.getRun(admitted.result.runId)?.outcome).toBe("success");
-    expect(admitted.commitCalls).toBeGreaterThan(0);
+    // Another writer's update lands first; the batch below is built on the old base.
+    const updatedCommit = commitDreamerOps({ store }, path, [{ op: "update", knowledgeId, baseCommit: created.committed[0]!.commit,
+      topics: [], reason: "Substantive correction of the recorded conclusion.", text: "The project uses pnpm exclusively.",
+      category: "constraint", scope: "project", supports: [factId], createdAt: "2026-01-01T00:01:45Z" }])[0]!.commit;
+    const revisionsBefore = store.listKnowledgeRevisions();
+    const linksBefore = store.listKnowledgeLinks(second.committed[0]!.knowledgeId);
+    const rejected = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: s.id, branch: path.branch, createdAt: "2026-01-01T00:02:00Z" }, operations: [
+      { op: "archive", kind: "invalid", knowledgeId: second.committed[0]!.knowledgeId, baseCommit: second.committed[0]!.commit,
+        text: "The independent fixture item no longer holds; the user withdrew it and nothing replaces it.",
+        supports: [factId], reason: "Retire the independent fixture item.", createdAt: "2026-01-01T00:02:00Z" },
+      { op: "update", knowledgeId, baseCommit: created.committed[0]!.commit, topics: [],
+        reason: "Substantive correction of the recorded conclusion.", text: "A conflicting edit.", category: "constraint",
+        scope: "project", supports: [factId], createdAt: "2026-01-01T00:02:00Z" },
+    ] });
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) throw new Error("stale Store batch unexpectedly committed");
+    expect(rejected.problems).toEqual([`K${knowledgeId}@${created.committed[0]!.commit}: base is not the latest effective applicable revision; current: K${knowledgeId}@${updatedCommit}`]);
+    expect(store.getRun(rejected.runId)).toMatchObject({ kind: "manual", outcome: "failure" });
+    expect(store.listKnowledgeRevisions()).toEqual(revisionsBefore);
+    expect(store.listKnowledgeLinks(second.committed[0]!.knowledgeId)).toEqual(linksBefore);
+    expect(store.currentCommit(second.committed[0]!.knowledgeId).map(revision => revision.id)).toEqual([second.committed[0]!.commit]);
+    expect(store.currentCommit(knowledgeId).map(revision => revision.id)).toEqual([updatedCommit]);
     expect(store.currentCommit(second.committed[0]!.knowledgeId)[0]?.op).toBe("create");
     const finalKnowledge = { knowledge: store.getKnowledge(knowledgeId)!, revision: store.currentCommit(knowledgeId)[0]! };
     expect(finalKnowledge.revision.id).toBe(updatedCommit);
@@ -463,7 +433,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 
-  test("64b: knowledge identity origin survives while global current scope hides the identity from other readers", async () => {
+  test("64b: knowledge identity origin survives while global current scope hides the identity from other readers", () => {
     const { p, s, factId } = seed(), peer = makeSession(p.id);
     const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", userPrompt: "private term", startedAt: consolidationAt });
     const entry = store.appendSourceEntry({ sessionId: peer.id, turnId: turn.id, nativeLineage: "fixture", nativeId: "peer-private",
@@ -479,22 +449,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       operations: [{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "term", category: "understanding", scope: "project", supports: [factId], createdAt: consolidationAt }] });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
-    const admitted = await runAdmittedStoreScenario({ sessionId: peer.id, branch: "main", headTurnId: turn.id }, peerFact, 1,
-      (input, trigger, memory) => {
-        const request = { fixture: "moved editor lineage", trigger }; input.reportRequest(request);
-        const read = (address: string) => memoryFiles(memory, input.reader).read(`trace://${address}`).content;
-        const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
-        read(tag(id, made.committed[0]!.commit));
-        read(tag(trigger.knowledgeId, trigger.commit));
-        const receipt = dreamerWrite(write, { operations: [
-          { op: "update", id: tag(id, made.committed[0]!.commit), topics: [], reason: "Substantive correction of the recorded conclusion.",
-            text: "private term", category: "understanding", scope: "session", supports: [`F${peerFact}`] },
-          { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${peerFact}`], reason: "Retire the explicit fixture trigger." },
-        ], skipped: [] });
-        expect(receipt).toContain('"committed"');
-        return { outcome: "success", output: "updated", request };
-      });
-    expect(admitted.result.outcome).toBe("success");
+    commitDreamerOps({ store }, { sessionId: peer.id, branch: "main", headTurnId: turn.id }, [{ op: "update", knowledgeId: id, baseCommit: made.committed[0]!.commit, topics: [],
+      reason: "Substantive correction of the recorded conclusion.", text: "private term", category: "understanding", scope: "session", supports: [peerFact], createdAt: consolidationAt }]);
     const privateCommit = store.currentCommit(id, store.knowledgePath(peer.id))[0]!.id;
     const target = store.declareProject(peer.id, "destination", "mark", declarationContext(store, { sessionId: peer.id, branch: "main", headTurnId: turn.id }));
     const survivor = store.createProject({ name: "survivor", declaredBy: "mark" });
@@ -505,7 +461,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.currentCommit(id, store.knowledgePath(s.id)).map(r => r.id)).toEqual([]);
   });
 
-  test("64b: a scope change moves the knowledge's ownership, so it stays visible after reopening", async () => {
+  test("64b: a scope change moves the knowledge's ownership, so it stays visible after reopening", () => {
     const { p, s, t, factId } = seed();
     const made = commitNoterKnowledge(store, {
       run: { sessionId: s.id, createdAt: consolidationAt },
@@ -514,29 +470,15 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
     expect(store.getKnowledge(id)!.projectId).toBe(p.id);
-    const admitted = await runAdmittedStoreScenario({ sessionId: s.id, branch: "main", headTurnId: t.id }, factId, 1,
-      (input, trigger, memory) => {
-        const request = { fixture: "scope ownership movement", trigger }; input.reportRequest(request);
-        const read = (address: string) => memoryFiles(memory, input.reader).read(`trace://${address}`).content;
-        const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
-        read(tag(id, made.committed[0]!.commit));
-        read(tag(trigger.knowledgeId, trigger.commit));
-        const receipt = dreamerWrite(write, { operations: [
-          { op: "update", id: tag(id, made.committed[0]!.commit), topics: [], reason: "Substantive correction of the recorded conclusion.",
-            text: "Use pnpm here.", category: "constraint", scope: "project", supports: [`F${factId}`] },
-          { op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." },
-        ], skipped: [] });
-        expect(receipt).toContain('"committed"');
-        return { outcome: "success", output: "scope moved", request };
-      }, "global");
-    expect(admitted.result.outcome).toBe("success");
+    commitDreamerOps({ store }, { sessionId: s.id, branch: "main", headTurnId: t.id }, [{ op: "update", knowledgeId: id, baseCommit: made.committed[0]!.commit, topics: [],
+      reason: "Substantive correction of the recorded conclusion.", text: "Use pnpm here.", category: "constraint", scope: "project", supports: [factId], createdAt: consolidationAt }]);
     store.close();
     store = new Store(dbPath);
     expect(store.getKnowledge(id)!.projectId).toBe(p.id);
     expect(store.listVisibleKnowledge(s.id, p.id).map((e) => e.knowledge.id)).toContain(id);
   });
 
-  test("34a merge rejects self and duplicate parents instead of normalizing them away", async () => {
+  test("34a merge rejects self and duplicate parents instead of normalizing them away", () => {
     const { s, factId, path } = seed();
     const mk = (text: string) =>
       commitNoterKnowledge(store, {
@@ -548,40 +490,23 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     if (!a.ok || !b.ok) throw new Error("setup failed");
     const aId = a.committed[0]!.knowledgeId;
     const bId = b.committed[0]!.knowledgeId;
-    const admitted = await runAdmittedStoreScenario(path, factId, 1, (input, trigger, memory, commit) => {
-      const request = { fixture: "store merge cardinality", trigger }; input.reportRequest(request);
-      const read = (address: string) => memoryFiles(memory, input.reader).read(`trace://${address}`).content;
-      const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
-      dreamerWrite(write, { operations: [], skipped: [
-        { knowledge: history(aId, a.committed[0]!.commit), because: "Hold unchanged while validating Store merge cardinality." },
-        { knowledge: history(bId, b.committed[0]!.commit), because: "Hold unchanged while validating Store merge cardinality." },
-        { knowledge: history(trigger.knowledgeId, trigger.commit), because: "Retire after validating Store merge cardinality." },
-      ] });
-      const admittedRun = commit.mock.calls.at(-1)![0].run;
-      const common = { topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "A", category: "understanding" as const,
-        scope: "project" as const, supports: [factId], createdAt: consolidationAt };
-      const self = memory.store.commitConsolidationRun({ path, run: admittedRun, operations: [{ op: "merge", intoKnowledgeId: aId,
-        intoBaseCommit: a.committed[0]!.commit, absorb: [{ knowledgeId: aId, baseCommit: a.committed[0]!.commit }], ...common }] });
-      expect(self.ok).toBe(false);
-      if (!self.ok) expect(self.problems.join(" ")).toContain("duplicate merge parent");
-      const duplicate = memory.store.commitConsolidationRun({ path, run: admittedRun, operations: [{ op: "merge", intoKnowledgeId: aId,
-        intoBaseCommit: a.committed[0]!.commit, absorb: [{ knowledgeId: bId, baseCommit: b.committed[0]!.commit },
-          { knowledgeId: bId, baseCommit: b.committed[0]!.commit }], ...common, text: "A and B" }] });
-      expect(duplicate.ok).toBe(false);
-      if (!duplicate.ok) expect(duplicate.problems.join(" ")).toContain("duplicate merge parent");
-      read(tag(trigger.knowledgeId, trigger.commit));
-      dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit), supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }],
-        skipped: [] }); // The first call already recorded the untouched bases as skipped.
-      return { outcome: "success", output: "cardinality checked", request };
-    });
-    if (admitted.result.outcome !== "success") throw new Error(JSON.stringify(admitted.result));
-    expect(admitted.commitCalls).toBeGreaterThan(0);
+    const common = { topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "A", category: "understanding" as const,
+      scope: "project" as const, supports: [factId], createdAt: consolidationAt };
+    const run = { kind: "dreaming" as const, sessionId: s.id, branch: path.branch, createdAt: consolidationAt };
+    const [self, duplicate] = store.commitWorkspaceRun({ path, run, operations: [{ op: "merge", intoKnowledgeId: aId,
+      intoBaseCommit: a.committed[0]!.commit, absorb: [{ knowledgeId: aId, baseCommit: a.committed[0]!.commit }], ...common },
+    { op: "merge", intoKnowledgeId: aId, intoBaseCommit: a.committed[0]!.commit, absorb: [{ knowledgeId: bId, baseCommit: b.committed[0]!.commit },
+      { knowledgeId: bId, baseCommit: b.committed[0]!.commit }], ...common, text: "A and B" }] }).results;
+    expect(self).toMatchObject({ ok: false });
+    if (!self!.ok) expect(self!.reason).toContain("duplicate merge parent");
+    expect(duplicate).toMatchObject({ ok: false });
+    if (!duplicate!.ok) expect(duplicate!.reason).toContain("duplicate merge parent");
     expect(store.currentCommit(aId)[0]?.op).toBe("create");
     expect(store.currentCommit(bId)[0]?.op).toBe("create");
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_links WHERE from_knowledge = ?").get(bId)).toEqual({ n: 0 });
   });
 
-  test("a merge keeps the named primary's identity, even when the primary is the newer item, inside an otherwise valid atomic batch", async () => {
+  test("a merge keeps the named primary's identity, even when the primary is the newer item, beside another valid operation", () => {
     const { s, factId, path } = seed();
     const run = { kind: "manual" as const, sessionId: s.id, createdAt: consolidationAt };
     const create = (text: string) => {
@@ -591,34 +516,24 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       return result.committed[0]!;
     };
     const older = create("older"), newer = create("newer"), independent = create("independent");
-    const admitted = await runAdmittedStoreScenario(path, factId, 1, (input, trigger, memory, commit) => {
-      const request = { fixture: "store merge primary", trigger }; input.reportRequest(request);
-      const write = input.tools.find((tool: { name: string }) => tool.name === "memory")!;
-      dreamerWrite(write, { operations: [], skipped: [older, newer, independent, trigger].map(item => ({
-        knowledge: history(item.knowledgeId, item.commit), because: "Deliberated this fixture's frozen version." })) });
-      const admittedRun = commit.mock.calls.at(-1)![0].run;
-      const merged = memory.store.commitConsolidationRun({ path, run: admittedRun, operations: [
-        { op: "archive", kind: "budget", knowledgeId: independent.knowledgeId, baseCommit: independent.commit, supports: [factId],
-          reason: "Independent legal batch item", createdAt: consolidationAt },
-        { op: "merge", intoKnowledgeId: newer.knowledgeId, intoBaseCommit: newer.commit,
-          absorb: [{ knowledgeId: older.knowledgeId, baseCommit: older.commit }], text: "combined", category: "understanding",
-          scope: "project", supports: [factId], reason: "Merge into the newer item", topics: ["identity"], createdAt: consolidationAt },
-      ] });
-      if (!merged.ok) throw new Error(merged.problems.join("; "));
-      const primary = merged.committed[1]!;
-      expect(primary).toMatchObject({ op: "merge", knowledgeId: newer.knowledgeId });
-      expect(memory.store.knowledgeRevision(primary.commit)).toMatchObject({ knowledgeId: newer.knowledgeId, parentId: newer.commit,
-        text: "combined", supports: [factId], reason: "Merge into the newer item", topics: ["identity"] });
-      expect(memory.store.listKnowledgeLinks(older.knowledgeId)).toContainEqual({ fromKnowledge: older.knowledgeId,
-        fromCommit: older.commit, kind: "merged_into", toKnowledge: newer.knowledgeId, toCommit: primary.commit });
-      expect(memory.store.revisionGrounds(memory.store.knowledgeRevision(primary.commit)!)).toEqual(new Set([factId]));
-      expect(memory.store.currentCommit(older.knowledgeId)).toEqual([]);
-      expect(memory.store.currentCommit(independent.knowledgeId)[0]?.op).toBe("archive");
-      dreamerWrite(write, { operations: [{ op: "archive", kind: "budget", id: tag(trigger.knowledgeId, trigger.commit),
-        supports: [`F${factId}`], reason: "Retire the explicit fixture trigger." }], skipped: [] });
-      return { outcome: "success", output: "merge contracts checked", request };
-    });
-    expect(admitted.result.outcome, JSON.stringify(admitted.result)).toBe("success");
+    const merged = store.commitWorkspaceRun({ path, run: { kind: "dreaming", sessionId: s.id, branch: path.branch, createdAt: consolidationAt }, operations: [
+      { op: "archive", kind: "invalid", knowledgeId: independent.knowledgeId, baseCommit: independent.commit, supports: [factId],
+        text: "The independent item no longer holds; the user withdrew it and nothing replaces it.", reason: "Independent legal batch item", createdAt: consolidationAt },
+      { op: "merge", intoKnowledgeId: newer.knowledgeId, intoBaseCommit: newer.commit,
+        absorb: [{ knowledgeId: older.knowledgeId, baseCommit: older.commit }], text: "combined", category: "understanding",
+        scope: "project", supports: [factId], reason: "Merge into the newer item", topics: ["identity"], createdAt: consolidationAt },
+    ] });
+    const [archived, mergeResult] = merged.results;
+    if (!archived!.ok || !mergeResult!.ok) throw new Error(JSON.stringify(merged.results));
+    const primary = mergeResult!.committed[0]!;
+    expect(primary).toMatchObject({ op: "merge", knowledgeId: newer.knowledgeId });
+    expect(store.knowledgeRevision(primary.commit)).toMatchObject({ knowledgeId: newer.knowledgeId, parentId: newer.commit,
+      text: "combined", supports: [factId], reason: "Merge into the newer item", topics: ["identity"] });
+    expect(store.listKnowledgeLinks(older.knowledgeId)).toContainEqual({ fromKnowledge: older.knowledgeId,
+      fromCommit: older.commit, kind: "merged_into", toKnowledge: newer.knowledgeId, toCommit: primary.commit });
+    expect(store.revisionGrounds(store.knowledgeRevision(primary.commit)!)).toEqual(new Set([factId]));
+    expect(store.currentCommit(older.knowledgeId)).toEqual([]);
+    expect(store.currentCommit(independent.knowledgeId)[0]?.op).toBe("archive");
     expect(store.currentCommit(newer.knowledgeId)[0]?.op).toBe("merge");
     expect(store.currentCommit(independent.knowledgeId)[0]?.op).toBe("archive");
   });

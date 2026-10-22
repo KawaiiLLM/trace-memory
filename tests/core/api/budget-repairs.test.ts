@@ -9,8 +9,7 @@ import { renderFact, renderKnowledgeDiff } from "../../../src/core/render/index.
 import { memoryFiles } from "../../../src/core/api/index.ts";
 import { budgetMaterial, compactText, injectionText, notingText, rawWindowTokens, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
-import { AdmittedDreamerScenarios, createDreamerTrigger } from "../../admitted-dreamer-scenario.ts";
-import { dreamerWrite, skipRest } from "../../dreaming-skips.ts";
+import { curateWrite } from "../../support/dreamer.ts";
 import { submitEmpty } from "../../support/noter.ts";
 
 function seeded(config: Record<string, unknown> = {}) {
@@ -21,15 +20,14 @@ function seeded(config: Record<string, unknown> = {}) {
       submitEmpty(input);
     }
     return { outcome: "success" as const, output: "", request: { probe: true } }; };
-  const scenarios = new AdmittedDreamerScenarios(fallback);
-  const m = sourceSeededMemory(":memory:", scenarios.agent, { writing: { bodyTokens: 1_000_000 }, ...config });
+  const m = sourceSeededMemory(":memory:", fallback, { writing: { bodyTokens: 1_000_000 }, ...config });
   const p = m.store.createProject({ name: "review", declaredBy: "mark" });
   const s = m.store.createSession({ host: "review", startedAt: "2026-09-08", firstReplyAt: "2026-09-08", projectId: p.id, enrollmentChoice: true });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });
   const tools = m.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ title: "Review evidence", sources: `[T${t.id}#E1] ${text}`, ...extra });
   const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] });
-  return { m, calls, s, t, note, knowledge, scenarios };
+  return { m, calls, s, t, note, knowledge };
 }
 
 test("92: fresh N has separate fact and knowledge windows without reviving C progress", async () => {
@@ -172,19 +170,9 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
     const entries = hydrate(f.m.store.sourcePath(f.s.id, "main", f.t.id), f.m.store);
     f.m.selectEntries(f.s.id, "main", entries.map(entry => entry.id));
     const path = { sessionId: f.s.id, branch: "main", headTurnId: f.t.id, triggerEntryId: entries.at(-1)!.id };
-    createDreamerTrigger(f.m, path, 1, 1, "project");
-    let updatedCommit = 0;
-    const result = await f.scenarios.run(f.m, path, input => {
-      const request = { fixture: "topic-set diff" }; input.reportRequest(request);
-      const write = input.tools.find(tool => tool.name === "memory")!;
-      const base = `K1#${f.m.store.versionTag(1, 1)}`;
-      expect(memoryFiles(f.m, input.reader!).read("trace://K1@v1").content).toContain(base);
-      const receipt = JSON.parse(dreamerWrite(write, { operations: [{ op: "update", id: base, ...content, topics: ["a", "b"] }], skipped: [] }));
-      updatedCommit = receiptCommit(f.m.store, receipt.committed[0]);
-      expect(skipRest(input, ["K1@v1"])).toContain("committed"); // 104: the untouched trigger is deliberated too
-      return { outcome: "success", output: "updated", request };
-    });
-    expect(result.outcome).toBe("success");
+    expect(memoryFiles(f.m, path).read("trace://K1@v1").content).toContain("K1#");
+    const updatedCommit = curateWrite(f.m, path, [{ op: "update", knowledgeId: 1, baseCommit: f.m.store.currentCommit(1, path)[0]!.id, text: content.text,
+      category: "constraint", scope: "project", supports: [1], topics: ["a", "b"], reason: content.reason, createdAt: "2026-09-08" }])[0]!.commit;
     const files = memoryFiles(f.m, { sessionId: f.s.id, branch: "main", headTurnId: f.t.id });
     expect(files.read("trace://K1@v1").content).toContain('topics: ["a, b"]');
     expect(files.read(`trace://K1@v${f.m.store.versionOrdinal(1, updatedCommit)}`).content).toContain('topics: ["a","b"]');
