@@ -33,10 +33,10 @@ afterAll(() => { memory.close(); rmSync(directory, { recursive: true, force: tru
 const scope = () => ({ sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: fixture.headTurnId });
 const timed = async <T>(run: () => T | Promise<T>) => { const started = performance.now(); const value = await run(); return { value, ms: performance.now() - started }; };
 
-test("a default Raw search reads a few Turns, not the project, however common its word", async () => {
+test.each(["build", "build cache", "build 缓存"])("a default Raw search for %s reads a few Turns, not the project", async query => {
   const hydrated = countHydratedRows();
   try {
-    const { value, ms } = await timed(() => memory.search("build", "raw", scope()));
+    const { value, ms } = await timed(() => memory.search(query, "raw", scope()));
     expect((value as string).split("\n").filter(line => line.startsWith("[S"))).toHaveLength(10);
     expect(hydrated.reads()).toBeLessThan(200); // one chunk of Turns, against about 20,000 entries
     expect(ms).toBeLessThan(500);

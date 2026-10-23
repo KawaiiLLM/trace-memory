@@ -624,14 +624,12 @@ test.each([
       }
     }
   }
-  const search = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: 1 }).find(t => t.name === "search")!;
   // Order is not the point here (the contract test pins it): which hits match, literally, in every layer.
   const labels = (text: string) => [...new Set([...text.matchAll(/^\[[^\]]+\]/gm)].map(m => m[0].replace(/#E\d+@\w+\]$/, "]")))].sort();
   for (const layer of ["facts", "knowledge", "raw", "all"] as const) {
     const wanted = (layer === "all" ? [...expected.facts, ...expected.knowledge, ...expected.raw] : expected[layer]).sort();
     expect(labels(memory.search(query, layer, { topk: 100 }) as string)).toEqual(wanted);
   }
-  expect(search.description.toLowerCase()).toContain("literal substring search");
 });
 
 test("virtual files reject retired address forms", () => {

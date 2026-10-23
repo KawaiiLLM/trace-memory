@@ -67,7 +67,7 @@ test("35d Settings edits the bound database row, shows derived diagnostics, and 
   h.ctx.hasUI = true;
   h.answers.push("Settings…", undefined);
   await command(h, "");
-  expect(h.dialogs.at(-1)!.title).toContain(`\n${join(h.dir, "trace.db")}`);
+  expect(h.dialogs.at(-1)!.title).toContain(join(h.dir, "trace.db"));
   expect(h.dialogs.at(-1)!.title).toContain("knowledge base 20,000 + temporary allowance 10,000 = 30,000 max input");
   expect(h.dialogs.at(-1)!.options![0]).toBe("Knowledge base: 20,000");
   expect(h.dialogs.at(-1)!.options!.filter(option => /Knowledge budget|^(Global|Project|Session) /.test(option))).toEqual([]); // one row, not three

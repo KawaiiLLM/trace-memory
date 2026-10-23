@@ -131,7 +131,7 @@ test("41 archives and merged-away identities have no current body but remain can
   expect(memory.search("absorbed", "knowledge", who)).toMatch(new RegExp(`\\[K${absorbed.knowledgeId}@v1\\] \\((superseded|archived)\\)`));
   curateWrite(memory, who, [{ op: "archive", kind: "invalid", knowledgeId: result!.knowledgeId, baseCommit: result!.commit, supports: who.supports, reason: "Archive", createdAt: time }]);
   // No version is current any more: every hit is marked, and the archives are labelled as such.
-  const historyText = memory.search("", "knowledge", { ...who, topk: 100 }) as string;
+  const historyText = memory.search(undefined, "knowledge", { ...who, topk: 100 }) as string;
   expect(historyText.split("\n").every(line => /^\[K\d+@v\d+\] \((superseded|archived)\)/.test(line))).toBe(true);
   expect(historyText).toContain("(archived)");
   expect(memoryFiles(memory, who).read("trace://knowledge-all").content).toContain(`trace://K${survivor.knowledgeId}@v`);

@@ -43,9 +43,9 @@ test("manual core sorts segments by native path, derives owner, cites roles and 
   expect(complete).toContain(`[T${x.turn.id}#E2@assistant] Pi agent responds`);
   expect(tokens(complete)).toBeGreaterThan(tokens(fact.text));
   expect(renderFact(fact, [], tokens(complete))).toBe(complete);
-  expect(x.memory.store.searchAddresses("discussion", "facts")).toEqual(["F1"]);
-  expect(x.memory.store.searchAddresses("responds", "facts")).toEqual(["F1"]);
-  expect(x.memory.store.searchAddresses("@assistant", "facts")).toEqual([]);
+  expect(x.memory.store.searchAddresses(["discussion"], "facts")).toEqual(["F1"]);
+  expect(x.memory.store.searchAddresses(["responds"], "facts")).toEqual(["F1"]);
+  expect(x.memory.store.searchAddresses(["@assistant"], "facts")).toEqual([]);
 });
 
 test("branch reads retain every fact's ordered source segments", () => {

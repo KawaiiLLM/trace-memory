@@ -30,6 +30,12 @@ interface Hit { item: Record<string, unknown>; line: () => string; load?: Record
   chunk?: number }
 const raise = (message: string): never => { throw new Error(message); };
 
+function searchTerms(query: string): string[] {
+  const terms = [...query.matchAll(/"([^"]*)"?|([^\p{White_Space}"]+)/gu)].map(match => match[1] ?? match[2]!).filter(Boolean);
+  if (!terms.length) throw new Error("query has no search terms: whitespace and empty quotes are ignored");
+  return terms;
+}
+
 export function validateSearchInput(raw: unknown): { query?: string; layer?: SearchLayer; options: Pick<SearchOptions, "scope" | "topk" | "code"> } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
   const input = raw as Record<string, unknown>;
@@ -63,6 +69,8 @@ export function searchFacade(store: Store) {
   return (query: string | undefined, layer: SearchLayer = "all", options: SearchOptions = {}): string | Promise<string> => {
     if (!SEARCH_LAYERS.includes(layer)) throw new Error("invalid search layer");
     if (options.scope !== undefined && !KNOWLEDGE_SCOPES.includes(options.scope)) throw new Error("invalid knowledge scope filter");
+    const terms = query === undefined ? undefined : searchTerms(query);
+    const needles = terms?.map(term => term.toLocaleLowerCase());
     const reader = options.sessionId === undefined ? undefined : store.getSession(options.sessionId) ?? undefined;
     if (options.sessionId !== undefined && !reader) throw new Error(`session S${options.sessionId} does not exist`);
     if (options.scope === "session" && !reader) throw new Error("scope:session requires a session context");
@@ -84,7 +92,7 @@ export function searchFacade(store: Store) {
       const selection = knowledgeReadSelection(store, { sessionId: options.sessionId, branch: options.branch, headTurnId: options.headTurnId,
         ...(scope ? { scope } : {}), versions: "history" });
       const candidates = query === undefined ? [...selection.byCommit.values()]
-        : store.searchAddresses(query, "knowledge", sessionIds).map(address => selection.byCommit.get(Number(address.split("@")[1]))!);
+        : store.searchAddresses(terms!, "knowledge", sessionIds).map(address => selection.byCommit.get(Number(address.split("@")[1]))!);
       const eligible = candidates.filter(revision => revision && selection.eligible(revision));
       const score = (r: KnowledgeRevision) => query === undefined ? 0 : Math.max(similarity(query, r.text), ...r.topics.map(topic => similarity(query, topic)));
       const scored = eligible.map(revision => ({ revision, score: score(revision) })).sort((a, b) => query === undefined
@@ -100,14 +108,14 @@ export function searchFacade(store: Store) {
         yield { item: { layer: "knowledge", address: `trace://K${r.knowledgeId}@v${version}`, time: r.createdAt, text, title,
             id: r.knowledgeId, version, status, archiveKind: r.archiveKind ?? null, category: group, scope: r.scope, topics: r.topics,
             supports: r.supports, reason: r.reason },
-          line: () => `[K${r.knowledgeId}@v${version}] ${status === "current" ? "" : `(${status}) `}[${group}/${r.scope}] ${title} — ${snippet(text, query)}` };
+          line: () => `[K${r.knowledgeId}@v${version}] ${status === "current" ? "" : `(${status}) `}[${group}/${r.scope}] ${title} — ${snippet(text, terms)}` };
       }
     }
 
     function* facts(): Generator<Hit> {
       const ids = query === undefined
         ? (sessionIds ?? store.listSessions().map(s => s.id)).flatMap(id => store.listSessionFacts(id).map(fact => fact.id))
-        : store.searchAddresses(query, "facts", sessionIds).map(address => Number(address.slice(1)));
+        : store.searchAddresses(terms!, "facts", sessionIds).map(address => Number(address.slice(1)));
       const found = store.factsByIds(ids).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id);
       const citing = store.citingKnowledge(found.map(fact => fact.id));
       for (const fact of found) {
@@ -116,16 +124,15 @@ export function searchFacade(store: Store) {
           role: fact.roles?.[i]?.role ?? null, text }));
         yield { item: { layer: "facts", address: `trace://F${fact.id}`, session, turn: fact.turnId, time: fact.createdAt, text: fact.text,
             id: fact.id, title: fact.title ?? null, sources, citedBy: [...(citing.get(fact.id)?.keys() ?? [])] },
-          line: () => renderFactPreview(fact, new Set(["text"]), Infinity, query) };
+          line: () => renderFactPreview(fact, new Set(["text"]), Infinity, terms) };
       }
     }
 
     function* raw(): Generator<Hit> {
       const turnIds = query === undefined
         ? (sessionIds ?? store.listSessions().map(s => s.id)).flatMap(id => store.listTurns(id).map(turn => turn.id))
-        : store.searchAddresses(query, "raw", sessionIds).map(address => Number(address.slice(1)));
+        : store.searchAddresses(terms!, "raw", sessionIds).map(address => Number(address.slice(1)));
       turnIds.sort((a, b) => b - a);
-      const needle = query?.toLocaleLowerCase();
       // Newest Turns first, a chunk at a time, so a small `topk` reads a few Turns' bodies and not the project's.
       for (let from = 0; from < turnIds.length; from += CHUNK_TURNS) {
         const chunk = turnIds.slice(from, from + CHUNK_TURNS);
@@ -146,15 +153,22 @@ export function searchFacade(store: Store) {
             // (never the host's), so `matchLines` number that Read's lines.
             let rendered: string | undefined;
             const text = () => rendered ??= renderEntryWhole(entry(), rawResultText, undefined, undefined, true).content;
-            if (needle !== undefined && !(body(id) && text().toLocaleLowerCase().includes(needle))) continue;
+            if (needles !== undefined) {
+              if (!body(id)) continue;
+              const lower = text().toLocaleLowerCase();
+              if (!needles.every(term => lower.includes(term))) continue;
+            }
             const role = () => entry().role === "toolResult" ? "observation" : entry().role;
             const label = `S${turn.sessionId}/T${turnId}#E${entryOrdinal}`;
-            const matchLines = () => needle === undefined ? [] : text().split("\n").flatMap((line, index) => line.toLocaleLowerCase().includes(needle) ? [index + 1] : []);
+            const matchLines = () => needles === undefined ? [] : text().split("\n").flatMap((line, index) => {
+              const lower = line.toLocaleLowerCase();
+              return needles.some(term => lower.includes(term)) ? [index + 1] : [];
+            });
             // The line opens with its own label, so the snippet leaves out the label the entry's text opens with.
             const snippetBody = () => text().replace(new RegExp(`^\\[T${turnId}#E${entryOrdinal}@${role()}\\] (?:${role()}: )?`), "");
             yield { item: { layer: "raw", address: `trace://raw/${label}`, session: turn.sessionId, turn: turnId, time: turn.startedAt,
                 entry: entryOrdinal, citedBy: cited.get(id) ?? [], lazy: ["role", "text", "matchLines"] },
-              line: () => `[${label}@${role()}] ${snippet(snippetBody(), query)}`, load: { role, text, matchLines }, chunk: from };
+              line: () => `[${label}@${role()}] ${snippet(snippetBody(), terms)}`, load: { role, text, matchLines }, chunk: from };
           }
         }
       }
@@ -170,7 +184,7 @@ export function searchFacade(store: Store) {
 
     if (options.code === undefined) {
       const lines = hits.map(hit => hit.line());
-      if (!lines.length) return "No hit. Search matches a literal substring. No hit does not mean absent.";
+      if (!lines.length) return "No hit. Every term must appear in one item; try fewer terms. No hit does not mean absent.";
       if (hits.length >= limit && Number.isFinite(limit)) lines.push(`(topk ${limit} reached; more may match. Raise topk or add code to filter.)`);
       return capOutput(lines.join("\n"), options.spill);
     }
@@ -204,7 +218,7 @@ interface Raw extends Base { layer: "raw"; session: number; turn: number; entry:
 
 export const searchToolDefinition = {
   name: "search" as const,
-  description: `Literal substring search over knowledge (every version, marked with its status), facts and raw. Without query it lists the newest. topk caps hits across layers (default 10 with a query). A hit prints as one line; pass code to filter and print instead. No hit does not mean absent.
+  description: `Search knowledge (every version, marked with its status), facts and raw. Every space-separated term must appear in one item (case-insensitive); double quotes keep a phrase. Without query it lists the newest. topk caps hits across layers (default 10 with a query). A hit prints as one line; pass code to filter and print instead. No hit does not mean absent.
 code is an async function body run in a sandbox (no files, network or modules; 10 s, 256 MB; output capped at 10000 tokens). Print with text(), console.log() or return.
 declare const hits: Hit[]; // at most topk
 declare function render(hit: Hit): string; // its one-line print

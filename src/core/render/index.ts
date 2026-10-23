@@ -537,15 +537,16 @@ function renderPreview(prefix: string, body: string, suffix: string, cap: number
   return tokens(build(0)) <= cap ? build(fit(build, cut.list.length, cap))
     : inline(`${prefix.trimEnd()} ${truncated(cut.characters)}${suffix}`);
 }
-export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80, query?: string): string {
+export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80, terms?: readonly string[]): string {
   if (fact.title !== undefined) {
-    if (query === undefined) return renderPreview(`[F${fact.id}] `, fact.title, "", cap, true);
-    // A fact whose text lacks the query matched by its title, which is already shown.
-    if (!fact.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())) return renderPreview(`[F${fact.id}] `, fact.title, "", cap, true);
-    return renderPreview(`[F${fact.id}] ${fact.title} — `, snippet(fact.text, query), "", cap, fields.has("text"));
+    if (terms === undefined) return renderPreview(`[F${fact.id}] `, fact.title, "", cap, true);
+    // A fact whose text lacks every term matched by its title, which is already shown.
+    const lower = fact.text.toLocaleLowerCase();
+    if (!terms.some(term => lower.includes(term.toLocaleLowerCase()))) return renderPreview(`[F${fact.id}] `, fact.title, "", cap, true);
+    return renderPreview(`[F${fact.id}] ${fact.title} — `, snippet(fact.text, terms), "", cap, fields.has("text"));
   }
   const prefix = `[F${fact.id}] ${fact.category && fact.actor ? `[${fact.category}/${fact.actor}] ` : ""}${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`;
-  return renderPreview(prefix, snippet(fact.text, query), "", cap, fields.has("text"));
+  return renderPreview(prefix, snippet(fact.text, terms), "", cap, fields.has("text"));
 }
 
 // 21b: the labels ride the metadata line, beside the evidence, so they are never read as conclusion
@@ -1037,10 +1038,15 @@ export const renderKnowledgeBlock = (groups: { category: string; text: string }[
 export const listingLine = (text: string): string => text.replaceAll("\n", " ⏎ ");
 
 const SNIPPET_CHARS = 200;
-/** About 200 characters centred on the first match (the start of the text without one), cut with `…`. */
-export function snippet(text: string, query?: string): string {
-  const at = query ? text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase()) : -1;
-  let start = at < 0 ? 0 : Math.max(0, at + Math.floor(query!.length / 2) - SNIPPET_CHARS / 2);
+/** About 200 characters centred on the earliest term (the start of the text without one), cut with `…`. */
+export function snippet(text: string, terms?: readonly string[]): string {
+  const lower = terms ? text.toLocaleLowerCase() : "";
+  let at = -1, length = 0;
+  for (const term of terms ?? []) {
+    const index = lower.indexOf(term.toLocaleLowerCase());
+    if (index >= 0 && (at < 0 || index < at)) { at = index; length = term.length; }
+  }
+  let start = at < 0 ? 0 : Math.max(0, at + Math.floor(length / 2) - SNIPPET_CHARS / 2);
   let end = Math.min(text.length, start + SNIPPET_CHARS);
   if (end === text.length) start = Math.max(0, end - SNIPPET_CHARS);
   if (start > 0 && /[\uDC00-\uDFFF]/.test(text[start]!)) start++;
