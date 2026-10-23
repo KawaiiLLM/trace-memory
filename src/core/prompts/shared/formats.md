@@ -15,4 +15,4 @@
 - Calls render as `<tool>(<key>=<value>, …)` after their entry label; results render as `<tool> <status>: <result text>`. E ordinals stay stable within a Turn, including branch gaps. Copy the entry address, never a block selector or call ID.
 - Arguments are `key=JSON` in stored order. Dropped structured data is marked by its size, non-text content by its type (`[<type> omitted]`).
 - An omission is `[... N characters truncated]` or `[... N characters of details truncated]`; what a marker stands for was not inspected.
-- `{{tool.search}}` matches one contiguous literal substring over every version applicable here, archived and superseded included and marked as such; several words match only that exact sequence. On no hit, change the word; never add one.
+- `{{tool.search}}` matches items that contain every space-separated term, case-insensitive; a double-quoted phrase must appear exactly. It searches every version applicable here, archived and superseded included and marked as such. On no hit, drop or change a term; adding one only narrows.
