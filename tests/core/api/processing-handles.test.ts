@@ -26,8 +26,8 @@ function setup(second = false, initialText = "body A") {
   // The initial item may be oversized, as an item written before the caps (ticket 144) can be; the caps are lifted for the seed only.
   const limits = { ...m.config.writing };
   m.config.writing.bodyWords = 1_000_000;
-  expect(write([{ op: "create", title: "Fixture title", ...content }])).not.toContain("rejected:");
-  if (second) expect(write([{ op: "create", title: "Fixture title", ...content, text: "second" }])).not.toContain("rejected:");
+  expect(write([{ files: null, op: "create", title: "Fixture title", ...content }])).not.toContain("rejected:");
+  if (second) expect(write([{ files: null, op: "create", title: "Fixture title", ...content, text: "second" }])).not.toContain("rejected:");
   Object.assign(m.config.writing, limits);
   const tag = (id: number, ordinal = 1) => `K${id}#${m.store.versionTag(id, m.store.resolveVersionOrdinal(id, ordinal))}`;
   return { m, context, path: { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: rootEntry.id }, content, tools, write, t, rootEntry, tag };
@@ -38,7 +38,7 @@ test("92: previews carry no tag; a valid tag works across bindings without a rea
   const preview = a.tools.find(tool => tool.name === "search")!.execute({ query: "body", layer: "knowledge" });
   expect(preview).toContain("K1@v1");
   expect(preview).not.toContain(a.tag(1));
-  const archive = (id: string) => a.write([{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id, supports: ["F1"], reason: "Retire tagged item" }], a.m.tools(a.context));
+  const archive = (id: string) => a.write([{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id, supports: ["F1"], reason: "Retire tagged item" }], a.m.tools(a.context));
   expect(archive("K1")).toContain("supply an exact K#tag");
   expect(archive("K1#unknown")).toContain("knowledge version does not exist");
   expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");
@@ -58,7 +58,7 @@ test("manual writers freeze fact sources and knowledge supports at the exact tri
   expect(lateTools.find(tool => tool.name === "note")!.execute({ title: "Later evidence", sources: `[T${a.t.id}#E${later.entryOrdinal}] later` })).not.toContain("rejected:");
   const earlyTools = a.m.tools({ ...a.context, triggerEntryId: carrier.id, entryIds: [a.rootEntry.id, carrier.id] });
   expect(earlyTools.find(tool => tool.name === "note")!.execute({ title: "Too late", sources: `[T${a.t.id}#E${later.entryOrdinal}] too late` })).toContain("invalid source");
-  expect(earlyTools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", ...a.content, supports: ["F2"] })).toContain("after the exact triggering source prefix");
+  expect(earlyTools.find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", ...a.content, supports: ["F2"] })).toContain("after the exact triggering source prefix");
 });
 
 test("92 supersedes named-read grants: copied Raw tags do not prove reading, but still identify the exact version", () => {
@@ -70,7 +70,7 @@ test("92 supersedes named-read grants: copied Raw tags do not prove reading, but
   a.m.selectEntries(1, "main", a.m.store.listSourceEntries(1, a.t.id).map(entry => entry.id));
   const fresh = a.m.tools(a.context);
   expect(memoryFiles(a.m, a.path).read(`trace://raw/S${a.path.sessionId}/T${a.t.id}`).content).toContain(a.tag(1));
-  const archive = (id: string) => a.write([{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id, supports: ["F1"], reason: "Retire exact tagged version" }], fresh);
+  const archive = (id: string) => a.write([{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id, supports: ["F1"], reason: "Retire exact tagged version" }], fresh);
   expect(archive("K1#unknown")).toContain("knowledge version does not exist");
   expect(a.m.store.currentCommit(1)[0]!.op).toBe("create");
   expect(archive(a.tag(1))).toContain("committed");
@@ -86,7 +86,7 @@ test("99: Dreamer invalidation commits immediately and an ordinary update revive
   const [archived] = applied(a, block("archive K1@v1", { kind: "invalid", reason: "Withdraw prior understanding" },
     "The old claim no longer holds because the user withdrew the evidence; nothing replaces it."));
   expect(archived).toMatchObject({ status: "applied", versions: ["K1@v2"] });
-  expect(a.m.store.currentCommit(1, a.path)[0]).toMatchObject({ op: "archive", archiveKind: "invalid", supports: [1] });
+  expect(a.m.store.currentCommit(1, a.path)[0]).toMatchObject({ files: null, op: "archive", archiveKind: "invalid", supports: [1] });
   expect(a.m.store.currentKnowledge(a.path).some(item => item.knowledge.id === 1)).toBe(false);
   expect(applied(a, block("update K1@v2", { reason: "Revive" }, "A new user decision revives this identity"))[0]).toMatchObject({ status: "applied", versions: ["K1@v3"] });
   expect(a.m.store.currentCommit(1, a.path)[0]!.op).toBe("update");

@@ -79,6 +79,51 @@ export function migrateInadmissibleKind144(db: DatabaseSync): void {
   for (const object of objects) db.exec(object.sql);
 }
 
+/** The relation CHECK is the only rebuild; new metadata is additive and old rows stay unmapped. */
+export function migratePropagation154(db: DatabaseSync): void {
+  if (!db.isTransaction) throw new Error("154 migration requires Store's schema transaction");
+  const sql = String(db.prepare("SELECT sql FROM sqlite_master WHERE name='fact_relations'").get()!.sql);
+  if (!sql.includes("'caused_by'")) {
+    const next = sql.replace("'support','negate'", "'support','negate','caused_by'");
+    if (next === sql) throw new Error("154 migration refused unknown fact_relations schema");
+    const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='fact_relations' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+    db.exec(next.replace(/CREATE TABLE (?:IF NOT EXISTS )?"?fact_relations"?/i, "CREATE TABLE fact_relations_154"));
+    db.exec("INSERT INTO fact_relations_154 SELECT * FROM fact_relations; DROP TABLE fact_relations; ALTER TABLE fact_relations_154 RENAME TO fact_relations");
+    for (const object of objects) db.exec(String(object.sql));
+  }
+  if (!db.prepare("PRAGMA table_info(facts)").all().some(row => row.name === "objects"))
+    db.exec("ALTER TABLE facts ADD COLUMN objects TEXT");
+  if (!db.prepare("PRAGMA table_info(knowledge_revisions)").all().some(row => row.name === "files"))
+    db.exec("ALTER TABLE knowledge_revisions ADD COLUMN files TEXT");
+  const hadFts = !!db.prepare("SELECT 1 FROM sqlite_master WHERE name='knowledge_fts'").get();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fact_objects (
+      fact_id INTEGER NOT NULL REFERENCES facts(id),
+      name TEXT NOT NULL,
+      object_key TEXT NOT NULL,
+      PRIMARY KEY (fact_id, object_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_fact_objects_key ON fact_objects(object_key, fact_id);
+    CREATE TABLE IF NOT EXISTS knowledge_file_verifications (
+      revision_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
+      file TEXT NOT NULL,
+      verified_commit TEXT NOT NULL,
+      verified_at TEXT NOT NULL,
+      PRIMARY KEY (revision_id, file)
+    );
+    CREATE TABLE IF NOT EXISTS knowledge_stale_reasons (
+      revision_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
+      reason TEXT NOT NULL CHECK (reason IN ('negated_fact','file_changed','unresolved_check','unverified_file','missing_grounds')),
+      detail TEXT NOT NULL,
+      PRIMARY KEY (revision_id, reason, detail)
+    );
+    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+      title, text, content = '', contentless_delete = 1, tokenize = 'trigram'
+    );
+  `);
+  if (!hadFts) db.exec("INSERT INTO knowledge_fts(rowid, title, text) SELECT id, title, text FROM knowledge_revisions");
+}
+
 /** Ticket 144, Stage 4: the columns Dreaming's curate, verify and classify tasks need. Every column is nullable or
  * defaulted, so existing rows are kept as they are; each is added once (`table_info` is the idempotency signal).
  * The Knowledge base lives in its own single-row table, `knowledge_base_policy`, not in `knowledge_budget_policy`:

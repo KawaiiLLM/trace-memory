@@ -25,7 +25,7 @@ for (const outcome of ["failure", "cancelled"] as const) test(`92: ${outcome} af
   agent = async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
-    await submit(input, memory, { noteInput: [fact()], memoryInput: { op: "create", title: "Fixture title", text: "Project rule", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" } });
+    await submit(input, memory, { noteInput: [fact()], memoryInput: { files: null, op: "create", title: "Fixture title", text: "Project rule", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" } });
     expect(memory.store.listSessionFacts(1)).toEqual([]);
     expect(memory.store.getKnowledge(1)).toBeNull();
     return { outcome, output: "connection stopped", request: { round: 2 } };
@@ -50,27 +50,38 @@ for (const kind of ["Error", "AbortError"]) test(`92: thrown ${kind} after writi
   expect(memory.store.sourcePath(1, "main", 1).every(e => !memory.store.entryNoted(e.id))).toBe(true);
 });
 
-test("116: the public manual schemas distinguish full items from empty calls, and carry no draft fields", () => {
-  const note = toolDefinitions.find(t => t.name === "note")!.parameters;
-  const knowledge = toolDefinitions.find(t => t.name === "memory")!.parameters;
-  for (const schema of [note, knowledge]) {
-    expect(schema).not.toHaveProperty("anyOf");
-    expect(schema).not.toHaveProperty("oneOf");
-    expect(schema).not.toHaveProperty("allOf");
-    expect(schema).toMatchObject({ if: { minProperties: 1 } });
-    expect(schema.additionalProperties).toBe(false);
-    for (const field of ["slot", "drop"]) expect(schema.properties).not.toHaveProperty(field);
-  }
-  expect(note.then).toMatchObject({ required: ["title", "sources"] });
-  expect(knowledge.then).toMatchObject({ required: ["op", "supports", "reason"] });
-  const rules = (knowledge.then as any).allOf as any[];
-  expect(rules).toHaveLength(4);
-  expect(rules[0]).toMatchObject({ if: { properties: { op: { const: "create" } } }, else: { required: ["id"] } });
-  expect(rules[2]).toMatchObject({ if: { properties: { op: { const: "archive" } } }, then: { required: ["kind"] },
-    else: { if: { properties: { op: { const: "update" } } }, else: { required: ["text", "category", "scope", "topics"] } } });
-  expect(rules[3]).toMatchObject({ if: { properties: { op: { const: "update" } } }, else: { not: { required: ["edits"] } } });
-  expect((knowledge.properties as Record<string, unknown>).skipped).toBeUndefined();
-  expect((knowledge.properties as any).kind.enum).toEqual(["invalid", "inadmissible"]);
+
+test("manual schemas accept empty calls and require explicit code files for each knowledge operation", () => {
+  const definitions = Object.fromEntries(toolDefinitions.map(tool => [tool.name, tool]));
+  const valid = (name: "note" | "memory", arguments_: Record<string, unknown>) => {
+    const tool = definitions[name]!;
+    try { validateToolArguments(tool as never, { type: "toolCall", id: "call", name, arguments: arguments_ as never }); return true; }
+    catch { return false; }
+  };
+  expect(valid("note", {})).toBe(true);
+  expect(valid("memory", {})).toBe(true);
+  expect(valid("note", { title: "Incomplete" })).toBe(false);
+  expect(valid("note", { title: "Evidence", sources: "[T1#E1] Evidence" })).toBe(true);
+  const create = { op: "create", title: "Rule", text: "Use pnpm", category: "constraint", scope: "project",
+    topics: [], supports: ["F1"], reason: "User ruled" };
+  expect(valid("memory", create)).toBe(false);
+  expect(valid("memory", { ...create, files: null })).toBe(true);
+  expect(valid("memory", { ...create, files: ["src/store.ts#opaque"] })).toBe(true);
+  expect(valid("memory", { ...create, files: "None" })).toBe(false);
+  const note = memory.tools(manual()).find(tool => tool.name === "note")!;
+  expect(note.execute(fact())).toContain("ok: F1");
+  const write = memory.tools(manual()).find(tool => tool.name === "memory")!;
+  expect(write.execute(create)).toContain("files: required");
+  expect(memory.store.listKnowledgeRevisions()).toEqual([]);
+  const receipt = JSON.parse(write.execute({ ...create, files: ["src/store.ts#opaque"] }));
+  const base = memory.store.listKnowledgeRevisions()[0]!;
+  expect(receipt.results).toEqual(["ok"]);
+  const update = { op: "update", id: `K${base.knowledgeId}#${memory.store.versionTag(base.knowledgeId, base.id)}`,
+    edits: [{ old: "pnpm", new: "corepack pnpm" }], supports: ["F1"], reason: "Clarify" };
+  expect(write.execute(update)).toContain("files: required");
+  expect(JSON.parse(write.execute({ ...update, files: null })).results).toEqual(["ok"]);
+  expect(memory.store.listKnowledgeRevisions().map(revision => revision.files)).toEqual([["src/store.ts#opaque"], null]);
+  expect(valid("memory", { ...create, files: null, slot: 1 })).toBe(false);
 });
 
 // 135: Pi and Claude Code validate a call against the advertised schema before it reaches Core, so this
@@ -82,10 +93,10 @@ test("135: the advertised memory schema accepts exactly one body form per update
     catch { return false; }
   };
   const base = { supports: ["F1"], reason: "Clarify" };
-  const update = { ...base, op: "update", id: "K1#abcd" };
+  const update = { ...base, files: null, op: "update", id: "K1#abcd" };
   const full = { text: "Use pnpm", category: "reference", scope: "project", topics: [] };
   const edits = [{ old: "npm", new: "pnpm" }];
-  const archive = { ...base, op: "archive", id: "K1#abcd", kind: "invalid", text: "No longer holds; nothing replaces it." };
+  const archive = { files: null, ...base, op: "archive", id: "K1#abcd", kind: "invalid", text: "No longer holds; nothing replaces it." };
   const accepted: Array<[string, Record<string, unknown>]> = [
     ["complete text with its metadata", { ...update, ...full }],
     ["one edit, metadata inherited", { ...update, edits }],
@@ -103,7 +114,7 @@ test("135: the advertised memory schema accepts exactly one body form per update
     ["edits on an archive", { ...archive, edits }],
   ];
   const noterOnly: Array<[string, Record<string, unknown>]> = [
-    ["edits on a create", { ...base, op: "create", title: "Fixture title", ...full, edits }],
+    ["edits on a create", { files: null, ...base, op: "create", title: "Fixture title", ...full, edits }],
   ];
   for (const [what, args] of accepted) expect(valid(noter, args), `Noter and manual accept ${what}`).toBe(true);
   for (const [what, args] of [...rejected, ...noterOnly]) expect(valid(noter, args), `Noter and manual reject ${what}`).toBe(false);
@@ -125,14 +136,14 @@ test("116: manual memory commits one operation at a time and rejects Noter-only 
   const tools = memory.tools(manual());
   expect(tools.find(tool => tool.name === "note")!.execute(fact())).toContain("F1");
   const knowledge = tools.find(tool => tool.name === "memory")!;
-  const create = { op: "create", title: "Fixture title", text: "rule", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "evidence" };
+  const create = { files: null, op: "create", title: "Fixture title", text: "rule", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "evidence" };
   expect(knowledge.execute({ ...create, skipped: [] })).toContain("rejected:");
   expect(knowledge.execute({ ...create, supports: ["$1"] })).toContain("rejected:");
   expect(memory.store.getKnowledge(1)).toBeNull();
   expect(knowledge.execute(create)).toContain('"committed"');
   expect(JSON.parse(memory.store.listRuns(1).at(-1)!.request!)).toEqual(create);
   expect(memory.store.getKnowledgeRevision(1, 1)?.text).toBe("rule");
-  const archive = { op: "archive", id: `K1#${memory.store.versionTag(1, 1)}`, kind: "invalid", text: "Superseded; nothing replaces it.", supports: ["F1"], reason: "superseded" };
+  const archive = { files: null, op: "archive", id: `K1#${memory.store.versionTag(1, 1)}`, kind: "invalid", text: "Superseded; nothing replaces it.", supports: ["F1"], reason: "superseded" };
   expect(knowledge.execute(archive)).toContain('"committed"');
   expect(JSON.parse(memory.store.listRuns(1).at(-1)!.request!)).toEqual(archive);
   expect(memory.store.getKnowledgeRevision(1, 2)?.op).toBe("archive");
@@ -224,7 +235,7 @@ test("reads return every knowledge item while injection still applies the scope 
     const note = memory.tools(manual(sessionId, sessionId))[1]!;
     note.execute(fact(`T${sessionId}#E1`));
     memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: "now" }, operations:
-      (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "understanding" as const, scope, supports: [sessionId], createdAt: "now" })) });
+      (["global", "project", "session"] as const).map((scope, i) => ({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "understanding" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [search] = memory.tools(manual());
   const hits = search!.execute({ query: "knowledge", layer: "knowledge" });
@@ -235,7 +246,7 @@ test("reads return every knowledge item while injection still applies the scope 
   // Injection keeps the scope rule: another session's session knowledge and another project's project knowledge stay out.
   for (const id of [6, 8, 9]) expect(memory.inject(1)).not.toContain(`[K${id}@`);
   memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "later" }, operations: [
-    { op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 3, baseCommit: 3, supports: [1], createdAt: "later" },
+    { files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 3, baseCommit: 3, supports: [1], createdAt: "later" },
   ] });
   expect(memory.trace("K3@v1")).toContain("owner 1 scope session");
   expect(memory.trace("K3", { versions: "history" })).toContain("archive");
@@ -272,8 +283,8 @@ test("144: the memory tool archives with kind inadmissible, and the kind require
   const tools = memory.tools(manual());
   tools.find(tool => tool.name === "note")!.execute(fact());
   const knowledge = tools.find(tool => tool.name === "memory")!;
-  expect(knowledge.execute({ op: "create", title: "Fixture title", text: "A running log of the session", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "evidence" })).toContain('"committed"');
-  const archive = { op: "archive", id: `K1#${memory.store.versionTag(1, 1)}`, kind: "inadmissible", supports: ["F1"], reason: "not an understanding" };
+  expect(knowledge.execute({ files: null, op: "create", title: "Fixture title", text: "A running log of the session", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "evidence" })).toContain('"committed"');
+  const archive = { files: null, op: "archive", id: `K1#${memory.store.versionTag(1, 1)}`, kind: "inadmissible", supports: ["F1"], reason: "not an understanding" };
   expect(knowledge.execute(archive)).toContain("rejected:"); // no explanation
   expect(memory.store.getKnowledgeRevision(1, 2)).toBeNull();
   expect(knowledge.execute({ ...archive, text: "A running log of one session, not an understanding; nothing replaces it." })).toContain('"committed"');

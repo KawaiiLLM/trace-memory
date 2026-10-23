@@ -21,7 +21,7 @@ test("92/03: pre-tag revision metadata backfills once without rewriting knowledg
   const factId = seedFact(old, { sessionId: session.id, branch: "main", headTurnId: turn.id },
     "Old evidence", [{ entry: source, text: "Old evidence" }]).id;
   const receipt = JSON.parse(old.tools({ kind: "manual", sessionId: session.id, currentTurnId: turn.id, branch: "main" })
-    .find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "Old body", category: "reference", scope: "session", topics: ["old"], reason: "old reason", supports: [`F${factId}`] }));
+    .find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", text: "Old body", category: "reference", scope: "session", topics: ["old"], reason: "old reason", supports: [`F${factId}`] }));
   const id = receipt.committed[0].knowledgeId;
   const revision = old.store.resolveVersionOrdinal(id, Number(receipt.committed[0].version.split("@v")[1]));
   const before = old.store.db.prepare("SELECT * FROM knowledge_revisions WHERE id=?").get(revision);

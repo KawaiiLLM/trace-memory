@@ -51,7 +51,7 @@ function retainedFixture() {
   // Noter-written: only the Noter's changes make a Dreamer due (2026-10-22 trigger).
   const create = (text: string, support: number) => commitNoterKnowledge(store, {
     path: { sessionId: f.session.id, branch: "left", headTurnId: f.left.id },
-    run: { sessionId: f.session.id, branch: "left", createdAt: at }, operations: [{ op: "create", title: "Fixture title", handle: `$${text}`,
+    run: { sessionId: f.session.id, branch: "left", createdAt: at }, operations: [{ files: null, op: "create", title: "Fixture title", handle: `$${text}`,
       author: "test", text, category: "constraint", scope: "project", supports: [support], topics: [], reason: "fixture", createdAt: at }],
   });
   const stable = create("stable", noted.facts[0]!.id);
@@ -69,7 +69,7 @@ function retainedFixture() {
       source: [`T${foreignChild.id}#E${foreignEntry.entryOrdinal}`], entryIds: [foreignEntry.id], createdAt: at }] });
   if (!foreignNoted.ok) throw new Error(foreignNoted.problems.join("; "));
   const unrelated = store.commitConsolidationRun({ path: { sessionId: foreign.id, branch: "child", headTurnId: foreignChild.id },
-    run: { kind: "manual", sessionId: foreign.id, branch: "child", createdAt: at }, operations: [{ op: "create", title: "Fixture title", handle: "$foreign",
+    run: { kind: "manual", sessionId: foreign.id, branch: "child", createdAt: at }, operations: [{ files: null, op: "create", title: "Fixture title", handle: "$foreign",
       author: "test", text: "foreign obligation", category: "constraint", scope: "project", supports: [foreignNoted.facts[0]!.id],
       topics: [], reason: "fixture", createdAt: at }] });
   if (!unrelated.ok) throw new Error(unrelated.problems.join("; "));
@@ -85,18 +85,18 @@ function retainedFixture() {
 
 test("64b: stale guidance follows split descendants instead of reporting the old identity has no tip", () => {
   const f = retainedFixture();
-  const split = f.store.commitWorkspaceRun({ run: f.run, path: f.target, operations: [{ op: "split",
+  const split = f.store.commitWorkspaceRun({ run: f.run, path: f.target, operations: [{ files: null, op: "split",
     knowledgeId: f.stable.knowledgeId, baseCommit: f.stable.commit, text: "stable, primary part", category: "constraint", scope: "project", topics: [],
     supports: [], reason: "split", createdAt: at,
     children: [
-      { title: "Fixture child", text: "stable A", category: "constraint", topics: [] },
-      { title: "Fixture child", text: "stable B", category: "constraint", topics: [] },
+      { files: null, title: "Fixture child", text: "stable A", category: "constraint", topics: [] },
+      { files: null, title: "Fixture child", text: "stable B", category: "constraint", topics: [] },
     ] }] });
   const applied = split.results[0]!;
   expect(applied.ok).toBe(true);
   if (!applied.ok) return;
   const before = f.store.listKnowledgeRevisions().length;
-  const stale = f.store.commitWorkspaceRun({ run: f.run, path: f.target, operations: [{ op: "archive", kind: "invalid", text: "Stale archive, with its grounds in the cited evidence.",
+  const stale = f.store.commitWorkspaceRun({ run: f.run, path: f.target, operations: [{ files: null, op: "archive", kind: "invalid", text: "Stale archive, with its grounds in the cited evidence.",
     knowledgeId: f.stable.knowledgeId, baseCommit: f.stable.commit, supports: [], reason: "stale", createdAt: at }] }).results[0]!;
   expect(stale.ok).toBe(false);
   const problem = stale.ok ? "" : stale.reason;
@@ -108,7 +108,7 @@ test("64b: stale guidance follows split descendants instead of reporting the old
 test("64b: write legality ignores an unrelated rewound retained obligation but keeps current-base and seat fences", () => {
   const f = retainedFixture();
   f.store.setCurrentPath(f.foreign.id, "root", f.foreignRoot.id, "test-lineage");
-  const update = (baseCommit: number, text: string) => ({ op: "update" as const, knowledgeId: f.stable.knowledgeId, baseCommit,
+  const update = (baseCommit: number, text: string) => ({ files: null, op: "update" as const, knowledgeId: f.stable.knowledgeId, baseCommit,
     text, category: "constraint" as const, scope: "project" as const, supports: [] as number[], topics: [], reason: text, createdAt: at });
 
   const accepted = f.store.commitWorkspaceRun({ run: f.run, path: f.target, operations: [update(f.stable.commit, "maintained")] }).results[0]!;

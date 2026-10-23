@@ -177,7 +177,7 @@ export function generate(dbPath: string, options: FixtureOptions = {}): Fixture 
         const supports = cite(i);
         if (supports.length < 2) break;
         const run = { kind: "manual" as const, sessionId, branch, createdAt: "2026-01-01T02:00:00Z" };
-        const operations = [{ op: "create" as const, title: "Fixture title", handle: `perf-${i}`, author: "perf", text: `${pick(LATIN)} ${pick(CJK)} K${i}`,
+        const operations = [{ files: null, op: "create" as const, title: "Fixture title", handle: `perf-${i}`, author: "perf", text: `${pick(LATIN)} ${pick(CJK)} K${i}`,
           category: "understanding" as const, scope: "session" as const, supports, reason: "perf fixture", topics: [pick(LATIN)], createdAt: "2026-01-01T02:00:00Z" }];
         const committed = store.commitConsolidationRun({ path, run, operations });
         if (!committed.ok) throw new Error(committed.problems.join("; "));
@@ -192,7 +192,7 @@ export function generate(dbPath: string, options: FixtureOptions = {}): Fixture 
       if (firstCommit && secondCommit) {
         // Merge has D-only authority even while C remains live: it goes through the commit a Dreamer pass uses. A refused seed is not ignored.
         const done = store.commitWorkspaceRun({ run: { kind: "dreaming", sessionId, branch, createdAt: "2026-01-01T02:10:00Z" }, path,
-          operations: [{ op: "merge", intoKnowledgeId: firstKnowledge, intoBaseCommit: firstCommit,
+          operations: [{ files: null, op: "merge", intoKnowledgeId: firstKnowledge, intoBaseCommit: firstCommit,
             absorb: [{ knowledgeId: secondKnowledge, baseCommit: secondCommit }], title: "Merged perf knowledge", text: "merged perf knowledge", category: "understanding",
             scope: "session", supports: cite(0), reason: "perf fixture merge", topics: ["merge"], createdAt: "2026-01-01T02:10:00Z" }] });
         for (const result of done.results) {
@@ -352,7 +352,7 @@ export function searchCorpus(dbPath: string, options: { revisions: number; sessi
       const forks = [fork("corpusC"), fork("corpusD")];
       const create = (i: number) => {
         const run = store.bindRunOrigin({ kind: "manual" as const, sessionId, branch, createdAt: time }, store.triggerOrigin(path));
-        const done = store.commitConsolidationRun({ path, run, operations: [{ op: "create", title: "Fixture title", handle: `corpus-${i}`, author: "perf",
+        const done = store.commitConsolidationRun({ path, run, operations: [{ files: null, op: "create", title: "Fixture title", handle: `corpus-${i}`, author: "perf",
           text: `${query} conclusion ${i}`, category: "understanding", scope: "session", supports, reason: "search corpus",
           topics: [i % 3 ? "corpus" : query], createdAt: time }] });
         if (!done.ok) throw new Error(done.problems.join("; "));

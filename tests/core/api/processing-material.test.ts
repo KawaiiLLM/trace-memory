@@ -19,7 +19,7 @@ function fixture(agent?: (input: NotingAgentInput) => Promise<void>) {
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: turn.id });
   tools.find(tool => tool.name === "note")!.execute({ title: "Rule", sources: `[T${turn.id}#E1] rule` });
   const content = { text: "word ".repeat(5_200), category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "test" };
-  expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", ...content })).toContain("committed");
+  expect(tools.find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", ...content })).toContain("committed");
   scoreAll(memory.store); // the Knowledge base carries scored items
   // Derive an exact 5,000-token Knowledge window from the real pool policy.
   // The oversized body then exercises omission without a retired fixed allowance.
@@ -34,7 +34,7 @@ test("92: omitted knowledge has no printed tag; an exact tag works without read 
   const f = fixture(async input => {
     expect(input).not.toHaveProperty("readKnowledgeCommits");
     expect(input.text).not.toContain("word ".repeat(400));
-    const operation = { op: "update", id: "K1@1", ...f.content, text: "Updated concise rule using its exact version" };
+    const operation = { files: null, op: "update", id: "K1@1", ...f.content, text: "Updated concise rule using its exact version" };
     // The knowledge step first names a version address, is repaired once, then names the exact tag.
     expect(await submit(input, f.memory, { memoryInput: operation,
       fix: () => ({ knowledge: knowledgeFile(f.memory, { ...operation, id: `K1#${f.memory.store.versionTag(1, 1)}` }) }) })).toContain("not a version address");
@@ -69,7 +69,7 @@ test("92: omitted knowledge stays fully readable while N has a distinct create i
     // A read produces frozen output only; it never mutates the dispatch snapshot.
     expect(input).not.toHaveProperty("readKnowledgeCommits");
 
-    expect(await submit(input, f.memory, { memoryInput: { op: "create", title: "Fixture title", ...f.content, text: "A distinct durable rule" } })).toBeUndefined();
+    expect(await submit(input, f.memory, { memoryInput: { files: null, op: "create", title: "Fixture title", ...f.content, text: "A distinct durable rule" } })).toBeUndefined();
     expect(f.memory.store.currentKnowledge(f.memory.store.knowledgePath(1))).toHaveLength(1);
     input.reportRequest({ fixture: "held processing material" });
   });
@@ -86,7 +86,7 @@ test("N material shows each knowledge body's cap-check units count; injection do
   const f = fixture();
   try {
     const body = "Short rule. ".repeat(40);
-    expect(f.tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", ...f.content, text: body })).toContain("committed");
+    expect(f.tools.find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", ...f.content, text: body })).toContain("committed");
     scoreAll(f.memory.store);
     setKnowledgeCapacity(f.memory, 20_000);
     const material = f.freeze().prepared!.text;

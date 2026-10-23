@@ -161,7 +161,7 @@ test("34c: disable preserves work and on rechecks evidence coverage", async () =
   // Live N publication is exercised separately by the host atomic and scheduler tests.
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   expect(seedFact(h, "Shared rule").text).toBe("Shared rule");
-  expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission",
+  expect(tools.find(t => t.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission",
     text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"] })).not.toContain("rejected:");
   expect((await h.prompt("no receipts"))?.message?.content ?? "").not.toContain("<noted>");
   await h.answer(); await h.emit("agent_settled"); await h.answer("consolidation opportunity"); await h.drain();

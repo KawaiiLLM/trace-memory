@@ -89,7 +89,7 @@ test("exact entry and exact knowledge retain more than 100 lines without Core pa
   expect(note.execute({ title: "Knowledge source", sources: factSources([{ address: `T${first.id}#E1`, text: "A source" }]) })).toContain("ok: F1");
   m.config.writing.bodyWords = 10_000; // 125 lines is a body written before the caps could be
   const write = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: first.id }).find(tool => tool.name === "memory")!;
-  const created = JSON.parse(write.execute({ op: "create", title: "Fixture title", text: lines, category: "reference", scope: "project", topics: [], supports: ["F1"], reason: "Test whole body" }));
+  const created = JSON.parse(write.execute({ files: null, op: "create", title: "Fixture title", text: lines, category: "reference", scope: "project", topics: [], supports: ["F1"], reason: "Test whole body" }));
   expect(files.read(`trace://K${created.committed[0].knowledgeId}`).content).toContain("LINE_124");
 });
 
@@ -126,7 +126,7 @@ test("knowledge injection charges IDs only while an explicit trace displays supp
   const { m, first, second, session, note } = fixture();
   expect(note.execute({ title: "A descriptive episode title", sources: factSources([{ address: `T${first.id}#E1`, text: "User asks a question" }]) })).toContain("ok: F1");
   const memory = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: second.id }).find(tool => tool.name === "memory")!;
-  const result = JSON.parse(memory.execute({ op: "create", title: "Fixture title", text: "A lasting rule", category: "constraint",
+  const result = JSON.parse(memory.execute({ files: null, op: "create", title: "Fixture title", text: "A lasting rule", category: "constraint",
     scope: "project", topics: [], reason: "user choice", supports: ["F1"] }));
   expect(result.committed).toHaveLength(1);
   const id = result.committed[0].knowledgeId;
@@ -177,12 +177,12 @@ test("a fact backlink groups citing history under visible current identity, incl
   expect(note.execute({ title: "Later finding", sources: factSources([{ address: `T${second.id}#E1`, text: "Later evidence" }]) })).toContain("ok: F2");
   const context = { kind: "manual" as const, sessionId: session.id, branch: "main", currentTurnId: second.id };
   const memory = m.tools(context).find(tool => tool.name === "memory")!;
-  const create = JSON.parse(memory.execute({ op: "create", title: "Fixture title", text: "Rule", category: "constraint",
+  const create = JSON.parse(memory.execute({ files: null, op: "create", title: "Fixture title", text: "Rule", category: "constraint",
     scope: "session", topics: [], reason: "first", supports: ["F1"] }));
   const id = create.committed[0].knowledgeId;
   const firstCommit = m.store.resolveVersionOrdinal(id, 1);
   const tag = m.store.versionTag(id, firstCommit);
-  const archive = JSON.parse(memory.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: `K${id}#${tag}`,
+  const archive = JSON.parse(memory.execute({ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: `K${id}#${tag}`,
     reason: "reconsidered", supports: ["F2"] }));
   expect(archive.committed).toHaveLength(1);
   const files = memoryFiles(m, { sessionId: session.id, branch: "main", headTurnId: second.id });
@@ -300,7 +300,7 @@ test("invisible global current successor hides an earlier visible project identi
   expect(note.execute({ title: "Shared source", sources: factSources([{ address: `T${first.id}#E1`, text: "Public evidence" }]) })).toContain("ok: F1");
   const memory = m.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: second.id })
     .find(tool => tool.name === "memory")!;
-  const create = JSON.parse(memory.execute({ op: "create", title: "Fixture title", text: "Project rule", category: "constraint",
+  const create = JSON.parse(memory.execute({ files: null, op: "create", title: "Fixture title", text: "Project rule", category: "constraint",
     scope: "project", topics: [], reason: "original", supports: ["F1"] }));
   const id = create.committed[0].knowledgeId;
   const peer = m.store.createSession({ projectId: m.store.getSession(session.id)!.projectId,
@@ -309,7 +309,7 @@ test("invisible global current successor hides an earlier visible project identi
   const privateNote = m.tools({ kind: "manual", sessionId: peer.id, branch: "main", currentTurnId: peerTurn.id }).find(tool => tool.name === "note")!;
   expect(privateNote.execute({ title: "Private source", sources: factSources([{ address: `T${peerTurn.id}#E1`, text: "Private evidence" }]) })).toContain("ok: F2");
   const changed = commitNoterKnowledge(m.store, { path: { sessionId: peer.id, branch: "main", headTurnId: peerTurn.id },
-    run: { sessionId: peer.id, branch: "main", createdAt: "later" }, operations: [{ op: "update", knowledgeId: id,
+    run: { sessionId: peer.id, branch: "main", createdAt: "later" }, operations: [{ files: null, op: "update", knowledgeId: id,
       baseCommit: m.store.resolveVersionOrdinal(id, 1), text: "Private successor", category: "constraint", scope: "session",
       topics: [], reason: "restricted", supports: [2], createdAt: "later" }] });
   expect(changed.ok).toBe(true);

@@ -373,7 +373,7 @@ function dreamingScenarios(size: string): Sample[] {
     const create = (i: number) => {
       const result = store.commitConsolidationRun({ path: target,
         run: { kind: "manual", sessionId: target.sessionId, branch: target.branch, createdAt: time },
-        operations: [{ op: "create", handle: `$${i}`, author: "perf", ...content(i) }] });
+        operations: [{ files: null, op: "create", handle: `$${i}`, author: "perf", ...content(i) }] });
       if (!result.ok) throw new Error(result.problems.join());
       return result.committed[0]!;
     };
@@ -383,7 +383,7 @@ function dreamingScenarios(size: string): Sample[] {
       for (let i = 10; i < revisions; i++) {
         const base = current[i % 10]!;
         const done = store.commitWorkspaceRun({ run: { kind: "dreaming", sessionId: target.sessionId, branch: target.branch, createdAt: time }, path: target,
-          operations: [{ op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content(i) }] });
+          operations: [{ files: null, op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content(i) }] });
         const result = done.results[0]!;
         if (!result.ok) throw new Error(result.reason);
         current[i % 10] = result.committed[0]!;
@@ -436,7 +436,7 @@ function deliveryScenarios(fixture: Fixture, size: string): Sample[] {
     const path = { sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: fixture.headTurnId };
     const support = store.listBranchFacts(fixture.sessionId, fixture.branch, fixture.headTurnId)[0]!;
     const committed = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: fixture.sessionId, branch: fixture.branch, createdAt: "2026-09-12T00:00:00Z" },
-      operations: Array.from({ length: count }, (_, index) => ({ op: "create" as const, handle: `$e${index + 1}`,
+      operations: Array.from({ length: count }, (_, index) => ({ files: null, op: "create" as const, handle: `$e${index + 1}`,
         author: "perf", text: `Foreground candidate ${index + 1}`, category: "constraint" as const, scope: "project" as const,
         supports: [support.id], topics: [], reason: "synthetic foreground publication fixture", createdAt: "2026-09-12T00:00:00Z" })) });
     if (!committed.ok) throw new Error(committed.problems.join("; "));

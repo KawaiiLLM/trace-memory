@@ -36,6 +36,8 @@ export const factSources = (segments: readonly { address: string; text: string }
   segments.map(({ address, text }) => `[${address}] ${text}`).join("\n");
 
 type NewSeed = { title: string; sources: readonly { entry: SourceEntry; text: string }[];
+  objects?: string[];
+  caused_by?: readonly (readonly [number, "strong" | "weak"])[];
   negate?: readonly (readonly [number, "strong" | "weak"])[] };
 
 /** One real manual note call per supplied fact; Core owns ordering, roles and owning Turn. A seeded fact
@@ -54,7 +56,9 @@ function seedFacts(memory: TraceMemory, tool: { execute(input: unknown): string 
   const ids = items.map(item => {
     const receipt = tool.execute({ title: item.title, sources: factSources(item.sources.map(source => ({
       address: `T${source.entry.turnId}#E${source.entry.entryOrdinal}`, text: source.text,
-    }))), ...(item.negate?.length ? { negate: item.negate.map(([id, strength]) => [`F${id}`, strength]) } : {}) });
+    }))), ...(item.negate?.length ? { negate: item.negate.map(([id, strength]) => [`F${id}`, strength]) } : {}),
+      ...(item.objects === undefined ? {} : { objects: item.objects }),
+      ...(item.caused_by?.length ? { caused_by: item.caused_by.map(([id, strength]) => [`F${id}`, strength]) } : {}) });
     if (receipt.startsWith("rejected:")) throw new Error(`fact seed failed: ${receipt}`);
     const result = JSON.parse(receipt) as { factIds?: number[]; results?: string[] };
     if (result.factIds?.length !== 1 || result.results?.[0] !== `ok: F${result.factIds[0]}`)
@@ -110,13 +114,14 @@ export function legacyFact(store: Store, path: KnowledgePath, sources: readonly 
 export const fixtureTitle = (text: string): string => knowledgeOpening(text, DEFAULT_WRITING_LIMITS.titleWords);
 
 type KnowledgeSeed = { scope: "global" | "project" | "session"; category: KnowledgeCategory; supports: number[];
-  title?: string; text: string; topics?: string[]; createdAt?: string; author?: string; reason?: string };
+  title?: string; text: string; topics?: string[]; createdAt?: string; author?: string; reason?: string; files?: string[] | null };
 type KnowledgeRun = { kind: "manual" | "noting"; createdAt: string };
 
 /** One real create-only manual/N knowledge run; caller owns path, run time and each item's metadata. */
 export function knowledgeBatch(store: Store, path: KnowledgePath, items: readonly KnowledgeSeed[],
   run: KnowledgeRun = { kind: "noting", createdAt: at }) {
   const operations = items.map((item, index) => ({ op: "create" as const, handle: `$${index + 1}`,
+    files: item.files ?? null,
     author: item.author ?? "test", title: item.title ?? fixtureTitle(item.text), text: item.text, category: item.category, scope: item.scope,
     supports: item.supports, topics: item.topics ?? [], reason: item.reason ?? "fixture",
     createdAt: item.createdAt ?? run.createdAt }));
@@ -148,6 +153,7 @@ export function legacyKnowledge(store: Store, path: KnowledgePath, item: Knowled
     VALUES (?,NULL,?,?,?,?,'change','create',?,?,?,?,'manual')`).run(knowledgeId, item.text, item.category, item.scope,
       JSON.stringify(item.supports), item.reason ?? "legacy", JSON.stringify(item.topics ?? []), runId, item.createdAt ?? at).lastInsertRowid);
   assignVersionTag(store.db, knowledgeId, commit);
+  indexLegacyVersion(store, commit);
   return { knowledgeId, commit };
 }
 
@@ -160,7 +166,7 @@ export function clearSupports(store: Store, commit: number): void {
 export function updateKnowledge(store: Store, path: KnowledgePath, knowledgeId: number, baseCommit: number, text: string,
   supports: number[], category: KnowledgeCategory = "constraint", scope: "global" | "project" | "session" = "project"): CommittedKnowledgeOp {
   const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    operations: [{ op: "update", knowledgeId, baseCommit, text, category, scope, supports, topics: [], reason: "fixture update", createdAt: at }] });
+    operations: [{ op: "update", files: store.knowledgeRevision(baseCommit)!.files, knowledgeId, baseCommit, text, category, scope, supports, topics: [], reason: "fixture update", createdAt: at }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!;
 }
@@ -170,7 +176,7 @@ export function updateKnowledge(store: Store, path: KnowledgePath, knowledgeId: 
 export function archive(store: Store, path: KnowledgePath, knowledgeId: number, baseCommit: number, supports: number[],
   kind: "invalid" | "inadmissible" = "invalid", text = "Withdrawn: the user retired this and nothing replaces it, per the cited fact."): number {
   const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    operations: [{ op: "archive", kind, knowledgeId, baseCommit, supports, reason: "fixture archive", createdAt: at, text }] });
+    operations: [{ op: "archive", files: store.knowledgeRevision(baseCommit)!.files, kind, knowledgeId, baseCommit, supports, reason: "fixture archive", createdAt: at, text }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!.commit;
 }
@@ -179,6 +185,7 @@ export function archive(store: Store, path: KnowledgePath, knowledgeId: number, 
 export function legacyArchive(store: Store, path: KnowledgePath, knowledgeId: number, baseCommit: number, supports: number[]): number {
   const commit = archive(store, path, knowledgeId, baseCommit, supports);
   store.db.prepare("UPDATE knowledge_revisions SET text = '', archive_kind = NULL WHERE id = ?").run(commit);
+  indexLegacyVersion(store, commit);
   return commit;
 }
 
@@ -186,7 +193,14 @@ export function legacyArchive(store: Store, path: KnowledgePath, knowledgeId: nu
 export function budgetArchive(store: Store, path: KnowledgePath, knowledgeId: number, baseCommit: number, supports: number[]): number {
   const commit = archive(store, path, knowledgeId, baseCommit, supports);
   store.db.prepare("UPDATE knowledge_revisions SET text = (SELECT text FROM knowledge_revisions WHERE id = ?), archive_kind = 'budget' WHERE id = ?").run(baseCommit, commit);
+  indexLegacyVersion(store, commit);
   return commit;
+}
+
+/** Historical fixture writes stand for versions the migration already indexed. */
+function indexLegacyVersion(store: Store, commit: number): void {
+  store.db.prepare("DELETE FROM knowledge_fts WHERE rowid=?").run(commit);
+  store.db.prepare("INSERT INTO knowledge_fts(rowid,title,text) SELECT id,title,text FROM knowledge_revisions WHERE id=?").run(commit);
 }
 
 /** Scores every knowledge item that has none (default 50): injection spends the Knowledge base on scored items only,

@@ -235,6 +235,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       if (category === undefined && !isKnowledgeCategory(b.revision.category))
         return { problems: [problem(file, section.line, label, `category: the base \`${b.revision.category}\` is a legacy category; supply one of ${KNOWLEDGE_CATEGORIES.join(", ")}`)] };
       return piece({ op: "update", id: `K${b.knowledgeId}#${store.versionTag(b.knowledgeId, b.commit)}`, text: section.body,
+        files: b.revision.files,
         category: category ?? b.revision.category, scope: scope ?? b.revision.scope, topics: topics === undefined ? b.revision.topics : list(topics),
         supports: cited.refs, reason: value(section, "reason") ?? "", ...(title === undefined ? {} : { title }) }, label, section.line, "", mapping, !noting);
     };
@@ -243,6 +244,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       const cited = supports(section, label, mapping);
       if (!cited.refs) return { problems: cited.problems };
       return piece({ op: "create", title: value(section, "title"), text: section.body, category: value(section, "category"), scope: value(section, "scope"),
+        files: null,
         topics: list(value(section, "topics")), supports: cited.refs, reason: value(section, "reason") }, label, section.line, prefix, mapping);
     };
     const planned = (entry: Omit<PlannedBlock, "block">) => {
@@ -296,7 +298,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
           const made = createOf(child, "child", `${where} child ${i + 1}`, `child ${i + 1}: `, mapping);
           if (made.operation?.op !== "create") { found.push(...made.problems); return; }
           const c = made.operation;
-          children.push({ title: c.title, text: c.text, category: c.category, topics: c.topics, scope: c.scope, supports: c.supports, reason: c.reason });
+          children.push({ title: c.title, text: c.text, category: c.category, topics: c.topics, files: c.files ?? null, scope: c.scope, supports: c.supports, reason: c.reason });
         });
         return found.length || children.length !== block.children.length ? { problems: found }
           : { problems: [], operation: { ...content, op: "split", knowledgeId, baseCommit, children } };
@@ -314,6 +316,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       record(target.knowledgeId, block.line);
       planned({
         make: () => ({ problems: [], operation: { op: "archive", knowledgeId: target.knowledgeId, baseCommit: target.commit, kind: (kind ?? "invalid") as "invalid",
+          files: target.revision.files,
           text: block.body, supports: [], reason: value(block, "reason") ?? "", createdAt: new Date().toISOString() } }) });
     }
   }

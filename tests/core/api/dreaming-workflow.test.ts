@@ -40,7 +40,7 @@ test("35c faithful merge keeps authority, conditions, exception and rendered top
   const outcome = await f.dream();
   expect(outcome.outcome, JSON.stringify(outcome)).toBe("success");
   const current = f.store.currentCommit(items[0]!.knowledgeId, f.path)[0]!;
-  expect(current).toMatchObject({ op: "merge", text: body.text, category: body.category, scope: body.scope, topics: [...body.topics].sort() });
+  expect(current).toMatchObject({ files: null, op: "merge", text: body.text, category: body.category, scope: body.scope, topics: [...body.topics].sort() });
   const rendered = f.memory.trace(`K${items[0]!.knowledgeId}@v2`);
   expect(rendered).toContain("artifacts may be prepared before deployment");
   expect(rendered).toContain('topics: ["artifact-preparation","deployment","offline-runtime"]');

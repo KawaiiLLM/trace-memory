@@ -82,9 +82,9 @@ async function maintain(path: { sessionId: number; branch: string; headTurnId: n
   const knowledgeId = Number(id), baseCommit = memory.store.resolveVersionTag(knowledgeId, versionTag!);
   const supports = ((operation.supports as string[] | undefined) ?? []).map(value => Number(value.slice(1)));
   return curateWrite(memory, target, [operation.op === "archive"
-    ? { op: "archive", kind: "invalid", knowledgeId, baseCommit, supports, reason: String(operation.reason), createdAt: time,
+    ? { files: null, op: "archive", kind: "invalid", knowledgeId, baseCommit, supports, reason: String(operation.reason), createdAt: time,
         text: "The user withdrew this and nothing replaces it; the grounds are in the cited evidence." }
-    : { op: "update", knowledgeId, baseCommit, text: String(operation.text), category: operation.category as "constraint", scope: operation.scope as "project",
+    : { files: null, op: "update", knowledgeId, baseCommit, text: String(operation.text), category: operation.category as "constraint", scope: operation.scope as "project",
         topics: operation.topics as string[], supports, reason: String(operation.reason), createdAt: time }]);
 }
 
@@ -155,7 +155,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   // A legal oversized manual item pressures the same Knowledge selector used by N.
   const receipt = "omitted 2 constraint knowledge; expand: trace://K2, trace://K1";
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
-  tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [],
+  tools.find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", topics: [],
     reason: "Exercise a database-derived omission boundary.", text: "The project uses pnpm " + "word ".repeat(5_200),
     category: "constraint", scope: "project", supports: ["F1"] });
   scoreAll(memory.store);
@@ -287,7 +287,7 @@ test("45/92: N sends Knowledge within the database-derived cap without borrowing
 test("21b/92: foreground, compact and N render topics through one renderer, with a multi-topic item once", async () => {
   const { s, t, read } = seeded();
   read("K1@v1");
-  const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: tag(1, 1),
+  const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { files: null, op: "update", id: tag(1, 1),
     topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.", text: "The project uses pnpm",
     category: "constraint", scope: "project", supports: ["F1"] }, tag(1, 1)))[0]!;
   const labelled = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n## constraint (1)\n[${tag(1, changed.commit)}] [constraint/project] Package manager\nThe project uses pnpm\n  change supports: F1 · topics: ["packaging","storage"]\n</knowledge>`;
@@ -305,7 +305,7 @@ test("21b/92: foreground, compact and N render topics through one renderer, with
 test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the leading block stays byte-identical across tasks", async () => {
   const { s, t, read } = seeded();
   read("K1@v1");
-  const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: tag(1, 1),
+  const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { files: null, op: "update", id: tag(1, 1),
     topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.", text: "The project uses pnpm " + "word ".repeat(900),
     category: "constraint", scope: "project", supports: ["F1"] }, tag(1, 1)))[0]!;
   const value = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!;
@@ -513,7 +513,7 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   const { s, t } = seeded();
   const files = memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id });
   files.read("trace://K1@v1");
-  const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "update", id: tag(1, 1),
+  const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { files: null, op: "update", id: tag(1, 1),
     topics: [], reason: "The rule was restated.", text: "The project uses pnpm only", category: "constraint", scope: "project", supports: ["F1"] }, tag(1, 1)))[0]!;
   seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }, "Package manager retained",
     [{ entry: hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store).find(e => e.role === "user")!, text: "Keep pnpm" }]);
@@ -533,7 +533,7 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   expect(unchanged.text).toBe("");
   expect(unchanged.knowledgeCommitIds).toEqual([]);
   files.read(`trace://${tag(1, current)}`);
-  await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag(1, current),
+  await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag(1, current),
     reason: "Withdrawn by the user.", supports: ["F1"] }, tag(1, current));
   setKnowledgeCapacity(memory, 5_000);
   const squeezed = delivery([current]);
@@ -583,7 +583,7 @@ test("64c/92: foreground and fresh N keep the same newer items and receipt omitt
   const { s, t } = seeded();
   const write = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!;
   const committed = ["constraint", "understanding", "reference"].flatMap(category => {
-    const receipt = JSON.parse(write.execute({ op: "create", title: "Fixture title", category, scope: "project", text: `new ${category} ` + "word ".repeat(2_000),
+    const receipt = JSON.parse(write.execute({ files: null, op: "create", title: "Fixture title", category, scope: "project", text: `new ${category} ` + "word ".repeat(2_000),
       topics: [], supports: ["F1"], reason: "durable conclusion" }));
     return receipt.committed;
   });

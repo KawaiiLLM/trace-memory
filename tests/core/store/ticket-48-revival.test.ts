@@ -26,7 +26,7 @@ function fixture() {
     supports: [fact], reason: "test", topics: ["object"], createdAt: "now" });
   const create = (text: string) => {
     const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" },
-      operations: [{ op: "create", title: "Fixture title", handle: `$${text}`, author: "test", ...content(text) }] });
+      operations: [{ files: null, op: "create", title: "Fixture title", handle: `$${text}`, author: "test", ...content(text) }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
     return result.committed[0]!;
   };

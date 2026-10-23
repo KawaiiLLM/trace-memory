@@ -65,7 +65,7 @@ if (!process.argv.includes("--fixed-only")) for (const length of lengths) {
     const original = store.listBranchFacts(target.sessionId, target.branch, target.headTurnId)[0]!;
     const changed = store.commitConsolidationRun({ path: target,
       run: { kind: "manual", sessionId: target.sessionId, branch: target.branch, createdAt: "2026-09-26T00:00:00Z" },
-      operations: [{ op: "create", handle: "$change", author: "benchmark", title: "New synthetic rule", text: "new synthetic rule",
+      operations: [{ files: null, op: "create", handle: "$change", author: "benchmark", title: "New synthetic rule", text: "new synthetic rule",
         category: "constraint", scope: "session", supports: [original.id], topics: [], reason: "benchmark", createdAt: "2026-09-26T00:00:00Z" }] });
     if (!changed.ok) throw Error(changed.problems.join("; "));
     sample("changed knowledge injection", length, () => memory.injection(target, supplied), { ...inventory, newVersions: changed.committed.length });
@@ -106,7 +106,7 @@ if (!process.argv.includes("--fixed-only")) for (const length of lengths) {
       const path = local!.store.sourcePath(target.sessionId, target.branch, target.headTurnId);
       const ordinal = path.filter(item => item.turnId === entry.turnId).findIndex(item => item.id === first) + 1;
       const message = await submit(task, local!, { noteInput: [{ title: "Synthetic user rule", sources: `[T${entry.turnId}#E${ordinal}] Synthetic user specified a durable rule` }],
-        memoryInput: { op: "create", title: "Fixture title", text: "Synthetic rule applies", category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "benchmark" } });
+        memoryInput: { files: null, op: "create", title: "Fixture title", text: "Synthetic rule applies", category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "benchmark" } });
       if (message) throw Error(`workspace files rejected: ${message}`);
       return { outcome: "success", output: "done", request };
     };
@@ -270,7 +270,7 @@ for (const length of lengths) {
       if (task.task === "verify") return verifyUnchanged(task, { request });
       task.reportRequest(request);
       const message = await submit(task, local!, { noteInput: [{ title: "Synthetic user rule", sources: `[T${head - 2}#E1] Synthetic user rule` }],
-        memoryInput: { op: "create", title: "Fixture title", text: "Synthetic rule", category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "benchmark" } });
+        memoryInput: { files: null, op: "create", title: "Fixture title", text: "Synthetic rule", category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "benchmark" } });
       if (message) throw Error(`workspace files rejected: ${message}`);
       return { outcome: "success", output: "done", request };
     };

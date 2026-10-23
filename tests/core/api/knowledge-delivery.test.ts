@@ -31,7 +31,7 @@ function fixture(config: Record<string, unknown> = {}) {
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const create = (text: string, supports: number[]) => {
     const result = memory.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
-      run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ op: "create", title: "Fixture title", handle: `$${text}`,
+      run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ files: null, op: "create", title: "Fixture title", handle: `$${text}`,
         author: "fixture", text, category: "constraint", scope: "project", supports, topics: [], reason: "record conclusion", createdAt: time }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
     scoreAll(memory.store); // the Knowledge base carries scored items
@@ -64,11 +64,12 @@ async function maintain(f: ReturnType<typeof fixture>, operation: Record<string,
   const facts = (list: unknown) => ((list as string[] | undefined) ?? []).map(value => Number(value.slice(1)));
   const common = { text: String(operation.text), category: operation.category as "constraint", scope: operation.scope as "project", topics: (operation.topics ?? []) as string[],
     supports: facts(operation.supports), reason: String(operation.reason), createdAt: time };
+  const files = { files: null };
   const base = parse(String(operation.id));
-  const op = operation.op === "update" ? { op: "update" as const, ...base, ...common }
-    : operation.op === "merge" ? { op: "merge" as const, intoKnowledgeId: base.knowledgeId, intoBaseCommit: base.baseCommit,
+  const op = operation.op === "update" ? { ...files, op: "update" as const, ...base, ...common }
+    : operation.op === "merge" ? { ...files, op: "merge" as const, intoKnowledgeId: base.knowledgeId, intoBaseCommit: base.baseCommit,
       absorb: (operation.absorb as string[]).map(address => { const { knowledgeId, baseCommit } = parse(address); return { knowledgeId, baseCommit }; }), ...common }
-    : { op: "split" as const, ...base, children: operation.children as { title: string; text: string; category: "constraint" | "goal"; topics: string[] }[], ...common };
+    : { ...files, op: "split" as const, ...base, children: operation.children as { title: string; text: string; category: "constraint" | "goal"; topics: string[]; files: null }[], ...common };
   const committed = await curateWrite(f.memory, f.target, [op]);
   scoreAll(f.memory.store); // the Knowledge base carries scored items
   return committed;
@@ -149,7 +150,7 @@ test("92 recognized bounded Raw never suppresses an undelivered Knowledge body",
 test("34c empty supports are never evidence-suppressed and only current-change supports are inspected", async () => {
   const f = fixture();
   const parent = f.create("parent", [f.facts[0]!.id]);
-  const update = await maintain(f, { op: "update", id: `K${parent.knowledgeId}@${parent.commit}`, text: "changed", category: "constraint", scope: "project",
+  const update = await maintain(f, { files: null, op: "update", id: `K${parent.knowledgeId}@${parent.commit}`, text: "changed", category: "constraint", scope: "project",
     supports: [`F${f.facts[1]!.id}`], topics: [], reason: "change" }, [`K${parent.knowledgeId}@${parent.commit}`]);
   const coveredParentOnly = view({ factIds: new Set([f.facts[0]!.id]) });
   expect(f.memory.injection(f.target, coveredParentOnly).knowledgeCommitIds).toEqual([update[0]!.commit]);
@@ -224,7 +225,7 @@ test("92 archive notices remain eligible even with complete current-change evide
   const f = fixture();
   const parent = f.create("retire me", [f.facts[0]!.id]);
   const archive = f.memory.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time },
-    operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: f.facts.map(fact => fact.id),
+    operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: f.facts.map(fact => fact.id),
       reason: "withdraw", createdAt: time }] });
   if (!archive.ok) throw new Error(archive.problems.join());
   const visibleParent = { knowledgeCommitIds: new Set([parent.commit]) };
@@ -240,7 +241,7 @@ test("34c a retained state-only receipt consumes allowance without granting body
   const f = fixture();
   const parent = f.create("retired", [f.facts[0]!.id]);
   const archive = f.memory.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time },
-    operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: parent.knowledgeId, baseCommit: parent.commit,
+    operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: parent.knowledgeId, baseCommit: parent.commit,
       supports: [f.facts[0]!.id], reason: "retire", createdAt: time }] });
   if (!archive.ok) throw new Error(archive.problems.join());
   f.create("remaining candidate ".repeat(3_000), [f.facts[1]!.id]);
@@ -255,7 +256,7 @@ test("34c state transitions are whole deterministic prefix items and only select
   const parents = [f.create("retire first ".repeat(4_000), [f.facts[0]!.id]), f.create("retire second ".repeat(4_000), [f.facts[1]!.id]), f.create("retire third ".repeat(4_000), [f.facts[0]!.id])];
   const archives = parents.map((parent, index) => {
     const result = f.memory.store.commitConsolidationRun({ path: f.target,
-      run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.",
+      run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.",
         knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: [f.facts[index % 2]!.id], reason: `retire ${index}`, createdAt: time }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
     return result.committed[0]!;
@@ -299,7 +300,7 @@ test("34c state-prefix budgeting shares exact framing with bodies without acknow
   const f = fixture();
   const parent = f.create("retire visible parent ".repeat(6_000), [f.facts[0]!.id]);
   const archive = f.memory.store.commitConsolidationRun({ path: f.target,
-    run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.",
+    run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.",
       knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: [f.facts[0]!.id], reason: "retire", createdAt: time }] });
   if (!archive.ok) throw new Error(archive.problems.join("; "));
   const body = f.create("deliver this complete body", [f.facts[1]!.id]);
@@ -324,7 +325,7 @@ test("34c merge notices are scoped to visible parents and do not grant the survi
   const f = fixture();
   const first = f.create("first parent", [f.facts[0]!.id]);
   const second = f.create("second parent", [f.facts[1]!.id]);
-  const merge = await maintain(f, { op: "merge", id: `K${first.knowledgeId}@${first.commit}`,
+  const merge = await maintain(f, { files: null, op: "merge", id: `K${first.knowledgeId}@${first.commit}`,
     absorb: [`K${second.knowledgeId}@${second.commit}`], text: "merged survivor", category: "constraint", scope: "project",
     supports: [`F${f.facts[0]!.id}`], topics: [], reason: "merge" },
   [`K${first.knowledgeId}@${first.commit}`, `K${second.knowledgeId}@${second.commit}`]);
@@ -342,9 +343,9 @@ test("34c a split item's old version is shown as its primary part; budgeting kee
   const f = fixture();
   const parent = f.create("compound parent ".repeat(4_000), [f.facts[0]!.id]);
   // The split item continues as its primary part (2026-10-22); its two children are new items.
-  const [primary, first, second] = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, text: "Primary part.", category: "constraint", scope: "project", topics: [],
+  const [primary, first, second] = await maintain(f, { files: null, op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, text: "Primary part.", category: "constraint", scope: "project", topics: [],
     supports: [], reason: "separate", children: [
-      { title: "Fixture child", text: "first child ".repeat(450), category: "constraint", topics: [] }, { title: "Fixture child", text: "second child ".repeat(450), category: "goal", topics: [] }] },
+      { files: null, title: "Fixture child", text: "first child ".repeat(450), category: "constraint", topics: [] }, { files: null, title: "Fixture child", text: "second child ".repeat(450), category: "goal", topics: [] }] },
   [`K${parent.knowledgeId}@${parent.commit}`], false);
   const visible = view({ knowledgeCommitIds: new Set([parent.commit]) });
   let partial: ReturnType<typeof f.memory.injection> | undefined;
@@ -366,10 +367,10 @@ test("34c a split item's old version is shown as its primary part; budgeting kee
 test("92 split notice names only the visible results and never mislabels a partially hidden split as a merge", async () => {
   const f = fixture({ dreaming: { triggerOperations: 1 } });
   const parent = f.create("compound parent", [f.facts[0]!.id]);
-  const split = await maintain(f, { op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, text: "Primary part.", category: "constraint", scope: "project", topics: [],
+  const split = await maintain(f, { files: null, op: "split", id: `K${parent.knowledgeId}@${parent.commit}`, text: "Primary part.", category: "constraint", scope: "project", topics: [],
     supports: [], reason: "separate", children: [
-      { title: "Fixture child", text: "public child", category: "constraint", topics: [] },
-      { title: "Fixture child", text: "child later private", category: "constraint", topics: [] }] }, [`K${parent.knowledgeId}@${parent.commit}`], false);
+      { files: null, title: "Fixture child", text: "public child", category: "constraint", topics: [] },
+      { files: null, title: "Fixture child", text: "child later private", category: "constraint", topics: [] }] }, [`K${parent.knowledgeId}@${parent.commit}`], false);
   const peer = f.memory.store.createSession({ host: "peer", projectId: f.session.projectId, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
   const turn = f.memory.store.appendTurn({ sessionId: peer.id, kind: "turn", userPrompt: "Private evidence", startedAt: time });
   const entry = f.memory.appendEntry({ sessionId: peer.id, turnId: turn.id, nativeLineage: "peer", nativeId: "private", role: "user", text: "Private evidence", raw: "{}", calls: [] });
@@ -378,7 +379,7 @@ test("92 split notice names only the visible results and never mislabels a parti
     text: "Private evidence", source: [`T${turn.id}#E${entry.entryOrdinal}`], createdAt: time }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const changed = commitNoterKnowledge(f.memory.store, { path: { sessionId: peer.id, branch: "main", headTurnId: turn.id },
-    run: { sessionId: peer.id, createdAt: time }, operations: [{ op: "update", knowledgeId: split[2]!.knowledgeId,
+    run: { sessionId: peer.id, createdAt: time }, operations: [{ files: null, op: "update", knowledgeId: split[2]!.knowledgeId,
       baseCommit: split[2]!.commit, text: "Private successor", scope: "session", category: "constraint", supports: [noted.facts[0]!.id], topics: [], reason: "private scope", createdAt: time }] });
   if (!changed.ok) throw new Error(changed.problems.join("; "));
   const result = f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([parent.commit]), knowledgeTokens: 100 }));

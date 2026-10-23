@@ -26,7 +26,7 @@ function session(store: Store, projectId: number, declaration: "undeclared" | "m
 }
 
 function create(store: Store, owner: ReturnType<typeof session>, text: string, scope: "project" | "global" | "session" = "project") {
-  const operation: KnowledgeOperationInput = { op: "create", title: "Fixture title", handle: "$1", author: "test", text, category: "constraint", scope,
+  const operation: KnowledgeOperationInput = { files: null, op: "create", title: "Fixture title", handle: "$1", author: "test", text, category: "constraint", scope,
     supports: [owner.fact.id], topics: [], reason: "test", createdAt: "now" };
   const result = store.commitConsolidationRun({ path: owner.path, run: { kind: "manual", sessionId: owner.value.id, createdAt: "now" },
     operations: [operation] });
@@ -125,7 +125,7 @@ test("86: moved current revision becomes uncovered and counts as a Noter change,
   const pool = `project:${target.id}`;
   processPool(store, author.path);
   const revised = commitNoterKnowledge(store, { path: moving.path, run: { sessionId: moving.value.id, branch: "main", createdAt: "now" }, operations: [
-    { op: "update", knowledgeId: original.knowledgeId, baseCommit: original.commit, text: "second author revised text",
+    { files: null, op: "update", knowledgeId: original.knowledgeId, baseCommit: original.commit, text: "second author revised text",
       category: "constraint", scope: "project", supports: [moving.fact.id], topics: [], reason: "new evidence", createdAt: "now" },
   ] });
   if (!revised.ok) throw Error(revised.problems.join("; "));

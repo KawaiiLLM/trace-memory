@@ -209,7 +209,7 @@ test("24a: the counts follow the selected branch, so a sibling entry of the same
     .find(value => value.entryOrdinal === ordinal)!;
   fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha rule",
     [{ entry: h.memory.store.getSourceEntry(source(1).id)!, text: "Use alpha everywhere" }]);
-  expect(write("main").find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
+  expect(write("main").find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
     supports: ["F1"], reason: "Admitted from the shared ancestry." })).not.toContain("rejected:");
   // A withdrawal bound to a sibling entry of the same Turn: only main holds it.
   h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });
@@ -217,7 +217,7 @@ test("24a: the counts follow the selected branch, so a sibling entry of the same
   fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Alpha withdrawn",
     [{ entry: h.memory.store.getSourceEntry(source(4).id)!, text: "Pi agent reports alpha withdrawn" }]);
   const handle = readHandle(address => memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(address).content, "K1");
-  expect(write("main").find(tool => tool.name === "memory")!.execute({ op: "archive", kind: "invalid", text: "The rule was withdrawn on this path: F2 records that the Pi agent reported alpha withdrawn, and nothing replaces it.", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." })).not.toContain("rejected:");
+  expect(write("main").find(tool => tool.name === "memory")!.execute({ files: null, op: "archive", kind: "invalid", text: "The rule was withdrawn on this path: F2 records that the Pi agent reported alpha withdrawn, and nothing replaces it.", id: handle, supports: ["F2"], reason: "The rule was withdrawn on this path." })).not.toContain("rejected:");
   await refresh(h);
   const onMain = footer(h);
   expect(onMain).toMatchObject({ ...enumerated(h), facts: "2", knowledge: "0" }); // archived here

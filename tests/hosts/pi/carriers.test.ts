@@ -128,7 +128,7 @@ test("26c0 native fixture: the message the hook returned is persisted through th
     // 29d: that commit reaches no prompt on its own, so the message this case needs is the one
     // automatic carrier that is left — the initial knowledge block.
     const store = f.h.memory.store, fact = store.listSessionFacts(1)[0]!;
-    const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{
+    const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ files: null,
       op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture",
       text: "Carried knowledge", category: "constraint", scope: "global", supports: [fact.id], createdAt: "now" }] });
     if (!created.ok) throw new Error(created.problems.join("; "));

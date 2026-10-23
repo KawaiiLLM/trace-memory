@@ -21,6 +21,35 @@ Ticket 137: the retrieval policy (`src/core/render/retrieval-policy.ts`) says wh
 
 Ordinary reads use host-native limits; offset/limit continuations use the original `trace://` path and render again without exposing backing paths or adding model-visible text. Session knowledge, compaction views and exact entries are whole on main sessions and Pi children; CC fresh workers retain SDK Read limits. One shared guide (at most 200 Core-estimated tokens) is emitted once per injection/material, never once per knowledge block. It is fixed framing outside the Knowledge, facts, Raw and shared selection windows; its actual bytes still count toward delivered text and model capacity. Read records no delivery or state. Search pagination is unchanged.
 
+## Propagation data (154)
+
+The store accepts fact objects and causal annotations now; Noter and Dreamer workspace formats and prompts remain unchanged until 155/156.
+
+- **Fact objects:** optional names must occur case-insensitively in the body, not merely the title. Core trims names, removes case-insensitive duplicates while keeping the first spelling, and stores the authored list in `facts.objects`. `fact_objects(fact_id, name, object_key)` and its `(object_key, fact_id)` index serve `factsMentioningObject(name)` without scanning bodies. Old facts have no objects record and are not backfilled.
+- **Relations:** `caused_by` accepts at most two existing fact targets and renders through the same relation renderer as `support` and `negate`. Causation is an annotation, never a trigger or an applicability rule. `support` remains accepted for the current writers; its removal from new Noter output belongs to 155.
+- **Files:** each Store operation requires its own `files` property, including every split child. An array contains opaque code-file paths; `#` has no special meaning. JSON `null` means explicitly no code files; SQL `NULL` means no mapping record. A maintenance writer may explicitly pass `undefined` only when copying an unmapped parent. Omission is refused, and a create cannot pass `undefined`. Duplicate paths are removed exactly, without interpreting or resolving them.
+- **Status:** `knowledge_file_verifications(revision_id, file, verified_commit, verified_at)` stores code-authored verification for a linked path. `setKnowledgeFileVerification`, `clearKnowledgeFileVerification` and `knowledgeFileVerifications` mutate/read it without a version. An update or archive whose explicit mapping equals its parent's copies verification; a different mapping, merge, split or create starts unverified.
+- **Staleness:** `knowledge_stale_reasons(revision_id, reason, detail)` represents the flag by one or more reasons. Supported reasons are `negated_fact`, `file_changed`, `unresolved_check`, `unverified_file` and `missing_grounds`. `setKnowledgeStale` adds a reason, `clearKnowledgeStale` removes one exact reason/detail or all reasons, and `knowledgeStaleReasons` reads them. No automatic scanner or model-facing status write is added here. Status changes affect neither applicability, rewind, scores nor version history.
+- **Derived objects:** `knowledgeObjects(revisionId)` follows that exact version's parent and merged-parent ancestry, stopping at each split. It counts distinct cited facts per case-insensitive object, ranks by count descending, and breaks ties by object key. The returned spelling is the minimum stored spelling for that key. Nothing is stored on knowledge as authored objects.
+- **Candidate text:** contentless trigram `knowledge_fts(title, text)` indexes every version, including archives and superseded versions. Version publication writes it in the same transaction. Migration backfills it once. `searchKnowledge(terms)` returns distinct knowledge ids for versions containing all literal terms across title and body, using indexed candidates and a real-column recheck; short terms use the same substring fallback as Raw. An empty term list returns none. Visibility belongs to the caller; public `search` retains its existing topics-aware contract.
+
+Current writers make these explicit choices until they collect file information:
+
+| Writer | Files rule |
+|---|---|
+| Manual `memory` create/update/archive | Required array or `null`, authored by the caller; no file inheritance |
+| Noter workspace create | `null` |
+| Noter workspace update | Copy the exact base's mapping, including no record |
+| Noter concurrent update converted to create | Keep explicit paths or `null`; an unmapped base becomes `null` on the new identity |
+| Dreamer curate/verify update/archive | Copy the exact base's mapping, including no record |
+| Dreamer merge | Copy the primary parent's mapping; never union mappings implicitly |
+| Dreamer split primary | Copy its parent's mapping |
+| Dreamer split children | `null` per new identity |
+
+Dreamer proposal reload restores an explicit `undefined` property lost in JSON, so an unmapped-parent copy remains explicit through the existing curate/verify handoff. Metadata-only maintenance uses an ordinary update with the parent's body and empty Dreamer supports; existing support inheritance copies the parent's facts. The pre-144 deployment revival runs before this migration and remains historical unmapped data; its versions are included in the FTS backfill.
+
+The migration adds only metadata columns/tables and the FTS index, except for rebuilding the existing fact-relation CHECK to admit `caused_by`. It preserves relation rows and indexes, and runs inside Store's schema transaction and foreign-key check. Production deployment still requires an SQLite-backup-API backup and stopped executors; measuring a disposable production copy is not a deployment migration.
+
 ## Noter publication (92/04)
 
 This contract supersedes the older immediate-Noting and NEAR descriptions below. Live Consolidation is retired; historical C records remain readable. The numbered sections retain implementation history, not permission to use superseded schemas or stages. In particular, ticket 02's `note({facts})`, `note({facts: []})`, immediate N commit and NEAR descriptions below are historical, not current tool guidance.

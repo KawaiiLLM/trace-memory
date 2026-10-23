@@ -41,7 +41,7 @@ function writeFact(store: Store, sessionId: number, branch: string, turnId: numb
 
 function create(store: Store, path: KnowledgePath, factId: number, scope: "global" | "project" | "session", text: string) {
   const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    operations: [{ op: "create", title: "Fixture title", handle: `$${scope}`, author: "test", text, category: "constraint", scope,
+    operations: [{ files: null, op: "create", title: "Fixture title", handle: `$${scope}`, author: "test", text, category: "constraint", scope,
       topics: [], supports: [factId], reason: "represent current-path applicability", createdAt: at }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!;
@@ -186,9 +186,9 @@ test("64b pilot: an admitted Dreamer child uses only its direct foreground suppo
     const parentForDirectA = create(store, { sessionId: a.id, branch: "supported", headTurnId: a1.turn.id }, parentFact.id, "global", "second parent claim");
     const target = { sessionId: b.id, branch: "main", headTurnId: b0.turn.id, triggerEntryId: b0.entry.id };
     const [child, childCitingA] = curateWrite(memory, target, [
-      { op: "update", knowledgeId: parent.knowledgeId, baseCommit: parent.commit, text: "child claim", category: "constraint", scope: "global",
+      { files: null, op: "update", knowledgeId: parent.knowledgeId, baseCommit: parent.commit, text: "child claim", category: "constraint", scope: "global",
         supports: [childFact.id], topics: [], reason: "Child revision.", createdAt: at },
-      { op: "update", knowledgeId: parentForDirectA.knowledgeId, baseCommit: parentForDirectA.commit, text: "child explicitly citing A", category: "constraint", scope: "global",
+      { files: null, op: "update", knowledgeId: parentForDirectA.knowledgeId, baseCommit: parentForDirectA.commit, text: "child explicitly citing A", category: "constraint", scope: "global",
         supports: [parentFact.id], topics: [], reason: "Direct A support.", createdAt: at },
     ]) as [{ knowledgeId: number; commit: number }, { knowledgeId: number; commit: number }];
     const bPath = { sessionId: b.id, branch: "main", headTurnId: b0.turn.id };
@@ -226,7 +226,7 @@ test("64b validity pilot: later applicable commit wins independent of restore or
   const base = create(store, aMain, rootFact.id, "global", "base body");
   const archived = store.commitConsolidationRun({ path: aMain,
     run: { kind: "manual", sessionId: a.id, branch: "main", createdAt: at },
-    operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit,
+    operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit,
       supports: [archiveFact.id], reason: "Archive on A child.", createdAt: at }] });
   if (!archived.ok) throw new Error(archived.problems.join("; "));
   const archiveCommit = archived.committed[0]!.commit;
@@ -240,7 +240,7 @@ test("64b validity pilot: later applicable commit wins independent of restore or
   expect(store.currentKnowledge(bPath).some(item => item.knowledge.id === base.knowledgeId)).toBe(false);
   store.setCurrentPath(a.id, "rewind", a0.turn.id, "test-lineage");
 
-  const [replacement] = curateWrite(memory, bPath, [{ op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, text: "B replacement", category: "constraint", scope: "global",
+  const [replacement] = curateWrite(memory, bPath, [{ files: null, op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, text: "B replacement", category: "constraint", scope: "global",
     supports: [bFact.id], topics: [], reason: "Replace rewound base.", createdAt: at }]) as [{ knowledgeId: number; commit: number }];
 
   // Restoring A first cannot override the later applicable branch.
@@ -298,7 +298,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
     const tag = (item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}#${store.versionTag(item.knowledgeId, item.commit)}`;
     const history = (item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`;
     const update = (prior: { knowledgeId: number; commit: number }, scope: "session" | "project", text: string) =>
-      curateWrite(memory, ownerPath, [{ op: "update", knowledgeId: prior.knowledgeId, baseCommit: prior.commit, text, category: "constraint", scope,
+      curateWrite(memory, ownerPath, [{ files: null, op: "update", knowledgeId: prior.knowledgeId, baseCommit: prior.commit, text, category: "constraint", scope,
         supports: [ownerFact.id], reason: "Change current visibility.", topics: [], createdAt: at }])[0]!;
 
     const narrowed = update(base, "session", "owner-only body");
@@ -351,9 +351,9 @@ test("64b validity pilot: competing same-base Store writes commit once and stale
     const base = create(first, path, fact.id, "session", "one base");
     const attempt = (store: Store, reason: string, includeCreate = false) => store.commitConsolidationRun({ path,
       run: { kind: "manual", sessionId: owner.id, branch: "main", createdAt: at }, operations: [
-        ...(includeCreate ? [{ op: "create" as const, title: "Fixture title", handle: "$partial", author: "test", text: "must roll back",
+        ...(includeCreate ? [{ files: null, op: "create" as const, title: "Fixture title", handle: "$partial", author: "test", text: "must roll back",
           category: "constraint" as const, scope: "session" as const, supports: [fact.id], topics: [], reason: "Atomic probe.", createdAt: at }] : []),
-        { op: "archive" as const, kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fact.id], reason, createdAt: at },
+        { files: null, op: "archive" as const, kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fact.id], reason, createdAt: at },
       ] });
     const winner = attempt(first, "Winner.");
     expect(winner.ok).toBe(true);

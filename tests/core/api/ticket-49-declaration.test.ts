@@ -168,7 +168,7 @@ test.each(["source", "target", "unrelated"] as const)("86: a %s project peer's l
   expect(f.store.getClaim(peerSession.id, "dreaming")).toEqual(held);
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
   const before = f.store.listKnowledgeRevisions().length;
-  const commit = () => f.store.commitWorkspaceRun({ path: peerPath, run, operations: [{ op: "update", knowledgeId: peerItem.knowledgeId,
+  const commit = () => f.store.commitWorkspaceRun({ path: peerPath, run, operations: [{ files: null, op: "update", knowledgeId: peerItem.knowledgeId,
     baseCommit: peerItem.commit, text: "Peer maintenance after another session moved", category: "constraint", scope: "project",
     topics: [], supports: [], reason: "Peer's exact running task", createdAt: "now" }] });
   if (relation === "source") {

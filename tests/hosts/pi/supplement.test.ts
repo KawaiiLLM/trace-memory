@@ -97,7 +97,7 @@ test("34c/92 archive state has a persisted body-free receipt without a write tag
   const { h, support } = await seeded();
   try {
     const archived = h.memory.store.commitConsolidationRun({ path: { sessionId: 1, branch: "main", headTurnId: 1 },
-      run: { kind: "manual", sessionId: 1, branch: "main", createdAt: time }, operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: 1,
+      run: { kind: "manual", sessionId: 1, branch: "main", createdAt: time }, operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: 1,
         baseCommit: 1, supports: [support], reason: "withdraw", createdAt: time }] });
     if (!archived.ok) throw new Error(archived.problems.join());
     const notice = await served(h, "archive notice");
@@ -107,7 +107,7 @@ test("34c/92 archive state has a persisted body-free receipt without a write tag
     expect(carrier(notice).supplied.knowledgeStates).toEqual([{ fromCommit: 1, toCommits: [2] }]);
     expect((await h.prompt("archive unchanged"))?.message).toBeUndefined();
     // A state/history address is not a tagged base; there is no complete-read ledger.
-    await expect(h.tools.get("memory")!.execute("call", { op: "update", id: "K1@v2", text: "illegal",
+    await expect(h.tools.get("memory")!.execute("call", { files: null, op: "update", id: "K1@v2", text: "illegal",
       category: "constraint", scope: "project", supports: [`F${support}`], topics: [], reason: "no handle" }, null, null, h.ctx))
       .rejects.toThrow("supply an exact K#tag");
   } finally { await h.dispose(); }

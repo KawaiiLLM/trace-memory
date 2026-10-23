@@ -25,7 +25,7 @@ function fixture(path = ":memory:", prepare?: (store: Store, target: KnowledgePa
   prepare?.(store, target, content.supports);
   // The run of a Dreamer pass, as `commitTaskPass` records it; the claim fence has its own test below.
   const run: RunInput = { kind: "dreaming", sessionId: session.id, branch: "main", createdAt: "now" };
-  const archive = { op: "archive" as const, kind: "invalid" as const, text: "Retired: the user withdrew this rule and nothing replaces it; the grounds are in the cited fact.", knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [], reason: "Retire lower-priority active memory; history retained", createdAt: "now" };
+  const archive = { files: null, op: "archive" as const, kind: "invalid" as const, text: "Retired: the user withdrew this rule and nothing replaces it; the grounds are in the cited fact.", knowledgeId: item.knowledgeId, baseCommit: item.commit, supports: [], reason: "Retire lower-priority active memory; history retained", createdAt: "now" };
   /** One Dreamer pass's operations: each commits or is refused on its own. */
   const pass = (operations: Parameters<Store["commitWorkspaceRun"]>[0]["operations"], as: RunInput = run) => store.commitWorkspaceRun({ run: as, path: target, operations });
   return { store, content, item, target, run, archive, pass };
@@ -63,7 +63,7 @@ test("64b: writer branch visibility refuses a live session base while visible ba
     const run: RunInput = { kind: "dreaming", sessionId: session.id, branch: writerBranch, createdAt: "now" };
     return { store, session, target, run, sessionBase, projectBase, globalBase, writerFact };
   };
-  const operation = (base: { knowledgeId: number; commit: number }, factId: number, text: string) => ({ op: "update" as const,
+  const operation = (base: { knowledgeId: number; commit: number }, factId: number, text: string) => ({ files: null, op: "update" as const,
     knowledgeId: base.knowledgeId, baseCommit: base.commit, text, category: "constraint" as const, scope: text.startsWith("session") ? "session" as const : "project" as const,
     supports: [factId], topics: [], reason: "writer visibility regression", createdAt: "now" });
 
@@ -108,7 +108,7 @@ test("64b: only a Dreamer pass may submit empty supports, which inherit the exac
 
 test.each(["update", "archive"] as const)("64b: empty-support %s materializes the parent's supports", op => {
   const f = fixture();
-  const operation = op === "archive" ? f.archive : { op, knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit,
+  const operation = op === "archive" ? f.archive : { files: null, op, knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit,
     text: "maintained rule", category: "constraint" as const, scope: "project" as const, supports: [],
     topics: [], reason: "Maintenance rewrite.", createdAt: "now" };
   const result = f.pass([operation]).results[0]!;
@@ -131,7 +131,7 @@ test.each(["update", "archive"] as const)("inherited cross-project supports do n
       .run(store.createProject({ name: "moved", declaredBy: "mark" }).id, sibling.id);
   });
   const operation = op === "archive" ? { ...f.archive, knowledgeId: item.knowledgeId, baseCommit: item.commit }
-    : { op, knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "maintained rule", category: "constraint" as const,
+    : { files: null, op, knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "maintained rule", category: "constraint" as const,
       scope: "project" as const, supports: [], topics: [], reason: "Maintenance rewrite.", createdAt: "now" };
   const result = f.pass([operation]).results[0]!;
   expect(result.ok, JSON.stringify(result)).toBe(true);
@@ -147,7 +147,7 @@ test("64b: empty-support merge unions both exact parents and split copies its ex
     secondFactId = secondFact.id;
     second = seedKnowledge(store, target, "project", "constraint", [secondFact.id], "second rule");
   });
-  const merge = merged.pass([{ op: "merge",
+  const merge = merged.pass([{ files: null, op: "merge",
     intoKnowledgeId: merged.item.knowledgeId, intoBaseCommit: merged.item.commit,
     absorb: [{ knowledgeId: second.knowledgeId, baseCommit: second.commit }],
     text: "merged rules", category: "constraint", scope: "project", supports: [], topics: [], reason: "Merge redundancy.", createdAt: "now",
@@ -157,10 +157,10 @@ test("64b: empty-support merge unions both exact parents and split copies its ex
     .toEqual([merged.content.supports[0], secondFactId]);
 
   const split = fixture();
-  const result = split.pass([{ op: "split",
+  const result = split.pass([{ files: null, op: "split",
     knowledgeId: split.item.knowledgeId, baseCommit: split.item.commit, text: "primary claim", category: "constraint", scope: "project", topics: [],
     supports: [], reason: "Separate claims.", createdAt: "now",
-    children: [{ title: "Fixture child", text: "first", category: "constraint", topics: [] }, { title: "Fixture child", text: "second", category: "constraint", topics: [] }],
+    children: [{ files: null, title: "Fixture child", text: "first", category: "constraint", topics: [] }, { files: null, title: "Fixture child", text: "second", category: "constraint", topics: [] }],
   }]).results[0]!;
   expect(result.ok).toBe(true);
   if (result.ok) expect(result.committed.map(value => split.store.knowledgeRevision(value.commit)!.supports))
@@ -171,16 +171,16 @@ test("64b: explicit evidence is not augmented and an operation with invalid evid
   const f = fixture();
   const evidence = legacyFact(f.store, f.target,
     [{ entry: f.store.getSourceEntry(f.target.triggerEntryId!)!, address: `T${f.target.headTurnId}#user` }], "replacement evidence", "decision");
-  const another = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{
+  const another = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ files: null,
     op: "create", title: "Fixture title", handle: "$2", author: "test", ...f.content, text: "another rule",
   }] });
   if (!another.ok) throw Error(another.problems.join());
   const before = f.store.listKnowledgeRevisions();
   // A pass is not atomic (stage 4: each operation commits or is refused on its own): the refused one writes nothing and does not stop the other.
   const done = f.pass([
-    { op: "archive", kind: "invalid", text: f.archive.text, knowledgeId: another.committed[0]!.knowledgeId, baseCommit: another.committed[0]!.commit,
+    { files: null, op: "archive", kind: "invalid", text: f.archive.text, knowledgeId: another.committed[0]!.knowledgeId, baseCommit: another.committed[0]!.commit,
       supports: [999_999], reason: "Invalid evidence.", createdAt: "now" },
-    { op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, text: "evidence rewrite", category: "constraint", scope: "project",
+    { files: null, op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, text: "evidence rewrite", category: "constraint", scope: "project",
       supports: [evidence.id], topics: [], reason: "Apply evidence.", createdAt: "now" },
   ]);
   expect(done.results.map(result => result.ok)).toEqual([false, true]);
@@ -202,7 +202,7 @@ test("64b: empty legacy parent support remains empty", () => {
 
 test("32d: a Dreamer pass never grants an empty-support create", () => {
   const f = fixture();
-  const done = f.pass([{ op: "create", title: "Fixture title", handle: "$1", author: "test", ...f.content, supports: [] }]);
+  const done = f.pass([{ files: null, op: "create", title: "Fixture title", handle: "$1", author: "test", ...f.content, supports: [] }]);
   expect(done.results[0]).toMatchObject({ ok: false });
   expect(f.store.listKnowledgeRevisions()).toHaveLength(1);
   expect(f.store.currentCommit(f.item.knowledgeId, f.target)[0]!.id).toBe(f.item.commit);

@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
-import { migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateDeploymentData144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { migratePropagation154, migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateDeploymentData144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
@@ -16,7 +16,7 @@ import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, with
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_OPERATIONS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
 import { tokens } from "../render/index.ts";
-import { isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
+import { factObjects, isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import type {
   Actor,
   Knowledge,
@@ -178,7 +178,7 @@ CREATE TABLE IF NOT EXISTS fact_sources (
 CREATE TABLE IF NOT EXISTS fact_relations (
   from_fact INTEGER NOT NULL REFERENCES facts(id),
   to_fact INTEGER NOT NULL REFERENCES facts(id),
-  kind TEXT NOT NULL CHECK (kind IN ('support','negate')),
+  kind TEXT NOT NULL CHECK (kind IN ('support','negate','caused_by')),
   strength TEXT NOT NULL CHECK (strength IN ('strong','weak')),
   PRIMARY KEY (from_fact, to_fact, kind)
 );
@@ -499,6 +499,8 @@ export interface FactCommitInput {
   text: string;
   title?: string;
   segments?: string[];
+  objects?: string[];
+  caused_by?: NotingRelationTarget[];
   quote?: string | null;
   status?: EventStatus | null;
   source: string[];
@@ -527,8 +529,15 @@ export type CommitNotingResult =
   | { ok: true; runId: number; facts: Fact[] }
   | { ok: false; runId: number; problems: string[] };
 
+export type KnowledgeFiles = string[] | null | undefined;
+export type KnowledgeStaleReason = "negated_fact" | "file_changed" | "unresolved_check" | "unverified_file" | "missing_grounds";
+export interface KnowledgeFileVerification { file: string; verifiedCommit: string; verifiedAt: string }
+export interface KnowledgeStale { reason: KnowledgeStaleReason; detail: string }
+
 export type KnowledgeOperationInput =
   | {
+      /** Required even when explicitly preserving an unmapped parent with undefined. */
+      files: KnowledgeFiles;
       op: "create";
       handle: string; // system-generated candidate label
       author: string;
@@ -545,6 +554,7 @@ export type KnowledgeOperationInput =
     }
   | {
       op: "update";
+      files: KnowledgeFiles;
       knowledgeId: number;
       baseCommit: number;
       /** Omitted: inherited from the base, else the start of the body. */
@@ -559,6 +569,7 @@ export type KnowledgeOperationInput =
     }
   | {
       op: "merge";
+      files: KnowledgeFiles;
       intoKnowledgeId: number;
       intoBaseCommit: number;
       absorb: { knowledgeId: number; baseCommit: number }[];
@@ -573,6 +584,7 @@ export type KnowledgeOperationInput =
     }
   | {
       op: "split";
+      files: KnowledgeFiles;
       knowledgeId: number;
       baseCommit: number;
       /** The primary part: the split item continues with this new version (ticket 144), fields as an update's. */
@@ -582,7 +594,7 @@ export type KnowledgeOperationInput =
       scope: KnowledgeScope;
       topics: string[];
       /** Each child is a new identity recorded as split from the item; scope, supports and reason default to the operation's. */
-      children: { title?: string; text: string; category: KnowledgeCategory; topics: string[];
+      children: { title?: string; text: string; category: KnowledgeCategory; topics: string[]; files: string[] | null;
         scope?: KnowledgeScope; supports?: number[]; reason?: string }[];
       supports: number[];
       reason: string;
@@ -590,6 +602,7 @@ export type KnowledgeOperationInput =
     }
   | {
       op: "archive";
+      files: KnowledgeFiles;
       knowledgeId: number;
       baseCommit: number;
       /** The chosen archive cause is mandatory on new writes. An item whose content lives on in another current
@@ -754,6 +767,7 @@ function toFact(row: any): Fact {
     actor: row.actor,
     text: row.text,
     ...(row.title !== null && row.title !== undefined ? { title: row.title } : {}),
+    ...(row.objects === null || row.objects === undefined ? {} : { objects: JSON.parse(row.objects) }),
     quote: row.quote,
     status: row.status ?? null,
     source: JSON.parse(row.source),
@@ -775,6 +789,7 @@ function toKnowledgeRevision(row: any): KnowledgeRevision {
     parentId: row.parent_id,
     text: row.text,
     title: row.title ?? null,
+    ...(row.files === null || row.files === undefined ? {} : { files: JSON.parse(row.files) }),
     category: row.category,
     scope: row.scope,
     supports: JSON.parse(row.supports),
@@ -1270,6 +1285,7 @@ export class Store {
       // 144: the deployment data step, once, after every schema migration. `user_version` 2 marks it, as 1 marks 86's reset above.
       const dataStep = Number(this.db.prepare("PRAGMA user_version").get()!.user_version) < 2;
       if (dataStep) { migrateDeploymentData144(this); this.db.exec("PRAGMA user_version = 2"); }
+      migratePropagation154(this.db);
       const schemaChanged = Number(this.db.prepare("PRAGMA schema_version").get()!.schema_version) !== schemaBefore;
       if ((schemaChanged || dataStep) && this.db.prepare("PRAGMA foreign_key_check").all().length)
         throw new Error("Store migration: foreign key violations");
@@ -2334,9 +2350,15 @@ export class Store {
               citedEntries.some((id, i) => id !== f.entryIds?.[i])))
             throw new Error("new fact title, segments, body and source bindings disagree");
           if (f.title === undefined && f.segments !== undefined) throw new Error("segments require a fact title");
-          const info = this.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time, source_roles, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(runId, f.turnId, f.category ?? null, f.actor ?? null, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt, roles ? JSON.stringify(roles) : null, f.title ?? null);
+          const objects = f.objects === undefined ? undefined : factObjects(f.objects, f.text);
+          if ((f.caused_by?.length ?? 0) > 2) throw new Error("caused_by: at most two relations");
+          const info = this.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time, source_roles, title, objects) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(runId, f.turnId, f.category ?? null, f.actor ?? null, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt, roles ? JSON.stringify(roles) : null, f.title ?? null, objects === undefined ? null : JSON.stringify(objects));
           const factId = Number(info.lastInsertRowid);
           batchIds.push(factId);
+          if (objects !== undefined) {
+            const insertObject = this.db.prepare("INSERT INTO fact_objects(fact_id, name, object_key) VALUES (?, ?, ?)");
+            for (const object of objects) insertObject.run(factId, object, object.toLowerCase());
+          }
           for (const entryId of new Set(f.entryIds ?? [])) {
             if (this.getSourceEntry(entryId)?.sessionId !== sessionId) throw new Error("fact source entry does not belong to the run session");
             this.db.prepare("INSERT INTO fact_sources (fact_id, entry_id, segment_text) VALUES (?, ?, ?)")
@@ -2360,9 +2382,11 @@ export class Store {
         };
         facts.forEach((f, i) => {
           const fromFact = batchIds[i]!;
-          for (const kind of ["support", "negate"] as const) for (const rel of f[kind] ?? []) {
+          for (const kind of ["support", "negate", "caused_by"] as const) for (const rel of f[kind] ?? []) {
+            const target = resolve(rel.target, i);
+            if (kind === "caused_by" && target >= fromFact) throw new Error("caused_by must name an existing fact or an earlier local fact");
             this.db.prepare("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, ?, ?)")
-              .run(fromFact, resolve(rel.target, i), kind, rel.strength);
+              .run(fromFact, target, kind, rel.strength);
           }
         });
         const knowledgeAudit: { requested: KnowledgeOperationInput; applied: KnowledgeOperationInput | null; committed: CommittedKnowledgeOp[] }[] = [];
@@ -2492,6 +2516,84 @@ export class Store {
   getKnowledgeRevision(knowledgeId: number, commitId: number): KnowledgeRevision | null {
     const row = this.db.prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id = ? AND id = ?").get(knowledgeId, commitId);
     return row ? toKnowledgeRevision(row) : null;
+  }
+
+  /** Case-insensitive exact object lookup, independent of foreground visibility. */
+  factsMentioningObject(object: string): Fact[] {
+    return this.hydrateFactSegments(this.db.prepare(`SELECT f.* FROM fact_objects o JOIN facts f ON f.id=o.fact_id
+      WHERE o.object_key=? ORDER BY f.id`).all(object.trim().toLowerCase()).map(toFact));
+  }
+
+  setKnowledgeFileVerification(revisionId: number, value: KnowledgeFileVerification): void {
+    const revision = this.knowledgeRevision(revisionId);
+    if (!revision?.files?.includes(value.file)) throw new Error("verification file is not linked to this version");
+    if (!value.verifiedCommit.trim() || !Number.isFinite(Date.parse(value.verifiedAt)))
+      throw new Error("verification requires a commit and valid time");
+    this.db.prepare(`INSERT INTO knowledge_file_verifications(revision_id,file,verified_commit,verified_at) VALUES (?,?,?,?)
+      ON CONFLICT(revision_id,file) DO UPDATE SET verified_commit=excluded.verified_commit,verified_at=excluded.verified_at`)
+      .run(revisionId, value.file, value.verifiedCommit, value.verifiedAt);
+  }
+
+  clearKnowledgeFileVerification(revisionId: number, file: string): void {
+    this.db.prepare("DELETE FROM knowledge_file_verifications WHERE revision_id=? AND file=?").run(revisionId, file);
+  }
+
+  knowledgeFileVerifications(revisionId: number): KnowledgeFileVerification[] {
+    return this.db.prepare(`SELECT file,verified_commit,verified_at FROM knowledge_file_verifications
+      WHERE revision_id=? ORDER BY file`).all(revisionId).map(row => ({
+        file: String(row.file), verifiedCommit: String(row.verified_commit), verifiedAt: String(row.verified_at),
+      }));
+  }
+
+  setKnowledgeStale(revisionId: number, value: KnowledgeStale): void {
+    this.db.prepare("INSERT OR IGNORE INTO knowledge_stale_reasons(revision_id,reason,detail) VALUES (?,?,?)")
+      .run(revisionId, value.reason, value.detail);
+  }
+
+  clearKnowledgeStale(revisionId: number, value?: KnowledgeStale): void {
+    if (value) this.db.prepare("DELETE FROM knowledge_stale_reasons WHERE revision_id=? AND reason=? AND detail=?")
+      .run(revisionId, value.reason, value.detail);
+    else this.db.prepare("DELETE FROM knowledge_stale_reasons WHERE revision_id=?").run(revisionId);
+  }
+
+  knowledgeStaleReasons(revisionId: number): KnowledgeStale[] {
+    return this.db.prepare("SELECT reason,detail FROM knowledge_stale_reasons WHERE revision_id=? ORDER BY reason,detail")
+      .all(revisionId).map(row => ({ reason: row.reason as KnowledgeStaleReason, detail: String(row.detail) }));
+  }
+
+  /** Follow exact ancestry (including merges), but never cross a split. Count each cited fact once. */
+  knowledgeObjects(revisionId: number): { object: string; facts: number }[] {
+    return this.db.prepare(`WITH RECURSIVE ancestry(id) AS (
+      SELECT id FROM knowledge_revisions WHERE id=?
+      UNION
+      SELECT parent.id FROM ancestry a JOIN knowledge_revisions child ON child.id=a.id
+        JOIN knowledge_revisions parent ON parent.id=child.parent_id WHERE child.op<>'split'
+      UNION
+      SELECT l.from_commit FROM ancestry a JOIN knowledge_revisions child ON child.id=a.id
+        JOIN knowledge_links l ON l.to_commit=a.id AND l.kind='merged_into' WHERE child.op<>'split'
+    ), grounds(fact_id) AS (
+      SELECT DISTINCT j.value FROM ancestry a JOIN knowledge_revisions r ON r.id=a.id, json_each(r.supports) j
+    ) SELECT MIN(o.name) AS object,COUNT(DISTINCT o.fact_id) AS facts FROM grounds g JOIN fact_objects o ON o.fact_id=g.fact_id
+      GROUP BY o.object_key ORDER BY facts DESC,o.object_key`).all(revisionId)
+      .map(row => ({ object: String(row.object), facts: Number(row.facts) }));
+  }
+
+  /** All terms must occur in the same version's title/body; callers apply their own visibility. */
+  searchKnowledge(terms: readonly string[]): number[] {
+    if (!terms.length) return [];
+    const indexed = terms.filter(term => unicodeLength(term) >= 3 && !term.includes("\u0000"));
+    const candidates = indexed.length ? this.searchTermBatches(indexed, (batch, remaining) =>
+      this.db.prepare(`SELECT rowid AS id FROM knowledge_fts WHERE knowledge_fts MATCH ?
+        ${remaining === undefined ? "" : "AND rowid IN (SELECT value FROM json_each(?))"}`)
+        .all(batch.map(ftsPhraseQuery).join(" AND "), ...(remaining === undefined ? [] : [remaining])) as { id: number }[]) : undefined;
+    const patterns = terms.map(term => `%${term.replace(/[\\%_]/g, "\\$&")}%`);
+    const rows = this.searchTermBatches(patterns, (batch, remaining) =>
+      this.db.prepare(`SELECT id,knowledge_id FROM knowledge_revisions WHERE
+        ${remaining === undefined ? "" : "id IN (SELECT value FROM json_each(?)) AND"}
+        ${batch.map(() => "(title LIKE ? ESCAPE '\\' OR text LIKE ? ESCAPE '\\')").join(" AND ")} ORDER BY id`)
+        .all(...(remaining === undefined ? [] : [remaining]), ...batch.flatMap(pattern => [pattern, pattern])) as { id: number; knowledge_id: number }[],
+      candidates === undefined ? undefined : JSON.stringify(candidates.map(row => row.id)));
+    return [...new Set(rows.map(row => row.knowledge_id))].sort((a, b) => a - b);
   }
 
   listKnowledgeLinks(knowledgeId: number): KnowledgeLink[] {
@@ -3894,6 +3996,7 @@ export class Store {
    * descendant is a Noter concurrency conversion. Other invalid bases remain errors. */
   normalizeNotingOperation(op: KnowledgeOperationInput, path: KnowledgePath): KnowledgeOperationInput | null {
     if (op.op !== "create" && op.op !== "update" && op.op !== "archive") throw new Error("Noter permits create, update and archive only");
+    if (!Object.hasOwn(op, "files")) throw new Error("files: required list of paths or null");
     if (op.op === "archive") {
       const problem = this.archiveProblem(op);
       if (problem) throw new Error(problem);
@@ -3902,6 +4005,8 @@ export class Store {
     const input = this.commitGraphInput();
     const bad = this.baseDiagnostic(op.knowledgeId, op.baseCommit, path, false, input.metadata);
     if (bad) throw bad;
+    if (op.files === undefined && this.getKnowledgeRevision(op.knowledgeId, op.baseCommit)!.files !== undefined)
+      throw new Error("files: required list of paths or null; undefined can only copy an unmapped parent");
     const graph = this.commitGraph(path, undefined, undefined, input);
     const stale = this.resolvedBaseProblem(graph, op);
     if (!stale) return op;
@@ -3915,7 +4020,7 @@ export class Store {
     // The annotation is system text appended after the accepted write; it is not re-checked against the cap (ticket 144).
     const text = `${op.text}\n${annotation}`;
     const { knowledgeId: _knowledgeId, baseCommit: _baseCommit, ...content } = op;
-    return { ...content, op: "create", handle: address, author: "noting", text };
+    return { ...content, files: op.files ?? null, op: "create", handle: address, author: "noting", text };
   }
 
   private archiveProblem(op: Extract<KnowledgeOperationInput, { op: "archive" }>): string | null {
@@ -3955,6 +4060,13 @@ export class Store {
       seen.add(target.baseCommit);
     }
     const prior = targets.length ? this.getKnowledgeRevision(targets[0]!.knowledgeId, targets[0]!.baseCommit)! : null;
+    const validFiles = (value: unknown): boolean => value === null ||
+      Array.isArray(value) && value.every(file => typeof file === "string" && !!file.trim());
+    if (!Object.hasOwn(op, "files") || !(validFiles(op.files) ||
+        op.files === undefined && prior !== null && prior.files === undefined))
+      return { ok: false, reason: "files: required list of paths or null (only an unmapped parent may be copied as undefined)" };
+    if (op.op === "split" && op.children.some(child => !Object.hasOwn(child, "files") || !validFiles(child.files)))
+      return { ok: false, reason: "files: every split child requires a list of paths or null" };
     if (op.op === "merge") {
       // Ticket 144: merged items share one category and scope, whoever writes the merge.
       for (const field of ["scope", "category"] as const) {
@@ -3979,7 +4091,7 @@ export class Store {
     if (bad) return { ok: false, reason: bad };
     // A split child may carry its own scope, supports and reason; every other revision uses the operation's.
     const insertRevision = (knowledgeId: number, parentId: number | null, title: string | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp,
-      own: { scope?: KnowledgeScope; supports?: number[]; reason?: string } = {}) => {
+      own: { scope?: KnowledgeScope; supports?: number[]; reason?: string; files?: KnowledgeFiles } = {}) => {
       if (!isKnowledgeCategory(category) &&
           !((revisionOp === "archive" || revisionOp === "update" || revisionOp === "split") && category === prior?.category) &&
           !(revisionOp === "create" && role === "noting" && inheritedCreateCategory !== undefined && category === inheritedCreateCategory))
@@ -3987,12 +4099,20 @@ export class Store {
       // A new live version always ends with a title (ticket 144), given or inherited from its base. A derived
       // title is only how a legacy row renders; it is never stored. Only an archive carries a legacy null.
       if (title === null && revisionOp !== "archive") throw new Error("a new live knowledge version requires a title");
+      const files = Object.hasOwn(own, "files") ? own.files : op.files;
+      const storedFiles = files === undefined ? null : JSON.stringify(files === null ? null : [...new Set(files)]);
       const info = this.db.prepare(`INSERT INTO knowledge_revisions
-        (knowledge_id, parent_id, title, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role, archive_kind)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, title, text, category, own.scope ?? scope,
+        (knowledge_id, parent_id, title, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role, archive_kind, files)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, title, text, category, own.scope ?? scope,
           JSON.stringify(own.supports ?? supports), revisionOp, own.reason ?? op.reason, JSON.stringify(topics), runId, op.createdAt, role,
-          revisionOp === "archive" ? (op as Extract<KnowledgeOperationInput, { op: "archive" }>).kind : null);
+          revisionOp === "archive" ? (op as Extract<KnowledgeOperationInput, { op: "archive" }>).kind : null, storedFiles);
       const commitId = Number(info.lastInsertRowid);
+      this.db.prepare("INSERT INTO knowledge_fts(rowid,title,text) VALUES (?,?,?)").run(commitId, title, text);
+      // Verification survives only an unchanged file mapping on a one-parent maintenance version.
+      if (prior && (revisionOp === "update" || revisionOp === "archive") &&
+          storedFiles === (prior.files === undefined ? null : JSON.stringify(prior.files)))
+        this.db.prepare(`INSERT INTO knowledge_file_verifications(revision_id,file,verified_commit,verified_at)
+          SELECT ?,file,verified_commit,verified_at FROM knowledge_file_verifications WHERE revision_id=?`).run(commitId, prior.id);
       assignVersionTag(this.db, knowledgeId, commitId);
       return commitId;
     };

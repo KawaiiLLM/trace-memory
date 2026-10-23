@@ -56,12 +56,12 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
       sources: [{ entry: user, address: `T${turn.id}#user` }], text: "fact ".repeat(300), category: "observation", actor: "user", createdAt: at,
     }], memory.store.sourcePath(session.id, "main", turn.id).map(entry => entry.id));
     const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: at },
-      operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "knowledge", category: "constraint", scope: "project", topics: [],
+      operations: [{ files: null, op: "create", title: "Fixture title", handle: "$k", author: "test", text: "knowledge", category: "constraint", scope: "project", topics: [],
         supports: [noted.facts[0]!.id], reason: "fixture", createdAt: at }] });
     if (!created.ok) throw new Error(JSON.stringify(created));
     const base = created.committed[0]!;
     const archived = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: at },
-      operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [noted.facts[0]!.id], reason: "archive", createdAt: at }] });
+      operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [noted.facts[0]!.id], reason: "archive", createdAt: at }] });
     if (!archived.ok) throw new Error(JSON.stringify(archived));
     const visible = noVisibility(); visible.knowledgeCommitIds.add(base.commit); // a status notice is now due
     Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 1 });

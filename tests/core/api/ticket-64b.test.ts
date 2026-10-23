@@ -24,7 +24,7 @@ function fixture() {
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const fact = noted.facts[0]!.id;
   const created = memory.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "root", headTurnId: turn.id },
-    run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: at }, operations: [{ op: "create", title: "Fixture title", handle: "$root", author: "test",
+    run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: at }, operations: [{ files: null, op: "create", title: "Fixture title", handle: "$root", author: "test",
       text: "root knowledge", category: "constraint", scope: "project", supports: [fact], topics: [], reason: "Initial rule.", createdAt: at }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   return { memory, session, turn, root, left, right, joined, fact, base: created.committed[0]! };

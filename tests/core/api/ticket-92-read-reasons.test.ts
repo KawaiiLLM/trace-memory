@@ -12,11 +12,11 @@ test("92/41b: reasons belong to history metadata, not current or exact bodies", 
     const write = memory.tools({ kind: "manual", ...path, currentTurnId: turn.id }).find(tool => tool.name === "memory")!;
     const user = memory.store.getSourceEntry(memory.store.listSourceEntries(session.id, turn.id)[0]!.id)!;
     fact(memory, path, "Rule requested", [{ entry: user, text: "User requested the rule" }]);
-    const content = { op: "create", title: "Fixture title", text: "The durable rule", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "REASON_INITIAL" };
+    const content = { files: null, op: "create", title: "Fixture title", text: "The durable rule", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "REASON_INITIAL" };
     expect(write.execute(content)).toContain("committed");
     expect(write.execute({ ...content, text: "Another identity", reason: "OTHER_REASON" })).toContain("committed");
     const tag = `K1#${memory.store.versionTag(1, 1)}`;
-    expect(write.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag, supports: ["F1"], reason: "REASON_ARCHIVE" })).toContain("committed");
+    expect(write.execute({ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag, supports: ["F1"], reason: "REASON_ARCHIVE" })).toContain("committed");
     const read = (address: string) => memoryFiles(memory, path).read(`trace://${address}`).content;
     for (const address of [tag, "K1@v1", "K1@v2", "K2"]) {
       expect(read(address)).not.toContain("REASON_");

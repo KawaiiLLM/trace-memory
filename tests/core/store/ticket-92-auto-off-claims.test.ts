@@ -16,7 +16,7 @@ for (const state of ["active", "reserved", "replaced", "expired", "none"] as con
       ] });
       if (!fact.ok) throw Error(fact.problems.join("; "));
       const written = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
-        { op: "create", title: "Fixture title", handle: "$1", author: "test", text: "rule", category: "constraint", scope: "session", supports: [fact.facts[0]!.id], topics: [], reason: "evidence", createdAt: "now" },
+        { files: null, op: "create", title: "Fixture title", handle: "$1", author: "test", text: "rule", category: "constraint", scope: "session", supports: [fact.facts[0]!.id], topics: [], reason: "evidence", createdAt: "now" },
       ] });
       if (!written.ok) throw Error(written.problems.join("; "));
       // The claim of an admitted run; admission itself needs a due Dreamer, which this fixture does not depend on.

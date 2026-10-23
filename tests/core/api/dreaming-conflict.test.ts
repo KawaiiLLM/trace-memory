@@ -43,7 +43,7 @@ test("64c external maintenance is atomically refused by the live seat and succee
   const f = fixture(), held = f.hold();
   const running = f.dream();
   await held.admitted.wait;
-  const operation = { op: "archive" as const, kind: "invalid" as const, knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, text: "No longer holds, per the user's later correction which replaces it.",
+  const operation = { files: null, op: "archive" as const, kind: "invalid" as const, knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, text: "No longer holds, per the user's later correction which replaces it.",
     supports: f.item.supports, reason: "external archive", createdAt: "now" };
   const before = f.store.listKnowledgeRevisions().length;
   const blocked = f.other.store.commitConsolidationRun({ path: f.otherPath,

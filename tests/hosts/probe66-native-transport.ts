@@ -36,7 +36,7 @@ const noted = memory.store.commitNotingRun({ run: { kind: 'noting', sessionId: s
     source: [`T${turn.id}#user`], createdAt: '2026-01-01T00:00:00.000Z' }] });
 if (!noted.ok) throw new Error(noted.problems.join('; '));
 const committed = memory.store.commitConsolidationRun({ run: { kind: 'consolidation', sessionId: session.id,
-  createdAt: '2026-01-01T00:00:00.000Z' }, operations: [{ op: 'create', topics: [], reason: 'fixture', handle: '$global',
+  createdAt: '2026-01-01T00:00:00.000Z' }, operations: [{ files: null, op: 'create', topics: [], reason: 'fixture', handle: '$global',
   author: 'fixture', text: 'one injected global fact', supports: [noted.facts[0]!.id], createdAt: '2026-01-01T00:00:00.000Z',
   category: 'constraint', scope: 'global' }] });
 if (!committed.ok) throw new Error(committed.problems.join('; '));

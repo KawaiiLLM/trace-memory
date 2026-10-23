@@ -18,7 +18,7 @@ const current = (b: WorkspaceBatch, knowledgeId: number) => b.store.currentCommi
 const read = (b: WorkspaceBatch, address: string) => memoryFiles(b.memory, b.path).read(address).content;
 /** Another writer's update of an item, as a manual `memory update` would commit it. */
 const concurrentUpdate = (b: WorkspaceBatch, item: { knowledgeId: number; commit: number; supports: number[] }, text: string) => {
-  const result = b.store.commitConsolidationRun({ path: b.path, run: { kind: "manual", sessionId: b.session.id, branch: "main", createdAt: "now" }, operations: [{ op: "update",
+  const result = b.store.commitConsolidationRun({ path: b.path, run: { kind: "manual", sessionId: b.session.id, branch: "main", createdAt: "now" }, operations: [{ files: null, op: "update",
     knowledgeId: item.knowledgeId, baseCommit: item.commit, text, category: "constraint", scope: "project", supports: item.supports, topics: [], reason: "concurrent", createdAt: "now" }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!;
@@ -39,9 +39,9 @@ describe("the Noter's two files", () => {
     expect(b.store.getFact(f1)).toMatchObject({ title: "pnpm chosen", source: [`${b.address(0)}@user`, `${b.address(1)}@assistant`] });
     expect(result.blocks.map(item => [item.status, item.versions.length])).toEqual([["applied", 1], ["applied", 1]]);
     const created = current(b, Number(result.blocks[0]!.versions[0]!.match(/^K(\d+)/)![1]))[0]!;
-    expect(created).toMatchObject({ op: "create", title: "Use pnpm", supports: [f1, f2], actorRole: "noting" });
+    expect(created).toMatchObject({ files: null, op: "create", title: "Use pnpm", supports: [f1, f2], actorRole: "noting" });
     // An update keeps the identity and adds a version.
-    expect(current(b, existing.knowledgeId)[0]).toMatchObject({ op: "update", supports: [f2], text: "Use pnpm for the build." });
+    expect(current(b, existing.knowledgeId)[0]).toMatchObject({ files: null, op: "update", supports: [f2], text: "Use pnpm for the build." });
     expect(result.blocks[1]!.versions).toEqual([`K${existing.knowledgeId}@v2`]);
     // The batch is published once: its entries are processed.
     expect(b.entries.every(entry => b.store.entryNoted(entry.id))).toBe(true);
@@ -87,7 +87,7 @@ describe("curate", () => {
     const result = ok(dreaming(b, "update", block(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")));
     expect(result.blocks.map(entry => entry.status)).toEqual(["applied"]);
     expect(result.blocks[0]!.versions).toEqual([`K${item.knowledgeId}@v2`]);
-    expect(current(b, item.knowledgeId)[0]).toMatchObject({ op: "update", text: "Rule one, tidied.", supports: item.supports, actorRole: "dreaming" });
+    expect(current(b, item.knowledgeId)[0]).toMatchObject({ files: null, op: "update", text: "Rule one, tidied.", supports: item.supports, actorRole: "dreaming" });
   });
 
   test("a merge keeps the primary's identity, even the newer one, and consumes the absorbed items with successor links", () => {
@@ -95,7 +95,7 @@ describe("curate", () => {
     const older = b.item("Rule a"), newer = b.item("Rule b"), third = b.item("Rule c");
     const result = ok(dreaming(b, "merge", block(`merge ${newer.ref}`, { absorb: `${older.ref}, ${third.ref}`, reason: "same rule" }, "Rules a, b and c, merged.")));
     expect(result.blocks[0]).toMatchObject({ status: "applied", versions: [`K${newer.knowledgeId}@v2`] });
-    expect(current(b, newer.knowledgeId)[0]).toMatchObject({ op: "merge", text: "Rules a, b and c, merged." });
+    expect(current(b, newer.knowledgeId)[0]).toMatchObject({ files: null, op: "merge", text: "Rules a, b and c, merged." });
     for (const absorbed of [older, third]) {
       expect(current(b, absorbed.knowledgeId)).toEqual([]);
       expect(b.store.listKnowledgeLinks(absorbed.knowledgeId)).toMatchObject([{ kind: "merged_into", toKnowledge: newer.knowledgeId }]);
@@ -125,7 +125,7 @@ describe("curate", () => {
     const [primary, ...children] = result.blocks[0]!.versions;
     expect(primary).toBe(`K${item.knowledgeId}@v2`);
     expect(children).toHaveLength(2);
-    expect(current(b, item.knowledgeId)[0]).toMatchObject({ op: "split", text: "Rule one." });
+    expect(current(b, item.knowledgeId)[0]).toMatchObject({ files: null, op: "split", text: "Rule one." });
     const ids = children.map(entry => Number(entry.match(/^K(\d+)/)![1]));
     expect(ids.map(id => current(b, id)[0]!.category)).toEqual(["reference", "goal"]);
     expect(b.store.listKnowledgeLinks(item.knowledgeId).map(link => [link.kind, link.toKnowledge])).toEqual(ids.map(id => ["split_from", id]));
@@ -143,7 +143,7 @@ describe("curate", () => {
       block(`archive ${inadmissible!.ref}`, { kind: "inadmissible", reason: "a running log" }, "A running log of one session, not an understanding."),
     ].join("\n")));
     expect(result.blocks.map(entry => [entry.status, entry.versions])).toEqual([["applied", [`K${invalid!.knowledgeId}@v2`]], ["applied", [`K${inadmissible!.knowledgeId}@v2`]]]);
-    expect(current(b, invalid!.knowledgeId)[0]).toMatchObject({ op: "archive", archiveKind: "invalid", text: "The user withdrew the rule on the same day." });
+    expect(current(b, invalid!.knowledgeId)[0]).toMatchObject({ files: null, op: "archive", archiveKind: "invalid", text: "The user withdrew the rule on the same day." });
     expect(current(b, inadmissible!.knowledgeId)[0]).toMatchObject({ op: "archive", archiveKind: "inadmissible" });
   });
 

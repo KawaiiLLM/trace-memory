@@ -86,7 +86,7 @@ test("92 exact historical versions retain complete tags without granting stale u
     const note = tools.find(t => t.name === "note")!, memory = tools.find(t => t.name === "memory")!;
     expect(note.execute({ title: "Started check", sources: factSources([{ address: "T1#E1", text: "Started the check." }]) })).not.toContain("rejected:");
     const text = "A complete durable claim has its conditions and evidence. ".repeat(500);
-    expect(memory.execute({ op: "create", title: "Fixture title", text, category: "understanding", scope: "project", supports: ["F1"], reason: "Initial evidence", topics: [] })).not.toContain("rejected:");
+    expect(memory.execute({ files: null, op: "create", title: "Fixture title", text, category: "understanding", scope: "project", supports: ["F1"], reason: "Initial evidence", topics: [] })).not.toContain("rejected:");
     const path = { sessionId, headTurnId: turn.id, branch: "main" };
     const oldTag = `K1#${m.store.versionTag(1, 1)}`;
     // A Dreamer's curate update makes the old revision historical.

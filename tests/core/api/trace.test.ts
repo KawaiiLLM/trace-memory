@@ -19,11 +19,11 @@ async function consolidation(...operations: Operation[]) {
   return curateWrite(memory, { sessionId, branch: "main", headTurnId }, operations); // the Dreamer's pass
 }
 async function create(text = "use red tiles now") {
-  return (await consolidation({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission", handle: "$e1", author: "test", text,
+  return (await consolidation({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission", handle: "$e1", author: "test", text,
     category: "reference", scope: "project", supports: [1], createdAt: time }))[0]!.knowledgeId;
 }
 async function update(id: number, base: number, text: string) {
-  return (await consolidation({ op: "update", topics: [], reason: "Correction", knowledgeId: id, baseCommit: base, text,
+  return (await consolidation({ files: null, op: "update", topics: [], reason: "Correction", knowledgeId: id, baseCommit: base, text,
     category: "reference", scope: "project", supports: [1], createdAt: time }))[0]!;
 }
 beforeEach(() => {
@@ -59,13 +59,13 @@ test("current and exact knowledge retain evidence and version links", async () =
 
 test("merge and archive keep exact historical bodies while the current archive shows no live body", async () => {
   const survivor = await create("survivor"), absorbed = await create("absorbed");
-  const merged = (await consolidation({ op: "merge", topics: [], reason: "Merge", intoKnowledgeId: survivor, intoBaseCommit: 1,
+  const merged = (await consolidation({ files: null, op: "merge", topics: [], reason: "Merge", intoKnowledgeId: survivor, intoBaseCommit: 1,
     absorb: [{ knowledgeId: absorbed, baseCommit: 2 }], text: "combined", category: "reference", scope: "project", supports: [1, 2], createdAt: time }))[0]!;
   const later = await update(survivor, merged.commit, "later survivor");
   expect(read(`K${absorbed}`)).toContain(`merged_into: K${survivor}@v${memory.store.versionOrdinal(survivor, merged.commit)} (from K${absorbed}@v${memory.store.versionOrdinal(absorbed, 2)})`);
   expect(read(`K${absorbed}@v1`)).toContain(`children: K${survivor}@v${memory.store.versionOrdinal(survivor, merged.commit)}`);
   expect(read(`K${absorbed}@v1`)).not.toContain("later survivor");
-  const archived = (await consolidation({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", reason: "Retired", knowledgeId: survivor,
+  const archived = (await consolidation({ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", reason: "Retired", knowledgeId: survivor,
     baseCommit: later.commit, supports: [4], createdAt: time }))[0]!;
   expect(read(`K${survivor}`)).not.toContain(`[K${survivor}@v${memory.store.versionOrdinal(survivor, archived.commit)}]`);
   expect(read(`K${survivor}`)).not.toContain("later survivor");

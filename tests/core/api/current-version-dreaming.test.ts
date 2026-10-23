@@ -77,7 +77,7 @@ test("64c a merge names its primary: the older identity continues, both parents 
   f.dreamer.script.curate!.constraint = block(`merge ${older.ref}`, { absorb: newer.ref, topics: "merged", reason: "same conclusion" }, explicit);
   expect((await f.dream()).outcome).toBe("success");
   const merged = f.store.currentCommit(older.knowledgeId, f.path)[0]!;
-  expect(merged).toMatchObject({ knowledgeId: older.knowledgeId, op: "merge", text: explicit, topics: ["merged"] });
+  expect(merged).toMatchObject({ files: null, knowledgeId: older.knowledgeId, op: "merge", text: explicit, topics: ["merged"] });
   expect(f.store.commitParents(merged).map(parent => parent.id).sort((a, b) => a - b)).toEqual([older.commit, newer.commit].sort((a, b) => a - b));
   expect(f.store.currentCommit(newer.knowledgeId, f.path)).toEqual([]);
 });

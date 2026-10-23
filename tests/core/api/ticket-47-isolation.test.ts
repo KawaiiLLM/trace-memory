@@ -70,10 +70,10 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
     if (!result.ok) throw new Error(result.problems.join("; "));
     return result.committed[0]!;
   };
-  const survivor = create(rootPath, { op: "create", title: "Fixture title", handle: "$survivor", author: "test", ...content }, rootPending.id);
-  const maintained = create(rootPath, { op: "create", title: "Fixture title", handle: "$maintained", author: "test", ...content, text: "maintained common rule" }, rootPending.id);
-  const archived = create(rootPath, { op: "create", title: "Fixture title", handle: "$archived", author: "test", ...content, text: "archivable common rule" }, rootPending.id);
-  const victim = create(rootPath, { op: "create", title: "Fixture title", handle: "$victim", author: "test", ...content, text: "merge-away common rule" }, rootPending.id);
+  const survivor = create(rootPath, { files: null, op: "create", title: "Fixture title", handle: "$survivor", author: "test", ...content }, rootPending.id);
+  const maintained = create(rootPath, { files: null, op: "create", title: "Fixture title", handle: "$maintained", author: "test", ...content, text: "maintained common rule" }, rootPending.id);
+  const archived = create(rootPath, { files: null, op: "create", title: "Fixture title", handle: "$archived", author: "test", ...content, text: "archivable common rule" }, rootPending.id);
+  const victim = create(rootPath, { files: null, op: "create", title: "Fixture title", handle: "$victim", author: "test", ...content, text: "merge-away common rule" }, rootPending.id);
   const targets = {
     head: { sessionId: session.id, branch: "main", headTurnId: headTurn.id },
     rewind: rootPath,
@@ -113,15 +113,15 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
   const siblingFact = siblingNoted.facts[0]!;
   const siblingPath = { sessionId: session.id, branch: "sibling", headTurnId: siblingTurn.id };
   const siblingContent = { ...content, supports: [siblingFact.id], reason: "sibling-only mutation", createdAt: "sibling" };
-  const siblingOnly = create(siblingPath, { op: "create", title: "Fixture title", handle: "$sibling", author: "test", ...siblingContent, text: "sibling-only knowledge" }, siblingEntry.id);
+  const siblingOnly = create(siblingPath, { files: null, op: "create", title: "Fixture title", handle: "$sibling", author: "test", ...siblingContent, text: "sibling-only knowledge" }, siblingEntry.id);
   store.setCurrentPath(session.id, siblingPath.branch, siblingPath.headTurnId, "test-lineage");
   // The Dreamer's pass on the sibling branch: its operations commit with the sibling's own evidence (so they stay sibling-only).
   const change = { category: "open" as const, scope: "project" as const, topics: [] as string[], supports: [siblingFact.id], reason: "sibling-only mutation", createdAt: "sibling" };
   const maintenanceReceipt = commitDreamerOps(memory, siblingPath, [
-    { op: "update", knowledgeId: maintained.knowledgeId, baseCommit: maintained.commit, ...change, text: "sibling-only update" },
-    { op: "archive", kind: "invalid", knowledgeId: archived.knowledgeId, baseCommit: archived.commit, supports: [siblingFact.id], reason: "sibling-only archive",
+    { files: null, op: "update", knowledgeId: maintained.knowledgeId, baseCommit: maintained.commit, ...change, text: "sibling-only update" },
+    { files: null, op: "archive", kind: "invalid", knowledgeId: archived.knowledgeId, baseCommit: archived.commit, supports: [siblingFact.id], reason: "sibling-only archive",
       text: "The sibling branch withdrew this rule and nothing replaces it; the sibling-only evidence says so.", createdAt: "sibling" },
-    { op: "merge", intoKnowledgeId: survivor.knowledgeId, intoBaseCommit: survivor.commit, absorb: [{ knowledgeId: victim.knowledgeId, baseCommit: victim.commit }], ...change, text: "sibling-only merge" },
+    { files: null, op: "merge", intoKnowledgeId: survivor.knowledgeId, intoBaseCommit: survivor.commit, absorb: [{ knowledgeId: victim.knowledgeId, baseCommit: victim.commit }], ...change, text: "sibling-only merge" },
   ]);
   expect(maintenanceReceipt.length).toBeGreaterThanOrEqual(3);
   expect(store.listFactRelations(rootFact.id)).toContainEqual({ fromFact: siblingFact.id, toFact: rootFact.id, kind: "negate", strength: "strong" });
@@ -146,7 +146,7 @@ test("47: head and rewind N material and eligibility ignore sibling-only and ter
     source: [`T${terminalTurn.id}#E${terminalEntry.entryOrdinal}`], createdAt: "terminal",
   }] });
   if (!terminalNoted.ok) throw new Error(terminalNoted.problems.join("; "));
-  create({ sessionId: session.id, branch: "terminal", headTurnId: terminalTurn.id }, { op: "create", title: "Fixture title", handle: "$terminal", author: "test",
+  create({ sessionId: session.id, branch: "terminal", headTurnId: terminalTurn.id }, { files: null, op: "create", title: "Fixture title", handle: "$terminal", author: "test",
     ...content, supports: [terminalNoted.facts[0]!.id], text: "older terminal-only knowledge", reason: "terminal-only", createdAt: "terminal" }, terminalEntry.id);
 
   const after = await capture("after");

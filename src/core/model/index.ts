@@ -24,7 +24,7 @@ export const knowledgeCategoryGroup = (category: KnowledgeCategory): (typeof KNO
 export const ACTORS = ["user", "agent"] as const;
 export type Actor = (typeof ACTORS)[number];
 
-export const RELATION_KINDS = ["support", "negate"] as const;
+export const RELATION_KINDS = ["support", "negate", "caused_by"] as const;
 export type RelationKind = (typeof RELATION_KINDS)[number];
 
 export const RELATION_STRENGTHS = ["strong", "weak"] as const;
@@ -101,6 +101,7 @@ export interface Fact {
   /** Absent on historical facts; new facts have one segment for every source. */
   title?: string;
   segments?: string[];
+  objects?: string[];
   /** Read-only native binding projection for legacy display; never rewrites authored source. */
   boundAddresses?: string[];
   quote: string | null;
@@ -136,6 +137,8 @@ export interface KnowledgeRevision {
   text: string;
   /** One-line index title. Legacy versions have none (null) and are never rewritten (ticket 144). */
   title: string | null;
+  /** Undefined: not mapped (legacy); null: explicitly no code files. Paths are opaque strings. */
+  files?: string[] | null;
   category: KnowledgeCategory;
   scope: KnowledgeScope;
   supports: number[];
@@ -204,6 +207,8 @@ export interface NotingRelationInput {
 export interface NotingFactInput {
   title: string;
   sources: { address: string; text: string }[];
+  objects?: string[];
+  caused_by?: NotingRelationInput[];
   support?: NotingRelationInput[];
   negate?: NotingRelationInput[];
 }
@@ -237,6 +242,19 @@ function validateRelationList(
   return out;
 }
 
+/** Keep the first spelling; lookup and body membership use the same Unicode case folding. */
+export function factObjects(value: unknown, body: string): string[] {
+  if (!Array.isArray(value)) throw new Error("objects: expected an array of names");
+  const seen = new Set<string>(), objects: string[] = [], folded = body.toLowerCase();
+  for (const object of value) {
+    if (typeof object !== "string" || !object.trim()) throw new Error("objects: expected non-empty names");
+    const name = object.trim(), key = name.toLowerCase();
+    if (!folded.includes(key)) throw new Error(`objects: ${name} does not appear in the fact body`);
+    if (!seen.has(key)) { seen.add(key); objects.push(name); }
+  }
+  return objects;
+}
+
 export function validateNotingFact(path: string, raw: unknown, problems: string[]): NotingFactInput | null {
   if (typeof raw !== "object" || raw === null) {
     problems.push(`${path}: expected an object`);
@@ -262,16 +280,25 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
     });
   }
   for (const key of Object.keys(f)) {
-    if (!["title", "sources", "support", "negate"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
+    if (!["title", "sources", "support", "negate", "caused_by", "objects"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
   }
   const support = validateRelationList(`${path}.support`, f.support, problems);
   const negate = validateRelationList(`${path}.negate`, f.negate, problems);
+  const caused_by = validateRelationList(`${path}.caused_by`, f.caused_by, problems);
+  if (caused_by && caused_by.length > 2) problems.push(`${path}.caused_by: at most two relations`);
+  let objects: string[] | undefined;
+  if (f.objects !== undefined) {
+    try { objects = factObjects(f.objects, sources.map(source => source.text).join("\n")); }
+    catch (error) { problems.push(`${path}.${(error as Error).message}`); }
+  }
 
   return {
     title: f.title as string,
     sources,
     support,
     negate,
+    caused_by,
+    ...(objects === undefined ? {} : { objects }),
   };
 }
 
@@ -284,6 +311,7 @@ export const DEFAULT_WRITING_LIMITS: WritingLimits = { titleWords: 20, bodyWords
 export interface MemoryOperation {
   op: "create" | "update" | "merge" | "split" | "archive";
   title?: string;
+  files?: string[] | null;
   kind?: "invalid" | "inadmissible";
   id?: string;
   absorb?: string[];

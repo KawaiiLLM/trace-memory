@@ -26,7 +26,7 @@ function fixture(extra = { knowledge: 0, facts: 0, raw: 0 }, noted = false, hist
       category: "observation", actor: "user", createdAt: time },
   ], noted ? entries.map(e => e.id) : []);
   const k = memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "manual", createdAt: time },
-    operations: [{ op: "create", title: "Fixture title", topics: [], handle: "$k", author: "test", text: knowledgeText, category: "constraint", scope: "project", supports: [f.facts[0]!.id], reason: "initial", createdAt: time }] });
+    operations: [{ files: null, op: "create", title: "Fixture title", topics: [], handle: "$k", author: "test", text: knowledgeText, category: "constraint", scope: "project", supports: [f.facts[0]!.id], reason: "initial", createdAt: time }] });
   if (!k.ok) throw new Error(JSON.stringify(k));
   scoreAll(memory.store); // the Knowledge base carries scored items
   return { s, t, f: f.facts[0]!, entries };

@@ -45,7 +45,7 @@ function history(turns: number) {
   if (!committed.ok) throw new Error(committed.problems.join("; "));
   const path: KnowledgePath = { sessionId: session.id, headTurnId: turnIds.at(-1)!, branch: "main" };
   const knowledge = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time },
-    operations: [{ op: "create", title: "Fixture title", handle: "$k1", author: "fake", text: "consolidated", category: "understanding", scope: "session",
+    operations: [{ files: null, op: "create", title: "Fixture title", handle: "$k1", author: "fake", text: "consolidated", category: "understanding", scope: "session",
       supports: [committed.facts[0]!.id, committed.facts[1]!.id], reason: "pin the snapshot", topics: [], createdAt: time }] });
   if (!knowledge.ok) throw new Error(knowledge.problems.join("; "));
   historicalConsolidation(store, session.id, [committed.facts[0]!.id]);
@@ -169,7 +169,7 @@ test("32b performance: batch and ordinary applicability agree for bindings, fore
   if (!noted.ok) throw Error(noted.problems.join());
   const siblingPath = { ...path, branch: "sibling" };
   const base = store.currentCommit(knowledgeId, path)[0]!;
-  const archived = store.commitConsolidationRun({ path: siblingPath, run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
+  const archived = store.commitConsolidationRun({ path: siblingPath, run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{ files: null,
     op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId, baseCommit: base.id, supports: [noted.facts[0]!.id], reason: "sibling only", createdAt: time }] });
   if (!archived.ok) throw Error(archived.problems.join());
   // Both public status counts must describe the same selected path, including a rewind or no head.
@@ -180,7 +180,7 @@ test("32b performance: batch and ordinary applicability agree for bindings, fore
     expect(status).toContain(`Knowledge: ${count} visible active`);
   }
   const foreign = history(2);
-  const shared = store.commitConsolidationRun({ path: siblingPath, run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
+  const shared = store.commitConsolidationRun({ path: siblingPath, run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{ files: null,
     op: "create", title: "Fixture title", handle: "$shared", author: "test", scope: "global", category: "understanding", text: "shared", topics: [],
     supports: [...facts, ...noted.facts, ...foreign.facts].map(f => f.id), reason: "all evidence shapes", createdAt: time }] });
   if (!shared.ok) throw Error(shared.problems.join());

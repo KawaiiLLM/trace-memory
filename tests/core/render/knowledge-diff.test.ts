@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import type { KnowledgeRevision } from "../../../src/core/model/index.ts";
 import { renderKnowledgeDiff, sentenceDiff } from "../../../src/core/render/index.ts";
 
-const baseline: KnowledgeRevision = {
+const baseline: KnowledgeRevision = { files: null,
   id: 1, knowledgeId: 1, parentId: null, title: null, text: "A stable explanation.", category: "mechanism",
   scope: "project", supports: [], supportSemantics: "change", op: "create", reason: "Initial explanation",
   topics: [], runId: null, createdAt: "2026-10-01T00:00:00Z",
@@ -10,7 +10,7 @@ const baseline: KnowledgeRevision = {
 
 test.each([undefined, new Set(["status"]), new Set(["text", "status"])])(
   "knowledge diff shows raw category changes within the same display group (fields=%s)", fields => {
-    const current: KnowledgeRevision = { ...baseline, id: 2, parentId: 1, category: "understanding", op: "update" };
+    const current: KnowledgeRevision = { files: null, ...baseline, id: 2, parentId: 1, category: "understanding", op: "update" };
     expect(renderKnowledgeDiff(baseline, current, [baseline, current], Infinity, fields))
       .toContain("category: mechanism -> understanding");
     expect(renderKnowledgeDiff(baseline, { ...current, category: "mechanism" }, [], Infinity, fields))
@@ -19,13 +19,13 @@ test.each([undefined, new Set(["status"]), new Set(["text", "status"])])(
 );
 
 test("knowledge diff still honors the status field selection", () => {
-  const current: KnowledgeRevision = { ...baseline, id: 2, parentId: 1, category: "understanding", op: "update" };
+  const current: KnowledgeRevision = { files: null, ...baseline, id: 2, parentId: 1, category: "understanding", op: "update" };
   expect(renderKnowledgeDiff(baseline, current, [], Infinity, new Set(["text"]))).not.toContain("category:");
 });
 
 test("134: full sentence diff shows unchanged text once and adjacent word-marked edit lines", () => {
   const before = { ...baseline, text: "保持这条裁定。" + "Maintain the confirmed scope and all important conditions before using red tiles。\n最后的执行边界。" };
-  const after = { ...before, id: 2, parentId: 1, op: "update" as const,
+  const after = { files: null, ...before, id: 2, parentId: 1, op: "update" as const,
     text: before.text.replace("red", "blue") };
   const result = renderKnowledgeDiff(before, after, [], Infinity, new Set(["text"]));
   expect(result.match(/^  保持这条裁定。$/gm)).toHaveLength(1);
@@ -98,7 +98,7 @@ test("134: an insertion after a pair comes before the next removed sentence (K29
 });
 
 test("134: an empty change history prints History: none unless the caller omits it", () => {
-  const current: KnowledgeRevision = { ...baseline, id: 2, parentId: 1, text: "A changed explanation.", op: "update" };
+  const current: KnowledgeRevision = { files: null, ...baseline, id: 2, parentId: 1, text: "A changed explanation.", op: "update" };
   const fields = new Set(["text"]);
   expect(renderKnowledgeDiff(baseline, current, [], Infinity, fields)).toContain("History: none");
   expect(renderKnowledgeDiff(baseline, current, [], Infinity, fields, undefined, undefined, false)).not.toContain("History");

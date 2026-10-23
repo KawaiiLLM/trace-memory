@@ -27,7 +27,7 @@ function fixture(file = false) {
   const fact = seedFact(memory, target, "Supplied evidence", [{ entry: user, text: "User supplied evidence" }]).id;
   const content = { author: "fixture", category: "constraint" as const, scope: "project" as const, topics: [], supports: [fact], reason: "fixture", createdAt: "now" };
   const create = (text: string) => {
-    const result = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ ...content, op: "create", title: "Fixture title", handle: "$new", text }] });
+    const result = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ files: null, ...content, op: "create", title: "Fixture title", handle: "$new", text }] });
     if (!result.ok) throw new Error(result.problems.join("; "));
     scoreAll(store); // the Knowledge base carries scored items
     return result.committed[0]!;
@@ -45,7 +45,7 @@ test("92 warm reader memo respects an older SQLite read snapshot across an exter
   f.store.db.exec("BEGIN");
   const descriptor = f.store.db.prepare("SELECT MAX(id) n FROM knowledge_revisions").get()!.n;
   const changed = commitNoterKnowledge(external.store, { path: f.target, run: { sessionId: f.session.id, branch: "main", createdAt: "later" },
-    operations: [{ ...f.content, op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, text: "new version" }] });
+    operations: [{ files: null, ...f.content, op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, text: "new version" }] });
   if (!changed.ok) throw new Error(changed.problems.join("; "));
   expect(descriptor).toBe(first.commit);
   expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([first.commit]);
@@ -66,7 +66,7 @@ test("92 a globally current but reader-invisible successor hides the identity an
   const target = { sessionId: peer.id, branch: "main", headTurnId: turn.id };
   const user = hydrate(f.store.listSourceEntries(peer.id, turn.id), f.store).find(entry => entry.role === "user")!;
   const fact = seedFact(f.memory, target, "Private evidence", [{ entry: user, text: "Private evidence" }]).id;
-  const changed = commitNoterKnowledge(f.store, { path: target, run: { sessionId: peer.id, createdAt: "later" }, operations: [{ ...f.content,
+  const changed = commitNoterKnowledge(f.store, { path: target, run: { sessionId: peer.id, createdAt: "later" }, operations: [{ files: null, ...f.content,
     op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, text: "Secret successor", scope: "session", supports: [fact] }] });
   if (!changed.ok) throw new Error(changed.problems.join("; "));
   expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([]);

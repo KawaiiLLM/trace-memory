@@ -101,7 +101,7 @@ function knowledgeCorpus(knowledge: number, revisions: number) {
   const tips: { knowledgeId: number; commit: number }[] = [];
   for (let i = 0; i < knowledge; i++) {
     const run = { kind: "manual" as const, sessionId, branch: "main", createdAt: time };
-    const created = store.commitConsolidationRun({ path, run, operations: [{ op: "create", title: "Fixture title", handle: `h${i}`, author: "fake",
+    const created = store.commitConsolidationRun({ path, run, operations: [{ files: null, op: "create", title: "Fixture title", handle: `h${i}`, author: "fake",
       text: `SEARCHNEEDLE conclusion ${i}`, category: "understanding", scope: "session", supports, reason: "corpus", topics: [], createdAt: time }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     tips.push({ knowledgeId: created.committed[0]!.knowledgeId, commit: created.committed[0]!.commit });

@@ -18,7 +18,7 @@ import { REQUEST, factsFile, knowledgeFile, largestTaskPromptTokens, scriptedNot
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 const fact = (text = "User set the rule", source = "T1#E1") => ({ title: "Rule evidence", sources: `[${source}] ${text}` });
-const create = (supports: string[] = ["$1"]) => ({ op: "create", title: "Fixture title", text: "Use the stated rule", category: "constraint", scope: "session", supports, reason: "new rule", topics: [] });
+const create = (supports: string[] = ["$1"]) => ({ files: null, op: "create", title: "Fixture title", text: "Use the stated rule", category: "constraint", scope: "session", supports, reason: "new rule", topics: [] });
 
 function fixture(script: NoterOutput[], agent?: (input: NotingAgentInput) => Promise<RunAgentResult>) {
   const dir = mkdtempSync(join(tmpdir(), "tm-144-two-tasks-"));
@@ -88,7 +88,7 @@ function seedKnowledge(f: Fixture) {
   const note = f.memory.tools({ kind: "manual", ...f.path, currentTurnId: f.turn.id }).find(tool => tool.name === "note")!;
   const fid = JSON.parse(note.execute(fact("User supplied enduring evidence"))).factIds[0] as number;
   const created = commitNoterKnowledge(store, { path: f.path, run: { sessionId: f.session.id, createdAt: "now" }, operations: [
-    { op: "create", title: "Seeded title", text: "Old rule", category: "constraint", scope: "session", topics: [], supports: [fid], reason: "initial", createdAt: "now", author: "test", handle: "$seed" }] });
+    { files: null, op: "create", title: "Seeded title", text: "Old rule", category: "constraint", scope: "session", topics: [], supports: [fid], reason: "initial", createdAt: "now", author: "test", handle: "$seed" }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const base = created.committed[0]!;
   return { fid, tag: `K${base.knowledgeId}#${store.versionTag(base.knowledgeId, base.commit)}` };
@@ -99,7 +99,7 @@ for (const [label, output, problem] of [
   ["a fact over the body limit", () => ({ noteInput: [fact("word ".repeat(300))] }), "200"],
   ["a role that does not match the entry", () => ({ noteInput: [fact("User set the rule", "T1#E1@assistant")] }), "assistant"],
   ["a second record for the same item", (f: Fixture) => { const seed = seedKnowledge(f);
-    return { noteInput: [fact()], memoryInput: [{ op: "update", id: seed.tag, text: "First", supports: ["$1"], reason: "r" }, { op: "update", id: seed.tag, text: "Second", supports: ["$1"], reason: "r" }] }; }, "already has a record"],
+    return { noteInput: [fact()], memoryInput: [{ files: null, op: "update", id: seed.tag, text: "First", supports: ["$1"], reason: "r" }, { files: null, op: "update", id: seed.tag, text: "Second", supports: ["$1"], reason: "r" }] }; }, "already has a record"],
 ] as const) test(`blocked before publication: ${label}`, async () => {
   const f = fixture([]);
   f.noter.script.push((output as (f: Fixture) => NoterOutput)(f)); // a seeded item, when the case needs one, exists before the run
@@ -176,11 +176,11 @@ test("an update whose base moved between the tasks is published as a create with
     try {
       const base = other.currentKnowledge(f.path)[0]!;
       const result = commitNoterKnowledge(other, { path: f.path, run: { sessionId: f.session.id, createdAt: "later" }, operations: [
-        { op: "update", knowledgeId: base.knowledge.id, baseCommit: base.revision.id, title: "Seeded title", text: "Concurrent rule", category: "constraint", scope: "session", topics: [], supports: [seed.fid], reason: "other", createdAt: "later" }] });
+        { files: null, op: "update", knowledgeId: base.knowledge.id, baseCommit: base.revision.id, title: "Seeded title", text: "Concurrent rule", category: "constraint", scope: "session", topics: [], supports: [seed.fid], reason: "other", createdAt: "later" }] });
       if (!result.ok) throw new Error(result.problems.join("; "));
     } finally { other.close(); }
   };
-  f.noter.script.push({ noteInput: [fact("Refinement")], memoryInput: { op: "update", id: seed.tag, text: "Requested rule", supports: [`F${seed.fid}`, "$1"], reason: "r" }, verify: () => advance() });
+  f.noter.script.push({ noteInput: [fact("Refinement")], memoryInput: { files: null, op: "update", id: seed.tag, text: "Requested rule", supports: [`F${seed.fid}`, "$1"], reason: "r" }, verify: () => advance() });
   expect(await f.run()).toMatchObject({ outcome: "success" });
   const current = f.memory.store.currentKnowledge(f.path);
   expect(current).toHaveLength(2);

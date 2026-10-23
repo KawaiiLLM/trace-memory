@@ -34,9 +34,9 @@ test("92/118: all-branch history owns stable ordinals, current selection follows
       return result.committed[0]!;
     };
     const content = { title: "History rule", category: "constraint" as const, scope: "session" as const, topics: [], reason: "history", createdAt: "now" };
-    const initial = write(paths[0]!, [{ op: "create", handle: "$1", author: "test", ...content, text: "Initial body", supports: [facts[0]!] }]);
-    const first = write(paths[1]!, [{ op: "update", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, ...content, text: "Left body", supports: [facts[1]!] }]);
-    const second = write(paths[2]!, [{ op: "update", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, ...content, text: "Right body", supports: [facts[2]!] }]);
+    const initial = write(paths[0]!, [{ files: null, op: "create", handle: "$1", author: "test", ...content, text: "Initial body", supports: [facts[0]!] }]);
+    const first = write(paths[1]!, [{ files: null, op: "update", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, ...content, text: "Left body", supports: [facts[1]!] }]);
+    const second = write(paths[2]!, [{ files: null, op: "update", knowledgeId: initial.knowledgeId, baseCommit: initial.commit, ...content, text: "Right body", supports: [facts[2]!] }]);
     const id = initial.knowledgeId;
     const read = (path: Path, address: string, versions = "current") => {
       activate(path);
@@ -62,7 +62,7 @@ test("92/118: all-branch history owns stable ordinals, current selection follows
     expect(all).not.toMatch(/K\d+@\d+/);
     expect(read(paths[2]!, `K${id}`)).toContain(`[K${id}#${store.versionTag(id, second.commit)}]`);
     expect(store.versionOrdinal(id, first.commit)).toBe(2);
-    const archive = write(paths[2]!, [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: id, baseCommit: second.commit, supports: [facts[2]!], reason: "retired", createdAt: "now" }]);
+    const archive = write(paths[2]!, [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: id, baseCommit: second.commit, supports: [facts[2]!], reason: "retired", createdAt: "now" }]);
     const archivedHistory = read(paths[2]!, `K${id}`, "history");
     expect(archivedHistory.split("\n").find(line => line.startsWith(`  K${id}@v4 `)))
       .toContain("archive kind: invalid");
@@ -75,7 +75,7 @@ test("92/118: all-branch history owns stable ordinals, current selection follows
     const tools = memory.tools({ kind: "manual", sessionId: foreign.id, branch: "main", currentTurnId: foreignTurn.id });
     const fact = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "Outside evidence", sources: `[T${foreignTurn.id}#E1] Outside evidence` })).factIds[0];
     expect(memoryFiles(memory, { sessionId: foreign.id, branch: "main", headTurnId: foreignTurn.id }).read(`trace://K${id}@v2`).content).toContain("Left body");
-    const rejected = tools.find(t => t.name === "memory")!.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" });
+    const rejected = tools.find(t => t.name === "memory")!.execute({ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: `K${id}#${store.versionTag(id, first.commit)}`, supports: [`F${fact}`], reason: "outside" });
     expect(rejected).toContain("rejected:");
     expect(rejected).not.toContain("expects one create/archive operation");
     expect(rejected).not.toMatch(/K\d+@\d+/);

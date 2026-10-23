@@ -22,7 +22,7 @@ function legacyFixture(extension = false, splitInvisible = false) {
     sources: [{ entry: initialEntry, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "e", createdAt: "now",
   }]);
   const created = store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
-    run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{
+    run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{ files: null,
       op: "create", title: "Fixture title", handle: "$1", author: "test", text: "root", category: "constraint", scope: "global",
       supports: [noting.facts[0]!.id], topics: [], reason: "root", createdAt: "now",
     }] });

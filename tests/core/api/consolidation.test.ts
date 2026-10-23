@@ -41,14 +41,14 @@ function fact(text = memories.base, options: { sessionId?: number; branch?: stri
   return result.facts[0]!;
 }
 function knowledge(support: number, text = memories.knowledge) {
-  const result = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time }, operations: [{
+  const result = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time }, operations: [{ files: null,
     op: "create", title: "Fixture title", handle: "$1", author: "fixture", text, category: "understanding", scope: "project", topics: [], supports: [support], reason: "Seed", createdAt: time,
   }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   const item = result.committed[0]!;
   return { ...item, tag: `K${item.knowledgeId}#${memory.store.versionTag(item.knowledgeId, item.commit)}` };
 }
-const create = (support: number, text = memories.knowledge) => ({ op: "create", title: "Fixture title", text, category: "understanding", scope: "project", topics: [], supports: [`F${support}`], reason: "Initial admission" });
+const create = (support: number, text = memories.knowledge) => ({ files: null, op: "create", title: "Fixture title", text, category: "understanding", scope: "project", topics: [], supports: [`F${support}`], reason: "Initial admission" });
 async function stage(input: NotingAgentInput, output: unknown) {
   await submit(input, memory, { noteInput: [], memoryInput: output as Record<string, unknown> });
 }
@@ -138,7 +138,7 @@ for (const bad of ["missing fact", "foreign fact", "late fact", "untagged base",
   const foreign = fact(memories.base, { sessionId: session(foreignProject) });
   const resolve = deferred(), pending = run();
   const late = fact();
-  const update = { op: "update", id: base.tag, text: memories.editedKnowledge, category: "understanding", scope: "project", topics: [], supports: [`F${evidence.id}`], reason: "Update" };
+  const update = { files: null, op: "update", id: base.tag, text: memories.editedKnowledge, category: "understanding", scope: "project", topics: [], supports: [`F${evidence.id}`], reason: "Update" };
   const operation = bad === "untagged base" ? { ...update, id: `K${base.knowledgeId}` }
     : bad === "model handle" ? { ...create(evidence.id), handle: "$e1" }
     : bad === "duplicate target" ? update
@@ -187,7 +187,7 @@ test("simulation v7m Chinese evidence remains traceable through N knowledge publ
   const fixture = JSON.parse(readFileSync(new URL("../../fixtures/consolidation.json", import.meta.url), "utf8"));
   const ids = new Map<number, number>();
   for (const source of fixture.facts) ids.set(source.id, fact(source.text, { actor: source.actor, category: source.category, quote: source.quote, createdAt: source.timestamp }).id);
-  queue({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission", ...fixture.knowledge, category: "understanding", supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) });
+  queue({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission", ...fixture.knowledge, category: "understanding", supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) });
   const result = await run();
   expect(result.outcome, JSON.stringify(result)).toBe("success");
   expect(memory.trace("K1")).toContain(fixture.knowledge.text);

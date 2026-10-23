@@ -53,7 +53,7 @@ export function knowledgeFile(memory: TraceMemory, input: ToolOperation | readon
   return operations.map(op => {
     const common = { supports: list(op.supports), reason: op.reason as string | undefined };
     // A field the format does not have is written as it was given, for the test that expects the check to refuse it.
-    const { op: _op, id: _id, title: _title, category: _category, scope: _scope, topics: _topics, supports: _supports, reason: _reason, text: _text, edits: _edits, ...extra } = op;
+    const { op: _op, id: _id, title: _title, category: _category, scope: _scope, topics: _topics, supports: _supports, reason: _reason, text: _text, edits: _edits, files: _files, ...extra } = op;
     const extras = Object.fromEntries(Object.entries(extra).map(([key, value]) => [key, String(value)]));
     if (op.op === "create") return block("create", { ...defined({ title: op.title as string, category: op.category as string, scope: op.scope as string,
       topics: list(op.topics) ?? "", ...common }), ...extras } as Record<string, string>, op.text as string);

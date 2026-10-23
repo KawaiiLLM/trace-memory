@@ -47,7 +47,7 @@ test("32c: borrowed failures continue across executors, disable only the target 
   await note(second, target, options);
   // Other target-phase work remains claimed while the third failure is settled.
   const fact = decision(second, target, "retained fact");
-  const knowledge = second.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, operations: [{
+  const knowledge = second.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, operations: [{ files: null,
     op: "create", title: "Fixture title", handle: "$1", author: "test", text: "pending maintenance", category: "constraint", scope: "session",
     supports: [fact.facts[0]!.id], reason: "evidence", topics: [], createdAt: "now",
   }] });
@@ -129,7 +129,7 @@ test.each([false, true])("92: the failure streak resets only after atomic termin
     const input = raw as NotingAgentInput;
     const text = `accepted attempt ${++attempt}`;
     await submit(input, good, { noteInput: [{ title: "Held evidence", sources: `[T${t.headTurnId}#E1] ${text}` }],
-      memoryInput: { op: "create", title: "Fixture title", text, category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "joint extraction" } });
+      memoryInput: { files: null, op: "create", title: "Fixture title", text, category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "joint extraction" } });
     expect(good.store.listSessionFacts(t.sessionId)).toEqual([]);
     expect(good.store.listKnowledgeRevisions()).toEqual([]);
     return { outcome: "success", output: "corrected", request };

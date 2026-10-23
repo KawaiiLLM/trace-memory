@@ -23,7 +23,9 @@ export function buildChanges(store: Store, path: KnowledgePath, curateRuns: read
   const proposals: Proposal[] = [];
   for (const run of curateRuns) {
     const response = JSON.parse(store.getRun(run)?.response ?? "{}") as { category?: string; proposed?: { block: string; operation: Operation }[] };
-    for (const entry of response.proposed ?? []) proposals.push({ n: proposals.length + 1, run, category: response.category ?? "", ...entry });
+    // JSON omits an explicit undefined mapping; restore the writer's unmapped-parent copy.
+    for (const entry of response.proposed ?? []) proposals.push({ n: proposals.length + 1, run, category: response.category ?? "", ...entry,
+      operation: { ...entry.operation, files: entry.operation.files } });
   }
   /** What the proposal writes as supports: its own, else the parents' (a Dreamer operation that cites none inherits them). */
   const supportsOf = (operation: Operation, base: KnowledgeRevision): number[] => operation.supports.length ? operation.supports

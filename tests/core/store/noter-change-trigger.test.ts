@@ -24,7 +24,7 @@ function setup() {
   };
   /** A Noter update of an item: one more operation on its chain. */
   const noterUpdate = (item: { knowledgeId: number; commit: number }, text: string) => {
-    const result = commitNoterKnowledge(b.store, { path: b.path, run: { sessionId: b.session.id, branch: "main", createdAt: "now" }, operations: [{ op: "update",
+    const result = commitNoterKnowledge(b.store, { path: b.path, run: { sessionId: b.session.id, branch: "main", createdAt: "now" }, operations: [{ files: null, op: "update",
       knowledgeId: item.knowledgeId, baseCommit: item.commit, text, category: "constraint", scope: "project", supports: [b.existingFact(`Support for ${text}`).id],
       topics: [], reason: "update", createdAt: "now" }] });
     if (!result.ok) throw new Error(result.problems.join("\n"));

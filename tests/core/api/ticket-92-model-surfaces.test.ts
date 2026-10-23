@@ -19,12 +19,12 @@ test("92/03: model lists and compact carriers use chronological tags; exact read
     const fact = seedFact(memory, target, "Shared evidence", [{ entry: user, text: "Shared evidence" }]).id;
     const content = { scope: "project" as const, topics: [], supports: [fact], reason: "fixture", createdAt: "now" };
     const created = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [
-      { op: "create", title: "Fixture title", handle: "$1", author: "test", ...content, category: "constraint", text: "Needle original" },
-      { op: "create", title: "Fixture title", handle: "$2", author: "test", ...content, category: "open", text: "Needle second" },
+      { files: null, op: "create", title: "Fixture title", handle: "$1", author: "test", ...content, category: "constraint", text: "Needle original" },
+      { files: null, op: "create", title: "Fixture title", handle: "$2", author: "test", ...content, category: "open", text: "Needle second" },
     ] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const first = created.committed[0]!, second = created.committed[1]!;
-    const updated = commitNoterKnowledge(store, { path: target, run: { sessionId: session.id, createdAt: "now" }, operations: [{
+    const updated = commitNoterKnowledge(store, { path: target, run: { sessionId: session.id, createdAt: "now" }, operations: [{ files: null,
       op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, ...content, category: "constraint", text: "Needle latest",
     }] });
     if (!updated.ok) throw new Error(updated.problems.join("; "));

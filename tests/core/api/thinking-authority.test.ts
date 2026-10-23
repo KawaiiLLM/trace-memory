@@ -63,7 +63,7 @@ test("thinking: bound historical facts and knowledge retain stored sources but d
     const legacy = legacyFacts(f.m.store, { kind: "noting", sessionId: f.sessionId, branch: "main", createdAt: "now" },
       sources.map(address => ({ sources: [{ entry: f.pure, address }], text: "Historical inference",
         category: "observation" as const, actor: "agent" as const, createdAt: "now" })), [f.pure.id]).facts;
-    const knowledge = f.m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$1", author: "test", text: "Historical knowledge", category: "understanding", scope: "project", supports: legacy.map(fact => fact.id), reason: "Historical support", topics: [], createdAt: "now" }] });
+    const knowledge = f.m.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ files: null, op: "create", title: "Fixture title", handle: "$1", author: "test", text: "Historical knowledge", category: "understanding", scope: "project", supports: legacy.map(fact => fact.id), reason: "Historical support", topics: [], createdAt: "now" }] });
     expect(knowledge.ok).toBe(true);
     expect(sourceAddresses(f.pure)).toEqual(expect.arrayContaining(sources));
     const raw = f.m.store.getSourceEntry(f.pure.id)!.raw;

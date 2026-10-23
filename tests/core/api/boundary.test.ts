@@ -71,7 +71,7 @@ test.each([
   const run = memory.noting;
   const cancelled = run({ ...target, signal: controller.signal });
   const untouched = run({ ...target, sessionId: other, headTurnId: otherTurn.id });
-  expect(memory.tools({ kind: "manual", sessionId: own, branch: "main", currentTurnId: ownTurn.id }).find(tool => tool.name === "memory")!.execute({
+  expect(memory.tools({ kind: "manual", sessionId: own, branch: "main", currentTurnId: ownTurn.id }).find(tool => tool.name === "memory")!.execute({ files: null,
     op: "create", title: "Fixture title", text: "Own rule", category: "constraint", scope: "session", supports: ["F1"], topics: [], reason: "Seed independent D claim",
   })).toContain("committed");
   const oldClaim = memory.store.getClaim(own, phase)!;
@@ -251,7 +251,7 @@ test("19b/92: N with unavailable audit stages knowledge on earlier facts and com
   const t = turn(sessionId, null, "用 pnpm", "好的。");
   memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute(fact(`T${t.id}#E1`));
-  const batch = { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] };
+  const batch = { files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] };
   verified = { request: undefined, audit: { available: false, reason: "no provider request on this host" } };
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
@@ -363,7 +363,7 @@ test("20a/92: a host-neutral N extracts both layers and shares knowledge renderi
     noted = input.text; // the whole task, as text: instructions stay a separate field
     expect(input.prompt).toContain("Noting (facts and knowledge)");
     expect(noted).toContain(input.material.entries[0]!.view);
-    await submit(input, memory, { noteInput: [fact(`T${t.id}#E1`)], memoryInput: { op: "create", title: "Fixture title", text: "The project uses pnpm", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" } });
+    await submit(input, memory, { noteInput: [fact(`T${t.id}#E1`)], memoryInput: { files: null, op: "create", title: "Fixture title", text: "The project uses pnpm", category: "constraint", scope: "project", topics: [], supports: ["$1"], reason: "Joint extraction" } });
     expect(memory.store.currentKnowledge()).toEqual([]);
     return { outcome: "success", output: "done", audit: { available: false, reason: "text-only host" } };
   };

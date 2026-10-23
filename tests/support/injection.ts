@@ -21,7 +21,7 @@ export function injectionFixture() {
   /** A knowledge item of about `size` words, with a classify score (null: unscored). */
   const create = (label: string, size: number, score: number | null) => {
     const text = `${label} ` + "word ".repeat(size);
-    const result = memory.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{
+    const result = memory.store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{ files: null,
       op: "create", title: fixtureTitle(label), handle: `$${++sequence}`, author: "test", text, category: "constraint", scope: "project",
       supports: [noted.facts[0]!.id], topics: [], reason: "order fixture", createdAt: "now" }] });
     if (!result.ok) throw new Error(result.problems.join("; "));

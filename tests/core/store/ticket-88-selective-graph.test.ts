@@ -23,7 +23,7 @@ test("88: neutral writes do not revisit existing knowledge revisions", () => {
     const fact = recorded.facts[0]!;
     const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     const created = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: at },
-      operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "knowledge", category: "constraint", scope: "session",
+      operations: [{ files: null, op: "create", title: "Fixture title", handle: "$k", author: "test", text: "knowledge", category: "constraint", scope: "session",
         supports: [fact.id], topics: [], reason: "evidence", createdAt: at }] });
     if (!created.ok) throw Error(created.problems.join("; "));
     const revisionId = created.committed[0]!.commit;
@@ -99,7 +99,7 @@ test("88: a mixed-owner global revision refreshes only the moved owner's members
     const [a, b] = nodes as [typeof nodes[number], typeof nodes[number]];
     const path = { sessionId: a.session.id, branch: "main", headTurnId: a.tail.id };
     const result = writer.commitConsolidationRun({ path, run: { kind: "manual", sessionId: a.session.id, branch: "main", createdAt: at },
-      operations: [{ op: "create", title: "Fixture title", handle: "$mixed", author: "test", text: "both", category: "constraint", scope: "global",
+      operations: [{ files: null, op: "create", title: "Fixture title", handle: "$mixed", author: "test", text: "both", category: "constraint", scope: "global",
         supports: [a.fact.id, b.fact.id], topics: [], reason: "both owners", createdAt: at }] });
     if (!result.ok) throw Error(result.problems.join("; "));
     expect(reader.visibleKnowledgeVersions(path)).toEqual(new Set([result.committed[0]!.commit]));
@@ -128,7 +128,7 @@ test("88: a mixed-owner global revision refreshes only the moved owner's members
     selectedOwners.length = 0;
     writer.setCurrentPath(a.session.id, "main", a.tail.id, "native");
     const added = writer.commitConsolidationRun({ path, run: { kind: "manual", sessionId: a.session.id, branch: "main", createdAt: at },
-      operations: [{ op: "create", title: "Fixture title", handle: "$second", author: "test", text: "second claim", category: "constraint",
+      operations: [{ files: null, op: "create", title: "Fixture title", handle: "$second", author: "test", text: "second claim", category: "constraint",
         scope: "global", supports: [a.fact.id, b.fact.id], topics: [], reason: "same evidence", createdAt: at }] });
     if (!added.ok) throw Error(added.problems.join("; "));
     expect(reader.visibleKnowledgeVersions(path)).toEqual(new Set([result.committed[0]!.commit, added.committed[0]!.commit]));
@@ -202,7 +202,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     const create = (owner: typeof nodes[number], support: number, scope: "global" | "session" | "project") => {
       const result = writer.commitConsolidationRun({ path: { sessionId: owner.session.id, branch: "main", headTurnId: owner.second.id },
         run: { kind: "manual", sessionId: owner.session.id, branch: "main", createdAt: at },
-        operations: [{ op: "create", title: "Fixture title", handle: "$new", author: "test", text: `claim ${support}`,
+        operations: [{ files: null, op: "create", title: "Fixture title", handle: "$new", author: "test", text: `claim ${support}`,
           category: "constraint", scope, supports: [support], reason: "fixture", topics: [], createdAt: at }] });
       if (!result.ok) throw Error(result.problems.join("; "));
       return result.committed[0]!;
@@ -228,7 +228,7 @@ test("88: every external commit, foreground move and rollback agrees with a fres
     writer.setCurrentPath(a.session.id, "main", a.second.id, "one"); check();
     const updated = writer.commitConsolidationRun({ path: paths[0]!,
       run: { kind: "manual", sessionId: a.session.id, branch: "main", createdAt: at },
-      operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit,
+      operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit,
         supports: [a.facts[1]!.id], reason: "new evidence", createdAt: at }] });
     if (!updated.ok) throw Error(updated.problems.join("; "));
     const archiveRefresh = measureRefresh(a.session.id);
@@ -291,16 +291,16 @@ test("88: every external commit, foreground move and rollback agrees with a fres
       commitComponents.push(inspected);
       return committed;
     };
-    const merged = maintain({ op: "merge", intoKnowledgeId: members[0]!.knowledgeId,
+    const merged = maintain({ files: null, op: "merge", intoKnowledgeId: members[0]!.knowledgeId,
       intoBaseCommit: members[0]!.commit, absorb: [{ knowledgeId: members[1]!.knowledgeId, baseCommit: members[1]!.commit }],
       text: "joined", category: "constraint", scope: "global", supports: [a.facts[1]!.id],
       topics: [], reason: "real merge", createdAt: at })[0]!;
     // The split item continues as its primary part (first), beside its two children.
-    const children = maintain({ op: "split", knowledgeId: merged.knowledgeId, baseCommit: merged.commit,
+    const children = maintain({ files: null, op: "split", knowledgeId: merged.knowledgeId, baseCommit: merged.commit,
       text: "joined, primary part", category: "constraint", scope: "global", topics: [],
-      children: [{ title: "Fixture child", text: "left", category: "constraint", topics: [] }, { title: "Fixture child", text: "right", category: "constraint", topics: [] }],
+      children: [{ files: null, title: "Fixture child", text: "left", category: "constraint", topics: [] }, { files: null, title: "Fixture child", text: "right", category: "constraint", topics: [] }],
       supports: [a.facts[0]!.id], reason: "real split", createdAt: at });
-    const transitive = maintain({ op: "merge", intoKnowledgeId: members[2]!.knowledgeId, intoBaseCommit: members[2]!.commit,
+    const transitive = maintain({ files: null, op: "merge", intoKnowledgeId: members[2]!.knowledgeId, intoBaseCommit: members[2]!.commit,
       absorb: [{ knowledgeId: children[1]!.knowledgeId, baseCommit: children[1]!.commit }],
       text: "transitive", category: "constraint", scope: "global", supports: [a.facts[0]!.id],
       topics: [], reason: "transitive merge", createdAt: at })[0]!;
@@ -365,13 +365,13 @@ test("88: every external commit, foreground move and rollback agrees with a fres
           case "create": create(a, a.facts[0]!.id, "global"); break;
           case "update": {
             const base = active().at(random() % active().length)!;
-            runOp({ op: "update", knowledgeId: base.knowledgeId, baseCommit: base.id, text: `updated ${sequence}`,
+            runOp({ files: null, op: "update", knowledgeId: base.knowledgeId, baseCommit: base.id, text: `updated ${sequence}`,
               category: "constraint", scope: "global", supports: [a.facts[0]!.id], topics: [], reason: "random update", createdAt: at });
             break;
           }
           case "archive": {
             const base = active().at(random() % active().length)!;
-            runOp({ op: "archive", kind: "invalid", knowledgeId: base.knowledgeId, baseCommit: base.id, text: `Withdrawn in this fixture at step ${sequence}; the cited fact records the withdrawal and nothing replaces it.`,
+            runOp({ files: null, op: "archive", kind: "invalid", knowledgeId: base.knowledgeId, baseCommit: base.id, text: `Withdrawn in this fixture at step ${sequence}; the cited fact records the withdrawal and nothing replaces it.`,
               supports: [a.facts[0]!.id], reason: "random archive", createdAt: at });
             break;
           }
@@ -380,17 +380,17 @@ test("88: every external commit, foreground move and rollback agrees with a fres
             const index = random() % choices.length;
             const pair = [choices[index]!, choices[(index + 1) % choices.length]!].sort((x, y) => x.knowledgeId - y.knowledgeId);
             const [left, right] = pair as [typeof choices[number], typeof choices[number]];
-            runOp({ op: "merge", intoKnowledgeId: left.knowledgeId, intoBaseCommit: left.id,
+            runOp({ files: null, op: "merge", intoKnowledgeId: left.knowledgeId, intoBaseCommit: left.id,
               absorb: [{ knowledgeId: right.knowledgeId, baseCommit: right.id }], text: `merged ${sequence}`,
               category: "constraint", scope: "global", supports: [a.facts[0]!.id], topics: [], reason: "random merge", createdAt: at });
             break;
           }
           case "split": {
             const base = active().at(random() % active().length)!;
-            runOp({ op: "split", knowledgeId: base.knowledgeId, baseCommit: base.id,
+            runOp({ files: null, op: "split", knowledgeId: base.knowledgeId, baseCommit: base.id,
               text: `primary ${sequence}`, category: "constraint", scope: "global", topics: [],
-              children: [{ title: "Fixture child", text: `left ${sequence}`, category: "constraint", topics: [] },
-                { title: "Fixture child", text: `right ${sequence}`, category: "constraint", topics: [] }],
+              children: [{ files: null, title: "Fixture child", text: `left ${sequence}`, category: "constraint", topics: [] },
+                { files: null, title: "Fixture child", text: `right ${sequence}`, category: "constraint", topics: [] }],
               supports: [a.facts[0]!.id], reason: "random split", createdAt: at });
             break;
           }

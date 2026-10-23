@@ -47,7 +47,7 @@ test("a new version is titled while the legacy versions it follows stay untitled
   const f = database();
   try {
     const updated = f.store.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.path.sessionId, branch: "main", createdAt: "now" },
-      operations: [{ op: "update", knowledgeId: f.first.knowledgeId, baseCommit: f.first.commit, title: "First rule", text: "First rule, clarified",
+      operations: [{ files: null, op: "update", knowledgeId: f.first.knowledgeId, baseCommit: f.first.commit, title: "First rule", text: "First rule, clarified",
         category: "constraint", scope: "project", supports: [f.fact], topics: [], reason: "clarify", createdAt: "now" }] });
     if (!updated.ok) throw new Error(updated.problems.join("; "));
     expect(f.store.getKnowledgeRevision(f.first.knowledgeId, updated.committed[0]!.commit)!.title).toBe("First rule");
@@ -64,9 +64,9 @@ test("a direct Store write of a new live version without a title is refused, and
     const common = { supports: [f.fact], topics: [], reason: "no title", createdAt: "now" };
     const before = f.store.listKnowledgeRevisions();
     const untitled = [
-      { op: "create" as const, handle: "$1", author: "test", text: "Untitled rule", category: "constraint" as const, scope: "project" as const, ...common },
+      { files: null, op: "create" as const, handle: "$1", author: "test", text: "Untitled rule", category: "constraint" as const, scope: "project" as const, ...common },
       // A legacy base has no title to inherit.
-      { op: "update" as const, knowledgeId: f.first.knowledgeId, baseCommit: f.first.commit, text: "Edited", category: "constraint" as const, scope: "project" as const, ...common },
+      { files: null, op: "update" as const, knowledgeId: f.first.knowledgeId, baseCommit: f.first.commit, text: "Edited", category: "constraint" as const, scope: "project" as const, ...common },
     ];
     for (const operation of untitled) {
       const result = f.store.commitConsolidationRun({ path: f.path, run, operations: [operation] });
@@ -99,7 +99,7 @@ test("a database whose archive kinds predate `inadmissible` keeps every knowledg
   const reopened = new Store(f.file);
   try {
     const archived = reopened.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.path.sessionId, branch: "main", createdAt: "now" }, operations: [
-      { op: "archive", kind: "inadmissible", knowledgeId: f.first.knowledgeId, baseCommit: f.first.commit, text: "A running log, not an understanding.", supports: [f.fact], reason: "fails admission", createdAt: "now" }] });
+      { files: null, op: "archive", kind: "inadmissible", knowledgeId: f.first.knowledgeId, baseCommit: f.first.commit, text: "A running log, not an understanding.", supports: [f.fact], reason: "fails admission", createdAt: "now" }] });
     if (!archived.ok) throw new Error(archived.problems.join("; "));
     expect(reopened.getKnowledgeRevision(f.first.knowledgeId, archived.committed[0]!.commit)).toMatchObject({ op: "archive", archiveKind: "inadmissible" });
     expect(archived.committed[0]!.commit).toBeGreaterThan(Number((before.at(-1) as { id: number }).id));

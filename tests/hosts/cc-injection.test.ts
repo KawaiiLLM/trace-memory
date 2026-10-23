@@ -72,7 +72,7 @@ async function hookFixture() {
       source: [`T${entry.turnId}#E${entry.entryOrdinal}`], createdAt: time(4) }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const committed = importer.memory.store.commitConsolidationRun({ path: { sessionId: result.coreSessionId!, branch: result.branch, headTurnId: result.headTurnId! },
-    run: { kind: "manual", sessionId: result.coreSessionId!, branch: result.branch, createdAt: time(5) }, operations: [{ op: "create", title: "Fixture title", handle: "$k",
+    run: { kind: "manual", sessionId: result.coreSessionId!, branch: result.branch, createdAt: time(5) }, operations: [{ files: null, op: "create", title: "Fixture title", handle: "$k",
       author: "fixture", text: `hook knowledge ${"x".repeat(12_000)}`, category: "constraint", scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: time(5) }] });
   if (!committed.ok) throw new Error(committed.problems.join("; "));
   importer.close();
@@ -243,7 +243,7 @@ test("73: SessionStart injection reads the resolved configuration, not the defau
     // Unscored, so the temporary allowance carries it: sized to fit the default 10,000-token allowance, but not a
     // 1-token allowance.
     const committed = importer.memory.store.commitConsolidationRun({ path: { sessionId: result.coreSessionId!, branch: result.branch, headTurnId: result.headTurnId! },
-      run: { kind: "manual", sessionId: result.coreSessionId!, branch: result.branch, createdAt: time(5) }, operations: [{ op: "create", title: "Fixture title", handle: "$k",
+      run: { kind: "manual", sessionId: result.coreSessionId!, branch: result.branch, createdAt: time(5) }, operations: [{ files: null, op: "create", title: "Fixture title", handle: "$k",
         author: "fixture", text: `config knowledge ${"word ".repeat(8_000)}`, category: "constraint", scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: time(5) }] });
     if (!committed.ok) throw new Error(committed.problems.join("; "));
     importer.close();

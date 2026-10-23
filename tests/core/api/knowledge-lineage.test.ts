@@ -51,7 +51,7 @@ function fixture() {
     scope, supports, topics: [], reason: `change to ${text}`, createdAt: time });
   const rootPath = { sessionId: session.id, branch: "root", headTurnId: rootTurn.id };
   const initial = store.commitConsolidationRun({ path: rootPath, run: { kind: "manual", sessionId: session.id, branch: "root", createdAt: time },
-    operations: [{ op: "create", title: "Fixture title", handle: "$root", author: "test", ...content("root conclusion", [rootFact]) }] });
+    operations: [{ files: null, op: "create", title: "Fixture title", handle: "$root", author: "test", ...content("root conclusion", [rootFact]) }] });
   if (!initial.ok) throw new Error(initial.problems.join("; "));
   const created = initial.committed[0]!;
   return { memory, store, project, session, rootTurn, rootEntry, rootFact, rootPath, append, note, write, content, created };
@@ -64,9 +64,9 @@ test("64b: change revisions use only direct facts and do not inherit historical 
   f.store.selectSourcePath(f.session.id, "child", [f.rootEntry.id, childEntry.id]);
   const childFact = f.note(childTurn.id, childEntry.id, "child-only evidence");
   const childPath = { sessionId: f.session.id, branch: "child", headTurnId: childTurn.id };
-  const first = (await f.write(childPath, [{ op: "update", knowledgeId: f.created.knowledgeId, baseCommit: f.created.commit,
+  const first = (await f.write(childPath, [{ files: null, op: "update", knowledgeId: f.created.knowledgeId, baseCommit: f.created.commit,
     ...f.content("complete child conclusion", [childFact]) }]))[0]!;
-  const second = (await f.write(childPath, [{ op: "update", knowledgeId: f.created.knowledgeId, baseCommit: first.commit,
+  const second = (await f.write(childPath, [{ files: null, op: "update", knowledgeId: f.created.knowledgeId, baseCommit: first.commit,
     ...f.content("complete later conclusion", [f.rootFact]) }]))[0]!;
 
   expect(f.store.knowledgeRevision(second.commit)).toMatchObject({ text: "complete later conclusion", supports: [f.rootFact],
@@ -79,9 +79,9 @@ test("64b: change revisions use only direct facts and do not inherit historical 
   expect(f.store.currentCommit(f.created.knowledgeId, f.rootPath).map(r => r.id)).toEqual([second.commit]);
   expect(f.store.currentCommit(f.created.knowledgeId, childPath).map(r => r.id)).toEqual([second.commit]);
 
-  const split = await f.write(childPath, [{ op: "split", knowledgeId: f.created.knowledgeId, text: "Primary part.", category: "constraint", scope: "project", topics: [],
+  const split = await f.write(childPath, [{ files: null, op: "split", knowledgeId: f.created.knowledgeId, text: "Primary part.", category: "constraint", scope: "project", topics: [],
     baseCommit: second.commit, supports: [f.rootFact], reason: "separate the complete result", createdAt: time,
-    children: [{ title: "Fixture child", text: "first complete result", category: "constraint", topics: [] }, { title: "Fixture child", text: "second complete result", category: "goal", topics: [] }] }]);
+    children: [{ files: null, title: "Fixture child", text: "first complete result", category: "constraint", topics: [] }, { files: null, title: "Fixture child", text: "second complete result", category: "goal", topics: [] }] }]);
   f.store.setCurrentPath(f.session.id, "root", f.rootTurn.id, "test-lineage");
   expect(f.store.currentKnowledge(f.rootPath).map(v => v.revision.id)).toEqual(split.map(v => v.commit));
   f.store.setCurrentPath(f.session.id, "child", childTurn.id, "test-lineage");
@@ -92,7 +92,7 @@ test("64b: change revisions use only direct facts and do not inherit historical 
 test("34a: a caller-supplied Dreamer role cannot forge trusted revision provenance", () => {
   const f = fixture();
   const result = f.store.commitConsolidationRun({ path: f.rootPath, run: { kind: "dreaming", sessionId: f.session.id, branch: "root", createdAt: time }, operations: [{
-    op: "update", knowledgeId: f.created.knowledgeId, baseCommit: f.created.commit, ...f.content("spoofed ordinary update", [f.rootFact]),
+    files: null, op: "update", knowledgeId: f.created.knowledgeId, baseCommit: f.created.commit, ...f.content("spoofed ordinary update", [f.rootFact]),
   }] });
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.problems.join(" ")).toContain("no knowledge commit authority");
@@ -106,8 +106,8 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
   f.store.selectSourcePath(f.session.id, "child", [f.rootEntry.id, childEntry.id]);
   const childFact = f.note(childTurn.id, childEntry.id, "child-only evidence");
   const childPath = { sessionId: f.session.id, branch: "child", headTurnId: childTurn.id };
-  const childOnly = (await f.write(childPath, [{ op: "create", title: "Fixture title", handle: "$child", author: "test", ...f.content("child-only conclusion", [childFact]) }]))[0]!;
-  const merged = (await f.write(childPath, [{ op: "merge", intoKnowledgeId: f.created.knowledgeId, intoBaseCommit: f.created.commit,
+  const childOnly = (await f.write(childPath, [{ files: null, op: "create", title: "Fixture title", handle: "$child", author: "test", ...f.content("child-only conclusion", [childFact]) }]))[0]!;
+  const merged = (await f.write(childPath, [{ files: null, op: "merge", intoKnowledgeId: f.created.knowledgeId, intoBaseCommit: f.created.commit,
     absorb: [{ knowledgeId: childOnly.knowledgeId, baseCommit: childOnly.commit }], ...f.content("complete merged conclusion", [f.rootFact]) }]))[0]!;
 
   expect(f.store.commitParents(f.store.knowledgeRevision(merged.commit)!).map(r => r.id)).toEqual([f.created.commit, childOnly.commit]);
@@ -139,7 +139,7 @@ test("64b/34a: trusted Dreamer split is atomic and keeps the item as its primary
     entryIds: [entry.id], category: "decision", actor: "user", text: "compound", source: [`T${turn.id}#E1`], createdAt: time }] });
   if (!facts.ok) throw new Error(facts.problems.join());
   const path = { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id };
-  const created = fstore.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ op: "create", title: "Fixture title", handle: "$parent", author: "test",
+  const created = fstore.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: time }, operations: [{ files: null, op: "create", title: "Fixture title", handle: "$parent", author: "test",
       text: "first rule and second rule", category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: ["compound"], reason: "initial", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join());
   const parent = created.committed[0]!, ref = `K${parent.knowledgeId}@v1`;
@@ -152,13 +152,13 @@ test("64b/34a: trusted Dreamer split is atomic and keeps the item as its primary
   expect(invalid.ok).toBe(false);
   expect(revisions()).toBe(before);
 
-  const [primary, first, second] = curateWrite(memory, path, [{ op: "split", knowledgeId: parent.knowledgeId, baseCommit: parent.commit, text: "Primary part.", category: "constraint", scope: "project",
+  const [primary, first, second] = curateWrite(memory, path, [{ files: null, op: "split", knowledgeId: parent.knowledgeId, baseCommit: parent.commit, text: "Primary part.", category: "constraint", scope: "project",
     topics: [], supports: [facts.facts[0]!.id], reason: "separate independent rules", createdAt: time,
-    children: [{ title: "Fixture child", text: "first rule", category: "constraint", topics: ["first"] }, { title: "Fixture child", text: "second rule", category: "goal", topics: ["second"] }] }]);
+    children: [{ files: null, title: "Fixture child", text: "first rule", category: "constraint", topics: ["first"] }, { files: null, title: "Fixture child", text: "second rule", category: "goal", topics: ["second"] }] }]);
   expect(primary!.knowledgeId).toBe(parent.knowledgeId);
-  const [update] = curateWrite(memory, path, [{ op: "update", knowledgeId: first!.knowledgeId, baseCommit: first!.commit, text: "first rule, clarified", category: "constraint", scope: "project",
+  const [update] = curateWrite(memory, path, [{ files: null, op: "update", knowledgeId: first!.knowledgeId, baseCommit: first!.commit, text: "first rule, clarified", category: "constraint", scope: "project",
     topics: ["first"], supports: [], reason: "clarify structure", createdAt: time }]);
-  curateWrite(memory, path, [{ op: "update", knowledgeId: second!.knowledgeId, baseCommit: second!.commit, text: "second rule", category: "goal", scope: "project",
+  curateWrite(memory, path, [{ files: null, op: "update", knowledgeId: second!.knowledgeId, baseCommit: second!.commit, text: "second rule", category: "goal", scope: "project",
     topics: ["second"], supports: [], reason: "Keep the second independent ruling", createdAt: time }]);
   expect(update!.knowledgeId).toBe(first!.knowledgeId);
 
@@ -187,7 +187,7 @@ test("34a migration labels legacy supports without changing ids, links or proces
   const fact = legacyFacts(store, { kind: "manual", sessionId: session.id, createdAt: time }, [{
     sources: [{ entry, address: `T${turn.id}#user` }], category: "decision", actor: "user", text: "legacy", createdAt: time,
   }]);
-  const create = (handle: string) => store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
+  const create = (handle: string) => store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{ files: null,
     op: "create", title: "Fixture title", handle, author: "legacy", text: handle, category: "constraint", scope: "project", supports: [fact.facts[0]!.id], topics: [], reason: "legacy", createdAt: time }] });
   const first = create("$first"), second = create("$second");
   if (!first.ok || !second.ok) throw new Error("fixture failed");
@@ -230,7 +230,7 @@ test("34a: bound origin freezes the ordered native path through the exact same-T
     entryIds: [trigger.id], category: "decision", actor: "user", text: "evidence", source: [`T${turn.id}#E2`], createdAt: time }] });
   if (!facts.ok) throw new Error(facts.problems.join());
   const tools = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id, triggerEntryId: trigger.id });
-  const result = tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", text: "origin-backed", category: "constraint", scope: "project",
+  const result = tools.find(t => t.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", text: "origin-backed", category: "constraint", scope: "project",
     topics: [], supports: [`F${facts.facts[0]!.id}`], reason: "initial" });
   expect(result).not.toContain("rejected:");
   const frozen = store.listRuns(session.id).at(-1)!.origin;

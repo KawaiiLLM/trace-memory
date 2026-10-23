@@ -126,13 +126,13 @@ test("92: only five new knowledge categories write through Store; old revisions 
     for (const category of ["constraint", "understanding", "goal", "open", "reference"] as const) {
       const result = f.store.commitConsolidationRun({ path,
         run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" },
-        operations: [{ op: "create", title: "Fixture title", handle: `$${category}`, author: "manual", text: `new ${category}`, category,
+        operations: [{ files: null, op: "create", title: "Fixture title", handle: `$${category}`, author: "manual", text: `new ${category}`, category,
           scope: "session", supports: [f.facts[0]!], reason: "new category", topics: [], createdAt: "now" }] });
       expect(result.ok).toBe(true);
     }
     const rejected = f.store.commitConsolidationRun({ path,
       run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" },
-      operations: [{ op: "create", title: "Fixture title", handle: "$old", author: "manual", text: "wrong", category: "mechanism",
+      operations: [{ files: null, op: "create", title: "Fixture title", handle: "$old", author: "manual", text: "wrong", category: "mechanism",
         scope: "session", supports: [f.facts[0]!], reason: "old category", topics: [], createdAt: "now" }] });
     expect(rejected.ok).toBe(false);
     expect(f.store.db.prepare("SELECT category FROM knowledge_revisions ORDER BY id").all().map(row => row.category))
@@ -148,20 +148,20 @@ test("99 an archive of a legacy-category item inherits its category, scope and t
       f.store.db.prepare("UPDATE knowledge_revisions SET category=?, topics=? WHERE id=?").run(legacy, '["legacy-topic"]', base.id);
       const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
       const invalidUpdate = f.store.commitConsolidationRun({ path, run: { kind: "consolidation", sessionId: f.session.id, createdAt: "now" },
-        operations: [{ op: "update", knowledgeId: base.knowledge_id, baseCommit: base.id, text: "invalid new revision",
+        operations: [{ files: null, op: "update", knowledgeId: base.knowledge_id, baseCommit: base.id, text: "invalid new revision",
           category: legacy, scope: "session", supports: [f.facts[0]!], reason: "old category", topics: [], createdAt: "now" }] });
       expect(invalidUpdate.ok).toBe(false);
       const archive = f.store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
-        operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledge_id, baseCommit: base.id,
+        operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledge_id, baseCommit: base.id,
           supports: [f.facts[0]!], reason: "Retire legacy item", createdAt: "now" }] });
       if (!archive.ok) throw new Error(archive.problems.join("; "));
       const parent = f.store.getKnowledgeRevision(base.knowledge_id, base.id)!;
       const child = f.store.getKnowledgeRevision(base.knowledge_id, archive.committed[0]!.commit)!;
       expect(parent.category).toBe(legacy);
-      expect(child).toMatchObject({ op: "archive", archiveKind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.",
+      expect(child).toMatchObject({ files: null, op: "archive", archiveKind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.",
         category: parent.category, scope: parent.scope, topics: parent.topics });
       const rejected = f.store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
-        operations: [{ op: "create", title: "Fixture title", handle: "$old", author: "manual", text: "invalid", category: legacy,
+        operations: [{ files: null, op: "create", title: "Fixture title", handle: "$old", author: "manual", text: "invalid", category: legacy,
           scope: "session", supports: [f.facts[0]!], reason: "invalid category", topics: [], createdAt: "now" }] });
       expect(rejected.ok).toBe(false);
     } finally { f.store.close(); }

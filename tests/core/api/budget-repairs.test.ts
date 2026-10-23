@@ -26,7 +26,7 @@ function seeded(config: Record<string, unknown> = {}) {
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });
   const tools = m.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ title: "Review evidence", sources: `[T${t.id}#E1] ${text}`, ...extra });
-  const knowledge = (text: string) => { const receipt = tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] }); scoreAll(m.store); return receipt; };
+  const knowledge = (text: string) => { const receipt = tools.find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] }); scoreAll(m.store); return receipt; };
   return { m, calls, s, t, note, knowledge };
 }
 
@@ -168,12 +168,12 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
     expect(f.note("Use SQLite")).toContain("ok: F1");
     const memory = f.m.tools({ kind: "manual", sessionId: f.s.id, branch: "main", currentTurnId: f.t.id }).find(tool => tool.name === "memory")!;
     const content = { text: "Use SQLite", category: "constraint", scope: "project", supports: ["F1"], reason: "Classify this conclusion." };
-    expect(memory.execute({ op: "create", title: "Fixture title", ...content, topics: ["a, b"] })).toContain("committed");
+    expect(memory.execute({ files: null, op: "create", title: "Fixture title", ...content, topics: ["a, b"] })).toContain("committed");
     const entries = hydrate(f.m.store.sourcePath(f.s.id, "main", f.t.id), f.m.store);
     f.m.selectEntries(f.s.id, "main", entries.map(entry => entry.id));
     const path = { sessionId: f.s.id, branch: "main", headTurnId: f.t.id, triggerEntryId: entries.at(-1)!.id };
     expect(memoryFiles(f.m, path).read("trace://K1@v1").content).toContain("K1#");
-    const updatedCommit = curateWrite(f.m, path, [{ op: "update", knowledgeId: 1, baseCommit: f.m.store.currentCommit(1, path)[0]!.id, text: content.text,
+    const updatedCommit = curateWrite(f.m, path, [{ files: null, op: "update", knowledgeId: 1, baseCommit: f.m.store.currentCommit(1, path)[0]!.id, text: content.text,
       category: "constraint", scope: "project", supports: [1], topics: ["a", "b"], reason: content.reason, createdAt: "2026-09-08" }])[0]!.commit;
     const files = memoryFiles(f.m, { sessionId: f.s.id, branch: "main", headTurnId: f.t.id });
     expect(files.read("trace://K1@v1").content).toContain('topics: ["a, b"]');

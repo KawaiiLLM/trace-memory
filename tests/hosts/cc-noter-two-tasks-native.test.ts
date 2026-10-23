@@ -57,7 +57,7 @@ for (const variant of variants)
     let beforeKnowledge!: ReturnType<Store["currentKnowledge"]>;
     const requests: unknown[] = [], logs: string[] = [], checkpoints: Record<number, () => void> = {};
     let files: Files = { facts: "", knowledge: "" }, checkpointError: unknown, checkpointsRun = 0;
-    const knowledge = () => knowledgeFile(memory, { op: "create", title: "Fixture title", text: "Claude Code notes the two episodes", category: "understanding",
+    const knowledge = () => knowledgeFile(memory, { files: null, op: "create", title: "Fixture title", text: "Claude Code notes the two episodes", category: "understanding",
       scope: "session", topics: [], supports: ["$1", "$2"], reason: "Both episodes" });
     // One request per entry. Each task has two steps: the stop after the facts file brings step 2 (a new request), the stop after
     // the knowledge file ends the task; a failing stop brings the step's one repair (a new request too).

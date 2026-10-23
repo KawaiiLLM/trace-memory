@@ -21,7 +21,8 @@ const relation = { type: "array", items: { type: "array", prefixItems: [{ type: 
 const titleSchema = { type: "string", minLength: 1, pattern: "^[^\\r\\n\\u2028\\u2029]+$" };
 const factSchema = object({ title: titleSchema,
   sources: { type: "string", minLength: 1, description: "Source segments as lines beginning [T12#E3@user] followed by a space and authored text. Each segment continues across lines up to the next marker; no text before the first marker." },
-  support: relation, negate: relation }, ["title", "sources"]);
+  support: relation, negate: relation, caused_by: { ...relation, maxItems: 2 },
+  objects: { type: "array", items: { type: "string", minLength: 1 } } }, ["title", "sources"]);
 
 const factId = { type: "string", pattern: "^F[1-9][0-9]*$" };
 const knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*#[a-z]{4,}$" };
@@ -32,10 +33,11 @@ const updateBodySchema = { oneOf: [
 /** An archive states its grounds as the new version's body. */
 const explainedKind = { enum: ["invalid", "inadmissible"] };
 const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "archive"] }, id: knowledgeId, title: titleSchema,
+  files: { type: ["array", "null"], items: { type: "string", minLength: 1 }, description: "Code-file paths backing this version, or null for no code files." },
   absorb: { type: "array", items: knowledgeId, minItems: 1, uniqueItems: true }, kind: { enum: ["invalid", "inadmissible"] }, text: { type: "string", minLength: 1 },
   edits: { type: "array", minItems: 1, items: object({ old: { type: "string", minLength: 1 }, new: { type: "string" } }, ["old", "new"]) },
   category: { enum: KNOWLEDGE_CATEGORIES }, scope: { enum: KNOWLEDGE_SCOPES }, supports: { type: "array", items: { ...factId, description: "An existing F fact." }, minItems: 1 },
-  reason: { type: "string", minLength: 1 }, topics: { type: "array", items: { type: "string", minLength: 1 } } }, ["op", "supports", "reason"]), allOf: [
+  reason: { type: "string", minLength: 1 }, topics: { type: "array", items: { type: "string", minLength: 1 } } }, ["op", "supports", "reason", "files"]), allOf: [
   { if: { properties: { op: { const: "create" } } }, then: { required: ["title"], not: { required: ["id"] } }, else: { required: ["id"] } },
   { if: { properties: { op: { const: "merge" } } }, then: { required: ["absorb"] }, else: { not: { required: ["absorb"] } } },
   { if: { properties: { op: { const: "archive" } } }, then: { required: ["kind"],
@@ -145,7 +147,7 @@ export function factValidator(store: Store, scope: { sessionId: number; noting: 
         else if (cited.has(matches[0]!.entry.id)) errors.push(`duplicate source entry ${source.address}`);
         else cited.set(matches[0]!.entry.id, { hit: matches[0]!, address: source.address, text: source.text });
       }
-      for (const kind of ["support", "negate"] as const) {
+      for (const kind of ["support", "negate", "caused_by"] as const) {
         const seen = new Set<string>();
         for (const rel of fact[kind] ?? []) {
           const n = Number(rel.target.slice(1));

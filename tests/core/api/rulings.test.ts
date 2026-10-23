@@ -418,7 +418,7 @@ function seededKnowledge(sessionId: number, turnId: number) {
   const tools = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId });
   const entry = hydrate(memory.store.listSourceEntries(sessionId, turnId), memory.store).find(value => value.role === "user")!;
   expect(seedFact(memory, { sessionId, branch: "main", headTurnId: turnId }, "Package manager decision", [{ entry, text: "Use pnpm" }]).id).toBe(1);
-  expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] })).toContain("committed");
+  expect(tools.find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] })).toContain("committed");
 }
 
 // User ruling 2026-09-08 (ticket 20 "Solution"): this explicitly revises 19b's ban on core-composed
@@ -482,7 +482,7 @@ test("2026-10-02: only search and writers are model-facing Core tools", () => {
   for (const tool of tools) { expect(tool.parameters.type).toBe("object"); expect(typeof tool.execute).toBe("function"); }
   expect(tools.find(tool => tool.name === "note")!.description).toContain("Each call commits one fact immediately");
   expect(tools.find(tool => tool.name === "memory")!.description).toContain("Manual writers may create/update/archive");
-  expect(tools.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." })).toContain("rejected:");
+  expect(tools.find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." })).toContain("rejected:");
 });
 
 // Ticket 116 supersedes the manual batch ruling: valid calls commit independently of later refusals.
@@ -555,7 +555,7 @@ function memoryWriter() {
   expect(seedFacts(memory, path, ["Use pnpm", "Do not use npm"].map(text => ({
     title: "Package manager decision", sources: [{ entry: entries[0]!, text }],
   })))).toHaveLength(2);
-  const create = { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
+  const create = { files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
   const write = (operations: any[]) => {
     const writer = tools.find(tool => tool.name === "memory")!;
     const receipts = operations.map(operation => JSON.parse(writer.execute(operation)));
@@ -571,13 +571,13 @@ test("2026-09-28, 99: archive kind is required and invalidation records grounds;
   const budgetId = budgetBase.knowledgeId, invalidId = invalidBase.knowledgeId;
   const budgetTag = tagged(budgetId, commitOf(budgetBase));
   const invalidTag = tagged(invalidId, commitOf(invalidBase));
-  const attempted = (id: string, extra: Record<string, unknown>) => write([{ op: "archive", id, supports: ["F1"], reason: "archival decision", ...extra }]);
+  const attempted = (id: string, extra: Record<string, unknown>) => write([{ files: null, op: "archive", id, supports: ["F1"], reason: "archival decision", ...extra }]);
   expect(attempted(budgetTag, {}).results[0]).toContain("archive kind must be invalid or inadmissible");
   expect(attempted(budgetTag, { kind: "budget" }).results[0]).toContain("archive kind must be invalid or inadmissible"); // no new budget archive can be written
   expect(attempted(invalidTag, { kind: "invalid", text: "obsolete" }).results[0]).toContain("substantive statement");
   expect(attempted(invalidTag, { kind: "invalid", text: "The rule no longer holds: the user corrected its basis; another rule replaces it." }).committed).toHaveLength(1);
   const invalid = memory.store.currentCommit(invalidId, path)[0]!;
-  expect(invalid).toMatchObject({ op: "archive", archiveKind: "invalid", category: "constraint", scope: "project", topics: [] });
+  expect(invalid).toMatchObject({ files: null, op: "archive", archiveKind: "invalid", category: "constraint", scope: "project", topics: [] });
   expect(invalid.text).toContain("no longer holds");
   expect(memory.store.currentKnowledge(path).map(item => item.knowledge.id)).toEqual([budgetId]); // the refused archive left its item current
   expect(memory.inject(s.id)).not.toContain("Old unique guidance");
@@ -649,7 +649,7 @@ test("2026-09-07: one operation shape, inapplicable fields rejected", () => {
   const { create, write } = memoryWriter();
   write([create]);
   const update = { ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: "K1" };
-  const archive = { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1", supports: ["F1"] };
+  const archive = { files: null, op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1", supports: ["F1"] };
   for (const operation of [create, update, { ...update, op: "merge", reason: "Merged duplicate knowledge into the survivor.", absorb: ["K2"] }, archive]) {
     for (const required of ["reason", "supports"]) {
       const missing = { ...operation } as Record<string, unknown>; delete missing[required];
@@ -702,7 +702,7 @@ test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要�
   memory.config.writing.bodyWords = 1_000_000;
   const old = write([{ ...create, text: long }]).committed[0];
   memory.config.writing.bodyWords = DEFAULT_CONFIG.writing.bodyWords;
-  const update = (item: { knowledgeId: number; version: string }, body: object) => ({ op: "update", id: tagged(item.knowledgeId, commitOf(item)), title: "Old rule",
+  const update = (item: { knowledgeId: number; version: string }, body: object) => ({ files: null, op: "update", id: tagged(item.knowledgeId, commitOf(item)), title: "Old rule",
     supports: ["F1"], reason: "Touch an old item", ...body });
   expect(write([update(old, { edits: [{ old: "word", new: "rule" }] })]).results[0]).toContain("over the limit of 220 (target 200)");
   expect(write([update(old, { text: "Use pnpm", category: "constraint", scope: "project", topics: [] })]).committed).toHaveLength(1);
@@ -882,12 +882,12 @@ function commitPaths() {
   const publish = (who: typeof root) => memory.store.setCurrentPath(who.sessionId, who.branch, who.headTurnId, "test-lineage");
   publish(root);
   const content = (fact: string, text = "Use blue tiles") => ({ text, category: "constraint", scope: "project", supports: [fact] });
-  expect(root.writeCommitted([{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }])[0]!.version).toBe("K1@v1");
+  expect(root.writeCommitted([{ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }])[0]!.version).toBe("K1@v1");
   const c = node(s.id, t.id, "C"), d = node(s.id, t.id, "D");
   const edit = async (who: typeof root, text: string, fact = who.fact) => {
     publish(who);
     const current = memory.store.currentCommit(1, who).at(-1)!;
-    return curateWrite(who, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
+    return curateWrite(who, [{ files: null, op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
       id: tagged(1, current.id), ...content(fact, text) }]);
   };
   const tips = (path: { sessionId: number; headTurnId: number }) => memory.store.currentCommit(1, path).map(r => r.id);
@@ -935,14 +935,14 @@ test("2026-09-07 A: sibling-branch facts are readable but supports requires an a
   const { c, d, content } = commitPaths();
   expect(memoryFiles(memory, c).read(`trace://${d.fact}`).content).toContain(d.fact);
   for (const scope of ["session", "project", "global"]) {
-    const rejected = c.write([{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(c.fact), scope, supports: [d.fact] }]);
+    const rejected = c.write([{ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(c.fact), scope, supports: [d.fact] }]);
     expect(rejected.results[0]).toContain("record an adoption fact on this path first");
     expect(memory.store.getKnowledge(2)).toBeNull();
   }
   const entry = hydrate(memory.store.listSourceEntries(c.sessionId, c.headTurnId), memory.store).find(value => value.role === "user")!;
   const adopted = { factIds: [seedFact(memory, { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
     "Sibling branch adoption", [{ entry, text: `Adopt the other branch's rule 「${d.fact}」` }]).id] };
-  expect(c.write([{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(`F${adopted.factIds[0]}`) }]).committed).toHaveLength(1);
+  expect(c.write([{ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(`F${adopted.factIds[0]}`) }]).committed).toHaveLength(1);
 });
 
 test("2026-09-07: supports obeys the session/project/global scope table", () => {
@@ -951,7 +951,7 @@ test("2026-09-07: supports obeys the session/project/global scope table", () => 
   const outside = peer(memory.store.createProject({ name: "outside", declaredBy: "mark" }).id);
   for (const scope of ["session", "project", "global"]) for (const origin of [c, same, outside]) {
     const allowed = origin === c || scope === "global" || (scope === "project" && origin === same);
-    const result = c.write([{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(c.fact), scope, supports: [origin.fact] }]);
+    const result = c.write([{ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(c.fact), scope, supports: [origin.fact] }]);
     expect(!!result.committed).toBe(allowed);
   }
   expect(memoryFiles(memory, c).read(`trace://${outside.fact}`).content).toContain(outside.fact);
@@ -985,8 +985,8 @@ test("2026-09-07 B: store rechecks every base inside the transaction and rolls b
   const origin = memory.store.triggerOrigin(root, root.triggerEntryId);
   const run = memory.store.bindRunOrigin({ kind: "manual", sessionId: root.sessionId, createdAt: time }, origin);
   const result = memory.store.commitConsolidationRun({ path: root, run, operations: [
-    { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "Must roll back", category: "goal", scope: "project", supports: [1], createdAt: time },
-    { op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 1, baseCommit: 1, supports: [1], createdAt: time },
+    { files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "Must roll back", category: "goal", scope: "project", supports: [1], createdAt: time },
+    { files: null, op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 1, baseCommit: 1, supports: [1], createdAt: time },
   ] });
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("stale batch committed");
@@ -999,11 +999,11 @@ test("92/118: search previews are tagless, and a stale base is refused naming th
   const { root, peer, content } = commitPaths();
   const other = peer();
   readHandle(file => memoryFiles(memory, other).read(file).content, "K1@v1");
-  const successor = other.writeCommitted([{ op: "update", id: tagged(1, 1), topics: [], reason: "A substantive correction.",
+  const successor = other.writeCommitted([{ files: null, op: "update", id: tagged(1, 1), topics: [], reason: "A substantive correction.",
     ...content(root.fact, `Unread successor ${"中文😀".repeat(350)}`) }])[0]!;
   const preview = other.tools.find(tool => tool.name === "search")!.execute({ query: "Unread successor", layer: "knowledge" });
   expect(preview).not.toContain("rejected:"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
-  const edit = (id: string) => other.write([{ op: "update", topics: [], reason: "A substantive correction.", id, ...content(other.fact) }]);
+  const edit = (id: string) => other.write([{ files: null, op: "update", topics: [], reason: "A substantive correction.", id, ...content(other.fact) }]);
   expect(edit(tagged(1, 1)).results[0]).toContain(`current: ${history(1, successor.commit)}`);
   const successorTag = tagged(1, successor.commit);
   expect(readHandle(file => memoryFiles(memory, other).read(file).content, successor.version)).toContain(successorTag);
@@ -1034,7 +1034,7 @@ test("41a: the unified scope filters candidates", () => {
   const { root, c, peer } = commitPaths();
   const sameProject = peer(), foreign = peer(memory.store.createProject({ name: "foreign-41a", declaredBy: "mark" }).id);
   const create = (who: typeof root, text: string, category: "open" | "reference", scope: "project" | "global") =>
-    who.writeCommitted([{ op: "create", title: "Fixture title", text, category, scope, supports: [who.fact], reason: "41a fixture", topics: [] }])[0]!;
+    who.writeCommitted([{ files: null, op: "create", title: "Fixture title", text, category, scope, supports: [who.fact], reason: "41a fixture", topics: [] }])[0]!;
   const shared = create(sameProject, "SAME-PROJECT-41A", "open", "project");
   const global = create(foreign, "FOREIGN-GLOBAL-41A", "reference", "global");
   const search = c.tools.find(tool => tool.name === "search")!;
@@ -1075,7 +1075,7 @@ test("41 review: fact and knowledge previews are one physical line with head-onl
   }]);
   const factId = factReceipt.facts[0]!.id;
   const longKnowledgeText = "KNOWLEDGE-LONG-41 " + "beta 🚀 ".repeat(180) + "\nKNOWLEDGE-LONG-TAIL";
-  const created = c.writeCommitted([{ op: "create", title: "Fixture title", text: longKnowledgeText, category: "reference", scope: "project",
+  const created = c.writeCommitted([{ files: null, op: "create", title: "Fixture title", text: longKnowledgeText, category: "reference", scope: "project",
     supports: [c.fact], topics: ["metadata\nline"], reason: "reason\nline" }])[0]!;
   const search = c.tools.find(tool => tool.name === "search")!;
 
@@ -1100,7 +1100,7 @@ test("41 review: fact and knowledge previews are one physical line with head-onl
 
 test("41b/92/118: search previews omit tags, while an exact tag read from the version's address is a valid base", () => {
   const { peer, content } = commitPaths(); const other = peer();
-  const update = (id: string, text: string) => other.writeCommitted([{ op: "update", id, ...content(other.fact, text), topics: [], reason: "41b update" }])[0]!;
+  const update = (id: string, text: string) => other.writeCommitted([{ files: null, op: "update", id, ...content(other.fact, text), topics: [], reason: "41b update" }])[0]!;
   const successor = update(tagged(1, 1), "BASE-SUCCESSOR");
   const preview = other.tools.find(tool => tool.name === "search")!.execute({ query: "BASE-SUCCESSOR", layer: "knowledge" });
   expect(preview).toContain("BASE-SUCCESSOR"); expect(preview).not.toMatch(/K\d+#[a-z]+/);
@@ -1116,7 +1116,7 @@ test("64b/34a: global current scope hides the identity without visible fallback"
   publish(root);
   const maintain = (text: string, scope: "global" | "project" | "session") => {
     const current = memory.store.currentCommit(1, root)[0]!;
-    const receipt = curateWrite(root, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
+    const receipt = curateWrite(root, [{ files: null, op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
       id: tagged(1, current.id), ...content(root.fact, text), scope }]);
     return receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!.commit as number;
   };
@@ -1136,7 +1136,7 @@ test("64b/34a: global current scope hides the identity without visible fallback"
 
 test("2026-09-07: commit schema removes mutable heads and binds parents and links to global ids", () => {
   const { root, content } = commitPaths();
-  root.write([{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact, "Another identity") }]);
+  root.write([{ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact, "Another identity") }]);
   const columns = (table: string) => memory.store.db.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name);
   expect(columns("knowledge")).not.toContain("status"); expect(columns("knowledge")).not.toContain("current_revision");
   expect(columns("knowledge_revisions")).not.toContain("rev"); expect(columns("knowledge_revisions")).toContain("parent_id");
@@ -1150,13 +1150,13 @@ test("2026-09-07: commit schema removes mutable heads and binds parents and link
 
 test("64b: stale absorbed bases name the surviving current commit across merge links", () => {
   const { root, peer, content, publish } = commitPaths();
-  const second = root.writeCommitted([{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }])[0]!;
+  const second = root.writeCommitted([{ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }])[0]!;
   const other = peer(); other.read(second.version);
   publish(root);
-  const mergedReceipt = curateWrite(root, [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.",
+  const mergedReceipt = curateWrite(root, [{ files: null, op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.",
     id: tagged(1, 1), absorb: [tagged(second.knowledgeId, second.commit)], ...content(root.fact) }]);
   const merged = mergedReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
-  const updatedReceipt = curateWrite(root, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
+  const updatedReceipt = curateWrite(root, [{ files: null, op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
     id: tagged(1, merged.commit), ...content(root.fact, "Surviving current conclusion") }]);
   const survivor = updatedReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
   publish(other);
@@ -1200,7 +1200,7 @@ test("16b: search marks versions against the supplied path, including archives a
   expect(memory.search("D version", "knowledge", c)).not.toContain("D version"); // another branch's version is not applicable here
   expect(line(memory.search("C version", "knowledge", root), history(1, cCommit))).toBeDefined();
   expect(c.read("K1")).toContain("C version");
-  const archived = curateWrite(c, [{ op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.",
+  const archived = curateWrite(c, [{ files: null, op: "archive", kind: "budget", reason: "Retired: the cited evidence withdraws this conclusion.",
     id: tagged(1, cCommit), text: "C version is withdrawn: the cited evidence no longer supports this conclusion." }]);
   expect(archived.committed[0].knowledgeId).toBe(1);
   expect(memory.search("C version", "knowledge", c)).toContain("(archived)");
@@ -1262,14 +1262,14 @@ test("64b/16b: every raw source of a multi-source fact constrains carry, current
     currentTurnId: c.headTurnId, triggerEntryId: entries.at(-1)!.id });
   const fact = JSON.parse(tools.find(tool => tool.name === "note")!.execute({ title: "Violet tile decision", sources: `[T${root.headTurnId}#E1] Initial tile rule\n[T${c.headTurnId}#E2] Use violet tiles` })).factIds[0] as number;
   publish(c);
-  const updated = curateWrite(c, [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
+  const updated = curateWrite(c, [{ files: null, op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
     id: tagged(1, 1), ...content(`F${fact}`, "Use violet tiles") }]);
   const commit = updated.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!.commit;
   for (const path of [root, d]) {
     publish(path);
     expect(memory.branchSummary(path.sessionId, path.branch, path.headTurnId)).not.toContain(`[F${fact}]`);
     expect(memory.inject(path)).toContain(`[${tagged(1, 1)}]`); expect(memory.inject(path)).not.toContain(`[${tagged(1, commit)}]`);
-    expect(path.write([{ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(`F${fact}`) }]).results[0])
+    expect(path.write([{ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", ...content(`F${fact}`) }]).results[0])
       .toContain("record an adoption fact on this path first");
   }
   publish(c);
@@ -1593,7 +1593,7 @@ test("64c: the knowledge cap remains hard and recency, not category, selects who
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   expect(tools.find(tool => tool.name === "note")!.execute({ title: "Package manager decision", sources: `[T${t.id}#E1] Use pnpm` })).toContain("ok: F1");
   const write = (category: string, text: string) => expect(tools.find(tool => tool.name === "memory")!
-    .execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text, category, scope: "project", supports: ["F1"] })).toContain('"committed"');
+    .execute({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text, category, scope: "project", supports: ["F1"] })).toContain('"committed"');
   for (let i = 0; i < 6; i++) write("constraint", `constraint ${i} ` + "word ".repeat(1_000));
   write("reference", "reference tail");
   scoreAll(memory.store); // the Knowledge base carries scored items
@@ -1771,7 +1771,7 @@ test("21a/116: single-item write keeps supports and reason; an archive in a cura
   const factSchema = toolDefinitions.find(t => t.name === "note")!.parameters.properties as Record<string, any>;
   expect(factSchema).not.toHaveProperty("reason"); // facts gain no commit metadata and the surface stays four tools
   expect(write([create]).committed).toHaveLength(1);
-  const archived = curateWrite(path, [{ op: "archive", kind: "budget", id: tagged(1, 1), reason: "Withdrawn by the user." }]);
+  const archived = curateWrite(path, [{ files: null, op: "archive", kind: "budget", id: tagged(1, 1), reason: "Withdrawn by the user." }]);
   const archiveCommit = archived.committed[0].commit as number;
   expect(memory.store.getKnowledgeRevision(1, archiveCommit)?.supports).toEqual([1]); // no longer cleared
 });
@@ -1783,14 +1783,14 @@ test("64b/21a: a curate update's supports face the same session/project/global t
   const same = peer(), outside = peer(memory.store.createProject({ name: "outside 21a", declaredBy: "mark" }).id);
   for (const scope of ["session", "project", "global"] as const) for (const origin of [c, same, outside]) {
     publish(c);
-    const created = c.writeCommitted([{ op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope, reason: "Admitted for the scope check." }])[0]!;
+    const created = c.writeCommitted([{ files: null, op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope, reason: "Admitted for the scope check." }])[0]!;
     const allowed = origin === c || scope === "global" || (scope === "project" && origin === same);
     const checked = checkWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
       file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `Retired on ${origin.branch} evidence.`, supports: origin.fact }, "Changed body.") } });
     expect(checked.problems.length === 0, `${scope} from ${origin.branch}: ${checked.problems.join("; ")}`).toBe(allowed);
   }
   // Reason prose cannot adopt a foreign fact.
-  const created = c.writeCommitted([{ op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope: "session", reason: "Admitted for the reason-bypass check." }])[0]!;
+  const created = c.writeCommitted([{ files: null, op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope: "session", reason: "Admitted for the reason-bypass check." }])[0]!;
   const prose = checkWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `The user adopted ${outside.fact} on this path.` }, "Changed body.") } });
   expect(prose.problems).toEqual([]); // it inherits the parent's evidence; the fact named in the reason is not a citation
@@ -1808,7 +1808,7 @@ test("64b/21b: a shared label changes no applicability and follows the owner's p
   const third = peer();
   const label = (who: typeof c, text: string) => {
     publish(who);
-    return curateWrite(who, [{ op: "update", id: tagged(1, 1), topics: ["tiling"], reason: "Substantive correction, filed under its subject.", ...content(who.fact, text) }]);
+    return curateWrite(who, [{ files: null, op: "update", id: tagged(1, 1), topics: ["tiling"], reason: "Substantive correction, filed under its subject.", ...content(who.fact, text) }]);
   };
   const cCommit = label(c, "C version").committed[0].commit as number;
   const dCommit = label(d, "D version").committed[0].commit as number;
@@ -1820,7 +1820,7 @@ test("64b/21b: a shared label changes no applicability and follows the owner's p
   expect(groups(third).topics).toEqual([{ topic: "tiling", commits: [{ knowledgeId: 1, commit: cCommit }] }]);
   // An archive inherits the label (and the evidence of its parent, so it applies where the parent did); explicit search keeps its
   // history labels, automatic material drops it.
-  const archiveCommit = curateWrite(c, [{ op: "archive", kind: "budget", id: tagged(1, cCommit), reason: "Retired on this path." }]).committed[0].commit as number;
+  const archiveCommit = curateWrite(c, [{ files: null, op: "archive", kind: "budget", id: tagged(1, cCommit), reason: "Retired on this path." }]).committed[0].commit as number;
   const archiveRevision = memory.store.getKnowledgeRevision(1, archiveCommit)!;
   expect(archiveRevision.op).toBe("archive");
   expect(archiveRevision.topics).toEqual(["tiling"]);
@@ -2032,7 +2032,7 @@ test("2026-10-22: a file holds one record per item, and an update whose base mov
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const seeded = seedKnowledge(memory.store, path, "session", "constraint", [seedFact(memory, path, "Seed", [{ entry: memory.store.sourcePath(s.id, "main", t.id)[0] as never, text: "seed" }]).id], "Old rule");
   const tag = `K${seeded.knowledgeId}#${memory.store.versionTag(seeded.knowledgeId, seeded.commit)}`;
-  const update = (text: string) => ({ op: "update", id: tag, text, supports: ["$1"], reason: "r" });
+  const update = (text: string) => ({ files: null, op: "update", id: tag, text, supports: ["$1"], reason: "r" });
   const doubled = noterOnFile([{ noteInput: [noterFact(t.id)], memoryInput: [update("one"), update("two")] }]);
   const refused = await memory.noting(path);
   expect(refused.outcome).toBe("failure");
@@ -2042,7 +2042,7 @@ test("2026-10-22: a file holds one record per item, and an update whose base mov
     const other = new Store(doubled.file);
     try {
       const base = other.currentKnowledge(path)[0]!;
-      other.commitConsolidationRun({ path, run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: time }, operations: [{ op: "update", knowledgeId: base.knowledge.id,
+      other.commitConsolidationRun({ path, run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: time }, operations: [{ files: null, op: "update", knowledgeId: base.knowledge.id,
         baseCommit: base.revision.id, title: "Seed", text: "Concurrent", category: "constraint", scope: "session", topics: [], supports: base.revision.supports, reason: "other", createdAt: time }] });
     } finally { other.close(); }
   } });
@@ -2275,7 +2275,7 @@ test("64b/29/31: archived divergent history follows the owner's shared foregroun
   const cCommit = (await edit(c, "C version")).committed[0].commit as number;
   const dCommit = (await edit(d, "D version")).committed[0].commit as number;
   publish(c);
-  const archived = curateWrite(c, [{ op: "archive", kind: "budget", id: tagged(1, cCommit), reason: "Withdraw C only." }]);
+  const archived = curateWrite(c, [{ files: null, op: "archive", kind: "budget", id: tagged(1, cCommit), reason: "Withdraw C only." }]);
   expect(archived.committed[0].knowledgeId).toBe(1);
   publish(d);
   const selected = peer();
@@ -2295,7 +2295,7 @@ test("64b/29/31: archived divergent history follows the owner's shared foregroun
 test("64b/29/31: an identity disappearance is noticed again after restore and rewind", () => {
   const { root, c, content, publish } = commitPaths();
   publish(c);
-  const created = c.writeCommitted([{ op: "create", title: "Fixture title", topics: [], reason: "Branch-only knowledge.", ...content(c.fact, "C-only rule") }]);
+  const created = c.writeCommitted([{ files: null, op: "create", title: "Fixture title", topics: [], reason: "Branch-only knowledge.", ...content(c.fact, "C-only rule") }]);
   const commit = created[0]!.commit as number;
   const status = () => knowledgeStatusNotes(memory.store, memory.store.currentKnowledge(root), [commit], root);
 
@@ -2507,7 +2507,7 @@ test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live item
     expect(state(budget.knowledgeId)).toEqual({ score: 0, scored_commit: null, op: "update" });
     for (const archived of [plain, invalid]) expect(state(archived.knowledgeId), `K${archived.knowledgeId}`).toEqual({ score: null, scored_commit: null, op: "archive" });
     const revived = store.db.prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id = ? ORDER BY id DESC LIMIT 1").get(budget.knowledgeId) as Record<string, unknown>;
-    expect(revived).toMatchObject({ text: "Budget rule", op: "update", parent_id: budgetCommit, category: "constraint", scope: "project", actor_role: "manual",
+    expect(revived).toMatchObject({ files: null, text: "Budget rule", op: "update", parent_id: budgetCommit, category: "constraint", scope: "project", actor_role: "manual",
       archive_kind: null, supports: JSON.stringify(budget.supports) });
     expect(store.db.prepare("SELECT kind FROM runs WHERE id = ?").get(Number(revived.run_id))).toEqual({ kind: "manual" });
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed").get()).toEqual(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions WHERE actor_role = 'noting'").get()); // every Noter change, not the revival
@@ -2669,7 +2669,7 @@ async function deliveryFixture(texts: string[]) {
   const evidence = legacyFacts(store, { kind: "manual", sessionId: seed.id, createdAt: time }, [{ sources: [{ entry: source,
     address: `T${turn.id}#E${source.entryOrdinal}` }], text: "rule", category: "decision", actor: "user", createdAt: time }]).facts[0]!;
   const committed = store.commitConsolidationRun({ path: { sessionId: seed.id, headTurnId: turn.id }, run: { kind: "manual", sessionId: seed.id, createdAt: time },
-    operations: texts.map((text, index) => ({ op: "create" as const, title: "Fixture title", handle: `$${index + 1}`, author: "fixture", text, category: "constraint" as const,
+    operations: texts.map((text, index) => ({ files: null, op: "create" as const, title: "Fixture title", handle: `$${index + 1}`, author: "fixture", text, category: "constraint" as const,
       scope: "global" as const, supports: [evidence.id], topics: [], reason: "fixture", createdAt: time })) });
   if (!committed.ok) throw new Error(committed.problems.join());
   const { ccDeltaInjection } = await import("../../../src/hosts/cc/injection.ts");
@@ -2732,15 +2732,15 @@ test("knowledge text, split child text and invalid-archive text may name F- and 
   const note = tools.find(tool => tool.name === "note")!, mem = tools.find(tool => tool.name === "memory")!;
   const noted = JSON.parse(note.execute({ title: "Rule", sources: `[T${t.id}#E1] rule` }));
   const fact = `F${noted.factIds[0]}`;
-  const create = (text: string) => ({ op: "create", title: "Fixture title", text, category: "constraint", scope: "project", supports: [fact], topics: [], reason: "test" });
+  const create = (text: string) => ({ files: null, op: "create", title: "Fixture title", text, category: "constraint", scope: "project", supports: [fact], topics: [], reason: "test" });
   expect(mem.execute(create("K14 stays as written; F101 is unrelated."))).toContain("committed");
   expect(mem.execute(create("Second item."))).toContain("committed");
   const [a, b] = memory.store.currentKnowledge(memory.store.knowledgePath(s.id)).map(v => `K${v.knowledge.id}#${memory.store.versionTag(v.knowledge.id, v.revision.id)}`);
   // Split is Dreamer-only, so manual memory still rejects it, but for that reason alone: the ids in the child text add no error.
-  const split = JSON.parse(mem.execute({ op: "split", id: a, supports: [fact], reason: "test", text: "Primary part.", category: "constraint", scope: "project", topics: [],
-    children: [{ title: "Fixture child", text: "Part K14 of it.", category: "constraint", topics: [] }, { title: "Fixture child", text: "Part F2 of it.", category: "constraint", topics: [] }] }));
+  const split = JSON.parse(mem.execute({ files: null, op: "split", id: a, supports: [fact], reason: "test", text: "Primary part.", category: "constraint", scope: "project", topics: [],
+    children: [{ files: null, title: "Fixture child", text: "Part K14 of it.", category: "constraint", topics: [] }, { files: null, title: "Fixture child", text: "Part F2 of it.", category: "constraint", topics: [] }] }));
   expect(split.results).toEqual(["rejected: split belongs to the Dreamer and is not available to manual memory"]);
-  const archive = JSON.parse(mem.execute({ op: "archive", id: b, kind: "invalid", supports: [fact], reason: "test",
+  const archive = JSON.parse(mem.execute({ files: null, op: "archive", id: b, kind: "invalid", supports: [fact], reason: "test",
     text: "K7 was based on a misreading of F1, which says the opposite in the quoted source." }));
   expect(archive.results[0]).not.toContain("rejected");
 });
@@ -2870,7 +2870,7 @@ test("2026-10-22, 146 — Dreaming is due at the 30th Noter operation and not th
   const first = f.item("Use pnpm everywhere", { title: "Use pnpm" });
   for (let i = 1; i < 28; i++) f.item(`Rule number ${i}`, { title: `Rule ${i}` }); // 28 creates
   const noterUpdate = (base: { knowledgeId: number; commit: number }, text: string) => {
-    const result = commitNoterKnowledge(f.store, { path: f.path, run: { sessionId: f.session.id, branch: "main", createdAt: "now" }, operations: [{ op: "update",
+    const result = commitNoterKnowledge(f.store, { path: f.path, run: { sessionId: f.session.id, branch: "main", createdAt: "now" }, operations: [{ files: null, op: "update",
       knowledgeId: base.knowledgeId, baseCommit: base.commit, text, category: "constraint", scope: "project", supports: first.supports, topics: [], reason: "update", createdAt: "now" }] });
     if (!result.ok) throw new Error(result.problems.join("\n"));
     return result.committed[0]!;

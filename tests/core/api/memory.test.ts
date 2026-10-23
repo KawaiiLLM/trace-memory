@@ -10,7 +10,7 @@ import { block } from "../../support/workspace.ts";
 import { pairOfText } from "../../support/dreamer.ts";
 let memory: ReturnType<typeof sourceSeededMemory>, triggerEntryId: number;
 afterEach(() => memory?.close());
-const create = { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
+const create = { files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
 const batch = create;
 /** `reply` is what the verify task answers; the scripted `agent` is the write task. */
 function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>, reply?: Partial<RunAgentResult>) {
@@ -124,7 +124,7 @@ test("135: a manual exact update applies sequential edits and deletion, inherits
   const original = "Use pnpm; retain the lockfile. Legacy clause.";
   const created = JSON.parse(write.execute({ ...create, text: original, topics: ["lockfiles", "package-tools"] }));
   const base = read(1);
-  const result = JSON.parse(write.execute({ op: "update", id: base, supports: ["F1"], reason: "Clarify the invocation and remove an obsolete clause",
+  const result = JSON.parse(write.execute({ files: null, op: "update", id: base, supports: ["F1"], reason: "Clarify the invocation and remove an obsolete clause",
     edits: [{ old: "pnpm", new: "bun" }, { old: "bun", new: "corepack pnpm" }, { old: "Legacy clause.", new: "" }] }));
   expect(result.committed).toMatchObject([{ op: "update", knowledgeId: 1, version: expect.stringMatching(/^K1#[a-z]{4,}$/) }]);
   const revision = memory.store.currentCommit(1)[0]!;
@@ -148,7 +148,7 @@ test.each([
   write.execute({ ...create, text: original });
   const base = read(1);
   const before = memory.store.listKnowledgeRevisions();
-  const refused = JSON.parse(write.execute({ op: "update", id: base, supports: ["F1"], reason: "Attempt an exact edit",
+  const refused = JSON.parse(write.execute({ files: null, op: "update", id: base, supports: ["F1"], reason: "Attempt an exact edit",
     edits: [{ old: "Use", new: "Prefer" }, { old, new: "replacement" }] }));
   expect(refused.results[0]).toContain("rejected:");
   expect(refused.results[0]).toContain("edit 2");
@@ -161,7 +161,7 @@ test("135: update rejects both body forms, neither, malformed edits and missing 
   const write = setup(async () => success());
   write.execute(create);
   const base = read(1), before = memory.store.listKnowledgeRevisions();
-  const update = { op: "update", id: base, supports: ["F1"], reason: "Exact update" };
+  const update = { files: null, op: "update", id: base, supports: ["F1"], reason: "Exact update" };
   for (const body of [
     { text: create.text, category: create.category, scope: create.scope, topics: [], edits: [{ old: "pnpm", new: "yarn" }] },
     {},
@@ -185,7 +185,7 @@ test("135: supplied edit metadata replaces the inherited fields", () => {
   const write = setup(async () => success());
   write.execute({ ...create, topics: ["packaging"] });
   const base = read(1);
-  const update = { op: "update", supports: ["F1"], reason: "Clarify the package manager" };
+  const update = { files: null, op: "update", supports: ["F1"], reason: "Clarify the package manager" };
   const result = JSON.parse(write.execute({ ...update, id: base, edits: [{ old: "pnpm", new: "corepack pnpm" }],
     category: "reference", scope: "session", topics: [] }));
   expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, result.committed[0]))).toMatchObject({
@@ -198,7 +198,7 @@ test("135: an edited full body is held to the cap (144, counted in units since 1
   write.execute({ ...create, topics: ["packaging"] });
   const base = read(1);
   const before = memory.store.listKnowledgeRevisions();
-  const update = { op: "update", id: base, supports: ["F1"], reason: "Clarify the invocation" };
+  const update = { files: null, op: "update", id: base, supports: ["F1"], reason: "Clarify the invocation" };
   const refused = write.execute({ ...update, edits: [{ old: "pnpm", new: "word ".repeat(300) }] });
   expect(refused).toContain("text: 301 units, over the limit of 220 (target 200)");
   expect(memory.store.listKnowledgeRevisions()).toEqual(before);
@@ -231,7 +231,7 @@ test("134: committed manual receipts report pool item cost and the cost removed 
   const created = JSON.parse(write.execute(create));
   expect(created.tokens.before).toEqual([]);
   expect(created.tokens.after[0]).toBeGreaterThan(tokens(create.text));
-  const archived = JSON.parse(write.execute({ op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: read(1),
+  const archived = JSON.parse(write.execute({ files: null, op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: read(1),
     supports: ["F1"], reason: "No longer needed in the pool" }));
   expect(archived.tokens.before).toEqual(created.tokens.after);
   expect(archived.tokens.after).toEqual([0]);
@@ -261,9 +261,9 @@ test("135: manual memory accepts create/update/archive but rejects merge and spl
   expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, updated.committed[0]))!.text).toBe("Use pnpm and retain the lockfile");
   for (const operation of [
     { ...create, op: "merge", id: updated.committed[0].version, absorb: [read(2)] },
-    { op: "split", id: updated.committed[0].version, supports: ["F1"], reason: "split", children: [] },
+    { files: null, op: "split", id: updated.committed[0].version, supports: ["F1"], reason: "split", children: [] },
   ]) expect(write.execute(operation)).toContain("belongs to the Dreamer");
-  expect(JSON.parse(write.execute({ op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", reason: "Retired by the user.", id: updated.committed[0].version, supports: ["F1"] })).committed).toHaveLength(1);
+  expect(JSON.parse(write.execute({ files: null, op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", reason: "Retired by the user.", id: updated.committed[0].version, supports: ["F1"] })).committed).toHaveLength(1);
 });
 
 test("N terminal success-audit failure rolls back facts, knowledge and Raw progress", async () => {
@@ -319,11 +319,11 @@ test("21a 2026-09-08: merge and archive of a curate file carry their supports an
   expect(memory.store.getFact(1)!.text).toBe("Use pnpm");
   const merged = curate(block("merge K1@v1", { absorb: "K2@v1", supports: "F1", reason: "Two readings of one packaging rule." }, "Use pnpm"));
   expect(merged.blocks).toMatchObject([{ status: "applied", versions: ["K1@v2"] }]);
-  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "merge", text: "Use pnpm", supports: [1], reason: "Two readings of one packaging rule." });
+  expect(memory.store.currentCommit(1)[0]).toMatchObject({ files: null, op: "merge", text: "Use pnpm", supports: [1], reason: "Two readings of one packaging rule." });
   expect(memory.store.currentCommit(2)).toEqual([]);
   curate(block("archive K1@v2", { kind: "invalid", reason: "The user withdrew the rule." }, "The user withdrew the rule; nothing replaces it."));
   // The archive keeps its own evidence and inherits category and scope from the parent revision.
-  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", archiveKind: "invalid", text: "The user withdrew the rule; nothing replaces it.",
+  expect(memory.store.currentCommit(1)[0]).toMatchObject({ files: null, op: "archive", archiveKind: "invalid", text: "The user withdrew the rule; nothing replaces it.",
     supports: [1], reason: "The user withdrew the rule.", category: "constraint", scope: "project" });
   // A block without a reason is a check problem, and nothing is written.
   const bare = applyWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: 1, path: dreamPath(), file: { name: "curate.md", text: block("update K1@v3", {}, "Use pnpm") } });
@@ -333,7 +333,7 @@ test("21a 2026-09-08: merge and archive of a curate file carry their supports an
 test("21a 2026-09-08: an omitted, wrongly typed or empty reason or supports rejects the whole batch", () => {
   const write = setup(async () => success());
   expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
-  const archive = { op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: read(1), supports: ["F1"], reason: "The user withdrew the rule." };
+  const archive = { files: null, op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: read(1), supports: ["F1"], reason: "The user withdrew the rule." };
   const drop = (operation: Record<string, unknown>, key: string) => { const copy = { ...operation }; delete copy[key]; return copy; };
   for (const bad of [drop(create, "reason"), drop(create, "supports"), { ...create, reason: "" }, { ...create, reason: "  \n " },
     { ...create, reason: 7 }, { ...create, reason: ["F1"] }, { ...create, supports: [] }, { ...create, supports: "F1" },
@@ -348,7 +348,7 @@ test("21a/116: removed because is rejected and cannot satisfy a required N memor
   setup(async input => {
     const write = input.tools.find(tool => tool.name === "memory")!;
     for (const bad of [{ ...create, because: ["F1"] }, { ...create, because: [] }, { ...create, because: "prompted by the user" },
-      { op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", because: ["F1"] }]) {
+      { files: null, op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", because: ["F1"] }]) {
       const result = JSON.parse(write.execute(bad));
       expect(result.results[0]).toContain("because: removed field");
       expect(result.results[0]).toContain('supply "reason"');
@@ -399,12 +399,12 @@ test("21b 2026-09-08: labels are trimmed, deduplicated and code-point ordered, a
   const drop = (operation: Record<string, unknown>, key: string) => { const copy = { ...operation }; delete copy[key]; return copy; };
   for (const bad of [drop(create, "topics"), { ...create, topics: "auth" }, { ...create, topics: null }, { ...create, topics: {} },
     { ...create, topics: ["auth", 7] }, { ...create, topics: [""] }, { ...create, topics: ["auth", "   "] }, { ...create, topics: [["auth"]] },
-    { op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", topics: ["auth"] }]) {
+    { files: null, op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", topics: ["auth"] }]) {
     expect(write.execute(bad)).toContain("rejected:");
     expect(memory.store.getKnowledge(2)).toBeNull();
     expect(memory.store.currentCommit(1)[0]?.op).toBe("create");
   }
-  expect(JSON.parse(write.execute({ op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: "K1", supports: ["F1"], reason: "Retired.", topics: ["auth"] })).results[0])
+  expect(JSON.parse(write.execute({ files: null, op: "archive", kind: "invalid", text: "The user withdrew the rule; nothing replaces it.", id: "K1", supports: ["F1"], reason: "Retired.", topics: ["auth"] })).results[0])
     .toContain("topics: inapplicable field");
 });
 
@@ -456,7 +456,7 @@ test("a merge keeps the identity of the primary it names, the newer one included
   const applied = curate(block("merge K2@v1", { absorb: "K1@v1", reason: "Unify without losing the older identity", topics: "packages" }, expected));
   expect(applied.blocks).toMatchObject([{ status: "applied", versions: ["K2@v2"] }]);
   const commit = memory.store.currentCommit(2)[0]!.id;
-  expect(memory.store.getKnowledgeRevision(2, commit)).toMatchObject({ op: "merge", parentId: newerCommit, text: expected, supports: [1],
+  expect(memory.store.getKnowledgeRevision(2, commit)).toMatchObject({ files: null, op: "merge", parentId: newerCommit, text: expected, supports: [1],
     reason: "Unify without losing the older identity", category: "constraint", scope: "project", topics: ["packages"] });
   expect(memory.store.listKnowledgeLinks(1)).toContainEqual({ fromKnowledge: 1, fromCommit: olderCommit, kind: "merged_into", toKnowledge: 2, toCommit: commit });
   expect(memory.store.currentCommit(1)).toEqual([]);

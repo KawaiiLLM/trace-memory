@@ -10,7 +10,7 @@ import { factsFile, knowledgeFile } from "../../support/noter.ts";
 
 const GOOD = [{ title: "Episode one", sources: "[T1#E1] 用 pnpm，不要 npm" }];
 const BAD = [{ title: "Episode one", sources: "[T1#E99] 用 pnpm，不要 npm" }];
-const create = { op: "create", title: "Fixture title", text: "Use pnpm, never npm", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "The user chose pnpm." };
+const create = { files: null, op: "create", title: "Fixture title", text: "Use pnpm, never npm", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "The user chose pnpm." };
 const variants = ["published", "corrected-at-stop", "unfixed"] as const;
 
 /** The two files of the run's workspace, from the first `check` result's step-1 file (the knowledge file sits beside it). */

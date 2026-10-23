@@ -276,7 +276,7 @@ test("an explicit empty submission notings the range; compactions cannot acquire
 test("read knowledge revisions and exact provider request are recorded, even when a knowledge item moves", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const created = commitNoterKnowledge(memory.store, { run: { sessionId, createdAt: time }, operations: [
-    { op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", category: "understanding", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
+    { files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", category: "understanding", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
   ] });
   expect(created.ok).toBe(true);
   const second = turn(first.id, 1), resolve = deferred(), pending = noting(second.id);
@@ -285,7 +285,7 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   expect(calls[1]!.material.knowledge!.map(group => group.text).join("\n")).toContain(`[K1#${memory.store.versionTag(1, 1)}]`);
   expect(calls[1]!.text).toContain(memories.knowledge);
   expect(commitNoterKnowledge(memory.store, { run: { sessionId, createdAt: time }, operations: [
-    { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: 1, baseCommit: 1, category: "understanding", scope: "project", text: memories.editedKnowledge, supports: [1], createdAt: time },
+    { files: null, op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: 1, baseCommit: 1, category: "understanding", scope: "project", text: memories.editedKnowledge, supports: [1], createdAt: time },
   ] }).ok).toBe(true);
   resolve(success([])); const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
@@ -361,7 +361,7 @@ test("86: an oldest entry exceeding the batch envelope still reaches the Noter",
 test("64c: no knowledge category bypasses the cap, newer commits are kept, and omitted items stay traceable", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const categories = ["constraint", "open", "goal", "understanding", "reference"] as const;
-  expect(commitNoterKnowledge(memory.store, { run: { sessionId, createdAt: time }, operations: categories.map((category, i) => ({
+  expect(commitNoterKnowledge(memory.store, { run: { sessionId, createdAt: time }, operations: categories.map((category, i) => ({ files: null,
     op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const,
     text: `${memories.knowledge} ${"word ".repeat(600)}`, supports: [1], createdAt: time,
   })) }).ok).toBe(true);

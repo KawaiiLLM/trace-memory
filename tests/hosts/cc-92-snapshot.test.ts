@@ -106,7 +106,7 @@ test("92: real staging renders once across an external mid-snapshot commit and 2
     const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     // A concurrent Dreamer pass rewrites the first rule while the renderer holds its snapshot.
     const changed = commitDreamerOps(memory, path,
-      [{ ...content, op: "update", knowledgeId: created.committed[0]!.knowledgeId, baseCommit: oldIds[0]!, text: "NEW concurrent rule" }]);
+      [{ files: null, ...content, op: "update", knowledgeId: created.committed[0]!.knowledgeId, baseCommit: oldIds[0]!, text: "NEW concurrent rule" }]);
     const newId = changed[0]!.commit;
     // A real eligible waiter starts while the renderer still holds its original read snapshot.
     const waiter = f.run(23, epoch + 54_999);

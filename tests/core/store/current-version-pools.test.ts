@@ -36,7 +36,7 @@ function setup(store = new Store(":memory:"), projectName = "A", projectId?: num
   const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
   const create = (scope: "global" | "project" | "session", text = `${scope} body`) => {
     const result = store.commitConsolidationRun({ path: target,
-      run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{
+      run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{ files: null,
         op: "create", title: "Fixture title", handle: "$1", author: "test", text, category: "constraint", scope,
         supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now",
       }] });
@@ -55,12 +55,12 @@ const inPool = (store: Store, path: KnowledgePath, pool: string, all = false) =>
   store.curateItems(path).filter(item => item.pool === pool && (all || !item.covered)).map(item => item.value.revision.id);
 /** An archive statement a manual writer may give (kind `budget` is refused for new writes since stage 4). */
 const WITHDRAWN = "The user withdrew this rule and nothing replaces it; the grounds are in the cited evidence.";
-const archiveOp = (f: Fixture, base: { knowledgeId: number; commit: number }) => ({ op: "archive" as const, kind: "invalid" as const,
+const archiveOp = (f: Fixture, base: { knowledgeId: number; commit: number }) => ({ files: null, op: "archive" as const, kind: "invalid" as const,
   knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [f.fact.id], reason: "done", text: WITHDRAWN, createdAt: "now" });
 
 function update(f: Fixture, base: { knowledgeId: number; commit: number }, text: string,
   scope: "global" | "project" | "session" = "global") {
-  const result = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" }, path: f.target, operations: [{ op: "update",
+  const result = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" }, path: f.target, operations: [{ files: null, op: "update",
     knowledgeId: base.knowledgeId, baseCommit: base.commit, text, category: "constraint", scope,
     supports: [f.fact.id], topics: [], reason: "maintenance", createdAt: "now" }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
@@ -112,7 +112,7 @@ test("64c current versions: session visibility follows the selected branch and r
   }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const made = store.commitConsolidationRun({ path: { sessionId: session.id, branch: "left", headTurnId: left.id },
-    run: { kind: "manual", sessionId: session.id, branch: "left", createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$1",
+    run: { kind: "manual", sessionId: session.id, branch: "left", createdAt: "now" }, operations: [{ files: null, op: "create", title: "Fixture title", handle: "$1",
       author: "test", text: "left only", category: "constraint", scope: "session", supports: [noted.facts[0]!.id], topics: [], reason: "test", createdAt: "now" }] });
   if (!made.ok) throw new Error(made.problems.join("; "));
   store.setCurrentPath(session.id, "left", left.id, "lineage");
@@ -123,15 +123,15 @@ test("64c current versions: session visibility follows the selected branch and r
 
 test("64c current versions: merge absorption yields one current identity and split yields the item and its children", () => {
   const merged = setup(), first = merged.create("global", "first"), second = merged.create("global", "second");
-  const [merge] = curateWrite(merged, merged.target, [{ op: "merge",
+  const [merge] = curateWrite(merged, merged.target, [{ files: null, op: "merge",
     intoKnowledgeId: first.knowledgeId, intoBaseCommit: first.commit, absorb: [{ knowledgeId: second.knowledgeId, baseCommit: second.commit }],
     text: "merged", category: "constraint", scope: "global", supports: [], topics: [], reason: "deduplicate", createdAt: "now" }]);
   expect(inPool(merged.store, merged.target, "global", true)).toEqual([merge!.commit]);
 
   const split = setup(), parent = split.create("global", "mixed");
-  const result = curateWrite(split, split.target, [{ op: "split",
+  const result = curateWrite(split, split.target, [{ files: null, op: "split",
     knowledgeId: parent.knowledgeId, baseCommit: parent.commit, text: "mixed, primary part", category: "constraint", scope: "global", topics: [], supports: [], reason: "separate", createdAt: "now",
-    children: [{ title: "Fixture child", text: "one", category: "constraint", topics: [] }, { title: "Fixture child", text: "two", category: "constraint", topics: [] }] }]);
+    children: [{ files: null, title: "Fixture child", text: "one", category: "constraint", topics: [] }, { files: null, title: "Fixture child", text: "two", category: "constraint", topics: [] }] }]);
   // The split item continues as its primary part beside its two children: three current versions.
   expect(result).toHaveLength(3);
   expect(result[0]!.knowledgeId).toBe(parent.knowledgeId);
@@ -161,11 +161,11 @@ test("64c current versions: legal P to Q to P declarations preserve pair semanti
 test.each(["update", "archive", "split"] as const)("126 writable set: one curate file may %s knowledge in each of the session's pools", op => {
   const f = setup(), items = (["global", "project", "session"] as const).map(scope => f.create(scope, `${scope} item`));
   const operation = (base: { knowledgeId: number; commit: number }, scope: "global" | "project" | "session") => op === "update"
-    ? { op, knowledgeId: base.knowledgeId, baseCommit: base.commit, text: `${scope} rewritten`, category: "constraint" as const, scope,
+    ? { files: null, op, knowledgeId: base.knowledgeId, baseCommit: base.commit, text: `${scope} rewritten`, category: "constraint" as const, scope,
       supports: [], topics: [], reason: "maintenance", createdAt: "now" }
     : op === "archive" ? { ...archiveOp(f, base), supports: [] }
-    : { op, knowledgeId: base.knowledgeId, baseCommit: base.commit, text: `${scope} primary`, category: "constraint" as const, scope, topics: [], supports: [], reason: "separate", createdAt: "now",
-      children: [{ title: "Fixture child", text: "one", category: "constraint" as const, topics: [] }, { title: "Fixture child", text: "two", category: "constraint" as const, topics: [] }] };
+    : { files: null, op, knowledgeId: base.knowledgeId, baseCommit: base.commit, text: `${scope} primary`, category: "constraint" as const, scope, topics: [], supports: [], reason: "separate", createdAt: "now",
+      children: [{ files: null, title: "Fixture child", text: "one", category: "constraint" as const, topics: [] }, { files: null, title: "Fixture child", text: "two", category: "constraint" as const, topics: [] }] };
   curateWrite(f, f.target, items.map((item, index) => operation(item, (["global", "project", "session"] as const)[index]!)));
   expect(items.map(item => f.store.currentCommit(item.knowledgeId, f.target)[0]?.id ?? null).every(id => !items.some(item => item.commit === id))).toBe(true);
 });
@@ -207,7 +207,7 @@ test("64c merge scope: merge parents from two of the session's pools are refused
 test("67: create batches skip writer graphs while consuming operations recheck after prior mutations", () => {
   const f = setup(), graph = vi.spyOn(f.store, "commitGraphInput");
   try {
-    const operations = Array.from({ length: 30 }, (_, i) => ({ op: "create" as const, title: "Fixture title", handle: `$${i}`, author: "test",
+    const operations = Array.from({ length: 30 }, (_, i) => ({ files: null, op: "create" as const, title: "Fixture title", handle: `$${i}`, author: "test",
       text: `body ${i}`, category: "constraint" as const, scope: "global" as const, supports: [f.fact.id], topics: [], reason: "test", createdAt: "now" }));
     const created = f.store.commitConsolidationRun({ path: f.target,
       run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: "now" }, operations });

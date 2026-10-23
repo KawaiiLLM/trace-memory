@@ -35,7 +35,7 @@ function fixture(script: Script, dream?: (task: DreamingAgentInput) => Promise<P
 }
 const call = (task: { tools: { name: string; execute(input: unknown): unknown }[] }, name: "note" | "memory", input: unknown) => task.tools.find(tool => tool.name === name)!.execute(input) as string;
 const fact = (text = "User set the rule", source = "T1#E1") => ({ title: "Rule evidence", sources: `[${source}] ${text}` });
-const knowledge = (supports = ["$1"]) => ({ op: "create", title: "Fixture title", text: "Use the stated rule", category: "constraint", scope: "session", supports, reason: "new rule", topics: [] });
+const knowledge = (supports = ["$1"]) => ({ files: null, op: "create", title: "Fixture title", text: "Use the stated rule", category: "constraint", scope: "session", supports, reason: "new rule", topics: [] });
 const noted = (f: ReturnType<typeof fixture>) => f.entries.some(entry => f.memory.store.entryNoted(entry.id));
 
 test("04: the batch stays private until task 2 passes, and task 2's corrections are what is published", async () => {
@@ -149,7 +149,7 @@ function seedKnowledge(f: ReturnType<typeof fixture>, scope: "session" | "projec
   const fid = JSON.parse(note.execute(fact("User supplied enduring evidence"))).factIds[0] as number;
   const content = { text: "Old rule", category: "constraint" as const, scope, topics: [], supports: [fid], reason: "initial", createdAt: "now" };
   const created = f.memory.store.commitConsolidationRun({ path: f.path, run: { kind: "manual", sessionId: f.session.id, createdAt: "now" },
-    operations: [{ op: "create", title: "Fixture title", author: "test", handle: "$seed", ...content }] });
+    operations: [{ files: null, op: "create", title: "Fixture title", author: "test", handle: "$seed", ...content }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const base = created.committed[0]!;
   const tag = `K${base.knowledgeId}#${f.memory.store.versionTag(base.knowledgeId, base.commit)}`;
@@ -157,8 +157,8 @@ function seedKnowledge(f: ReturnType<typeof fixture>, scope: "session" | "projec
     const other = new Store(f.file);
     try {
       const result = commitNoterKnowledge(other, { path: f.path, run: { sessionId: f.session.id, createdAt: "later" },
-        operations: [archive ? { op: "archive", kind: "invalid", text: "Retired; nothing replaces it.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fid], reason: "retired", createdAt: "later" }
-          : { op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content, text: "Concurrent rule" }] });
+        operations: [archive ? { files: null, op: "archive", kind: "invalid", text: "Retired; nothing replaces it.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fid], reason: "retired", createdAt: "later" }
+          : { files: null, op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content, text: "Concurrent rule" }] });
       if (!result.ok) throw new Error(result.problems.join("; "));
     } finally { other.close(); }
   };
@@ -304,7 +304,7 @@ test("04: a globally selected successor outside reader scope is not a conversion
     const path = { sessionId: other.id, branch: "main", headTurnId: turn.id };
     const tools = f.memory.tools({ kind: "manual", ...path, currentTurnId: turn.id });
     const fid = JSON.parse(tools.find(tool => tool.name === "note")!.execute({ title: "Foreign evidence", sources: `[T${turn.id}#E1] Foreign evidence` })).factIds[0];
-    const changed = commitNoterKnowledge(f.memory.store, { path, run: { sessionId: other.id, createdAt: "later" }, operations: [{
+    const changed = commitNoterKnowledge(f.memory.store, { path, run: { sessionId: other.id, createdAt: "later" }, operations: [{ files: null,
       op: "update", knowledgeId: seed.base.knowledgeId, baseCommit: seed.base.commit, text: "Foreign session-only rule", category: "constraint", scope: "session",
       topics: [], supports: [fid], reason: "narrow scope", createdAt: "later" }] });
     expect(changed.ok).toBe(true);

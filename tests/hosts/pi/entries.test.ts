@@ -330,7 +330,7 @@ test("review 2026-09-08 P1: a sibling entry of the same Turn is off-path for fac
     tools = h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
     expect(tools.find(t => t.name === "note")!.execute({ title: "Alpha adopted on sibling", sources: "[T1#E3] Pi agent adopted alpha." })).toContain("invalid source T1#E3");
     expect(h.memory.store.listBranchFacts(1, branch, 1)).toHaveLength(0); // F1 cites the sibling entry: off this path
-    const knowledge = tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] });
+    const knowledge = tools.find(t => t.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] });
     expect(knowledge).toContain("rejected:");
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("Always use alpha");
     // On the original path the fact and knowledge built on it are applicable.
@@ -364,7 +364,7 @@ test("64b/P1b: frozen Fact isolation remains reader-path local while Knowledge f
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     expect(tools.find(t => t.name === "note")!.execute({ title: "Pi agent proposed alpha", sources: "[T1#E2] Pi agent gave a shared interim observation.\n[T1#E3] Pi agent proposed: ALPHA_ONLY: adopt alpha." })).not.toContain("rejected:");
     expect(h.memory.store.factEntries(1)).toHaveLength(2); // both exact assistant sources remain required by the fact
-    expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] })).not.toContain("rejected:");
+    expect(tools.find(t => t.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(hydrate(h.memory.store.sourcePath(1, branch, 1), h.memory.store).some(e => e.text.includes("ALPHA_ONLY"))).toBe(false);
@@ -405,7 +405,7 @@ test("review 2026-09-08 P3: the Noter's active knowledge follows the branch path
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "alpha", name: "bash", arguments: { command: "adopt alpha" } }] }); await h.emit("agent_end");
     const t = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     expect(t.find(tool => tool.name === "note")!.execute({ title: "Alpha policy on sibling", sources: "[T1#E3] Pi agent proposed using alpha." })).not.toContain("rejected:");
-    expect(t.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "SIBLING_POLICY_ALPHA", category: "constraint", scope: "session", supports: ["F1"] })).not.toContain("rejected:");
+    expect(t.find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "SIBLING_POLICY_ALPHA", category: "constraint", scope: "session", supports: ["F1"] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("SIBLING_POLICY_ALPHA");
@@ -440,7 +440,7 @@ test("64b/21a: an archive follows its support owner's foreground without changin
     const write = (branch: string) => h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
     let tools = write("main");
     expect(tools.find(t => t.name === "note")!.execute({ title: "Alpha policy", sources: "[T1#E1] The user asked to investigate alpha." })).not.toContain("rejected:");
-    expect(tools.find(t => t.name === "memory")!.execute({ op: "create", title: "Fixture title", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
+    expect(tools.find(t => t.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
       supports: ["F1"], reason: "Admitted from the shared ancestry." })).not.toContain("rejected:");
     // The withdrawal is bound to a sibling entry of the same Turn: only this path holds it.
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });
@@ -448,7 +448,7 @@ test("64b/21a: an archive follows its support owner's foreground without changin
     tools = write("main");
     expect(tools.find(t => t.name === "note")!.execute({ title: "Alpha withdrawn", sources: "[T1#E4] Pi agent withdrew alpha on this path." })).not.toContain("rejected:");
     const base = readHandle(address => memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(address).content, "K1");
-    expect(tools.find(t => t.name === "memory")!.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: base, supports: ["F2"], reason: "The user withdrew the rule on this path." })).not.toContain("rejected:");
+    expect(tools.find(t => t.name === "memory")!.execute({ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: base, supports: ["F2"], reason: "The user withdrew the rule on this path." })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(branch).not.toBe("main");
@@ -458,7 +458,7 @@ test("64b/21a: an archive follows its support owner's foreground without changin
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).toContain("ALPHA_IS_THE_RULE");
     expect(h.memory.store.currentCommit(1, { sessionId: 1, headTurnId: 1, branch }).map(r => r.op)).toEqual(["create"]);
     expect(h.memory.store.currentCommit(1, { sessionId: 1, headTurnId: 1, branch: "main" }).map(r => r.op)).toEqual(["create"]);
-    expect(h.memory.store.knowledgeRevision(2)).toMatchObject({ op: "archive", archiveKind: "invalid", supports: [2] });
+    expect(h.memory.store.knowledgeRevision(2)).toMatchObject({ files: null, op: "archive", archiveKind: "invalid", supports: [2] });
   } finally { await h.dispose(); }
 });
 

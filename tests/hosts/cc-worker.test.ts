@@ -897,7 +897,7 @@ test.each([false, true])("production MCP N: files that fail the stop check get o
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const checks: string[] = [], reviews: string[] = [], tasks: string[] = [];
-  const valid = { op: "create", title: "Fixture title", text: "Durable CC conclusion", category: "reference", scope: "project",
+  const valid = { files: null, op: "create", title: "Fixture title", text: "Durable CC conclusion", category: "reference", scope: "project",
     topics: ["cc"], supports: ["F1"], reason: "New durable conclusion." };
   const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
     const stream = (async function* () {
@@ -1522,7 +1522,7 @@ test("92: catchup retries failed N without publishing held facts or knowledge tw
     expect(memory.store.listSessionFacts(input.sessionId)).toEqual([]);
     expect(memory.store.currentKnowledge()).toEqual([]);
     const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
-    expect(await submit(input, memory, { noteInput: [{ title: "Durable evidence", sources: `[${source}] Durable evidence` }], memoryInput: { op: "create", title: "Fixture title", text: "Durable reference", category: "reference",
+    expect(await submit(input, memory, { noteInput: [{ title: "Durable evidence", sources: `[${source}] Durable evidence` }], memoryInput: { files: null, op: "create", title: "Fixture title", text: "Durable reference", category: "reference",
       scope: "session", topics: [], supports: ["$1"], reason: "Supported" } })).toBeUndefined();
     return { outcome: attempts === 1 ? "failure" : "success", output: "terminal", audit: { available: false, reason: "test" } };
   }, { noting: { triggerTokens: 1_000_000 } });

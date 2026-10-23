@@ -32,11 +32,11 @@ function owner(name: string, projectId = memory.store.createProject({ name, decl
   const supports = [fact(memory, path, `Needle ${name}`, [{ entry, text: `needle ${name} fact` }]).id];
   const put = async (text: string, scope: KnowledgeScope = "project", topics: string[] = [], base?: { knowledgeId: number; commit: number }, category: KnowledgeCategory = "reference") => {
     if (!base) {
-      const result = memory.store.commitConsolidationRun({ path, run, operations: [{ op: "create", title: "Fixture title", handle: "new", author: "fixture", text, scope, category, topics, supports, reason: `Reason ${text}`, createdAt: time }] });
+      const result = memory.store.commitConsolidationRun({ path, run, operations: [{ files: null, op: "create", title: "Fixture title", handle: "new", author: "fixture", text, scope, category, topics, supports, reason: `Reason ${text}`, createdAt: time }] });
       if (!result.ok) throw new Error(result.problems.join("; "));
       return result.committed[0]!;
     }
-    const [changed] = curateWrite(memory, path, [{ op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, text, scope, category, topics,
+    const [changed] = curateWrite(memory, path, [{ files: null, op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, text, scope, category, topics,
       supports, reason: `Reason ${text}`, createdAt: time }]); // a Dreamer's pass
     return changed!;
   };
@@ -123,13 +123,13 @@ test("41 archives and merged-away identities have no current body but remain can
   const who = owner("lifecycle");
   // Ticket 44: the survivor is created first so its older address remains live.
   const survivor = await who.put("needle survivor"), absorbed = await who.put("needle absorbed");
-  const [result] = curateWrite(memory, who, [{ op: "merge", intoKnowledgeId: survivor.knowledgeId, intoBaseCommit: survivor.commit,
+  const [result] = curateWrite(memory, who, [{ files: null, op: "merge", intoKnowledgeId: survivor.knowledgeId, intoBaseCommit: survivor.commit,
     absorb: [{ knowledgeId: absorbed.knowledgeId, baseCommit: absorbed.commit }], text: "needle combined", scope: "project", category: "reference",
     topics: [], supports: who.supports, reason: "Merge", createdAt: time }]);
   const current = (memory.search("needle", "knowledge", who) as string).split("\n").filter(line => !/^\[K\d+@v\d+\] \((superseded|archived)\)/.test(line));
   expect(identities(current.join("\n"))).toEqual([`K${result!.knowledgeId}@v${memory.store.versionOrdinal(result!.knowledgeId, result!.commit)}`]);
   expect(memory.search("absorbed", "knowledge", who)).toMatch(new RegExp(`\\[K${absorbed.knowledgeId}@v1\\] \\((superseded|archived)\\)`));
-  curateWrite(memory, who, [{ op: "archive", kind: "invalid", knowledgeId: result!.knowledgeId, baseCommit: result!.commit, supports: who.supports, reason: "Archive", createdAt: time }]);
+  curateWrite(memory, who, [{ files: null, op: "archive", kind: "invalid", knowledgeId: result!.knowledgeId, baseCommit: result!.commit, supports: who.supports, reason: "Archive", createdAt: time }]);
   // No version is current any more: every hit is marked, and the archives are labelled as such.
   const historyText = memory.search(undefined, "knowledge", { ...who, topk: 100 }) as string;
   expect(historyText.split("\n").every(line => /^\[K\d+@v\d+\] \((superseded|archived)\)/.test(line))).toBe(true);
@@ -158,7 +158,7 @@ test("135/92: complete collections expose tags, metadata and history references 
   expect(historyText).toContain("K1@v1");
   expect(historyText).toContain("reason: Reason old body");
   const write = tools.find(tool => tool.name === "memory")!;
-  const archive = (id: string) => write.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id,
+  const archive = (id: string) => write.execute({ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id,
     supports: [`F${who.factId}`], reason: "Retire" });
   expect(archive(oldTag)).toContain("base is not the latest effective applicable revision");
   expect(JSON.parse(archive(currentTag)).committed).toHaveLength(1);

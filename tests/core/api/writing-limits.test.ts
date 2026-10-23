@@ -44,7 +44,7 @@ function setup() {
 }
 
 const rule = { topics: [], category: "constraint", scope: "project", supports: ["F1"], reason: "test" };
-const create = (title: string, text: string) => ({ op: "create", title, text, ...rule });
+const create = (title: string, text: string) => ({ files: null, op: "create", title, text, ...rule });
 const tag = (id: number, ordinal = 1) => `K${id}#${memory.store.versionTag(id, memory.store.resolveVersionOrdinal(id, ordinal))}`;
 const stored = (id: number) => memory.store.currentCommit(id)[0]!;
 
@@ -85,7 +85,7 @@ test("an update is checked on its resulting body, with text or with edits, and a
   const { write, path } = setup();
   const long = legacyKnowledge(memory.store, path, { text: sized(300, "Legacy rule. "), category: "constraint", scope: "project", supports: [1] });
   const base = tag(long.knowledgeId);
-  const update = { op: "update", id: base, title: "Legacy rule", supports: ["F1"], reason: "Shorten it" };
+  const update = { files: null, op: "update", id: base, title: "Legacy rule", supports: ["F1"], reason: "Shorten it" };
   // An edit that leaves it over the cap is refused with the resulting count; the stored item is untouched.
   const refused = write.execute({ ...update, edits: [{ old: "Legacy rule.", new: "Rule." }] });
   expect(refused).toMatch(/text: \d{3} units, over the limit of 220 \(target 200\)/);
@@ -95,19 +95,19 @@ test("an update is checked on its resulting body, with text or with edits, and a
   // The same update with a shortened body fits and is stored.
   expect(JSON.parse(write.execute({ ...update, text: "Legacy rule, shortened.", category: "constraint", scope: "project", topics: [] })).committed).toHaveLength(1);
   // Growing a body that fits past the cap by edits is refused too.
-  const grown = write.execute({ op: "update", id: tag(long.knowledgeId, 2), supports: ["F1"], reason: "Grow it", edits: [{ old: "shortened", new: sized(220) }] });
+  const grown = write.execute({ files: null, op: "update", id: tag(long.knowledgeId, 2), supports: ["F1"], reason: "Grow it", edits: [{ old: "shortened", new: sized(220) }] });
   expect(grown).toMatch(/text: \d{3} units, over the limit of 220 \(target 200\)/);
 });
 
 test("an update inherits its base's title; a base without one asks for it; an archive keeps the base's title or none", () => {
   const { write, path } = setup();
   expect(JSON.parse(write.execute(create("Package manager", "Use pnpm"))).committed).toHaveLength(1);
-  const update = { op: "update", supports: ["F1"], reason: "Clarify" };
+  const update = { files: null, op: "update", supports: ["F1"], reason: "Clarify" };
   expect(JSON.parse(write.execute({ ...update, id: tag(1), edits: [{ old: "pnpm", new: "corepack pnpm" }] })).committed).toHaveLength(1);
   expect(stored(1)).toMatchObject({ title: "Package manager", text: "Use corepack pnpm" });
   expect(JSON.parse(write.execute({ ...update, id: tag(1, 2), title: "Corepack", edits: [{ old: "Use", new: "Always use" }] })).committed).toHaveLength(1);
   expect(stored(1).title).toBe("Corepack");
-  const archived = JSON.parse(write.execute({ op: "archive", kind: "invalid", id: tag(1, 3), supports: ["F1"], reason: "No longer true",
+  const archived = JSON.parse(write.execute({ files: null, op: "archive", kind: "invalid", id: tag(1, 3), supports: ["F1"], reason: "No longer true",
     text: "The rule no longer holds because the user withdrew it; nothing replaces it." }));
   expect(memory.store.getKnowledgeRevision(1, receiptCommit(memory.store, archived.committed[0]))).toMatchObject({ op: "archive", title: "Corepack" });
   // A legacy version has no title to inherit: the update is refused until it supplies one.
@@ -118,7 +118,7 @@ test("an update inherits its base's title; a base without one asks for it; an ar
   expect(JSON.parse(write.execute({ ...update, id: tag(legacy.knowledgeId), title: "Old rule", edits: [{ old: "Legacy", new: "Old" }] })).committed).toHaveLength(1);
   // Archiving a legacy version keeps it untitled.
   const second = legacyKnowledge(memory.store, path, { text: "Another legacy rule", category: "constraint", scope: "project", supports: [1] });
-  const gone = JSON.parse(write.execute({ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag(second.knowledgeId), supports: ["F1"], reason: "Retire" }));
+  const gone = JSON.parse(write.execute({ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag(second.knowledgeId), supports: ["F1"], reason: "Retire" }));
   expect(memory.store.getKnowledgeRevision(second.knowledgeId, receiptCommit(memory.store, gone.committed[0]))!.title).toBeNull();
 });
 
@@ -162,7 +162,7 @@ test("a Noter update is checked on its resulting body and needs a title when its
   const legacy = legacyKnowledge(memory.store, path, { text: sized(250, "Legacy rule. "), category: "constraint", scope: "project", supports: [1] });
   const seen: string[] = [];
   script = async input => {
-    const update = { op: "update", id: tag(legacy.knowledgeId), supports: ["F1"], reason: "Compress", category: "constraint", scope: "project", topics: [] };
+    const update = { files: null, op: "update", id: tag(legacy.knowledgeId), supports: ["F1"], reason: "Compress", category: "constraint", scope: "project", topics: [] };
     toKnowledgeStep(input, { files: { facts: "## none\n" } });
     seen.push(await checked(input, { knowledge: knowledgeFile(memory, { ...update, text: "Rule, compressed." }) }));
     seen.push(await checked(input, { knowledge: knowledgeFile(memory, { ...update, title: "Legacy rule", text: sized(250, "Legacy rule. ") }) }));

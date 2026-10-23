@@ -34,7 +34,7 @@ function measure(archived: number, currentProcessed: number) {
     for (let from = 0; from < archived; from += 500) {
       const made = knowledgeBatch(store, path, Array.from({ length: Math.min(500, archived - from) }, (_, i) => item(`old ${from + i}`))).committed;
       const archives = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: session.id, createdAt: at },
-        operations: made.map(value => ({ op: "archive" as const, kind: "invalid" as const, text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: value.knowledgeId, baseCommit: value.commit,
+        operations: made.map(value => ({ files: null, op: "archive" as const, kind: "invalid" as const, text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: value.knowledgeId, baseCommit: value.commit,
           supports: [fact.id], reason: "retired", createdAt: at })) });
       if (!archives.ok) throw new Error(archives.problems.join("; "));
       processed([...made, ...archives.committed]);
@@ -97,7 +97,7 @@ function measureRewrites(rewrites: number) {
     store.db.prepare("INSERT INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)").run(`project:${project.id}`, created.commit, run.id);
     let base = created.commit;
     for (let i = 0; i < rewrites; i++) {
-      const result = commitNoterKnowledge(store, { path, run: { sessionId: session.id, branch: "main", createdAt: at }, operations: [{ op: "update",
+      const result = commitNoterKnowledge(store, { path, run: { sessionId: session.id, branch: "main", createdAt: at }, operations: [{ files: null, op: "update",
         knowledgeId: created.knowledgeId, baseCommit: base, text: `rule ${i} ${"word ".repeat(120)}`, category: "constraint", scope: "project",
         supports: [fact.id], topics: [], reason: "rewrite", createdAt: at }] });
       if (!result.ok) throw new Error(result.problems.join("; "));

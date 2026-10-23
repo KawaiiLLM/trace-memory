@@ -45,7 +45,7 @@ function pathFixture(seedOlderSurvivor = false) {
   }
   const manual = memory.tools({ kind: "manual", sessionId: session.id, branch: "root", currentTurnId: turn.id, triggerEntryId: root.id });
   const create = (text: string) => {
-    const receipt = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ op: "create", title: "Fixture title", text,
+    const receipt = JSON.parse(manual.find(tool => tool.name === "memory")!.execute({ files: null, op: "create", title: "Fixture title", text,
       category: "constraint", scope: "project", supports: [`F${fact}`], topics: [], reason: `Create ${text}.` }));
     expect(receipt.committed).toHaveLength(1);
     const item = receipt.committed[0] as { knowledgeId: number; version: string };

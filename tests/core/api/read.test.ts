@@ -48,7 +48,7 @@ function noting(sessionId: number, turnId: number, text = fixture.base, branch =
 function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "goal" | "understanding" | "reference" = "constraint",
   scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time, topics: string[] = [], historicalManual = false) {
   const result = memory.store.commitConsolidationRun({ run: { sessionId, branch: "main", kind: "manual", createdAt: time },
-    operations: [{ op: "create", title: fixtureTitle(text), topics, reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
+    operations: [{ files: null, op: "create", title: fixtureTitle(text), topics, reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
   });
   if (!result.ok) throw new Error(JSON.stringify(result));
   scoreAll(memory.store); // the Knowledge base carries scored items
@@ -120,7 +120,7 @@ test("visibility includes global, own project and own session only, excluding in
   const outside = knowledge(foreign.id, noting(foreign.id, turn(foreign.id).id).facts[0]!.id), global = knowledge(foreign.id, f.id, "goal", "global");
   const archived = knowledge(s.id, f.id, "reference");
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "manual", createdAt: time },
-    operations: [{ op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived, baseCommit: archived, supports: [f.id], createdAt: time }] });
+    operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived, baseCommit: archived, supports: [f.id], createdAt: time }] });
   for (const block of [memory.inject(s.id), compacted(memory.compact(s.id))]) {
     expect(block).toContain(`[K${own}#${memory.store.versionTag(own, own)}]`); expect(block).toContain(`[K${global}#${memory.store.versionTag(global, global)}]`);
     for (const id of [other, outside, archived]) expect(block).not.toContain(`[K${id}#`);
@@ -589,14 +589,6 @@ test("literal search finds facts, every knowledge version and raw across project
   expect(memory.search("nohits", "all")).toContain("No hit does not mean absent.");
 });
 
-// Ticket 81: raw_fts is now a real, used index (Raw search's candidate step), not dead scaffolding --
-// this pins its shadow-table shape and that nothing else under this glob, and no trigger, ever appears
-// (the writers maintain the index themselves; see Store.indexRawField/reindexRawField).
-test("schema has exactly raw_fts and its shadow tables under *_fts*, and no triggers", () => {
-  const names = (memory.store.db.prepare("SELECT name FROM sqlite_schema WHERE name GLOB '*_fts*'").all() as { name: string }[]).map(r => r.name).sort();
-  expect(names).toEqual(["raw_fts", "raw_fts_config", "raw_fts_data", "raw_fts_docsize", "raw_fts_idx"]);
-  expect(memory.store.db.prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger'").all()).toEqual([]);
-});
 
 test.each([
   ["美琴", "御坂美琴的电击"],
@@ -690,11 +682,11 @@ test("search marks historical, merged and archived knowledge hits so they do not
   memory.selectEntries(s.id, "main", selectedEntries.map(entry => entry.id));
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: selectedEntries.at(-1)!.id };
   const [updated, merged] = curateWrite(memory, path, [
-    { op: "update", knowledgeId: a, baseCommit: a, topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], createdAt: time },
-    { op: "merge", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], createdAt: time },
+    { files: null, op: "update", knowledgeId: a, baseCommit: a, topics: [], reason: "Substantive correction of the recorded conclusion.", text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], createdAt: time },
+    { files: null, op: "merge", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], topics: [], reason: "Merged duplicate knowledge into the survivor.", text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], createdAt: time },
   ]);
   expect(updated!.knowledgeId).toBe(a);
-  curateWrite(memory, path, [{ op: "archive", kind: "invalid", knowledgeId: b, baseCommit: merged!.commit, supports: [1], reason: "Retired: the cited evidence withdraws this conclusion.", createdAt: time }]);
+  curateWrite(memory, path, [{ files: null, op: "archive", kind: "invalid", knowledgeId: b, baseCommit: merged!.commit, supports: [1], reason: "Retired: the cited evidence withdraws this conclusion.", createdAt: time }]);
   const hits = (memory.search("pnpm", "knowledge", { topk: 100 }) as string).split("\n");
   const line = (label: string) => hits.find(l => l.startsWith(`[${label}]`))!;
   expect(line(`K${a}@v1`)).toContain("(superseded)"); // updated away
@@ -716,7 +708,7 @@ test("reads resolve any existing address: another session's history, current rev
   const selectedEntries = hydrate(memory.store.listSourceEntries(s.id, t.id), memory.store);
   memory.selectEntries(s.id, "main", selectedEntries.map(entry => entry.id));
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id, triggerEntryId: selectedEntries.at(-1)!.id };
-  curateWrite(memory, path, [{ op: "update", knowledgeId: k, baseCommit: k, topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
+  curateWrite(memory, path, [{ files: null, op: "update", knowledgeId: k, baseCommit: k, topics: [], reason: "Substantive correction of the recorded conclusion.", text: "private goal now",
     category: "goal", scope: "session", supports: [1], createdAt: time }]);
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });

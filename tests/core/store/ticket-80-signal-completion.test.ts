@@ -38,7 +38,7 @@ test("first cursor publication invalidates a previously built graph and footer s
       source: [`T${other.id}#E1`], createdAt: time }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const created = writer.commitConsolidationRun({ path: { sessionId, branch: "sibling", headTurnId: other.id },
-    run: { kind: "manual", sessionId, branch: "sibling", createdAt: time }, operations: [{ op: "create", title: "Fixture title", handle: "$k",
+    run: { kind: "manual", sessionId, branch: "sibling", createdAt: time }, operations: [{ files: null, op: "create", title: "Fixture title", handle: "$k",
       author: "test", text: "knowledge supported only on sibling", category: "constraint", scope: "global",
       supports: [noted.facts[0]!.id], topics: [], reason: "direct evidence", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));
@@ -77,7 +77,7 @@ test("a prepared snapshot supplied by one reader never replaces the memo's foreg
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const path = { sessionId, branch: "main", headTurnId: turnId };
   const created = writer.commitConsolidationRun({ path, run: { kind: "manual", sessionId, branch: "main", createdAt: time },
-    operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: "stable global knowledge",
+    operations: [{ files: null, op: "create", title: "Fixture title", handle: "$k", author: "test", text: "stable global knowledge",
       category: "constraint", scope: "global", supports: [noted.facts[0]!.id], topics: [],
       reason: "direct evidence", createdAt: time }] });
   if (!created.ok) throw new Error(created.problems.join("; "));

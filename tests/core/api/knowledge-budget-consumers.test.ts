@@ -27,7 +27,7 @@ function fixture(runAgent?: Parameters<typeof TraceMemory>[1]) {
   let sequence = 0;
   const create = (text: string, scope: "global" | "project" | "session" = "project", topics: string[] = [], category: "constraint" | "open" | "goal" = "constraint") => {
     const result = memory.store.commitConsolidationRun({ path: target,
-      run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{
+      run: { kind: "manual", sessionId: session.id, branch: "main", createdAt: "now" }, operations: [{ files: null,
         op: "create", title: fixtureTitle(text), handle: `$${++sequence}`, author: "test", text, category, scope,
         supports: [noted.facts[0]!.id], topics, reason: "consumer fixture", createdAt: "now",
       }] });

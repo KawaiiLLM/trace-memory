@@ -51,7 +51,7 @@ function compareCommittedGraph(store: Store, path: KnowledgePath) {
 
 function create(store: Store, path: KnowledgePath, support: number, scope: "session" | "project" | "global", text: string) {
   const result = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: path.sessionId, branch: path.branch, createdAt: at },
-    operations: [{ op: "create", title: "Fixture title", handle: "$new", author: "test", text, category: "constraint", scope,
+    operations: [{ files: null, op: "create", title: "Fixture title", handle: "$new", author: "test", text, category: "constraint", scope,
       supports: [support], reason: "Seed stateless graph fixture.", topics: [], createdAt: at }] });
   if (!result.ok) throw new Error(result.problems.join("; "));
   return result.committed[0]!;
@@ -107,9 +107,9 @@ test("64b stateless graph: genuine alternative split operations keep only the op
   const base = create(store, aPath, rootFact.id, "global", "split base");
   let sequence = 0;
   const split = (path: typeof aPath, support: number, labels: [string, string]) => {
-    const committed = curateWrite(memory, path, [{ op: "split", knowledgeId: base.knowledgeId, baseCommit: store.currentCommit(base.knowledgeId, path)[0]!.id,
+    const committed = curateWrite(memory, path, [{ files: null, op: "split", knowledgeId: base.knowledgeId, baseCommit: store.currentCommit(base.knowledgeId, path)[0]!.id,
       text: `primary ${++sequence}`, category: "constraint", scope: "global", topics: [], supports: [support], reason: "Alternative atomic split.", createdAt: at,
-      children: labels.map(text => ({ title: "Fixture child", text, category: "constraint" as const, topics: [] })) }]);
+      children: labels.map(text => ({ files: null, title: "Fixture child", text, category: "constraint" as const, topics: [] })) }]);
     const children = committed.filter(item => item.knowledgeId !== base.knowledgeId).map(item => item.commit);
     expect(children).toHaveLength(2);
     return children;
@@ -150,7 +150,7 @@ test("64b stateless graph: admitted deep branch defeats a restored sibling from 
   let sequence = 0;
   const update = (path: typeof aPath, prior: { knowledgeId: number; commit: number }, support: number, text: string) => {
     ++sequence;
-    const [result] = curateWrite(memory, path, [{ op: "update", knowledgeId: prior.knowledgeId, baseCommit: prior.commit, text, category: "constraint", scope: "global",
+    const [result] = curateWrite(memory, path, [{ files: null, op: "update", knowledgeId: prior.knowledgeId, baseCommit: prior.commit, text, category: "constraint", scope: "global",
       supports: [support], reason: "Advance the selected branch.", topics: [], createdAt: at }]);
     return result!;
   };
@@ -206,32 +206,32 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
   const absorbed = create(store, aPath, aFact.id, "global", "merge absorbed parent");
   const splitParent = create(store, aPath, aFact.id, "global", "split parent");
   const [absorbedSibling, splitSibling] = curateWrite(memory, aPath, [
-    { op: "update", knowledgeId: absorbed.knowledgeId, baseCommit: absorbed.commit, text: "restorable absorbed sibling",
+    { files: null, op: "update", knowledgeId: absorbed.knowledgeId, baseCommit: absorbed.commit, text: "restorable absorbed sibling",
       category: "constraint", scope: "global", supports: [cFact.id], reason: "Create competing merge sibling.", topics: [], createdAt: at },
-    { op: "update", knowledgeId: splitParent.knowledgeId, baseCommit: splitParent.commit, text: "restorable split-source sibling",
+    { files: null, op: "update", knowledgeId: splitParent.knowledgeId, baseCommit: splitParent.commit, text: "restorable split-source sibling",
       category: "constraint", scope: "global", supports: [cFact.id], reason: "Create competing split sibling.", topics: [], createdAt: at },
   ]) as [{ knowledgeId: number; commit: number }, { knowledgeId: number; commit: number }];
   store.setCurrentPath(c.id, "rewind", c0.turn.id, "test-lineage");
   expect(store.currentCommit(absorbed.knowledgeId, bPath).map(revision => revision.id)).toEqual([absorbed.commit]);
   expect(store.currentCommit(splitParent.knowledgeId, bPath).map(revision => revision.id)).toEqual([splitParent.commit]);
-  const [scopedResult] = curateWrite(memory, aPath, [{ op: "update", knowledgeId: scopedParent.knowledgeId, baseCommit: scopedParent.commit, text: "global child with B support",
+  const [scopedResult] = curateWrite(memory, aPath, [{ files: null, op: "update", knowledgeId: scopedParent.knowledgeId, baseCommit: scopedParent.commit, text: "global child with B support",
     category: "constraint", scope: "global", supports: [bFact.id], reason: "Direct child evidence changes scope.", topics: [], createdAt: at }]);
   const scopedChild = scopedResult!.commit;
   compareCommittedGraph(store, bPath);
 
   const [mergeResult, , ...splitResults] = curateWrite(memory, aPath, [
-    { op: "merge", intoKnowledgeId: survivor.knowledgeId, intoBaseCommit: survivor.commit, absorb: [{ knowledgeId: absorbed.knowledgeId, baseCommit: absorbed.commit }],
+    { files: null, op: "merge", intoKnowledgeId: survivor.knowledgeId, intoBaseCommit: survivor.commit, absorb: [{ knowledgeId: absorbed.knowledgeId, baseCommit: absorbed.commit }],
       text: "merged result with B support", category: "constraint", scope: "global", supports: [bFact.id], reason: "Merge distinct identities.", topics: [], createdAt: at },
-    { op: "split", knowledgeId: splitParent.knowledgeId, baseCommit: splitParent.commit, text: "split primary part", category: "constraint", scope: "global", topics: [],
+    { files: null, op: "split", knowledgeId: splitParent.knowledgeId, baseCommit: splitParent.commit, text: "split primary part", category: "constraint", scope: "global", topics: [],
       supports: [bFact.id], reason: "Split into atomic results.", createdAt: at,
-      children: [{ title: "Fixture child", text: "split result one", category: "constraint", topics: [] }, { title: "Fixture child", text: "split result two", category: "constraint", topics: [] }] },
+      children: [{ files: null, title: "Fixture child", text: "split result one", category: "constraint", topics: [] }, { files: null, title: "Fixture child", text: "split result two", category: "constraint", topics: [] }] },
   ]);
   const mergeCommit = mergeResult!.commit, splitChildren = splitResults.map(item => item.commit);
   // The restored siblings' bases are stale now: refused, and the refusal names the current results.
   store.setCurrentPath(c.id, "main", c1.turn.id, "test-lineage");
   const stale = store.commitWorkspaceRun({ path: aPath, run: { kind: "dreaming", sessionId: a.id, branch: "main", createdAt: at }, operations: [
-    { op: "archive", kind: "invalid", knowledgeId: absorbed.knowledgeId, baseCommit: absorbedSibling.commit, text: "The restored merge sibling no longer holds; the merge replaces it.", supports: [bFact.id], reason: "Stale restored merge sibling.", createdAt: at },
-    { op: "archive", kind: "invalid", knowledgeId: splitParent.knowledgeId, baseCommit: splitSibling.commit, text: "The restored split sibling no longer holds; the split replaces it.", supports: [bFact.id], reason: "Stale restored split sibling.", createdAt: at }] });
+    { files: null, op: "archive", kind: "invalid", knowledgeId: absorbed.knowledgeId, baseCommit: absorbedSibling.commit, text: "The restored merge sibling no longer holds; the merge replaces it.", supports: [bFact.id], reason: "Stale restored merge sibling.", createdAt: at },
+    { files: null, op: "archive", kind: "invalid", knowledgeId: splitParent.knowledgeId, baseCommit: splitSibling.commit, text: "The restored split sibling no longer holds; the split replaces it.", supports: [bFact.id], reason: "Stale restored split sibling.", createdAt: at }] });
   const [staleMerge, staleSplit] = stale.results;
   expect(staleMerge).toMatchObject({ ok: false, stale: true });
   if (!staleMerge!.ok) expect(staleMerge!.reason).toContain(`current: K${survivor.knowledgeId}@v${store.versionOrdinal(survivor.knowledgeId, mergeCommit)}`);

@@ -65,7 +65,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       ["update", "merge", "split", "archive"].includes(op)
         ? `${op} belongs to the Dreamer and is not available to ${run.kind === "noting" ? "the Noter" : "manual memory"}`
         : "invalid op");
-    const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []),
+    const keys = ["op", "reason", "supports", "files", ...(op !== "create" ? ["id"] : []),
       ...(op === "archive" ? ["kind", ...(explained(value.kind) ? ["text"] : [])]
         : ["title", "text", ...(op === "update" ? ["edits"] : []), "category", "scope", "topics"])];
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
@@ -96,6 +96,13 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       return { knowledgeId: id, baseCommit: base };
     };
     const dest = op !== "create" ? target(value.id) : undefined;
+    const files = value.files;
+    const copyingUnmapped = Object.hasOwn(value, "files") && files === undefined && op !== "create" &&
+      (run.kind === "noting" || emptySupports) && dest &&
+      store.getKnowledgeRevision(dest.knowledgeId, dest.baseCommit)?.files === undefined;
+    if (!copyingUnmapped && files !== null && (!Array.isArray(files) ||
+        files.some(file => typeof file !== "string" || !file.trim())))
+      errors.push("files: required list of code paths or null");
     if (op === "archive") {
       if (!explained(value.kind)) errors.push("archive kind must be invalid or inadmissible");
       if (explained(value.kind) && !substantiveArchiveStatement(value.text))
@@ -147,7 +154,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const body = op === "archive" ? (explained(value.kind) ? value.text : undefined) : text;
     if (typeof body === "string" && words(body) > wordLimit(limits.bodyWords)) errors.push(overLimit("text", words(body), limits.bodyWords));
     const content = { title: title!, text: text!, category: category!, scope: contentScope!, supports: facts(value.supports, errors, !emptySupports), reason: value.reason!,
-      topics, createdAt: run.createdAt };
+      topics, files, createdAt: run.createdAt };
     const scope = op === "archive" ? store.getKnowledgeRevision(dest!.knowledgeId, dest!.baseCommit)?.scope : contentScope;
     if (scope && content.supports.every(Number.isSafeInteger)) {
       const bad = store.citationProblem(content.supports.filter(id => id > 0), scope, path);
@@ -155,7 +162,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     }
     if (!errors.length) operations.push(op === "create" ? { op: "create", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
 
-      : op === "archive" ? { op: "archive", ...dest!, kind: value.kind!, ...(explained(value.kind) ? { text: value.text } : {}), supports: content.supports, reason: content.reason, createdAt: run.createdAt }
+      : op === "archive" ? { op: "archive", ...dest!, files, kind: value.kind!, ...(explained(value.kind) ? { text: value.text } : {}), supports: content.supports, reason: content.reason, createdAt: run.createdAt }
       : { op: "update", ...dest!, ...content });
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });

@@ -53,7 +53,7 @@ test("entry/cleanup integration: carry budgets only its exact normalized Raw suf
     expect(note.execute({ title: "Complete event", sources: `[T${turn.id}#E${mixed.entryOrdinal}] ${factText}\n[T${turn.id}#E${result.entryOrdinal}] Result evidence` })).not.toContain("rejected:");
     expect(note.execute({ title: "Later correction", sources: `[T${turn.id}#E1] a later correction`, negate: [["F1", "strong"]] })).not.toContain("rejected:");
     const knowledge = m.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
-      run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", title: "Fixture title", handle: "$k", author: "test", text: knowledgeText,
+      run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ files: null, op: "create", title: "Fixture title", handle: "$k", author: "test", text: knowledgeText,
         category: "understanding", scope: "session", supports: [1], topics: [], reason: "synthetic integration evidence", createdAt: "now" }] });
     expect(knowledge.ok).toBe(true);
     const views = [mixed, result].map(e => renderEntry(e, m.config.render).content);
@@ -96,7 +96,7 @@ test("67: long carry renders only its bounded suffix and prepares applicability 
     if (!noted.ok) throw new Error(noted.problems.join("; "));
     const created = m.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
       run: { kind: "manual", sessionId: session.id, createdAt: "now" },
-      operations: Array.from({ length: 100 }, (_, i) => ({ op: "create" as const, title: "Fixture title", handle: `$k${i}`, author: "test", text: `conclusion ${i}`,
+      operations: Array.from({ length: 100 }, (_, i) => ({ files: null, op: "create" as const, title: "Fixture title", handle: `$k${i}`, author: "test", text: `conclusion ${i}`,
         category: "understanding" as const, scope: "session" as const, supports: [noted.facts[0]!.id], topics: [], reason: "carry work bound", createdAt: "now" })) });
     if (!created.ok) throw new Error(created.problems.join("; "));
     m.config.render.episodicBlockTokens = 250;

@@ -17,7 +17,7 @@ async function checkMemoryBatch(operation: ToolOperation) {
       Array.from({ length: 6 }, (_, i) => ({ sources: [{ entry: assistant, address: `T${t.id}#assistant` }],
         category: "observation" as const, actor: "agent" as const, text: `Evidence ${i}`, createdAt: "now" })));
     const seeded = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: "now" },
-      operations: Array.from({ length: 10 }, (_, i) => ({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category: "understanding" as const, scope: "project" as const, text: `Seed ${i}`, supports: [1], createdAt: "now" })) });
+      operations: Array.from({ length: 10 }, (_, i) => ({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category: "understanding" as const, scope: "project" as const, text: `Seed ${i}`, supports: [1], createdAt: "now" })) });
     if (!seeded.ok) throw new Error(seeded.problems.join("; "));
     const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
     const run = memory.store.listRuns(s.id).at(-1)!;
@@ -28,23 +28,23 @@ async function checkMemoryBatch(operation: ToolOperation) {
 
 describe("checkMemoryBatch", async () => {
   test("64a/92: N creates knowledge backed by preceding facts", async () => {
-    const { problems, value } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] });
+    const { problems, value } = await checkMemoryBatch({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] });
     expect(problems).toEqual([]);
     expect(value!.op).toBe("create");
   });
 
   test("rejects an unknown scope", async () => {
-    const { problems = [] } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "team", category: "understanding", supports: ["F1"] });
+    const { problems = [] } = await checkMemoryBatch({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "team", category: "understanding", supports: ["F1"] });
     expect(problems.some((p) => p.includes("scope"))).toBe(true);
   });
 
   test("rejects an unknown category", async () => {
-    const { problems = [] } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "noting", supports: ["F1"] });
+    const { problems = [] } = await checkMemoryBatch({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "noting", supports: ["F1"] });
     expect(problems.some((p) => p.includes("category"))).toBe(true);
   });
 
   test("rejects a supports knowledge that is not a fact id", async () => {
-    const { problems = [] } = await checkMemoryBatch({ op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "understanding", supports: ["K1"] });
+    const { problems = [] } = await checkMemoryBatch({ files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "understanding", supports: ["K1"] });
     expect(problems.some((p) => p.includes("K1"))).toBe(true);
   });
 

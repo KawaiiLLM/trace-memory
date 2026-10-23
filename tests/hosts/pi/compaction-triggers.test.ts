@@ -52,7 +52,7 @@ const compactions = (f: Awaited<ReturnType<typeof session>>) =>
   f.manager.getEntries().filter(e => e.type === "compaction") as { summary: string; details?: { traceMemory?: unknown } }[];
 
 const noted = (_body: Record<string, any>) =>
-  call("archive-1", "memory", { op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: "K1@1", supports: [], reason: "Deliberate budget retirement" });
+  call("archive-1", "memory", { files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: "K1@1", supports: [], reason: "Deliberate budget retirement" });
 const scripted = (f: Awaited<ReturnType<typeof session>>, replies: ((signal?: AbortSignal) => Response | Promise<Response>)[]) => {
   let round = 0;
   f.script((body, signal) => {
