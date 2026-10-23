@@ -225,11 +225,6 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       else recorded.set(knowledgeId, block);
     };
     const base = (ref: string, at: number): Base | null => {
-      if (noting && task.checked && /^K[1-9]\d*$/.test(ref)) {
-        const current = store.currentKnowledge(path).find(item => item.knowledge.id === Number(ref.slice(1)))?.revision;
-        if (!current) { add(fmt(at, `${ref} is not visible to this session`)); return null; }
-        return { knowledgeId: current.knowledgeId, ordinal: store.versionOrdinal(current.knowledgeId, current.id), commit: current.id, revision: current };
-      }
       const match = VERSION.exec(ref.trim());
       if (!match) { add(fmt(at, `\`${ref}\` is not a version address; expected \`K<id>@v<n>\``)); return null; }
       const knowledgeId = Number(match[1]), ordinal = Number(match[2]);
@@ -289,7 +284,10 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
 
     if (block.op === "flag") {
       if (!value(block, "reason")?.trim()) add(fmt(line("reason"), "a flag requires a nonempty reason"));
-      const target = base(block.target, block.line);
+      // A flag sets status on the item's current visible version, so it names the item, not a base version.
+      const current = /^K[1-9]\d*$/.test(block.target) ? store.currentKnowledge(path).find(item => item.knowledge.id === Number(block.target.slice(1)))?.revision : undefined;
+      if (!current) add(fmt(block.line, `\`${block.target}\` is not a knowledge item visible to this session; a flag names \`K<id>\``));
+      const target = current && { knowledgeId: current.knowledgeId, commit: current.id };
       if (target) {
         record(target.knowledgeId, block.line);
         out.flags.push({ knowledgeId: target.knowledgeId, revisionId: target.commit, reason: value(block, "reason") ?? "" });

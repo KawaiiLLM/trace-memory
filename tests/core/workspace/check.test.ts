@@ -417,4 +417,16 @@ test("155: only the knowledge checker accepts an unresolved flag, and its reason
   expect(flag("requires merge", true)).toMatchObject({ ok: true });
   expect(joined(flag("", true))).toContain("nonempty reason");
   expect(flag("requires merge", false)).toMatchObject({ ok: false });
+  // 155 review: the checker's update names the version it was shown, so a version committed meanwhile goes through the stale-base path.
+  const bareUpdate = checkWorkspace(b.store, { kind: "noting-knowledge", scope: b.scope, checked: true, allowFlags: true, facts: file(factText(b), "facts.md"),
+    file: file(`## update K${item.knowledgeId}
+supports: f1
+files: None
+reason: r
+
+Body.
+
+verdict: ok
+`, "knowledge.md") });
+  expect(joined(bareUpdate)).toContain(`\`K${item.knowledgeId}\` is not a version address; expected \`K<id>@v<n>\``);
 });
