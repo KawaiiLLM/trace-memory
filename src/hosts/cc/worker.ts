@@ -6,7 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import type { DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 import { memoryPath, resolvedMemoryPath, toolRejected } from "../../core/api/index.ts";
 import { sweepStaleWorkspaces } from "../../core/noting/workspace.ts";
-import { confineSearch, resolveRepositoryPath } from "../../core/dreaming/roots.ts";
+import { confineSearch, resolveRepositoryPath, SECRET_DIRS, SECRET_FILES } from "../../core/dreaming/roots.ts";
 import { CC_AGENT_SDK_VERSION, ccWorkspaceRoot, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
@@ -284,9 +284,9 @@ function userMessage(text: string, sessionId = "", synthetic = false): SDKUserMe
     parent_tool_use_id: null, ...(synthetic ? { isSynthetic: true } : {}) } as SDKUserMessage;
 }
 
-function assertInit(message: Extract<SDKMessage, { type: "system"; subtype: "init" }>, worker: ResolvedCcWorkerConfig,
+function assertInit(message: Extract<SDKMessage, { type: "system"; subtype: "init" }>, cwd: string,
   allowedTools: readonly string[]): void {
-  if (message.cwd !== worker.cwd) throw new Error(`CC worker started in unexpected cwd ${message.cwd}`);
+  if (message.cwd !== cwd) throw new Error(`CC worker started in unexpected cwd ${message.cwd}`);
   const actual = [...message.tools].sort(), expected = [...allowedTools].sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected))
     throw new Error(`CC worker tool isolation failed: expected ${expected.join(", ")}, got ${actual.join(", ")}`);
@@ -345,7 +345,7 @@ export class CcAgentWorker {
     });
     const results: SDKResultMessage[] = [], assistantMessages: SDKAssistantMessage[] = [];
     const frozenReader = { ...task.reader };
-    // Native --restricted confines Read to the prepared private worker cwd, even after a Hook rewrite.
+    // Renderings stay outside the writable workspace; only this run's directory is additionally readable.
     const renderedRoot = join(this.worker.cwd, "rendered");
     mkdirSync(renderedRoot, { recursive: true, mode: 0o700 });
     const readDirectory = mkdtempSync(join(renderedRoot, "worker-"));
@@ -362,6 +362,9 @@ export class CcAgentWorker {
     // Stage 4: a Dreaming task has the same shape, with its own lists of readable and writable files.
     // A task with no workspace (a fixture of the older shapes) reads trace:// only.
     const workspace = task.workspace as typeof task.workspace | undefined;
+    const cwd = workspace ? realpathSync(workspace.dir) : this.worker.cwd;
+    const home = resolve(this.environment.HOME ?? homedir());
+    const privateDirectories = [join(home, ".trace-memory"), join(home, ".pi", "agent")];
     const files = !workspace ? { read: [] as string[], write: [] as string[] }
       : task.kind === "noting" ? { read: [task.workspace.facts, task.workspace.knowledge], write: [task.workspace.facts, task.workspace.knowledge] }
       : { read: task.workspace.read, write: task.workspace.write };
@@ -431,7 +434,7 @@ export class CcAgentWorker {
         return deny(error instanceof Error ? error.message : String(error));
       }
     };
-    // These hooks are the only guard on a child's file access: whatever they throw, the call is denied.
+    // These hooks guard native file tools, independently of the Bash sandbox; exceptions deny the call.
     const failClosed = <R,>(hook: (raw: unknown) => Promise<R>) => async (raw: unknown): Promise<R | ReturnType<typeof deny>> => {
       try { return await hook(raw); } catch (error) { return deny(`CC worker file hook failed: ${error instanceof Error ? error.message : String(error)}`); }
     };
@@ -460,12 +463,12 @@ export class CcAgentWorker {
       this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error.message }),
       async () => { try {
       task.signal?.throwIfAborted();
-      // The Noter alone has native Write and Edit, confined by the hook above to its two files; `--restricted` keeps them inside the cwd.
-      const native = workspace ? ["Read", "Write", "Edit", ...(searches ? ["Grep", "Glob"] : [])] : ["Read"];
+      // Native file tools retain their path hooks; Bash uses Claude Code's fail-closed sandbox.
+      const native = workspace ? ["Read", "Write", "Edit", "Bash", ...(searches ? ["Grep", "Glob"] : [])] : ["Read"];
       const allowedTools = [...native, ...task.tools.map(definition => ccWorkerToolNames[definition.name])];
       const execution = this.query({ prompt: input ?? task.text, options: {
         model: settings.model,
-        cwd: this.worker.cwd,
+        cwd,
         pathToClaudeCodeExecutable: this.worker.claudeExecutable,
         env: this.environment,
         tools: native,
@@ -487,14 +490,23 @@ export class CcAgentWorker {
         // plugin-free, as assertInit requires. 129: 2.1.293 adds `cc-plugin-plugin-authoring@builtin` the same way.
         extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking,
           settings: JSON.stringify({ enabledPlugins: { "agents-md@builtin": false, "cc-plugin-plugin-authoring@builtin": false },
-            // curate and verify: `--restricted` confines the file tools to the working directories, `additionalDirectories` included.
-            ...(roots.length ? { permissions: { additionalDirectories: roots } } : {}) }) },
+            permissions: { additionalDirectories: [...roots, readDirectory] },
+            ...(workspace ? { sandbox: {
+              enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true,
+              allowUnsandboxedCommands: false, excludedCommands: [], enableWeakerNestedSandbox: false,
+              filesystem: {
+                allowWrite: [cwd],
+                denyWrite: [...roots, ...privateDirectories, readDirectory],
+                denyRead: [...privateDirectories, ...roots.flatMap(root => [...SECRET_FILES, ...SECRET_DIRS].map(name => `${root}/**/${name}`))],
+              },
+              network: { allowedDomains: [], allowUnixSockets: [], allowAllUnixSockets: false, allowLocalBinding: false },
+            } } : {}) }) },
       } });
       for await (const message of execution) {
         if (passState === "complete")
           throw new Error("CC worker emitted protocol activity after its authorized final pass");
         if (message.type === "system" && message.subtype === "init") {
-          assertInit(message, this.worker, allowedTools);
+          assertInit(message, cwd, allowedTools);
           const identity = JSON.stringify({ sessionId: message.session_id,
             messagingSocketPath: (message as unknown as { messaging_socket_path?: unknown }).messaging_socket_path });
           if (initIdentity === null) {
@@ -502,7 +514,7 @@ export class CcAgentWorker {
             nativeSessionId = message.session_id;
             // 106: the Claude Code version is recorded per run, never required.
             this.journal("worker-run-started", { taskKind: task.kind, nativeSessionId, claudeVersion: message.claude_code_version });
-            nativeLog = ccNativeTranscriptPath(this.environment, this.worker.cwd, nativeSessionId);
+            nativeLog = ccNativeTranscriptPath(this.environment, cwd, nativeSessionId);
             assertModelMetadata(await execution.supportedModels(), settings);
           } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
         } else if (message.type === "assistant") {

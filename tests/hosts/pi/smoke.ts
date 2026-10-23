@@ -35,7 +35,7 @@ try {
   assert.deepEqual(runs.map(run => JSON.parse(run.response!).task), ["write", "verify"]);
   assert.deepEqual(JSON.parse(runs[0]!.request!), h.requests[4]); // the write task's last request: check, write the facts, step 2, write the knowledge, stop
   assert.deepEqual(JSON.parse(runs[1]!.request!), h.requests.at(-1));
-  assert.deepEqual(h.conversations[0]!.tools!.map(t => t.name), ["search", "check", "read", "write", "edit"]);
+  assert.deepEqual(h.conversations[0]!.tools!.map(t => t.name), ["search", "check", "read", "write", "edit", "bash"]);
   assert.equal(JSON.stringify(h.conversations[3]!.messages[0]), JSON.stringify(h.conversations[0]!.messages[0]), "both tasks open with the same task text");
   assert.equal(h.conversations[3]!.systemPrompt, h.conversations[0]!.systemPrompt);
   const response = JSON.parse(runs[0]!.response!);

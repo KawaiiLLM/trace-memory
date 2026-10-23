@@ -4,6 +4,7 @@ import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { query, Query } from "@anthropic-ai/claude-agent-sdk";
 import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { TraceMemory, toolDefinitions, type NotingAgentInput, type RunAgentResult, type TaskTarget, type ToolDefinition } from "../../src/core/api/index.ts";
@@ -44,6 +45,7 @@ function workerConfig(directory: string, claudeExecutable = "/opt/homebrew/bin/c
   return resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "claude-sonnet-4-5", notingThinking: "medium",
     "dreaming.model": "claude-sonnet-4-5", "dreaming.thinking": "medium",
+    "dreaming.classifyModel": "claude-sonnet-4-5", "dreaming.classifyThinking": "medium",
     worker: { claudeExecutable, contextWindows: { "claude-sonnet-4-5": 200_000, sonnet: 200_000 },
       cwd: directory, responseOriginTimeoutMs: 20 } });
 }
@@ -214,7 +216,7 @@ test("the Noter's file hooks fail closed: an exception inside either denies the 
       decisions.push(denied.permissionDecision);
       expect(denied.permissionDecisionReason).toContain("hook defect");
       yield { type: "system", subtype: "init", session_id: "failclosed", claude_code_version: TEST_CC_VERSION, cwd: directory,
-        tools: ["Read", "Write", "Edit"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+        tools: ["Read", "Write", "Edit", "Bash"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: "failclosed", is_error: false, result: "ok", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
     })() as any;
@@ -830,8 +832,8 @@ test("production worker reads a trace:// snapshot, runs search code and accounts
       const client = new Client({ name: "core-worker-test", version: "1" }); await client.connect(clientTransport);
       schemas.push(await client.listTools());
       const names = (schemas[0] as any).tools.map((value: { name: string }) => `mcp__trace_memory__${value.name}`);
-      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
-        tools: ["Read", "Write", "Edit", ...names], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: request.options.cwd,
+        tools: ["Read", "Write", "Edit", "Bash", ...names], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       const call = async (response: string, id: string, name: string, input: Record<string, unknown>) => {
         rawInputs.push(structuredClone(input));
         const result = await client.callTool({ name, arguments: input, _meta: { "claudecode/toolUseId": id } });
@@ -904,10 +906,10 @@ test.each([false, true])("production MCP N: files that fail the stop check get o
       const client = new Client({ name: "consolidation-worker-test", version: "1" }); await client.connect(clientTransport);
       const listed = await client.listTools();
       const exposed = listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`);
-      // The Noter's native tools are Read, Write and Edit; its own core tools are search and check.
+      // Ticket 152 adds Bash beside the Noter's confined file tools and its core search and check.
       expect(exposed).toEqual([ccWorkerToolNames.search, ccWorkerToolNames.check]);
-      expect(request.options.tools).toEqual(["Read", "Write", "Edit"]);
-      expect(request.options.allowedTools).toEqual(["Read", "Write", "Edit", ...exposed]);
+      expect(request.options.tools).toEqual(["Read", "Write", "Edit", "Bash"]);
+      expect(request.options.allowedTools).toEqual(["Read", "Write", "Edit", "Bash", ...exposed]);
       expect(request.options.hooks.PreToolUse.map((hook: { matcher: string }) => hook.matcher)).toEqual(["Read", "Write|Edit"]);
       // 137: Claude Code adds a server's instructions to a custom-system-prompt run too (native probe), so the worker
       // server sends none: the policy reaches the worker once, in its system prompt.
@@ -918,8 +920,8 @@ test.each([false, true])("production MCP N: files that fail the stop check get o
         expect(exposed.find(name => name.endsWith(`__${role}`))).toBe(ccWorkerToolNames[role]);
         expect(tool.description).not.toContain("{{tool.");
       }
-      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
-        tools: ["Read", "Write", "Edit", ...exposed], plugins: [], skills: [], slash_commands: [],
+      yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: request.options.cwd,
+        tools: ["Read", "Write", "Edit", "Bash", ...exposed], plugins: [], skills: [], slash_commands: [],
         mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       let ordinal = 0;
       const check = async function* () {
@@ -1008,7 +1010,7 @@ test("production protocol aborts remain failures while external cancellation sta
     const stream = (async function* () {
       let client: Client | undefined;
       try {
-        yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: directory,
+        yield { type: "system", subtype: "init", claude_code_version: TEST_CC_VERSION, cwd: request.options.cwd,
           tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [],
           mcp_servers: [{ name: "trace_memory", status: "connected" }] };
         if (mode === "cancel") {
@@ -1760,14 +1762,14 @@ test("scheduler borrows an eligible closed target only at the executor turn end"
   memory.close();
 });
 
-test.each(["curate", "classify"] as const)("2026-10-22, 144: a %s task's Read, Grep and Glob hooks follow its roots: curate reads under them past the deny list, classify has none", async dreamingTask => {
+test.each(["curate", "verify", "classify"] as const)("a %s task's Read, Grep and Glob hooks follow its roots and retain the secret deny list", async dreamingTask => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-roots-")); dirs.push(directory);
   const root = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-root-"))), outside = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-outside-")));
   dirs.push(root, outside);
   writeFileSync(join(root, "a.ts"), "export {};\n"); writeFileSync(join(root, ".env"), "SECRET=1\n"); writeFileSync(join(outside, "b.txt"), "x\n");
-  const workspace = { dir: directory, read: [], write: [], roots: dreamingTask === "curate" ? [root] : [] };
+  const workspace = { dir: directory, read: [], write: [], roots: dreamingTask !== "classify" ? [root] : [] };
   const decisions: Record<string, string> = {};
-  let additional: unknown;
+  let additional: string[] = [];
   const fakeQuery = ((request: { options: Record<string, any> }) => {
     const stream = (async function* () {
       const hooks = request.options.hooks.PreToolUse;
@@ -1776,8 +1778,8 @@ test.each(["curate", "classify"] as const)("2026-10-22, 144: a %s task's Read, G
       for (const [name, path] of [["under", join(root, "a.ts")], ["env", join(root, ".env")], ["outside", join(outside, "b.txt")]] as const)
         decisions[name] = (await read({ tool_name: "Read", tool_input: { file_path: path } })).hookSpecificOutput.permissionDecision;
       if (search) decisions.grep = (await search({ tool_name: "Grep", tool_input: { path: root, pattern: "x" } })).hookSpecificOutput.permissionDecision;
-      yield { type: "system", subtype: "init", session_id: "roots", claude_code_version: TEST_CC_VERSION, cwd: directory,
-        tools: ["Read"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "system", subtype: "init", session_id: "roots", claude_code_version: TEST_CC_VERSION, cwd: request.options.cwd,
+        tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: "roots", is_error: false, result: "ok", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
     })() as any;
@@ -1786,13 +1788,15 @@ test.each(["curate", "classify"] as const)("2026-10-22, 144: a %s task's Read, G
   }) as any;
   const task = { kind: "dreaming", task: dreamingTask, text: "material", prompt: "instructions", tools: [], workspace, acknowledgeRequest: vi.fn(),
     passEnd: vi.fn(() => undefined), reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
-  await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0);
-  if (dreamingTask === "curate") {
+  expect((await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0)).outcome).toBe("success");
+  const rendering = additional.at(-1)!;
+  expect(rendering.startsWith(join(directory, "rendered") + sep)).toBe(true);
+  if (dreamingTask !== "classify") {
     expect(decisions).toMatchObject({ under: "allow", env: "deny", outside: "deny", grep: "allow" });
-    expect(additional).toEqual([root]);
+    expect(additional).toEqual([root, rendering]);
   } else {
     expect(decisions).toMatchObject({ under: "deny", env: "deny", outside: "deny" });
-    expect(additional).toBeUndefined();
+    expect(additional).toEqual([rendering]);
   }
 });
 
@@ -1807,8 +1811,8 @@ test("a classify task's Write|Edit hook allows its own file and refuses another 
       const hook = request.options.hooks.PreToolUse.find((entry: { matcher: string }) => entry.matcher === "Write|Edit").hooks[0];
       for (const [name, tool, path] of [["edit", "Edit", file], ["write", "Write", file], ["other", "Edit", other]] as const)
         decisions[name] = (await hook({ tool_name: tool, tool_input: { file_path: path } })).hookSpecificOutput.permissionDecision;
-      yield { type: "system", subtype: "init", session_id: "edit", claude_code_version: TEST_CC_VERSION, cwd: directory,
-        tools: ["Read"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "system", subtype: "init", session_id: "edit", claude_code_version: TEST_CC_VERSION, cwd: request.options.cwd,
+        tools: request.options.allowedTools, plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: "edit", is_error: false, result: "ok", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
     })() as any;
@@ -1817,6 +1821,69 @@ test("a classify task's Write|Edit hook allows its own file and refuses another 
   }) as any;
   const task = { kind: "dreaming", task: "classify", text: "material", prompt: "instructions", tools: [], workspace: { dir: directory, read: [file], write: [file], roots: [] },
     acknowledgeRequest: vi.fn(), passEnd: vi.fn(() => undefined), reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
-  await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0);
+  expect((await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0)).outcome).toBe("success");
   expect(decisions).toEqual({ edit: "allow", write: "allow", other: "deny" });
 });
+
+test.each(["write", "verify-noting", "curate", "verify", "classify"] as const)(
+  "workspace %s launches with fail-closed Bash, read-only renderings and a transcript under its real cwd", async stage => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-bash-"))); dirs.push(directory);
+    const cwd = join(directory, "workspaces", "run"), home = join(directory, "home");
+    const root = join(directory, "repository");
+    for (const path of [cwd, home, root]) mkdirSync(path, { recursive: true });
+    const noting = stage === "write" || stage === "verify-noting";
+    const roots = !noting && stage !== "classify" ? [root] : [];
+    const privateDirectories = [join(home, ".trace-memory"), join(home, ".pi", "agent")];
+    let spill: ((text: string) => string) | undefined;
+    let snapshot = "";
+    const nativeLog = ccNativeTranscriptPath({ HOME: home }, cwd, "workspace-child");
+    const fakeQuery: typeof query = request => {
+      const options = request.options!;
+      const stream = (async function* () {
+        expect(options.cwd).toBe(cwd);
+        expect(options.tools).toEqual(["Read", "Write", "Edit", "Bash", ...(!noting && stage !== "classify" ? ["Grep", "Glob"] : [])]);
+        expect(options.allowedTools).toEqual(options.tools);
+        expect(options).toMatchObject({ permissionMode: "dontAsk", settingSources: [], plugins: [], strictMcpConfig: true });
+        expect(options.extraArgs).toMatchObject({ restricted: null });
+        snapshot = spill!("complete saved search output");
+        const readDirectory = join(snapshot, "..", "..");
+        expect(snapshot.startsWith(cwd + sep)).toBe(false);
+        expect(readFileSync(snapshot, "utf8")).toBe("complete saved search output");
+        const settings = JSON.parse(String(options.extraArgs!.settings));
+        expect(settings).toEqual({
+          enabledPlugins: { "agents-md@builtin": false, "cc-plugin-plugin-authoring@builtin": false },
+          permissions: { additionalDirectories: [...roots, readDirectory] },
+          sandbox: {
+            enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true,
+            allowUnsandboxedCommands: false, excludedCommands: [], enableWeakerNestedSandbox: false,
+            filesystem: {
+              allowWrite: [cwd], denyWrite: [...roots, ...privateDirectories, readDirectory],
+              denyRead: [...privateDirectories, ...roots.flatMap(path =>
+                [".env", ".env.*", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".netrc", ".npmrc", "credentials", "credentials.json",
+                  "*.pem", "*.key", "*.p12", "*.pfx", "*.keystore", ".ssh", ".aws", ".gnupg"].map(name => `${path}/**/${name}`))],
+            },
+            network: { allowedDomains: [], allowUnixSockets: [], allowAllUnixSockets: false, allowLocalBinding: false },
+          },
+        });
+        mkdirSync(join(nativeLog, ".."), { recursive: true });
+        writeFileSync(nativeLog, JSON.stringify({ sessionId: "workspace-child" }) + "\n");
+        yield { type: "system", subtype: "init", session_id: "workspace-child", claude_code_version: TEST_CC_VERSION,
+          cwd, tools: options.allowedTools, plugins: [], skills: [], slash_commands: [],
+          mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+        yield { type: "result", subtype: "success", session_id: "workspace-child", is_error: false, result: "done", errors: [],
+          usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+      })();
+      // The SDK's transport has methods these scripted runs never call.
+      const execution = Object.assign(stream, { supportedModels: async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }] }) as unknown as Query;
+      return execution;
+    };
+    const task = { kind: noting ? "noting" : "dreaming", task: stage === "verify-noting" ? "verify" : stage,
+      workspace: noting ? { dir: cwd, facts: join(cwd, "facts.md"), knowledge: join(cwd, "knowledge.md") }
+        : { dir: cwd, read: [], write: [], roots },
+      prompt: "instructions", text: "material", tools: [], acknowledgeRequest: vi.fn(), passEnd: () => undefined,
+      setSpill: (save: (text: string) => string) => { spill = save; },
+      reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
+    const result = await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery, environment: { HOME: home } }).run(task, 0);
+    expect(result, String(result.output)).toMatchObject({ outcome: "success", nativeLog });
+    expect(existsSync(snapshot)).toBe(false);
+  });

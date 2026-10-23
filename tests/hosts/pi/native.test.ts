@@ -149,7 +149,7 @@ test("19a 2026-09-08: a cancelled child without reported usage records unknown, 
 });
 
 // ------------------------------------------ 19b: subagent parity on the same native runner
-test("19b 2026-09-08: an explicit subagent task runs in a fresh native child with only its check, search and file tools and no legacy loop", async () => {
+test("a native subagent gets its bound tools, confined file tools and Bash without a legacy loop", async () => {
   const f = await fixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : noterTurn(body, noteBatch));
@@ -160,11 +160,11 @@ test("19b 2026-09-08: an explicit subagent task runs in a fresh native child wit
     const response = JSON.parse(run.response!);
     expect(response.requestedMode).toBe("subagent");
     expect(response.verification).toBeUndefined(); // no parent body to reproduce, so no gate
-    // The fresh child: core's domain prompt, memory tools and restricted native Read.
+    // Ticket 152 adds native Bash to the fresh child's existing tool set.
     const child = f.sent[1]!;
     expect(child.messages[0].role).toBe("system");
     expect(String(child.messages[0].content)).toContain("Noting (facts and knowledge)");
-    expect(child.tools.map((t: Body) => t.function.name)).toEqual(["search", "check", "read", "write", "edit"]);
+    expect(child.tools.map((t: Body) => t.function.name)).toEqual(["search", "check", "read", "write", "edit", "bash"]);
     expect(String(JSON.stringify(child.messages[1]))).toContain("Raw:"); // the full fresh-context material
     // Its own private session in the runs directory.
     const log = response.nativeLog as string;
@@ -191,7 +191,7 @@ test("19b 2026-09-08: the fresh child activates no inherited extension", async (
     const run = await settled(f);
     expect(run.outcome).toBe("success");
     expect(existsSync(marker)).toBe(false); // the extension was never loaded, so it never ran
-    expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["search", "check", "read", "write", "edit"]);
+    expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["search", "check", "read", "write", "edit", "bash"]);
     expect(f.h.memory.store.listRuns(1)).toHaveLength(2); // one batch, its two tasks, and no second worker
   } finally { await f.dispose(); }
 });

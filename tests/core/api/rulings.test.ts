@@ -3103,3 +3103,13 @@ test("2026-10-22, 144: allowance order — unextracted Raw, then unscored bodies
     expect(full(need[kinds]!).delivered[kinds], `kind ${kinds + 1} arrives once its room is added`).toBe(true);
   }
 });
+
+test("2026-10-24: all worker prompts permit Bash and require read-only use outside the workspace without network access", () => {
+  const noter = "You may use Bash to search and edit your workspace files in batches: grep, sed and scripts. Outside your workspace it is read-only: never change repositories, configuration or other files, and never use the network.";
+  const dreamer = "You may use Bash to search, read and inspect: grep, sed, git log/show/diff, and scripts over your workspace files. Outside your workspace it is read-only: never change repositories, configuration or other files, and never use the network.";
+  for (const tools of [canonicalToolNames, ccPluginToolNames]) {
+    expect(loadPrompt("noting.md", tools)).toContain(noter);
+    expect(loadPrompt("dreaming.md", tools)).toContain(dreamer);
+    expect(loadPrompt("classifying.md", tools)).toContain(dreamer);
+  }
+});

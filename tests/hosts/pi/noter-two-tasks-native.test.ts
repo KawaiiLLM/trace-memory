@@ -81,7 +81,7 @@ for (const variant of variants) test(`real Pi two-task Noter: ${variant}`, async
     expect(firsts).toHaveLength(2);
     expect(JSON.stringify(firsts[1]!.messages)).toBe(JSON.stringify(firsts[0]!.messages));
     expect(JSON.stringify(firsts[1]!.tools)).toBe(JSON.stringify(firsts[0]!.tools));
-    expect(firsts[0]!.tools.map((tool: Body) => tool.function.name)).toEqual(["search", "check", "read", "write", "edit"]);
+    expect(firsts[0]!.tools.map((tool: Body) => tool.function.name)).toEqual(["search", "check", "read", "write", "edit", "bash"]);
     if (variant === "published") {
       expect(f.h.memory.store.listSessionFacts(1).map(item => item.title)).toEqual(["Episode one, verified"]); // task 2's Edit is what is published
       expect(f.h.memory.store.currentKnowledge({ sessionId: 1, branch: "main", headTurnId: 1 })).toHaveLength(1);

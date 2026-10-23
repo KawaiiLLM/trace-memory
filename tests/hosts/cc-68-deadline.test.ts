@@ -62,7 +62,7 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
     const invocation = ++calls;
     const stream = (async function* () {
       if (!deadlineRun) {
-        yield init(directory, request.options.allowedTools, `healthy-${invocation}`);
+        yield init(request.options.cwd, request.options.allowedTools, `healthy-${invocation}`);
         yield { type: "result", subtype: "success", session_id: `healthy-${invocation}`, is_error: false,
           result: "healthy", errors: [], usage: { input_tokens: 1, output_tokens: 1,
             cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
@@ -77,13 +77,13 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
         await request.options.mcpServers.trace_memory.instance.connect(serverTransport);
         client = new Client({ name: "deadline-test", version: "1" }); await client.connect(clientTransport);
         const listed = await client.listTools();
-        // The Dreamer's native tools are Read, Write, Edit, Grep and Glob; its own core tools are search and check.
-        expect(request.options.tools).toEqual(["Read", "Write", "Edit", "Grep", "Glob"]);
-        expect(request.options.allowedTools).toEqual(["Read", "Write", "Edit", "Grep", "Glob", ...listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`)]);
+        // Ticket 152 adds Bash; the file tools retain their existing hooks.
+        expect(request.options.tools).toEqual(["Read", "Write", "Edit", "Bash", "Grep", "Glob"]);
+        expect(request.options.allowedTools).toEqual(["Read", "Write", "Edit", "Bash", "Grep", "Glob", ...listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`)]);
         expect(new Set(listed.tools.map(tool => `mcp__${CC_WORKER_SERVER_NAME}__${tool.name}`))).toEqual(new Set([ccWorkerToolNames.search, ccWorkerToolNames.check]));
         expect(request.options.systemPrompt).toBe(withRetrievalPolicy(loadPrompt("dreaming.md", ccWorkerToolNames), ccWorkerToolNames));
         expect(listed.tools.find(tool => tool.name === "check")?.description).not.toContain("{{tool.");
-        yield init(directory, request.options.allowedTools, "timed-child");
+        yield init(request.options.cwd, request.options.allowedTools, "timed-child");
         // The model checks, then its next work outlives the deadline.
         yield { type: "assistant", session_id: "timed-child", message: { id: "check-round", content: [{
           type: "tool_use", id: "check-1", name: ccWorkerToolNames.check, input: {},

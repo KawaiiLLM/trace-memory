@@ -18,8 +18,8 @@ export function allowedRoots(store: Store, sessionId: number): string[] {
 }
 
 const real = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
-const SECRET_FILES = [".env", ".env.*", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".netrc", ".npmrc", "credentials", "credentials.json", "*.pem", "*.key", "*.p12", "*.pfx", "*.keystore"];
-const SECRET_DIRS = [".ssh", ".aws", ".gnupg"];
+export const SECRET_FILES = [".env", ".env.*", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".netrc", ".npmrc", "credentials", "credentials.json", "*.pem", "*.key", "*.p12", "*.pfx", "*.keystore"];
+export const SECRET_DIRS = [".ssh", ".aws", ".gnupg"];
 const SECRET = new RegExp(`^(?:${SECRET_FILES.map(name => name.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")).join("|")})$`, "i");
 /** The same list as a ripgrep exclusion, for a Grep call (a hook can only allow or rewrite a call, never filter its output). */
 export const SECRET_GLOB = `!**/{${[...SECRET_FILES, ...SECRET_DIRS.map(name => `${name}/**`)].join(",")}}`;

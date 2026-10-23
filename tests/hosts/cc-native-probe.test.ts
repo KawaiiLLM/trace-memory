@@ -88,18 +88,27 @@ function workerReader(cwd: string) {
   } finally { memory.close(); }
 }
 
-probe("native file: a real CC worker run writes its transcript under <config dir>/projects/<dir for cwd>/<session id>.jsonl, holding the worker's assistant messages, tool calls and results; claude-powerline counts it once", async () => {
+probe("a native workspace worker reads trace and search renderings, records its real cwd transcript, and fails Bash closed inside the fence", async () => {
   const cwd = tempDir("tm78-native-cwd-");
   const configDir = tempDir("tm78-native-config-");
   const reader = workerReader(cwd);
+  const workspace = { dir: join(cwd, "workspaces", "run"), facts: "", knowledge: "" };
+  mkdirSync(workspace.dir, { recursive: true });
+  workspace.facts = join(workspace.dir, "facts.md"); workspace.knowledge = join(workspace.dir, "knowledge.md");
+  let spill = "";
   const loopback = await startLoopbackAnthropic((assistantTurns) => assistantTurns === 0
-    ? { blocks: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: `trace://raw/S${reader.sessionId}/T${reader.headTurnId}#E1` } }], stopReason: "tool_use" }
+    ? { blocks: [
+      { type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: `trace://raw/S${reader.sessionId}/T${reader.headTurnId}#E1` } },
+      { type: "tool_use", id: "toolu_spill", name: "Read", input: { file_path: spill } },
+      { type: "tool_use", id: "toolu_bash", name: "Bash", input: { command: "printf 'unexpected' > bash-must-not-run.txt" } },
+    ], stopReason: "tool_use" }
     : { blocks: [{ type: "text", text: "done" }], stopReason: "end_turn" });
   try {
     await fence(cwd, [Number(new URL(loopback.url).port)]);
     const environment = loopbackEnvironment(configDir, loopback.url);
     const task = { kind: "noting", text: "material", prompt: "instructions",
-      tools: [], reader, acknowledgeRequest: () => {},
+      tools: [], reader, workspace, acknowledgeRequest: () => {},
+      setSpill: (save: (text: string) => string) => { spill = save("complete native search rendering"); },
       passEnd: onceThen("Test host requests one final review.") } as unknown as CcAgentTask;
     const journal: { event: string; details?: Record<string, unknown> }[] = [];
     const result = await new CcAgentWorker(workerConfig(cwd), { environment, journal: (event, details) => journal.push({ event, details }) }).run(task, 0);
@@ -120,8 +129,8 @@ probe("native file: a real CC worker run writes its transcript under <config dir
     const sessionId = lines.find(line => typeof line.sessionId === "string")?.sessionId;
     expect(sessionId).toBeTruthy();
     expect(basename(nativeLog)).toBe(`${sessionId}.jsonl`);
-    expect(basename(sessionDir)).toBe(cwd.replace(/[^A-Za-z0-9]/g, "-"));
-    expect(ccNativeTranscriptPath(environment, cwd, sessionId)).toBe(nativeLog);
+    expect(basename(sessionDir)).toBe(workspace.dir.replace(/[^A-Za-z0-9]/g, "-"));
+    expect(ccNativeTranscriptPath(environment, workspace.dir, sessionId)).toBe(nativeLog);
 
     // Content: the assistant's built-in Read, its SDK-hook-backed tool_result, and the final text.
     const assistantMessages = lines.filter(line => line.type === "assistant");
@@ -129,6 +138,13 @@ probe("native file: a real CC worker run writes its transcript under <config dir
     expect(held).toContain("native worker evidence");
     expect(assistantMessages.some(line => line.message?.content?.some((block: { type?: string; text?: string }) =>
       block.type === "text" && block.text === "done"))).toBe(true);
+    expect(held).toContain("complete native search rendering");
+    // Nested sandbox initialization is unavailable inside the fence; Bash must not fall back to plain execution.
+    const bashResult = lines.flatMap(line => line.message?.content ?? [])
+      .find((block: { type: string; tool_use_id?: string }) => block.type === "tool_result" && block.tool_use_id === "toolu_bash");
+    expect(bashResult?.is_error).toBe(true);
+    expect(JSON.stringify(bashResult)).toContain("Sandbox is required but failed to initialize");
+    expect(existsSync(join(workspace.dir, "bash-must-not-run.txt"))).toBe(false);
 
     // Daily cost: claude-powerline's own project scanner finds and counts it, read-only, imported by
     // an absolute path built at runtime (not a static specifier, so it is never typechecked as part
