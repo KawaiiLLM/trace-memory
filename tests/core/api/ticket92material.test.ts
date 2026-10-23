@@ -20,7 +20,7 @@ function fixture(native = true) {
     const input = raw as NotingAgentInput;
     input.reportRequest({ material: input.text });
     if (input.kind !== "noting") throw new Error("unexpected Dreaming");
-    if (input.task === "write") inputs.push(input);
+    if (input.task === "extract-facts") inputs.push(input);
     submitEmpty(input);
     return { outcome: "success", output: "done", request: { material: input.text } };
   });

@@ -21,7 +21,7 @@ function backlog(h: ReturnType<typeof host>) {
 function extract(c: Parameters<typeof notingFact>[0], scope: "global" | "session" = "session") {
   const results = c.messages.filter(m => m.role === "toolResult");
   expect(JSON.stringify(results)).not.toContain("rejected:");
-  return notingFact(c, `## create\ntitle: Fixture title\ncategory: constraint\nscope: ${scope}\ntopics: \nsupports: f1\nreason: Supported conclusion\n\nRule ${"word ".repeat(120)}\n`);
+  return notingFact(c, `## create\ntitle: Fixture title\ncategory: constraint\nscope: ${scope}\ntopics: \nsupports: f1\nfiles: None\nreason: Supported conclusion\n\nRule ${"word ".repeat(120)}\n`);
 }
 /** The Dreamer's side of a run: check, write the file it names (nothing to change), stop. */
 const retain = (c: Parameters<typeof dreamerFiles>[0]): Reply => dreamerFiles(c) ?? reply("Done");
@@ -83,7 +83,7 @@ test("92: catchup waits for ordinary N; its successful joint publication checkpo
     expect(h.memory.store.getClaim(1, "noting")).not.toBeNull();
     await command(h, "catchup"); expect(h.notices.at(-1)).toContain("waiting for noting");
     release(); await settle(h);
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(2); // one batch: write and verify
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(4);
     expect(dreamExecutions(h)).toEqual(["success"]);
     await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { release(); await h.dispose(); }
@@ -161,7 +161,7 @@ test("92: successful N checks but does not run D below its ordinary threshold", 
     await h.turn(); h.provider(async c => extract(c));
     const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
     await command(h, "catchup"); await settle(h);
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(2); // one batch: write and verify
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(4);
     expect(h.memory.store.currentKnowledge()).toHaveLength(1);
     expect(eligibility).toHaveBeenCalled();
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming")).toEqual([]);
@@ -208,14 +208,14 @@ for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries 
       const report = c.messages.filter(m => m.role === "toolResult" && m.toolName === "check").at(-1);
       const written = c.messages.some(m => m.role === "toolResult" && m.toolName === "write");
       if (!report || written) return noterReply(c) ?? reply("Done"); // the check call; nothing to correct afterwards
-      if (/^Task: verify/m.test((report.content as { text: string }[])[0]!.text)) return reply("Done");
+      if (!/^Task: extract-facts/m.test((report.content as { text: string }[])[0]!.text)) return noterReply(c) ?? reply("Done");
       attempts++; checks.push(eligibility.mock.calls.length);
       if (attempts > (correct ? 2 : 3)) throw new Error("Noter retried beyond its scripted terminal outcome");
       return noterReply(c, correct && attempts > 1 ? {} : { facts: "## fact f1\ntitle: Rejected source\n\n[T99999#E1] Rejected source\n" })!;
     });
     await command(h, "catchup"); await settle(h);
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome))
-      .toEqual(correct ? ["failure", "success", "success"] : ["failure", "failure", "failure"]);
+      .toEqual(correct ? ["failure", ...Array(4).fill("success")] : ["failure", "failure", "failure"]);
     expect(checks[0]).toBeGreaterThan(0);
     expect(new Set(checks).size).toBe(1);
     expect(attempts).toBe(correct ? 2 : 3);

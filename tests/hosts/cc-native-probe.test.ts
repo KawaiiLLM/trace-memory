@@ -93,9 +93,10 @@ probe("a native workspace worker reads trace and search renderings, records its 
   const cwd = tempDir("tm78-native-cwd-");
   const configDir = tempDir("tm78-native-config-");
   const reader = workerReader(cwd);
-  const workspace = { dir: join(cwd, "workspaces", "run"), facts: "", knowledge: "" };
+  const workspace = { dir: join(cwd, "workspaces", "run"), facts: "", knowledge: "", read: [] as string[], write: [] as string[] };
   mkdirSync(workspace.dir, { recursive: true });
   workspace.facts = join(workspace.dir, "facts.md"); workspace.knowledge = join(workspace.dir, "knowledge.md");
+  workspace.read = [workspace.facts, workspace.knowledge]; workspace.write = [workspace.facts];
   let spill = "";
   const loopback = await startLoopbackAnthropic((assistantTurns) => assistantTurns === 0
     ? { blocks: [

@@ -78,7 +78,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and bi
   let firstId = 0, lateOrdinal = 0;
   const noter = TraceMemory(join(h.dir, "trace.db"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(raw);
+    if (input.task !== "extract-facts") return verifyUnchanged(raw);
     writing();
     await new Promise<void>(resolve => { release = resolve; });
     // The late result is not in the frozen batch: the check refuses it, and the Noter corrects its file.

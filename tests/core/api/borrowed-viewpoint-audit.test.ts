@@ -49,7 +49,16 @@ async function execute(borrowed:boolean,dead:boolean) {
   const checks:string[]=[];
   const agent:RunAgent=async raw=>{
     const input=raw as Worker;
-    if(input.task==='verify')return verifyUnchanged(input,{request:{offlineAudit:true}});
+    if(input.task.startsWith('check-'))return verifyUnchanged(input,{request:{offlineAudit:true}});
+    if(input.task==='write-knowledge'){
+      input.reportRequest({offlineAudit:true});
+      const op={files:null,op:'update',id:`K1#${f.s.versionTag(1,1)}`,category:'constraint',scope:'project',text:'OLD_BRANCH_RESULT',topics:[],reason:'target evidence changes the rule'};
+      const create={files:null,op:'create',title:'Fixture title',category:'constraint',scope:'project',text:'SHARED_ANCESTOR_RESULT',topics:[],reason:'shared ancestor remains on active path',supports:[`F${f.rootFact.id}`]};
+      expect(await submit(input,f.memory,{memoryInput:{...op,supports:[`F${f.liveFact.id}`]},
+        fix:()=>({knowledge:knowledgeFile(f.memory,[{...op,supports:['$1']},create])})})).toContain('do not pass the check');
+      checks.push('sibling fact citation rejected');
+      return {outcome:'success',output:'offline deterministic submission',request:{offlineAudit:true}};
+    }
     captured=material(input);input.reportRequest({offlineAudit:true});
     expect(input.sessionId).toBe(f.target.id);expect(input.branch).toBe('old');
     expect(input.text).toContain('OLD_TARGET_EVIDENCE');
@@ -70,10 +79,7 @@ async function execute(borrowed:boolean,dead:boolean) {
       expect(memoryFiles(f.memory,input.reader!).read('trace://K1@v1').content).toContain(base);
       const op={ files: null,op:'update',id:base,category:'constraint',scope:'project',text:'OLD_BRANCH_RESULT',topics:[],reason:'target evidence changes the rule'};
       const target={title:'Target statement',sources:`[T${f.old.id}#E1] Recorded target statement`};
-      const create={ files: null,op:'create',title:'Fixture title',category:'constraint',scope:'project',text:'SHARED_ANCESTOR_RESULT',topics:[],reason:'shared ancestor remains on active path',supports:[`F${f.rootFact.id}`]};
-      // The knowledge step first cites a sibling's fact and is repaired once (the repair message is what `submit` returns), then passes.
-      expect(await submit(input,f.memory,{noteInput:[target],memoryInput:{...op,supports:[`F${f.liveFact.id}`]},
-        fix:()=>({knowledge:knowledgeFile(f.memory,[{...op,supports:['$1']},create])})})).toContain('do not pass the check');checks.push('sibling fact citation rejected');
+      await submit(input,f.memory,{noteInput:[target],memoryInput:{...op,supports:[`F${f.liveFact.id}`]}});
       expect(f.s.currentCommit(1)[0]!.text).toBe('ROOT_KNOWLEDGE');
       expect(f.s.listSessionFacts(f.target.id).some(fact=>fact.text==='Recorded target statement')).toBe(false);
     }

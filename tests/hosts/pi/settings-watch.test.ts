@@ -44,7 +44,7 @@ test("a change saved by one session reaches a second live session's next admitte
   await start(first, second);
   await second.turn();
   const inherited = requestedLevels(second);
-  expect(inherited).toHaveLength(1);
+  expect(inherited).toHaveLength(4);
   const before = second.notices.length;
   // The first session saves through its own Settings menu; nothing is sent to the second.
   first.ctx.hasUI = true;
@@ -54,7 +54,7 @@ test("a change saved by one session reaches a second live session's next admitte
   expect(JSON.parse(readFileSync(file, "utf8"))["trace-memory"].notingThinking).toBe("high");
   await applied(second, "high");
   expect(await nextLevel(second)).toBe("high");
-  expect(requestedLevels(second)).toEqual([...inherited, "high"]);
+  expect(requestedLevels(second)).toEqual([...inherited, ...Array(4).fill("high")]);
   expect(second.notices.slice(before).filter(n => /setting|saved|restart|mode =/i.test(n))).toEqual([]);
 });
 

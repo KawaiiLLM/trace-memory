@@ -16,7 +16,7 @@ vi.mock("../../src/hosts/cc/worker.ts", () => ({
     if (task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
       return { outcome: "failure", output: `task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}` };
     // A batch is a write run and a verify run; the write run is the one held, and the verify run follows at once.
-    if (task.task === "write") await new Promise<void>(resolve => provider.calls.push({ model: settings.model,
+    if (task.task === "extract-facts") await new Promise<void>(resolve => provider.calls.push({ model: settings.model,
       thinking: settings.thinking, task, release: resolve }));
     expect(task.kind).toBe("noting");
     submitEmpty(task);
@@ -123,6 +123,6 @@ test("a batch's verify task runs on the worker its write task started on, whatev
     await runCcCommand(["cli", "--config", path, "--session", native, "setting", "noting.thinking", "medium"]);
     provider.calls[0]!.release();
     await tick(() => (coordinator as unknown as { scheduler: { running(): string[] } }).scheduler.running().length === 0);
-    expect(provider.runs).toEqual([{ task: "write", thinking: "high" }, { task: "verify", thinking: "high" }]);
+    expect(provider.runs).toEqual(["extract-facts", "check-facts", "write-knowledge", "check-knowledge"].map(task => ({ task, thinking: "high" })));
   } finally { for (const call of provider.calls) call.release(); await coordinator.shutdown("test done"); }
 });

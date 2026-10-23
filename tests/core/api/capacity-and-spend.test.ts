@@ -46,7 +46,7 @@ let sessionId: number, turnId: number;
 function open(entries = 6) {
   calls = []; renders = 0;
   // 116: with nothing to record a Noter still calls both tools with {}.
-  memory = sourceSeededMemory(dbPath, async raw => { const input = raw as NotingAgentInput; if (input.task === "write") calls.push(input);
+  memory = sourceSeededMemory(dbPath, async raw => { const input = raw as NotingAgentInput; if (input.task === "extract-facts") calls.push(input);
       if (input.kind === "noting") {
         submitEmpty(input);
       }
@@ -101,7 +101,7 @@ test("22d: the preflight is a floor and not the guard — an allowance over the 
   // the pending material costs, so the hard-budget check inside the freeze must still refuse to send.
   await expect(noting({ inputTokens: fixed + 500 })).rejects.toThrow(/Noting capacity/);
   expect(calls).toHaveLength(1); // nothing dispatched over the allowance
-  expect(memory.store.listRuns(sessionId)).toHaveLength(2); // the first noting's two task runs only; the refused freeze recorded none
+  expect(memory.store.listRuns(sessionId)).toHaveLength(4); // refused freezes record no stage
   // The same pending material under an allowance that fits runs, priced under what it was given.
   const generous = 60_000;
   expect((await noting({ inputTokens: generous })).outcome).toBe("success");
@@ -159,7 +159,7 @@ test("22d: spend totals come from the recorded usage without loading a run's req
 
   // A later usage amendment on the same run is reflected exactly, and nothing is double-counted.
   write(runId, { output: "x".repeat(200_000), usage: { ...usage, input: 2_200, cost: { total: 0.5 } }, problems: [] });
-  expect(memory.spend(sessionId)).toMatchObject({ input: 2_200, output: 300, cacheRead: 4_000, cost: 0.5, runs: { noting: 2, consolidation: 0, manual: 0 } }); // a Noter run records one run per task
+  expect(memory.spend(sessionId)).toMatchObject({ input: 2_200, output: 300, cacheRead: 4_000, cost: 0.5, runs: { noting: 4, consolidation: 0, manual: 0 } });
 });
 
 test("22d: an unknown or non-JSON usage counts its run and contributes no observed zero", async () => {
@@ -175,11 +175,11 @@ test("22d: an unknown or non-JSON usage counts its run and contributes no observ
   expect(cancelled).not.toBe(failed);
   const after = memory.spend(sessionId);
   expect(after).toMatchObject({ input: one.input, output: one.output, cacheRead: one.cacheRead, cacheWrite: one.cacheWrite, cost: one.cost });
-  expect(after.runs).toEqual({ noting: 3, consolidation: 1, dreaming: 0, manual: 0 }); // counted as runs, never as usage
+  expect(after.runs).toEqual({ noting: 5, consolidation: 1, dreaming: 0, manual: 0 });
   // A run that did record an all-zero usage is an observation, and stays one: the totals are unchanged
   // by it, but it is not confused with the two above — its usage is present in the projection.
   writeRunResponse(memory.store, cancelled, { output: "empty", usage: {} });
-  expect(memory.store.listRunUsage(sessionId).map(r => r.usage === null)).toEqual([false, true, false, true]); // write task, verify task (no usage), the empty observation, the failed C run
+  expect(memory.store.listRunUsage(sessionId).map(r => r.usage === null)).toEqual([false, true, true, true, false, true]);
   expect(memory.spend(sessionId)).toMatchObject({ input: one.input, cost: one.cost });
 });
 
@@ -217,8 +217,8 @@ test("77: listRunUsage never selects response or request, served by its covering
   // 79: the split (item 0) retired the covering idx_runs_session_usage -- `runs` has no body columns
   // to dodge anymore, so SCHEMA_SQL's plain idx_runs_session answers the same lookup on a tiny row.
   expect(statements[0]).toMatch(/INDEXED BY idx_runs_session\b/);
-  expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true, true, false]); // the Noter run's verify task records no usage
-  expect(usage[5]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null }); // the string usage: zero tokens, not reparsed; no cost.total, so the cost is unknown
+  expect(usage.map(u => u.usage === null)).toEqual([false, true, true, true, true, true, true, false]);
+  expect(usage[7]!.usage).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null });
 });
 
 test("77: listRunUsage's persisted columns match 71's extraction SQL for every scalar shape, booleans included", async () => {

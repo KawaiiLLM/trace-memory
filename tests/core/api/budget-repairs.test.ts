@@ -15,7 +15,7 @@ import { submitEmpty, largestTaskPromptTokens } from "../../support/noter.ts";
 function seeded(config: Record<string, unknown> = {}) {
   const calls: NotingAgentInput[] = [];
   // 116: explicit empty N output requires one empty call to each tool.
-  const fallback = async (raw: unknown) => { const input = raw as NotingAgentInput; if (input.task !== "verify") calls.push(input); // one entry per batch: the write task
+  const fallback = async (raw: unknown) => { const input = raw as NotingAgentInput; if (input.task === "extract-facts") calls.push(input);
     if (input.kind === "noting") {
       submitEmpty(input);
     }
@@ -61,7 +61,7 @@ test("review 2026-09-08: the oldest Noting entry dispatches despite exceeding it
     expect((await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id })).outcome).toBe("success");
     expect(f.calls).toHaveLength(1);
     expect((f.calls[0] as NotingAgentInput).entryIds).toContain(pending[0]!.id);
-    expect(f.m.store.listRuns(f.s.id)).toHaveLength(2); // one per task
+    expect(f.m.store.listRuns(f.s.id)).toHaveLength(4);
   } finally { f.m.close(); }
 });
 

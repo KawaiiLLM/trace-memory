@@ -38,17 +38,18 @@ for (const [label, changes, error] of [
   ["caller-selected role", { role: "user" }, "unexpected field"],
   ["retired quote", { quote: "Use pnpm." }, "unexpected field"],
   ["timestamp", { timestamp: "invented" }, "unexpected field"],
+  ["retired support", { support: [["F1", "strong"]] }, "expects one fact"],
   ["empty source", { sources: "" }, "sources"],
   ["old array source", { sources: [{ address: "T1#E1", text: "Use pnpm." }] }, "sources"],
   ["invalid source", { sources: "[T1] Use pnpm." }, "source"],
   ["missing entry source", { sources: "[T1#E99] Use pnpm." }, "invalid source"],
   ["block-selected source", { sources: "[T1#E1@text] Use pnpm." }, "invalid source"],
-  ["self handle", { support: [["$1", "weak"]] }, "earlier"],
-  ["zero handle", { support: [["$0", "weak"]] }, "earlier"],
+  ["self handle", { caused_by: [["$1", "weak"]] }, "earlier"],
+  ["zero handle", { caused_by: [["$0", "weak"]] }, "earlier"],
   ["missing fact", { negate: [["F101", "strong"]] }, "existing"],
-  ["malformed relation", { support: ["F1"] }, "[target, strength]"],
-  ["unknown strength", { support: [["$1", "medium"]] }, "strength"],
-  ["invalid relation target", { support: [["K7", "weak"]] }, "target"],
+  ["malformed relation", { caused_by: ["F1"] }, "[target, strength]"],
+  ["unknown strength", { caused_by: [["$1", "medium"]] }, "strength"],
+  ["invalid relation target", { caused_by: [["K7", "weak"]] }, "target"],
 ] as const) test(`note rejects ${label} and writes nothing`, () => {
   expect(note.execute(fact(changes))).toContain(["category", "actor", "status", "role", "quote", "timestamp"].some(key => key in changes)
     ? "expects one fact" : error);
@@ -68,8 +69,8 @@ test("new episodes derive the entry role and keep completion wording in the body
 
 test("manual calls commit separately and can relate to existing facts", () => {
   expect(note.execute(fact())).toContain("F1");
-  expect(note.execute(fact({ support: [["F1", "weak"]] }))).toContain("F2");
+  expect(note.execute(fact({ caused_by: [["F1", "weak"]] }))).toContain("F2");
   expect(note.execute(fact({ negate: [["F1", "strong"]] }))).toContain("F3");
-  expect(memory.trace("F2")).toContain("support F1 weak");
+  expect(memory.trace("F2")).toContain("caused_by F1 weak");
   expect(memory.trace("F1")).toContain("negate F3 strong");
 });

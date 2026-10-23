@@ -49,8 +49,8 @@ export function applyWorkspace(store: Store, input: ApplyInput): ApplyResult {
 const version = (store: Store, item: { knowledgeId: number; commit: number }): string => `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`;
 
 function applyNoting(store: Store, input: Extract<ApplyInput, { kind: "noting" }>): ApplyResult {
-  const facts = plan(store, { kind: "noting-facts", scope: input.scope, file: input.facts });
-  const knowledge = plan(store, { kind: "noting-knowledge", scope: input.scope, file: input.knowledge, facts: input.facts });
+  const facts = plan(store, { kind: "noting-facts", scope: input.scope, file: input.facts, checked: true });
+  const knowledge = plan(store, { kind: "noting-knowledge", scope: input.scope, file: input.knowledge, facts: input.facts, checked: true, allowFlags: true });
   const problems = [...facts.problems, ...knowledge.problems];
   if (problems.length) return { ok: false, problems };
   const { path, sources } = facts as Required<Pick<typeof facts, "path" | "sources">> & typeof facts;
@@ -62,6 +62,7 @@ function applyNoting(store: Store, input: Extract<ApplyInput, { kind: "noting" }
     blocks: knowledge.knowledge.map(entry => ({ block: describeBlock(entry.block), line: entry.block.line })) });
   const committed = store.commitNotingRun({ run, responseForFacts, facts: facts.facts.map(entry => entry.fact), entryIds: sources.frozenEntries,
     held: { path, slots: facts.facts.map((_, i) => i + 1),
+      flags: knowledge.flags,
       // The batch is published once: its frozen entries must still be pending on the path.
       validate: () => {
         const pending = new Set(store.pendingEntries(path.sessionId, path.branch!, path.headTurnId!, store.pathSnapshot(path)).map(entry => entry.id));

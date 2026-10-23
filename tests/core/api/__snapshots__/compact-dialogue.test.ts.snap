@@ -427,7 +427,7 @@ Raw:
 Receipts:
 omitted 4 older facts; expand: trace://F6, trace://F3, trace://F2, trace://F1
 
-Call check first: it names your task, its first step and your files."
+Call check first: it names your stage and your files."
 `;
 
 exports[`133: titles default to one hundred anchor-inclusive path turns, are configurable, and untitled facts stay bare > compaction material 1`] = `

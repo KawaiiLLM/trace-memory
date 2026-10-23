@@ -27,7 +27,7 @@ const notingPrompt = loadPrompt("noting.md");
 function open() {
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, verified); // the scripted write task is what these tests vary
+    if (input.task !== "extract-facts") return verifyUnchanged(input, verified);
     calls.push(input);
     return runAgent(input);
   });
@@ -153,7 +153,7 @@ test.each(["noting"] as const)("external abort respects the %s publication bound
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   runAgent = async input => {
-    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Task: write");
+    expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Task: extract-facts");
     await held;
     return { outcome: "cancelled", output: "aborted after commit", request: { fake: true } };
   };

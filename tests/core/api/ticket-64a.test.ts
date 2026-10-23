@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "vitest";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import type { KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { readHandle } from "../../read-handle-fixture.ts";
-import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { canonicalFlatConfig, REMOVED_SETTINGS, sourceSeededMemory, memoryFiles, validateConfig, type NotingAgentInput } from "../../source-fixture.ts";
 import { curateNow } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
@@ -17,14 +16,14 @@ const created = (fact: number, text: string, reason = "New durable conclusion.")
   op: "create", title: "Fixture title", text, category: "reference", scope: "project", topics: ["release"], supports: [`F${fact}`], reason,
 });
 
-describe("76/92 Noter updates and archives; Dreamer reviews", () => {
+describe("155 Noter updates; Dreamer reviews and archives", () => {
   let memory: ReturnType<typeof sourceSeededMemory>;
   afterEach(() => memory?.close());
 
   function fixture(agent: (input: NotingAgentInput) => Promise<void> | void) {
     memory = sourceSeededMemory(":memory:", async raw => {
       const input = raw as NotingAgentInput;
-      if (input.task === "verify") return verifyUnchanged(input, { request: { one: "request" } });
+      if (input.task !== "extract-facts") return verifyUnchanged(input, { request: { one: "request" } });
       await agent(input);
       return { outcome: "success", output: "done", request: { one: "request" } };
     });
@@ -66,7 +65,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     expect(JSON.parse(run.response!).files.knowledge).toContain("corrected");
   });
 
-  test("N terminal Store authority permits create/update/archive and rejects merge/split", () => {
+  test("155: N terminal Store authority permits create/update and rejects archive/merge/split", () => {
     const f = fixture(() => {});
     const base = publishN(f.session.id, [{ files: null, op: "create", title: "Fixture title", handle: "$base", author: "noting", text: "beta.4 is current",
       category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
@@ -78,7 +77,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     if (!updated.ok) return;
     const archived = publishN(f.session.id, [{ files: null, op: "archive", kind: "invalid", text: "Retired; no longer holds and nothing replaces it.", knowledgeId: baseCommit.knowledgeId, baseCommit: updated.committed[0]!.commit,
       supports: [f.fact2], reason: "Retired.", createdAt: time }]);
-    expect(archived.ok).toBe(true);
+    expect(archived).toMatchObject({ ok: false, problems: ["Noter permits create and update only"] });
 
     for (const forbidden of [
       { files: null, op: "merge", intoKnowledgeId: baseCommit.knowledgeId, intoBaseCommit: baseCommit.commit, absorb: [{ knowledgeId: 99, baseCommit: 99 }],
@@ -88,7 +87,7 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     ] satisfies KnowledgeOperationInput[]) {
       const rejected = publishN(f.session.id, [forbidden]);
       expect(rejected.ok).toBe(false);
-      if (!rejected.ok) expect(rejected.problems.join(" ")).toBe("Noter permits create, update and archive only");
+      if (!rejected.ok) expect(rejected.problems.join(" ")).toBe("Noter permits create and update only");
     }
   });
 
@@ -300,25 +299,8 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     }
   });
 
-  describe("archives", () => {
-    test("an N archive removes the item from the live set", () => {
-      const f = fixture(() => {});
-      const created0 = publishN(f.session.id, [{ files: null, op: "create", title: "Fixture title", handle: "$a", author: "noting", text: "removable body",
-        category: "reference", scope: "project", topics: [], supports: [f.fact], reason: "Initial.", createdAt: time }]);
-      if (!created0.ok) throw new Error(created0.problems.join("; "));
-      const first = created0.committed[0]!;
-      const path = { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id };
-      expect(memory.store.curateItems(path).map(item => item.value.knowledge.id)).toEqual([first.knowledgeId]);
-      const archived = publishN(f.session.id, [{ files: null, op: "archive", kind: "invalid", text: "No longer holds; nothing replaces it.", knowledgeId: first.knowledgeId, baseCommit: first.commit,
-        supports: [f.fact2], reason: "No longer holds.", createdAt: time }]);
-      if (!archived.ok) throw new Error(archived.problems.join("; "));
-      // Pool size (the injected material) excludes the archive entirely.
-      expect(memory.store.curateItems(path)).toEqual([]);
-      expect(memory.store.currentKnowledge(path)).toHaveLength(0);
-    });
-  });
 
-  test("manual memory shares the N schema and commits create, update and archive immediately", () => {
+  test("manual memory still commits create, update and archive immediately", () => {
     const f = fixture(() => {});
     const tools = memory.tools({ kind: "manual", sessionId: f.session.id, branch: "main", currentTurnId: f.turn.id });
     const memoryTool = tools.find(tool => tool.name === "memory")!;
@@ -330,20 +312,6 @@ describe("76/92 Noter updates and archives; Dreamer reviews", () => {
     expect(memoryTool.execute({ files: null, op: "archive", kind: "invalid", text: "Retired; no longer holds and nothing replaces it.", id: updated.committed[0].version, supports: [`F${f.fact}`], reason: "Retired." })).toContain('"committed"');
   });
 
-  test("prompt and material contain no second-round cues", async () => {
-    const f = fixture(input => {
-      expect(input.prompt).not.toContain("Second-round user message");
-      expect(input.prompt).not.toContain("NEAR");
-      expect(input.prompt).not.toContain("CLOSER");
-      expect(input.prompt).toContain("Merge, split and archive belong to curate");
-      expect(input.text).not.toContain("Negated-evidence reminder");
-      expect("reminders" in input.material).toBe(false);
-      submitEmpty(input);
-    });
-    expect(loadPrompt("noting.md")).not.toContain("Second-round user message");
-    expect(loadPrompt("noting.md")).toContain("Merge, split and archive belong to curate");
-    expect((await memory.noting({ sessionId: f.session.id, branch: "main", headTurnId: f.turn.id })).outcome).toBe("success");
-  });
 
   test("removed consolidation nearThreshold fails explicitly in flat and nested configuration", () => {
     const explanation = "remove it; Consolidation review cues and lexical NEAR selection no longer exist";

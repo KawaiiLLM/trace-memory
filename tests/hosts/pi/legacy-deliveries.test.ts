@@ -60,7 +60,7 @@ test("29d case 23: a published Beta database's delivery rows pause nothing, deli
     expect(h.memory.taskEligibility("noting", target).due).toBe(false); // nothing pending yet, not "paused"
     h.provider(async c => notingFact(c));
     await h.turn(); // this executor's own session: a Noting task runs to completion
-    expect(h.memory.store.listRuns(2).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success", "success"]); // write and verify runs
+    expect(h.memory.store.listRuns(2).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(Array(4).fill("success"));
     // No burst, no drain: the prompt after that commit carries no receipt of any kind.
     expect(String((await h.prompt("second"))?.message?.content ?? "")).not.toContain("<noted>");
     expect(String((await h.prompt("third"))?.message?.content ?? "")).not.toContain("<consolidated>");

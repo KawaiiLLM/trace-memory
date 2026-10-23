@@ -21,7 +21,7 @@ const relation = { type: "array", items: { type: "array", prefixItems: [{ type: 
 const titleSchema = { type: "string", minLength: 1, pattern: "^[^\\r\\n\\u2028\\u2029]+$" };
 const factSchema = object({ title: titleSchema,
   sources: { type: "string", minLength: 1, description: "Source segments as lines beginning [T12#E3@user] followed by a space and authored text. Each segment continues across lines up to the next marker; no text before the first marker." },
-  support: relation, negate: relation, caused_by: { ...relation, maxItems: 2 },
+  negate: relation, caused_by: { ...relation, maxItems: 2 },
   objects: { type: "array", items: { type: "string", minLength: 1 } } }, ["title", "sources"]);
 
 const factId = { type: "string", pattern: "^F[1-9][0-9]*$" };
@@ -57,8 +57,8 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
     if: { minProperties: 1 }, then: { required: memoryOperationSchema.required, allOf: memoryOperationSchema.allOf } } },
 ];
 
-/** The Noter's `check` (identical in both of its tasks): the stop hook's check on the current step's file, on demand. */
-const notingCheckDefinition: Omit<ToolDefinition, "execute"> = { name: "check", description: "Checks the file of your current step with the check that runs when you stop: block format, source addresses in this batch, one segment per entry per fact, roles, required fields, base versions, one record per knowledge item, allowed operations, and the title and body limits. Returns your task, step and file path, each problem with file and line, and the host-measured units of every title and body against its target; the first result of a step also carries that step's instructions. Writes and publishes nothing.", parameters: object({}) };
+/** The same check schema in every stage, preserving the shared first-request cache. */
+const notingCheckDefinition: Omit<ToolDefinition, "execute"> = { name: "check", description: "Names your stage and workspace inputs and checks its deliverable: block format, verdicts in check stages, source addresses, objects, relations, required fields, files, references, allowed operations and measured title/body lengths. Reports steps and context growth against this stage's budgets. Its first result carries stage instructions. Writes and publishes nothing.", parameters: object({}) };
 /** The Noter's own tools; its native read, write and edit are the host's. */
 export const notingToolDefinitions: Omit<ToolDefinition, "execute">[] = [searchToolDefinition, notingCheckDefinition];
 

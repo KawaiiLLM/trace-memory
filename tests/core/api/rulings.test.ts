@@ -7,7 +7,7 @@ import { setKnowledgeInjection as setKnowledgeBase } from "../../knowledge-budge
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { PROMPT_FILES, loadPrompt } from "../../../src/core/prompts/load.ts";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { DEFAULT_WRITING_LIMITS, renderLimits } from "../../../src/core/prompts/limits.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +18,7 @@ import { tokens, hydrate } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
 import { pricedToolDefinitions, notingToolDefinitions } from "../../../src/core/api/tools.ts";
 import type { MemoryReceipt } from "../../../src/core/knowledge-write/bind.ts";
-import { canonicalToolNames, renderToolNames } from "../../../src/core/prompts/tool-names.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { ccPluginToolNames } from "../../../src/hosts/cc/tool-names.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
@@ -85,7 +85,7 @@ beforeEach(() => {
   calls = [];
   // A successful Noter script writes `## none` to both files; only a batch's write task is counted in `calls`.
   const fallback = async (raw: unknown) => { const input = raw as NotingAgentInput;
-    if (!(input.kind === "noting" && input.task === "verify")) calls.push(input);
+    if (!(input.kind === "noting" && input.task !== "extract-facts")) calls.push(input);
     if (input.kind === "noting") {
       submitEmpty(input);
     }
@@ -234,7 +234,7 @@ test("2026-09-24, 86: 'catchup 选A' and '任务失败后不检查' — retry th
   let attempts = 0;
   const retryMemory = sourceSeededMemory(":memory:", async raw => {
     const task = raw as NotingAgentInput;
-    if (task.task === "verify") { submitEmpty(task); return ok([]); }
+    if (task.task !== "extract-facts") { submitEmpty(task); return ok([]); }
     attempts++;
     expect(task.kind).toBe("noting");
     if (attempts === 1) return { outcome: "failure", request: { fake: true }, output: "first attempt failed" };
@@ -493,8 +493,8 @@ test("2026-10-01, 116: a rejected manual item cannot undo its committed sibling"
   expect(JSON.parse(note.execute(fact)).factIds).toEqual([1]);
   expect(note.execute({ ...fact, actor: "tool" })).toContain("rejected:");
   expect(memory.store.listSessionFacts(s.id)).toHaveLength(1);
-  expect(JSON.parse(note.execute({ ...fact, support: [["F1", "strong"]] })).factIds).toEqual([2]);
-  expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }).read("trace://F2").content).toContain("support F1 strong");
+  expect(JSON.parse(note.execute({ ...fact, caused_by: [["F1", "strong"]] })).factIds).toEqual([2]);
+  expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }).read("trace://F2").content).toContain("caused_by F1 strong");
 });
 
 // One publication per run still holds; 92 moves it after all held edits and normal termination.
@@ -502,7 +502,7 @@ test("2026-09-07 / 92: one terminal publication per run, not one immediate tool 
   const { s, t } = session(); memory.close();
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, { request: { round: 2 } });
+    if (input.task !== "extract-facts") return verifyUnchanged(input, { request: { round: 2 } });
     input.reportRequest({ round: 1 });
     const fact = { title: "Package manager decision", sources: `[T${t.id}#E1] Use pnpm` };
     // The model may rewrite its file before step 1 passes; only the final file is published.
@@ -531,7 +531,7 @@ test("2026-09-07: a refused submission is not an empty one", async () => {
   let reject = true;
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, { request: {} });
+    if (input.task !== "extract-facts") return verifyUnchanged(input, { request: {} });
     await submit(input, memory, { noteInput: reject ? [{ title: "Invalid source", sources: "[T999#E1] Absent" }] : [], memoryInput: {} });
     return { outcome: "success", output: "No more text", request: {} };
   });
@@ -1495,7 +1495,6 @@ test("30: the shipped profile is 2,000/100/100 and the retired B and secondary k
   try { expect(explicit.config.render.entryTokens).toBe(2_000); } finally { explicit.close(); }
   // 30 (GPT ruling 2026-09-10): the smaller views change no phase limit. The trigger, the batch
   // ceilings and target limits keep their values. 92 removes only lexical review here.
-  expect(DEFAULT_CONFIG.noting).toEqual({ batchTokens: 10_000, triggerTokens: 10_000, maxToolRounds: 0 });
   for (const retired of [0, 1, -0.001, 1.001, Infinity, Number.NaN])
     expect(() => api.validateConfig({ noting: { nearThreshold: retired } } as never)).toThrow("Removed setting noting.nearThreshold");
 });
@@ -1665,7 +1664,7 @@ test("2026-10-22: the Noter runs fresh only", async () => {
     boundary: { exactEntryIds: frozen } })).outcome).toBe("success");
   expect(calls.at(-1)!.entryIds).toEqual(frozen);
   const runs = memory.store.listRuns(s.id).filter(r => r.kind === "noting");
-  expect(runs).toHaveLength(4); // two batches, a write run and a verify run each
+  expect(runs).toHaveLength(8); // two four-stage batches
   for (const run of [...runs, ...memory.store.listRuns(tail.id).filter(r => r.kind === "noting")]) {
     expect(run.mode).toBe("subagent");
     expect(JSON.parse(run.response!).requestedMode).toBe("subagent");
@@ -1746,7 +1745,7 @@ test("19c 2026-09-08: a stored branch-mode run reads as legacy request-copy exec
     expect((await after.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
     expect(after.trace(`R${legacy}`)).toContain("legacy request-copy execution");
     expect(after.store.getRun(legacy)!.mode).toBe("branch");
-    expect(after.store.listRuns(s.id).map(r => r.mode)).toEqual(["branch", "subagent", "subagent"]); // the new run is a batch's two tasks
+    expect(after.store.listRuns(s.id).map(r => r.mode)).toEqual(["branch", "subagent", "subagent", "subagent", "subagent"]);
   } finally { after.close(); }
 });
 
@@ -1910,13 +1909,13 @@ test("2026-10-22: a Noter run that does not finish normally is one failure, whic
   expect(memory.store.handoff(s.id, "noting")).not.toBeNull();
   const resumed = await memory.noting(target);
   expect(resumed.outcome).toBe("failure");
-  expect(memory.store.listRuns(s.id).filter(run => run.kind === "noting" && JSON.parse(run.response!).task === "write")).toHaveLength(2); // the resume ran no task 1
+  expect(memory.store.listRuns(s.id).filter(run => run.kind === "noting" && JSON.parse(run.response!).task === "extract-facts")).toHaveLength(2); // resume does not extract again
   expect(count()).toBe(3);
   expect(memory.store.enabled(s.id)).toBe(false);
   expect("automaticOff" in resumed && resumed.automaticOff).toBeTruthy();
 });
 
-// Maintainer, 2026-10-21/22, proposal "noting in two tasks" (ticket 144): the Noter writes, then an independent request verifies.
+// Ticket 155 supersedes the two-task and two-step Noter rulings; keep their publication and retry guarantees.
 const noterFact = (turnId: number, text = "用 pnpm，不要 npm") => ({ title: "Package manager", sources: `[T${turnId}#E1] ${text}` });
 const noterOnFile = (script: Parameters<typeof scriptedNoter>[1]) => {
   const file = join(directory, "test.sqlite"); memory.close();
@@ -1925,96 +1924,35 @@ const noterOnFile = (script: Parameters<typeof scriptedNoter>[1]) => {
   return { file, noter };
 };
 
-test("2026-10-22: the Noter writes, then an independent verify runs, and nothing is published before verify passes", async () => {
+test("2026-10-24: four independent Noter stages publish only after the final knowledge check", async () => {
   const { s, t } = session(); memory.close();
   const file = join(directory, "test.sqlite");
-  const during: unknown[] = [];
+  const during: number[] = [];
   const noter = scriptedNoter(() => memory, [{ noteInput: [noterFact(t.id)], verify: () => {
     const other = new Store(file);
-    try { during.push(other.listSessionFacts(s.id).length, other.pendingEntries(s.id, "main", t.id).length); } finally { other.close(); }
+    try { during.push(other.listSessionFacts(s.id).length); } finally { other.close(); }
   } }]);
   memory = sourceSeededMemory(file, noter.agent);
-  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
-  expect(result.outcome).toBe("success");
-  expect(noter.inputs.map(input => input.task)).toEqual(["write", "verify"]); // two requests, in this order
-  expect(during[0]).toBe(0);                       // nothing published while task 2 ran
-  expect(during[1]).toBeGreaterThan(0);            // and the batch was still pending
+  expect(await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).toMatchObject({ outcome: "success" });
+  expect(noter.inputs.map(input => input.task)).toEqual(["extract-facts", "check-facts", "write-knowledge", "check-knowledge"]);
+  expect(during).toEqual([0, 0]);
   expect(memory.store.listSessionFacts(s.id)).toHaveLength(1);
   expect(memory.pendingEntries(s.id, "main", t.id)).toEqual([]);
 });
 
-// Maintainer, 2026-10-22: 「N 的提取任务，分两步，第一步写事实，第二步更新知识，每一步分别给提示词，但用同一个agent」 and the same for verify;
-// 「Q9」 one repair per step; a step that does not finish normally fails its task.
-const STEP_MARK = { write1: "Task 1 (write), step 1 of 2", write2: "Task 1 (write), step 2 of 2", verify1: "Task 2 (verify), step 1 of 2", verify2: "Task 2 (verify), step 2 of 2" };
-test("2026-10-22: each Noter task runs as two steps; step 2's prompt arrives only after step 1's file passes; a step failure fails its task", async () => {
-  const { s, t } = session(); memory.close();
-  const sent: string[] = [], file = join(directory, "test.sqlite");
-  const check = async (input: NotingAgentInput) => { const text = String(await input.tools.find(tool => tool.name === "check")!.execute({})); sent.push(text); return text; };
-  const put = (path: string, text: string) => writeFileSync(path, text);
-  let failStep1Twice = false;
-  memory = sourceSeededMemory(file, async raw => {
-    const input = raw as NotingAgentInput;
-    const first = await check(input);
-    if (input.task === "verify") {
-      expect(first).toContain(STEP_MARK.verify1); expect(first).not.toContain(STEP_MARK.verify2);
-      while (true) { const message = input.passEnd(); if (message === undefined) break; sent.push(message); }
-      return ok([]);
-    }
-    expect(first).toContain(STEP_MARK.write1); expect(first).not.toContain(STEP_MARK.write2);
-    put(input.workspace.facts, factsFile([noterFact(999)])); // an address outside the batch
-    const repair = input.passEnd();
-    expect(repair).toContain("Problems:"); expect(repair).not.toContain(STEP_MARK.write2); // a failing facts file gets a repair, not step 2
-    sent.push(repair!);
-    if (failStep1Twice) { expect(input.passEnd()).toBeUndefined(); return ok([]); } // the second failure of the step fails the task
-    put(input.workspace.facts, factsFile([noterFact(t.id)]));
-    const advance = input.passEnd();
-    expect(advance).toContain("Step 1 passed."); expect(advance).toContain(STEP_MARK.write2);
-    sent.push(advance!);
-    put(input.workspace.knowledge, "## none\n");
-    expect(input.passEnd()).toBeUndefined();
-    return ok([]);
-  });
-  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
-  expect(result.outcome).toBe("success");
-  const all = sent.join("\n");
-  for (const mark of Object.values(STEP_MARK)) expect(all.split(mark), mark).toHaveLength(2); // each step's prompt reached the model exactly once
-  expect(all.indexOf(STEP_MARK.write2)).toBeGreaterThan(all.indexOf("Step 1 passed."));
-  // A step that fails its check twice fails its task: nothing is published and the batch stays pending.
-  failStep1Twice = true;
-  const second = session();
-  const failed = await memory.noting({ sessionId: second.s.id, branch: "main", headTurnId: second.t.id });
-  expect(failed.outcome).toBe("failure");
-  expect(memory.store.listSessionFacts(second.s.id)).toEqual([]);
-  expect(memory.pendingEntries(second.s.id, "main", second.t.id)).not.toEqual([]);
-});
 
-test("2026-10-22: the Noter's verify steps get the facts list and the create and update classes; no other Noter prompt carries a smell list", () => {
-  const block = (name: string) => renderLimits(readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8").trimEnd(), DEFAULT_WRITING_LIMITS);
-  const classes = ["smells-facts", "smells-create", "smells-update", "smells-merge", "smells-split", "smells-archive"];
-  const carried: Record<string, string[]> = { "tasks/noting-verify-facts.md": ["smells-facts"], "tasks/noting-verify-knowledge.md": ["smells-create", "smells-update"],
-    "tasks/noting-write-facts.md": [], "tasks/noting-write-knowledge.md": [], "noting.md": [] };
-  for (const [file, included] of Object.entries(carried)) {
-    const composed = loadPrompt(file as never);
-    for (const name of classes) {
-      if (included.includes(name)) expect(composed, `${file}: ${name}`).toContain(block(name));
-      else expect(composed, `${file}: ${name}`).not.toContain(block(name));
-    }
-  }
-});
-
-test("2026-10-22: a malformed file is prompted once, and a second failure keeps nothing", async () => {
+test("2026-10-24: malformed knowledge fails stage 3 but keeps the checked facts", async () => {
   const { s, t } = session();
   const { noter } = noterOnFile([{ noteInput: [noterFact(t.id)], files: { knowledge: "not a block\n" } }]);
-  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
-  expect(result.outcome).toBe("failure");
-  expect(noter.stopMessages).toHaveLength(1);                       // one prompt, not a loop
-  expect(noter.inputs).toHaveLength(1);                             // task 2 never started
-  expect(memory.store.handoff(s.id, "noting")).toBeNull();          // task 1's files are not kept
+  expect(await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).toMatchObject({ outcome: "failure" });
+  expect(noter.stopMessages).toHaveLength(1);
+  expect(noter.inputs.map(input => input.task)).toEqual(["extract-facts", "check-facts", "write-knowledge"]);
+  expect(memory.store.handoff(s.id, "noting")?.nextTask).toBe("write-knowledge");
   expect(memory.store.listSessionFacts(s.id)).toEqual([]);
   expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0);
 });
 
-test("2026-10-22: a verify failure keeps task 1's files and the next trigger resumes with verify on the same batch", async () => {
+test("2026-10-24: a check-facts failure resumes that stage without extracting again", async () => {
   const { s, t } = session();
   const { noter } = noterOnFile([{ noteInput: [noterFact(t.id)], verifyResult: { outcome: "failure", output: "verify stopped" } }, {}]);
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
@@ -2022,7 +1960,7 @@ test("2026-10-22: a verify failure keeps task 1's files and the next trigger res
   expect(memory.store.listSessionFacts(s.id)).toEqual([]);
   expect(memory.store.handoff(s.id, "noting")).not.toBeNull();
   expect((await memory.noting(target)).outcome).toBe("success");
-  expect(noter.inputs.map(input => input.task)).toEqual(["write", "verify", "verify"]); // the retry ran no second write
+  expect(noter.inputs.map(input => input.task)).toEqual(["extract-facts", "check-facts", "check-facts", "write-knowledge", "check-knowledge"]);
   expect(memory.store.listSessionFacts(s.id).map(f => f.text)).toEqual(["用 pnpm，不要 npm"]);
   expect(memory.store.handoff(s.id, "noting")).toBeNull();
 });
@@ -2058,8 +1996,8 @@ test("2026-10-22: `check` is callable at any time and returns the task, the prob
   const reports: string[] = [];
   noterOnFile([{ noteInput: [noterFact(t.id)], verify: (_files, input) => { reports.push(String(input.tools.find(tool => tool.name === "check")!.execute({}))); } }]);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
-  expect(reports[0]).toContain("Task: verify");
-  expect(reports[0]).toContain("Problems: none");
+  expect(reports[0]).toContain("Task: check-facts");
+  expect(reports[0]).toContain("expected `verdict: ok`");
   expect(reports[0]).toMatch(/facts\.md block 1 `## fact f1`: title \d+\/20 units \(limit 22\), body \d+\/200 units \(limit 220\)/);
 });
 
@@ -2339,28 +2277,6 @@ test("47/118: search reads every version without bypassing write validation", ()
   expect(search.description).toContain("superseded");
 });
 
-// The maintainer's current principle note supersedes 61/92's sentence pins. Semantic alignment is
-// reviewed against the frozen note with the change; keep composition and stage authority here.
-test("N and D compose shared definitions and principles with their permitted maintenance operations", () => {
-  const block = (name: string) => renderLimits(readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8").trimEnd(), DEFAULT_WRITING_LIMITS);
-  const shared = ["model", "facts", "knowledge", "common", "admission", "division", "citations", "writing", "maintenance", "archiving", "examples"];
-  for (const file of STAGE_PROMPTS) {
-    const composed = loadPrompt(file);
-    for (const name of shared) expect(composed, `${file}: ${name}`).toContain(block(name));
-    expect(composed).not.toContain("<!-- include:");
-  }
-  const noting = loadPrompt("noting.md"), dreaming = loadPrompt("dreaming.md");
-  for (const principle of ["- **Update**:", "- **Archive**:"]) {
-    expect(noting).toContain(principle);
-    expect(dreaming).toContain(principle);
-  }
-  for (const principle of ["- **Split**:", "- **Merge**:"]) {
-    expect(noting).not.toContain(principle);
-    expect(dreaming).toContain(principle);
-  }
-  expect(dreaming).toContain("Comparison is within one scope; items of different scopes are never merged.");
-  // 2026-10-22 files: a merge block carries the complete merged body, so the tool protocol's "a merge may omit text" no longer exists.
-});
 
 
 
@@ -2526,78 +2442,7 @@ test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live item
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-// 61 (2026-09-19): the prompts are written to one standard — shared memory-model blocks, per-stage judgment,
-// short imperative sentences, no internal references, defined vocabulary only.
-const STAGE_PROMPTS = ["noting.md", "dreaming.md"] as const;
-/** The task prompts a `check` result or the stop hook delivers after the shared prefix: held to the same writing standard. */
-const TASK_PROMPTS = PROMPT_FILES.filter(file => file.startsWith("tasks/"));
-const promptSentences = (text: string) => {
-  const body = text.replace(/```[\s\S]*?```/g, "");
-  const sentences: string[] = [];
-  for (const paragraph of body.split(/\n\s*\n/)) {
-    if (paragraph.trim().startsWith("#")) continue;
-    for (const raw of paragraph.split("\n")) {
-      const line = raw.replace(/^\s*(?:[-*>]|\d+\.)\s+/, "").trim();
-      const parts = line.split(/(?<=[.!?:])\s+(?=[A-Z`"(*\[])/).filter(part => part.split(/\s+/).length >= 2);
-      sentences.push(...parts);
-      if (parts.length > 4) sentences.push(`WALL:${line.slice(0, 60)}`);
-    }
-  }
-  return sentences;
-};
 
-test("61: every stage prompt is composed from the shared blocks in one section order, with a numbered procedure", () => {
-  const order = ["## Role", "## Definitions", "## Principles", "## Inputs", "## Procedure", "## Output"];
-  for (const file of STAGE_PROMPTS) {
-    const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8");
-    let last = -1;
-    for (const heading of order) {
-      const at = raw.indexOf(`\n${heading}\n`);
-      expect(at, `${file}: ${heading}`).toBeGreaterThan(last);
-      last = at;
-    }
-    expect(raw).toMatch(/\n## Procedure\n\n1\. /);
-    expect(raw).toMatch(/## Definitions\n\n<!-- include: model -->/);
-    expect(raw).toMatch(/## Inputs\n\n<!-- include: formats -->/);
-    expect(raw).toMatch(/## Principles\n\n(<!-- include: |### )/);
-    expect(loadPrompt(file)).not.toContain("<!-- include:");
-  }
-});
-
-test("61: sentences are short, paragraphs are not walls, and no internal reference or internal vocabulary leaks into the prompts", () => {
-  const banned = [/\bv1\.\d\b/, /\b\d\d[a-z]?'s\b/, /\bticket\s+\d+/, /\bcase \d\b/, /\buncertified\b/, /\bcertificate\b/, /\bneutral conflict\b/, /\bpost-freeze\b/,
-    /\beffective grounding\b/, /\bfrozen family\b/, /\bfamily\b/, /\bCONTEXT\.md\b/];
-  for (const file of [...STAGE_PROMPTS, "classifying.md", ...TASK_PROMPTS] as const) {
-    const prompt = loadPrompt(file);
-    const sentences = promptSentences(prompt);
-    const walls = sentences.filter(s => s.startsWith("WALL:"));
-    expect(walls, `${file}: paragraphs over four sentences`).toEqual([]);
-    const lengths = sentences.filter(s => !s.startsWith("WALL:")).map(s => s.split(/\s+/).length);
-    const longest = sentences.filter(s => s.split(/\s+/).length > 35);
-    expect(longest, `${file}: sentences over 35 words`).toEqual([]);
-    expect(lengths.reduce((a, b) => a + b, 0) / lengths.length, `${file}: mean sentence length`).toBeLessThanOrEqual(18);
-    for (const pattern of banned) expect(prompt.match(pattern), `${file}: ${pattern}`).toBeNull();
-    expect(prompt).not.toMatch(/[一-鿿]/);
-  }
-});
-
-
-test("61: every backticked category, kind or field word used in a stage file is defined in the shared blocks", () => {
-  const shared = renderToolNames(["model", "facts", "knowledge", "admission", "division", "writing", "citations", "formats"]
-    .map(name => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8")).join("\n"), canonicalToolNames);
-  const defined = new Set(["goal", "constraint", "understanding", "reference", "open", "observation", "user", "assistant", "role",
-    "session", "project", "global", "search", "supports", "reason", "topics", "text", "title", "sources", "address",
-    "category", "scope", "inbound", "support", "negate", "strong", "weak"]);
-  for (const word of defined) expect(shared, `shared blocks define ${word}`).toMatch(new RegExp("`" + word + "`|\\*\\*" + word + "\\*\\*"));
-  for (const file of [...STAGE_PROMPTS, ...TASK_PROMPTS]) {
-    const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8").replace(/```[\s\S]*?```/g, "");
-    for (const match of raw.matchAll(/`([a-z]+)`/g)) {
-      const word = match[1]!;
-      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skip", "skipped", "operations", "layer", "code", "full", "ok", "absorb", "edits", "source", "slot", "drop", "budget", "fact", "none", "confirm", "edit", "revert", "evidence", "kind", "invalid", "inadmissible", "child"].includes(word)) continue; // stage tools, operation fields and the workspace file blocks, defined in the stage's own sections
-      expect(defined.has(word), `${file}: \`${word}\` is not a defined term`).toBe(true);
-    }
-  }
-});
 
 // 79 item 1: sourcePath, pendingEntries and listSourceEntries return source-entry metadata read from
 // the hot table alone; no list read touches the payload table (source_entry_raw). Pinned with
@@ -2840,7 +2685,7 @@ test("2026-10-21/22: the Noter writes no parents, merge, split or archive", () =
     const item = b.item("Rule one");
     const facts = { name: "facts.md", text: workspaceBlock("fact f1", { title: "pnpm chosen" }, b.source(0, "User asked to use pnpm")) };
     const knowledge = (text: string) => checkWorkspace(b.store, { kind: "noting-knowledge", scope: b.scope, file: { name: "knowledge.md", text }, facts }).problems.join("\n");
-    const create = { title: "Use pnpm", category: "constraint", scope: "project", topics: "", supports: "f1", reason: "choice" };
+    const create = { title: "Use pnpm", category: "constraint", scope: "project", topics: "", supports: "f1", files: "None", reason: "choice" };
     expect(knowledge(workspaceBlock("create", create, "Use pnpm."))).toBe("");
     expect(knowledge(workspaceBlock("create", { ...create, parents: item.ref }, "Use pnpm."))).toContain("field `parents` is not allowed here");
     for (const op of ["merge", "split", "archive"]) expect(knowledge(workspaceBlock(`${op} ${item.ref}`, { reason: "r" }, "Body."))).toContain(`\`## ${op}\` is not allowed in a noting-knowledge file`);

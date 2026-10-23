@@ -8,7 +8,7 @@ import { submitEmpty } from "../../support/noter.ts";
 function fixture() {
   const invoked: string[] = [];
   const memory = sourceSeededMemory(":memory:", async raw => {
-    const task = raw as NotingAgentInput; if (task.task !== "verify") invoked.push(task.kind); // one entry per batch: its write task
+    const task = raw as NotingAgentInput; if (task.task === "extract-facts") invoked.push(task.kind);
     task.reportRequest({ fixture: "retirement" });
     submitEmpty(task);
     return { outcome: "success", output: "done", request: { fixture: "retirement" } };

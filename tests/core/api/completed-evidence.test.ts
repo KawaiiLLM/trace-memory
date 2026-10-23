@@ -10,7 +10,7 @@ function setup() {
   const m = TraceMemory(":memory:", async raw => {
     const input = raw as NotingAgentInput;
     if (input.kind !== "noting") throw new Error("Only Noting is expected");
-    if (input.task === "verify") return verifyUnchanged(input, { request: { fixture: "source evidence" } });
+    if (input.task !== "extract-facts") return verifyUnchanged(input, { request: { fixture: "source evidence" } });
     input.reportRequest({ fixture: "source evidence" });
     await run(input);
     return { outcome: "success", output: "done", request: { fixture: "source evidence" } };

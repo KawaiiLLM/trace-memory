@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Store } from "../../../src/core/store/index.ts";
+import { Store, type KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { writeHandoff } from "../../../src/core/store/executions.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { declarationContext } from "../project-declaration-context.ts";
@@ -568,7 +568,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.currentCommit(legacy.knowledgeId)[0]!.text).toBe("advanced rule");
   });
 
-  test("92: an N batch commits create and archive together; a forbidden op still rolls back the whole batch atomically", () => {
+  test("155 supersedes 92: N commits create and update together; a forbidden op rolls back the whole batch", () => {
     const { s, factId } = seed();
     const manual = { kind: "manual" as const, sessionId: s.id, createdAt: consolidationAt };
     const created = store.commitConsolidationRun({ run: manual, operations: [{ files: null, op: "create", title: "Fixture title", handle: "$base", author: "test",
@@ -576,16 +576,15 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       topics: [], createdAt: consolidationAt }] });
     if (!created.ok) throw new Error(created.problems.join("; "));
     const item = created.committed[0]!;
-    const archive = { files: null, op: "archive" as const, kind: "invalid" as const, text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: item.knowledgeId, baseCommit: item.commit,
-      supports: [factId], reason: "retire rule", createdAt: consolidationAt };
-    // N owns create and archive; terminal publication commits both atomically.
+    const update: KnowledgeOperationInput = { files: null, op: "update", text: "Updated continuing rule", knowledgeId: item.knowledgeId, baseCommit: item.commit,
+      category: "constraint", scope: "project", topics: [], supports: [factId], reason: "new evidence", createdAt: consolidationAt };
     const accepted = commitNoterKnowledge(store, { run: { sessionId: s.id, createdAt: consolidationAt },
-      operations: [{ files: null, op: "create", title: "Fixture title", handle: "$partial", author: "test", text: "commits alongside the archive", category: "understanding",
-        scope: "project", supports: [factId], reason: "mixed item", topics: [], createdAt: consolidationAt }, archive] });
+      operations: [{ files: null, op: "create", title: "Fixture title", handle: "$partial", author: "test", text: "commits alongside the update", category: "understanding",
+        scope: "project", supports: [factId], reason: "mixed item", topics: [], createdAt: consolidationAt }, update] });
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) return;
-    expect(accepted.committed.map(op => op.op)).toEqual(["create", "archive"]);
-    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "archive", archiveKind: "invalid", actorRole: "noting" });
+    expect(accepted.committed.map(op => op.op)).toEqual(["create", "update"]);
+    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "update", text: "Updated continuing rule", actorRole: "noting" });
 
     // A batch mixing a legal op with one forbidden to N (merge) rolls back whole.
     const before = store.listKnowledgeRevisions();
@@ -597,7 +596,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
           absorb: [{ knowledgeId: item.knowledgeId, baseCommit: currentBase }],
           category: "reference", scope: "project", supports: [factId], reason: "forbidden", topics: [], createdAt: consolidationAt }] });
     expect(rejected.ok).toBe(false);
-    if (!rejected.ok) expect(rejected.problems.join(" ")).toContain("Noter permits create, update and archive only");
+    if (!rejected.ok) expect(rejected.problems.join(" ")).toContain("Noter permits create and update only");
     expect(store.listKnowledgeRevisions()).toEqual(before);
   });
 

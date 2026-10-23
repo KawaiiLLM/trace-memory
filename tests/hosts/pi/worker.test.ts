@@ -55,18 +55,18 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
   } finally { await f.dispose(); }
 });
 
-test.each(["write", "verify-noting", "curate", "verify", "classify"] as const)(
+test.each(["extract-facts", "check-facts", "write-knowledge", "check-knowledge", "curate", "verify", "classify"] as const)(
   "a %s worker executes Pi Bash in its workspace beside its confined tools", async stage => {
     const f = await fixture();
     try {
       const dir = join(f.h.dir, "workspace"); mkdirSync(dir);
-      const noting = stage === "write" || stage === "verify-noting";
-      const workspace = noting ? { dir, facts: join(dir, "facts.md"), knowledge: join(dir, "knowledge.md") }
+      const noting = stage !== "curate" && stage !== "verify" && stage !== "classify";
+      const workspace = noting ? { dir, facts: join(dir, "facts.md"), knowledge: join(dir, "knowledge.md"), read: [], write: [] }
         : { dir, read: [], write: [], roots: [] };
       const files = workspaceFileTools(f.h.dir, workspace, !noting && stage !== "classify");
       f.script(body => body.messages.some((message: { role: string }) => message.role === "tool")
         ? say("Bash finished.") : call("workspace-bash", "bash", { command: "printf 'workspace output\\n' > bash-result.txt; pwd" }));
-      const frozen = { ...task(), kind: noting ? "noting" : "dreaming", task: stage === "verify-noting" ? "verify" : stage,
+      const frozen = { ...task(), kind: noting ? "noting" : "dreaming", task: stage,
         workspace, passEnd: () => undefined } as unknown as NotingAgentInput | DreamingAgentInput;
       const result = await runWorker(frozen, {
         model: f.model as never, checkCapacity: () => {}, tools: [], read: read(f), fileTools: files.definitions as never,

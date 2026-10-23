@@ -67,9 +67,19 @@ export interface TraceMemoryConfig {
   noting: {
     batchTokens: number;
     triggerTokens: number;
-    /** Character-bigram Jaccard threshold for automatic same-session fact review. */
     /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
     maxToolRounds: number;
+    /** Dispatcher proposal, default 20 per list; awaiting maintainer confirmation (155). */
+    relatedFacts: number;
+    relatedKnowledge: number;
+    extractFactsSteps: number;
+    extractFactsContextTokens: number;
+    checkFactsSteps: number;
+    checkFactsContextTokens: number;
+    writeKnowledgeSteps: number;
+    writeKnowledgeContextTokens: number;
+    checkKnowledgeSteps: number;
+    checkKnowledgeContextTokens: number;
   };
   /** Bounded fresh-subagent maintenance. */
   dreaming: {
@@ -107,6 +117,16 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     batchTokens: 10_000,
     triggerTokens: 10_000,
     maxToolRounds: 0,
+    relatedFacts: 20,
+    relatedKnowledge: 20,
+    extractFactsSteps: 10,
+    extractFactsContextTokens: 15_000,
+    checkFactsSteps: 8,
+    checkFactsContextTokens: 10_000,
+    writeKnowledgeSteps: 8,
+    writeKnowledgeContextTokens: 15_000,
+    checkKnowledgeSteps: 8,
+    checkKnowledgeContextTokens: 15_000,
   },
   dreaming: { triggerOperations: DEFAULT_DREAMING_TRIGGER_OPERATIONS, timeoutMs: 1_800_000 },
   writing: { ...DEFAULT_WRITING_LIMITS },

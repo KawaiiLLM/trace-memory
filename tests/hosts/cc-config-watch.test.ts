@@ -11,7 +11,7 @@ const provider = vi.hoisted(() => {
 vi.mock("../../src/hosts/cc/worker.ts", () => ({
   createCcRunAgent: (config: any) => async (task: any) => {
     // A batch is a write run and a verify run; the write run is the one held, and the verify run follows at once.
-    if (task.task === "write") await new Promise<void>(resolveCall => provider.calls.push({ model: config.worker.phases[task.kind].model,
+    if (task.task === "extract-facts") await new Promise<void>(resolveCall => provider.calls.push({ model: config.worker.phases[task.kind].model,
       thinking: config.worker.phases[task.kind].thinking, task, release: resolveCall }));
     submitEmpty(task);
     return { outcome: "success", output: "mock provider completed", request: { mock: true } };

@@ -76,7 +76,7 @@ test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): olde
     h.persist(reply("new completion")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
     let previous = 0;
     for (let batch = 0; batch < 3; batch++) {
-      const run = h.memory.store.listRuns(1).filter(r => r.kind === "noting")[2 * batch]!; // each batch is a write run and a verify run
+      const run = h.memory.store.listRuns(1).filter(r => r.kind === "noting")[4 * batch]!;
       const ids: number[] = JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id);
       const all = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
       expect(ids).toEqual(all.slice(previous, previous + ids.length).map(e => e.id));
@@ -210,7 +210,7 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
   const h = host({ "noting.triggerTokens": 1000000000 });
   const runner = TraceMemory(join(h.dir, "trace.db"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, { request: { exact: true } });
+    if (input.task !== "extract-facts") return verifyUnchanged(input, { request: { exact: true } });
     input.reportRequest({ exact: true });
     if (input.kind === "noting") await submit(input, runner, { noteInput: [{ title: "Partial source", sources: "[T1#E1] partial source fact" }], memoryInput: {} });
     return { outcome: "success", output: "", request: { exact: true } };
@@ -265,7 +265,7 @@ test("20b 2026-09-08 scenario 5: a small oldest entry is not joined with a near-
     const all = hydrate(h.memory.store.listSourceEntries(1), h.memory.store);
     expect(tokens(renderEntry(all[1]!, h.memory.config.render).content)).toBe(DEFAULT_CONFIG.render.entryTokens);
     h.persist(reply("completion")); await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
-    const noted = (n: number) => JSON.parse(h.memory.store.listRuns(1).filter(r => r.kind === "noting")[2 * n]!.response!).entryAudit.entries.map((e: { id: number }) => e.id);
+    const noted = (n: number) => JSON.parse(h.memory.store.listRuns(1).filter(r => r.kind === "noting")[4 * n]!.response!).entryAudit.entries.map((e: { id: number }) => e.id);
     expect(noted(0)).toEqual([all[0]!.id]); // the oldest alone: the near-ceiling entry does not fit beside it
     expect(hydrate(h.memory.pendingEntries(1, "main", 1), h.memory.store).map(e => e.id).slice(0, 2)).toEqual([all[1]!.id, all[2]!.id]);
     await h.prompt("next pending batch"); await h.answer("completion 2"); await h.drain();

@@ -8,7 +8,7 @@ import { block, workspaceBatch } from "../../support/workspace.ts";
 import { fact as seedFact, legacyKnowledge, receiptCommit } from "../../support/seed.ts";
 import { words } from "../../../src/core/render/index.ts";
 import { writeFileSync } from "node:fs";
-import { factsFile, finishKnowledgeStep, knowledgeFile, submit, toKnowledgeStep, verifyUnchanged, type Files } from "../../support/noter.ts";
+import { factsFile, knowledgeFile, submit, verifyUnchanged, type Files } from "../../support/noter.ts";
 import { pairOfText } from "../../support/dreamer.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>, triggerEntryId: number;
@@ -27,7 +27,7 @@ const success = (): RunAgentResult => ({ outcome: "success", output: "done", req
 let script: (input: NotingAgentInput) => Promise<RunAgentResult> = async () => success();
 function setup() {
   script = async () => success();
-  const agent: RunAgent = raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify"
+  const agent: RunAgent = raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task.startsWith("check-")
     ? verifyUnchanged(raw, { request: { fixture: "writing limits" } }) : script(raw as NotingAgentInput);
   memory = sourceSeededMemory(":memory:", agent);
   const project = memory.store.createProject({ name: "limits", declaredBy: "mark" });
@@ -133,15 +133,18 @@ test("the Noter's check refuses length and title with their counts, and a correc
   setup();
   script = async input => {
     const address = "T1#E1";
-    seen.push(await checked(input, { facts: factsFile([{ title: sized(23), sources: `[${address}] fine` }]) }));
-    seen.push(await checked(input, { facts: factsFile([{ title: "Fits", sources: `[${address}] ${sized(221)}` }]) }));
-    seen.push(await checked(input, { facts: factsFile([{ title: sized(22), sources: `[${address}] ${sized(215)}` }]) })); // over the targets, within the limits
-    // Knowledge problems are read at step 2, after the facts file has passed step 1.
-    toKnowledgeStep(input, { noteInput: [{ title: "Fits", sources: `[${address}] Use pnpm` }] });
+    if (input.task === "extract-facts") {
+      seen.push(await checked(input, { facts: factsFile([{ title: sized(23), sources: `[${address}] fine` }]) }));
+      seen.push(await checked(input, { facts: factsFile([{ title: "Fits", sources: `[${address}] ${sized(221)}` }]) }));
+      seen.push(await checked(input, { facts: factsFile([{ title: sized(22), sources: `[${address}] ${sized(215)}` }]) }));
+      await submit(input, memory, { noteInput: [{ title: "Fits", sources: `[${address}] Use pnpm` }] });
+      return success();
+    }
     seen.push(await checked(input, { knowledge: knowledgeFile(memory, create(sized(23), "Use pnpm")) }));
     seen.push(await checked(input, { knowledge: knowledgeFile(memory, { ...create("Package manager", "Use pnpm"), title: undefined }) }));
     seen.push(await checked(input, { knowledge: knowledgeFile(memory, create("Package manager", sized(221))) }));
-    expect(finishKnowledgeStep(input, memory, { memoryInput: create("Package manager", "Use pnpm") })).toBeUndefined();
+    writeFileSync(input.workspace.knowledge, knowledgeFile(memory, create("Package manager", "Use pnpm")));
+    expect(input.passEnd()).toBeUndefined();
     return success();
   };
   const result = await memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
@@ -163,10 +166,11 @@ test("a Noter update is checked on its resulting body and needs a title when its
   const seen: string[] = [];
   script = async input => {
     const update = { files: null, op: "update", id: tag(legacy.knowledgeId), supports: ["F1"], reason: "Compress", category: "constraint", scope: "project", topics: [] };
-    toKnowledgeStep(input, { files: { facts: "## none\n" } });
+    if (input.task === "extract-facts") { await submit(input, memory); return success(); }
     seen.push(await checked(input, { knowledge: knowledgeFile(memory, { ...update, text: "Rule, compressed." }) }));
     seen.push(await checked(input, { knowledge: knowledgeFile(memory, { ...update, title: "Legacy rule", text: sized(250, "Legacy rule. ") }) }));
-    expect(finishKnowledgeStep(input, memory, { memoryInput: { ...update, title: "Legacy rule", text: "Rule, compressed." } })).toBeUndefined();
+    writeFileSync(input.workspace.knowledge, knowledgeFile(memory, { ...update, title: "Legacy rule", text: "Rule, compressed." }));
+    expect(input.passEnd()).toBeUndefined();
     return success();
   };
   const result = await memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });

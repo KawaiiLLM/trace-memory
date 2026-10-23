@@ -1,5 +1,5 @@
 import { confirmEvery } from "../../support/dreamer.ts";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { JsonObject } from "@earendil-works/pi-ai";
@@ -7,6 +7,7 @@ import { buildContextEntries, createEventBus, type ExtensionAPI, type ExtensionC
 import extension, { piResultText } from "../../../src/hosts/pi/index.ts";
 import type { ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 import { TraceMemory, toolRejected } from "../../../src/core/api/index.ts";
+import { withVerdicts } from "../../support/noter.ts";
 
 type Conversation = Parameters<ExtensionContext["modelRegistry"]["complete"]>[1];
 export type Reply = Awaited<ReturnType<ExtensionContext["modelRegistry"]["complete"]>>;
@@ -124,21 +125,20 @@ function releaseAgentDir(agentDir: string) {
   borrowedAgentDir = undefined;
 }
 
-/** The scripted Noter's side of the two-task run (ticket 144, stage 5), as a model behaves on the wire: call `check` first; in the
- * write task, write the file the latest message names for its step (facts, then knowledge, the second after the stop hook's
- * step-advance message); stop. A verify task finds nothing to correct and stops at each step. `plan` is the text written to each
- * file; the default is `## none` in both. Returns undefined when the model has nothing left to say. */
+/** Each of four conversations checks first, writes its owned file and stops. */
 export function noterReply(conversation: Conversation, plan: { facts?: string; knowledge?: string } = {}): Reply | undefined {
   const call = (calls: { id: string; name: string; arguments: JsonObject }[]): Reply => ({ ...reply(""), stopReason: "toolUse",
     content: calls.map(value => ({ type: "toolCall" as const, ...value })) });
-  const mentions = conversation.messages.flatMap(m => m.role === "assistant" ? [] : [partsText((m as { content: unknown }).content)]).filter(text => /^Task: (write|verify)/m.test(text));
+  const mentions = conversation.messages.flatMap(m => m.role === "assistant" ? [] : [partsText((m as { content: unknown }).content)]).filter(text => /^Task: (extract-facts|check-facts|write-knowledge|check-knowledge)/m.test(text));
   if (!mentions.length) return call([{ id: "check-1", name: "check", arguments: {} }]);
   const report = mentions.at(-1)!;
-  const [, task, step, file] = /^Task: (write|verify).*?Step (\d) of 2 \(\w+\)\. File: (\S+?\.md)(?:\.|\s|$)/ms.exec(report) ?? [];
+  const [, task, file] = /^Task: ([\w-]+).*?File: (\S+?\.md)(?:\.|\s|$)/ms.exec(report) ?? [];
   const written = conversation.messages.flatMap(m => m.role !== "assistant" || !Array.isArray(m.content) ? [] : (m.content as { type: string; name?: string; arguments?: { path?: string } }[])
     .filter(part => part.type === "toolCall" && part.name === "write").map(part => part.arguments?.path));
-  if (!file || task === "verify" || written.includes(file)) return undefined;
-  return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content: (step === "1" ? plan.facts : plan.knowledge) ?? "## none\n" } }]);
+  if (!file || written.includes(file)) return undefined;
+  const content = task!.startsWith("check-") ? withVerdicts(readFileSync(file, "utf8"))
+    : (task === "extract-facts" ? plan.facts : plan.knowledge) ?? "## none\n";
+  return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content } }]);
 }
 /** The scripted Dreamer's side of a run (ticket 144 stage 4, 146), as a model behaves on the wire: call `check`, write the file the latest
  * message names (`## none` for each curate batch file the first `check` result lists, a `## confirm <n>` for every change of verify's change
@@ -159,9 +159,8 @@ export function dreamerFiles(conversation: Conversation, plan: { curate?: string
   return call(todo.map((file, i) => ({ id: `write-${written.length + i + 1}`, name: "write", arguments: { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n"
     : (/^Task: verify/m.test(report) ? plan.verify ?? confirmEvery(report) : /^Task: curate/m.test(report) ? plan.curate : undefined) ?? "## none\n" } })));
 }
-/** The requests one scripted Noter batch makes: the write task (check, the facts file, stop, the knowledge file, stop) and the verify task
- * (check, then a stop at each of its two steps). */
-export const NOTER_BATCH_REQUESTS = 8;
+/** Four stages, each with check, write and stop. */
+export const NOTER_BATCH_REQUESTS = 12;
 /** The Noter has staged its files (its write task wrote them). */
 export const noteHeld = (conversation: Conversation): boolean => conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "write");
 export const emptyNote = (conversation: Conversation): Reply | undefined =>
@@ -410,7 +409,7 @@ export function notingFact(conversation: Conversation, knowledge?: string): Repl
   const batch = input.split("\nRaw:\n")[1]?.split("\n</episodic>")[0] ?? input.split("\nSources:\n")[1] ?? "";
   const source = /\[(T\d+#E\d+)@user\] user:/.exec(batch)?.[1] ?? /\b(T\d+#E\d+)\b/.exec(batch)?.[1];
   if (!source) throw new Error("Noter fixture requires a source from its actual Raw batch or inherited source index");
-  return noterReply(conversation, { facts: `## fact f1\ntitle: 选择 pnpm\n\n[${source}] 用 pnpm，不要 npm\n`, knowledge }) ?? reply("Done.");
+  return noterReply(conversation, { facts: `## fact f1\ntitle: 选择 pnpm\nobjects: pnpm\n\n[${source}] 用 pnpm，不要 npm\n`, knowledge }) ?? reply("Done.");
 }
 
 /** A Noter batch whose first request is held open at the wire, as a worker still running; every other request of the batch

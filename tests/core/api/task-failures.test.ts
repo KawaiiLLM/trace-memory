@@ -17,7 +17,7 @@ const request = { messages: [] };
 const failed: RunAgent = async () => ({ outcome: "failure", output: "provider failed after retries", request });
 const open = (file = ":memory:", agent: RunAgent = failed) => {
   // The scripted agent is the write task; a verify task finds nothing to correct.
-  const m = sourceSeededMemory(file, raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify" ? verifyUnchanged(raw, { request }) : agent(raw),
+  const m = sourceSeededMemory(file, raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task !== "extract-facts" ? verifyUnchanged(raw, { request }) : agent(raw),
     { closedSessionScope: "global" }); memories.push(m); return m;
 };
 const file = () => { const dir = mkdtempSync(join(tmpdir(), "trace-task-failures-")); dirs.push(dir); return join(dir, "test.sqlite"); };

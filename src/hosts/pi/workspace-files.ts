@@ -11,7 +11,7 @@ type Workspace = NotingAgentInput["workspace"] | DreamingAgentInput["workspace"]
 
 /** The Noter's two files, or a Dreaming task's lists (stage 4): the same confinement either way. */
 export function workspaceFileTools(cwd: string, workspace: Workspace, search = false) {
-  const files = "facts" in workspace ? { read: [workspace.facts, workspace.knowledge], write: [workspace.facts, workspace.knowledge] } : workspace;
+  const files = workspace;
   const own = async (path: string, allowed: readonly string[]): Promise<string> => {
     if (!allowed.includes(path)) throw new Error("Trace Memory: this task may use only its workspace files");
     if (await realpath(dirname(path)) !== await realpath(workspace.dir)) throw new Error("Trace Memory: a workspace file must sit directly in the run's workspace");

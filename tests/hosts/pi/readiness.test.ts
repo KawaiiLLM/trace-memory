@@ -25,12 +25,12 @@ test("19c 2026-09-08: a message completion before persistence launches nothing; 
     expect(notingRuns(h)).toEqual([]);
     await h.emit("agent_end"); await h.emit("agent_settled"); await h.drain();
     const runs = notingRuns(h);
-    expect(runs).toHaveLength(2); // the batch's write and verify runs
+    expect(runs).toHaveLength(4);
     const audited = JSON.parse(runs[0]!.response!).entryAudit.entries as { nativeId: string }[];
     expect(audited.map(e => e.nativeId)).toContain(persisted.id); // the real entry id, not a synthesized one
     // Later boundaries are not new triggers: the same task is not launched a second time.
     await h.emit("agent_settled"); await h.emit("agent_end"); await h.drain();
-    expect(notingRuns(h)).toHaveLength(2);
+    expect(notingRuns(h)).toHaveLength(4);
   } finally { await h.dispose(); }
 });
 

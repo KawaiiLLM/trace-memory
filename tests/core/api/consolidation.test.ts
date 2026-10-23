@@ -19,7 +19,7 @@ beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-authority-")); calls = []; script = [];
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, { request });
+    if (input.task !== "extract-facts") return verifyUnchanged(input, { request });
     calls.push(input); input.reportRequest(request);
     const next = script.shift(); if (!next) throw new Error("unexpected call");
     return next(input);

@@ -267,14 +267,14 @@ test("startup imports admit Noting at the newest persisted entry without another
     await coordinator.start();
     const { importer, scheduler } = coordinator as unknown as { importer: CcImporter; scheduler: CcTaskScheduler };
     await scheduler.settle();
-    expect(importer.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // write, then verify
+    expect(importer.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual(Array(4).fill(["noting", "success"]));
     const entries = importer.memory.store.listSourceEntries(1), newest = entries.at(-1)!;
     expect(importer.memory.store.listRuns(1)[0]).toMatchObject({
       rangeTo: `S1/T${newest.turnId}`, origin: { sessionId: 1, entryIds: [newest.id] } });
     expect(inputs[0]!.entryIds).toEqual(entries.map(entry => entry.id));
     expect(entries.every(entry => importer.memory.store.entryNoted(entry.id))).toBe(true);
     await coordinator.requestReconcile("same imported leaf"); await scheduler.settle();
-    expect(inputs).toHaveLength(2);
+    expect(inputs).toHaveLength(4);
   } finally { await coordinator.shutdown("test"); spy.mockRestore(); }
 });
 
@@ -355,10 +355,10 @@ test.each(["hook", "transcript"] as const)("entry ingestion admits mid-turn and 
     transport.runAgent = async raw => {
       const input = raw as NotingAgentInput;
       // A batch is a write run and a verify run over the same entries; only the write run is a batch here.
-      if (input.task === "write") batches.push([...input.entryIds]);
+      if (input.task === "extract-facts") batches.push([...input.entryIds]);
       input.reportRequest({ fixture: "entry end" });
       submitEmpty(input);
-      if (input.task === "write" && batches.length === 1) await held;
+      if (input.task === "extract-facts" && batches.length === 1) await held;
       return { outcome: "success", output: "done", request: { fixture: "entry end" } };
     };
     const append = async (id: number) => {

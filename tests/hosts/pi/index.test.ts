@@ -114,15 +114,14 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   h.provider(async c => notingFact(c));
   await h.turn();
   const runs = h.memory.store.listRuns(1);
-  expect(runs.map(r => r.outcome)).toEqual(["success", "success"]); // write, then verify
+  expect(runs.map(r => r.outcome)).toEqual(Array(4).fill("success"));
   const run = runs[0]!;
-  expect(JSON.parse(run.response!)).toMatchObject({ task: "write" });
-  expect(JSON.parse(runs[1]!.response!)).toMatchObject({ task: "verify" });
+  expect(runs.map(value => JSON.parse(value.response!).task)).toEqual(["extract-facts", "check-facts", "write-knowledge", "check-knowledge"]);
   expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test");
-  const writeRequests = 5; // check, the facts file, stop, the knowledge file (after the step-advance message), stop
+  const writeRequests = 3; // check, extract facts, stop
   expect(JSON.parse(run.request!)).toEqual(h.requests[writeRequests - 1]);
-  expect(JSON.parse(runs[1]!.request!)).toEqual(h.requests.at(-1));
-  expect(h.conversations[writeRequests - 1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "assistant", "toolResult", "assistant", "user", "assistant", "toolResult"]);
+  expect(JSON.parse(runs[3]!.request!)).toEqual(h.requests.at(-1));
+  expect(h.conversations[writeRequests - 1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "assistant", "toolResult"]);
   // 137: a fresh Noter's system prompt is its instructions plus the retrieval policy, once.
   expect(h.conversations[0]!.systemPrompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
   expect(h.conversations[0]!.systemPrompt!.split("When to look up memory")).toHaveLength(2);
@@ -212,15 +211,15 @@ test("29d case 24: a worker's completion starts no drain loop, and a tree switch
   h.provider(async c => notingFact(c));
   await h.turn(); // one Noting batch over T1 (write, then verify), committing F1
   const after = h.requests.length;
-  expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success"]);
+  expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(Array(4).fill("success"));
   // Settling again, draining again and idling start nothing: the commit is not itself a trigger.
   await h.emit("agent_settled"); await h.emit("agent_end"); await h.drain();
   expect(h.requests).toHaveLength(after);
-  expect(h.memory.store.listRuns(1)).toHaveLength(2);
+  expect(h.memory.store.listRuns(1)).toHaveLength(4);
   // A tree switch re-selects the context and launches no extraction of its own.
   await h.emit("session_tree"); await h.drain();
   expect(h.requests).toHaveLength(after);
-  expect(h.memory.store.listRuns(1)).toHaveLength(2);
+  expect(h.memory.store.listRuns(1)).toHaveLength(4);
   expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
 });
 
@@ -303,11 +302,11 @@ test("ordinary N completion does not chain a retired stage or another N without 
   const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
   await h.turn();
-  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // write, then verify
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual(Array(4).fill(["noting", "success"]));
   const sent = h.requests.length;
   await h.emit("agent_settled"); await h.emit("session_tree"); await h.drain();
   expect(h.requests).toHaveLength(sent);
-  expect(h.memory.store.listRuns(1)).toHaveLength(2);
+  expect(h.memory.store.listRuns(1)).toHaveLength(4);
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
@@ -334,7 +333,6 @@ test("17b supersedes watermark growth: compressed source labels count along with
   const h = host({ "noting.triggerTokens": 16 }); // the two labels and their two characters, and nothing else
   await h.prompt("一"); await h.answer("a"); await h.drain();
   expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch: both tasks, each calling check and writing `## none`
-  expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Task: verify");
   expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
 });
 
@@ -355,7 +353,7 @@ test("duplicate eligible boundaries do not adopt or multiply the running N task"
   expect(h.requests).toHaveLength(1);
   h.provider(async c => notingFact(c));
   release(notingFact(h.conversations[0]!)); await h.drain();
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success", "success"]); // one batch: write, then verify
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(Array(4).fill("success"));
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
@@ -610,7 +608,6 @@ test("29d: a note waits for no receipt and no prompt carries one", async () => {
   h.provider(async c => notingFact(c));
   await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // the first batch's two tasks, but no chained run for the busy second turn
-  expect(JSON.stringify((h.requests.at(-1) as { messages: unknown[] }).messages)).toContain("Task: verify");
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(false);
   await h.answer(); await h.drain();
   expect(h.requests).toHaveLength(2 * NOTER_BATCH_REQUESTS); // the later turn admits one more batch
@@ -627,9 +624,8 @@ test("a subagent Noter reads omitted evidence through virtual Read and records i
   await h.prompt("next main turn"); await h.answer("word ".repeat(1000)); await h.drain();
   // Task 1: read, check, the facts file, stop, the knowledge file, stop. Task 2 starts from the same first message, so its model reads the same
   // evidence, then checks and stops at each of its two steps.
-  expect(h.conversations).toHaveLength(10);
+  expect(h.conversations).toHaveLength(16);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
-  expect(JSON.stringify(h.conversations.at(-1)!.messages)).toContain("Task: verify");
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
   expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
   expect(result.content[0]!.text).toBe(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(path).content);
@@ -637,7 +633,7 @@ test("a subagent Noter reads omitted evidence through virtual Read and records i
   expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["search", "check", "read", "write", "edit", "bash"]);
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.request!)).toEqual(h.requests[5]); // the write task's last request
+  expect(JSON.parse(run.request!)).toEqual(h.requests[3]); // read, check, write facts, stop
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
@@ -651,7 +647,7 @@ test("a noting tool call for a bad address returns an error result and N still c
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
   expect(h.conversations.every(c => c.tools!.map(t => t.name).join(",") === "search,check,read,write,edit,bash")).toBe(true);
   const runs = h.memory.store.listRuns(1);
-  expect(runs.map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // write, then verify
+  expect(runs.map(r => [r.kind, r.outcome])).toEqual(Array(4).fill(["noting", "success"]));
   // The OpenAI tool message transports text only. Check native status in Pi's own log,
   // rather than reconstructing an isError flag from the HTTP result's wording.
   const nativeLog = JSON.parse(runs[0]!.response!).nativeLog;
@@ -865,7 +861,7 @@ test("the plugin's spend is a footer status item updated after every run, and th
   // 24a: idle; nothing left to note, one applicable fact and no knowledge yet.
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: 0->1 memory: 0\/0 cost: \$\d+\.\d{2}<\/dim>$/);
   const spend = h.memory.spend(1);
-  expect(spend.runs).toEqual({ noting: 2, consolidation: 0, dreaming: 0, manual: 0 }); // write and verify are two runs
+  expect(spend.runs).toEqual({ noting: 4, consolidation: 0, dreaming: 0, manual: 0 });
   expect(spend.input + spend.output).toBeGreaterThan(0);
   await h.prompt("more"); await h.answer();
   const result = await h.emit("session_before_tree");
@@ -985,7 +981,7 @@ test("a retry re-sends the same request: a stream error after a tool round does 
   expect(run.outcome).toBe("success");
   // Every attempt that reported usage counts; the attempt that died in transport reported none.
   // The write task's requests: all but the dead attempt and the verify task's three (its own run).
-  expect(response.usage.input).toBe(usage.input * (h.conversations.length - 1 - 3));
+  expect(response.usage.input).toBe(usage.input * (h.conversations.length - 1 - 9));
   // Pi's own retry loop records the provider's error text as it arrived at the transport.
   expect(response.retries).toEqual([{ attempt: 1, error: expect.stringContaining("fetch failed") }]);
 });
@@ -1008,7 +1004,7 @@ test("N jointly publishes a fact and knowledge; the next prompt delivers only th
     category: "constraint", scope: "session", supports: ["$1"] });
   h.provider(async c => notingFact(c, knowledge));
   await h.turn();
-  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["noting", "success"]]);
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual(Array(4).fill(["noting", "success"]));
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
   expect(h.memory.store.listVisibleKnowledge(1, h.memory.store.getSession(1)!.projectId)).toHaveLength(1);
   const carried = String((await h.prompt("second"))?.message?.content ?? "");

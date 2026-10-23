@@ -2,6 +2,7 @@ import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { expect, test } from "vitest";
 import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
 import type { KnowledgePath, KnowledgeOperationInput } from "../../../src/core/store/index.ts";
+import { archive as seedArchive } from "../../support/seed.ts";
 
 test("92/118: all-branch history owns stable ordinals, current selection follows the reader, and exact reads grant no write scope", () => {
   const memory = sourceSeededMemory(":memory:", async () => ({ outcome: "failure" as const, output: "unused" }));
@@ -62,12 +63,12 @@ test("92/118: all-branch history owns stable ordinals, current selection follows
     expect(all).not.toMatch(/K\d+@\d+/);
     expect(read(paths[2]!, `K${id}`)).toContain(`[K${id}#${store.versionTag(id, second.commit)}]`);
     expect(store.versionOrdinal(id, first.commit)).toBe(2);
-    const archive = write(paths[2]!, [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: id, baseCommit: second.commit, supports: [facts[2]!], reason: "retired", createdAt: "now" }]);
+    const archive = seedArchive(store, paths[2]!, id, second.commit, [facts[2]!]);
     const archivedHistory = read(paths[2]!, `K${id}`, "history");
     expect(archivedHistory.split("\n").find(line => line.startsWith(`  K${id}@v4 `)))
       .toContain("archive kind: invalid");
     expect(memory.injection(paths[2]!).knowledgeCommitIds).toEqual([]);
-    expect(store.versionOrdinal(id, archive.commit)).toBe(4);
+    expect(store.versionOrdinal(id, archive)).toBe(4);
 
     const foreignProject = store.createProject({ name: "foreign", declaredBy: "mark" });
     const foreign = store.createSession({ projectId: foreignProject.id, host: "pi:foreign", startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });

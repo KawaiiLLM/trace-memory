@@ -6,10 +6,13 @@ import { tokens, words, wordLimit } from "../../../src/core/render/index.ts";
 import { scoreAll } from "../../support/seed.ts";
 import { knowledgeFile, submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
-function fixture(agent?: (input: NotingAgentInput) => Promise<void>) {
+function fixture(agent?: (input: NotingAgentInput) => Promise<void>, stage = "extract-facts") {
   const memory = sourceSeededMemory(":memory:", async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, { request: {} });
+    if (input.task !== stage) {
+      if (input.task === "extract-facts") { submitEmpty(input); return { outcome: "success", output: "done", request: {} }; }
+      return verifyUnchanged(input, { request: {} });
+    }
     if (agent) await agent(input); else submitEmpty(input);
     return { outcome: "success", output: "done", request: {} };
   }, { writing: { bodyWords: 1_000_000 } }); // the oversized body below stands for an item written before the caps (ticket 144)
@@ -39,7 +42,7 @@ test("92: omitted knowledge has no printed tag; an exact tag works without read 
     expect(await submit(input, f.memory, { memoryInput: operation,
       fix: () => ({ knowledge: knowledgeFile(f.memory, { ...operation, id: `K1#${f.memory.store.versionTag(1, 1)}` }) }) })).toContain("not a version address");
     expect(f.memory.store.currentKnowledge(f.memory.store.knowledgePath(1))[0]!.revision.text).toBe(f.content.text);
-  });
+  }, "write-knowledge");
   try {
     expect(f.memory.store.currentKnowledge(f.memory.store.knowledgePath(1))).toHaveLength(1);
     expect(f.freeze().prepared?.text).not.toContain(`K1#${f.memory.store.versionTag(1, 1)}`);

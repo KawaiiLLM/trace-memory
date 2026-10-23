@@ -80,7 +80,6 @@ test("worker tool names are rendered before capacity and audit, and the first re
   expect(priced.prompt).not.toContain("`note(");
   expect(priced.prompt).not.toContain("{{tool.");
   expect(canonical.prompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
-  expect(priced.prepared!.text.endsWith("Call mcp__trace_memory__check first: it names your task, its first step and your files.")).toBe(true);
   const price = tokens(expected) + largestTaskPromptTokens(workerNames) + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, workerNames))) + tokens(priced.prepared!.text);
   expect(price).toBeGreaterThan(tokens(canonical.prompt!) + largestTaskPromptTokens() + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames))) + tokens(canonical.prepared!.text));
   expect(() => freezeNoting(memory.store, { sessionId, branch: "main", headTurnId: first.id, toolNames: workerNames,
@@ -159,7 +158,7 @@ test("a turn arriving during the model call waits for the next trigger", async (
   expect(result.outcome).toBe("success");
   expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).length).toBeGreaterThan(0);
   expect(hydrate(memory.store.sourcePath(sessionId, "main", first.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  script.push(async () => success([batch(second.id, [fact({ sources: `[T${second.id}#E1] ${memories.base}`, support: [["F1", "weak"]] })])]));
+  script.push(async () => success([batch(second.id, [fact({ sources: `[T${second.id}#E1] ${memories.base}`, caused_by: [["F1", "weak"]] })])]));
   await noting(second.id);
   expect(calls[1]!.text).toContain(second.userPrompt!);
   const rawSection = calls[1]!.text.split("Raw:\n")[1]!.split("</episodic>")[0]!;
@@ -201,7 +200,7 @@ test("duplicate trigger is dropped, including another façade on the same file",
   expect(memory.store.getRun(1)).toBeNull();
   resolve(success([])); await pending;
   expect(calls).toHaveLength(1);
-  expect(memory.store.getRun(3)).toBeNull(); // the two tasks' runs are 1 and 2; the dropped trigger made none
+  expect(memory.store.getRun(5)).toBeNull(); // the dropped trigger makes no extra stage
 });
 
 for (const outcome of ["failure", "cancelled"] as const) test(`${outcome} records only the attempt and allows a retry`, async () => {
@@ -222,11 +221,11 @@ for (const [label, changes, problem] of [
   ["a fact-level category", { category: "open" }, "category"],
   ["a fact-level actor", { actor: "tool" }, "actor"],
   ["an event status", { status: "completed" }, "status"],
-  ["an unknown fact", { support: [["F999", "weak"]] }, "F999"],
-  ["a self label", { support: [["$1", "weak"]] }, "f1"],
-  ["a forward label", { support: [["$2", "weak"]] }, "f2"],
-  ["a malformed target", { support: [["$x", "weak"]] }, "f"],
-  ["a relation without strength", { support: ["F1"] }, "F1"],
+  ["an unknown fact", { caused_by: [["F999", "weak"]] }, "F999"],
+  ["a self label", { caused_by: [["$1", "weak"]] }, "f1"],
+  ["a forward label", { caused_by: [["$2", "weak"]] }, "f2"],
+  ["a malformed target", { caused_by: [["$x", "weak"]] }, "f"],
+  ["a relation without strength", { caused_by: ["F1"] }, "F1"],
 ] as const) test(`refuses ${label} with problems and only a run record`, async () => {
   const t = turn(), output = [batch(t.id, [fact(changes)])];
   script.push(async () => success(output));

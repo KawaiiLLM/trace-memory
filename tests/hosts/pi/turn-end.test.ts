@@ -32,11 +32,11 @@ test.each(["session_start", "enable"] as const)(
     else await h.emit(boundary);
     await h.drain();
     const entries = h.memory.store.listSourceEntries(1), newest = entries.at(-1)!;
-    expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // one batch: its write and verify runs
+    expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual(Array(4).fill(["noting", "success"]));
     expect(h.memory.store.listRuns(1)[0]!.origin).toEqual({ sessionId: 1, entryIds: [newest.id] });
     expect(entries.every(entry => h.memory.store.entryNoted(entry.id))).toBe(true);
     await h.emit("tool_execution_start"); await h.drain();
-    expect(h.memory.store.listRuns(1)).toHaveLength(2); // no further batch
+    expect(h.memory.store.listRuns(1)).toHaveLength(4); // no further batch
   });
 
 test("one import spanning multiple turns admits work at its newest entry", async () => {
@@ -48,12 +48,12 @@ test("one import spanning multiple turns admits work at its newest entry", async
   }
   await h.emit("tool_execution_start"); await h.drain();
   const entries = h.memory.store.listSourceEntries(1), newest = entries.at(-1)!;
-  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // one batch: its write and verify runs
+  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual(Array(4).fill(["noting", "success"]));
   expect(h.memory.store.listRuns(1)[0]).toMatchObject({
     rangeTo: `S1/T${newest.turnId}`, origin: { sessionId: 1, entryIds: [newest.id] } });
   expect(entries.every(entry => h.memory.store.entryNoted(entry.id))).toBe(true);
   await h.emit("tool_execution_start"); await h.drain();
-  expect(h.memory.store.listRuns(1)).toHaveLength(2); // no further batch
+  expect(h.memory.store.listRuns(1)).toHaveLength(4); // no further batch
 });
 
 test("an import after mid-turn compaction checks the selected head, not the entry's owning Turn", async () => {
@@ -69,7 +69,7 @@ test("an import after mid-turn compaction checks the selected head, not the entr
   expect(newest.turnId).not.toBe(head);
   const batch = expect.objectContaining({ kind: "noting", outcome: "success", rangeTo: `S1/T${newest.turnId}`,
     origin: { sessionId: 1, entryIds: [newest.id] } });
-  expect(h.memory.store.listRuns(1)).toEqual([batch, batch]); // the write run and the verify run
+  expect(h.memory.store.listRuns(1)).toEqual(Array(4).fill(batch));
 });
 
 test.each(["session_start", "session_tree"] as const)("%s with fully imported history launches nothing even when Noting is due", async boundary => {
@@ -92,7 +92,7 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
   const h = host({ "noting.triggerTokens": 300, "dreaming.triggerOperations": 1 });
   h.provider(async c => {
     if (c.systemPrompt?.startsWith("# Dreamer") || c.systemPrompt?.startsWith("# Classifying")) return dreamerFiles(c) ?? reply("Done");
-    return notingFact(c, "## create\ntitle: Fixture title\ncategory: constraint\nscope: session\ntopics: \nsupports: f1\nreason: Package choice\n\nUse pnpm\n");
+    return notingFact(c, "## create\ntitle: Fixture title\ncategory: constraint\nscope: session\ntopics: \nsupports: f1\nfiles: None\nreason: Package choice\n\nUse pnpm\n");
   });
   await h.prompt("short");
   await h.emit("message_end", { message: reply("short") });
@@ -101,7 +101,7 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
   expect(h.requests).toHaveLength(0);
   h.persist(reply("word ".repeat(400)));
   await h.emit("tool_execution_start"); await h.drain();
-  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // one batch: its write and verify runs
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual(Array(4).fill(["noting", "success"]));
   h.persist(reply("next entry"));
   await h.emit("tool_execution_start"); await h.drain();
   // One Dreamer run is a run for each task: curate's batch, verify with nothing to check, and the scoring pass.
@@ -120,14 +120,14 @@ test("busy entries queue nothing; the next entry after publication admits the ne
   expect(h.requests).toHaveLength(1);
   release(notingFact(initial)); await h.drain();
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "noting");
-  expect(runs).toHaveLength(2); // write and verify
-  expect(runs.map(r => r.outcome)).toEqual(["success", "success"]);
-  expect(h.memory.store.listFactsByRun(runs[1]!.id)).toHaveLength(1); // the verify run publishes
+  expect(runs).toHaveLength(4);
+  expect(runs.map(r => r.outcome)).toEqual(Array(4).fill("success"));
+  expect(h.memory.store.listFactsByRun(runs[3]!.id)).toHaveLength(1);
   expect(h.memory.store.pendingEntryIds(1, "main", 2).length).toBeGreaterThan(0);
   await h.emit("agent_settled"); await h.drain(); // duplicate terminal signal is not a new turn
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(2);
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(4);
   h.persist(reply("next entry in the same turn")); await h.emit("tool_execution_start"); await h.drain();
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(4); // the second batch's two runs
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(8);
 });
 
 test("failed Noting retries at later entry ends and disables memory after three failures", async () => {
@@ -150,7 +150,7 @@ test.each(["aborted", "error"] as const)("%s assistant entries admit without wai
   await h.prompt("word ".repeat(400));
   await h.emit("message_end", { message: { ...reply("partial"), stopReason: outcome } });
   await h.emit("agent_end"); await h.drain();
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(2);
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(4);
 });
 
 test("stop after an empty borrowed candidate fences the next borrowed launch", async () => {

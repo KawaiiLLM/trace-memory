@@ -99,7 +99,7 @@ if (!process.argv.includes("--fixed-only")) for (const length of lengths) {
     const agent: RunAgent = async raw => {
       const task = raw as NotingAgentInput;
       const request = { messages: [{ role: "user", content: "synthetic benchmark" }] };
-      if (task.task === "verify") return verifyUnchanged(task, { request });
+      if (task.task !== "extract-facts") return verifyUnchanged(task, { request });
       task.reportRequest(request);
       const first = task.entryIds[0]!;
       const entry = local!.store.getSourceEntry(first)!;
@@ -267,7 +267,7 @@ for (const length of lengths) {
     const request = { messages: [{ role: "user", content: "synthetic benchmark" }] };
     const agent: RunAgent = async raw => {
       const task = raw as NotingAgentInput;
-      if (task.task === "verify") return verifyUnchanged(task, { request });
+      if (task.task !== "extract-facts") return verifyUnchanged(task, { request });
       task.reportRequest(request);
       const message = await submit(task, local!, { noteInput: [{ title: "Synthetic user rule", sources: `[T${head - 2}#E1] Synthetic user rule` }],
         memoryInput: { files: null, op: "create", title: "Fixture title", text: "Synthetic rule", category: "constraint", scope: "session", supports: ["$1"], topics: [], reason: "benchmark" } });

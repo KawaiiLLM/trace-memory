@@ -1,6 +1,6 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { canonicalFlatConfig, validateConfig, type ClosedSessionScope, type ConfigOverride, type TraceMemoryConfig } from "../../core/api/index.ts";
+import { DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ClosedSessionScope, type ConfigOverride, type TraceMemoryConfig } from "../../core/api/index.ts";
 import { CLASSIFY_SETTING_KEYS, MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-settings.ts";
 import { retireConsolidationSettings } from "../retired-settings.ts";
 
@@ -42,7 +42,7 @@ export interface ResolvedCcWorkerConfig extends Omit<CcWorkerConfig, "responseOr
   responseOriginTimeoutMs: number;
 }
 
-export interface CcHostConfig {
+export interface CcHostConfig extends Partial<{ [K in keyof TraceMemoryConfig["noting"] as `noting.${K}`]: number }> {
   /** Omitted uses the same ~/.trace-memory/trace.db default as the Pi host. */
   dbPath?: string;
   stateDir: string;
@@ -53,7 +53,6 @@ export interface CcHostConfig {
   /** Optional: the Dreamer's classify task; absent, `sonnet` and the Noter's thinking (ruling 2026-10-21 「评级任务用sonnet」). */
   "dreaming.classifyModel"?: string;
   "dreaming.classifyThinking"?: string;
-  "noting.triggerTokens"?: number;
   "dreaming.triggerOperations"?: number;
   "dreaming.timeoutMs"?: number;
   /** The one temporary allowance of a context (144 stage 4 §7.3). */
@@ -185,7 +184,10 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
     [keys.model, keys.thinking].flatMap(key => input[key as keyof CcHostConfig] === undefined ? [] : [[key, input[key as keyof CcHostConfig]]]))) as Partial<ResolvedCcHostConfig>;
   const coreConfig = validateConfig({
     closedSessionScope,
-    ...(input["noting.triggerTokens"] === undefined ? {} : { noting: { triggerTokens: input["noting.triggerTokens"] } }),
+    noting: Object.fromEntries(Object.keys(DEFAULT_CONFIG.noting).flatMap(key => {
+      const value = input[`noting.${key}` as keyof CcHostConfig];
+      return value === undefined ? [] : [[key, value]];
+    })),
     ...(input["dreaming.triggerOperations"] === undefined && input["dreaming.timeoutMs"] === undefined ? {} : { dreaming: {
       ...(input["dreaming.triggerOperations"] === undefined ? {} : { triggerOperations: input["dreaming.triggerOperations"] }),
       ...(input["dreaming.timeoutMs"] === undefined ? {} : { timeoutMs: input["dreaming.timeoutMs"] }),

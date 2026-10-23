@@ -14,7 +14,7 @@ const manual = (sessionId = 1, currentTurnId = 1, branch = "main"): ToolContext 
 const record = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
 beforeEach(() => {
   agent = async () => ({ outcome: "success", output: "", request: {} });
-  memory = sourceSeededMemory(":memory:", raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify" ? verifyUnchanged(raw, { request: {} }) : agent(raw));
+  memory = sourceSeededMemory(":memory:", raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task !== "extract-facts" ? verifyUnchanged(raw, { request: {} }) : agent(raw));
   const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
   memory.store.createSession({ enrollmentChoice: true, host: "pi:tools", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   memory.store.appendTurn({ sessionId: 1, kind: "turn", userPrompt: "project evidence", assistantText: "done", startedAt: "first source time" });

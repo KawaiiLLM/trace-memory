@@ -13,7 +13,7 @@ test("92: native Noter writes optional relations without NEAR feedback", async (
     f.script(body => {
       if (!worker(body)) return say("好的。");
       const prior = f.h.memory.store.listSessionFacts(1).length; // the first batch publishes after its verify task
-      return noterTurn(body, prior ? { ...noteBatch, sources: noteBatch.sources.replace("[T1#E1]", "[T2#E1]"), support: [["F1", "strong"]] } : noteBatch);
+      return noterTurn(body, prior ? { ...noteBatch, sources: noteBatch.sources.replace("[T1#E1]", "[T2#E1]"), caused_by: [["F1", "strong"]] } : noteBatch);
     });
     await f.turn();
     await vi.waitFor(() => expect(f.h.memory.store.listSessionFacts(1)).toHaveLength(1));
@@ -21,7 +21,7 @@ test("92: native Noter writes optional relations without NEAR feedback", async (
     await vi.waitFor(() => expect(f.h.memory.store.listSessionFacts(1)).toHaveLength(2));
     expect(f.sent.filter(body => worker(body)).some(body => (body.messages ?? []).some((message: Body) =>
       message.role === "user" && JSON.stringify(message.content).includes("System-generated review guidance")))).toBe(false);
-    expect(f.h.memory.store.listFactRelations(2)).toContainEqual({ fromFact: 2, toFact: 1, kind: "support", strength: "strong" });
+    expect(f.h.memory.store.listFactRelations(2)).toContainEqual({ fromFact: 2, toFact: 1, kind: "caused_by", strength: "strong" });
   } finally { await f.dispose(); }
 });
 
@@ -192,7 +192,7 @@ test("19b 2026-09-08: the fresh child activates no inherited extension", async (
     expect(run.outcome).toBe("success");
     expect(existsSync(marker)).toBe(false); // the extension was never loaded, so it never ran
     expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["search", "check", "read", "write", "edit", "bash"]);
-    expect(f.h.memory.store.listRuns(1)).toHaveLength(2); // one batch, its two tasks, and no second worker
+    expect(f.h.memory.store.listRuns(1)).toHaveLength(4);
   } finally { await f.dispose(); }
 });
 
@@ -313,7 +313,7 @@ test("review 2026-09-08: provider retries never spend the tool-round cap; the ca
     // Two failed attempts, then the write task's three tool rounds within the cap and its two stops, then the verify task's three requests.
     expect(run.outcome).toBe("success");
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
-    expect(f.sent.filter(body => worker(body))).toHaveLength(10);
+    expect(f.sent.filter(body => worker(body))).toHaveLength(14);
     expect(JSON.stringify(f.sent.filter(body => worker(body)).at(-1)!.messages)).not.toContain("Your files do not pass the check"); // the files pass, so no repair
     expect(JSON.parse(run.response!).retries).toHaveLength(2);
   } finally { await f.dispose(); }

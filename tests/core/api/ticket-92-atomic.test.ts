@@ -9,6 +9,7 @@ import { tokens } from "../../../src/core/render/index.ts";
 import { REQUEST, scriptedNoter, type NoterOutput } from "../../support/noter.ts";
 import { block } from "../../support/workspace.ts";
 import { curateNow, versionRef } from "../../support/dreamer.ts";
+import { archive as seedArchive } from "../../support/seed.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -84,7 +85,7 @@ test("04: another connection allocates the next F ID while the files exist; fina
 });
 
 test("04: labels map to actual ids, a literal $3 in a body stays text, and a relation resolves to its fact", async () => {
-  const f = fixture(() => ({ noteInput: [fact("first"), { ...fact("Pi agent's final explanation", "T1#E2"), support: [["$1", "strong"]] }],
+  const f = fixture(() => ({ noteInput: [fact("first"), { ...fact("Pi agent's final explanation", "T1#E2"), caused_by: [["$1", "strong"]] }],
     memoryInput: { ...knowledge(["$2"]), text: "Literal $3 stays text" } }));
   expect(await f.run()).toMatchObject({ outcome: "success" });
   const facts = f.memory.store.listSessionFacts(f.session.id).sort((a, b) => a.id - b.id);
@@ -119,8 +120,8 @@ for (const table of ["facts", "knowledge_revisions", "noted_entries"])
     expect(f.memory.store.listSessionFacts(f.session.id)).toEqual([]);
     expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
     expect(f.memory.pendingEntries(f.session.id, "main", f.turn.id)).toHaveLength(f.entries.length);
-    // The only success run left is task 1's pass record, which owns no fact and no processed entry; the hand-off still waits for task 2.
-    expect(f.memory.store.db.prepare("SELECT count(*) n FROM runs WHERE outcome='success'").get()).toMatchObject({ n: 1 });
+    // Three stage snapshots survived; none owns facts or processed entries.
+    expect(f.memory.store.db.prepare("SELECT count(*) n FROM runs WHERE outcome='success'").get()).toMatchObject({ n: 3 });
     expect(f.memory.store.db.prepare("SELECT count(*) n FROM facts").get()).toMatchObject({ n: 0 });
     expect(f.memory.store.handoff(f.session.id, "noting")).not.toBeNull();
   });
@@ -130,7 +131,7 @@ test("116: manual writes commit one item at a time without N slots or local supp
   const tools = f.memory.tools({ kind: "manual", ...f.path, currentTurnId: f.turn.id });
   const note = tools.find(tool => tool.name === "note")!, memory = tools.find(tool => tool.name === "memory")!;
   expect(JSON.parse(note.execute(fact("first"))).factIds).toEqual([1]);
-  expect(JSON.parse(note.execute({ ...fact("second"), support: [["F1", "strong"]] })).factIds).toEqual([2]);
+  expect(JSON.parse(note.execute({ ...fact("second"), caused_by: [["F1", "strong"]] })).factIds).toEqual([2]);
   expect(f.memory.store.listFactRelations(2)[0]).toMatchObject({ toFact: 1 });
   for (const input of [{ slot: "$1", ...fact("must not replace") }, { drop: "$1" }])
     expect(note.execute(input)).toContain("N-only");
@@ -156,9 +157,9 @@ function seedKnowledge(f: ReturnType<typeof fixture>, scope: "session" | "projec
   const advance = (archive = false) => {
     const other = new Store(f.file);
     try {
+      if (archive) { seedArchive(other, f.path, base.knowledgeId, base.commit, [fid]); return; }
       const result = commitNoterKnowledge(other, { path: f.path, run: { sessionId: f.session.id, createdAt: "later" },
-        operations: [archive ? { files: null, op: "archive", kind: "invalid", text: "Retired; nothing replaces it.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [fid], reason: "retired", createdAt: "later" }
-          : { files: null, op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content, text: "Concurrent rule" }] });
+        operations: [{ files: null, op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content, text: "Concurrent rule" }] });
       if (!result.ok) throw new Error(result.problems.join("; "));
     } finally { other.close(); }
   };
@@ -171,7 +172,7 @@ for (const when of ["write", "verify"] as const)
     const f = fixture(() => {
       if (when === "write") seed.advance();
       return { noteInput: [fact("User changed the rule")], memoryInput: { ...knowledge([`F${seed.fid}`, "$1"]), op: "update", id: seed.tag, text: "Requested rule" },
-        verify: () => { if (when === "verify") seed.advance(); } };
+        verify: (_files, input) => { if (when === "verify" && input.task === "check-knowledge") seed.advance(); } };
     });
     const seed = seedKnowledge(f);
     const result = await f.run(); expect(result).toMatchObject({ outcome: "success" });
@@ -200,7 +201,7 @@ for (const when of ["write", "verify"] as const) test(`144/04: a body at the cap
   expect(tokens(body)).toBe(200);
   const f = fixture(() => {
     if (when === "write") seed.advance();
-    return { noteInput: [fact("Refinement")], memoryInput: { ...knowledge(), op: "update", id: seed.tag, text: body }, verify: () => { if (when === "verify") seed.advance(); } };
+    return { noteInput: [fact("Refinement")], memoryInput: { ...knowledge(), op: "update", id: seed.tag, text: body }, verify: (_files, input) => { if (when === "verify" && input.task === "check-knowledge") seed.advance(); } };
   });
   const seed = seedKnowledge(f);
   expect(await f.run()).toMatchObject({ outcome: "success" });

@@ -280,9 +280,8 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
     });
   }
   for (const key of Object.keys(f)) {
-    if (!["title", "sources", "support", "negate", "caused_by", "objects"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
+    if (!["title", "sources", "negate", "caused_by", "objects"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
   }
-  const support = validateRelationList(`${path}.support`, f.support, problems);
   const negate = validateRelationList(`${path}.negate`, f.negate, problems);
   const caused_by = validateRelationList(`${path}.caused_by`, f.caused_by, problems);
   if (caused_by && caused_by.length > 2) problems.push(`${path}.caused_by: at most two relations`);
@@ -295,7 +294,6 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
   return {
     title: f.title as string,
     sources,
-    support,
     negate,
     caused_by,
     ...(objects === undefined ? {} : { objects }),

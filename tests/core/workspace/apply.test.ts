@@ -3,6 +3,7 @@ import { memoryFiles } from "../../../src/core/api/files.ts";
 import { applyWorkspace, overCaps, plan, type ApplyResult } from "../../../src/core/workspace/index.ts";
 import { curatePairOf, type CurateOperation } from "../../../src/core/store/executions.ts";
 import { block, workspaceBatch, type WorkspaceBatch } from "../../support/workspace.ts";
+import { withVerdicts } from "../../support/noter.ts";
 
 const opened: WorkspaceBatch[] = [];
 const batch = () => { const b = workspaceBatch(); opened.push(b); return b; };
@@ -10,7 +11,7 @@ afterEach(() => { for (const b of opened.splice(0)) b.memory.close(); });
 
 const file = (text: string, name = "file.md") => ({ name, text });
 const noting = (b: WorkspaceBatch, facts: string, knowledge: string) =>
-  applyWorkspace(b.store, { kind: "noting", scope: b.scope, facts: file(facts, "facts.md"), knowledge: file(knowledge, "knowledge.md") });
+  applyWorkspace(b.store, { kind: "noting", scope: b.scope, facts: file(withVerdicts(facts), "facts.md"), knowledge: file(withVerdicts(knowledge), "knowledge.md") });
 const dreaming = (b: WorkspaceBatch, operation: CurateOperation, text: string) =>
   applyWorkspace(b.store, { kind: "curate", pair: curatePairOf(operation), sessionId: b.session.id, path: b.path, file: file(text, `curate-${operation}.md`) });
 const ok = (result: ApplyResult) => { if (!result.ok) throw new Error(result.problems.join("\n")); return result; };
@@ -26,14 +27,14 @@ const concurrentUpdate = (b: WorkspaceBatch, item: { knowledgeId: number; commit
 const support = (item: { supports: number[] }) => `F${item.supports[0]}`;
 
 const factFile = (b: WorkspaceBatch, label = "f1") => block(`fact ${label}`, { title: "pnpm chosen" }, `${b.source(0, "User asked to use pnpm")}\n${b.source(1, "Pi agent explained the choice")}`);
-const create = { title: "Use pnpm", category: "constraint", scope: "project", topics: "tooling", supports: "f1", reason: "User choice" };
+const create = { title: "Use pnpm", category: "constraint", scope: "project", topics: "tooling", supports: "f1", files: "None", reason: "User choice" };
 
 describe("the Noter's two files", () => {
   test("facts are published and the knowledge file's labels resolve to the new fact ids in the same transaction", () => {
     const b = batch();
     const existing = b.item("Use npm for the build", { title: "Build tool" });
     const result = ok(noting(b, `${factFile(b)}\n${block("fact f2", { title: "lockfile condition" }, b.source(2, "User added the lockfile condition"))}`,
-      `${block("create", { ...create, supports: "f1, f2" }, "Use pnpm and commit the lockfile.")}\n${block(`update ${existing.ref}`, { supports: "f2", reason: "User changed it" }, "Use pnpm for the build.")}`));
+      `${block("create", { ...create, supports: "f1, f2" }, "Use pnpm and commit the lockfile.")}\n${block(`update ${existing.ref}`, { supports: "f2", files: "None", reason: "User changed it" }, "Use pnpm for the build.")}`));
     expect(Object.keys(result.factIds)).toEqual(["f1", "f2"]);
     const [f1, f2] = [result.factIds.f1!, result.factIds.f2!];
     expect(b.store.getFact(f1)).toMatchObject({ title: "pnpm chosen", source: [`${b.address(0)}@user`, `${b.address(1)}@assistant`] });
@@ -50,7 +51,7 @@ describe("the Noter's two files", () => {
   test("a stale update becomes a create through the Noter's conflict path; it does not fail the file", () => {
     const b = batch();
     const item = b.item("Use npm for the build", { title: "Build tool" });
-    const files = [factFile(b), block(`update ${item.ref}`, { supports: "f1", reason: "User changed it" }, "Use pnpm for the build.")] as const;
+    const files = [factFile(b), block(`update ${item.ref}`, { supports: "f1", files: "None", reason: "User changed it" }, "Use pnpm for the build.")] as const;
     concurrentUpdate(b, item, "Use yarn for the build");
     const result = ok(noting(b, files[0], `${files[1]}\n${block("create", create, "Use pnpm.")}`));
     expect(result.blocks[0]).toMatchObject({ status: "applied", converted: true });
@@ -215,16 +216,16 @@ describe("the caps in force at apply", () => {
 });
 
 describe("fact relations (ticket 144, Q3-A)", () => {
-  test("`support:` and `negate:` name an existing fact or an earlier label; the published fact carries both relations with their F ids", () => {
+  test("`caused_by:` and `negate:` name an existing fact or an earlier label; publication resolves their F ids", () => {
     const b = batch();
     const old = b.existingFact("Earlier claim", "User asked to use pnpm");
-    const first = block("fact f1", { title: "pnpm chosen", support: `F${old.id} strong` }, b.source(0, "User asked to use pnpm"));
-    const second = block("fact f2", { title: "lockfile condition", support: "f1 weak", negate: `F${old.id} weak` }, b.source(2, "User added the lockfile condition"));
+    const first = block("fact f1", { title: "pnpm chosen", caused_by: `F${old.id} strong` }, b.source(0, "User asked to use pnpm"));
+    const second = block("fact f2", { title: "lockfile condition", caused_by: "f1 weak", negate: `F${old.id} weak` }, b.source(2, "User added the lockfile condition"));
     const result = ok(noting(b, `${first}\n${second}`, "## none\n"));
     const [f1, f2] = [result.factIds.f1!, result.factIds.f2!];
-    expect(b.store.listFactRelations(f1)).toContainEqual({ fromFact: f1, toFact: old.id, kind: "support", strength: "strong" });
+    expect(b.store.listFactRelations(f1)).toContainEqual({ fromFact: f1, toFact: old.id, kind: "caused_by", strength: "strong" });
     expect(b.store.listFactRelations(f2)).toEqual(expect.arrayContaining([
-      { fromFact: f2, toFact: f1, kind: "support", strength: "weak" },
+      { fromFact: f2, toFact: f1, kind: "caused_by", strength: "weak" },
       { fromFact: f2, toFact: old.id, kind: "negate", strength: "weak" }]));
   });
 });

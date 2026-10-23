@@ -255,7 +255,7 @@ test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter
     await h.emit("session_before_compact", { preparation: { tokensBefore: 1_000 } });
     await h.drain();
     expect(h.requests).toHaveLength(requests);
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(2); // The first batch's two tasks; the new batch is still held.
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(4); // first batch only
     // The summary is the plugin's own message: it becomes no source entry, no fact and no receipt.
     const sources = h.memory.store.listSourceEntries(1).length;
     await h.emit("session_compact", { compactionEntry: h.compaction(block.compaction.summary), fromExtension: true });

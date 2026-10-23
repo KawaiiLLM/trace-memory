@@ -95,6 +95,11 @@ export class CcResponseOrigins {
     if (this.failure) throw this.failure;
     const responseId = message.message.id;
     if (typeof responseId !== "string" || !responseId) throw this.fail(new Error("CC assistant response has no valid message.id"));
+    if (this.task.kind === "noting") {
+      const usage = message.message.usage;
+      const input = usage?.input_tokens === undefined ? undefined : usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+      this.task.reportResponse?.(responseId, input !== undefined && Number.isFinite(input) ? input : undefined);
+    }
     const blocks = message.message.content.filter((block): block is Extract<typeof block, { type: "tool_use" }> => block.type === "tool_use");
     if (!this.responseIds.has(responseId)) {
       this.responseIds.add(responseId);
@@ -400,9 +405,7 @@ export class CcAgentWorker {
     // absolute and already normal, is exactly one of the two, is not a symbolic link, and sits directly in the run's directory.
     // Stage 4: a Dreaming task has the same shape, with its own lists of readable and writable files.
     // A task with no workspace (a fixture of the older shapes) reads trace:// only.
-    const files = !workspace ? { read: [] as string[], write: [] as string[] }
-      : task.kind === "noting" ? { read: [task.workspace.facts, task.workspace.knowledge], write: [task.workspace.facts, task.workspace.knowledge] }
-      : { read: task.workspace.read, write: task.workspace.write };
+    const files = !workspace ? { read: [] as string[], write: [] as string[] } : workspace;
     const workspaceFile = (file: unknown, allowed: readonly string[]): { path: string } | { reason: string } => {
       if (typeof file !== "string" || !isAbsolute(file) || file !== resolve(file) || !allowed.includes(file))
         return { reason: `Trace Memory: this task may use only its ${task.kind === "noting" ? "two " : ""}workspace files` };

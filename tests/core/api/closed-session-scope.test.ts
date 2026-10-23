@@ -7,7 +7,7 @@ const at = "2026-09-09T00:00:00Z";
 /** The scripted write task records nothing; its verify task finds nothing to correct. */
 const submitted = submitEmpty;
 function setup(scope: ClosedSessionScope = "project", agent: Parameters<typeof sourceSeededMemory>[1] = async raw => { submitted(raw); return { outcome: "success", output: "", request: {} }; }) {
-  const memory = sourceSeededMemory(":memory:", raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify"
+  const memory = sourceSeededMemory(":memory:", raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task !== "extract-facts"
     ? verifyUnchanged(raw, { request: {} }) : agent(raw), { closedSessionScope: scope });
   const p = memory.store.createProject({ name: "same", declaredBy: "mark" });
   const other = memory.store.createProject({ name: "other", declaredBy: "mark" });

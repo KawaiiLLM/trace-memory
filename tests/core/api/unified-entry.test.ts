@@ -5,7 +5,7 @@ import { probe, submit, verifyUnchanged } from "../../support/noter.ts";
 const time = "2026-09-01T00:00:00Z";
 function fixture() {
   let run: (input: NotingAgentInput) => Promise<RunAgentResult> = async () => { throw new Error("offline test"); };
-  const m = TraceMemory(":memory:", raw => (raw as NotingAgentInput).task === "verify" ? verifyUnchanged(raw, { request: {} }) : run(raw as NotingAgentInput), {}, undefined, piSourceBlocks);
+  const m = TraceMemory(":memory:", raw => (raw as NotingAgentInput).task !== "extract-facts" ? verifyUnchanged(raw, { request: {} }) : run(raw as NotingAgentInput), {}, undefined, piSourceBlocks);
   const project = m.store.createProject({ name: "p", declaredBy: "mark" });
   const session = m.store.createSession({ host: "pi:entry", projectId: project.id, startedAt: time, firstReplyAt: time, enrollmentChoice: true });
   const turn = m.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "question", startedAt: time });

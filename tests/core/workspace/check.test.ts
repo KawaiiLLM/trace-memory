@@ -12,7 +12,7 @@ afterEach(() => { for (const b of opened.splice(0)) b.memory.close(); });
 const file = (text: string, name = "file.md") => ({ name, text });
 const factText = (b: WorkspaceBatch, label = "f1") => block(`fact ${label}`, { title: "pnpm chosen" },
   `${b.source(0, "User asked to use pnpm")}\n${b.source(1, "Pi agent explained the choice")}`);
-const create = { title: "Use pnpm", category: "constraint", scope: "project", topics: "tooling", supports: "f1", reason: "User choice" };
+const create = { title: "Use pnpm", category: "constraint", scope: "project", topics: "tooling", supports: "f1", files: "None", reason: "User choice" };
 const noterFacts = (b: WorkspaceBatch, text: string) => checkWorkspace(b.store, { kind: "noting-facts", scope: b.scope, file: file(text, "facts.md") });
 const noterKnowledge = (b: WorkspaceBatch, text: string, factsText = factText(b)) =>
   checkWorkspace(b.store, { kind: "noting-knowledge", scope: b.scope, file: file(text, "knowledge.md"), facts: file(factsText, "facts.md") });
@@ -108,7 +108,7 @@ describe("noting-knowledge", () => {
   test("create and update pass; supports may cite a label of the facts file and report lengths", () => {
     const b = batch();
     const existing = b.item("Use npm for the build", { title: "Build tool" });
-    const text = `${block("create", create, "Use pnpm.")}\n${block(`update ${existing.ref}`, { title: "Build tool", supports: "f1", reason: "User changed it" }, "Use pnpm for the build.")}`;
+    const text = `${block("create", create, "Use pnpm.")}\n${block(`update ${existing.ref}`, { title: "Build tool", supports: "f1", files: "None", reason: "User changed it" }, "Use pnpm for the build.")}`;
     const result = noterKnowledge(b, text);
     expect(result).toMatchObject({ ok: true, problems: [] });
     expect(result.lengths.map(item => `${item.block}/${item.field}`)).toEqual(["block 1 `## create`/title", "block 1 `## create`/body", `block 2 \`## update ${existing.ref}\`/title`, `block 2 \`## update ${existing.ref}\`/body`]);
@@ -372,25 +372,49 @@ describe("fact relations (ticket 144, Q3-A)", () => {
   const fact = (b: WorkspaceBatch, label: string, fields: Record<string, string>, index = 0) =>
     block(`fact ${label}`, { title: `fact ${label}`, ...fields }, b.source(index, `evidence for ${label}`));
 
-  test("`support:` and `negate:` accept an existing F id or an earlier label with a strength, separated by commas", () => {
+  test("`caused_by:` and `negate:` accept an existing F id or an earlier label with a strength, separated by commas", () => {
     const b = batch();
     const old = b.existingFact();
-    expect(noterFacts(b, `${fact(b, "f1", { support: `F${old.id} strong` })}\n${fact(b, "f2", { support: "f1 weak", negate: `F${old.id} strong` }, 2)}`))
+    expect(noterFacts(b, `${fact(b, "f1", { caused_by: `F${old.id} strong` })}\n${fact(b, "f2", { caused_by: "f1 weak", negate: `F${old.id} strong` }, 2)}`))
       .toMatchObject({ ok: true, problems: [] });
   });
 
   test("a relation is refused when its target is unknown, later in the file, itself, or has no strength, in the label the file wrote", () => {
     const b = batch();
     const refused = (fields: Record<string, string>, other = "") => joined(noterFacts(b, `${fact(b, "f1", fields)}${other ? `\n${other}` : ""}`));
-    expect(refused({ support: "F99999 strong" })).toContain("F99999");
-    expect(refused({ support: "f1 strong" })).toContain("f1");              // itself
+    expect(refused({ caused_by: "F99999 strong" })).toContain("F99999");
+    expect(refused({ caused_by: "f1 strong" })).toContain("f1");
     expect(refused({ negate: "f2 weak" }, fact(b, "f2", {}, 2))).toContain("f2"); // later in the file
-    expect(refused({ support: "f9 weak" })).toContain("is not `<F id or fact label> strong|weak`");
-    expect(refused({ support: "F1" })).toContain("is not `<F id or fact label> strong|weak`");
+    expect(refused({ caused_by: "f9 weak" })).toContain("is not `<F id or fact label> strong|weak`");
+    expect(refused({ caused_by: "F1" })).toContain("is not `<F id or fact label> strong|weak`");
   });
 
   test("a relation field of another block is not a field of that block", () => {
     const b = batch();
     expect(joined(noterKnowledge(b, block("create", { ...create, negate: "f1 weak" }, "Use pnpm.")))).toContain("negate");
   });
+});
+
+test("155: new fact support is refused, causal annotations are capped, and object names must occur in the body", () => {
+  const b = batch();
+  const old = Array.from({ length: 3 }, () => b.existingFact());
+  expect(joined(noterFacts(b, block("fact f1", { title: "pnpm chosen", support: `F${old[0]!.id} strong` }, b.source(0, "User chose pnpm")))))
+    .toContain("field `support` is not allowed");
+  expect(noterFacts(b, block("fact f1", { title: "pnpm chosen", caused_by: old.slice(0, 2).map(fact => `F${fact.id} strong`).join(", ") }, b.source(0, "User chose pnpm"))))
+    .toMatchObject({ ok: true });
+  expect(joined(noterFacts(b, block("fact f1", { title: "pnpm chosen", caused_by: old.map(fact => `F${fact.id} strong`).join(", ") }, b.source(0, "User chose pnpm")))))
+    .toContain("caused_by: at most two relations");
+  expect(joined(noterFacts(b, block("fact f1", { title: "pnpm chosen", objects: "workspace" }, b.source(0, "User chose pnpm")))))
+    .toContain("workspace");
+  expect(noterFacts(b, block("fact f1", { title: "pnpm chosen", objects: "PNPM" }, b.source(0, "User chose pnpm")))).toMatchObject({ ok: true });
+});
+
+test("155: only the knowledge checker accepts an unresolved flag, and its reason cannot be empty", () => {
+  const b = batch(), item = b.item("Existing rule");
+  const flag = (reason: string, allowFlags: boolean) => checkWorkspace(b.store, { kind: "noting-knowledge", scope: b.scope,
+    file: file(`## flag K${item.knowledgeId}\nreason: ${reason}\n\nverdict: ok\n`, "knowledge.md"),
+    facts: file(factText(b), "facts.md"), checked: true, allowFlags });
+  expect(flag("requires merge", true)).toMatchObject({ ok: true });
+  expect(joined(flag("", true))).toContain("nonempty reason");
+  expect(flag("requires merge", false)).toMatchObject({ ok: false });
 });

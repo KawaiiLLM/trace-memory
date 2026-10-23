@@ -37,8 +37,7 @@ test.each(["automatic", "catchup"] as const)("%s releases a rejected slot once a
     admission.mockRestore();
     const release = vi.spyOn(runtime.store, "releaseClaim");
     await start(); await h.drain();
-    expect(runtime.store.listRuns(1).filter(r => r.kind === "noting")).toMatchObject([{ outcome: "success" }, { outcome: "success" }]);
-    expect(runtime.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(2); // one batch: its write and verify runs
+    expect(runtime.store.listRuns(1).filter(r => r.kind === "noting").map(run => run.outcome)).toEqual(Array(4).fill("success"));
     // The released/reused slot must still send the normalized entry view, not the old labels.
     const run = runtime.store.listRuns(1).find(r => r.kind === "noting")!;
     const audit = JSON.parse(run.response!).entryAudit;

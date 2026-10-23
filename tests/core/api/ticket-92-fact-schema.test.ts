@@ -45,10 +45,10 @@ test("92: one note schema derives ordered entry roles and original harness, not 
     const next = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" })
       .find(tool => tool.name === "note")!;
     const related = JSON.parse(next.execute({ ...slice("User confirmed the proposal", [f.source[0]!]),
-      support: [[`F${fact.id}`, "strong"]] }));
+      caused_by: [[`F${fact.id}`, "strong"]] }));
     expect(related.factIds).toHaveLength(1);
     expect(f.memory.store.listFactRelationsOnPathOf([related.factIds[0]], { sessionId: f.session.id, branch: "main", headTurnId: f.turn.id })
-      .get(related.factIds[0])).toEqual(expect.arrayContaining([expect.objectContaining({ fromFact: related.factIds[0], toFact: fact.id, kind: "support" })]));
+      .get(related.factIds[0])).toEqual(expect.arrayContaining([expect.objectContaining({ fromFact: related.factIds[0], toFact: fact.id, kind: "caused_by" })]));
   } finally { f.memory.close(); }
 });
 
@@ -171,7 +171,7 @@ test("92: essential quoted identifiers stay literal and legacy groups name only 
     expect(f.memory.store.getFact(receipt.factIds[0])!.text).toBe(text);
     expect(f.memory.store.listFactRelations(receipt.factIds[0])).toEqual([]);
     const next = f.memory.tools({ kind: "manual", sessionId: f.session.id, currentTurnId: f.turn.id, branch: "main" }).find(t => t.name === "note")!;
-    expect(next.execute({ ...slice(text, [f.source[0]!]), support: [["F99999", "strong"]] })).toContain("rejected:");
+    expect(next.execute({ ...slice(text, [f.source[0]!]), caused_by: [["F99999", "strong"]] })).toContain("rejected:");
     const legacy = f.memory.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "now" }, facts: [{
       turnId: f.turn.id, category: "observation", actor: "agent", text: "A pasted discussion", source: [`T${f.turn.id}#assistant`], entryIds: [f.entries[1]!.id], createdAt: "now",
     }] });

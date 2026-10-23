@@ -39,9 +39,9 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker l
       rounds++;
       expect(memory.store.listSessionFacts(session.id)).toEqual([]);
       expect(memory.store.currentKnowledge(path)).toEqual([]);
-      if (ending === "error" && writes(body) >= 2) return broken(); // the write task's two files exist (one per step); its last reply fails
+      if (ending === "error" && writes(body) >= 1 && JSON.stringify(body.messages).includes("Task: write-knowledge")) return broken();
       return noterTurn(body, { title: "Durable rule", sources: "[T1#E1] User set a durable rule" }, usage(),
-        "## create\ntitle: Fixture title\ncategory: constraint\nscope: session\ntopics: \nsupports: f1\nreason: User requirement\n\nFollow the durable rule\n");
+        "## create\ntitle: Fixture title\ncategory: constraint\nscope: session\ntopics: \nsupports: f1\nfiles: None\nreason: User requirement\n\nFollow the durable rule\n");
     });
     const result = await memory.noting({ ...path });
     expect(result.outcome).toBe(ending === "success" ? "success" : "failure");
@@ -50,7 +50,7 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker l
     expect(memory.store.currentKnowledge(path)).toHaveLength(ending === "success" ? 1 : 0);
     if (!("runId" in result)) throw new Error("missing audit");
     const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);
-    expect(audit.task).toBe(ending === "success" ? "verify" : "write");
+    expect(audit.task).toBe(ending === "success" ? "check-knowledge" : "write-knowledge");
     expect(audit.toolCalls.map((value: any) => value.name)).toEqual(["check"]);
     expect(audit.files.knowledge).toContain("Follow the durable rule");
     expect(audit.usage).not.toBeNull();

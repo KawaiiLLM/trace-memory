@@ -22,12 +22,12 @@ const run = (sessionId: number, extra = {}) => ({ kind: "noting" as const, sessi
 test("the first task's pass writes its run and the hand-off together; a later pass replaces the row", () => {
   const { store, session, entries } = open();
   const ids = entries.map(entry => entry.id);
-  const first = store.commitWriteTask({ run: run(session.id, { response: JSON.stringify({ task: "write", files: { facts: "a", knowledge: "b" } }) }), handoff: { nextTask: "verify", branch: "main", entryIds: ids } });
+  const first = store.commitNotingStage({ run: run(session.id, { response: JSON.stringify({ task: "extract-facts", files: { facts: "a", knowledge: "b" } }) }), handoff: { nextTask: "check-facts", branch: "main", entryIds: ids } });
   expect(first.ok).toBe(true);
   if (!first.ok) return;
   expect(store.getRun(first.runId)).toMatchObject({ outcome: "success" });
-  expect(store.handoff(session.id, "noting")).toMatchObject({ runId: first.runId, nextTask: "verify", branch: "main", entryIds: ids });
-  const second = store.commitWriteTask({ run: run(session.id), handoff: { nextTask: "verify", branch: "main", entryIds: ids } });
+  expect(store.handoff(session.id, "noting")).toMatchObject({ runId: first.runId, nextTask: "check-facts", branch: "main", entryIds: ids });
+  const second = store.commitNotingStage({ run: run(session.id), handoff: { nextTask: "write-knowledge", branch: "main", entryIds: ids } });
   expect(second.ok && store.handoff(session.id, "noting")!.runId).toBe(second.ok && second.runId);
   expect(store.db.prepare("SELECT count(*) AS n FROM task_handoffs").get()).toEqual({ n: 1 });
   // The pass owns no fact and processes no entry.
@@ -37,7 +37,7 @@ test("the first task's pass writes its run and the hand-off together; a later pa
 test("a publication covering the row's entries deletes it; one covering none of them keeps it", () => {
   const { store, session, entries } = open();
   const ids = entries.map(entry => entry.id);
-  store.commitWriteTask({ run: run(session.id), handoff: { nextTask: "verify", branch: "main", entryIds: ids } });
+  store.commitNotingStage({ run: run(session.id), handoff: { nextTask: "check-facts", branch: "main", entryIds: ids } });
   expect(store.commitNotingRun({ run: run(session.id), facts: [], entryIds: [] }).ok).toBe(true);
   expect(store.handoff(session.id, "noting")).not.toBeNull();
   expect(store.commitNotingRun({ run: run(session.id), facts: [], entryIds: [ids[0]!] }).ok).toBe(true);
@@ -47,7 +47,7 @@ test("a publication covering the row's entries deletes it; one covering none of 
 test("a stale claim fences the pass: a failure run is recorded and no hand-off is written", () => {
   const { store, session, entries } = open();
   const stale = { sessionId: session.id, phase: "noting" as const, token: "gone", executorId: "e", expiresAt: 0 } as never;
-  const result = store.commitWriteTask({ run: run(session.id, { claim: stale }), handoff: { nextTask: "verify", branch: "main", entryIds: entries.map(entry => entry.id) } });
+  const result = store.commitNotingStage({ run: run(session.id, { claim: stale }), handoff: { nextTask: "check-facts", branch: "main", entryIds: entries.map(entry => entry.id) } });
   expect(result.ok).toBe(false);
   expect(store.handoff(session.id, "noting")).toBeNull();
   expect(store.listRuns(session.id).map(r => r.outcome)).toEqual(["failure"]);

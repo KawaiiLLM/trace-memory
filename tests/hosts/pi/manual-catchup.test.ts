@@ -44,7 +44,7 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     await command(h, "catchup");
     await settle(h);
     const notingRuns = h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success");
-    const batches = notingRuns.length / 2; // each batch is a write run and a verify run
+    const batches = notingRuns.filter(run => JSON.parse(run.response!).task === "check-knowledge").length;
     expect(batches).toBeGreaterThan(1); // several bounded batches, not one unbounded drain
     expect(h.memory.pendingEntries(1, "main", head)).toEqual([]); // the frozen entry boundary is fully processed
     const allFacts = h.memory.store.listSessionFacts(1).map(f => f.id).sort((a, b) => a - b);
@@ -58,7 +58,7 @@ test("67: catchup drains bounded Noting batches but leaves below-threshold facts
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     expect(h.memory.store.listSessionFacts(1).some(f => f.text === "Later, unrelated")).toBe(true);
     await command(h, "");
-    expect(h.notices.at(-1)?.replace(/\s+/g, " ")).toContain(`Catchup: completed (${notingRuns.filter(r => JSON.parse(r.response!).task === "verify").reduce((n, r) => n + JSON.parse(r.response!).entryAudit.entries.length, 0)} entries noted; below-threshold knowledge may remain pending)`);
+    expect(h.notices.at(-1)?.replace(/\s+/g, " ")).toContain(`Catchup: completed (${notingRuns.filter(r => JSON.parse(r.response!).task === "check-knowledge").reduce((n, r) => n + JSON.parse(r.response!).entryAudit.entries.length, 0)} entries noted; below-threshold knowledge may remain pending)`);
   } finally { await h.dispose(); }
 }, 30000);
 
@@ -107,13 +107,13 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
     h.provider(async c => emptyNote(c) ?? reply("No durable material."));
     release[0]!(reply("No durable material.")); // the ordinary run finishes, but does not chain a catchup batch
     await settle(h);
-    expect(h.requests).toHaveLength(8); // the held first request, the write task's repair of step 1 and its step 2, and the verify task's three; no chained batch
-    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(2);
+    expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS);
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(4);
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
     await command(h, "catchup"); // the ordinary run exhausted Raw; finish the waiting drain without another launch
     await settle(h);
-    expect(h.requests).toHaveLength(8);
-    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(2);
+    expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS);
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(4);
     expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(2);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
@@ -314,7 +314,7 @@ test("18b 2026-09-08: stop prevents the next batch from being scheduled even whe
     } finally { spy.mockRestore(); }
     expect(stoppedOnce).toBe(true);
     expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch, both tasks; stop forbids a second batch
-    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(2);
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(4);
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");

@@ -2,7 +2,7 @@
 // the real installed SDK: a real Pi SessionManager and AgentSession for the parent, a real fresh
 // native child, the real pi-ai adapters and a real temporary SQLite database. Only HTTP is stubbed,
 // so every request below is one the adapter really serialized.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, vi } from "vitest";
@@ -13,7 +13,7 @@ import { renderToolDefinitions } from "../../../src/core/api/tools.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import type { NativeTask, ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
-import { factsFile } from "../../support/noter.ts";
+import { factsFile, withVerdicts } from "../../support/noter.ts";
 
 export type Body = Record<string, any>;
 export const sse = (events: unknown[]) => new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n",
@@ -27,17 +27,17 @@ export const call = (id: string, name: string, args: unknown, tokens = usage()) 
 export const calls = (id: string, name: string, args: readonly unknown[], tokens = usage()) => sse([
   { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta: { role: "assistant", tool_calls: args.map((value, index) =>
     ({ index, id: `${id}-${index + 1}`, type: "function", function: { name, arguments: JSON.stringify(value) } })) }, finish_reason: "tool_calls" }], usage: tokens }]);
-/** The scripted Noter on the wire (ticket 144, stage 5): call `check`; in the write task write the file the latest message names for
- * its step (the fact, if any, in the facts file, then `knowledge` after the stop hook's step-advance message); stop. A verify task
- * finds nothing to correct and stops at each step. Returns the reply to the request `body` holds. */
+/** Four conversations; each checks first, writes only its deliverable and stops. */
 export const noterTurn = (body: Body, fact: Record<string, unknown> = {}, tokens = usage(), knowledge = "## none\n"): Response => {
   const text = (message: Body) => typeof message.content === "string" ? message.content : (message.content ?? []).map((part: Body) => part.text ?? "").join("");
-  const mentions = (body.messages ?? []).filter((m: Body) => m.role !== "assistant" && m.role !== "system").map(text).filter((value: string) => /^Task: (write|verify)/m.test(value));
+  const mentions = (body.messages ?? []).filter((m: Body) => m.role !== "assistant" && m.role !== "system").map(text).filter((value: string) => /^Task: (extract-facts|check-facts|write-knowledge|check-knowledge)/m.test(value));
   if (!mentions.length) return call("check-1", "check", {}, tokens);
-  const [, task, step, file] = /^Task: (write|verify).*?Step (\d) of 2 \(\w+\)\. File: (\S+?\.md)(?:\.|\s|$)/ms.exec(mentions.at(-1)!) ?? [];
+  const [, task, file] = /^Task: ([\w-]+).*?File: (\S+?\.md)(?:\.|\s|$)/ms.exec(mentions.at(-1)!) ?? [];
   const written = (body.messages ?? []).flatMap((m: Body) => (m.tool_calls ?? []).filter((c: Body) => c.function?.name === "write").map((c: Body) => JSON.parse(c.function.arguments).path));
-  if (!file || task === "verify" || written.includes(file)) return say("Done.", tokens);
-  return call(`write-${written.length + 1}`, "write", { path: file, content: step === "1" ? (Object.keys(fact).length ? factsFile([fact as never]) : "## none\n") : knowledge }, tokens);
+  if (!file || written.includes(file)) return say("Done.", tokens);
+  const content = task!.startsWith("check-") ? withVerdicts(readFileSync(file, "utf8"))
+    : task === "extract-facts" ? (Object.keys(fact).length ? factsFile([fact as never]) : "## none\n") : knowledge;
+  return call(`write-${written.length + 1}`, "write", { path: file, content }, tokens);
 };
 /** The scripted Dreamer on the wire (ticket 144, stage 4): call `check`; write the file the latest report or follow-up names (`## none` for
  * curate and verify, every listed item 50 for the scorer); stop. Returns the reply to the request `body` holds. */

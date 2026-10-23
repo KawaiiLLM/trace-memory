@@ -148,8 +148,8 @@ the runtime-derived shared allowance; they are not production defaults.
 4. Save the run records and actual request bodies. For each fork run, apply
    the README script: strip suffixes backwards and verify each previous/new
    hash, unchanged tools/settings and exact captured-prefix bytes. Check native
-   call IDs/results and the final stored request. A Noter batch is a write run and a verify run with identical first requests (system, tools, first message);
-   a malformed file gets one follow-up message from the stop check.
+   call IDs/results and the final stored request. A Noter batch has four fresh conversations with identical first requests (system, tools, first message);
+   each check stage reads its code-retrieved file and writes per-block verdicts; a malformed deliverable gets one stop-hook repair.
 5. Exercise a manual `note` and `memory` call; check immediate kind `manual`
    receipts and native source entries for the calls and results. Manual `memory` permits
    create/update/archive (135). Exercise `/trace project <name>`; verify `/trace` alone

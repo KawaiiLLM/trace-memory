@@ -4,6 +4,8 @@
 // the memory tool's (`prepareMemory`), and fact validation is `note`'s (`factValidator`); this file adds only
 // what the file format itself introduces.
 
+import { existsSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { factValidator, frozenTurnIds, notingSources } from "../api/tools.ts";
 import { prepareMemory, overLimit } from "../knowledge-write/prepare.ts";
 import { isKnowledgeCategory, substantiveArchiveStatement, validateNotingFact, KNOWLEDGE_CATEGORIES, type KnowledgeRevision } from "../model/index.ts";
@@ -19,9 +21,9 @@ export type TaskKind = "noting-facts" | "noting-knowledge" | "curate" | "classif
 export interface NotingScope { sessionId: number; branch: string; range: { from: string; to: string }; entryIds?: readonly number[] }
 
 export type WorkspaceTask =
-  | { kind: "noting-facts"; scope: NotingScope; file: WorkspaceFile }
+  | { kind: "noting-facts"; scope: NotingScope; file: WorkspaceFile; checked?: boolean }
   /** `facts` is the run's facts file; its labels are what `supports:` may cite besides `F<id>`. */
-  | { kind: "noting-knowledge"; scope: NotingScope; file: WorkspaceFile; facts: WorkspaceFile }
+  | { kind: "noting-knowledge"; scope: NotingScope; file: WorkspaceFile; facts: WorkspaceFile; checked?: boolean; allowFlags?: boolean }
   /** 146 ruling 13: a curate file holds blocks of either operation of the run's `pair`, and never a `create` (Dreaming creates no knowledge). */
   | { kind: "curate"; pair: CuratePair; sessionId: number; path?: KnowledgePath; file: WorkspaceFile }
   | { kind: "classify"; items: readonly number[]; file: WorkspaceFile };
@@ -44,21 +46,23 @@ export interface Plan {
   lengths: Length[];
   facts: { block: Block; label: string; fact: FactCommitInput }[];
   knowledge: PlannedBlock[];
+  flags: { knowledgeId: number; revisionId: number; reason: string }[];
   path?: KnowledgePath;
   sources?: ReturnType<typeof notingSources>;
 }
 
 const allowedOps = (task: WorkspaceTask): readonly string[] =>
-  task.kind === "noting-facts" ? ["fact"] : task.kind === "noting-knowledge" ? ["create", "update"] : task.kind === "curate" ? CURATE_PAIRS[task.pair] : [];
+  task.kind === "noting-facts" ? ["fact"] : task.kind === "noting-knowledge" ? ["create", "update", ...(task.allowFlags ? ["flag"] : [])] : task.kind === "curate" ? CURATE_PAIRS[task.pair] : [];
 
 const FIELDS: Record<string, readonly string[]> = {
-  fact: ["title", "support", "negate"],
+  fact: ["title", "objects", "negate", "caused_by", "verdict"],
   create: ["title", "category", "scope", "topics", "supports", "reason"],
   update: ["title", "category", "scope", "topics", "supports", "reason"],
   merge: ["absorb", "title", "category", "scope", "topics", "supports", "reason"],
   split: ["title", "category", "scope", "topics", "supports", "reason"],
   child: ["title", "category", "scope", "topics", "supports", "reason"],
   archive: ["kind", "reason"],
+  flag: ["reason", "verdict"],
 };
 const REQUIRED: Record<string, readonly string[]> = {
   fact: ["title"],
@@ -66,6 +70,7 @@ const REQUIRED: Record<string, readonly string[]> = {
   update: ["reason"], merge: ["absorb", "reason"], split: ["reason"],
   child: ["title", "category", "scope", "topics", "supports", "reason"],
   archive: ["kind", "reason"],
+  flag: ["reason"],
 };
 const ARCHIVE_KINDS = ["invalid", "inadmissible"] as const;
 /** Merging has one form; an archive that names a successor is the old, refused way to say it. */
@@ -79,7 +84,7 @@ type Made = { operation?: KnowledgeOperationInput; problems: string[] };
 interface Base { knowledgeId: number; ordinal: number; commit: number; revision: KnowledgeRevision }
 
 export function plan(store: Store, task: WorkspaceTask): Plan {
-  const out: Plan = { problems: [], lengths: [], facts: [], knowledge: [] };
+  const out: Plan = { problems: [], lengths: [], facts: [], knowledge: [], flags: [] };
   const { file } = task;
   if (task.kind === "classify") {
     const { scores, problems } = parseScores(file);
@@ -98,10 +103,16 @@ export function plan(store: Store, task: WorkspaceTask): Plan {
   }
   const parsed = parseBlocks(file);
   out.problems.push(...parsed.problems);
+  const noting = task.kind === "noting-facts" || task.kind === "noting-knowledge";
+  if (noting) for (const block of parsed.blocks) {
+    const verdict = block.fields.get("verdict");
+    if (verdict ? !/^(?:ok|(?:edited|reverted) — \S.*)$/.test(verdict.value) : task.checked)
+      out.problems.push(problem(file, verdict?.line ?? block.line, describeBlock(block), "expected `verdict: ok`, `verdict: edited — <why>` or `verdict: reverted — <why>` under the block"));
+  }
   // `## none` stands alone: one bare line, nothing beside it and nothing under it that apply would drop silently.
   const none = parsed.blocks.filter(block => block.op === "none");
   for (const block of none) {
-    if (block.target || block.fields.size || block.body || block.children.length)
+    if (block.target || [...block.fields.keys()].some(key => !(noting && key === "verdict")) || block.body || block.children.length)
       out.problems.push(problem(file, block.line, describeBlock(block), "`## none` is the whole block: no target, fields, body or `###` sections"));
   }
   if (none.length && parsed.blocks.length > none.length)
@@ -110,7 +121,7 @@ export function plan(store: Store, task: WorkspaceTask): Plan {
   const allowed = allowedOps(task);
   for (const block of parsed.blocks) if (block.op !== "none" && !allowed.includes(block.op))
     out.problems.push(problem(file, block.line, describeBlock(block), `\`## ${block.op}\` is not allowed in a ${task.kind} file; allowed: ${allowed.map(op => `\`${op}\``).join(", ")}, or \`## none\``));
-  const blocks = parsed.blocks.filter(block => allowed.includes(block.op));
+  const blocks = parsed.blocks.filter(block => allowed.includes(block.op) && !(noting && block.fields.get("verdict")?.value.startsWith("reverted — ")));
   if (task.kind === "noting-facts") planFacts(store, task, blocks, out);
   else planKnowledge(store, task, blocks, out);
   return out;
@@ -144,14 +155,14 @@ function planFacts(store: Store, task: Extract<WorkspaceTask, { kind: "noting-fa
     else labels.set(block.target, block);
     const title = block.fields.get("title")?.value ?? "";
     // The body is one `[address] text` line per source, the form `note` takes; its length is the sum of its segments.
-    const relations: Record<"support" | "negate", string[][]> = { support: [], negate: [] };
-    for (const kind of ["support", "negate"] as const) for (const item of list(block.fields.get(kind)?.value)) {
+    const relations: Record<"caused_by" | "negate", string[][]> = { caused_by: [], negate: [] };
+    for (const kind of ["caused_by", "negate"] as const) for (const item of list(block.fields.get(kind)?.value)) {
       const match = /^(\S+)\s+(strong|weak)$/.exec(item), target = match?.[1];
       const handle = !target ? undefined : /^F[1-9]\d*$/.test(target) ? target : position.has(target) ? `$${position.get(target)}` : undefined;
       if (handle) relations[kind].push([handle, match![2]!]);
       else out.problems.push(problem(file, block.fields.get(kind)!.line, where, `${kind}: \`${item}\` is not \`<F id or fact label> strong|weak\`; separate relations with commas`));
     }
-    const raw = { title, sources: block.body, ...(relations.support.length ? { support: relations.support } : {}), ...(relations.negate.length ? { negate: relations.negate } : {}) };
+    const raw = { title, sources: block.body, objects: list(block.fields.get("objects")?.value), ...relations };
     const syntax: string[] = [], shape = validateNotingFact("fact", raw, syntax);
     out.lengths.push(measured(where, "title", words(title), store.writing.titleWords));
     if (shape && !syntax.length)
@@ -171,7 +182,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
   out.path = path;
   const sessionId = path.sessionId;
   // The Noter may cite the facts file's labels; they are numbered by position, as the Noter's `$n` handles were.
-  const factBlocks = noting ? parseBlocks(task.facts).blocks.filter(block => block.op === "fact") : [];
+  const factBlocks = noting ? parseBlocks(task.facts).blocks.filter(block => block.op === "fact" && !block.fields.get("verdict")?.value.startsWith("reverted — ")) : [];
   const labelOf = new Map(factBlocks.map((block, i) => [block.target, i + 1]));
   const localFacts = new Map(factBlocks.map((block, i) => {
     const bad: string[] = [], shape = validateNotingFact("fact", { title: block.fields.get("title")?.value ?? "", sources: block.body }, bad);
@@ -187,7 +198,26 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
     const line = (name: string) => block.fields.get(name)?.line ?? block.line;
     const value = (section: Section, name: string) => section.fields.get(name)?.value;
     const missing = (section: Section, kind: string) => (REQUIRED[kind] ?? []).some(name => !section.fields.has(name));
-    add(...checkFields(file, block, block.op, where));
+    const fieldBlock = noting ? { ...block, fields: new Map([...block.fields].filter(([key]) => key !== "files" && key !== "verdict")) } : block;
+    add(...checkFields(file, fieldBlock, block.op, where));
+    if (noting && block.op !== "flag" && !block.fields.has("files")) add(fmt(block.line, "missing required field `files`"));
+    const files = (section: Section): string[] | null | undefined => {
+      if (!noting) return undefined;
+      const raw = value(section, "files");
+      if (raw === undefined) return undefined;
+      if (raw === "None") return null;
+      const paths = list(raw);
+      if (!paths.length) add(fmt(line("files"), "files: list code paths or write `None`"));
+      const session = store.getSession(sessionId)!;
+      const root = session.directory ?? session.startDirectory;
+      return paths.map(path => {
+        if (!isAbsolute(path) && !root) { add(fmt(line("files"), `files: cannot resolve relative path \`${path}\`: session root is unknown`)); return path; }
+        const absolute = isAbsolute(path) ? resolve(path) : resolve(root!, path);
+        if (!existsSync(absolute)) add(fmt(line("files"), `files: path does not exist: ${absolute}`));
+        return absolute;
+      });
+    };
+    const linkedFiles = files(block);
 
     const record = (knowledgeId: number, at: number) => {
       const earlier = recorded.get(knowledgeId);
@@ -195,6 +225,11 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       else recorded.set(knowledgeId, block);
     };
     const base = (ref: string, at: number): Base | null => {
+      if (noting && task.checked && /^K[1-9]\d*$/.test(ref)) {
+        const current = store.currentKnowledge(path).find(item => item.knowledge.id === Number(ref.slice(1)))?.revision;
+        if (!current) { add(fmt(at, `${ref} is not visible to this session`)); return null; }
+        return { knowledgeId: current.knowledgeId, ordinal: store.versionOrdinal(current.knowledgeId, current.id), commit: current.id, revision: current };
+      }
       const match = VERSION.exec(ref.trim());
       if (!match) { add(fmt(at, `\`${ref}\` is not a version address; expected \`K<id>@v<n>\``)); return null; }
       const knowledgeId = Number(match[1]), ordinal = Number(match[2]);
@@ -235,7 +270,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       if (category === undefined && !isKnowledgeCategory(b.revision.category))
         return { problems: [problem(file, section.line, label, `category: the base \`${b.revision.category}\` is a legacy category; supply one of ${KNOWLEDGE_CATEGORIES.join(", ")}`)] };
       return piece({ op: "update", id: `K${b.knowledgeId}#${store.versionTag(b.knowledgeId, b.commit)}`, text: section.body,
-        files: b.revision.files,
+        files: noting ? linkedFiles : b.revision.files,
         category: category ?? b.revision.category, scope: scope ?? b.revision.scope, topics: topics === undefined ? b.revision.topics : list(topics),
         supports: cited.refs, reason: value(section, "reason") ?? "", ...(title === undefined ? {} : { title }) }, label, section.line, "", mapping, !noting);
     };
@@ -244,7 +279,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       const cited = supports(section, label, mapping);
       if (!cited.refs) return { problems: cited.problems };
       return piece({ op: "create", title: value(section, "title"), text: section.body, category: value(section, "category"), scope: value(section, "scope"),
-        files: null,
+        files: noting ? linkedFiles : null,
         topics: list(value(section, "topics")), supports: cited.refs, reason: value(section, "reason") }, label, section.line, prefix, mapping);
     };
     const planned = (entry: Omit<PlannedBlock, "block">) => {
@@ -252,7 +287,15 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       add(...entry.make().problems);
     };
 
-    if (block.op === "create") {
+    if (block.op === "flag") {
+      if (!value(block, "reason")?.trim()) add(fmt(line("reason"), "a flag requires a nonempty reason"));
+      const target = base(block.target, block.line);
+      if (target) {
+        record(target.knowledgeId, block.line);
+        out.flags.push({ knowledgeId: target.knowledgeId, revisionId: target.commit, reason: value(block, "reason") ?? "" });
+      }
+      if (block.body || block.children.length) add(fmt(block.line, "a flag takes only a reason line and its verdict"));
+    } else if (block.op === "create") {
       lengths(block, where); body(block, where);
       if (block.children.length) add(fmt(block.line, "a `create` block has no `### child` sections"));
       planned({ make: mapping => createOf(block, "create", where, "", mapping) });

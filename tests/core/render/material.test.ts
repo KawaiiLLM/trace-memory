@@ -39,7 +39,7 @@ const time = "2026-09-08T00:00:00Z";
 const tag = (knowledgeId: number, commit: number) => `K${knowledgeId}#${memory.store.versionTag(knowledgeId, commit)}`;
 
 /** Core ends the Noter\u2019s material with this line, so both tasks of a run begin with the same request. */
-const CHECK_FIRST = "\n\nCall check first: it names your task, its first step and your files.";
+const CHECK_FIRST = "\n\nCall check first: it names your stage and your files.";
 const ok = (): RunAgentResult => ({ outcome: "success", output: "[]", request: { fake: true } });
 
 /** These cases size items in thousands of tokens, as items written before the caps are (ticket 144); the caps are lifted here, not in each case. */
@@ -482,7 +482,7 @@ test("29b/92 (case 13): fresh N receives one full material dispatch across its t
   let rounds = 0;
   const worker = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, { request: { fake: true } });
+    if (input.task !== "extract-facts") return verifyUnchanged(input, { request: { fake: true } });
     calls.push(input);
     if (input.kind === "noting") {
       // Two tool rounds inside one run: the child keeps its own messages and nothing is resent.

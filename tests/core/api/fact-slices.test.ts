@@ -17,7 +17,7 @@ function setup(worker?: (task: any) => void | Promise<void>) {
   const db = join(dir, "db.sqlite");
   const memory = sourceSeededMemory(db, async raw => {
     const task = raw as any;
-    if (task.task === "verify") return verifyUnchanged(task, { request: { messages: [{ role: "user", content: "test" }] } });
+    if (task.task !== "extract-facts") return verifyUnchanged(task, { request: { messages: [{ role: "user", content: "test" }] } });
     task.reportRequest({ messages: [{ role: "user", content: "test" }] });
     await worker?.(task);
     return { outcome: "success", output: "done", request: { messages: [{ role: "user", content: "test" }] } };

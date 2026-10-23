@@ -46,6 +46,7 @@ interface NativeCommon {
   onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: { requested?: ThinkingLevel; effective: ThinkingLevel } }): void;
   /** Dreamer's host check at a completed pass, with one same-child repair. */
   passEnd?(): string | undefined;
+  onResponse?(id: string, inputTokens?: number): void;
   /** Pi's own retry policy (settings.json `retry`, read by the child's SettingsManager) scheduled a
    * backoff, and ended one. The host surfaces them; this module neither retries nor sleeps itself. */
   onRetry?(event: { attempt: number; maxAttempts: number; delayMs: number; error: string }): void;
@@ -214,6 +215,9 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     const message = event.message as { role: string; usage?: unknown; stopReason?: string; errorMessage?: string; content?: unknown };
     if (message.role !== "assistant" || seen.has(event.message)) return;
     seen.add(event.message);
+    const counters = message.usage as { input?: number; cacheRead?: number; cacheWrite?: number } | undefined;
+    const input = counters?.input === undefined ? undefined : counters.input + (counters.cacheRead ?? 0) + (counters.cacheWrite ?? 0);
+    task.onResponse?.(String(seen.size), input);
     const failedOrCancelled = message.stopReason === "error" || message.stopReason === "aborted" || message.errorMessage !== undefined;
     // Only responses this run generated. The copied parent messages restored into the child were
     // never re-sent, and native session statistics would count them. An errored or cancelled response

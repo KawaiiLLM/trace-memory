@@ -12,7 +12,7 @@ function fixture(db = ":memory:") {
   let requests = 0;
   const agent: RunAgent = async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task !== "verify") requests++; // a batch is one request: its write task
+    if (input.task === "extract-facts") requests++;
     if (input.kind === "noting") {
       submitEmpty(input);
     }

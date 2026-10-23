@@ -85,7 +85,7 @@ test("borrowed N follows the oldest retained branch; a busy slot never takes ano
     expect(h.signals[0]!.aborted).toBe(false); // arriving own work did not preempt borrowed N
     h.provider(async c => notingFact(c));
     await tick(h);
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success", "success"]); // write and verify
+    expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(Array(4).fill("success"));
     expect(h.memory.pendingEntries(second.sessionId, second.branch, second.headTurnId)).toHaveLength(1);
   } finally { await h.dispose(); }
 });
@@ -100,7 +100,7 @@ test("closed tiny pending Raw is borrowed below own trigger; noted-only, live an
     const pending = target(h.memory);
     await tick(h);
     expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch: both tasks
-    expect(h.memory.store.listRuns(pending.sessionId).filter(r => r.kind === "noting")).toHaveLength(2);
+    expect(h.memory.store.listRuns(pending.sessionId).filter(r => r.kind === "noting")).toHaveLength(4);
     expect(h.memory.pendingEntries(pending.sessionId, pending.branch, pending.headTurnId)).toEqual([]);
     expect(h.memory.store.listRuns(live.sessionId)).toHaveLength(0);
     expect(h.memory.store.listRuns(disabled.sessionId)).toHaveLength(0);
@@ -139,11 +139,11 @@ test("borrowed N publishes both layers to its target without a special executor 
     h.memory.declareProject(1, "Borrowed project", "mark", h.memory.store.knowledgePath(1, "main"));
     const t = target(h.memory, { project: "Borrowed project", branch: "target-branch" });
     const beforeDelivery = h.entries.filter(e => e.type === "custom_message").length;
-    h.provider(async c => notingFact(c, "## create\ntitle: Fixture title\ncategory: understanding\nscope: project\ntopics: \nsupports: f1\nreason: Retain the target's finding.\n\nTarget knowledge\n"));
+    h.provider(async c => notingFact(c, "## create\ntitle: Fixture title\ncategory: understanding\nscope: project\ntopics: \nsupports: f1\nfiles: None\nreason: Retain the target's finding.\n\nTarget knowledge\n"));
     await tick(h);
     const runs = h.memory.store.listRuns(t.sessionId).filter(r => r.kind === "noting");
-    expect(runs).toHaveLength(2); // write and verify
-    expect(runs[1]).toMatchObject({ branch: t.branch, outcome: "success" });
+    expect(runs).toHaveLength(4);
+    expect(runs[3]).toMatchObject({ branch: t.branch, outcome: "success" });
     const fact = h.memory.store.listSessionFacts(t.sessionId)[0]!;
     expect(fact).toBeDefined();
     const visible = h.memory.store.listVisibleKnowledge(t.sessionId, t.projectId);

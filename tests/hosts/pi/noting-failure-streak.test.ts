@@ -25,20 +25,20 @@ const cancelled = async (h: Host) => {
 };
 const head = (h: Host) => h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)[0]!.id;
 
-test("144: a worker that writes only one of its two files ends without publishing or advancing Raw", async () => {
+test("155: a knowledge writer that stops without its file publishes nothing or Raw progress", async () => {
   const h = host(config);
   try {
     let requests = 0;
     h.provider(async c => {
-      if (++requests > 5) throw new Error("single-file failure script repeated a request");
+      if (++requests > 9) throw new Error("missing-file failure script repeated a request");
       const next = noterReply(c, { facts: "## fact f1\ntitle: Package choice\n\n[T1#E1] User prefers pnpm\n" });
-      // The knowledge file is never written: step 1 passes, step 2's stop check prompts once, the model has nothing more to do, the second check fails.
+      // Extraction and fact checking pass; the knowledge writer gets one repair, but never writes its file.
       const writesKnowledge = next?.content.some(part => part.type === "toolCall" && part.name === "write" && String(part.arguments.path).endsWith("knowledge.md"));
       return !next || writesKnowledge ? reply("Done.") : next;
     }, { autoStop: false });
     await h.turn();
-    expect(requests).toBe(5); // check, write facts, stop (step 1 passes), stop at step 2, stop again after the one repair
-    const run = notingRuns(h)[0]!;
+    expect(requests).toBe(9);
+    const run = notingRuns(h).at(-1)!;
     expect(run.outcome).toBe("failure");
     expect(JSON.parse(run.response!).problems.join("\n")).toContain("knowledge.md");
     expect(h.memory.store.listSessionFacts(1)).toEqual([]);
@@ -166,7 +166,7 @@ test("32c replaces 26a: real native children disable on the third incomplete exe
     await command(f.h, "on");
     f.script(body => !worker(body) ? say("好的。") : noterTurn(body, {}));
     await f.turn("enabled opportunity " + "word ".repeat(400));
-    await vi.waitFor(() => expect(notingRuns(f.h).filter(r => r.outcome === "success")).toHaveLength(2), { timeout: 5000 }); // write and verify
+    await vi.waitFor(() => expect(notingRuns(f.h).filter(r => r.outcome === "success")).toHaveLength(4), { timeout: 5000 });
   } finally { await f.dispose(); }
 }, 40000);
 

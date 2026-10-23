@@ -19,7 +19,7 @@ import { CcTaskScheduler as CoreCcTaskScheduler } from "../../src/hosts/cc/sched
 import type { CcReconcileResult } from "../../src/hosts/cc/importer.ts";
 import { TEST_CC_VERSION } from "../support/cc-version.ts";
 import { fact as seedFact, knowledgeBatch } from "../support/seed.ts";
-import { factsFile, knowledgeFile, submit, submitEmpty, verifyUnchanged } from "../support/noter.ts";
+import { factsFile, knowledgeFile, submit, submitEmpty, verifyUnchanged, withVerdicts } from "../support/noter.ts";
 
 type FixtureProjection = Omit<CcReconcileResult, "selectedCount" | "selectedTailId" | "selectedAppendedEntryIds">;
 // Scheduler-only fixtures vary source selection independently. Supply the importer-owned header
@@ -205,7 +205,8 @@ test("fresh CC Read uses Core's frozen reader, denies other files, and re-render
 test("the Noter's file hooks fail closed: an exception inside either denies the call", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-failclosed-")); dirs.push(directory);
   const workspaceDir = join(directory, "workspaces", "run"); mkdirSync(workspaceDir, { recursive: true });
-  const workspace = { dir: workspaceDir, facts: join(workspaceDir, "facts.md"), knowledge: join(workspaceDir, "knowledge.md") };
+  const workspace = { dir: workspaceDir, facts: join(workspaceDir, "facts.md"), knowledge: join(workspaceDir, "knowledge.md"),
+    read: [join(workspaceDir, "facts.md"), join(workspaceDir, "knowledge.md")], write: [join(workspaceDir, "facts.md")] };
   const broken = (tool_name: string) => ({ tool_name, get tool_input(): never { throw new Error("hook defect"); } });
   const decisions: string[] = [];
   const fakeQuery = ((request: { options: Record<string, any> }) => {
@@ -855,16 +856,11 @@ test("production worker reads a trace:// snapshot, runs search code and accounts
       expect(plain).toMatch(/^\[S\d+\/T\d+#E1@user\] .*needle word word/);
       // The model's native Write is simulated by the file it would leave: `check` names the paths.
       yield assistant(`check-${++id}`, [`check-${id}`], ccWorkerToolNames.check);
-      const facts = /File: (.+?facts\.md)/.exec(await call(`check-${id}`, `check-${id}`, "check", {}))![1]!;
-      writeFileSync(facts, "## none\n");
+      const report = await call(`check-${id}`, `check-${id}`, "check", {});
+      const file = /File: (.+?\.md)/.exec(report)![1]!;
+      writeFileSync(file, `## none\n${/^Task: check-/m.test(report) ? "verdict: ok\n" : ""}`);
       yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: id,
         usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 5, cache_creation_input_tokens: 3 },
-        modelUsage: {}, total_cost_usd: 0.125 };
-      // Step 1 passed: the stop hook's message brings step 2, whose file the model then writes.
-      expect((await prompts.next()).value.message.content[0].text).toContain("Step 1 passed.");
-      writeFileSync(facts.replace(/facts\.md$/, "knowledge.md"), "## none\n");
-      yield { type: "result", subtype: "success", is_error: false, result: "done", errors: [], num_turns: id,
-        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
         modelUsage: {}, total_cost_usd: 0.125 };
       await client.close();
     })() as any;
@@ -887,7 +883,7 @@ test("production worker reads a trace:// snapshot, runs search code and accounts
   expect(listed.find((value: { name: string }) => value.name === "search").inputSchema)
     .toEqual(toolDefinitions.find(value => value.name === "search")!.parameters);
   expect(rawInputs.some(input => typeof input.code === "string")).toBe(true);
-  expect(memory.spend(session.id)).toMatchObject({ input: 22, output: 14, cacheRead: 10, cacheWrite: 6, cost: 0.25 }); // one native session per task
+  expect(memory.spend(session.id)).toMatchObject({ input: 44, output: 28, cacheRead: 20, cacheWrite: 12, cost: 0.5 });
   expect(memory.trace(`R${result.runId}`, { full: true })).toContain("cost $0.1250");
   memory.close();
 });
@@ -931,28 +927,24 @@ test.each([false, true])("production MCP N: files that fail the stop check get o
         yield assistant(id, [id], ccWorkerToolNames.check);
         const text = (await client.callTool({ name: "check", arguments: {}, _meta: { "claudecode/toolUseId": id } }) as any).content[0].text as string;
         checks.push(text);
-        const facts = /File: (.+?facts\.md)/.exec(text)![1]!;
-        return { task: /Task: (\w+)/.exec(text)![1]!, paths: [facts, facts.replace(/facts\.md$/, "knowledge.md")] as [string, string] };
+        const file = /File: (\S+?\.md)/.exec(text)![1]!;
+        return { task: /Task: ([\w-]+)/.exec(text)![1]!, file };
       };
       const result = { type: "result", subtype: "success", is_error: false, result: "done", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
         modelUsage: {}, total_cost_usd: 0 };
-      const { task, paths } = yield* check();
+      const { task, file } = yield* check();
       tasks.push(task);
-      // The native Write is simulated by the file the model would leave, one file per step.
-      if (task === "write") writeFileSync(paths[0], factsFile([]));
+      if (task === "extract-facts") writeFileSync(file, factsFile([]));
+      else if (task === "write-knowledge") writeFileSync(file, knowledgeFile(memory, invalidFirst ? { ...valid, supports: [] } : valid));
+      else writeFileSync(file, withVerdicts(readFileSync(file, "utf8")));
+      expect(memory.store.currentKnowledge()).toHaveLength(0);
       yield { ...result, num_turns: ordinal };
-      const advance = (await prompts.next()).value;
-      expect(advance.isSynthetic).toBe(true);
-      expect(advance.message.content[0].text).toContain("Step 1 passed.");
-      if (task === "write") writeFileSync(paths[1], knowledgeFile(memory, invalidFirst ? { ...valid, supports: [] } : valid));
-      expect(memory.store.currentKnowledge()).toHaveLength(0); // not a partial publication
-      yield { ...result, num_turns: ordinal };
-      if (task === "write" && invalidFirst) {
+      if (task === "write-knowledge" && invalidFirst) {
         const review = (await prompts.next()).value;
         expect(review.isSynthetic).toBe(true);
         reviews.push(review.message.content[0].text);
-        writeFileSync(paths[1], knowledgeFile(memory, valid));
+        writeFileSync(file, knowledgeFile(memory, valid));
         yield { ...result, num_turns: ordinal };
       }
       expect(memory.store.currentKnowledge()).toHaveLength(0);
@@ -974,7 +966,7 @@ test.each([false, true])("production MCP N: files that fail the stop check get o
   const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: target.turn.id,
     triggerEntryId: target.entry.id, model: "claude-sonnet-4-5", toolNames: ccWorkerToolNames });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  expect(tasks).toEqual(["write", "verify"]); // two native sessions, one per task
+  expect(tasks).toEqual(["extract-facts", "check-facts", "write-knowledge", "check-knowledge"]);
   expect(memory.store.currentKnowledge()).toHaveLength(1);
   expect(reviews).toHaveLength(invalidFirst ? 1 : 0);
   if (invalidFirst) { expect(reviews[0]).toContain("Your files do not pass the check"); expect(reviews[0]).toContain("supports"); }
@@ -1407,7 +1399,7 @@ test("manual catchup drains bounded Noting but leaves below-threshold facts and 
   const phases: string[] = [], admissions: { kind: string; model: string; thinking?: string }[] = [];
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, { request: undefined, audit: { available: false, reason: "test" } });
+    if (input.task !== "extract-facts") return verifyUnchanged(input, { request: undefined, audit: { available: false, reason: "test" } });
     phases.push(input.kind);
     expect(input.kind).toBe("noting");
     admissions.push({ kind: input.kind, model: input.model, thinking: input.subagentThinkingLevel });
@@ -1449,7 +1441,7 @@ test("86: a failed N retries the frozen entry before checking other phases after
   let attempts = 0;
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, { request: undefined, audit: { available: false, reason: "test" } });
+    if (input.task !== "extract-facts") return verifyUnchanged(input, { request: undefined, audit: { available: false, reason: "test" } });
     expect(input.kind).toBe("noting");
     if (++attempts === 1) {
       expect(await submit(input, memory, { noteInput: [{ title: "Rejected source", sources: "[T99999#E1] Rejected." }], memoryInput: {} })).toContain("invalid source");
@@ -1470,7 +1462,7 @@ test("86: a failed N retries the frozen entry before checking other phases after
       selectedEntryIds: source.ids, appendedEntryIds: [], problems: [], snapshot: {} as any });
     for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
     expect(memory.store.listRuns(session.id).filter(run => run.kind === "noting").map(run => run.outcome))
-      .toEqual(["failure", "success", "success"]); // the refused write run, then the retry's write and verify runs
+      .toEqual(["failure", ...Array(4).fill("success")]);
     expect(attempts).toBe(2);
     expect(checks.mock.calls.map(([phase]) => phase)).toEqual([
       "dreaming", "dreaming", "dreaming"]);
@@ -1517,7 +1509,7 @@ test("92: catchup retries failed N without publishing held facts or knowledge tw
   let attempts = 0;
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, { request: undefined, audit: { available: false, reason: "test" } });
+    if (input.task !== "extract-facts") return verifyUnchanged(input, { request: undefined, audit: { available: false, reason: "test" } });
     expect(input.kind).toBe("noting"); attempts++;
     expect(memory.store.listSessionFacts(input.sessionId)).toEqual([]);
     expect(memory.store.currentKnowledge()).toEqual([]);
@@ -1535,7 +1527,7 @@ test("92: catchup retries failed N without publishing held facts or knowledge tw
       selectedEntryIds: source.ids, appendedEntryIds: [], problems: [], snapshot: {} as any });
     for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
     expect(scheduler.catchupStatus().state).toBe("completed"); expect(attempts).toBe(2);
-    expect(memory.store.listRuns(session.id).map(run => run.outcome)).toEqual(["failure", "success", "success"]); // the failed attempt, then the retry's write and verify runs
+    expect(memory.store.listRuns(session.id).map(run => run.outcome)).toEqual(["failure", ...Array(4).fill("success")]);
     expect(memory.store.listSessionFacts(session.id)).toHaveLength(1);
     expect(memory.store.currentKnowledge()).toHaveLength(1);
     expect(memory.pendingEntries(session.id, "main", source.turn.id)).toEqual([]);
@@ -1573,7 +1565,7 @@ test("92: stop discards unpublished N output; restart processes the same pending
   let noted!: () => void, attempts = 0; const held = new Promise<void>(resolve => { noted = resolve; });
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
-    if (input.task === "verify") return verifyUnchanged(input, { request: undefined, audit: { available: false, reason: "test" } });
+    if (input.task !== "extract-facts") return verifyUnchanged(input, { request: undefined, audit: { available: false, reason: "test" } });
     expect(input.kind).toBe("noting");
     const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
     expect(await submit(input, memory, { noteInput: [{ title: "Held fact", sources: `[${source}] Held until terminal success` }], memoryInput: {} })).toBeUndefined();
@@ -1604,7 +1596,7 @@ test("92: stop discards unpublished N output; restart processes the same pending
   expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesTotal: 1, entriesDone: 1 });
   expect(memory.pendingEntries(session.id, "main", source.turn.id)).toEqual([]);
   expect(memory.store.listSessionFacts(session.id)).toHaveLength(1);
-  expect(memory.store.listRuns(session.id).map(run => run.outcome)).toEqual(["cancelled", "success", "success"]); // the cancelled attempt, then the restart's write and verify runs
+  expect(memory.store.listRuns(session.id).map(run => run.outcome)).toEqual(["cancelled", ...Array(4).fill("success")]);
   memory.close();
 });
 
@@ -1733,7 +1725,7 @@ test("scheduler borrows an eligible closed target only at the executor turn end"
   const targets: number[] = [], admissions: NotingAgentInput[] = [];
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
     const task = raw as NotingAgentInput;
-    if (task.task === "verify") return verifyUnchanged(task, { request: undefined, audit: { available: false, reason: "test" } });
+    if (task.task !== "extract-facts") return verifyUnchanged(task, { request: undefined, audit: { available: false, reason: "test" } });
     targets.push(task.sessionId); admissions.push(task);
     submitEmpty(task);
     return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
@@ -1928,7 +1920,7 @@ test.each(["workspace", "rendering"] as const)("denied directory checks resolve 
   mkdirSync(cwd, { recursive: true });
   config.worker!.cwd = target === "rendering" ? join(alias, "not-created-yet") : join(directory, "worker");
   const launch = vi.fn();
-  const task = { kind: "noting", task: "write", workspace: { dir: cwd, facts: join(cwd, "facts.md"), knowledge: join(cwd, "knowledge.md") },
+  const task = { kind: "noting", task: "extract-facts", workspace: { dir: cwd, facts: join(cwd, "facts.md"), knowledge: join(cwd, "knowledge.md"), read: [], write: [] },
     prompt: "instructions", text: "material", tools: [], acknowledgeRequest: vi.fn(), passEnd: () => undefined,
     reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
   const result = await new NativeCcAgentWorker(config, { query: launch, environment: { HOME: join(directory, "home") } }).run(task, 0);

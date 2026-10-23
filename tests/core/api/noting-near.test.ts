@@ -10,7 +10,7 @@ const unavailable = { available: false as const, reason: "native payload unavail
 function fixture(script: (task: NotingAgentInput) => Partial<RunAgentResult> | void | Promise<Partial<RunAgentResult> | void>) {
   const memory = sourceSeededMemory(":memory:", async raw => {
     const task = raw as NotingAgentInput;
-    if (task.task === "verify") return verifyUnchanged(task, { request: undefined, audit: unavailable });
+    if (task.task !== "extract-facts") return verifyUnchanged(task, { request: undefined, audit: unavailable });
     return { outcome: "success", output: "done", audit: unavailable, ...await script(task) };
   });
   close.push(() => memory.close());
@@ -23,7 +23,7 @@ function fixture(script: (task: NotingAgentInput) => Partial<RunAgentResult> | v
   expect(note.execute({ title: "User rule", sources: "[T1#E1] The user set a rule" })).toContain("F1");
   return { memory, path, note, run: () => memory.noting(path) };
 }
-for (const relation of [undefined, ["support", "strong"], ["support", "weak"], ["negate", "strong"], ["negate", "weak"]] as const)
+for (const relation of [undefined, ["caused_by", "strong"], ["caused_by", "weak"], ["negate", "strong"], ["negate", "weak"]] as const)
   test(`92: identical facts need no lexical review; optional ${relation?.join(" ") ?? "no edge"}`, async () => {
     let ack!: () => void;
     const f = fixture(async task => {
@@ -42,7 +42,7 @@ for (const relation of [undefined, ["support", "strong"], ["support", "weak"], [
     if (!("runId" in result)) throw new Error("missing run");
     const run = f.memory.store.getRun(result.runId!)!;
     expect(JSON.parse(run.response!)).not.toHaveProperty("notingNearReview");
-    const write = f.memory.store.getRun(JSON.parse(run.response!).writeRun)!;
+    const write = f.memory.store.listRuns(1).find(value => JSON.parse(value.response ?? "{}").task === "extract-facts")!;
     expect(JSON.parse(write.request!)).toEqual({ exact: "payload" });
     expect(() => ack()).toThrow("finished");
   });

@@ -32,6 +32,13 @@ export const problem = (file: WorkspaceFile, line: number, where: string, messag
 /** Split the lines of one section into fields (up to the first blank line) and the body after it. */
 function section(file: WorkspaceFile, where: string, first: number, lines: string[], problems: string[]): Section {
   const fields = new Map<string, Field>();
+  let last = lines.length - 1;
+  while (last >= 0 && !lines[last]!.trim()) last--;
+  const verdict = last < 0 ? null : /^verdict:[ \t]*(.*)$/.exec(lines[last]!);
+  if (verdict) {
+    fields.set("verdict", { value: verdict[1]!.trim(), line: first + last });
+    lines = lines.slice(0, last);
+  }
   let at = 0;
   for (; at < lines.length && lines[at]!.trim(); at++) {
     const match = FIELD.exec(lines[at]!);

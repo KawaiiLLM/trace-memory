@@ -40,10 +40,10 @@ function abandonedSibling(memory: ReturnType<typeof TraceMemory>, target: TaskTa
 function expectConsumedOnlySibling(memory: ReturnType<typeof TraceMemory>, sessionId: number, sibling: ReturnType<typeof abandonedSibling>) {
   const store = memory.store;
   const runs = store.listRuns(sessionId).filter(run => run.kind !== "manual" && run.branch === "abandoned");
-  expect(runs).toHaveLength(2); // the batch's write and verify runs
+  expect(runs).toHaveLength(4);
   expect(runs.every(run => run.kind === "noting" && run.outcome === "success")).toBe(true);
   // Only the verify run, which publishes, owns the processed entries.
-  expect(store.db.prepare("SELECT entry_id FROM noted_entries WHERE run_id = ?").all(runs[1]!.id).map(row => Number(row.entry_id))).toEqual([sibling.entry.id]);
+  expect(store.db.prepare("SELECT entry_id FROM noted_entries WHERE run_id = ?").all(runs[3]!.id).map(row => Number(row.entry_id))).toEqual([sibling.entry.id]);
   expect(store.pendingEntries(sessionId, "abandoned", sibling.turn.id)).toEqual([]);
   // C retirement does not clear or replay historical unprocessed facts.
   expect(store.consolidationBatch(sessionId, "abandoned", sibling.turn.id).map(fact => fact.id))
@@ -59,7 +59,7 @@ test("89: Pi borrows only active paths and consumes reactivated backlog at the n
     const sibling = abandonedSibling(h.memory, target);
     await h.prompt("executor opportunity"); await h.answer(); await h.drain();
     const runs = store.listRuns(target.sessionId).filter(run => run.kind !== "manual");
-    expect(runs).toHaveLength(2); // one batch: write, then verify
+    expect(runs).toHaveLength(4);
     expect(runs.every(run => run.kind === "noting")).toBe(true);
     expect(runs.every(run => run.branch === target.branch && run.outcome === "success")).toBe(true);
     expect(store.pendingEntries(target.sessionId, "abandoned", sibling.turn.id).map(value => value.id)).toEqual([sibling.entry.id]);
@@ -117,10 +117,10 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
       scheduler.reconcile(projection);
       if (ended) scheduler.turnEnd(projection, scheduler.catchupTicket());
     };
-    const batches = () => inputs.filter(input => input.task === "write"); // each batch is a write and a verify run
+    const batches = () => inputs.filter(input => input.task === "extract-facts");
     opportunity([first], true); await scheduler.settle();
     expect(batches()).toHaveLength(1);
-    expect(inputs).toHaveLength(2);
+    expect(inputs).toHaveLength(4);
     expect(inputs[0]!.kind).toBe("noting");
     expect(inputs.every(input => input.sessionId === target.sessionId && input.branch === "active")).toBe(true);
     expect(inputs.every(input => !input.text.includes("ABANDONED_SIBLING"))).toBe(true);
@@ -132,7 +132,7 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
     expect(batches()).toHaveLength(1);
     opportunity([append()], true); await scheduler.settle();
     expect(batches()).toHaveLength(2);
-    expect(inputs.slice(2).every(input => input.sessionId === target.sessionId && input.branch === "abandoned")).toBe(true);
+    expect(inputs.slice(4).every(input => input.sessionId === target.sessionId && input.branch === "abandoned")).toBe(true);
     expectConsumedOnlySibling(memory, target.sessionId, sibling);
     expect(diagnostics).toEqual([]);
   } finally { memory.close(); }

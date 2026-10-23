@@ -9,7 +9,7 @@ import type { bindTools } from "../api/tools.ts";
 import { pricedToolDefinitions, notingToolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
 import { applyWorkspace, type NotingScope } from "../workspace/index.ts";
-import { NotingWorkspace, defaultWorkspaceRoot, stepPrompts, type NotingTask, type StepPrompts } from "./workspace.ts";
+import { NotingWorkspace, NOTING_TASKS, defaultWorkspaceRoot, stagePrompts, type NotingTask, type StagePrompts } from "./workspace.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type EntryView, type ResultExtractor } from "../render/index.ts";
@@ -21,14 +21,14 @@ import type { NotingDiagnostic } from "./review.ts";
 // Pricing includes the launch's rendered names, not the canonical template. The lazy per-map cache
 // avoids repeatedly tokenizing static schemas through the source-selection loop. The host's native read, write
 // and edit definitions are priced from its own estimates.
-const fixed = new Map<string, { prompt: string; taskPrompts: StepPrompts; instructions: number; tools: number }>();
+const fixed = new Map<string, { prompt: string; taskPrompts: StagePrompts; instructions: number; tools: number }>();
 const fixedCost = (names: ToolNames, native: number, limits: WritingLimits) => {
   const key = JSON.stringify([names, native, limits]);
   let cost = fixed.get(key);
   if (!cost) {
     const domain = loadPrompt("noting.md", names, limits), prompt = withRetrievalPolicy(domain, names);
-    // The largest set of step prompts a task can carry is priced with the system prompt (stage 5 §0): the conversation will hold it.
-    const taskPrompts = stepPrompts(names, limits), largest = Math.max(...Object.values(taskPrompts).map(pair => tokens(pair.join("\n\n"))));
+    // Each independent conversation carries exactly one stage instruction block.
+    const taskPrompts = stagePrompts(names, limits), largest = Math.max(...Object.values(taskPrompts).map(prompt => tokens(prompt)));
     cost = { prompt, taskPrompts, instructions: tokens(prompt) + largest,
       tools: tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, names))) + native };
     fixed.set(key, cost);
@@ -36,9 +36,8 @@ const fixedCost = (names: ToolNames, native: number, limits: WritingLimits) => {
   return cost;
 };
 
-/** The one line that ends both tasks' material. The task and paths reach the model only through `check`'s result, so
- * both tasks' first requests are byte-identical and the second reads the first's cached material. */
-const CHECK_FIRST = "Call {{tool.check}} first: it names your task, its first step and your files.";
+/** All four tasks start with identical material; instructions arrive in the first check result. */
+const CHECK_FIRST = "Call {{tool.check}} first: it names your stage and your files.";
 
 export interface NotingInput extends TaskOptions {
   sessionId: number;
@@ -58,8 +57,7 @@ export interface NotingInput extends TaskOptions {
 export type { NotingMaterial } from "../render/material.ts";
 export interface NotingAgentInput extends AgentControl {
   kind: "noting";
-  /** Ticket 144: one batch is handled by two independent runs of this same input apart from this field. The task's instructions
-   * reach the model only through `check` results and the stop hook's messages. */
+  /** Four independent conversations; only check results carry stage-specific instructions. */
   task: NotingTask;
   entryIds: number[];
   sessionId: number;
@@ -71,9 +69,7 @@ export interface NotingAgentInput extends AgentControl {
   prompt: string;
   promptHash: string;
   material: NotingMaterial;
-  /** Core's prepared domain text: the one material this task supplies. It ends with the line that tells the
-   * model to call `check`, and is the same for both tasks. The host places it in its own messages and never
-   * chooses between two representations. */
+  /** Identical prepared first message for all four stages. */
   text: string;
   /** 29a/29b: the identities this text actually carries, so the host can persist a carrier for the
    * entry it puts the text in and a later context can prove what it holds. Budget omissions are
@@ -83,11 +79,11 @@ export interface NotingAgentInput extends AgentControl {
   entryAudit: EntryAudit;
   /** Core's tools: `search` and `check`. The host adds its native read, write and edit. */
   tools: ToolDefinition[];
-  /** The run's directory and its two files. The host confines native write and edit to exactly these two paths. */
-  workspace: { dir: string; facts: string; knowledge: string };
-  /** The stop hook, called after every normally completed pass: nothing when the task is over, otherwise the one follow-up message
-   * that lists what to correct or brings the next step's instructions (each step has one repair; core bounds the passes at four). */
+  /** Readable inputs and the one deliverable owned by this stage. */
+  workspace: { dir: string; facts: string; knowledge: string; read: string[]; write: string[] };
   passEnd(): string | undefined;
+  /** One native model response, deduplicated by host identity; input includes both cache counters. */
+  reportResponse?(id: string, inputTokens?: number): void;
   /** Host-only: a proven later model turn acknowledges review delivery without fabricating an audit
    * payload. This is not a model-facing tool or argument. A native boundary calls this or
    * reportRequest exactly once, never both. */
@@ -317,15 +313,13 @@ export interface NotingRunOptions {
   /** Where the run's workspace directory is made; a host with no preference gets the system temporary directory. */
   workspaceRoot?: string;
   executionId: string;
-  /** The first task's run, when its hand-off is being resumed: only the second task runs, on that run's files. */
+  /** The latest passed stage's run, whose files seed the failed next stage. */
   resumeRunId?: number;
   /** Registers the run's workspace with the cancellation fence (stage 4 §1.5): closing the task closes it. */
   registerFence?(workspace: { close(): void }): void;
 }
 
-/** One Noter run is two independent runs of the same input (ticket 144). Task 1 writes the two workspace files; task 2 checks
- * and corrects them; only after task 2 passes are the facts and the knowledge published, together. A task 1 that passed
- * leaves a hand-off, so a task 2 that fails is resumed on the same files at the next trigger. */
+/** Four independently resumed tasks; facts and knowledge publish once, after check-knowledge. */
 export async function runNoting(
   store: Store, frozen: ReturnType<typeof freezeNoting>, runAgent: RunAgent,
   config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput, noting?: { check(): string }) => ReturnType<typeof bindTools>,
@@ -348,11 +342,11 @@ export async function runNoting(
       toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } };
   const entryIds = entries.map(e => e.id);
   const scope: NotingScope = { sessionId, branch, range, entryIds };
-  const workspace = new NotingWorkspace(store, scope, options.workspaceRoot ?? defaultWorkspaceRoot(), sessionId, options.executionId, frozen.taskPrompts);
+  const workspace = new NotingWorkspace(store, scope, options.workspaceRoot ?? defaultWorkspaceRoot(), sessionId, options.executionId, frozen.taskPrompts, config.noting);
   options.registerFence?.(workspace);
-  let writeRunId = options.resumeRunId;
+  let previousRunId = options.resumeRunId;
 
-  /** Run one task. Returns the run's final result when it ends the whole run, and nothing when task 1 passed and task 2 follows. */
+  /** A passing intermediate stage keeps only an audit and handoff, never facts or knowledge. */
   const runTask = async (task: NotingTask): Promise<NotingResult | undefined> => {
     const started = Date.now();
     const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
@@ -362,7 +356,10 @@ export async function runNoting(
     const agentInput: NotingAgentInput = { kind: "noting", task, entryIds, sessionId, branch, range,
       model, prompt: frozen.prompt!, promptHash: frozen.promptHash!,
       material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit),
-      tools: binding.tools, workspace: { dir: workspace.dir, ...workspace.paths }, passEnd: () => workspace.passEnd(),
+      tools: binding.tools, workspace: { dir: workspace.dir, ...workspace.paths,
+        read: [...Object.values(workspace.paths), workspace.path("related-facts.md"), workspace.path("related-knowledge.md")],
+        write: [task === "extract-facts" || task === "check-facts" ? workspace.paths.facts : workspace.paths.knowledge] },
+      passEnd: () => workspace.passEnd(), reportResponse: (id, inputTokens) => workspace.reportResponse(id, inputTokens),
       acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
     try {
       let result: RunAgentResult;
@@ -371,23 +368,23 @@ export async function runNoting(
       // A direct facade close may dispose before the provider settles; never access that store.
       if (store.closed) return { outcome: "dropped" };
       if ((binding.cancelled || workspace.closed) && result.outcome === "success") result = { ...result, outcome: "cancelled", output: "Noter cancelled before terminal publication" };
-      // The stop hook is the host's courtesy; this second check is what decides, so a host that never ran the first
-      // still cannot pass bad files, and a task whose two steps did not both pass fails whatever the files then hold.
+      // The host stop hook is a courtesy; a terminal recheck also refuses changed or unfinished stage files.
       const final = result.outcome === "success" ? workspace.check() : undefined;
       const unfinished = result.outcome === "success" ? workspace.unfinished() : undefined;
       const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)]
         : requestMissing(result) ? ["runAgent must return the exact provider request"] : [...(unfinished ? [unfinished] : []), ...final!.problems];
       const { facts, knowledge } = workspace.read();
-      recordAttempt(run, result, { task, ...(task === "verify" ? { writeRun: writeRunId } : {}), files: { facts, knowledge },
+      recordAttempt(run, result, { task, ...(previousRunId === undefined ? {} : { previousRun: previousRunId }), files: { facts, knowledge },
         ...workspace.record(), toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
       if (problems.length || result.outcome !== "success") {
         const outcome = result.outcome !== "success" ? result.outcome : "failure";
         return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id };
       }
-      if (task === "write") {
-        const passed = store.commitWriteTask({ run, handoff: { nextTask: "verify", branch, entryIds } });
+      if (task !== "check-knowledge") {
+        const nextTask = NOTING_TASKS[NOTING_TASKS.indexOf(task) + 1]!;
+        const passed = store.commitNotingStage({ run, handoff: { nextTask, branch, entryIds } });
         if (!passed.ok) return { outcome: "failure", runId: passed.runId, problems: passed.problems };
-        writeRunId = passed.runId;
+        previousRunId = passed.runId;
         return undefined;
       }
       checkMembership();
@@ -403,18 +400,25 @@ export async function runNoting(
 
   try {
     const seed = options.resumeRunId === undefined ? undefined : resumedFiles(store, options.resumeRunId);
-    workspace.open(seed ? { "facts.md": seed.facts, "knowledge.md": seed.knowledge } : {});
-    if (options.resumeRunId === undefined) {
-      const first = await runTask("write");
-      if (first) return first;
+    workspace.open(seed ? { "facts.md": seed.facts, "knowledge.md": seed.knowledge } : {
+      "facts.md": "## fact f1\ntitle: \nobjects: \nnegate: \ncaused_by: \n\n",
+      "knowledge.md": "## create\ntitle: \ncategory: \nscope: \ntopics: \nsupports: \nfiles: \nreason: \n\n",
+    });
+    const first = seed ? NOTING_TASKS.indexOf(seed.nextTask) : 0;
+    for (const task of NOTING_TASKS.slice(first)) {
+      const result = await runTask(task);
+      if (result) return result;
     }
-    return (await runTask("verify"))!;
+    throw new Error("Noter ended without terminal publication");
   } finally { workspace.remove(); }
 }
 
-/** The first task's files, as its run record kept them. */
+/** Passed stage snapshots, rather than a failed stage's partial edits, are durable. */
 function resumedFiles(store: Store, runId: number) {
-  const files = (JSON.parse(store.getRun(runId)?.response ?? "{}") as { files?: { facts?: unknown; knowledge?: unknown } }).files;
-  if (typeof files?.facts !== "string" || typeof files.knowledge !== "string") throw new Error(`the first task's run R${runId} holds no workspace files to resume`);
-  return { facts: files.facts, knowledge: files.knowledge };
+  const saved = JSON.parse(store.getRun(runId)?.response ?? "{}") as { task?: NotingTask; files?: { facts?: unknown; knowledge?: unknown } };
+  const { files, task } = saved;
+  const nextTask = task === undefined ? undefined : NOTING_TASKS[NOTING_TASKS.indexOf(task) + 1];
+  if (typeof files?.facts !== "string" || typeof files.knowledge !== "string" || !nextTask)
+    throw new Error(`passed stage R${runId} holds no workspace files or next stage to resume`);
+  return { facts: files.facts, knowledge: files.knowledge, nextTask };
 }

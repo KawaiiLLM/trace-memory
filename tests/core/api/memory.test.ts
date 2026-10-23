@@ -3,7 +3,7 @@ import { fact as seedFact, legacyKnowledge, receiptCommit } from "../../support/
 import { afterEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
-import { submit, verifyUnchanged } from "../../support/noter.ts";
+import { knowledgeFile, submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { applyWorkspace } from "../../../src/core/workspace/index.ts";
 import { block } from "../../support/workspace.ts";
@@ -12,10 +12,14 @@ let memory: ReturnType<typeof sourceSeededMemory>, triggerEntryId: number;
 afterEach(() => memory?.close());
 const create = { files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
 const batch = create;
-/** `reply` is what the verify task answers; the scripted `agent` is the write task. */
-function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>, reply?: Partial<RunAgentResult>) {
-  memory = sourceSeededMemory(":memory:", async raw => (raw as NotingAgentInput).kind === "noting" && (raw as NotingAgentInput).task === "verify"
-    ? verifyUnchanged(raw, reply) : agent(raw as NotingAgentInput));
+/** Script one writing stage; other stages complete through the shared native-file builder. */
+function setup(agent: (input: NotingAgentInput) => Promise<RunAgentResult>, reply?: Partial<RunAgentResult>, stage: NotingAgentInput["task"] = "extract-facts") {
+  memory = sourceSeededMemory(":memory:", async raw => {
+    const input = raw as NotingAgentInput;
+    if (input.kind !== "noting" || input.task === stage) return agent(input);
+    if (input.task === "extract-facts") { submitEmpty(input); return success(); }
+    return verifyUnchanged(input, reply);
+  });
   const project = memory.store.createProject({ name: "test", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use pnpm", assistantText: "Okay", startedAt: "now" });
@@ -56,7 +60,7 @@ test("payload-free acknowledgement preserves explicit native request-audit unava
   expect(JSON.parse(run.response!)).toMatchObject({ usage: null, audit: { available: false }, problems: [] });
 });
 
-test("N publishes its batch only after task 2 passes", async () => {
+test("N publishes its batch only after stage 4 passes", async () => {
   setup(async input => {
     input.reportRequest({ first: true });
     await submit(input, memory, { noteInput: [], memoryInput: batch });
@@ -70,19 +74,19 @@ test("N publishes its batch only after task 2 passes", async () => {
   expect(memory.pendingEntries(1, "main", 1)).toEqual([]);
   expect(memory.store.listConsolidatedProjectFacts(1)).toEqual([]);
   const audit = JSON.parse(memory.store.getRun(result.runId)!.response!);
-  expect(audit).toMatchObject({ task: "verify", files: { knowledge: expect.stringContaining("## create") } });
-  expect(audit.writeRun).toBe(memory.store.listRuns(1).find(run => run.kind === "noting")!.id);
+  expect(audit).toMatchObject({ task: "check-knowledge", files: { knowledge: expect.stringContaining("## create") } });
+  expect(audit.previousRun).toBe(memory.store.listRuns(1).filter(run => run.kind === "noting").at(-2)!.id);
 });
 
-test("a rejected batch can be corrected once, at the stop check", async () => {
+test("a rejected knowledge batch can be corrected once at its stage's stop check", async () => {
   setup(async input => {
     input.reportRequest({ first: true });
-    const message = await submit(input, memory, { noteInput: [], memoryInput: { ...create, supports: [] },
-      fix: () => ({ knowledge: "## create\ntitle: Fixture title\ncategory: constraint\nscope: project\ntopics: \nsupports: F1\nreason: Initial admission\n\nUse pnpm\n" }) });
+    const message = await submit(input, memory, { files: { knowledge: knowledgeFile(memory, { ...create, supports: [] }) },
+      fix: () => ({ knowledge: knowledgeFile(memory, create) }) });
     expect(message).toContain("supports");
     expect(memory.store.getKnowledge(1)).toBeNull();
     return success();
-  });
+  }, undefined, "write-knowledge");
   expect((await integrate()).outcome).toBe("success");
   expect(memory.store.getKnowledge(1)).not.toBeNull();
 });

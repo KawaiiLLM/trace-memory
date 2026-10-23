@@ -62,6 +62,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       tools: binding.tools, read: binding.read, fileTools: binding.fileTools, maxToolRounds: binding.maxToolRounds,
       signal: task.signal,
       passEnd: task.passEnd,
+      onResponse: task.kind === "noting" ? task.reportResponse : undefined,
       onRequest: (body: unknown, contextTokens: number | undefined) => { binding.checkCapacity!(contextTokens); request = body; task.reportRequest(body); },
       onProgress: (state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: RunAgentResult["thinking"] }) => {
         if (state.thinking) thinking = state.thinking;

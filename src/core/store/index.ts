@@ -522,6 +522,7 @@ export interface CommitNotingRunInput {
     validate(): void;
     slots: number[];
     knowledge(ids: ReadonlyMap<number, number>): KnowledgeOperationInput[];
+    flags?: readonly { knowledgeId: number; revisionId: number; reason: string }[];
   };
 }
 
@@ -2394,13 +2395,17 @@ export class Store {
           const mapping = new Map(input.held.slots.map((slot, index) => [slot, batchIds[index]!]));
           for (const requested of input.held.knowledge(mapping)) {
             const op = this.normalizeNotingOperation(requested, input.held.path);
-            if (!op) { knowledgeAudit.push({ requested, applied: null, committed: [] }); continue; }
             const inheritedCreateCategory = requested.op === "update" && op.op === "create" && !isKnowledgeCategory(op.category)
               ? this.getKnowledgeRevision(requested.knowledgeId, requested.baseCommit)!.category : undefined;
             const result = this.applyKnowledgeOperation(op, runId, this.getSession(sessionId)!.projectId,
               sessionId, input.held.path, false, "noting", inheritedCreateCategory);
             if (!result.ok) throw result.reason instanceof Error ? result.reason : new Error(result.reason);
             knowledgeAudit.push({ requested, applied: op, committed: result.value });
+          }
+          for (const flag of input.held.flags ?? []) {
+            const revision = this.currentKnowledge(input.held.path).find(item => item.knowledge.id === flag.knowledgeId)?.revision;
+            if (!revision || revision.id !== flag.revisionId) throw new Error(`flag K${flag.knowledgeId}: version is no longer current`);
+            this.setKnowledgeStale(revision.id, { reason: "unresolved_check", detail: "Noter check could not resolve" });
           }
         }
         let response: Record<string, unknown>;
@@ -2426,10 +2431,8 @@ export class Store {
     }
   }
 
-  /** The first task of a two-task Noter run passed (ticket 144): its run is recorded as a success that owns no fact
-   * and no noted entry, and the hand-off to the second task is written in the same transaction, fenced by the claim.
-   * A failure records a failure run and writes no hand-off. */
-  commitWriteTask(input: { run: RunInput; handoff: Omit<Handoff, "createdAt" | "runId" | "phase" | "sessionId"> }): CommitNotingResult {
+  /** A passed Noter stage records only its files and the next stage, atomically fenced by the claim. */
+  commitNotingStage(input: { run: RunInput; handoff: Omit<Handoff, "createdAt" | "runId" | "phase" | "sessionId"> }): CommitNotingResult {
     try {
       return this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
@@ -3994,13 +3997,9 @@ export class Store {
 
   /** Only an applicable, scope-authorized tagged predecessor consumed by a later visible
    * descendant is a Noter concurrency conversion. Other invalid bases remain errors. */
-  normalizeNotingOperation(op: KnowledgeOperationInput, path: KnowledgePath): KnowledgeOperationInput | null {
-    if (op.op !== "create" && op.op !== "update" && op.op !== "archive") throw new Error("Noter permits create, update and archive only");
+  normalizeNotingOperation(op: KnowledgeOperationInput, path: KnowledgePath): KnowledgeOperationInput {
+    if (op.op !== "create" && op.op !== "update") throw new Error("Noter permits create and update only");
     if (!Object.hasOwn(op, "files")) throw new Error("files: required list of paths or null");
-    if (op.op === "archive") {
-      const problem = this.archiveProblem(op);
-      if (problem) throw new Error(problem);
-    }
     if (op.op === "create") return op;
     const input = this.commitGraphInput();
     const bad = this.baseDiagnostic(op.knowledgeId, op.baseCommit, path, false, input.metadata);
@@ -4012,7 +4011,6 @@ export class Store {
     if (!stale) return op;
     const descendants = graph.descendants(op.baseCommit);
     if (!graph.current.some(revision => revision.id > op.baseCommit && descendants.has(revision.id))) throw stale;
-    if (op.op === "archive") return null;
     const address = `K${op.knowledgeId}#${this.versionTag(op.knowledgeId, op.baseCommit)}`;
     const annotation = /[\u3400-\u9fff]/u.test(op.text)
       ? `〔并发冲突转新建，原拟更新 ${address}，待核对。〕`

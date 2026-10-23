@@ -72,7 +72,7 @@ test("historical enable imports once, preserves native identities, and checks on
   const imported = h.memory.pendingEntries(1, "main", state(h).head);
   expect(imported).toHaveLength(6); expect(h.memory.store.listTurns(1)).toHaveLength(3);
   await h.drain();
-  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // one batch: its write and verify runs
+  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual(Array(4).fill(["noting", "success"]));
   expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
   const requests = h.requests.length;
   const identities = h.memory.store.listSourceEntries(1);
@@ -91,8 +91,7 @@ test("historical enable imports once, preserves native identities, and checks on
   await command(h, "on"); expect(h.memory.store.listTurns(1)).toHaveLength(4);
   expect(h.memory.pendingEntries(1, "main", state(h).head)).toHaveLength(2);
   await h.drain();
-  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual([
-    ["noting", "success"], ["noting", "success"], ["noting", "success"], ["noting", "success"] ]); // two batches: a write and a verify run each
+  expect(h.memory.store.listRuns(1).map(run => [run.kind, run.outcome])).toEqual(Array(8).fill(["noting", "success"]));
   expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
   expect(h.memory.store.listSourceEntries(1).slice(0, identities.length)).toEqual(identities);
   const resumedRequests = h.requests.length;
