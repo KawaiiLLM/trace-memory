@@ -421,7 +421,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const prompt = loadPrompt("classifying.md", frozen.names, config.writing), promptHash = createHash("sha256").update(prompt).digest("hex");
     const deadline = Date.now() + config.dreaming.timeoutMs, tools = tokens(JSON.stringify(pricedToolDefinitions(dreamingWorkspaceToolDefinitions, frozen.names)));
     const selfCheck = renderToolNames(CLASSIFY_SELF_CHECK, frozen.names);
-    const texts = passes.map(pass => classifyMessage(anchors, pass, store.writing, frozen.names, CHECK_FIRST));
+    const texts = passes.map(pass => classifyMessage(anchors, pass, frozen.names, CHECK_FIRST));
     if (model.capacity && texts.some(text => tokens(prompt) + tools + tokens(text) > model.capacity!.inputTokens))
       throw new Error("Dreaming capacity: a classify pass exceeds the model input allowance");
     let applied = 0;

@@ -553,14 +553,17 @@ export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap =
 // Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
 
-/** Longest fallback title per unit of the title target, in characters. A path or an identifier counts as one unit, so the unit cut alone lets one unbroken run become the whole title. */
+/** Longest opening per unit of the title target; an unbroken path or identifier counts as one unit. */
 const FALLBACK_TITLE_CHARS_PER_UNIT = 8;
 
-/** The title a knowledge version shows (ticket 144): its own, or for a legacy untitled version the
- * leading characters of its body, flattened to one line and cut to the title target in units (145),
- * and to at most `titleWords * 8` characters. */
+/** A body's opening, flattened and bounded by the existing title target in units and characters. */
+export function knowledgeOpening(text: string, titleWords: number): string {
+  return Array.from(leadingWords(text.replace(/\s+/g, " ").trim(), titleWords)).slice(0, titleWords * FALLBACK_TITLE_CHARS_PER_UNIT).join("").trimEnd();
+}
+
+/** A standalone label never presents an untitled body's opening as an authored title (153). */
 export function knowledgeTitle(r: Pick<KnowledgeRevision, "title" | "text">, titleWords: number): string {
-  return r.title ?? Array.from(leadingWords(r.text.replace(/\s+/g, " ").trim(), titleWords)).slice(0, titleWords * FALLBACK_TITLE_CHARS_PER_UNIT).join("").trimEnd();
+  return r.title ?? `(no title) ${knowledgeOpening(r.text, titleWords)}…`;
 }
 
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`, showSize = false,
@@ -568,7 +571,7 @@ export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevisio
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
   const size = showSize ? ` (${words(r.text)}/${limits.bodyWords} units, limit ${wordLimit(limits.bodyWords)})` : "";
   const tags = `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size}`;
-  return `${tags} ${knowledgeTitle(r, limits.titleWords)}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  return `${tags} ${r.title ?? "(no title)"}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 /** Canonical headings contain an address and category/scope; price without re-rendering metadata. */
@@ -623,10 +626,10 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
     const whole = [renderKnowledge(value, shown(value.revision), false, limits),
       ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
       `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
-    const prefix = `[${shown(value.revision)}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] ${knowledgeTitle(value.revision, limits.titleWords)}\n`;
+    const prefix = `[${shown(value.revision)}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] ${value.revision.title ?? "(no title)"}\n`;
     return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
   }
-  const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "", title = knowledgeTitle(r, limits.titleWords);
+  const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "", title = fields.has("text") ? r.title ?? "(no title)" : knowledgeTitle(r, limits.titleWords);
   const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${title}\n`;
   const suffix = [
     ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields.has("topics") ? topicList(r.topics) : ""}`] : []),
@@ -871,10 +874,10 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   return { ...body, receipts: emittedReceipts(kept), cost: cost(kept) };
 }
 
-/** One title-only line (144 §7.4): the same header as a body line, marked, with the title in place of the body. */
+/** One title-only line (144 §7.4); an untitled item's bounded opening is explicitly marked (153). */
 export function renderKnowledgeTitle({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`,
   limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
-  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] (title only) ${knowledgeTitle(r, limits.titleWords)}`;
+  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.title == null ? `(opening only) ${knowledgeOpening(r.text, limits.titleWords)}…` : `(title only) ${r.title}`}`;
 }
 
 export interface SelectedKnowledge extends BudgetedKnowledge {

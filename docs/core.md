@@ -134,6 +134,14 @@ An update accepts exactly one body form (135):
 The complete result passes the same admission, supports and scope checks as a full-text update, and
 the title and body length checks of every writer (144), applied to the resulting body, so updating a long legacy item must also fit. An update without `title` inherits its base's; a base without one requires it.
 The Noter's file carries the complete result against the exact base it names.
+
+Untitled legacy knowledge is never displayed as if its body's opening were a title (153).
+A whole item's header shows `(no title)`, followed by the body on the next line.
+Title-only delivery instead shows `(opening only) <opening>…`; standalone labels, including search
+and bodyless trace views, show `(no title) <opening>…`. The opening keeps its existing
+`writing.titleWords` unit target and `titleWords * 8` character bound. Authored titles are unchanged,
+and token budgets charge the rendered markers and text.
+
 The audited concurrent update-to-create conversion retains inherited legacy classification too;
 ordinary creates still cannot author a legacy category.
 Storage, Knowledge history and injection use complete revisions, never edit lists;

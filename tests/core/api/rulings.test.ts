@@ -3009,6 +3009,30 @@ test("2026-10-21, 144: injection follows scores, not age", () => {
   expect(delivery.knowledgeTitleCommitIds).toEqual([fresh.commit]); // the newer one is a title, not a body
 });
 
+test("2026-10-24, 153: title-only delivery distinguishes authored titles from untitled openings and charges the rendered text", () => {
+  const f = injectionFixture();
+  const titled = f.create("Authored title", 100, 90);
+  const untitled = legacyKnowledge(f.memory.store, f.target, {
+    text: "Opening words describe the body, not a title.", category: "reference", scope: "project", supports: [1] });
+  scoreAll(f.memory.store, 80);
+  setKnowledgeBase(f.memory, 0);
+  const check = (text: string) => {
+    expect(text).toContain(`[constraint/project] (title only) Authored title\n`);
+    expect(text).toContain(`[reference/project] (opening only) Opening words describe the body, not a title.…\n`);
+    expect(text).not.toContain("(title only) Opening words");
+  };
+  const delivery = f.memory.injection(f.target);
+  expect(delivery.knowledgeCommitIds).toEqual([]);
+  expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([titled.commit, untitled.commit]));
+  check(delivery.text);
+  expect(delivery.knowledgeTokens! + delivery.temporaryTokens!).toBe(tokens(delivery.text.split("\n\n").slice(1).join("\n\n")));
+  const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId);
+  if ("native" in compact) throw new Error(compact.reason);
+  check(compact.text);
+  expect(compact.supplied.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([titled.commit, untitled.commit]));
+  expect(compact.supplied.temporaryTokens).toBe(compact.charged!.temporary);
+});
+
 test("2026-10-22, 144: verify reads the working directories of the project's sessions; another project's directory, a session without one and a vanished directory add nothing", () => {
   const b = workspaceBatch();
   try {
