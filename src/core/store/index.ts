@@ -405,6 +405,9 @@ export const unicodeLength = (value: string): number => Array.from(value).length
  * doubled per FTS5's own quoting rule. */
 const ftsPhraseQuery = (query: string): string => `"${query.replaceAll('"', '""')}"`;
 
+// Bound compound SELECTs, expression depth and bindings, not the number of search terms.
+const SEARCH_TERM_BATCH_SIZE = 64;
+
 /** 77: 71's one-parse extraction, unchanged — a single multi-path `json_extract` reads the four usage
  * counters, the cost total and `$.usage` itself (to tell "recorded" from "missing or explicit null")
  * in one pass over the response text. `expr` is bound at write time (the exact string about to be
@@ -4262,27 +4265,44 @@ export class Store {
     });
   }
 
+  private searchTermBatches<T extends { id: number }>(terms: readonly string[],
+    select: (batch: readonly string[], candidates?: string) => T[], candidates?: string): T[] {
+    let rows: T[] = [];
+    if (candidates === "[]") return rows;
+    for (let from = 0; from < terms.length; from += SEARCH_TERM_BATCH_SIZE) {
+      if (from) candidates = JSON.stringify(rows.map(row => row.id));
+      rows = select(terms.slice(from, from + SEARCH_TERM_BATCH_SIZE), candidates);
+      if (!rows.length) break;
+    }
+    return rows;
+  }
+
   /** Recheck real columns, bounded to indexed candidates unless every term is below the trigram floor.
    * Turns are a superset: the API checks all terms again in one exact source-entry Read. */
   private rawLikeScan(patterns: readonly string[], restricted: boolean, owners: string, candidates?: string): string[] {
-    const matches = patterns.map(() => `(t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
-      (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
-      (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\')))` ).join(" AND ");
-    return (this.db.prepare(`SELECT t.id FROM turns t WHERE
-        ${candidates === undefined ? "" : "t.id IN (SELECT value FROM json_each(?)) AND"}
-        (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND ${matches} ORDER BY t.id`)
-      .all(...(candidates === undefined ? [] : [candidates]), Number(restricted), owners,
-        ...patterns.flatMap(pattern => [pattern, pattern, pattern, pattern, pattern])) as { id: number }[]).map(r => `T${r.id}`);
+    return this.searchTermBatches(patterns, (batch, remaining) => {
+      const matches = batch.map(() => `(t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
+        (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
+        (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\')))` ).join(" AND ");
+      return this.db.prepare(`SELECT t.id FROM turns t WHERE
+          ${remaining === undefined ? "" : "t.id IN (SELECT value FROM json_each(?)) AND"}
+          (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND ${matches} ORDER BY t.id`)
+        .all(...(remaining === undefined ? [] : [remaining]), Number(restricted), owners,
+          ...batch.flatMap(pattern => [pattern, pattern, pattern, pattern, pattern])) as { id: number }[];
+    }, candidates).map(r => `T${r.id}`);
   }
 
   /** Fields have separate FTS rows: intersect Turn candidates, not phrases within one field.
    * One source entry can contain text and several calls; it must not be excluded at this stage. */
   private rawTrigram(indexed: readonly string[], patterns: readonly string[], restricted: boolean, owners: string): string[] {
-    const candidates = this.db.prepare(indexed.map(() => `SELECT e.turn_id AS turnId
-        FROM raw_search_entries e JOIN raw_fts ON raw_fts.rowid = e.id
-        WHERE raw_fts MATCH ? AND (? = 0 OR e.session_id IN (SELECT value FROM json_each(?)))`).join(" INTERSECT "))
-      .all(...indexed.flatMap(term => [ftsPhraseQuery(term), Number(restricted), owners])) as { turnId: number }[];
-    return this.rawLikeScan(patterns, restricted, owners, JSON.stringify([...new Set(candidates.map(c => c.turnId))]));
+    const candidates = this.searchTermBatches(indexed, (batch, remaining) =>
+      this.db.prepare(`SELECT id FROM (${batch.map(() => `SELECT e.turn_id AS id
+          FROM raw_search_entries e JOIN raw_fts ON raw_fts.rowid = e.id
+          WHERE raw_fts MATCH ? AND (? = 0 OR e.session_id IN (SELECT value FROM json_each(?)))`).join(" INTERSECT ")})
+        ${remaining === undefined ? "" : "WHERE id IN (SELECT value FROM json_each(?))"}`)
+        .all(...batch.flatMap(term => [ftsPhraseQuery(term), Number(restricted), owners]),
+          ...(remaining === undefined ? [] : [remaining])) as { id: number }[]);
+    return this.rawLikeScan(patterns, restricted, owners, JSON.stringify(candidates.map(c => c.id)));
   }
 
   searchAddresses(terms: readonly string[], scope: "facts" | "knowledge" | "all" | "raw", sessionIds?: readonly number[]): string[] {
@@ -4292,16 +4312,24 @@ export class Store {
     const indexed = terms.filter(term => unicodeLength(term) >= 3 && !term.includes("\u0000"));
     const raw = () => indexed.length ? this.rawTrigram(indexed, patterns, restricted, owners) : this.rawLikeScan(patterns, restricted, owners);
     if (scope === "raw") return raw();
-    const factMatch = patterns.map(() => "(f.text LIKE ? ESCAPE '\\' OR f.title LIKE ? ESCAPE '\\')").join(" AND ");
-    const facts = scope === "knowledge" ? [] : (this.db.prepare(`SELECT f.id FROM facts f JOIN turns t ON t.id = f.turn_id
-      WHERE (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND ${factMatch} ORDER BY f.id`)
-      .all(Number(restricted), owners, ...patterns.flatMap(pattern => [pattern, pattern])) as { id: number }[]).map(r => `F${r.id}`);
+    const facts = scope === "knowledge" ? [] : this.searchTermBatches(patterns, (batch, candidates) => {
+      const matches = batch.map(() => "(f.text LIKE ? ESCAPE '\\' OR f.title LIKE ? ESCAPE '\\')").join(" AND ");
+      return this.db.prepare(`SELECT f.id FROM facts f JOIN turns t ON t.id = f.turn_id
+        WHERE ${candidates === undefined ? "" : "f.id IN (SELECT value FROM json_each(?)) AND"}
+        (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND ${matches} ORDER BY f.id`)
+        .all(...(candidates === undefined ? [] : [candidates]), Number(restricted), owners,
+          ...batch.flatMap(pattern => [pattern, pattern])) as { id: number }[];
+    }).map(r => `F${r.id}`);
     // Match topic values, never their JSON punctuation. Membership is resolved by the reader's path.
-    const knowledgeMatch = patterns.map(() => `(text LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
-      OR EXISTS (SELECT 1 FROM json_each(topics) WHERE value LIKE ? ESCAPE '\\'))`).join(" AND ");
-    const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT knowledge_id, id FROM knowledge_revisions
-      WHERE ${knowledgeMatch} ORDER BY knowledge_id, id`)
-      .all(...patterns.flatMap(pattern => [pattern, pattern, pattern])) as { knowledge_id: number; id: number }[]).map(r => `K${r.knowledge_id}@${r.id}`);
+    const knowledge = scope === "facts" ? [] : this.searchTermBatches(patterns, (batch, candidates) => {
+      const matches = batch.map(() => `(text LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
+        OR EXISTS (SELECT 1 FROM json_each(topics) WHERE value LIKE ? ESCAPE '\\'))`).join(" AND ");
+      return this.db.prepare(`SELECT knowledge_id, id FROM knowledge_revisions
+        WHERE ${candidates === undefined ? "" : "id IN (SELECT value FROM json_each(?)) AND"}
+        ${matches} ORDER BY knowledge_id, id`)
+        .all(...(candidates === undefined ? [] : [candidates]),
+          ...batch.flatMap(pattern => [pattern, pattern, pattern])) as { knowledge_id: number; id: number }[];
+    }).map(r => `K${r.knowledge_id}@${r.id}`);
     return scope === "all" ? [...facts, ...knowledge, ...raw()] : [...facts, ...knowledge];
   }
 

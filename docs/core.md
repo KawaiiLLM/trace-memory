@@ -954,11 +954,15 @@ is removed when the run ends. Raw `text`, `role` and `matchLines` (1-based, numb
 
 Raw matching includes tool names, inputs, and results; `%`, `_` and backslashes are escaped for `LIKE`.
 Terms of at least three Unicode code points use the existing trigram index. Because each indexed field
-has its own row, one SQL statement intersects the per-term FTS5 phrase candidates by Turn, allowing
-different fields and calls within an entry to satisfy different terms. Every term, including shorter
-ones, is rechecked against real columns with `LIKE`; the API then requires every term in one exact
-entry Read. When all terms are short, the existing full scan checks them all. A NUL-containing term
-cannot be sent to FTS5 and stays in the recheck; if no term can use FTS5, the scan is retained.
+has its own row, per-term FTS5 phrase candidates are intersected by Turn, allowing different fields
+and calls within an entry to satisfy different terms. Search has no term-count cap: SQL expands at
+most 64 terms per statement in every layer, carrying surviving row ids between batches through
+`json_each` so compound SELECTs, expression depth and binding counts stay bounded. Raw processes all
+indexable batches before rechecking every term, including shorter ones, against real columns with
+`LIKE`; these rechecks remain bounded to the indexed candidates. The API then requires every term in
+one exact entry Read. When all terms are short, the first batch uses the existing full scan and later
+batches narrow its survivors. A NUL-containing term cannot be sent to FTS5 and stays in the recheck;
+if no term can use FTS5, the scan is retained.
 `matchLines` lists the 1-based lines containing at least one term. A miss explains that every term must
 appear in one item, suggests fewer terms, and retains “No hit does not mean absent.”
 `trace://` reads and Grep are unchanged.

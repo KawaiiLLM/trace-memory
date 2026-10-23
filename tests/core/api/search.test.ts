@@ -164,6 +164,28 @@ test.each(["knowledge", "facts", "raw"] as const)("every term must occur in one 
     expect(memory.search(query, layer, path), query).toContain("No hit");
 });
 
+test.each((["knowledge", "facts", "raw"] as const).flatMap(layer => [
+  { layer, kind: "513 distinct indexable terms", terms: Array.from({ length: 513 }, (_, i) => `term${String(i).padStart(4, "0")}`) },
+  { layer, kind: "1,000 distinct short terms", terms: Array.from({ length: 1000 }, (_, i) => `字${String.fromCodePoint(0x4e00 + i)}`) },
+]))("$layer search requires all $kind without exceeding SQL limits", ({ layer, terms }) => {
+  const f = corpus();
+  const body = terms.join(" ");
+  const turn = memory.store.appendTurn({ sessionId: f.session.id, parentTurnId: f.turns.at(-1)!.id, kind: "turn",
+    userPrompt: body, startedAt: "2026-10-02T00:00:00Z" });
+  const path = { ...f.path, headTurnId: turn.id };
+  const source = memory.store.hydrateSourceEntries(memory.store.listSourceEntries(f.session.id).filter(e => e.turnId === turn.id).map(e => e.id))[0]!;
+  const [fact] = facts(memory, path, [{ title: "Many terms", sources: [{ entry: source, text: body }] }]);
+  const rule = knowledge(memory.store, path, "project", "constraint", [fact!.id], body, { operation: { title: "Many terms" } });
+  const label = layer === "facts" ? `[F${fact!.id}]` : layer === "knowledge" ? `[K${rule.knowledgeId}@v1]` : `[S${f.session.id}/T${turn.id}#E1@user]`;
+  const found = lines(memory.search(body, layer, path));
+  expect(found).toHaveLength(1);
+  expect(found[0]).toContain(label);
+  // A missing term in either the first or last batch must reject the item.
+  const missing = terms[0]!.startsWith("term") ? "absent" : "缺失";
+  expect(memory.search([missing, ...terms.slice(1)].join(" "), layer, path)).toContain("No hit");
+  expect(memory.search([...terms.slice(0, -1), missing].join(" "), layer, path)).toContain("No hit");
+});
+
 test("terms may match different searched fields without matching JSON punctuation or other items", () => {
   const f = corpus();
   const [fact] = facts(memory, f.path, [{ title: "ALPHA title", sources: [{ entry: f.first, text: "beta body" }] }]);
