@@ -336,7 +336,7 @@ async function searchScenarios(fixture: Fixture, size: string): Promise<Sample[]
     try {
       const query = "SEARCHNEEDLE";
       const scope = { topk: 100_000, sessionId: fixture.sessionId, headTurnId: fixture.headTurnId };
-      const hits = memory.store.searchAddresses(query, "knowledge").length;
+      const hits = memory.store.searchAddresses([query], "knowledge").length;
       const graphed = (run: () => unknown) => {
         const counter = countGraphResolutions();
         try { counter.reset(); run(); return counter.resolutions(); } finally { counter.restore(); }

@@ -4262,69 +4262,46 @@ export class Store {
     });
   }
 
-  /** Ticket 81: today's full scan of every Turn and tool call, kept verbatim for queries too short for
-   * a trigram (below three Unicode characters, where two-character CJK words are common). */
-  private rawLikeScan(pattern: string, restricted: boolean, owners: string): string[] {
+  /** Recheck real columns, bounded to indexed candidates unless every term is below the trigram floor.
+   * Turns are a superset: the API checks all terms again in one exact source-entry Read. */
+  private rawLikeScan(patterns: readonly string[], restricted: boolean, owners: string, candidates?: string): string[] {
+    const matches = patterns.map(() => `(t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
+      (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
+      (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\')))` ).join(" AND ");
     return (this.db.prepare(`SELECT t.id FROM turns t WHERE
-        (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND
-        (t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
-        (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
-        (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\'))) ORDER BY t.id`)
-        .all(Number(restricted), owners, pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
+        ${candidates === undefined ? "" : "t.id IN (SELECT value FROM json_each(?)) AND"}
+        (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND ${matches} ORDER BY t.id`)
+      .all(...(candidates === undefined ? [] : [candidates]), Number(restricted), owners,
+        ...patterns.flatMap(pattern => [pattern, pattern, pattern, pattern, pattern])) as { id: number }[]).map(r => `T${r.id}`);
   }
 
-  /** Ticket 81: the index finds candidates, today's rule decides the hits (review of d9d8d84).
-   * Step 1 -- `raw_fts MATCH` with the query as one quoted phrase against the default (case-folding)
-   * trigram index: a superset of today's LIKE hits (Unicode case-folding is broader than LIKE's
-   * ASCII-only fold), restricted to this scope's sessions and split into Turn-level candidate turn
-   * ids and tool-call-level candidate (turn id, tool_call id) pairs by field.
-   * Step 2 -- each candidate is re-checked against the real column value with today's exact
-   * `LIKE … ESCAPE '\'` clause (never against raw_fts itself: FTS5 does not use the trigram index for
-   * a LIKE with ESCAPE, confirmed by EXPLAIN QUERY PLAN on this SQLite -- a full scan). This is the
-   * same WHERE clause `rawLikeScan` runs, merely restricted to `id IN (candidates)`, so a field that
-   * only looked like a match under Unicode case-folding (`éco` candidate, `École`) is excluded exactly
-   * as today, and a query spanning two fields (the end of a prompt, the start of a reply) never
-   * candidates in the first place because each field is its own indexed row.
-   * Step 3 -- candidates reduce to Turns (several matching tool calls of one Turn collapse to it once)
-   * and are ordered by id, as today. */
-  private rawTrigram(query: string, restricted: boolean, owners: string): string[] {
-    const phrase = ftsPhraseQuery(query);
-    const candidates = this.db.prepare(`SELECT e.turn_id AS turnId, e.tool_call_id AS toolCallId
+  /** Fields have separate FTS rows: intersect Turn candidates, not phrases within one field.
+   * One source entry can contain text and several calls; it must not be excluded at this stage. */
+  private rawTrigram(indexed: readonly string[], patterns: readonly string[], restricted: boolean, owners: string): string[] {
+    const candidates = this.db.prepare(indexed.map(() => `SELECT e.turn_id AS turnId
         FROM raw_search_entries e JOIN raw_fts ON raw_fts.rowid = e.id
-        WHERE raw_fts MATCH ? AND (? = 0 OR e.session_id IN (SELECT value FROM json_each(?)))`)
-      .all(phrase, Number(restricted), owners) as { turnId: number; toolCallId: number | null }[];
-    const turnIds = JSON.stringify([...new Set(candidates.filter(c => c.toolCallId === null).map(c => c.turnId))]);
-    const toolCallIds = JSON.stringify([...new Set(candidates.filter(c => c.toolCallId !== null).map(c => c.toolCallId))]);
-    const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
-    const hits = new Set<number>();
-    for (const row of this.db.prepare(`SELECT id FROM turns WHERE id IN (SELECT value FROM json_each(?))
-        AND (user_prompt LIKE ? ESCAPE '\\' OR assistant_text LIKE ? ESCAPE '\\')`)
-      .all(turnIds, pattern, pattern) as { id: number }[]) hits.add(row.id);
-    for (const row of this.db.prepare(`SELECT DISTINCT turn_id AS id FROM tool_calls WHERE id IN (SELECT value FROM json_each(?))
-        AND (name LIKE ? ESCAPE '\\' OR input LIKE ? ESCAPE '\\' OR result LIKE ? ESCAPE '\\')`)
-      .all(toolCallIds, pattern, pattern, pattern) as { id: number }[]) hits.add(row.id);
-    return [...hits].sort((a, b) => a - b).map(id => `T${id}`);
+        WHERE raw_fts MATCH ? AND (? = 0 OR e.session_id IN (SELECT value FROM json_each(?)))`).join(" INTERSECT "))
+      .all(...indexed.flatMap(term => [ftsPhraseQuery(term), Number(restricted), owners])) as { turnId: number }[];
+    return this.rawLikeScan(patterns, restricted, owners, JSON.stringify([...new Set(candidates.map(c => c.turnId))]));
   }
 
-  searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw", sessionIds?: readonly number[]): string[] {
-    const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+  searchAddresses(terms: readonly string[], scope: "facts" | "knowledge" | "all" | "raw", sessionIds?: readonly number[]): string[] {
+    const patterns = terms.map(term => `%${term.replace(/[\\%_]/g, "\\$&")}%`);
     const owners = JSON.stringify(sessionIds ?? []), restricted = sessionIds !== undefined;
-    // A NUL cannot appear in an FTS5 query string (it ends the phrase: "unterminated string"), so a
-    // query holding one keeps the LIKE scan too, unchanged rather than stripped.
-    const raw = () => unicodeLength(query) < 3 || query.includes("\u0000")
-      ? this.rawLikeScan(pattern, restricted, owners) : this.rawTrigram(query, restricted, owners);
+    // NUL ends an FTS5 query string; keep that term in the real-column recheck only.
+    const indexed = terms.filter(term => unicodeLength(term) >= 3 && !term.includes("\u0000"));
+    const raw = () => indexed.length ? this.rawTrigram(indexed, patterns, restricted, owners) : this.rawLikeScan(patterns, restricted, owners);
     if (scope === "raw") return raw();
+    const factMatch = patterns.map(() => "(f.text LIKE ? ESCAPE '\\' OR f.title LIKE ? ESCAPE '\\')").join(" AND ");
     const facts = scope === "knowledge" ? [] : (this.db.prepare(`SELECT f.id FROM facts f JOIN turns t ON t.id = f.turn_id
-      WHERE (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND (f.text LIKE ? ESCAPE '\\' OR f.title LIKE ? ESCAPE '\\') ORDER BY f.id`)
-      .all(Number(restricted), owners, pattern, pattern) as { id: number }[]).map((r) => `F${r.id}`);
-    // 21b: a label matches under the same literal semantics and escaping as the text. EXISTS over
-    // json_each reads label values, never the JSON punctuation around them, and returns one row per
-    // revision however many labels (or text and labels together) match. Knowledge membership is
-    // resolved by the caller's path and version filter rather than by its author's session here.
+      WHERE (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND ${factMatch} ORDER BY f.id`)
+      .all(Number(restricted), owners, ...patterns.flatMap(pattern => [pattern, pattern])) as { id: number }[]).map(r => `F${r.id}`);
+    // Match topic values, never their JSON punctuation. Membership is resolved by the reader's path.
+    const knowledgeMatch = patterns.map(() => `(text LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
+      OR EXISTS (SELECT 1 FROM json_each(topics) WHERE value LIKE ? ESCAPE '\\'))`).join(" AND ");
     const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT knowledge_id, id FROM knowledge_revisions
-      WHERE text LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM json_each(topics) WHERE value LIKE ? ESCAPE '\\')
-      ORDER BY knowledge_id, id`)
-      .all(pattern, pattern, pattern) as { knowledge_id: number; id: number }[]).map((r) => `K${r.knowledge_id}@${r.id}`);
+      WHERE ${knowledgeMatch} ORDER BY knowledge_id, id`)
+      .all(...patterns.flatMap(pattern => [pattern, pattern, pattern])) as { knowledge_id: number; id: number }[]).map(r => `K${r.knowledge_id}@${r.id}`);
     return scope === "all" ? [...facts, ...knowledge, ...raw()] : [...facts, ...knowledge];
   }
 

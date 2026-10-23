@@ -883,10 +883,16 @@ the token counters and the internal renderer behind `trace://` use, and no view 
 becomes a source entry, a fact or a processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
 path. Sibling queues are never combined into an automatic Raw view.
 
-`search({query?, scope?, layer?, topk?, code?})` (ticket 136) uses literal substring matching over fact
-text, every knowledge version, and original Raw. Nothing else is accepted. A knowledge hit matches the
-conclusion text or any revision topic label. Matching runs over label values with SQLite `json_each`, so
-serialized JSON punctuation and escapes never match.
+`search({query?, scope?, layer?, topk?, code?})` matches every query term in one item
+(ticket 150). Terms split on any whitespace, including U+3000; double quotes keep an exact phrase
+and its inner spaces. An unmatched quote keeps the rest as a phrase. Empty terms are discarded;
+a supplied query with no terms is refused. Omitting the query still lists items.
+
+Terms are case-insensitive literal substrings under the existing SQLite `LIKE` semantics
+(ASCII case folding), not FTS syntax or wildcards. Every term must occur in one knowledge version,
+one fact or one Raw entry. Terms may occur in different searched fields of that item: facts search
+text and title; knowledge searches text, title and topic values. Topics are read with SQLite
+`json_each`, so serialized JSON punctuation and escapes never match.
 
 `topicGroups(sessionId, headTurnId?, branch?)` projects the same path-selected
 visible current Knowledge as `{topics: [{topic, commits}], unclassified}`, where a commit
@@ -911,10 +917,11 @@ selection; selection grants no source or write authority.
 
 `layer` is `knowledge`, `facts`, `raw` or `all` (default). `topk` caps the hits across the layers together:
 10 with a query, none without. Without a query, hits are the newest first across the layers; with one,
-knowledge comes first (closest lexical match to its text or a topic, then current, then newer), then facts
-and Raw, each newest first. Every knowledge version applicable on the reader's path is a candidate, current,
-superseded and archived alike; other branches' versions are not. Raw hits are entries: the unit whose text
-contains the query, found newest Turn first a chunk at a time, so a small `topk` reads a few Turns. Raw
+knowledge comes first (closest lexical match to its text or a topic, using the original query string,
+then current, then newer), then facts and Raw, each newest first. Every knowledge version applicable
+on the reader's path is a candidate, current, superseded and archived alike; other branches' versions
+are not. Raw hits are entries whose searched text contains every term, found newest Turn first a chunk
+at a time, so a small `topk` reads a few Turns. Raw
 candidates are listed from metadata alone (entry id and ordinal): a body is read, for the whole chunk of Turns at
 once, when a query filter, a printed line or a script first needs a hit's `text`, `role` or `matchLines`, so
 a search that only counts its hits reads none. A Raw hit's `text` is the exact Read of its `address` (the same
@@ -926,8 +933,8 @@ TypeScript in the tool description). Facts and Raw also carry `session` and `tur
 to no single Turn, so knowledge carries neither (a script reaches a Turn through `supports`). It prints as one line:
 `[K12@v3] (archived) [category/scope] …snippet…` (no mark for the current version), `[F25081] title — …snippet…`
 or `[S173/T8727#E1@user] …snippet…`. One snippet rule serves all three layers: about 200 characters centred on
-the first match, cut with `…`; without a query it is the start of the body (a fact shows its title alone). A Raw
-snippet starts after the entry's own `[T..#E..@role]` label and role word, which the line's label already says.
+the earliest occurrence of any term, cut with `…`; without a query it is the start of the body (a fact shows its title alone).
+A Raw snippet starts after the entry's own `[T..#E..@role]` label and role word, which the line's label already says.
 Search never grants a knowledge write handle; read the complete `trace://K<id>` body for a tagged mutation base.
 
 `code` is the body of an async function run over the hits in a QuickJS sandbox (no Node API, file system,
@@ -945,8 +952,16 @@ temporary directory, and for a fresh Noter or Dreamer the run's own: Claude Code
 its restricted Read may open, and a Pi worker's temporary directory, which its `trace://`-only Read may also open and which
 is removed when the run ends. Raw `text`, `role` and `matchLines` (1-based, numbered as a Read of the hit's address) load on first access. The first read of `role` or `matchLines` answers for every hit of that hit's chunk of 25 Turns in a single reply, which the worker keeps, so reading it for every hit of a project costs one request per chunk and not one per hit. `text` answers for the asked hit alone, so a script never holds bodies it did not read.
 
-Raw matching includes tool names, inputs, and results; `%` and `_` are escaped. A miss says that no hit does
-not mean absent. `trace://` reads use host-native limits, not search budgets.
+Raw matching includes tool names, inputs, and results; `%`, `_` and backslashes are escaped for `LIKE`.
+Terms of at least three Unicode code points use the existing trigram index. Because each indexed field
+has its own row, one SQL statement intersects the per-term FTS5 phrase candidates by Turn, allowing
+different fields and calls within an entry to satisfy different terms. Every term, including shorter
+ones, is rechecked against real columns with `LIKE`; the API then requires every term in one exact
+entry Read. When all terms are short, the existing full scan checks them all. A NUL-containing term
+cannot be sent to FTS5 and stays in the recheck; if no term can use FTS5, the scan is retained.
+`matchLines` lists the 1-based lines containing at least one term. A miss explains that every term must
+appear in one item, suggests fewer terms, and retains “No hit does not mean absent.”
+`trace://` reads and Grep are unchanged.
 
 The following trace-only address and option behavior is historical, not a public tool contract:
 session and project addresses, comma lists, fact intervals and trace `pageBudget`/`tool`/`full`/`cursor` options.

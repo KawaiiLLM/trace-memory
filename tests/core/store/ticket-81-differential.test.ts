@@ -7,9 +7,9 @@ import { Store } from "../../../src/core/store/index.ts";
 // Ticket 81: a differential test over the exact battery the ticket's Constraints name -- ASCII, mixed
 // case, non-ASCII case pairs, CJK words of two/three/more characters, LIKE metacharacters, FTS5 syntax
 // characters, and a very long query -- run against both the old full scan and the new trigram-indexed
-// search, asserting byte-identical hits. `originalRawLikeScan` is a frozen copy of the pre-81
-// `searchAddresses` raw() query (Store.rawLikeScan today, unchanged): a second, independent
-// implementation to compare against, not a call into the code under test.
+// search, asserting byte-identical hits for one literal term. Callers supply parsed terms; quotes
+// and whitespace inside this one term remain literal, as in a search tool's quoted phrase.
+// `originalRawLikeScan` is an independent copy of the pre-index scan.
 function originalRawLikeScan(store: Store, query: string, sessionIds?: readonly number[]): string[] {
   const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
   const owners = JSON.stringify(sessionIds ?? []), restricted = sessionIds !== undefined;
@@ -60,8 +60,8 @@ test("81: differential -- ASCII, mixed case, non-ASCII case pairs, CJK, metachar
     ...Array.from({ length: 128 }, (_, code) => `a${String.fromCharCode(code)}b`),
   ];
   for (const query of queries) {
-    expect(s.searchAddresses(query, "raw"), `unrestricted: ${JSON.stringify(query)}`).toEqual(originalRawLikeScan(s, query));
-    expect(s.searchAddresses(query, "raw", [f.sessionA.id]), `restricted to A: ${JSON.stringify(query)}`).toEqual(originalRawLikeScan(s, query, [f.sessionA.id]));
-    expect(s.searchAddresses(query, "raw", [f.sessionB.id]), `restricted to B: ${JSON.stringify(query)}`).toEqual(originalRawLikeScan(s, query, [f.sessionB.id]));
+    expect(s.searchAddresses([query], "raw"), `unrestricted: ${JSON.stringify(query)}`).toEqual(originalRawLikeScan(s, query));
+    expect(s.searchAddresses([query], "raw", [f.sessionA.id]), `restricted to A: ${JSON.stringify(query)}`).toEqual(originalRawLikeScan(s, query, [f.sessionA.id]));
+    expect(s.searchAddresses([query], "raw", [f.sessionB.id]), `restricted to B: ${JSON.stringify(query)}`).toEqual(originalRawLikeScan(s, query, [f.sessionB.id]));
   }
 });

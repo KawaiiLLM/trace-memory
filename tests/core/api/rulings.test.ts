@@ -96,6 +96,19 @@ beforeEach(() => {
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
+test("2026-10-24: every search term must occur in one item, while a quoted phrase stays exact", () => {
+  const store = memory.store;
+  const project = store.createProject({ name: "search-terms", declaredBy: "mark" });
+  const session = seedSession(store, project.id, "fake");
+  const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "预览在 3090 端口重启\n预览实例 3090 仍开", startedAt: time });
+  const source = api.hydrate(store.listSourceEntries(session.id), store)[0]!;
+  const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+  const fact = seedFact(memory, path, "Preview restart", [{ entry: source, text: source.text }]);
+  const tool = memory.tools({ kind: "manual", sessionId: session.id, branch: "main", currentTurnId: turn.id }).find(t => t.name === "search")!;
+  expect(tool.execute({ query: "预览 3090 重启 预览实例", layer: "facts" })).toContain(`[F${fact.id}]`);
+  expect(tool.execute({ query: '"预览 3090"', layer: "facts" })).toContain("No hit");
+});
+
 /** Tight-budget cases bound the one temporary allowance explicitly; no window can borrow a base. */
 const compactionWindows = (knowledge: number, facts: number, raw: number, temporary = 0) => {
   setKnowledgeInjection(memory, Math.max(0, knowledge));
@@ -1005,7 +1018,7 @@ test("41a/118: search lists the versions applicable on the reader's path, and ex
   const current = memory.search("FILTER", "knowledge", c);
   expect(current).toContain(`[${history(1, cCommit)}]`);
   expect(current).not.toContain(`[${history(1, dCommit)}]`); // another branch's version is not applicable here
-  const listed = memory.search("", "knowledge", { ...c, topk: 100 }) as string;
+  const listed = memory.search(undefined, "knowledge", { ...c, topk: 100 }) as string;
   expect(listed).toContain(`[${history(1, 1)}] (superseded)`); // the parent is still a candidate, marked
   expect(listed).toContain(`[${history(1, cCommit)}]`); expect(listed).not.toContain(`[${history(1, dCommit)}]`);
   const files = memoryFiles(memory, c);

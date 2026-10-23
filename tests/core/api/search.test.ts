@@ -2,7 +2,7 @@
 // hit by default; every knowledge version a candidate; each hit a structured item whose fields the tool
 // description declares.
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { sourceSeededMemory, memoryFiles } from "../../source-fixture.ts";
+import { sourceSeededMemory, memoryFiles, seedSourceEntry } from "../../source-fixture.ts";
 import { archive, facts, knowledge } from "../../support/seed.ts";
 import { SEARCH_HIT_TYPES, toolDefinitions } from "../../../src/core/api/index.ts";
 import { countHydratedRows } from "../../perf/fixture.ts";
@@ -52,7 +52,7 @@ test("defaults: layer all, topk 10 with a query, knowledge then facts then Raw, 
   // Ten is the default cap; a miss says so without claiming absence.
   for (let i = 0; i < 12; i++) memory.store.appendTurn({ sessionId: f.session.id, kind: "turn", userPrompt: `gizmo ${i}`, startedAt: "2026-10-02T00:00:00Z" });
   expect(lines(memory.search("gizmo", "raw")).filter(l => l.startsWith("[S"))).toHaveLength(10);
-  expect(memory.search("no such word")).toBe("No hit. Search matches a literal substring. No hit does not mean absent.");
+  expect(memory.search("no such word")).toContain("No hit");
 });
 
 test("with no query: every entry, or the newest topk across the layers", () => {
@@ -110,7 +110,7 @@ test("a Raw line opens with its address once: the entry's own label and role wor
   const f = corpus();
   const id = `S${f.session.id}/T${f.turns[1]!.id}`;
   expect(lines(memory.search("second prompt", "raw", f.path))).toEqual([`[${id}#E1@user] second prompt about widgets`]);
-  expect(lines(memory.search("reply 2", "raw", f.path))).toEqual([`[${id}#E2@assistant] reply 2 widgets`]);
+  expect(lines(memory.search('"reply 2"', "raw", f.path))).toEqual([`[${id}#E2@assistant] reply 2 widgets`]);
   // A match only in the stripped label does not centre the snippet there.
   expect(lines(memory.search("user", "raw", { ...f.path, topk: 100 })).every(l => !/^\[S\d+\/T\d+#E\d+@user\] (\[T|user:)/.test(l))).toBe(true);
 });
@@ -146,6 +146,78 @@ test("unknown or removed parameters and bad values are refused", () => {
   for (const bad of [{ topk: 0 }, { topk: 1.5 }, { layer: "everything" }, { scope: "branch" }, { code: 3 }, { query: 3 }, { cap: 5 }, { maxTokens: 100 }, { versions: "all" }])
     expect(search.execute(bad)).toMatch(/^rejected: /);
   expect(Object.keys(toolDefinitions.find(t => t.name === "search")!.parameters.properties as object)).toEqual(["query", "scope", "layer", "topk", "code"]);
+});
+
+test.each(["knowledge", "facts", "raw"] as const)("every term must occur in one %s item, with quoted phrases kept exact", layer => {
+  const f = corpus();
+  const body = "预览在 3090 端口重启\n预览实例 3090 仍开\nALPHA is separate from beta\nexact  phrase\n100% snake_case core\\api * : NEAR AND";
+  const turn = memory.store.appendTurn({ sessionId: f.session.id, parentTurnId: f.turns.at(-1)!.id, kind: "turn",
+    userPrompt: body, assistantText: "Only missingword appears here", startedAt: "2026-10-02T00:00:00Z" });
+  const path = { ...f.path, headTurnId: turn.id };
+  const source = memory.store.hydrateSourceEntries(memory.store.listSourceEntries(f.session.id).filter(e => e.turnId === turn.id).map(e => e.id))[0]!;
+  const [fact] = facts(memory, path, [{ title: "Preview notes", sources: [{ entry: source, text: body }] }]);
+  const rule = knowledge(memory.store, path, "project", "constraint", [fact!.id], body, { operation: { title: "Preview notes" } });
+  const label = layer === "facts" ? `[F${fact!.id}]` : layer === "knowledge" ? `[K${rule.knowledgeId}@v1]` : `[S${f.session.id}/T${turn.id}#E1@user]`;
+  for (const query of ["预览 3090 重启 预览实例", "预览 3090", "预览 重启", "预览　重启", "alpha\tBETA", '"exact  phrase"', '"exact  phrase', '"" 预览', "100% snake_case core\\api * : NEAR AND"])
+    expect(memory.search(query, layer, path), query).toContain(label);
+  for (const query of ['"预览 3090"', '"exact phrase"', "预览 missingword"])
+    expect(memory.search(query, layer, path), query).toContain("No hit");
+});
+
+test("terms may match different searched fields without matching JSON punctuation or other items", () => {
+  const f = corpus();
+  const [fact] = facts(memory, f.path, [{ title: "ALPHA title", sources: [{ entry: f.first, text: "beta body" }] }]);
+  const rule = knowledge(memory.store, f.path, "project", "constraint", [fact!.id], "beta body",
+    { operation: { title: "ALPHA title", topics: ["gamma", "delta"] } });
+  expect(memory.search("alpha beta", "facts", f.path)).toContain(`[F${fact!.id}] ALPHA title — beta body`);
+  expect(memory.search("alpha beta gamma delta", "knowledge", f.path)).toContain(`[K${rule.knowledgeId}@v1]`);
+  expect(memory.search('gamma ","', "knowledge", f.path)).toContain("No hit");
+  memory.store.appendToolCall({ turnId: f.turns.at(-1)!.id, name: "AlphaTool", input: "预览 重启 gamma", result: "beta delta", status: "success" });
+  expect(memory.search("AlphaTool beta delta", "raw", f.path)).toMatch(/@observation\]/);
+  expect(memory.search("AlphaTool gamma", "raw", f.path)).toMatch(/@assistant\]/);
+  expect(memory.search("预览 重启", "raw", f.path)).toMatch(/@assistant\]/);
+  expect(memory.search("gamma beta", "raw", f.path)).toContain("No hit");
+});
+
+test("one Raw entry can satisfy terms in its text and in different tool calls", () => {
+  const f = corpus();
+  const turn = memory.store.appendTurn({ sessionId: f.session.id, kind: "turn", assistantText: "ALPHA preview", startedAt: "2026-10-02T00:00:00Z" });
+  const calls = ["beta", "gamma"].map(input => {
+    const call = memory.store.appendToolCall({ turnId: turn.id, name: "Read", input, status: "attempted" });
+    return { ordinal: call.ordinal, callId: `call-${call.id}`, name: call.name, input, status: call.status };
+  });
+  seedSourceEntry(memory, turn.id, "assistant", "ALPHA preview", calls);
+  const last = memory.store.listSourceEntries(f.session.id).at(-1)!;
+  const out = lines(memory.search("alpha beta gamma", "raw"));
+  expect(out).toHaveLength(1);
+  expect(out[0]).toContain(`[S${f.session.id}/T${turn.id}#E${last.entryOrdinal}@assistant]`);
+});
+
+test("snippets use the earliest term regardless of query order and matchLines includes any term", async () => {
+  const f = corpus();
+  const body = `${"before ".repeat(60)}EARLY\n${"middle ".repeat(60)}LATER\nno matching word`;
+  const turn = memory.store.appendTurn({ sessionId: f.session.id, parentTurnId: f.turns.at(-1)!.id, kind: "turn", userPrompt: body, startedAt: "2026-10-02T00:00:00Z" });
+  const path = { ...f.path, headTurnId: turn.id };
+  const source = memory.store.hydrateSourceEntries(memory.store.listSourceEntries(f.session.id).filter(e => e.turnId === turn.id).map(e => e.id))[0]!;
+  const [fact] = facts(memory, path, [{ title: "Long notes", sources: [{ entry: source, text: body }] }]);
+  knowledge(memory.store, path, "project", "constraint", [fact!.id], body, { operation: { title: "Long notes" } });
+  for (const layer of ["knowledge", "facts", "raw"] as const) {
+    const out = memory.search("later early", layer);
+    expect(out).toContain("EARLY");
+    expect(out).not.toContain("LATER");
+  }
+  const out = await memory.search("later early", "raw", { code: "return JSON.stringify(hits.map(h => ({ address: h.address, matchLines: h.matchLines })))" });
+  const hits = JSON.parse(/Output:\n(.*)$/s.exec(out)![1]!) as { address: string; matchLines: number[] }[];
+  expect(hits).toEqual([{ address: `trace://raw/S${f.session.id}/T${turn.id}#E1`, matchLines: [1, 2] }]);
+});
+
+test("queries without terms are refused by the tool and direct API", () => {
+  const f = corpus();
+  const tool = memory.tools({ kind: "manual", sessionId: f.session.id, branch: "main", currentTurnId: f.turns.at(-1)!.id }).find(t => t.name === "search")!;
+  for (const query of ["", " \t\n　", '""', ' "" "" ']) {
+    expect(() => memory.search(query)).toThrow(/no search terms/);
+    expect(tool.execute({ query })).toMatch(/^rejected: .*query/);
+  }
 });
 
 /** The fields a TypeScript declaration gives each interface, with the shared `Base` fields merged in. */
