@@ -3,8 +3,6 @@
 
 import { renderToolNames } from "../prompts/tool-names.ts";
 import type { ToolNames } from "../prompts/tool-names.ts";
-import { knowledgeTitle } from "../render/index.ts";
-import type { WritingLimits } from "../model/index.ts";
 import type { CurateItem } from "./curate.ts";
 
 /** One conversation scores at most this many items (Magic Context's classify batch). */
@@ -33,10 +31,10 @@ export function classifyAnchors(items: readonly CurateItem[]): CurateItem[] {
 }
 
 /** The first message of one pass: the anchors, then the items to score, whole, then the line that sends the model to `check`. */
-export function classifyMessage(anchors: readonly CurateItem[], pass: readonly CurateItem[], limits: Pick<WritingLimits, "titleWords">, names: ToolNames, checkFirst: string): string {
+export function classifyMessage(anchors: readonly CurateItem[], pass: readonly CurateItem[], names: ToolNames, checkFirst: string): string {
   const show = (item: CurateItem, mark = "") => {
     const r = item.value.revision;
-    return `K${r.knowledgeId} [${r.category}/${r.scope}]${mark} ${knowledgeTitle(r, limits.titleWords)}\n${r.text}`;
+    return `K${r.knowledgeId} [${r.category}/${r.scope}]${mark} ${r.title ?? "(no title)"}\n${r.text}`;
   };
   return [anchors.length ? `Already scored; shown for scale, do not score:\n\n${anchors.map(item => show(item, ` (score ${item.score})`)).join("\n\n")}` : "",
     `Items to score:\n\n${pass.map(item => show(item)).join("\n\n")}`, renderToolNames(checkFirst, names)].filter(Boolean).join("\n\n");

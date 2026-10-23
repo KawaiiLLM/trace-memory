@@ -5,7 +5,7 @@ import { DEFAULT_WRITING_LIMITS, type Fact, type FactCategory, type KnowledgeCat
 import { parseKnowledgeAddress } from "../../src/core/model/address.ts";
 import type { MemoryReceipt } from "../../src/core/knowledge-write/bind.ts";
 import { assignVersionTag } from "../../src/core/store/version-tags.ts";
-import { knowledgeTitle } from "../../src/core/render/index.ts";
+import { knowledgeOpening } from "../../src/core/render/index.ts";
 
 /** Resolve the shared tool receipt: authored update/merge/split tags, other history addresses. */
 export function receiptCommit(store: Store, item: Pick<MemoryReceipt["committed"][number], "knowledgeId" | "version">): number {
@@ -106,8 +106,8 @@ export function legacyFact(store: Store, path: KnowledgePath, sources: readonly 
     [{ sources, text, category, actor: "user", createdAt: at }]).facts[0]!;
 }
 
-/** The title a legacy item would have shown: its body's leading characters. Fixtures that need a title and do not care which use it. */
-export const fixtureTitle = (text: string): string => knowledgeTitle({ title: null, text }, DEFAULT_WRITING_LIMITS.titleWords);
+/** Fixtures that need an authored title and do not care which use the bounded body opening, without display markers. */
+export const fixtureTitle = (text: string): string => knowledgeOpening(text, DEFAULT_WRITING_LIMITS.titleWords);
 
 type KnowledgeSeed = { scope: "global" | "project" | "session"; category: KnowledgeCategory; supports: number[];
   title?: string; text: string; topics?: string[]; createdAt?: string; author?: string; reason?: string };

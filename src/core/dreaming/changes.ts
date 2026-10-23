@@ -19,7 +19,7 @@ const targetOf = (operation: Operation) => operation.op === "merge" ? { knowledg
 export function buildChanges(store: Store, path: KnowledgePath, curateRuns: readonly number[]): Changes {
   const version = (r: { knowledgeId: number; id: number }) => `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`;
   const at = (knowledgeId: number, commit: number) => `K${knowledgeId}@v${store.versionOrdinal(knowledgeId, commit)}`;
-  const titled = (r: KnowledgeRevision) => `${knowledgeTitle(r, store.writing.titleWords)}\n${r.text}`;
+  const titled = (r: KnowledgeRevision) => `${r.title ?? "(no title)"}\n${r.text}`;
   const proposals: Proposal[] = [];
   for (const run of curateRuns) {
     const response = JSON.parse(store.getRun(run)?.response ?? "{}") as { category?: string; proposed?: { block: string; operation: Operation }[] };
@@ -59,7 +59,7 @@ export function buildChanges(store: Store, path: KnowledgePath, curateRuns: read
       const revision = store.getKnowledgeRevision(item.knowledgeId, item.baseCommit)!;
       lines.push("", ...currentText(item, revision, `absorbed ${version(revision)} (archived into the primary if confirmed)`));
     }
-    lines.push("", "proposed:", `${operation.title ?? knowledgeTitle(base, store.writing.titleWords)}\n${operation.text ?? ""}`);
+    lines.push("", "proposed:", `${operation.title ?? base.title ?? "(no title)"}\n${operation.text ?? ""}`);
     // A child is written with its own category, topics, scope and supports, else the operation's (supports resolved as the store does).
     if (operation.op === "split") operation.children.forEach((child, i) => lines.push("", `proposed child ${i + 1}:`, `category: ${child.category}`,
       `scope: ${child.scope ?? operation.scope}`, `topics: ${JSON.stringify(child.topics)}`,
