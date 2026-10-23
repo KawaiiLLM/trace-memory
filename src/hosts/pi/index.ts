@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
-import { createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createReadToolDefinition, createWriteToolDefinition, SettingsManager, truncateHead, truncateLine, formatSize, DEFAULT_MAX_BYTES, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createReadToolDefinition, createWriteToolDefinition, SettingsManager, truncateHead, truncateLine, formatSize, DEFAULT_MAX_BYTES, type GrepToolInput, type ReadToolInput, type ExtensionAPI, type ExtensionContext, type SessionEntry, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { contextComposition } from "./context-composition.ts";
 import { statusBody } from "./session-status.ts";
 import { showSessionPanel } from "./session-panel.ts";
@@ -368,9 +368,9 @@ export default function (pi: ExtensionAPI) {
     // description and schema beside Core's memory tools.
     const { name, description, parameters } = createReadToolDefinition(context.cwd);
     const nativeReadToolTokens = tokens(JSON.stringify({ name, description, parameters }));
-    // The Noter also has Pi's write and edit.
+    // Both workers also have Pi's write, edit and Bash.
     // The Dreamer's curate and verify also list grep and find (stage 4 §5.4), priced beside write and edit.
-    const nativeWriteToolTokens = [createWriteToolDefinition(context.cwd), createEditToolDefinition(context.cwd),
+    const nativeWriteToolTokens = [createWriteToolDefinition(context.cwd), createEditToolDefinition(context.cwd), createBashToolDefinition(context.cwd),
       ...(kind === "dreaming" ? [createGrepToolDefinition(context.cwd), createFindToolDefinition(context.cwd)] : [])]
       .reduce((sum, { name, description, parameters }) => sum + tokens(JSON.stringify({ name, description, parameters })), 0);
     const common = { ...target, model: selectedModel, thinkingLevel: inheritedThinking, subagentThinkingLevel: subagentThinking,

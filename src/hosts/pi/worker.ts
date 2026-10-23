@@ -57,7 +57,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
     // there is no second runtime to fall back to, and the queue stays pending for the next
     // permitted trigger.
     const native = await runNative({
-      kind: task.kind, runsDir: binding.runsDir, cwd: binding.cwd, agentDir: binding.agentDir, model,
+      kind: task.kind, runsDir: binding.runsDir, cwd: task.workspace?.dir ?? binding.cwd, agentDir: binding.agentDir, model,
       thinkingLevel: (task.subagentThinkingLevel ?? task.thinkingLevel) as ThinkingLevel | undefined,
       tools: binding.tools, read: binding.read, fileTools: binding.fileTools, maxToolRounds: binding.maxToolRounds,
       signal: task.signal,

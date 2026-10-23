@@ -127,7 +127,7 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   expect(h.conversations[0]!.systemPrompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
   expect(h.conversations[0]!.systemPrompt!.split("When to look up memory")).toHaveLength(2);
   expect(h.conversations[0]!.messages).toHaveLength(1);
-  expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["search", "check", "read", "write", "edit"]);
+  expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["search", "check", "read", "write", "edit", "bash"]);
   // Both tasks start from the same bytes: system prompt, tools and task text.
   expect(h.conversations[writeRequests]!.systemPrompt).toBe(h.conversations[0]!.systemPrompt);
   expect(h.conversations[writeRequests]!.tools).toEqual(h.conversations[0]!.tools);
@@ -634,7 +634,7 @@ test("a subagent Noter reads omitted evidence through virtual Read and records i
   expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
   expect(result.content[0]!.text).toBe(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read(path).content);
   expect(result.content[0]!.text).toContain("x".repeat(5000));
-  expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["search", "check", "read", "write", "edit"]);
+  expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["search", "check", "read", "write", "edit", "bash"]);
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
   expect(JSON.parse(run.request!)).toEqual(h.requests[5]); // the write task's last request
@@ -649,7 +649,7 @@ test("a noting tool call for a bad address returns an error result and N still c
   const result = h.conversations[1]!.messages[2] as { content: { text: string }[] };
   expect(result.content[0]!.text).toContain("does not exist");
   await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
-  expect(h.conversations.every(c => c.tools!.map(t => t.name).join(",") === "search,check,read,write,edit")).toBe(true);
+  expect(h.conversations.every(c => c.tools!.map(t => t.name).join(",") === "search,check,read,write,edit,bash")).toBe(true);
   const runs = h.memory.store.listRuns(1);
   expect(runs.map(r => [r.kind, r.outcome])).toEqual([["noting", "success"], ["noting", "success"]]); // write, then verify
   // The OpenAI tool message transports text only. Check native status in Pi's own log,

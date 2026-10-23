@@ -20,8 +20,8 @@ export function allowedRoots(store: Store, sessionId: number): string[] {
 }
 
 const real = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
-const SECRET_FILES = [".env", ".env.*", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".netrc", ".npmrc", "credentials", "credentials.json", "*.pem", "*.key", "*.p12", "*.pfx", "*.keystore"];
-const SECRET_DIRS = [".ssh", ".aws", ".gnupg"];
+export const SECRET_FILES = [".env", ".env.*", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".netrc", ".npmrc", "credentials", "credentials.json", "*.pem", "*.key", "*.p12", "*.pfx", "*.keystore"];
+export const SECRET_DIRS = [".ssh", ".aws", ".gnupg"];
 /** The production memory directory and the Pi agent directory, relative to home (`deniedPath` holds them to the exact home). A Grep rooted
  * at home would otherwise search them, so the exclusion names them too (any directory of the same name is skipped as well). */
 const DENIED_TREES = [".trace-memory", ".pi/agent"];

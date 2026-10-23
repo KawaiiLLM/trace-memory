@@ -6,7 +6,7 @@ import { retireConsolidationSettings } from "../retired-settings.ts";
 
 export const CC_AGENT_SDK_VERSION = "0.1.77";
 export const CC_CONTEXT_HEADROOM = 10_000;
-/** The Noter's workspaces live inside the worker's cwd, the one tree `--restricted` lets its native file tools reach. */
+/** Run workspaces live under the prepared worker directory; each run launches from its own workspace. */
 export const ccWorkspaceRoot = (cwd: string): string => join(cwd, "workspaces");
 export const CC_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type CcEffort = typeof CC_EFFORT_LEVELS[number];

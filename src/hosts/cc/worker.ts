@@ -6,7 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import type { DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 import { memoryPath, resolvedMemoryPath, toolRejected } from "../../core/api/index.ts";
 import { sweepStaleWorkspaces } from "../../core/noting/workspace.ts";
-import { confineSearch, resolveRepositoryPath } from "../../core/dreaming/roots.ts";
+import { confineSearch, resolveRepositoryPath, SECRET_DIRS, SECRET_FILES } from "../../core/dreaming/roots.ts";
 import { CC_AGENT_SDK_VERSION, ccWorkspaceRoot, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
@@ -284,9 +284,9 @@ function userMessage(text: string, sessionId = "", synthetic = false): SDKUserMe
     parent_tool_use_id: null, ...(synthetic ? { isSynthetic: true } : {}) } as SDKUserMessage;
 }
 
-function assertInit(message: Extract<SDKMessage, { type: "system"; subtype: "init" }>, worker: ResolvedCcWorkerConfig,
+function assertInit(message: Extract<SDKMessage, { type: "system"; subtype: "init" }>, cwd: string,
   allowedTools: readonly string[]): void {
-  if (message.cwd !== worker.cwd) throw new Error(`CC worker started in unexpected cwd ${message.cwd}`);
+  if (message.cwd !== cwd) throw new Error(`CC worker started in unexpected cwd ${message.cwd}`);
   const actual = [...message.tools].sort(), expected = [...allowedTools].sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected))
     throw new Error(`CC worker tool isolation failed: expected ${expected.join(", ")}, got ${actual.join(", ")}`);
@@ -306,18 +306,34 @@ function assertModelMetadata(models: unknown, execution: ResolvedCcPhaseConfig):
     throw new Error(`CC worker effort ${execution.thinking} is not supported by model ${execution.model}`);
 }
 
+/** Resolve existing symlinked ancestors even when a configured directory does not exist yet. */
+function sandboxDirectory(path: string): string {
+  path = resolve(path);
+  try { return realpathSync(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const parent = dirname(path);
+    if (parent === path) throw error;
+    return join(sandboxDirectory(parent), path.slice(parent.length));
+  }
+}
+
 /** One fresh-context official-SDK execution implementation for all three frozen memory phases. */
 export class CcAgentWorker {
   private readonly config: ResolvedCcHostConfig;
   private readonly worker: ResolvedCcWorkerConfig;
   private readonly environment: NodeJS.ProcessEnv;
+  private readonly piAgentDirectory: string;
   private readonly query: typeof query;
   private readonly journal: CcWorkerJournal;
 
   constructor(config: ResolvedCcHostConfig, dependencies: CcWorkerDependencies = {}) {
     if (!config.worker) throw new Error("CC worker configuration is required for memory-task admission");
     this.config = config; this.worker = config.worker;
-    const environment = productionEnvironment(dependencies.environment ?? process.env);
+    const source = dependencies.environment ?? process.env;
+    const environment = productionEnvironment(source);
+    // Pi's effective directory belongs to the host, even though its override is not passed to Claude.
+    this.piAgentDirectory = resolve(source.PI_CODING_AGENT_DIR ?? join(source.HOME ?? homedir(), ".pi", "agent"));
     this.environment = config.retry === undefined ? environment
       : { ...environment, CLAUDE_CODE_MAX_RETRIES: String(config.retry.maxRetries) };
     this.query = dependencies.query ?? query;
@@ -333,6 +349,30 @@ export class CcAgentWorker {
       throw new Error(`CC ${task.kind} task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}`);
     if (!task.reader?.sessionId || !task.reader.branch || !task.reader.headTurnId || !task.reader.projectId)
       throw new Error("CC worker needs a frozen Core reader target");
+    const workspace = task.workspace as typeof task.workspace | undefined;
+    const cwd = workspace ? realpathSync(workspace.dir) : this.worker.cwd;
+    const roots = task.kind === "dreaming" ? task.workspace?.roots ?? [] : [];
+    const home = resolve(this.environment.HOME ?? homedir());
+    const privateDirectories = [...new Set([
+      join(home, ".trace-memory"), join(home, ".pi", "agent"), dirname(this.config.dbPath), this.piAgentDirectory,
+    ])];
+    const renderedRoot = join(this.worker.cwd, "rendered");
+    if (workspace) {
+      try {
+        const denied = [...roots, ...privateDirectories].map(path => ({ path, real: sandboxDirectory(path) }));
+        const rendered = sandboxDirectory(renderedRoot);
+        for (const [name, path] of [["workspace", cwd], ["rendering", rendered]] as const) {
+          const conflict = denied.find(directory => path === directory.real ||
+            path.startsWith(directory.real.endsWith(sep) ? directory.real : directory.real + sep));
+          if (conflict) throw new Error(`CC worker ${name} directory ${path} is inside denied directory ${conflict.path}; configure separate worker and sensitive directories`);
+        }
+        if (rendered === cwd || rendered.startsWith(cwd + sep))
+          throw new Error(`CC worker rendering directory ${renderedRoot} is inside the writable workspace directory ${cwd}; configure separate directories`);
+      } catch (error) {
+        return { outcome: "failure", output: error instanceof Error ? error.message : String(error),
+          audit: { available: false, reason: AUDIT_UNAVAILABLE } };
+      }
+    }
     // 78: the path Claude Code itself will persist this run's native session under, known only once
     // init reports the native session id. Verified, never created, by this adapter.
     let nativeLog: string | undefined;
@@ -345,8 +385,7 @@ export class CcAgentWorker {
     });
     const results: SDKResultMessage[] = [], assistantMessages: SDKAssistantMessage[] = [];
     const frozenReader = { ...task.reader };
-    // Native --restricted confines Read to the prepared private worker cwd, even after a Hook rewrite.
-    const renderedRoot = join(this.worker.cwd, "rendered");
+    // Renderings stay outside the writable workspace; only this run's directory is additionally readable.
     mkdirSync(renderedRoot, { recursive: true, mode: 0o700 });
     const readDirectory = mkdtempSync(join(renderedRoot, "worker-"));
     const rendered = new Map<string, string>();
@@ -361,7 +400,6 @@ export class CcAgentWorker {
     // absolute and already normal, is exactly one of the two, is not a symbolic link, and sits directly in the run's directory.
     // Stage 4: a Dreaming task has the same shape, with its own lists of readable and writable files.
     // A task with no workspace (a fixture of the older shapes) reads trace:// only.
-    const workspace = task.workspace as typeof task.workspace | undefined;
     const files = !workspace ? { read: [] as string[], write: [] as string[] }
       : task.kind === "noting" ? { read: [task.workspace.facts, task.workspace.knowledge], write: [task.workspace.facts, task.workspace.knowledge] }
       : { read: task.workspace.read, write: task.workspace.write };
@@ -376,7 +414,6 @@ export class CcAgentWorker {
     };
     // Stage 5 §3.7: curate and verify may read repositories, through Read, Grep and Glob confined to their roots (one function, one deny
     // list); classify has no roots, so its calls are refused. Equal roots keep curate's and verify's first requests alike.
-    const roots = task.kind === "dreaming" ? task.workspace?.roots ?? [] : [];
     const searches = task.kind === "dreaming" && task.task !== "classify";
     const onSearch = async (raw: unknown) => {
       const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown> };
@@ -431,7 +468,7 @@ export class CcAgentWorker {
         return deny(error instanceof Error ? error.message : String(error));
       }
     };
-    // These hooks are the only guard on a child's file access: whatever they throw, the call is denied.
+    // These hooks guard native file tools, independently of the Bash sandbox; exceptions deny the call.
     const failClosed = <R,>(hook: (raw: unknown) => Promise<R>) => async (raw: unknown): Promise<R | ReturnType<typeof deny>> => {
       try { return await hook(raw); } catch (error) { return deny(`CC worker file hook failed: ${error instanceof Error ? error.message : String(error)}`); }
     };
@@ -460,12 +497,12 @@ export class CcAgentWorker {
       this.journal("contained-sdk-control-abort", { taskKind: task.kind, nativeSessionId, error: error.message }),
       async () => { try {
       task.signal?.throwIfAborted();
-      // The Noter alone has native Write and Edit, confined by the hook above to its two files; `--restricted` keeps them inside the cwd.
-      const native = workspace ? ["Read", "Write", "Edit", ...(searches ? ["Grep", "Glob"] : [])] : ["Read"];
+      // Native file tools retain their path hooks; Bash uses Claude Code's fail-closed sandbox.
+      const native = workspace ? ["Read", "Write", "Edit", "Bash", ...(searches ? ["Grep", "Glob"] : [])] : ["Read"];
       const allowedTools = [...native, ...task.tools.map(definition => ccWorkerToolNames[definition.name])];
       const execution = this.query({ prompt: input ?? task.text, options: {
         model: settings.model,
-        cwd: this.worker.cwd,
+        cwd,
         pathToClaudeCodeExecutable: this.worker.claudeExecutable,
         env: this.environment,
         tools: native,
@@ -487,14 +524,23 @@ export class CcAgentWorker {
         // plugin-free, as assertInit requires. 129: 2.1.293 adds `cc-plugin-plugin-authoring@builtin` the same way.
         extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking,
           settings: JSON.stringify({ enabledPlugins: { "agents-md@builtin": false, "cc-plugin-plugin-authoring@builtin": false },
-            // curate and verify: `--restricted` confines the file tools to the working directories, `additionalDirectories` included.
-            ...(roots.length ? { permissions: { additionalDirectories: roots } } : {}) }) },
+            permissions: { additionalDirectories: [...roots, readDirectory] },
+            ...(workspace ? { sandbox: {
+              enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true,
+              allowUnsandboxedCommands: false, excludedCommands: [], enableWeakerNestedSandbox: false,
+              filesystem: {
+                allowWrite: [cwd],
+                denyWrite: [...roots, ...privateDirectories, readDirectory],
+                denyRead: [...privateDirectories, ...roots.flatMap(root => [...SECRET_FILES, ...SECRET_DIRS].map(name => `${root}/**/${name}`))],
+              },
+              network: { allowedDomains: [], allowUnixSockets: [], allowAllUnixSockets: false, allowLocalBinding: false },
+            } } : {}) }) },
       } });
       for await (const message of execution) {
         if (passState === "complete")
           throw new Error("CC worker emitted protocol activity after its authorized final pass");
         if (message.type === "system" && message.subtype === "init") {
-          assertInit(message, this.worker, allowedTools);
+          assertInit(message, cwd, allowedTools);
           const identity = JSON.stringify({ sessionId: message.session_id,
             messagingSocketPath: (message as unknown as { messaging_socket_path?: unknown }).messaging_socket_path });
           if (initIdentity === null) {
@@ -502,7 +548,7 @@ export class CcAgentWorker {
             nativeSessionId = message.session_id;
             // 106: the Claude Code version is recorded per run, never required.
             this.journal("worker-run-started", { taskKind: task.kind, nativeSessionId, claudeVersion: message.claude_code_version });
-            nativeLog = ccNativeTranscriptPath(this.environment, this.worker.cwd, nativeSessionId);
+            nativeLog = ccNativeTranscriptPath(this.environment, cwd, nativeSessionId);
             assertModelMetadata(await execution.supportedModels(), settings);
           } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
         } else if (message.type === "assistant") {

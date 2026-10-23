@@ -6,7 +6,7 @@
 // Everything here uses the public SDK entry (`createAgentSession`, `SessionManager`,
 // `DefaultResourceLoader`, `SettingsManager`) plus the public `Agent` fields Pi itself sets.
 import { mkdirSync } from "node:fs";
-import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
+import { createAgentSession, createBashTool, DefaultResourceLoader, SessionManager, SettingsManager,
   type ExtensionAPI, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ToolDefinition } from "../../core/api/index.ts";
 import { THINKING_LEVELS, type ThinkingLevel } from "../phase-settings.ts";
@@ -51,8 +51,7 @@ interface NativeCommon {
   onRetry?(event: { attempt: number; maxAttempts: number; delayMs: number; error: string }): void;
   onRetryEnd?(): void;
 }
-/** Fresh context: a private child session with no parent file and no inherited history (19b). Its
- * system prompt is core's domain prompt and its tools are only the memory tools core bound. */
+/** Fresh context: a private child session with no parent file to inherit from. */
 export interface NativeTask extends NativeCommon {
   systemPrompt: string;
 }
@@ -98,31 +97,32 @@ export function addUsage(total: unknown, usage: unknown): unknown {
 export async function runNative(task: NativeTask): Promise<NativeResult> {
   // --- Prepare the child. Failures before the first provider request are run failures with a reason.
   mkdirSync(task.runsDir, { recursive: true });
-  // Fresh context (19b "Subagent parity"): Pi's own new-session constructor, in the runs directory,
-  // with no parent file to inherit from. Only the bound memory tools and restricted native Read are registered.
+  // Fresh context (19b): only the bound tools, confined file tools and native Bash are registered.
   const system = task.systemPrompt;
+  const bash = createBashTool(task.cwd);
   const tools: { name: string; description: string; parameters: Body;
     constrainedSampling?: PiToolDefinition["constrainedSampling"] }[] = [
     ...task.tools.map(definition => ({ name: definition.name, description: definition.description, parameters: definition.parameters as Body })),
     { name: task.read.name, description: task.read.description, parameters: { ...task.read.parameters },
       constrainedSampling: task.read.constrainedSampling },
-    ...(task.fileTools ?? []).map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters as Body }))];
+    ...(task.fileTools ?? []).map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters as Body })),
+    { name: bash.name, description: bash.description, parameters: { ...bash.parameters }, constrainedSampling: bash.constrainedSampling }];
   const manager = SessionManager.create(task.cwd, task.runsDir);
   const nativeLog: string | undefined = manager.getSessionFile();
 
   const calls: { name: string; executed: boolean }[] = [];
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
-  // A fresh child registers bound memory tools plus restricted native Read. Tool EXECUTION allows
-  // these tools only.
+  // All tools share the same execution accounting and round limit, including plain (unsandboxed) Bash.
   const definitions = tools.map(tool => ({
     name: tool.name, label: tool.name, description: tool.description, parameters: tool.parameters as never,
     constrainedSampling: tool.constrainedSampling,
     executionMode: "sequential" as const,
     async execute(_id: string, raw: unknown) {
       const bound = task.tools.find(t => t.name === tool.name);
-      const reading = tool.name === "read", file = task.fileTools?.find(t => t.name === tool.name);
-      calls.push({ name: tool.name, executed: (reading || !!file || !!bound) && !exceeded });
+      const reading = tool.name === "read", file = task.fileTools?.find(t => t.name === tool.name), shell = tool.name === bash.name;
+      calls.push({ name: tool.name, executed: (reading || !!file || shell || !!bound) && !exceeded });
       if (exceeded) throw new Error(`rejected: tool rounds exceeded (${task.maxToolRounds})`);
+      if (shell) return bash.execute(_id, raw as never, task.signal);
       if (reading) return task.read.execute(_id, raw as never, task.signal, undefined, { cwd: task.cwd } as never);
       if (file) return file.execute(_id, raw as never, task.signal, undefined, { cwd: task.cwd } as never);
       if (!bound) throw new Error(`rejected: ${tool.name} is not available to a Trace Memory worker`);

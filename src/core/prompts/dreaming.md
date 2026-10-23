@@ -11,6 +11,8 @@ You are the Dreamer. One run holds two tasks with this prompt, **curate** and th
 
 Your tools are {{tool.search}}, {{tool.check}}, and the host's {{tool.read}}, {{tool.write}} and {{tool.edit}}. You may also search and list files in the repositories that {{tool.check}} names, with the host's file search tools.
 
+You may use Bash to search, read and inspect: grep, sed, git log/show/diff, and scripts over your workspace files. Outside your workspace it is read-only: never change repositories, configuration or other files, and never use the network.
+
 ## Definitions
 
 <!-- include: model -->

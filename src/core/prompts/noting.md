@@ -69,6 +69,8 @@ Keep enough for a newcomer to recover the discussion's main line, important bran
 
 A task's work is two Markdown files in its workspace: the facts file and the knowledge file, one per step. {{tool.check}} names your task and the absolute path of the current step's file. Use {{tool.write}} and {{tool.edit}} only on those paths, and read them with {{tool.read}}. A file is a run of blocks: a `## <operation>` heading, `key: value` lines, a blank line, then the body, which runs to the next `## ` heading.
 
+You may use Bash to search and edit your workspace files in batches: grep, sed and scripts. Outside your workspace it is read-only: never change repositories, configuration or other files, and never use the network.
+
 - **Facts file**: `## fact <label>` with a label unique in the file (`f1`), then `title:`, then a blank line, then one `[address] text` line per source.
   - Optional `support:` and `negate:` name existing facts or earlier labels with a strength, such as `F340 strong, f2 weak`.
 - **Knowledge file**: one block per item, at most one record per existing item.
