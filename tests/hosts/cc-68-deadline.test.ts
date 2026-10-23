@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -46,9 +46,10 @@ function init(directory: string, tools: string[], sessionId: string) {
 
 test("shared Dreamer deadline terminates an actual CC adapter run and leaves the worker reusable", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-deadline-")); dirs.push(directory);
+  mkdirSync(join(directory, "database"));
   const executable = join(directory, "claude");
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
-  const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
+  const config = resolveCcHostConfig({ dbPath: join(directory, "database", "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "sonnet", notingThinking: "medium",
     "dreaming.model": "sonnet", "dreaming.thinking": "medium", "dreaming.triggerOperations": 1, "dreaming.timeoutMs": 1_000,
     worker: { claudeExecutable: executable, contextWindows: { sonnet: 200_000 }, cwd: directory } });

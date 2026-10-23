@@ -306,18 +306,34 @@ function assertModelMetadata(models: unknown, execution: ResolvedCcPhaseConfig):
     throw new Error(`CC worker effort ${execution.thinking} is not supported by model ${execution.model}`);
 }
 
+/** Resolve existing symlinked ancestors even when a configured directory does not exist yet. */
+function sandboxDirectory(path: string): string {
+  path = resolve(path);
+  try { return realpathSync(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const parent = dirname(path);
+    if (parent === path) throw error;
+    return join(sandboxDirectory(parent), path.slice(parent.length));
+  }
+}
+
 /** One fresh-context official-SDK execution implementation for all three frozen memory phases. */
 export class CcAgentWorker {
   private readonly config: ResolvedCcHostConfig;
   private readonly worker: ResolvedCcWorkerConfig;
   private readonly environment: NodeJS.ProcessEnv;
+  private readonly piAgentDirectory: string;
   private readonly query: typeof query;
   private readonly journal: CcWorkerJournal;
 
   constructor(config: ResolvedCcHostConfig, dependencies: CcWorkerDependencies = {}) {
     if (!config.worker) throw new Error("CC worker configuration is required for memory-task admission");
     this.config = config; this.worker = config.worker;
-    const environment = productionEnvironment(dependencies.environment ?? process.env);
+    const source = dependencies.environment ?? process.env;
+    const environment = productionEnvironment(source);
+    // Pi's effective directory belongs to the host, even though its override is not passed to Claude.
+    this.piAgentDirectory = resolve(source.PI_CODING_AGENT_DIR ?? join(source.HOME ?? homedir(), ".pi", "agent"));
     this.environment = config.retry === undefined ? environment
       : { ...environment, CLAUDE_CODE_MAX_RETRIES: String(config.retry.maxRetries) };
     this.query = dependencies.query ?? query;
@@ -333,6 +349,30 @@ export class CcAgentWorker {
       throw new Error(`CC ${task.kind} task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}`);
     if (!task.reader?.sessionId || !task.reader.branch || !task.reader.headTurnId || !task.reader.projectId)
       throw new Error("CC worker needs a frozen Core reader target");
+    const workspace = task.workspace as typeof task.workspace | undefined;
+    const cwd = workspace ? realpathSync(workspace.dir) : this.worker.cwd;
+    const roots = task.kind === "dreaming" ? task.workspace?.roots ?? [] : [];
+    const home = resolve(this.environment.HOME ?? homedir());
+    const privateDirectories = [...new Set([
+      join(home, ".trace-memory"), join(home, ".pi", "agent"), dirname(this.config.dbPath), this.piAgentDirectory,
+    ])];
+    const renderedRoot = join(this.worker.cwd, "rendered");
+    if (workspace) {
+      try {
+        const denied = [...roots, ...privateDirectories].map(path => ({ path, real: sandboxDirectory(path) }));
+        const rendered = sandboxDirectory(renderedRoot);
+        for (const [name, path] of [["workspace", cwd], ["rendering", rendered]] as const) {
+          const conflict = denied.find(directory => path === directory.real ||
+            path.startsWith(directory.real.endsWith(sep) ? directory.real : directory.real + sep));
+          if (conflict) throw new Error(`CC worker ${name} directory ${path} is inside denied directory ${conflict.path}; configure separate worker and sensitive directories`);
+        }
+        if (rendered === cwd || rendered.startsWith(cwd + sep))
+          throw new Error(`CC worker rendering directory ${renderedRoot} is inside the writable workspace directory ${cwd}; configure separate directories`);
+      } catch (error) {
+        return { outcome: "failure", output: error instanceof Error ? error.message : String(error),
+          audit: { available: false, reason: AUDIT_UNAVAILABLE } };
+      }
+    }
     // 78: the path Claude Code itself will persist this run's native session under, known only once
     // init reports the native session id. Verified, never created, by this adapter.
     let nativeLog: string | undefined;
@@ -346,7 +386,6 @@ export class CcAgentWorker {
     const results: SDKResultMessage[] = [], assistantMessages: SDKAssistantMessage[] = [];
     const frozenReader = { ...task.reader };
     // Renderings stay outside the writable workspace; only this run's directory is additionally readable.
-    const renderedRoot = join(this.worker.cwd, "rendered");
     mkdirSync(renderedRoot, { recursive: true, mode: 0o700 });
     const readDirectory = mkdtempSync(join(renderedRoot, "worker-"));
     const rendered = new Map<string, string>();
@@ -361,10 +400,6 @@ export class CcAgentWorker {
     // absolute and already normal, is exactly one of the two, is not a symbolic link, and sits directly in the run's directory.
     // Stage 4: a Dreaming task has the same shape, with its own lists of readable and writable files.
     // A task with no workspace (a fixture of the older shapes) reads trace:// only.
-    const workspace = task.workspace as typeof task.workspace | undefined;
-    const cwd = workspace ? realpathSync(workspace.dir) : this.worker.cwd;
-    const home = resolve(this.environment.HOME ?? homedir());
-    const privateDirectories = [join(home, ".trace-memory"), join(home, ".pi", "agent")];
     const files = !workspace ? { read: [] as string[], write: [] as string[] }
       : task.kind === "noting" ? { read: [task.workspace.facts, task.workspace.knowledge], write: [task.workspace.facts, task.workspace.knowledge] }
       : { read: task.workspace.read, write: task.workspace.write };
@@ -379,7 +414,6 @@ export class CcAgentWorker {
     };
     // Stage 5 §3.7: curate and verify may read repositories, through Read, Grep and Glob confined to their roots (one function, one deny
     // list); classify has no roots, so its calls are refused. Equal roots keep curate's and verify's first requests alike.
-    const roots = task.kind === "dreaming" ? task.workspace?.roots ?? [] : [];
     const searches = task.kind === "dreaming" && task.task !== "classify";
     const onSearch = async (raw: unknown) => {
       const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown> };

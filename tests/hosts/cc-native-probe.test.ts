@@ -68,14 +68,15 @@ function loopbackEnvironment(configDir: string, baseUrl: string): NodeJS.Process
 function onceThen(message: string): () => string | undefined { let asked = false; return () => asked ? undefined : (asked = true, message); }
 
 function workerConfig(cwd: string, executable = fencedClaude) {
-  return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
+  return resolveCcHostConfig({ dbPath: join(cwd, "database", "memory.sqlite"), stateDir: join(cwd, "state"),
     notingModel: "sonnet", notingThinking: "medium",
     "dreaming.model": "sonnet", "dreaming.thinking": "medium",
     worker: { claudeExecutable: executable, contextWindows: { "sonnet": 200_000 }, cwd } });
 }
 
 function workerReader(cwd: string) {
-  const memory = TraceMemory(join(cwd, "memory.sqlite"), async () => { throw new Error("fixture never runs a model"); });
+  mkdirSync(join(cwd, "database"), { recursive: true });
+  const memory = TraceMemory(join(cwd, "database", "memory.sqlite"), async () => { throw new Error("fixture never runs a model"); });
   try {
     const project = memory.store.createProject({ name: "native-worker", declaredBy: "mark" });
     const session = memory.store.createSession({ host: "cc:native-worker", projectId: project.id,

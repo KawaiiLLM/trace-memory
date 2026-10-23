@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -42,7 +42,8 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 function workerConfig(directory: string, claudeExecutable = "/opt/homebrew/bin/claude") {
-  return resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
+  mkdirSync(join(directory, "database"), { recursive: true });
+  return resolveCcHostConfig({ dbPath: join(directory, "database", "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "claude-sonnet-4-5", notingThinking: "medium",
     "dreaming.model": "claude-sonnet-4-5", "dreaming.thinking": "medium",
     "dreaming.classifyModel": "claude-sonnet-4-5", "dreaming.classifyThinking": "medium",
@@ -203,7 +204,8 @@ test("fresh CC Read uses Core's frozen reader, denies other files, and re-render
 
 test("the Noter's file hooks fail closed: an exception inside either denies the call", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-failclosed-")); dirs.push(directory);
-  const workspace = { dir: directory, facts: join(directory, "facts.md"), knowledge: join(directory, "knowledge.md") };
+  const workspaceDir = join(directory, "workspaces", "run"); mkdirSync(workspaceDir, { recursive: true });
+  const workspace = { dir: workspaceDir, facts: join(workspaceDir, "facts.md"), knowledge: join(workspaceDir, "knowledge.md") };
   const broken = (tool_name: string) => ({ tool_name, get tool_input(): never { throw new Error("hook defect"); } });
   const decisions: string[] = [];
   const fakeQuery = ((request: { options: Record<string, any> }) => {
@@ -215,7 +217,7 @@ test("the Noter's file hooks fail closed: an exception inside either denies the 
       const denied = (await write(broken("Write"))).hookSpecificOutput;
       decisions.push(denied.permissionDecision);
       expect(denied.permissionDecisionReason).toContain("hook defect");
-      yield { type: "system", subtype: "init", session_id: "failclosed", claude_code_version: TEST_CC_VERSION, cwd: directory,
+      yield { type: "system", subtype: "init", session_id: "failclosed", claude_code_version: TEST_CC_VERSION, cwd: request.options.cwd,
         tools: ["Read", "Write", "Edit", "Bash"], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
       yield { type: "result", subtype: "success", session_id: "failclosed", is_error: false, result: "ok", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
@@ -871,7 +873,7 @@ test("production worker reads a trace:// snapshot, runs search code and accounts
   }) as any;
   let memory: ReturnType<typeof TraceMemory>;
   const prepared = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
-  memory = TraceMemory(join(directory, "memory.sqlite"), task => prepared.run(task as CcAgentTask, 0),
+  memory = TraceMemory(workerConfig(directory).dbPath, task => prepared.run(task as CcAgentTask, 0),
     { noting: { triggerTokens: 1 } });
   const project = memory.store.createProject({ name: "core", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
@@ -960,7 +962,7 @@ test.each([false, true])("production MCP N: files that fail the stop check get o
     return stream;
   }) as any;
   const worker = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
-  const memory = TraceMemory(join(directory, "memory.sqlite"), task => worker.run(task as CcAgentTask, 0),
+  const memory = TraceMemory(workerConfig(directory).dbPath, task => worker.run(task as CcAgentTask, 0),
     { noting: { triggerTokens: 1 } });
   const project = memory.store.createProject({ name: "core", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:test", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
@@ -1030,7 +1032,7 @@ test("production protocol aborts remain failures while external cancellation sta
     return stream;
   }) as any;
   const prepared = new NativeCcAgentWorker(workerConfig(directory, executable), { query: fakeQuery });
-  const memory = TraceMemory(join(directory, "memory.sqlite"), task => prepared.run(task as CcAgentTask, 0),
+  const memory = TraceMemory(workerConfig(directory).dbPath, task => prepared.run(task as CcAgentTask, 0),
     { noting: { triggerTokens: 1 } });
   const project = memory.store.createProject({ name: "protocol", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:protocol", projectId: project.id,
@@ -1767,7 +1769,8 @@ test.each(["curate", "verify", "classify"] as const)("a %s task's Read, Grep and
   const root = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-root-"))), outside = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-outside-")));
   dirs.push(root, outside);
   writeFileSync(join(root, "a.ts"), "export {};\n"); writeFileSync(join(root, ".env"), "SECRET=1\n"); writeFileSync(join(outside, "b.txt"), "x\n");
-  const workspace = { dir: directory, read: [], write: [], roots: dreamingTask !== "classify" ? [root] : [] };
+  const workspaceDir = join(directory, "workspaces", "run"); mkdirSync(workspaceDir, { recursive: true });
+  const workspace = { dir: workspaceDir, read: [], write: [], roots: dreamingTask !== "classify" ? [root] : [] };
   const decisions: Record<string, string> = {};
   let additional: string[] = [];
   const fakeQuery = ((request: { options: Record<string, any> }) => {
@@ -1803,7 +1806,8 @@ test.each(["curate", "verify", "classify"] as const)("a %s task's Read, Grep and
 // 146 §9.2: the scorer corrects its file with Edit in the self-check step; Edit on any other path is refused.
 test("a classify task's Write|Edit hook allows its own file and refuses another path", async () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-classify-"))); dirs.push(directory);
-  const file = join(directory, "classify-1.md"), other = join(directory, "other.md");
+  const workspaceDir = join(directory, "workspaces", "run"); mkdirSync(workspaceDir, { recursive: true });
+  const file = join(workspaceDir, "classify-1.md"), other = join(directory, "other.md");
   writeFileSync(file, "K1 50\n"); writeFileSync(other, "x\n");
   const decisions: Record<string, string> = {};
   const fakeQuery = ((request: { options: Record<string, any> }) => {
@@ -1819,7 +1823,7 @@ test("a classify task's Write|Edit hook allows its own file and refuses another 
     stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
     return stream;
   }) as any;
-  const task = { kind: "dreaming", task: "classify", text: "material", prompt: "instructions", tools: [], workspace: { dir: directory, read: [file], write: [file], roots: [] },
+  const task = { kind: "dreaming", task: "classify", text: "material", prompt: "instructions", tools: [], workspace: { dir: workspaceDir, read: [file], write: [file], roots: [] },
     acknowledgeRequest: vi.fn(), passEnd: vi.fn(() => undefined), reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
   expect((await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0)).outcome).toBe("success");
   expect(decisions).toEqual({ edit: "allow", write: "allow", other: "deny" });
@@ -1830,10 +1834,11 @@ test.each(["write", "verify-noting", "curate", "verify", "classify"] as const)(
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-bash-"))); dirs.push(directory);
     const cwd = join(directory, "workspaces", "run"), home = join(directory, "home");
     const root = join(directory, "repository");
-    for (const path of [cwd, home, root]) mkdirSync(path, { recursive: true });
+    const database = join(directory, "database"), agent = join(directory, "custom-pi-agent");
+    for (const path of [cwd, home, root, database, agent]) mkdirSync(path, { recursive: true });
     const noting = stage === "write" || stage === "verify-noting";
     const roots = !noting && stage !== "classify" ? [root] : [];
-    const privateDirectories = [join(home, ".trace-memory"), join(home, ".pi", "agent")];
+    const privateDirectories = [join(home, ".trace-memory"), join(home, ".pi", "agent"), database, agent];
     let spill: ((text: string) => string) | undefined;
     let snapshot = "";
     const nativeLog = ccNativeTranscriptPath({ HOME: home }, cwd, "workspace-child");
@@ -1883,7 +1888,53 @@ test.each(["write", "verify-noting", "curate", "verify", "classify"] as const)(
       prompt: "instructions", text: "material", tools: [], acknowledgeRequest: vi.fn(), passEnd: () => undefined,
       setSpill: (save: (text: string) => string) => { spill = save; },
       reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
-    const result = await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery, environment: { HOME: home } }).run(task, 0);
+    const config = workerConfig(directory);
+    config.dbPath = join(database, "memory.sqlite");
+    const result = await new NativeCcAgentWorker(config, { query: fakeQuery, environment: { HOME: home, PI_CODING_AGENT_DIR: agent } }).run(task, 0);
     expect(result, String(result.output)).toMatchObject({ outcome: "success", nativeLog });
     expect(existsSync(snapshot)).toBe(false);
   });
+
+test.each(["database", "pi-agent", "default-memory", "default-agent", "repository"] as const)(
+  "fails before launch when the workspace or rendering directory is inside denied %s", async sensitive => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-overlap-"))); dirs.push(directory);
+    const home = join(directory, "home"), privateRoot = sensitive === "default-memory" ? join(home, ".trace-memory")
+      : sensitive === "default-agent" ? join(home, ".pi", "agent") : join(directory, sensitive);
+    for (const target of ["workspace", "rendering"] as const) {
+      const config = workerConfig(directory);
+      config.dbPath = join(directory, "database", "memory.sqlite");
+      const cwd = target === "workspace" ? join(privateRoot, "run") : join(directory, "workspaces", "run");
+      config.worker!.cwd = target === "rendering" ? privateRoot : join(directory, "worker");
+      mkdirSync(cwd, { recursive: true });
+      const launch = vi.fn();
+      const task = { kind: "dreaming", task: "curate", workspace: { dir: cwd, read: [], write: [],
+        roots: sensitive === "repository" ? [privateRoot] : [] },
+        prompt: "instructions", text: "material", tools: [], acknowledgeRequest: vi.fn(), passEnd: () => undefined,
+        reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
+      const result = await new NativeCcAgentWorker(config, { query: launch,
+        environment: { HOME: home, PI_CODING_AGENT_DIR: sensitive === "pi-agent" ? privateRoot : join(directory, "agent") } }).run(task, 0);
+      expect(result).toMatchObject({ outcome: "failure" });
+      expect(result.output).toContain(`${target} directory`);
+      expect(result.output).toContain(`denied directory ${privateRoot}`);
+      expect(launch).not.toHaveBeenCalled();
+    }
+  });
+
+test.each(["workspace", "rendering"] as const)("denied directory checks resolve a symlinked %s path", async target => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-alias-"))); dirs.push(directory);
+  const config = workerConfig(directory), database = join(directory, "database"), alias = join(directory, "alias");
+  symlinkSync(database, alias);
+  const cwd = target === "workspace" ? join(alias, "run") : join(directory, "workspaces", "run");
+  mkdirSync(cwd, { recursive: true });
+  config.worker!.cwd = target === "rendering" ? join(alias, "not-created-yet") : join(directory, "worker");
+  const launch = vi.fn();
+  const task = { kind: "noting", task: "write", workspace: { dir: cwd, facts: join(cwd, "facts.md"), knowledge: join(cwd, "knowledge.md") },
+    prompt: "instructions", text: "material", tools: [], acknowledgeRequest: vi.fn(), passEnd: () => undefined,
+    reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
+  const result = await new NativeCcAgentWorker(config, { query: launch, environment: { HOME: join(directory, "home") } }).run(task, 0);
+  expect(result).toMatchObject({ outcome: "failure" });
+  expect(result.output).toContain(`${target} directory`);
+  expect(result.output).toContain(`denied directory ${database}`);
+  expect(launch).not.toHaveBeenCalled();
+  if (target === "rendering") expect(existsSync(join(database, "not-created-yet"))).toBe(false);
+});

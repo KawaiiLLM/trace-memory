@@ -25,7 +25,9 @@ afterAll(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true
 const opts = { DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1",
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1" };
-function config(cwd: string, claudeExecutable: string) { return resolveCcHostConfig({ dbPath: join(cwd, "memory.sqlite"), stateDir: join(cwd, "state"),
+function config(cwd: string, claudeExecutable: string) {
+  mkdirSync(join(cwd, "database"), { recursive: true });
+  return resolveCcHostConfig({ dbPath: join(cwd, "database", "memory.sqlite"), stateDir: join(cwd, "state"),
   notingModel: "sonnet", notingThinking: "medium", "dreaming.model": "sonnet", "dreaming.thinking": "medium",
   worker: { claudeExecutable, contextWindows: { sonnet: 200_000 }, cwd } }); }
 
