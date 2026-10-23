@@ -31,7 +31,7 @@ interface Hit { item: Record<string, unknown>; line: () => string; load?: Record
 const raise = (message: string): never => { throw new Error(message); };
 
 function searchTerms(query: string): string[] {
-  const terms = [...query.matchAll(/"([^"]*)"?|([^\s"]+)/gu)].map(match => match[1] ?? match[2]!).filter(Boolean);
+  const terms = [...query.matchAll(/"([^"]*)"?|([^\p{White_Space}"]+)/gu)].map(match => match[1] ?? match[2]!).filter(Boolean);
   if (!terms.length) throw new Error("query has no search terms: whitespace and empty quotes are ignored");
   return terms;
 }

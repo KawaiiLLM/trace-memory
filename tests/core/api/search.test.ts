@@ -158,7 +158,7 @@ test.each(["knowledge", "facts", "raw"] as const)("every term must occur in one 
   const [fact] = facts(memory, path, [{ title: "Preview notes", sources: [{ entry: source, text: body }] }]);
   const rule = knowledge(memory.store, path, "project", "constraint", [fact!.id], body, { operation: { title: "Preview notes" } });
   const label = layer === "facts" ? `[F${fact!.id}]` : layer === "knowledge" ? `[K${rule.knowledgeId}@v1]` : `[S${f.session.id}/T${turn.id}#E1@user]`;
-  for (const query of ["预览 3090 重启 预览实例", "预览 3090", "预览 重启", "预览　重启", "alpha\tBETA", '"exact  phrase"', '"exact  phrase', '"" 预览', "100% snake_case core\\api * : NEAR AND"])
+  for (const query of ["预览 3090 重启 预览实例", "预览 3090", "预览 重启", "预览　重启", "预览\u0085重启", "alpha\tBETA", '"exact  phrase"', '"exact  phrase', '"" 预览', "100% snake_case core\\api * : NEAR AND"])
     expect(memory.search(query, layer, path), query).toContain(label);
   for (const query of ['"预览 3090"', '"exact phrase"', "预览 missingword"])
     expect(memory.search(query, layer, path), query).toContain("No hit");
@@ -214,7 +214,7 @@ test("snippets use the earliest term regardless of query order and matchLines in
 test("queries without terms are refused by the tool and direct API", () => {
   const f = corpus();
   const tool = memory.tools({ kind: "manual", sessionId: f.session.id, branch: "main", currentTurnId: f.turns.at(-1)!.id }).find(t => t.name === "search")!;
-  for (const query of ["", " \t\n　", '""', ' "" "" ']) {
+  for (const query of ["", " \t\n　", "\u0085", '""', ' "" "" ']) {
     expect(() => memory.search(query)).toThrow(/no search terms/);
     expect(tool.execute({ query })).toMatch(/^rejected: .*query/);
   }
