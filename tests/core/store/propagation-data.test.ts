@@ -175,7 +175,7 @@ test("verification and stale reasons are independent version status, survive reo
   expect(reopened.currentKnowledge(f.path)).toEqual(rewound);
 });
 
-test("maintenance copies verification only with an unchanged mapping; changed files and new identities are unverified", () => {
+test("only a metadata-only version copies verification; a changed body, changed files and new identities are unverified", () => {
   const f = fixture(), base = f.create(["a.ts"]), verification = { file: "a.ts", verifiedCommit: "abc", verifiedAt: at };
   f.store.setKnowledgeFileVerification(base.commit, verification);
   const maintenance = f.store.commitWorkspaceRun({ run: { ...f.run, kind: "dreaming" }, path: f.path, operations: [{
@@ -185,7 +185,9 @@ test("maintenance copies verification only with an unchanged mapping; changed fi
   const copied = maintenance.committed[0]!;
   expect(f.store.knowledgeRevision(copied.commit)).toMatchObject({ title: "Refined index title", text: f.common.text, supports: f.common.supports });
   expect(f.store.knowledgeFileVerifications(copied.commit)).toEqual([verification]);
-  const changed = f.write([{ ...f.common, op: "update", knowledgeId: base.knowledgeId, baseCommit: copied.commit, files: null }])[0]!;
+  const rewritten = f.write([{ ...f.common, op: "update", knowledgeId: base.knowledgeId, baseCommit: copied.commit, text: `${f.common.text} Rewritten.`, files: ["a.ts"] }])[0]!;
+  expect(f.store.knowledgeFileVerifications(rewritten.commit)).toEqual([]); // a changed claim was not checked against its files
+  const changed = f.write([{ ...f.common, op: "update", knowledgeId: base.knowledgeId, baseCommit: rewritten.commit, files: null }])[0]!;
   expect(f.store.knowledgeFileVerifications(changed.commit)).toEqual([]);
   expect(f.store.knowledgeFileVerifications(f.create(["a.ts"]).commit)).toEqual([]);
   expect(f.store.knowledgeFileVerifications(base.commit)).toEqual([verification]);
