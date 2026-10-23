@@ -4106,8 +4106,10 @@ export class Store {
           revisionOp === "archive" ? (op as Extract<KnowledgeOperationInput, { op: "archive" }>).kind : null, storedFiles);
       const commitId = Number(info.lastInsertRowid);
       this.db.prepare("INSERT INTO knowledge_fts(rowid,title,text) VALUES (?,?,?)").run(commitId, title, text);
-      // Verification survives only an unchanged file mapping on a one-parent maintenance version.
-      if (prior && (revisionOp === "update" || revisionOp === "archive") &&
+      // Verification checked the parent's claims against its files, so it carries only to a one-parent version with the same body,
+      // supports and files (a metadata-only version); any other new version starts unverified.
+      const sameSet = (a: readonly number[], b: readonly number[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+      if (prior && (revisionOp === "update" || revisionOp === "archive") && text === prior.text && sameSet(own.supports ?? supports, prior.supports) &&
           storedFiles === (prior.files === undefined ? null : JSON.stringify(prior.files)))
         this.db.prepare(`INSERT INTO knowledge_file_verifications(revision_id,file,verified_commit,verified_at)
           SELECT ?,file,verified_commit,verified_at FROM knowledge_file_verifications WHERE revision_id=?`).run(commitId, prior.id);
