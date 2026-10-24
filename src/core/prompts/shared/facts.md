@@ -6,7 +6,10 @@ The writer fills:
 
 - **`title`**: a one-line index for recognition and lookup: name the object and the activity, enough to recognize and find it. Do not narrate the course of events or restate the body.
 - **`sources`**: one `{address, text}` segment per contributing entry. `address` is the entry's address; `text` summarizes only that entry's contribution to this topic. One entry gets one segment within a fact.
-- **`objects`**: full current names of the key things the fact says something about; resolve coreferences and include every object case-insensitively in the body.
+- **`objects`**: the specific things a developer of this project identifies at once, by their full current names; resolve coreferences and include every object case-insensitively in the body.
+  - Yes: a project or repository (trace-memory), a component (Noter, Dreamer), a file or function (`src/core/store/index.ts#commitGraph`), a setting (`dreaming.triggerOperations`), a tool (omp, Codex), a named mechanism or rule of the project (the “possibly outdated” flag, the shared prefix), a ticket or commit, a session, or a person or agent when the fact is about them.
+  - No: class words such as project, file, session, knowledge, fact, test or prompt.
+  - A ticket, commit or session never stands alone: name the mechanism it implements or the problem it solves as an object too.
 - **`caused_by`** and **`negate`** (optional): relations to visible facts, each naming the target and a strength.
   - `caused_by`: the source explicitly states an outcome caused by the target; at most two per fact. It is an annotation, never a knowledge-update trigger; `support` remains readable on old facts but is refused on new ones.
   - `negate`: this fact opposes the target, such as withdrawal, veto, correction, a changed state, doubt or contrary evidence.

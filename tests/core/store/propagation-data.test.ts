@@ -59,6 +59,7 @@ test("object validation uses the body, not title, and a failed batch publishes n
   if (!result.ok) expect(result.problems.join(" ")).toContain("does not appear in the fact body");
   expect(f.store.listSessionFacts(f.owner.id)).toEqual(before);
   expect(f.store.factsMentioningObject("Store").map(fact => fact.id)).toEqual(f.authored.slice(0, 2).map(fact => fact.id));
+  expect(f.store.db.prepare("SELECT rowid FROM facts_fts WHERE facts_fts MATCH 'records' ORDER BY rowid").all().map(row => row.rowid)).toEqual([f.authored[0]!.id, f.authored[1]!.id]);
   const note = f.memory.tools({ kind: "manual", sessionId: f.owner.id, branch: "main", currentTurnId: f.turn.id }).find(tool => tool.name === "note")!;
   expect(note.execute({ title: "Only in title", sources: `[T${f.turn.id}#E1] Store records`, objects: ["Only"] })).toContain("does not appear in the fact body");
 });
@@ -255,4 +256,28 @@ test("the additive migration preserves legacy rows and support relations, backfi
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(store.factsMentioningObject("Store")).toEqual([]);
   }
+});
+
+test("fact similarity migration preserves titled and legacy facts, backfills once, and indexes later writes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-facts-fts-migration-")); dirs.push(dir);
+  const file = join(dir, "memory.db"), f = fixture(file);
+  const old = legacyFact(f.store, f.path, [{ entry: f.source, address: `T${f.turn.id}#E1` }], "历史事实的全文检索");
+  const [titled] = facts(f.memory, f.path, [{ title: "整理分批由代理自己推进", sources: [{ entry: f.source, text: "Original body" }] }]);
+  const before = f.store.db.prepare("SELECT * FROM facts ORDER BY id").all();
+  f.store.db.exec("DROP TABLE facts_fts");
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  for (let open = 0; open < 2; open++) {
+    const store = new Store(file); stores.push(store);
+    expect(store.db.prepare("SELECT * FROM facts ORDER BY id").all()).toEqual(before);
+    const ids = before.map(row => Number(row.id));
+    expect(store.db.prepare("SELECT rowid FROM facts_fts ORDER BY rowid").all().map(row => Number(row.rowid))).toEqual(ids);
+    expect(store.similarFacts("整理分批的推进方式", ids, 1)).toEqual([titled!.id]);
+    expect(store.similarFacts("历史事实的检索方案", ids, 1)).toEqual([old.id]);
+    expect(store.db.prepare("PRAGMA integrity_check").get()!.integrity_check).toBe("ok");
+    expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    store.close(); stores.splice(stores.indexOf(store), 1);
+  }
+  const reopened = TraceMemory(file, async () => { throw new Error("no model work"); }); stores.push(reopened.store);
+  const [later] = facts(reopened, f.path, [{ title: "会话独立核实事实", sources: [{ entry: f.source, text: "New indexed body" }] }]);
+  expect(reopened.store.similarFacts("会话独立核实的新方案", [...before.map(row => Number(row.id)), later!.id], 1)).toEqual([later!.id]);
 });
