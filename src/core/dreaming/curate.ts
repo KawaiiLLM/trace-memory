@@ -127,8 +127,8 @@ export function wholeFileCapProblems(store: Store, path: KnowledgePath, limit: n
   for (const op of project ? operations : []) {
     if (op.op !== "create") current.delete(op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId);
     if (op.op === "merge") for (const parent of op.absorb) current.delete(parent.knowledgeId);
-    if (op.op === "archive" || op.scope === "session") continue;
-    additions.push(op.files);
+    if (op.op === "archive") continue;
+    if (op.scope !== "session") additions.push(op.files);
     if (op.op === "split") for (const child of op.children) if ((child.scope ?? op.scope) !== "session") additions.push(child.files);
   }
   const counts = new Map<string, number>(), roots = allowedRoots(store, path.sessionId);

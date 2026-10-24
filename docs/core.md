@@ -49,10 +49,14 @@ Routine Dreamer resolves files to absolute paths under the project's allowed roo
 
 Symbol links compare declaration text at the verified commit and repository HEAD, ignoring edits elsewhere in the file. Missing symbols at either commit count as changed; a missing HEAD symbol names the address and `symbol missing` in the stale reason. The dependency-free extractor finds function, method, const-arrow, class and getter declarations and balances delimiters while skipping strings, templates, regexes and comments. The Noter validates the file path without discarding a conversation-named anchor; curate additionally requires the symbol at HEAD. A tracked file retains the captured baseline even when the symbol was absent there, so the next scan flags it.
 
+Arrow lookup skips type annotations before locating the initializer, and class lookup skips balanced generic constraints and header expressions before locating the body. Expression-bodied arrows recognize implicit semicolon boundaries without dropping multiline continuations. Extraction remains lexical, not a full TypeScript/TSX parser: regex literals immediately after control-flow heads need grammar context that it does not track.
+
 Use `path#Class.method` to distinguish same-named methods in different classes. Bare names select the outermost declaration and refuse equally nested duplicates rather than silently tracking the wrong method.
 Anonymous default-exported functions use `path#default`; private and computed methods retain their declaration names, for example `path#JoinedTokens.#refresh` and `path#CcUserInput.[Symbol.asyncIterator]`.
 
 `dreaming.wholeFileLimit` is a positive integer, default 5. Curate counts current visible project/global items across the project, not just its group, after projecting updates, archives, merges and split children. More than the limit linking one canonical whole-file address refuses the check and requests function anchors; function addresses are uncapped. Publication rechecks the actual resulting pool inside the group's transaction and rolls back the group if the limit is exceeded, including a concurrent group's new links. Never remove a real link to satisfy this cap.
+
+Projected split counts evaluate the primary's scope and each child's effective scope independently: a session-scoped primary does not hide its project/global children from the cap.
 
 The migration adds only metadata columns/tables and the FTS index, except for rebuilding the existing fact-relation CHECK to admit `caused_by`. It preserves relation rows and indexes, and runs inside Store's schema transaction and foreign-key check. Production deployment still requires an SQLite-backup-API backup and stopped executors; measuring a disposable production copy is not a deployment migration.
 
