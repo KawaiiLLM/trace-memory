@@ -25,7 +25,7 @@ test("one pass can update archive merge and split but never create", async () =>
   f.dreamer.script.curate!.group1 = [block(`update ${a!.ref}`, { reason: "clarify" }, "Updated supported rule"),
     block(`archive ${b!.ref}`, { kind: "invalid", reason: "expired" }, "This time-limited rule expired according to the recorded facts."),
     block(`merge ${c!.ref}`, { absorb: d!.ref, reason: "duplicates" }, "The common supported rule"),
-    block(`split ${e!.ref}`, { supports: `F${e!.supports[0]}`, reason: "independent facets" }, "The primary facet") + `\n### child\ntitle: Other facet\ncategory: reference\nscope: project\ntopics:\nsupports: F${e!.supports[0]}\nfiles: None\nreason: Independent facet\n\nThe other facet\n`].join("\n");
+    block(`split ${e!.ref}`, { supports: `F${e!.supports[0]}`, reason: "independent facets" }, "The primary facet") + `\n### child\ntitle: Other facet\ncategory: reference\nscope: project\ntopics:\nsupports: F${e!.supports[0]}\nreason: Independent facet\n\nThe other facet\n`].join("\n");
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.store.currentCommit(a!.knowledgeId, f.path)[0]!.text).toBe("Updated supported rule");
   expect(f.store.currentCommit(b!.knowledgeId, f.path)[0]!.op).toBe("archive");
@@ -100,14 +100,14 @@ test("incremental groups freeze marks and references, share background, and resu
 test("curate refuses a reference item as a decision, mutation target or absorbed merge parent", () => {
   const f = dreamerFixture(memories), candidate = f.item("Candidate body"), reference = f.item("Reference body");
   const items = projectItems(f.store, f.path), selected = items.filter(item => item.value.knowledge.id === candidate.knowledgeId);
-  const decisions = decisionText(decisionsTemplate(selected));
+  const decisions = decisionText(decisionsTemplate(selected, false));
   for (const changes of [
     block(`update ${reference.ref}`, { reason: "Attempted reference write" }, "Changed reference"),
     block(`merge ${candidate.ref}`, { absorb: reference.ref, reason: "Attempted reference absorption" }, "Combined rule"),
   ]) {
     expect(checkCurate(f.store, f.path, selected, { name: "decisions.md", text: decisions }, { name: "changes.md", text: changes }).problems.join("\n")).toContain("outside this group");
   }
-  expect(checkCurate(f.store, f.path, selected, { name: "decisions.md", text: decisionText(decisionsTemplate(items)) }, { name: "changes.md", text: "## none\n" }).problems.join("\n")).toContain("expected an item of this group");
+  expect(checkCurate(f.store, f.path, selected, { name: "decisions.md", text: decisionText(decisionsTemplate(items, false)) }, { name: "changes.md", text: "## none\n" }).problems.join("\n")).toContain("expected an item of this group");
   expect(f.store.currentCommit(reference.knowledgeId, f.path)[0]!.id).toBe(reference.commit);
 });
 

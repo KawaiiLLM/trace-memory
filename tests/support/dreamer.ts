@@ -25,7 +25,7 @@ export function decisionText(templateText: string, changes = "## none\n"): strin
     const operation = operations.find(op => op.target === item.target);
     const merged = operations.find(op => op.op === "merge" && op.fields.get("absorb")?.value.split(",").map(value => value.trim()).includes(item.target));
     const decision = merged ? `merged into ${merged.target.split("@")[0]}` : operation?.op ?? "keep";
-    return `## item ${item.target}\ntitle: ${operation?.fields.get("title")?.value ?? item.fields.get("title")?.value ?? ""}\naccuracy: ok\ngrounds: Recorded facts\nnorms: Reviewed\nevidence: None\nfiles: None\ndecision: ${decision}\nreason: Preserve the supported understanding\n`;
+    return `## item ${item.target}\ntitle: ${operation?.fields.get("title")?.value ?? item.fields.get("title")?.value ?? ""}\naccuracy: ok\ngrounds: Recorded facts\nnorms: Reviewed\nevidence: None\n${item.fields.has("files") ? "files: None\n" : ""}decision: ${decision}\nreason: Preserve the supported understanding\n`;
   }).join("\n");
 }
 export function writeDecisions(dir: string, changes = "## none\n"): void {

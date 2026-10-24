@@ -29,8 +29,8 @@ export function groupText(store: Store, items: readonly CurateItem[], clusters?:
   });
   return `# Contents\n\n${contents}\n\n${bodies.join("\n\n")}\n${referenceText ? `\n# Reference only — not candidates\n\n${referenceText}\n` : ""}`;
 }
-export const decisionsTemplate = (items: readonly CurateItem[]) => items.map(item => `## item ${item.address}\ntitle: ${item.value.revision.title ?? ""}\naccuracy: \ngrounds: \nnorms: \nevidence: \nfiles: \ndecision: \nreason: \n`).join("\n");
-export interface Decision { item: CurateItem; title: string; files: string[] | null; decision: string; reason: string; missingGrounds: boolean }
+export const decisionsTemplate = (items: readonly CurateItem[], hasRepository: boolean) => items.map(item => `## item ${item.address}\ntitle: ${item.value.revision.title ?? ""}\naccuracy: \ngrounds: \nnorms: \nevidence: \n${hasRepository ? "files: \n" : ""}decision: \nreason: \n`).join("\n");
+export interface Decision { item: CurateItem; title: string; files: string[] | null | undefined; decision: string; reason: string; missingGrounds: boolean }
 export interface Curated { problems: string[]; decisions: Decision[]; operations: KnowledgeOperationInput[]; lengths: string[] }
 /** The caller supplies membership: incremental selection and full-check clustering use this same boundary. */
 export function checkCurate(store: Store, path: KnowledgePath, items: readonly CurateItem[], decisionsFile: WorkspaceFile, changesFile: WorkspaceFile, wholeFileLimit = 5): Curated {
@@ -44,14 +44,14 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
     if (seen.has(block.target)) problems.push(`${label}: duplicate item ${block.target}`);
     seen.add(block.target);
     const fields = block.fields;
-    const keys = ["title", "accuracy", "grounds", "norms", "evidence", "files", "decision", "reason"];
+    const keys = ["title", "accuracy", "grounds", "norms", "evidence", ...(roots.length ? ["files"] : []), "decision", "reason"];
     for (const key of keys) if (!fields.get(key)?.value.trim()) problems.push(`${label}: fill ${key}`);
-    for (const key of fields.keys()) if (!keys.includes(key)) problems.push(`${label}: unknown key ${key}`);
+    for (const key of fields.keys()) if (!keys.includes(key)) problems.push(`${label}: ${key === "files" && !roots.length ? "omit files: no readable repository; the current record is preserved" : `unknown key ${key}`}`);
     if (block.body || block.children.length) problems.push(`${label}: item takes only its checklist keys`);
     const value = (key: string) => fields.get(key)?.value ?? "";
     if (!/^(?:ok|unverified|outdated:\s*\S.*|wrong:\s*\S.*)$/.test(value("accuracy"))) problems.push(`${label}: accuracy must be ok, unverified, outdated: <why> or wrong: <why>`);
     if (words(value("title")) > Math.ceil(store.writing.titleWords * 1.1)) problems.push(`${label}: title exceeds target ${store.writing.titleWords}`);
-    const files: string[] | null = value("files") === "None" ? null : list(value("files")).flatMap(file => {
+    const files = !roots.length ? item.value.revision.files : value("files") === "None" ? null : list(value("files")).flatMap(file => {
       const resolved = resolveCodeLink(file, roots);
       if ("reason" in resolved) { problems.push(`${label}: files: ${resolved.reason}`); return []; }
       return [resolved.path];
@@ -75,6 +75,8 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
     consumed.set(id, operation);
   };
   for (const entry of checked.knowledge) {
+    if (!roots.length) for (const section of [entry.block, ...entry.block.children])
+      if (section.fields.has("files")) problems.push(`changes.md:${section.line}: omit files: no readable repository; the parent's record is preserved`);
     const op = entry.make().operation;
     if (!op || op.op === "create") continue;
     const id = op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId, decision = byId.get(id);
@@ -91,8 +93,9 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
     if (op.op === "split" && !entry.block.fields.has("supports")) problems.push(`changes.md: K${id} split requires explicit supports for its primary part`);
     if (op.op === "split") entry.block.children.forEach((child, index) => {
       const raw = child.fields.get("files")?.value;
-      if (!raw) { problems.push(`changes.md: K${id} child ${index + 1} requires files`); return; }
-      op.children[index]!.files = raw === "None" ? null : list(raw).flatMap(file => {
+      if (!roots.length) op.children[index]!.files = decision.item.value.revision.files;
+      else if (!raw) problems.push(`changes.md: K${id} child ${index + 1} requires files`);
+      else op.children[index]!.files = raw === "None" ? null : list(raw).flatMap(file => {
         const resolved = resolveCodeLink(file, roots);
         if ("reason" in resolved) { problems.push(`changes.md: child files: ${resolved.reason}`); return []; }
         return [resolved.path];
@@ -121,6 +124,8 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
  * counts the pool as it stands, for the recheck after publication. */
 export function wholeFileCapProblems(store: Store, path: KnowledgePath, limit: number, operations: readonly KnowledgeOperationInput[],
   groupFiles: readonly (readonly string[] | null | undefined)[], project = true): string[] {
+  const roots = allowedRoots(store, path.sessionId);
+  if (!roots.length) return [];
   const current = new Map(store.curateItems(path).filter(item => item.value.revision.scope !== "session")
     .map(item => [item.value.knowledge.id, item.value.revision.files]));
   const additions: (readonly string[] | null | undefined)[] = [];
@@ -131,7 +136,7 @@ export function wholeFileCapProblems(store: Store, path: KnowledgePath, limit: n
     if (op.scope !== "session") additions.push(op.files);
     if (op.op === "split") for (const child of op.children) if ((child.scope ?? op.scope) !== "session") additions.push(child.files);
   }
-  const counts = new Map<string, number>(), roots = allowedRoots(store, path.sessionId);
+  const counts = new Map<string, number>();
   const wholeFiles = (files: readonly string[] | null | undefined) => new Set((files ?? []).filter(file => codeAddress(file).symbol === undefined)
     .map(file => { const resolved = resolveCodeLink(file, roots); return "reason" in resolved ? file : resolved.path; }));
   for (const files of [...current.values(), ...additions]) for (const address of wholeFiles(files)) counts.set(address, (counts.get(address) ?? 0) + 1);

@@ -2817,16 +2817,16 @@ test("2026-10-24, 159: curate caps whole-file links project-wide at five current
     scope: "project", category: "constraint", supports: [support.id], title: `Facet ${i}`, text: `Preserve facet ${i}`, files: [source],
   }]).committed[0]!);
   const group = projectItems(f.store, f.path).slice(0, 1);
-  const decisions = decisionText(decisionsTemplate(group)).replace("files: None", `files: ${source}`);
+  const decisions = decisionText(decisionsTemplate(group, true)).replace("files: None", `files: ${source}`);
   const checked = checkCurate(f.store, f.path, group, { name: "decisions.md", text: decisions }, { name: "changes.md", text: "## none\n" });
   expect(checked.problems).toEqual([expect.stringContaining("has 6 current items (whole-file limit 5)")]);
   expect(checkCurate(f.store, f.path, group, { name: "decisions.md", text: decisions }, { name: "changes.md", text: "## none\n" }, 6).problems).toEqual([]);
   const all = projectItems(f.store, f.path);
-  const anchored = decisionText(decisionsTemplate(all)).replaceAll("files: None", `files: ${anchor}`);
+  const anchored = decisionText(decisionsTemplate(all, true)).replaceAll("files: None", `files: ${anchor}`);
   const refined = checkCurate(f.store, f.path, all, { name: "decisions.md", text: anchored }, { name: "changes.md", text: "## none\n" }, 1);
   expect(refined.problems).toEqual([]);
   expect(refined.operations.map(op => op.files)).toEqual(items.map(() => [anchor]));
   // 159 review: an over-cap address the group does not link is not its to fix and does not fail it.
-  const elsewhere = decisionText(decisionsTemplate(group)).replace("files: None", `files: ${anchor}`);
+  const elsewhere = decisionText(decisionsTemplate(group, true)).replace("files: None", `files: ${anchor}`);
   expect(checkCurate(f.store, f.path, group, { name: "decisions.md", text: elsewhere }, { name: "changes.md", text: "## none\n" }).problems).toEqual([]);
 });

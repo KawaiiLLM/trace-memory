@@ -1,7 +1,7 @@
 // The repositories the Dreamer may read: one function names the allowed roots; one deny list applies to
 // Read, Grep, Glob and to the files `evidence:` cites. Both hosts and the file check call these and nothing else.
 
-import { realpathSync, statSync } from "node:fs";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -9,13 +9,18 @@ import type { Store } from "../store/index.ts";
 
 /** The roots are the working directories of the project's sessions (user rulings, 2026-10-22 and 2026-10-23): a session's
  * `directory` (the repository root ticket 62 resolved) when it has one, otherwise the directory it started in
- * (`start_directory`, so a session started in the home directory reads the whole home directory). A directory that is gone
- * cannot be read and is left out. */
+ * (`start_directory`, so a session started in the home directory reads the whole home directory). Missing or unreadable
+ * directories are left out. */
 export function allowedRoots(store: Store, sessionId: number): string[] {
   const projectId = store.getSession(sessionId)!.projectId;
   const roots = new Set<string>();
   for (const row of store.db.prepare("SELECT DISTINCT COALESCE(directory, start_directory) AS root FROM sessions WHERE project_id = ? AND COALESCE(directory, start_directory) IS NOT NULL").all(projectId)) {
-    try { roots.add(realpathSync(String(row.root))); } catch { /* a directory that is gone cannot be read */ }
+    try {
+      const root = realpathSync(String(row.root));
+      if (!statSync(root).isDirectory()) continue;
+      accessSync(root, constants.R_OK | constants.X_OK);
+      roots.add(root);
+    } catch { /* missing or unreadable directory */ }
   }
   return [...roots].sort();
 }
