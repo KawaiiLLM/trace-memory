@@ -244,6 +244,19 @@ test("terms may match different searched fields without matching JSON punctuatio
   expect(memory.search("gamma beta", "raw", f.path)).toContain("No hit");
 });
 
+// 161 review: the index scores a Turn's whole reply, so a tool-only entry of a Turn with a strong reply must not borrow that score.
+test("a tool-only Raw entry is ranked by its own calls, not by its Turn's reply text", () => {
+  const f = corpus();
+  const strong = memory.store.appendTurn({ sessionId: f.session.id, kind: "turn", assistantText: "quartz ".repeat(8).trim(), startedAt: "2026-10-02T00:00:00Z" });
+  const input = `quartz ${"unrelated ".repeat(80)}`;
+  memory.store.appendToolCall({ turnId: strong.id, name: "Read", input, status: "attempted" }); // the fixture seeds a tool-only entry
+  const other = memory.store.appendTurn({ sessionId: f.session.id, kind: "turn", assistantText: "quartz one two three four five", startedAt: "2026-10-03T00:00:00Z" });
+  const label = (turnId: number, nth: number) => `S${f.session.id}/T${turnId}#E${memory.store.listSourceEntries(f.session.id, turnId)[nth]!.entryOrdinal}@assistant`;
+  const out = lines(memory.search("quartz", "raw", { topk: 2 }));
+  const top = out.filter(line => line.startsWith("[")).map(line => /^\[([^\]]+)\]/.exec(line)![1]);
+  expect(top).toEqual([label(strong.id, 0), label(other.id, 0)]);
+});
+
 test("one Raw entry can satisfy terms in its text and in different tool calls", () => {
   const f = corpus();
   const turn = memory.store.appendTurn({ sessionId: f.session.id, kind: "turn", assistantText: "ALPHA preview", startedAt: "2026-10-02T00:00:00Z" });
