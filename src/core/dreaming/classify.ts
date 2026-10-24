@@ -5,7 +5,7 @@ import { knowledgeStaleLabel } from "../render/index.ts";
 export const CLASSIFY_ANCHORS = 30;
 /** Stratified old scored versions, including small pools; changed candidates do not anchor themselves. */
 /** 2026-10-24 (「参考的分布要有多样性」): anchors are drawn round-robin from every (score band, category) cell, highest band first, each cell
- * alternating its highest and lowest remaining scores, so the high bands and every category show even when the pool is mostly mid-scored
+ * offering its median first and then the scores next to it, so the high bands and every category show even when the pool is mostly mid-scored
  * (the simulation's quantile anchors left Sonnet scoring rulings below their 61–80 band). */
 export function classifyAnchors(items: readonly CurateItem[], excluded: ReadonlySet<number> = new Set()): CurateItem[] {
   const scored = items.filter(item => !excluded.has(item.value.knowledge.id) && item.score !== null && item.scoredCommit === item.value.revision.id)
@@ -16,8 +16,11 @@ export function classifyAnchors(items: readonly CurateItem[], excluded: Readonly
     const key = `${4 - Math.min(4, Math.floor((item.score! - 1) / 20))}:${item.value.revision.category}`; // band 81–100 sorts first
     cells.set(key, [...(cells.get(key) ?? []), item]);
   }
-  const queues = [...cells].sort(([a], [b]) => a.localeCompare(b)).map(([, cell]) =>
-    cell.map((_, i) => cell[i % 2 ? Math.floor(i / 2) : cell.length - 1 - Math.floor(i / 2)]!));
+  // Each cell offers its median first, then the scores next to it (「参照改为取各格中位数」): extremes are where known mis-scores sit.
+  const queues = [...cells].sort(([a], [b]) => a.localeCompare(b)).map(([, cell]) => {
+    const middle = Math.floor((cell.length - 1) / 2);
+    return cell.map((_, i) => cell[middle + (i % 2 ? (i + 1) / 2 : -i / 2)]!);
+  });
   const picked: CurateItem[] = [];
   for (let round = 0; picked.length < CLASSIFY_ANCHORS; round++)
     for (const queue of queues) if (round < queue.length && picked.length < CLASSIFY_ANCHORS) picked.push(queue[round]!);

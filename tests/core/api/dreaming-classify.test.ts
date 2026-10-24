@@ -54,6 +54,12 @@ test("incremental scoring draws 30 anchors across score bands and categories, so
   expect(anchors.some(anchor => anchor.value.knowledge.id === 1)).toBe(false); // excluded targets are never anchors
   expect(anchors.map(anchor => anchor.score)).toEqual([...anchors.map(anchor => anchor.score)].sort((a, b) => a! - b!));
   expect(classifyAnchors(items.slice(0, 4))).toEqual(items.slice(0, 4));
+  // Median first within a cell (「参照改为取各格中位数」): a single crowded cell gives up its middle before its extremes.
+  const crowded = Array.from({ length: 40 }, (_, i) => item(200 + i, 41 + Math.floor(i / 2), "understanding"));
+  const middle = classifyAnchors(crowded).map(anchor => anchor.score!);
+  expect(middle).toHaveLength(30);
+  expect(Math.min(...middle)).toBeGreaterThan(41);
+  expect(Math.max(...middle)).toBeLessThan(60);
 });
 
 test("stale operations remain pending while independent group operations publish atomically with their scores", async () => {
