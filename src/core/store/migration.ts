@@ -124,6 +124,16 @@ export function migratePropagation154(db: DatabaseSync): void {
   if (!hadFts) db.exec("INSERT INTO knowledge_fts(rowid, title, text) SELECT id, title, text FROM knowledge_revisions");
 }
 
+/** Fact titles and bodies are immutable; backfill their similarity index once inside the schema transaction. */
+export function migrateFactsFts160(db: DatabaseSync): void {
+  if (!db.isTransaction) throw new Error("160 migration requires Store's schema transaction");
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name='facts_fts'").get()) return;
+  db.exec(`CREATE VIRTUAL TABLE facts_fts USING fts5(
+    title, text, content = '', contentless_delete = 1, tokenize = 'trigram'
+  );
+  INSERT INTO facts_fts(rowid, title, text) SELECT id, title, text FROM facts`);
+}
+
 /** Ticket 144, Stage 4: the columns Dreaming's curate, verify and classify tasks need. Every column is nullable or
  * defaulted, so existing rows are kept as they are; each is added once (`table_info` is the idempotency signal).
  * The Knowledge base lives in its own single-row table, `knowledge_base_policy`, not in `knowledge_budget_policy`:

@@ -36,7 +36,7 @@ Keep enough for a newcomer to recover the discussion's main line, important bran
 1. **Write an index title**: name the object and the activity, enough to recognize and find it; do not narrate the course of events or restate the body.
 2. **Summarize source by source**: give each contributing entry its own cited segment, in order of occurrence. Write only that source's contribution to this topic; an entry touching several topics may serve each of their facts. Add none of your own explanation, and do not write later explanations back into earlier segments.
 3. **Separate results from interpretation**: a tool segment records what actually returned; an agent segment records the original agent's analysis, proposals or actions. Calls with no new contribution, repeated searches and routine steps need no citation.
-4. **Resolve references to full current names**: name the concrete objects in the body, including what an approval, withdrawal, rebuttal or correction concerns, what was there before and what changed.
+4. **Resolve references to full current names**: name the specific objects defined above in the body, including what an approval, withdrawal, rebuttal or correction concerns, what was there before and what changed.
 
 ### Knowledge
 
@@ -71,7 +71,7 @@ Each stage works on one pre-made Markdown deliverable in its workspace. {{tool.c
 You may use Bash to search and edit your workspace files in batches: grep, sed and scripts. Outside your workspace it is read-only: never change repositories, configuration or other files, and never use the network.
 
 - **Facts file**: `## fact <label>` with a label unique in the file (`f1`), then `title:` and `objects:`, then a blank line and one `[address] text` line per source.
-  - `objects:` lists full current names of the key things the fact says something about; each must appear case-insensitively in its body.
+  - `objects:` lists the specific instances defined above, not class words; each full current name must appear case-insensitively in the body.
   - Optional `negate:` and `caused_by:` name existing visible facts or earlier labels with a strength, such as `F340 strong, f2 weak`; `caused_by` takes at most two and only where the source states causation explicitly. Do not write `support:`.
 - **Knowledge file**: one block per item, at most one record per existing item.
   - `## create` takes `title`, `category`, `scope`, `topics`, `supports`, `files` and `reason`, then a blank line and the complete body.
@@ -97,25 +97,25 @@ A facts file:
 
 ```
 ## fact f1
-title: Pi agent ran the test suite
-objects: Pi agent, test suite
+title: Pi agent checked Noter
+objects: Pi agent, Noter
 
-[T812#E7@assistant] Pi agent ran the test suite with pnpm test.
+[T812#E7@assistant] Pi agent ran the Noter tests with pnpm test.
 [T812#E8@observation] The tool reported 12 tests passed.
 
 ## fact f2
-title: The user withdrew the pnpm-only rule
-objects: pnpm-only rule
+title: The user withdrew trace-memory's pnpm-only rule
+objects: trace-memory's pnpm-only rule
 negate: F340 strong
 
-[T901#E1@user] The user withdrew the pnpm-only rule: 「Actually, npm is fine too」.
+[T901#E1@user] The user withdrew trace-memory's pnpm-only rule: 「Actually, npm is fine too」.
 ```
 
 A knowledge file:
 
 ```
 ## create
-title: The pnpm-only rule is withdrawn
+title: trace-memory's pnpm-only rule is withdrawn
 category: constraint
 scope: project
 topics: package manager
@@ -123,7 +123,7 @@ supports: f2
 reason: The user withdrew the rule recorded as F340
 files: None
 
-The user withdrew the pnpm-only rule: npm is acceptable too (「Actually, npm is fine too」).
+The user withdrew trace-memory's pnpm-only rule: npm is acceptable too (「Actually, npm is fine too」).
 
 ## update K41@v2
 reason: Pi agent's test run settled the open question

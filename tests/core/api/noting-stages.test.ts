@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { REQUEST, factsFile, knowledgeFile, submit, verifyUnchanged, withVerdicts } from "../../support/noter.ts";
-import { facts, knowledge } from "../../support/seed.ts";
+import { entry as sourceEntry, facts, knowledge, session } from "../../support/seed.ts";
 import { NOTING_TASKS } from "../../../src/core/noting/workspace.ts";
 import { relatedFacts, relatedKnowledge } from "../../../src/core/noting/retrieval.ts";
 
@@ -212,20 +212,76 @@ for (const missing of ["field", "path"]) test(`knowledge rejects a missing files
   expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
 });
 
-test("retrieval: facts from new facts, knowledge only from new knowledge by similarity, and configured result caps", () => {
-  const f = fixture(async () => OK);
-  const entry = f.memory.store.getSourceEntry(f.memory.store.listSourceEntries(1)[0]!.id)!;
-  const [raw, lexical] = facts(f.memory, f.path, [
-    { title: "Opaque history", sources: [{ entry, text: "opaque baseline" }] },
-    { title: "lexicalneedle", sources: [{ entry, text: "another baseline" }] },
+test("fact retrieval finds rephrased CJK titles and full bodies without mapping unrelated Raw", () => {
+  const f = fixture(async () => OK), store = f.memory.store;
+  const entry = store.getSourceEntry(store.listSourceEntries(1)[0]!.id)!;
+  const [cjk, body, opaque] = facts(f.memory, f.path, [
+    { title: "整理分批由代理自己推进", sources: [{ entry, text: "旧方案" }] },
+    { title: "Opaque history", sources: [{ entry, text: "Earlier context. Noter checks facts in independent conversations." }] },
+    { title: "Opaque baseline", sources: [{ entry, text: "Unrelated historical record" }] },
   ]);
   const scope = { ...f.path, range: { from: "S1/T1", to: "S1/T1" } };
+  const seed = (title: string, text = "新内容") => ({ name: "facts.md", text: factsFile([{ title, sources: `[T1#E1] ${text}` }]) });
+  const ids = (text: string) => [...text.matchAll(/^## F(\d+)$/gm)].map(match => Number(match[1]));
+  expect(ids(relatedFacts(store, scope, seed("整理分批的推进方式"), 1))).toEqual([cjk!.id]);
+  expect(ids(relatedFacts(store, scope, seed("New episode", "New context. Noter checks facts in separate conversations."), 1))).toEqual([body!.id]);
+  // The Turn's Raw mentions pnpm, but none of its facts do.
+  expect(ids(relatedFacts(store, scope, seed("pnpm"), 20))).toEqual([]);
+  expect(ids(relatedFacts(store, scope, seed("整理分批的推进方式"), 0))).toEqual([]);
+  expect(ids(relatedFacts(store, scope, { name: "facts.md", text: "## none\n" }, 20))).toEqual([]);
+  expect(ids(relatedFacts(store, scope, seed("整理分批的推进方式"), 20))).not.toContain(opaque!.id);
+});
+
+test("fact retrieval scopes object and ranked matches before the cap, including same-Turn sibling entries", () => {
+  const f = fixture(async () => OK), store = f.memory.store;
+  const root = store.getSourceEntry(store.listSourceEntries(1)[0]!.id)!;
+  const sibling = sourceEntry(store, 1, 1, "sibling", "user", "整理分批的推进方式 Noter");
+  store.selectSourcePath(1, "sibling", [sibling.id]);
+  const text = "整理分批的推进方式 Noter";
+  const [offBranch] = facts(f.memory, { ...f.path, branch: "sibling" }, [{ title: text, objects: ["Noter"], sources: [{ entry: sibling, text }] }]);
+  const project = store.createProject({ name: "other-project", declaredBy: "mark" });
+  const other = session(store, project.id, "pi:other");
+  const turn = store.appendTurn({ sessionId: other.id, kind: "turn", userPrompt: text, startedAt: "now" });
+  const foreignEntry = store.getSourceEntry(store.listSourceEntries(other.id)[0]!.id)!;
+  facts(f.memory, { sessionId: other.id, branch: "main", headTurnId: turn.id }, [{ title: text, objects: ["Noter"], sources: [{ entry: foreignEntry, text }] }]);
+  store.selectSourcePath(1, "main", [root.id]);
+  const [onPath] = facts(f.memory, f.path, [{ title: "整理分批由代理自己推进", objects: ["Noter"], sources: [{ entry: root, text: "Noter uses the old plan" }] }]);
+  const scope = { ...f.path, range: { from: "S1/T1", to: "S1/T1" } };
+  for (const objects of [[], ["Noter"]]) {
+    const file = { name: "facts.md", text: factsFile([{ title: text, objects, sources: "[T1#E1] Current plan" }]) };
+    const result = relatedFacts(store, scope, file, 1);
+    expect([...result.matchAll(/^## F(\d+)$/gm)].map(match => Number(match[1]))).toEqual([onPath!.id]);
+    expect(result).not.toContain(`## F${offBranch!.id}\n`);
+  }
+});
+
+test("fact retrieval round-robins distinct seeds, ranks shared objects, and ignores reverted blocks", () => {
+  const f = fixture(async () => OK), store = f.memory.store;
+  const entry = store.getSourceEntry(store.listSourceEntries(1)[0]!.id)!;
+  const [one, both, second, reverted] = facts(f.memory, f.path, [
+    { title: "First partial", objects: ["Noter"], sources: [{ entry, text: "Noter extracts" }] },
+    { title: "First complete", objects: ["Noter", "SQLite"], sources: [{ entry, text: "Noter writes SQLite" }] },
+    { title: "Second topic", sources: [{ entry, text: "独立核实事实的会话" }] },
+    { title: "Dropped topic", sources: [{ entry, text: "撤回方案的历史" }] },
+  ]);
+  const scope = { ...f.path, range: { from: "S1/T1", to: "S1/T1" } };
+  const file = { name: "facts.md", text: factsFile([
+    { title: "New first", objects: ["Noter", "SQLite"], sources: "[T1#E1] Noter writes SQLite" },
+    { title: "独立核实事实的新方案", sources: "[T1#E1] unrelated body" },
+    { title: "撤回方案", sources: "[T1#E1] unrelated body", verdict: "reverted — not admitted" },
+  ]) };
+  const ids = (cap: number) => [...relatedFacts(store, scope, file, cap).matchAll(/^## F(\d+)$/gm)].map(match => Number(match[1]));
+  expect(ids(2)).toEqual([both!.id, second!.id]);
+  expect(ids(3)).toEqual([both!.id, second!.id, one!.id]);
+  expect(ids(20)).not.toContain(reverted!.id);
+});
+
+test("knowledge retrieval uses new knowledge, not new facts, and finds rephrased CJK titles", () => {
+  const f = fixture(async () => OK);
+  const entry = f.memory.store.getSourceEntry(f.memory.store.listSourceEntries(1)[0]!.id)!;
+  const [raw] = facts(f.memory, f.path, [{ title: "Opaque history", sources: [{ entry, text: "opaque baseline" }] }]);
+  const scope = { ...f.path, range: { from: "S1/T1", to: "S1/T1" } };
   const seed = (title: string) => ({ name: "facts.md", text: factsFile([{ title, sources: "[T1#E1] unrelated current summary" }]) });
-  expect(relatedFacts(f.memory.store, scope, seed("lexicalneedle"), 20)).toContain(`## F${lexical!.id}`);
-  const fromRaw = relatedFacts(f.memory.store, scope, seed("pnpm"), 20);
-  expect(fromRaw).toContain(`## F${raw!.id}`);
-  expect(fromRaw).toContain(`## F${lexical!.id}`);
-  expect(relatedFacts(f.memory.store, scope, seed("pnpm"), 1).match(/^## F/gm)).toEqual(["## F"]);
   const item = knowledge(f.memory.store, f.path, "session", "constraint", [raw!.id], "Existing conclusion", { operation: { title: "knowledgeneedle" } });
   const files = { facts: seed("no-match"), knowledge: { name: "knowledge.md", text: knowledgeFile(f.memory, { ...create, title: "knowledgeneedle", supports: [`F${raw!.id}`] }) } };
   expect(relatedKnowledge(f.memory.store, scope, files, 20)).toContain(`## K${item.knowledgeId}@v1`);

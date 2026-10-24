@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
-import { migratePropagation154, migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateDeploymentData144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { migrateFactsFts160, migratePropagation154, migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateDeploymentData144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
@@ -1293,6 +1293,7 @@ export class Store {
       const dataStep = Number(this.db.prepare("PRAGMA user_version").get()!.user_version) < 2;
       if (dataStep) { migrateDeploymentData144(this); this.db.exec("PRAGMA user_version = 2"); }
       migratePropagation154(this.db);
+      migrateFactsFts160(this.db);
       const schemaChanged = Number(this.db.prepare("PRAGMA schema_version").get()!.schema_version) !== schemaBefore;
       if ((schemaChanged || dataStep) && this.db.prepare("PRAGMA foreign_key_check").all().length)
         throw new Error("Store migration: foreign key violations");
@@ -2361,6 +2362,7 @@ export class Store {
           if ((f.caused_by?.length ?? 0) > 2) throw new Error("caused_by: at most two relations");
           const info = this.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time, source_roles, title, objects) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(runId, f.turnId, f.category ?? null, f.actor ?? null, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt, roles ? JSON.stringify(roles) : null, f.title ?? null, objects === undefined ? null : JSON.stringify(objects));
           const factId = Number(info.lastInsertRowid);
+          this.db.prepare("INSERT INTO facts_fts(rowid,title,text) VALUES (?,?,?)").run(factId, f.title ?? null, f.text);
           batchIds.push(factId);
           if (objects !== undefined) {
             const insertObject = this.db.prepare("INSERT INTO fact_objects(fact_id, name, object_key) VALUES (?, ?, ?)");
@@ -2626,9 +2628,18 @@ export class Store {
     const chars = [...text.replace(/[\s\p{P}\p{S}]/gu, "")], grams = new Set<string>();
     for (let i = 0; i + 3 <= chars.length; i++) grams.add(chars.slice(i, i + 3).join(""));
     if (!grams.size || !revisions.length || limit <= 0) return [];
-    // ponytail: one OR query per text; a long body makes a long query, so callers pass titles and opening sentences.
+    // ponytail: one OR query per text; a body capped at 200 units stays a short query.
     return (this.db.prepare(`SELECT rowid AS id FROM knowledge_fts WHERE knowledge_fts MATCH ? AND rowid IN (SELECT value FROM json_each(?))
       ORDER BY bm25(knowledge_fts) LIMIT ?`).all([...grams].map(ftsPhraseQuery).join(" OR "), JSON.stringify(revisions), limit) as { id: number }[]).map(row => row.id);
+  }
+
+  /** Facts most similar to the new fact's title and full body, restricted before ranking and limiting. */
+  similarFacts(text: string, facts: readonly number[], limit: number): number[] {
+    const chars = [...text.replace(/[\s\p{P}\p{S}]/gu, "")], grams = new Set<string>();
+    for (let i = 0; i + 3 <= chars.length; i++) grams.add(chars.slice(i, i + 3).join(""));
+    if (!grams.size || !facts.length || limit <= 0) return [];
+    return (this.db.prepare(`SELECT rowid AS id FROM facts_fts WHERE facts_fts MATCH ? AND rowid IN (SELECT value FROM json_each(?))
+      ORDER BY bm25(facts_fts), rowid LIMIT ?`).all([...grams].map(ftsPhraseQuery).join(" OR "), JSON.stringify(facts), limit) as { id: number }[]).map(row => row.id);
   }
 
   listKnowledgeLinks(knowledgeId: number): KnowledgeLink[] {
