@@ -4,6 +4,7 @@ import { dreamerFixture, scriptedDreamer } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
 import { updateKnowledge } from "../../support/seed.ts";
 import { checkScores } from "../../../src/core/dreaming/classify.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -27,7 +28,8 @@ test("all curate groups commit before one isolated scoring conversation publishe
     expect(new Set(labels)).toEqual(new Set([`K${a.knowledgeId}`, `K${b.knowledgeId}`]));
     return `K${a.knowledgeId} 5 1 1\nK${b.knowledgeId} 4 4 4\n`;
   };
-  const result = await f.dream();
+  // Host-exposed names (as on CC) must not filter the canonical check definition out of scoring.
+  const result = await f.memory.dream({ ...f.target, toolNames: { ...canonicalToolNames, search: "mcp__t__search", note: "mcp__t__note", memory: "mcp__t__memory", check: "mcp__t__check" } });
   expect(result, JSON.stringify(result)).toMatchObject({ outcome: "success" });
   expect(f.store.getKnowledge(a.knowledgeId)).toMatchObject({ score: 81, ratings: { consequence: 5, frequency: 1, current: 1 } });
   expect(f.store.getKnowledge(b.knowledgeId)).toMatchObject({ score: 51, ratings: { consequence: 4, frequency: 4, current: 4 } });

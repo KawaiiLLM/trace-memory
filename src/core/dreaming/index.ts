@@ -146,7 +146,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       return undefined;
     };
     const input: DreamingAgentInput = { kind: "dreaming", task: initial, sessionId, branch, model: run.model!, thinking: frozen.model.thinking, mode: "subagent",
-      prompt, promptHash: run.promptHash!, text, tools: scoring ? binding.tools.filter(tool => tool.name === frozen.names.check) : binding.tools,
+      prompt, promptHash: run.promptHash!, text, tools: scoring ? binding.tools.filter(tool => tool.name === "check") : binding.tools,
       workspace: { dir: workspace.dir, read: (scoring ? ["scoring.md", "scores.md"] : ["items.md", "groups.md", "group.md", "background.md", "notes.md", "decisions.md", "changes.md", ...batchNames]).map(name => workspace.path(name)),
         write: (initial === "notes" ? ["notes.md"] : initial === "clustering" ? ["groups.md"] : scoring ? ["scores.md"] : ["decisions.md", "changes.md"]).map(name => workspace.path(name)), roots: scoring ? [] : roots },
       passEnd, reportResponse: (id, input) => responses.set(id, input), acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
