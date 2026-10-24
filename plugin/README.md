@@ -9,9 +9,9 @@ CC uses the same flat phase-setting keys as Pi. The shipped defaults are:
 | Phase | Model key | Default | Thinking key | Default |
 | --- | --- | --- | --- | --- |
 | Noter | `notingModel` | `haiku` | `notingThinking` | `xhigh` |
-| Dreamer notes and curate (scoring is pinned to Opus `high`, clustering to Haiku `xhigh`) | `dreaming.model` | `sonnet` | `dreaming.thinking` | `xhigh` |
+| Dreamer notes, curate and its scoring continuation (clustering uses Haiku `xhigh`) | `dreaming.model` | `sonnet` | `dreaming.thinking` | `xhigh` |
 
-These are top-level JSON keys, including literal dots. CC and Pi store settings separately. CC Dreamer notes and curate run on Sonnet (default thinking `xhigh`): an explicit Sonnet model id is retained; otherwise it uses the configured Noter's Sonnet id, or the canonical `sonnet` alias. Clustering runs on Haiku at `xhigh` on every run, in parallel with repository notes; scoring runs on Opus at `high`. Register the Sonnet, Haiku and Opus identifiers in `worker.contextWindows`. The separate classify model/thinking keys are removed and rejected. Noter remains independently configured; unsupported native effort still fails explicitly. Omit `worker` only for ingestion/read-only operation.
+These are top-level JSON keys, including literal dots. CC and Pi store settings separately. CC Dreamer notes and curate run on Sonnet (default thinking `xhigh`): an explicit Sonnet model id is retained; otherwise it uses the configured Noter's Sonnet id, or the canonical `sonnet` alias. Scoring continues each group's curate conversation on that same model and thinking, with the same tools and readable roots. Clustering runs on Haiku at `xhigh` on every run, in parallel with repository notes. Register the Sonnet and Haiku identifiers in `worker.contextWindows`. The separate classify model/thinking keys are removed and rejected. Noter remains independently configured; unsupported native effort still fails explicitly. Omit `worker` only for ingestion/read-only operation.
 
 A fresh worker uses its configured phase model, thinking level and capacity consistently for admission, execution and run records, including borrowed work and catchup. Each workspace task launches with its run's workspace as cwd; native transcripts follow that real cwd. Temporary memory renderings remain under the prepared private `worker.cwd/rendered`; only the run's rendering directory is additionally readable under `--restricted`, denied to Bash writes, and removed at settlement. The worker's Read hook still rejects other files, including unrelated files inside cwd. Capacity is looked up by model name, not copied from another phase. The local `/trace` Settings screen saves edits to this file and applies them to subsequent tasks on the running executor. It reports file save and executor apply separately; already admitted tasks retain their settings. Manual edits outside that command still require a restart.
 
@@ -25,13 +25,13 @@ Core phase bounds use optional top-level keys in the same file:
 | --- | ---: | --- |
 | `noting.triggerTokens` | 10,000 | Noter trigger checked at every main-session entry end; catchup still drains below it |
 | `dreaming.triggerOperations` | 30 | Dreamer trigger: Noter knowledge operations (creates and updates) not yet covered by a Dreamer pass |
-| `dreaming.timeoutMs` | 1,800,000 | Wall-clock bound per conversation, including each separate scoring batch |
+| `dreaming.timeoutMs` | 1,800,000 | Wall-clock bound per stage interval; curate plus scoring gets two intervals |
 | `dreaming.groupItems` | 50 | Maximum candidate items per conversation; cannot exceed 50 |
 | `dreaming.parallelGroups` | 5 | Concurrent group limit; cannot exceed five |
 | `dreaming.notesSteps` / `dreaming.notesTokens` | 10 / 10,000 | Soft response budget / hard notes-file token cap |
 | `dreaming.clusteringSteps` / `dreaming.clusteringContextTokens` | 30 / 150,000 | Every-run clustering soft response / context-growth budgets |
 | `dreaming.curateSteps` / `dreaming.curateContextTokens` | 100 / 200,000 | Dispatcher-proposed soft response / context-growth budgets |
-| `dreaming.scoringSteps` / `dreaming.scoringContextTokens` | 10 / 60,000 | Soft response / context-growth budgets per separate scoring conversation; at most 100 targets each |
+| `dreaming.scoringSteps` / `dreaming.scoringContextTokens` | 10 / 60,000 | Soft response / context-growth budgets counted from the scoring stage's start |
 | `compaction.temporaryTokens` | 10,000 | Body pool: pending Raw overflow, then unscored Knowledge newest first (165) |
 | `compaction.pointerTokens` | 10,000 | Independent pointer pool: titles of Knowledge not shown whole by score, then user words and fact titles together by newest path turn (165/140) |
 | `compaction.userTurns` | 100 | User-word reach including the anchor, counted along its path |

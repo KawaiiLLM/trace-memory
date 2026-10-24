@@ -55,7 +55,7 @@ test("Dreamer pre-request capacity failure names its own phase and retains its w
   } finally { measure.mockRestore(); await h.dispose(); }
 });
 
-test("Pi notes, grouped curate and separate scoring use the frozen Dreamer model or foreground default", async () => {
+test("Pi notes and grouped curate with scoring use the frozen Dreamer model or foreground default", async () => {
   for (const [config, model, thinking] of [
     [{ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high" }, "fake/test-thinking", "high"],
     [{}, "fake/test", "off"],
@@ -69,7 +69,7 @@ test("Pi notes, grouped curate and separate scoring use the frozen Dreamer model
       expect(runs.every(run => run.model === model)).toBe(true);
       expect(runs.every(run => JSON.parse(run.response!).thinking.requested === thinking)).toBe(true);
       expect(seen.some(text => text.includes("Task: scoring"))).toBe(true);
-      expect(seen.some(text => text.includes("Task: scoring") && text.includes("Task: curate"))).toBe(false);
+      expect(seen.some(text => text.includes("Task: scoring") && text.includes("Task: curate"))).toBe(true);
       expect(store.noterOperations(store.knowledgePath(1))).toBe(0);
     } finally { await h.dispose(); }
   }
@@ -174,7 +174,7 @@ test("32d native host: Noter and Dreamer occupy independent seats", async () => 
   } finally { release(); await h.dispose(); }
 });
 
-/** Interrupt the separate scoring task after curate committed. */
+/** Interrupt scoring after curate passes but before the group publishes (169). */
 function curateThen(h: ReturnType<typeof host>, item: { heading: string }, after: (c: Parameters<Parameters<typeof h.provider>[0]>[0]) => Promise<Reply>) {
   h.provider(async c => {
     if (JSON.stringify(c.messages).includes("Task: scoring")) return after(c);
@@ -182,7 +182,7 @@ function curateThen(h: ReturnType<typeof host>, item: { heading: string }, after
   }, { autoStop: false });
 }
 
-test("stop during scoring keeps committed changes, counts no failure and resumes scoring on the next trigger", async () => {
+test("stop during scoring leaves the group unpublished, counts no failure and retries curate on the next trigger", async () => {
   const { h, store, item } = await seeded();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -194,11 +194,11 @@ test("stop during scoring keeps committed changes, counts no failure and resumes
     await h.commands.get("trace").handler("stop", h.ctx);
     await vi.waitFor(() => expect(dreamingRuns(store).at(-1)!.outcome).toBe("cancelled"));
     expect(store.getClaim(1, "dreaming")).toBeNull();
-    expect(dreamingRuns(store).flatMap(run => store.listCommitsByRun(run.id))).toHaveLength(1);
-    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint, tidied"]);
+    expect(dreamingRuns(store).flatMap(run => store.listCommitsByRun(run.id))).toHaveLength(0);
+    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint"]);
     expect(store.taskFailures(1).every(f => f.count === 0)).toBe(true);
     const runsAfterStop = dreamingRuns(store).length;
-    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "scoring" });
+    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "curate" });
     release();
     await h.drain();
     expect(dreamingRuns(store)).toHaveLength(runsAfterStop); // nothing retries by itself
@@ -208,15 +208,15 @@ test("stop during scoring keeps committed changes, counts no failure and resumes
   } finally { release(); await h.dispose(); }
 });
 
-test("provider overflow during scoring keeps committed groups, fails the run and does not compact", async () => {
+test("provider overflow during scoring leaves the group unpublished, fails the run and does not compact", async () => {
   const { h, store, item } = await seeded({ compaction: { enabled: true }, retry: { enabled: false } });
   try {
     curateThen(h, item, async () => ({ ...reply(""), stopReason: "error", errorMessage: "maximum context length exceeded" }));
     await h.turn(); await h.drain();
     const runs = dreamingRuns(store);
     expect(runs.at(-1)!.outcome).toBe("failure");
-    expect(runs.flatMap(run => store.listCommitsByRun(run.id))).toHaveLength(1);
-    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint, tidied"]);
+    expect(runs.flatMap(run => store.listCommitsByRun(run.id))).toHaveLength(0);
+    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint"]);
     const entries = readFileSync(JSON.parse(runs.at(-1)!.response!).nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(entries.some(e => e.type === "compaction")).toBe(false);
   } finally { await h.dispose(); }

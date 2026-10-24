@@ -22,7 +22,7 @@ test("clustering rejects missing, duplicate, foreign and oversized membership be
   expect(f.store.currentKnowledge(f.path).every(item => item.knowledge.score === null)).toBe(true);
 });
 
-test("full check persists clusters, resumes only uncommitted groups and rescores already scored keeps after all groups", async () => {
+test("full check persists clusters, resumes only uncommitted groups and rescores already scored keeps with their group", async () => {
   const f = dreamerFixture(memories); f.memory.config.dreaming.groupItems = 1;
   const a = f.item("First supported rule"), b = f.item("Second supported rule");
   f.store.db.prepare("UPDATE knowledge SET score=90,scored_commit=? WHERE id=?").run(a.commit, a.knowledgeId);
@@ -36,14 +36,14 @@ test("full check persists clusters, resumes only uncommitted groups and rescores
   const saved = f.store.handoff(f.session.id, "dreaming")!.detail!;
   expect(saved.groups!.map(group => !!group.run)).toEqual([true, false]);
   expect(saved.groups![0]!.clusters).toEqual([{ label: "Topic 1.1", items: [a.knowledgeId] }]);
-  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(90); // 167: no scoring before all groups commit.
+  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(75);
   expect(f.store.currentCommit(a.knowledgeId, f.path)[0]!.id).toBe(a.commit);
   expect(f.store.getKnowledge(b.knowledgeId)!.score).toBeNull();
   expect(fullCheckDryRun(f.store, f.path)).toMatchObject({ count: 2, groups: saved.groups, decisions: [{ runId: saved.groups![0]!.run }] });
   f.dreamer.script.curate!.group2 = "## none\n";
   const before = f.dreamer.inputs.length;
   expect(await f.memory.dream({ ...f.target, manual: true, fullCheck: true })).toMatchObject({ outcome: "success" });
-  expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate", "scoring"]);
+  expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate"]);
   expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(75);
   expect(f.store.getKnowledge(b.knowledgeId)!.score).toBe(75);
   expect(f.store.currentKnowledge(f.path).map(item => item.revision.files)).toEqual([null, null]);

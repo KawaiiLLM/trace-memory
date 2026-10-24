@@ -46,7 +46,6 @@ export { defaultWorkspaceRoot, sweepStaleWorkspaces } from "../noting/workspace.
 import { Store, type PathPending, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
 import { prepareDreaming, runDreaming, executionLimitMs, CLAIM_LEASE_MARGIN_MS, TASK_GAP_MS, type DreamingFrozen, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
-import { SCORING_BATCH_ITEMS } from "../dreaming/classify.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
 export { fullCheckDryRun } from "../dreaming/clustering.ts";
 
@@ -882,8 +881,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         if (input.manual || input.fullCheck ? !handoff && !visible.length : !dreamingDue(target)) { empty = true; return null; }
         const groupCount = handoff?.detail?.groups?.length || Math.ceil((handoff?.detail?.clusteringItems?.length ?? visible.length) / cfg.dreaming.groupItems);
         const setupTasks = 2;
-        const scoringTasks = Math.max(1, Math.ceil((handoff?.detail?.scoringTargets?.length ?? visible.length) / SCORING_BATCH_ITEMS));
-        executionLimit = executionLimitMs(setupTasks + Math.max(1, Math.ceil(groupCount / cfg.dreaming.parallelGroups)) + scoringTasks, cfg.dreaming.timeoutMs);
+        executionLimit = executionLimitMs(setupTasks + 2 * Math.max(1, Math.ceil(groupCount / cfg.dreaming.parallelGroups)), cfg.dreaming.timeoutMs);
         claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerOperations, executionLimit + CLAIM_LEASE_MARGIN_MS, input.manual || input.fullCheck);
         if (!claim) {
           if (input.manual || input.fullCheck) {
@@ -990,7 +988,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     // Stage 4 §1.3: the effective deadline of a call never passes the backstop minus one gap, so the latest task deadline
     // always precedes the backstop and the backstop precedes lease expiry.
-    let backstopAt = admittedAt + executionLimit;
+    const backstopAt = admittedAt + executionLimit;
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
       const own = (raw as AgentControl).call, call = own ?? lastCall;
@@ -1050,13 +1048,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind,
           { workspaceRoot: input.workspaceRoot, executionId: executionId!, resumeRunId, registerFence: workspace => { fences.add(workspace); } })
         : await runDreaming(store, frozen as DreamingFrozen, agent, cfg, bind,
-          { workspaceRoot: input.workspaceRoot, executionId: executionId!, registerFence: workspace => { fences.add(workspace); },
-            extendExecution: remainingTasks => {
-              backstopAt = Math.max(backstopAt, Date.now() + executionLimitMs(remainingTasks, cfg.dreaming.timeoutMs));
-              executionLimit = backstopAt - admittedAt;
-              store.extendClaim(claim!, backstopAt - Date.now() + CLAIM_LEASE_MARGIN_MS);
-              armTimeout();
-            } });
+          { workspaceRoot: input.workspaceRoot, executionId: executionId!, registerFence: workspace => { fences.add(workspace); } });
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
       external?.removeEventListener("abort", onExternalAbort);

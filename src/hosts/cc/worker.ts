@@ -344,10 +344,9 @@ export class CcAgentWorker {
   }
 
   async run(task: CcAgentTask, maxToolRounds: number): Promise<RunAgentResult> {
-    // Pinned Dreamer tasks (2026-10-25): clustering on Haiku at xhigh (「跑聚类的 haiku也统一xhigh」), scoring on Opus at high (「评分用 Opus high」).
-    // Their frozen thinking is the Dreamer's, so it is not compared.
-    const pinned = task.kind !== "dreaming" ? undefined : task.task === "clustering" ? { model: "haiku", thinking: "xhigh" as const }
-      : task.task === "scoring" ? { model: "opus", thinking: "high" as const } : undefined;
+    // Clustering stays on Haiku xhigh; curate and its scoring stage share the configured Dreamer.
+    // Clustering's frozen thinking is the Dreamer's, so it is not compared.
+    const pinned = task.kind === "dreaming" && task.task === "clustering" ? { model: "haiku", thinking: "xhigh" as const } : undefined;
     const settings = pinned ? { ...this.worker.phases.dreaming, ...pinned } : this.worker.phases[task.kind];
     if (task.model !== undefined && task.model !== settings.model)
       throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
