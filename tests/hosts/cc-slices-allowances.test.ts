@@ -68,6 +68,16 @@ test("the receipt for a temporary item the slice cannot carry is charged to the 
   expect(sum(slices, "temporaryTokens")).toBeLessThanOrEqual(1_000);
 });
 
+test("an oversized overflow body's receipt uses the body pool and preserves base knowledge with one pointer token left", () => {
+  const base = knowledge(1, 0, "base");
+  const slices = sliceCcInjection(binding, [base, knowledge(2, 1, "temporary", 12_000)], undefined, 20_000, 10_000, 1);
+  expect(commits(slices)).toEqual([1]);
+  expect(slices.map(slice => slice?.hookSpecificOutput.additionalContext ?? "").join("")).toContain("trace://K2@2");
+  expect(sum(slices, "knowledgeTokens")).toBe(sum(sliceCcInjection(binding, [base]), "knowledgeTokens"));
+  expect(sum(slices, "temporaryTokens")).toBeGreaterThan(0);
+  expect(sum(slices, "pointerTokens")).toBe(0);
+});
+
 test("a base item omitted for capacity charges its receipt to the base, and the resulting overrun evicts base items, never the temporary one", () => {
   const a = knowledge(1, 0, "base"), t = knowledge(2, 1, "temporary"), huge = knowledge(3, 2, "base", 200_000); // the huge one fits no slice
   const baseOnly = sum(sliceCcInjection(binding, [a]), "knowledgeTokens"); // A fills the base to the token

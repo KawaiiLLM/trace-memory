@@ -35,12 +35,19 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   if (binding.coreSession === null && items.some(item => item.kind === "raw"))
     throw new Error("CC Raw transport needs a bound core session");
   const slots: { items: TransportItem[] }[] = Array.from({ length: CC_SLICE_COUNT }, () => ({ items: [] }));
-  const omitted: string[] = [];
-  let pendingRaw = 0, pendingFacts = 0, pendingFactTokens = 0, omittedKnowledge = false, omittedBase = false;
+  type Receipt = Extract<TransportItem, { kind: "receipt" }>;
+  const omitted = new Map<NonNullable<Receipt["allowance"]>, { addresses: string[]; receipt: Receipt }>();
+  let pendingRaw = 0, pendingFacts = 0, pendingFactTokens = 0;
   const omit = (item: TransportItem): void => {
-    omitted.push(address(item, binding.coreSession));
-    if (item.kind === "knowledge" || item.kind === "state") omittedKnowledge = true;
-    if (item.kind === "state" || item.kind === "knowledge" && !temporaryKnowledge(item)) omittedBase = true;
+    const allowance = "allowance" in item ? item.allowance ?? "base" : "base";
+    let group = omitted.get(allowance);
+    if (!group) {
+      group = { addresses: [], receipt: { kind: "receipt", text: "", knowledge: false, allowance } };
+      omitted.set(allowance, group);
+    }
+    group.addresses.push(address(item, binding.coreSession));
+    if (item.kind === "knowledge" || item.kind === "state") group.receipt.knowledge = true;
+    group.receipt.text = `omitted ${group.addresses.length} whole items at CC inline capacity; expand: ${expandList(group.addresses)}`;
     if (item.kind === "raw" && item.pending) pendingRaw++;
     if (item.kind === "fact" && item.pending) { pendingFacts++; pendingFactTokens += tokens(item.text); }
   };
@@ -117,7 +124,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     const count = item.text.match(/omitted (\d+)/)?.[1];
     const expansion = item.text.split("expand: ")[1];
     const addresses = expansion?.match(/trace:\/\/[^\s,]+/g) ?? [];
-    const compact: TransportItem = { kind: "receipt", knowledge: item.knowledge,
+    const compact: TransportItem = { ...item,
       text: `omitted ${count ?? "1"} ${count ? "items" : "receipt"}; expand: ${expandList(addresses)}` };
     if (!addresses.length || !tryPlace(compact)) throw new Error("CC core omission receipt has no usable expansion address");
   }
@@ -165,7 +172,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   const lowestPointer = () => [...ordered].reverse().find(item => item.kind === "knowledge" && item.allowance === "pointer" && placed(item));
   // Evict only from the pool whose framing exceeds its cap.
   const lowestKnowledge = () => costs().base > knowledgeAllowance ? lowestBase()
-    : costs().temporary > temporaryAllowance ? lowestTemporary() ?? lowestBase() : lowestPointer() ?? lowestBase();
+    : costs().temporary > temporaryAllowance ? lowestTemporary() : lowestPointer();
   // Same admission priorities as character packing: lowest-ranked first, state notices last. Final segment
   // framing belongs to K; host JSON framing and Fact/Raw do not. Two loops, base first: removing a slice's last
   // base item moves its framing to the temporary cost, and removing a temporary item never changes the base cost,
@@ -185,26 +192,23 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     if (!item) break;
     remove(item);
   }
-  if (omitted.length) {
-    const receipt: TransportItem = { kind: "receipt", text: "" };
-    // Last in selection priority, not last in physical slot: first-fit may leave holes.
+  if (omitted.size) {
+    // Keep one receipt per owning pool, including when further evictions add mixed omissions.
     while (true) {
-      receipt.text = `omitted ${omitted.length} whole items at CC inline capacity; expand: ${expandList(omitted)}`;
-      receipt.knowledge = omittedKnowledge;
-      // 144 §7.2: a receipt is charged to the allowance of the material it reports.
-      receipt.allowance = omittedKnowledge && !omittedBase ? "pointer" : "base";
-      const isPlaced = tryPlace(receipt);
+      const receipts = [...omitted.values()].map(group => group.receipt);
+      let isPlaced = true;
+      for (const receipt of receipts) if (!tryPlace(receipt)) isPlaced = false;
       if (isPlaced && fits()) break;
-      // Choose while the receipt's cost still counts: taking it out first can hide a base overrun it caused.
+      // Choose while the receipts' costs still count: removing them can hide their pool's overrun.
       const retained = isPlaced ? lowestKnowledge() : [...ordered].reverse().find(item => item.kind !== "receipt" &&
         slots.some(slot => slot.items.includes(item)));
-      if (isPlaced) {
-        const slot = slots.find(slot => slot.items.includes(receipt))!;
-        slot.items.splice(slot.items.indexOf(receipt), 1);
-      }
       if (!retained) {
         if (!isPlaced) throw new Error("CC inline envelope cannot carry its omission receipt");
-        break; // No K item remains, and even its omission receipt does not fit this window.
+        break; // An owning pool cannot fit even its omission receipt.
+      }
+      for (const receipt of receipts) {
+        const slot = slots.find(slot => slot.items.includes(receipt));
+        if (slot) slot.items.splice(slot.items.indexOf(receipt), 1);
       }
       remove(retained);
     }
