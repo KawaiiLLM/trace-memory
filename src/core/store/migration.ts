@@ -3,6 +3,7 @@ import { isAbsolute } from "node:path";
 import type { Store } from "./index.ts";
 import { placementOwner } from "./processing.ts";
 import { assignVersionTag } from "./version-tags.ts";
+import { wordFrequencies } from "./word-similarity.ts";
 
 export interface Migration64dReport {
   legacySchema: boolean;
@@ -133,6 +134,37 @@ export function migrateFactsFts160(db: DatabaseSync): void {
     title, text, content = '', contentless_delete = 1, tokenize = 'trigram'
   );
   INSERT INTO facts_fts(rowid, title, text) SELECT id, title, text FROM facts`);
+}
+
+/** Store owns the schema transaction, including the version marker and both complete backfills. */
+export function migrateWordSimilarity(db: DatabaseSync): void {
+  if (!db.isTransaction) throw new Error("Word similarity migration requires Store's schema transaction");
+  if (Number(db.prepare("PRAGMA user_version").get()!.user_version) >= 4) return;
+  for (const [corpus, source] of [["fact", "facts"], ["knowledge", "knowledge_revisions"]] as const) {
+    const documents = `${corpus}_word_documents`, terms = `${corpus}_word_terms`, postings = `${corpus}_word_postings`;
+    db.exec(`CREATE TABLE IF NOT EXISTS ${documents} (
+        document_id INTEGER PRIMARY KEY REFERENCES ${source}(id),norm REAL NOT NULL CHECK(norm>0)
+      );
+      CREATE TABLE IF NOT EXISTS ${terms} (term TEXT PRIMARY KEY,df INTEGER NOT NULL CHECK(df>=0)) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS ${postings} (
+        term TEXT NOT NULL,document_id INTEGER NOT NULL REFERENCES ${source}(id),tf INTEGER NOT NULL CHECK(tf>0),
+        PRIMARY KEY(term,document_id)
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS idx_${postings}_document ON ${postings}(document_id);
+      DELETE FROM ${postings}; DELETE FROM ${terms}; DELETE FROM ${documents};`);
+    const insert = db.prepare(`INSERT INTO ${postings}(term,document_id,tf) VALUES (?,?,?)`);
+    for (const row of db.prepare(`SELECT id,title,text FROM ${source} ORDER BY id`).iterate())
+      for (const [term, tf] of wordFrequencies(`${row.title ?? ""} ${row.text}`)) insert.run(term, Number(row.id), tf);
+    db.exec(`INSERT INTO ${terms} SELECT term,count(*) FROM ${postings} GROUP BY term;
+      INSERT INTO ${documents} SELECT id,1 FROM ${source};
+      WITH weights AS MATERIALIZED (
+        SELECT term,max(ln(((SELECT count(*) FROM ${documents})-df+0.5)/(df+0.5)),0) AS idf FROM ${terms}
+      ), norms AS (
+        SELECT p.document_id,sqrt(sum(pow((1+ln(p.tf))*w.idf,2))) AS norm
+        FROM ${postings} p JOIN weights w ON w.term=p.term GROUP BY p.document_id
+      ) UPDATE ${documents} SET norm=coalesce((SELECT nullif(norm,0) FROM norms WHERE norms.document_id=${documents}.document_id),1)`);
+  }
+  db.exec("PRAGMA user_version = 4");
 }
 
 /** Fill historical read roots once, without consulting native files or changing project assignment. */

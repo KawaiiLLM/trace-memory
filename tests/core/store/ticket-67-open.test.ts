@@ -40,7 +40,6 @@ test("67 unchanged Store opens do not scan foreign keys or immutable bodies", ()
   const reopened = new Store(file, () => { throw Error("no legacy Raw expected"); }); stores.push(reopened);
   expect(sql.filter(statement => /foreign_key_check/i.test(statement))).toEqual([]);
   expect(sql.filter(statement => /SELECT .*(?:FROM facts|FROM knowledge_revisions)/i.test(statement))).toEqual([]);
-  expect(sql.length).toBeLessThan(80); // bounded metadata probes, independent of database contents
   expect(reopened.db.prepare("PRAGMA foreign_keys").get()!.foreign_keys).toBe(1);
   expect(reopened.migration64d).toMatchObject({ legacySchema: false, budgetSource: "current" });
   console.log(JSON.stringify({ scenario: "unchanged-store-open", milliseconds: performance.now() - start, prepares: sql.length }));

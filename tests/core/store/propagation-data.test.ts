@@ -7,6 +7,7 @@ import { Store, type KnowledgeOperationInput, type KnowledgeFiles } from "../../
 import { entry, facts, knowledgeBatch, legacyFact, legacyKnowledge, session } from "../../support/seed.ts";
 import { renderFact } from "../../../src/core/render/index.ts";
 import { plan } from "../../../src/core/workspace/plan.ts";
+import { migrateWordSimilarity } from "../../../src/core/store/migration.ts";
 
 const at = "2026-10-24T00:00:00.000Z";
 const stores: Store[] = [], dirs: string[] = [];
@@ -280,4 +281,86 @@ test("fact similarity migration preserves titled and legacy facts, backfills onc
   const reopened = TraceMemory(file, async () => { throw new Error("no model work"); }); stores.push(reopened.store);
   const [later] = facts(reopened, f.path, [{ title: "会话独立核实事实", sources: [{ entry: f.source, text: "New indexed body" }] }]);
   expect(reopened.store.similarFacts("会话独立核实的新方案", [...before.map(row => Number(row.id)), later!.id], 1)).toEqual([later!.id]);
+});
+
+test("word indexes publish authored fact content and immutable knowledge updates, and roll back refused batches", () => {
+  const f = fixture();
+  const [saved] = facts(f.memory, f.path, [{ title: "知识 QUASAR", sources: [{ entry: f.source, text: "Quasar quasar 知识" }] }]);
+  expect(f.store.similarFacts("quasar", [saved!.id], 20)).toEqual([saved!.id]);
+  expect(f.store.similarFacts("知识", [saved!.id], 20)).toEqual([saved!.id]);
+  expect(f.store.similarFacts("quas", [saved!.id], 20)).toEqual([]);
+  expect(f.store.db.prepare("SELECT tf FROM fact_word_postings WHERE term='quasar' AND document_id=?").get(saved!.id)!.tf).toBe(3);
+  expect(f.store.db.prepare("SELECT df FROM fact_word_terms WHERE term='quasar'").get()!.df).toBe(1);
+  const versions = Array.from({ length: 4 }, (_, i) => f.create(null, `Background${i}`));
+  const first = f.write([{ ...f.common, title: "Original title", text: "Nebula", files: null, op: "create", author: "test", handle: "$1" }])[0]!;
+  const changed = f.write([{ ...f.common, title: "Updated title", text: "Pulsar pulsar", files: null,
+    op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit }])[0]!;
+  const ids = [...versions.map(item => item.commit), first.commit, changed.commit];
+  expect(f.store.similarKnowledge("NEBULA", ids, 20)).toEqual([first.commit]);
+  expect(f.store.similarKnowledge("pulsar", ids, 20)).toEqual([changed.commit]);
+  expect(f.store.similarKnowledge("nebula", [changed.commit], 20)).toEqual([]);
+  expect(f.store.db.prepare("SELECT tf FROM knowledge_word_postings WHERE term='pulsar' AND document_id=?").get(changed.commit)!.tf).toBe(2);
+  const tables = ["fact_word_documents", "fact_word_terms", "fact_word_postings", "knowledge_word_documents", "knowledge_word_terms", "knowledge_word_postings"];
+  const snapshot = () => tables.map(table => f.store.db.prepare(`SELECT * FROM ${table} ORDER BY 1,2`).all());
+  const before = snapshot();
+  const row = { turnId: f.turn.id, text: "Transientword", category: "observation" as const, actor: "user" as const,
+    source: [`T${f.turn.id}#E1`], entryIds: [f.source.id], createdAt: at };
+  expect(f.store.commitNotingRun({ run: f.run, facts: [row, { ...row, caused_by: [{ target: "F999999", strength: "strong" }] }] }).ok).toBe(false);
+  const valid = { ...f.common, title: "Transientword", text: "Transientword", files: null, op: "create" as const, handle: "$1", author: "test" };
+  expect(f.store.commitConsolidationRun({ run: f.run, path: f.path, operations: [valid, { ...valid, supports: [999999] }] }).ok).toBe(false);
+  expect(snapshot()).toEqual(before);
+  expect(f.store.similarFacts("transientword", [saved!.id], 20)).toEqual([]);
+  expect(f.store.similarKnowledge("transientword", ids, 20)).toEqual([]);
+});
+
+test("word similarity backfills both corpora without changing source rows and reopens without recomputing norms", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-word-migration-")); dirs.push(dir);
+  const file = join(dir, "memory.sqlite"), f = fixture(file);
+  const old = legacyFact(f.store, f.path, [{ entry: f.source, address: `T${f.turn.id}#E1` }], "星云 nebula");
+  const legacy = legacyKnowledge(f.store, f.path, { ...f.common, text: "星云 nebula" });
+  for (let i = 0; i < 4; i++) f.create(null, `Background${i}`);
+  const tables = ["fact_word_documents", "fact_word_terms", "fact_word_postings", "knowledge_word_documents", "knowledge_word_terms", "knowledge_word_postings"];
+  f.store.db.exec(tables.map(table => `DROP TABLE ${table}`).join(";") + "; PRAGMA user_version=3");
+  const factsBefore = f.store.db.prepare("SELECT * FROM facts ORDER BY id").all();
+  const versionsBefore = f.store.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all();
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  let indexed: unknown;
+  for (let open = 0; open < 2; open++) {
+    const store = new Store(file); stores.push(store);
+    expect(store.db.prepare("PRAGMA user_version").get()!.user_version).toBe(4);
+    expect(store.db.prepare("SELECT * FROM facts ORDER BY id").all()).toEqual(factsBefore);
+    expect(store.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all()).toEqual(versionsBefore);
+    expect(store.similarFacts("星云", factsBefore.map(row => Number(row.id)), 20)).toEqual([old.id]);
+    expect(store.similarKnowledge("NEBULA", versionsBefore.map(row => Number(row.id)), 20)).toEqual([legacy.commit]);
+    const rows = tables.map(table => store.db.prepare(`SELECT * FROM ${table} ORDER BY 1,2`).all());
+    if (open) expect(rows).toEqual(indexed); else indexed = rows;
+    expect(store.db.prepare("SELECT count(*) AS n FROM fact_word_documents").get()!.n).toBe(factsBefore.length);
+    expect(store.db.prepare("SELECT count(*) AS n FROM knowledge_word_documents").get()!.n).toBe(versionsBefore.length);
+    expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    store.close(); stores.splice(stores.indexOf(store), 1);
+  }
+});
+
+test("word similarity normalizes document length, weights repeated query terms, ignores nonpositive IDF and restricts candidates before limiting", () => {
+  const f = fixture();
+  const added = facts(f.memory, f.path, [
+    { title: "Nebula", sources: [{ entry: f.source, text: "nebula ubiquitous" }] },
+    { title: "Nebula", sources: [{ entry: f.source, text: "nebula ubiquitous" }] },
+    { title: "Nebula", sources: [{ entry: f.source, text: "nebula noise noise ubiquitous" }] },
+    { title: "Elsewhere", sources: [{ entry: f.source, text: "unrelated ubiquitous" }] },
+    { title: "Aster", sources: [{ entry: f.source, text: "aster comet ubiquitous" }] },
+    { title: "Comet", sources: [{ entry: f.source, text: "comet aster ubiquitous" }] },
+  ]);
+  f.store.transaction(() => { f.store.db.exec("PRAGMA user_version=3"); migrateWordSimilarity(f.store.db); });
+  const ids = added.map(fact => fact.id), [first, second, noisy] = ids;
+  expect(f.store.similarFacts("NEBULA", ids, 20)).toEqual([first, second, noisy]);
+  expect(f.store.similarFacts("nebula", [noisy!], 1)).toEqual([noisy]);
+  expect(f.store.similarFacts("nebula", [second!, first!, first!], 1)).toEqual([first]);
+  expect(f.store.similarFacts("nebula noise noise", ids, 1)).toEqual([noisy]);
+  expect(f.store.similarFacts("ubiquitous", ids, 20)).toEqual([]);
+  expect(f.store.similarFacts("?!", ids, 20)).toEqual([]);
+  expect(f.store.similarFacts("nebula", [], 20)).toEqual([]);
+  expect(f.store.similarFacts("nebula", ids, 0)).toEqual([]);
+  expect(f.store.similarFacts("aster comet", ids, 2)).toEqual(ids.slice(4));
+  expect(f.store.similarFacts("aster comet comet", ids, 2)).toEqual([ids[5], ids[4]]);
 });

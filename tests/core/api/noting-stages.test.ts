@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { REQUEST, factsFile, knowledgeFile, submit, verifyUnchanged, withVerdicts } from "../../support/noter.ts";
-import { entry as sourceEntry, facts, knowledge, session } from "../../support/seed.ts";
+import { entry as sourceEntry, facts, knowledge, knowledgeBatch, session } from "../../support/seed.ts";
 import { NOTING_TASKS } from "../../../src/core/noting/workspace.ts";
 import { relatedFacts, relatedKnowledge } from "../../../src/core/noting/retrieval.ts";
 
@@ -349,13 +349,13 @@ test("fact retrieval round-robins distinct seeds, ranks shared objects, and igno
     { title: "First partial", objects: ["Noter"], sources: [{ entry, text: "Noter extracts" }] },
     { title: "First complete", objects: ["Noter", "SQLite"], sources: [{ entry, text: "Noter writes SQLite" }] },
     { title: "Second topic", sources: [{ entry, text: "独立核实事实的会话" }] },
-    { title: "Dropped topic", sources: [{ entry, text: "撤回方案的历史" }] },
+    { title: "Dropped topic", sources: [{ entry, text: "独角兽失效记录" }] },
   ]);
   const scope = { ...f.path, range: { from: "S1/T1", to: "S1/T1" } };
   const file = { name: "facts.md", text: factsFile([
     { title: "New first", objects: ["Noter", "SQLite"], sources: "[T1#E1] Noter writes SQLite" },
     { title: "独立核实事实的新方案", sources: "[T1#E1] unrelated body" },
-    { title: "撤回方案", sources: "[T1#E1] unrelated body", verdict: "reverted — not admitted" },
+    { title: "独角兽失效记录", sources: "[T1#E1] unrelated body", verdict: "reverted — not admitted" },
   ]) };
   const ids = (cap: number) => [...relatedFacts(store, scope, file, cap).matchAll(/^## F(\d+)$/gm)].map(match => Number(match[1]));
   expect(ids(2)).toEqual([both!.id, second!.id]);
@@ -369,10 +369,13 @@ test("knowledge retrieval uses new knowledge, not new facts, and finds rephrased
   const [raw] = facts(f.memory, f.path, [{ title: "Opaque history", sources: [{ entry, text: "opaque baseline" }] }]);
   const scope = { ...f.path, range: { from: "S1/T1", to: "S1/T1" } };
   const seed = (title: string) => ({ name: "facts.md", text: factsFile([{ title, sources: "[T1#E1] unrelated current summary" }]) });
+  knowledgeBatch(f.memory.store, f.path, Array.from({ length: 4 }, (_, i) => ({
+    title: `Background ${i}`, text: "Unrelated background", category: "constraint", scope: "session", supports: [raw!.id],
+  })));
   const item = knowledge(f.memory.store, f.path, "session", "constraint", [raw!.id], "Existing conclusion", { operation: { title: "knowledgeneedle" } });
   const files = { facts: seed("no-match"), knowledge: { name: "knowledge.md", text: knowledgeFile(f.memory, { ...create, title: "knowledgeneedle", supports: [`F${raw!.id}`] }) } };
   expect(relatedKnowledge(f.memory.store, scope, files, 20)).toContain(`## K${item.knowledgeId}@v1`);
-  // Ruling 2026-10-23: new knowledge retrieves old knowledge; the new facts alone retrieve none. A CJK title, one "word", is still found by similarity.
+  // New knowledge retrieves old knowledge; new facts alone retrieve none. Word segmentation also finds rephrased CJK titles.
   const cjk = knowledge(f.memory.store, f.path, "session", "constraint", [raw!.id], "旧结论", { operation: { title: "整理分批由代理自己推进" } });
   const factOnly = { facts: seed("整理分批由代理自己推进"), knowledge: { name: "knowledge.md", text: "## none\n" } };
   expect(relatedKnowledge(f.memory.store, scope, factOnly, 20)).not.toContain(`## K${cjk.knowledgeId}@v1`);

@@ -6,6 +6,7 @@ import { parseKnowledgeAddress } from "../../src/core/model/address.ts";
 import type { MemoryReceipt } from "../../src/core/knowledge-write/bind.ts";
 import { assignVersionTag } from "../../src/core/store/version-tags.ts";
 import { knowledgeOpening } from "../../src/core/render/index.ts";
+import { WordSimilarity } from "../../src/core/store/word-similarity.ts";
 
 /** Resolve the shared tool receipt: authored update/merge/split tags, other history addresses. */
 export function receiptCommit(store: Store, item: Pick<MemoryReceipt["committed"][number], "knowledgeId" | "version">): number {
@@ -201,6 +202,8 @@ export function budgetArchive(store: Store, path: KnowledgePath, knowledgeId: nu
 function indexLegacyVersion(store: Store, commit: number): void {
   store.db.prepare("DELETE FROM knowledge_fts WHERE rowid=?").run(commit);
   store.db.prepare("INSERT INTO knowledge_fts(rowid,title,text) SELECT id,title,text FROM knowledge_revisions WHERE id=?").run(commit);
+  const row = store.db.prepare("SELECT title,text FROM knowledge_revisions WHERE id=?").get(commit)!;
+  store.transaction(() => new WordSimilarity(store.db, "knowledge").write(commit, row.title as string | null, String(row.text)));
 }
 
 /** Scores every knowledge item that has none (default 50): injection spends the Knowledge base on scored items only,

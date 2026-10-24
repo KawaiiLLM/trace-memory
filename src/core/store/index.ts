@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
-import { migrateStartDirectories163, migrateFactsFts160, migratePropagation154, migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateDeploymentData144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { migrateWordSimilarity, migrateStartDirectories163, migrateFactsFts160, migratePropagation154, migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateDeploymentData144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
@@ -18,6 +18,7 @@ import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_OPE
 import { tokens } from "../render/index.ts";
 import { factObjects, isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import { ratingScore, type RatedTarget } from "../dreaming/classify.ts";
+import { WordSimilarity } from "./word-similarity.ts";
 import type {
   Actor,
   Knowledge,
@@ -924,6 +925,8 @@ interface PathView {
 
 export class Store {
   readonly db: DatabaseSync;
+  private readonly factWords: WordSimilarity;
+  private readonly knowledgeWords: WordSimilarity;
   private readonly pathViews = new Map<string, PathView>();
   private transactionPaths: Map<string, PathView> | null = null;
   private reading = false;
@@ -1298,12 +1301,15 @@ export class Store {
       migratePropagation154(this.db);
       migrateFactsFts160(this.db);
       migrateStartDirectories163(this.db);
+      migrateWordSimilarity(this.db);
       const schemaChanged = Number(this.db.prepare("PRAGMA schema_version").get()!.schema_version) !== schemaBefore;
       if ((schemaChanged || dataStep) && this.db.prepare("PRAGMA foreign_key_check").all().length)
         throw new Error("Store migration: foreign key violations");
       this.db.exec("COMMIT");
       began = false;
       this.db.exec("PRAGMA foreign_keys = ON");
+      this.factWords = new WordSimilarity(this.db, "fact");
+      this.knowledgeWords = new WordSimilarity(this.db, "knowledge");
     } catch (error) {
       if (began && this.db.isTransaction) { try { this.db.exec("ROLLBACK"); } catch { /* Preserve the initialization error. */ } }
       try { this.db.exec("PRAGMA foreign_keys = ON"); } catch { /* Preserve the initialization error. */ }
@@ -2367,6 +2373,7 @@ export class Store {
           const info = this.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time, source_roles, title, objects) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(runId, f.turnId, f.category ?? null, f.actor ?? null, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt, roles ? JSON.stringify(roles) : null, f.title ?? null, objects === undefined ? null : JSON.stringify(objects));
           const factId = Number(info.lastInsertRowid);
           this.db.prepare("INSERT INTO facts_fts(rowid,title,text) VALUES (?,?,?)").run(factId, f.title ?? null, f.text);
+          this.factWords.write(factId, f.title ?? null, f.text);
           batchIds.push(factId);
           if (objects !== undefined) {
             const insertObject = this.db.prepare("INSERT INTO fact_objects(fact_id, name, object_key) VALUES (?, ?, ?)");
@@ -2626,24 +2633,14 @@ export class Store {
     return [...new Set(rows.map(row => row.knowledge_id))].sort((a, b) => a - b);
   }
 
-  /** Versions most similar to `text`, by BM25 over the text's trigrams, any of which may match (unlike `searchKnowledge`, which needs every
-   * word: a CJK title has no spaces, so it is one word and finds little but itself). Returns version ids, best first. */
+  /** Word TF-IDF similarity over exact versions, restricted before limiting; returns version ids. */
   similarKnowledge(text: string, revisions: readonly number[], limit: number): number[] {
-    const chars = [...text.replace(/[\s\p{P}\p{S}]/gu, "")], grams = new Set<string>();
-    for (let i = 0; i + 3 <= chars.length; i++) grams.add(chars.slice(i, i + 3).join(""));
-    if (!grams.size || !revisions.length || limit <= 0) return [];
-    // ponytail: one OR query per text; a body capped at 200 units stays a short query.
-    return (this.db.prepare(`SELECT rowid AS id FROM knowledge_fts WHERE knowledge_fts MATCH ? AND rowid IN (SELECT value FROM json_each(?))
-      ORDER BY bm25(knowledge_fts) LIMIT ?`).all([...grams].map(ftsPhraseQuery).join(" OR "), JSON.stringify(revisions), limit) as { id: number }[]).map(row => row.id);
+    return this.knowledgeWords.similar(text, revisions, limit);
   }
 
   /** Facts most similar to the new fact's title and full body, restricted before ranking and limiting. */
   similarFacts(text: string, facts: readonly number[], limit: number): number[] {
-    const chars = [...text.replace(/[\s\p{P}\p{S}]/gu, "")], grams = new Set<string>();
-    for (let i = 0; i + 3 <= chars.length; i++) grams.add(chars.slice(i, i + 3).join(""));
-    if (!grams.size || !facts.length || limit <= 0) return [];
-    return (this.db.prepare(`SELECT rowid AS id FROM facts_fts WHERE facts_fts MATCH ? AND rowid IN (SELECT value FROM json_each(?))
-      ORDER BY bm25(facts_fts), rowid LIMIT ?`).all([...grams].map(ftsPhraseQuery).join(" OR "), JSON.stringify(facts), limit) as { id: number }[]).map(row => row.id);
+    return this.factWords.similar(text, facts, limit);
   }
 
   listKnowledgeLinks(knowledgeId: number): KnowledgeLink[] {
@@ -4151,6 +4148,7 @@ export class Store {
           revisionOp === "archive" ? (op as Extract<KnowledgeOperationInput, { op: "archive" }>).kind : null, storedFiles);
       const commitId = Number(info.lastInsertRowid);
       this.db.prepare("INSERT INTO knowledge_fts(rowid,title,text) VALUES (?,?,?)").run(commitId, title, text);
+      this.knowledgeWords.write(commitId, title, text);
       // Verification checked the parent's claims against its files, so it carries only to a one-parent version with the same body,
       // supports and files (a metadata-only version); any other new version starts unverified.
       const sameSet = (a: readonly number[], b: readonly number[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
