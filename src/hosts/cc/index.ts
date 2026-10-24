@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -301,7 +301,10 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
     return;
   }
   if (verb === "full-check" && rest.length === 1 && rest[0] === "--dry-run") {
+    // Opening applies pending migrations, as for every operator command; the preview itself runs with writes refused.
+    if (!existsSync(config.dbPath)) throw new Error(`no database at ${config.dbPath}`);
     const store = new Store(config.dbPath);
+    store.db.exec("PRAGMA query_only=1");
     try {
       const binding = readBinding(config, nativeSessionId);
       if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
