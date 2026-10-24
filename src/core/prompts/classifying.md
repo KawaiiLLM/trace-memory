@@ -21,7 +21,7 @@ Use the whole scale, and separate items inside a band.
 
 ## Inputs and file
 
-Read `scoring.md`: changed/new or unscored items are targets; up to 30 old scored items anchor the scale, even in a small pool. Score only the supplied targets. {{tool.check}} names the absolute path of `scores.md`.
+Read `scoring.md`: incremental targets are changed/new or unscored items with up to 30 old scored anchors, even in a small pool; a full check targets every surviving group item without anchors. Score only the supplied targets. {{tool.check}} names the absolute path of `scores.md`.
 
 The file holds one line for each target, in the form `K12 85`: its supplied label and score. A split's uncommitted child uses its local label, for example `K12.child1 60`; code resolves that label at commit. Score every target exactly once and write no other text. An item outside the supplied list is refused. Do not edit curate files after they pass.
 

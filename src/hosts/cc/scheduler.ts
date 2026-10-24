@@ -172,7 +172,7 @@ export class CcTaskScheduler {
 
   /** The manual dream after the sync: the checks `startCatchup` makes, then the Dreaming slot and the core with `manual: true`.
    * A refusal replaces the status with its reason; a finished run shows its outcome. It adds no drain and no Noter check. */
-  startDream(reconcile: CcReconcileResult, ticket: number): void {
+  startDream(reconcile: CcReconcileResult, ticket: number, fullCheck = false): void {
     if (ticket !== this.cancellationEpoch) { this.dream = { state: "stopped", diagnostic: "stop requested before admission" }; return; }
     const refuse = (diagnostic: string) => { this.failDream(diagnostic); };
     if (this.stopped) return refuse("CC executor is shutting down");
@@ -188,7 +188,7 @@ export class CcTaskScheduler {
     this.dream = { state: "running" };
     this.reserve("dreaming", async () => {
       try {
-        const result = await this.runCandidate("dreaming", target.sessionId, target, false, ticket, true);
+        const result = await this.runCandidate("dreaming", target.sessionId, target, false, ticket, true, fullCheck);
         this.dream = dreamOutcome(result);
         return result;
       } catch (error) { this.failDream(error instanceof Error ? error.message : String(error)); }
@@ -286,10 +286,10 @@ export class CcTaskScheduler {
 
   /** One ordinary admission path; callers own continuation and error handling, not claim policy. */
   private async runCandidate(phase: CcWorkerPhase, executorSessionId: number, target: TaskTarget,
-    borrowed: boolean, epoch: number, manual = false): Promise<CcTaskResult | undefined> {
+    borrowed: boolean, epoch: number, manual = false, fullCheck = false): Promise<CcTaskResult | undefined> {
     if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) return;
     const options = { ...this.common(phase, target, borrowed, !manual), executorSessionId };
-    const result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream({ ...options, manual });
+    const result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream({ ...options, manual, fullCheck });
     this.report(phase, target, result);
     if (phase === "dreaming") this.endDrainOnDreamingFailure(target, result);
     return result;

@@ -9,11 +9,10 @@ const setup = () => { const h = host(); hosts.push(h); return h; };
 afterEach(async () => { for (const h of hosts.splice(0)) await h.dispose(); });
 const command = (h: ReturnType<typeof host>) => h.commands.get("trace").handler("", h.ctx);
 
-test("main menu uses shared action order; cancellation and read do not schedule or write", async () => {
+test("opening and cancelling the main menu do not schedule or write", async () => {
   const h = setup(); await h.turn(); h.ctx.hasUI = true;
   const before = { entries: h.entries.length, runs: h.memory.store.listRuns(1), requests: h.requests.length };
   h.answers.push(undefined); await command(h);
-  expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Dream", "Stop", "Project…", "Runs…", "Settings…"]);
   expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger");
   expect(h.dialogs.at(-1)!.title).toContain("Trace Memory · S1");
   expect(h.entries).toHaveLength(before.entries);

@@ -94,7 +94,10 @@ export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; next
   detail?: HandoffDetail }
 export interface DreamerBoundary { fact: number; revision: number; versions: Record<string, number> }
 export interface HandoffDetail {
-  groups?: { items: number[]; run?: number }[];
+  fullCheck?: boolean;
+  clusteringItems?: number[];
+  groupsFile?: string;
+  groups?: { items: number[]; clusters?: { label: string; items: number[] }[]; run?: number }[];
   knowledge?: string;
   notes?: string;
   seeds?: string;

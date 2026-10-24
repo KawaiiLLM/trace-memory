@@ -41,16 +41,24 @@ export const noterTurn = (body: Body, fact: Record<string, unknown> = {}, tokens
   return call(`write-${written.length + 1}`, "write", { path: file, content }, tokens);
 };
 /** Native wire replies fill the grouped Dreamer's pre-made files. */
-export const dreamerTurn = (body: Body, tokens = usage()): Response => {
+export const dreamerTurn = (body: Body, tokens = usage(), changes = "## none\n"): Response => {
   const text = (message: Body) => typeof message.content === "string" ? message.content : (message.content ?? []).map((part: Body) => part.text ?? "").join("");
-  const named = (body.messages ?? []).filter((m: Body) => m.role !== "assistant" && m.role !== "system").map(text).filter((value: string) => /Task: (notes|curate|scoring)/.test(value));
+  const named = (body.messages ?? []).filter((m: Body) => m.role !== "assistant" && m.role !== "system").map(text).filter((value: string) => /Task: (notes|clustering|curate|scoring)/.test(value));
   if (!named.length) return call("check-1", "check", {}, tokens);
   const report = named.at(-1)!;
   const written = (body.messages ?? []).flatMap((m: Body) => (m.tool_calls ?? []).filter((c: Body) => c.function?.name === "write").map((c: Body) => JSON.parse(c.function.arguments).path));
-  const stage = /Task: (notes|curate|scoring)/.exec(report)![1]!;
+  const stage = /Task: (notes|clustering|curate|scoring)/.exec(report)![1]!;
   const path = (label: string) => new RegExp(`${label}: (\\S+?\\.md)`).exec(report)![1]!;
+  if (stage === "clustering") {
+    const output = path("Output");
+    if (written.includes(output)) return say("Done.", tokens);
+    const items = readFileSync(path("Input"), "utf8").trim().split("\n").map(line => line.split(" ")[0]!);
+    const size = Number(/Group size: at most (\d+)/.exec(report)?.[1] ?? 50);
+    return call("groups", "write", { path: output, content: Array.from({ length: Math.ceil(items.length / size) }, (_, i) =>
+      `# Group ${i + 1}\n\n## Cluster Topic ${i + 1}\nitems: ${items.slice(i * size, (i + 1) * size).join(", ")}\n`).join("\n") }, tokens);
+  }
   const files = stage === "notes" ? [{ path: path("File"), content: "No repository-specific notes." }]
-    : stage === "curate" ? [{ path: path("Decisions"), content: decisionText(readFileSync(path("Decisions"), "utf8")) }, { path: path("Changes"), content: "## none\n" }]
+    : stage === "curate" ? [{ path: path("Decisions"), content: decisionText(readFileSync(path("Decisions"), "utf8"), changes) }, { path: path("Changes"), content: changes }]
     : [{ path: path("Scores"), content: [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+(?:\.child\d+)?/g)].map(match => `${match[0]} 50`).join("\n") }];
   const writes = files.filter(file => !written.includes(file.path));
   if (!writes.length) return say("Done.", tokens);

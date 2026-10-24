@@ -21,6 +21,7 @@ import { executorSettings, executorSnapshot, signalCcTurnEnd } from "./control.t
 import { runCcFiles } from "./files.ts";
 import { Store } from "../../core/store/index.ts";
 import { parseRunsCount } from "../trace-menu.ts";
+import { fullCheckDryRun } from "../../core/dreaming/clustering.ts";
 
 export * from "./config.ts";
 export * from "./binding.ts";
@@ -173,7 +174,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
   if ((command !== "mcp" && command !== "hook" && command !== "hook-prepare" && command !== "hook-slices" && command !== "hook-delta" &&
       command !== "hook-compact" && command !== "hook-capable" && command !== "hook-turn" && command !== "cli" && command !== "fs") || configFlag !== "--config" || !configPath)
-    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|dream|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|materialize ...");
+    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|dream|full-check [--dry-run]|project [name] | cc.cjs fs --config /absolute/path/to/cc.config.json --session <native-id> read|materialize ...");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config, undefined, configPath); return; }
   if (command === "hook-capable" || command === "hook-turn") {
@@ -299,9 +300,20 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
       diagnostic: error instanceof Error ? error.message : String(error) })}\n`); }
     return;
   }
+  if (verb === "full-check" && rest.length === 1 && rest[0] === "--dry-run") {
+    const store = new Store(config.dbPath);
+    try {
+      const binding = readBinding(config, nativeSessionId);
+      if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+      assertOperatorBinding(config, binding, store);
+      if (!binding.coreSessionId) throw new Error("No assistant reply yet");
+      process.stdout.write(`${JSON.stringify(fullCheckDryRun(store, store.knowledgePath(binding.coreSessionId, binding.branch, binding.selectedHeadTurnId)))}\n`);
+    } finally { store.close(); }
+    return;
+  }
   if (verb !== "project" && rest.length) throw new Error(`CC operator command ${verb} accepts no arguments`);
   const result = verb === "project" ? await declareCcProject(config, nativeSessionId, rest.join(" "))
-    : verb === "on" || verb === "off" || verb === "stop" || verb === "catchup" || verb === "dream" ? await operateCcSession(config, nativeSessionId, verb)
+    : verb === "on" || verb === "off" || verb === "stop" || verb === "catchup" || verb === "dream" || verb === "full-check" ? await operateCcSession(config, nativeSessionId, verb)
     : (() => { throw new Error(`unknown CC operator command ${verb}`); })();
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

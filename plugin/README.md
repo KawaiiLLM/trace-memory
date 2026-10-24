@@ -11,7 +11,7 @@ CC uses the same flat phase-setting keys as Pi. The shipped defaults are:
 | Noter | `notingModel` | `sonnet` | `notingThinking` | `high` |
 | Dreamer notes, curate and in-conversation scoring | `dreaming.model` | `sonnet` | `dreaming.thinking` | `high` |
 
-These are top-level JSON keys, including literal dots. CC and Pi store settings separately. CC Dreamer runs on Sonnet for every task: an explicit Sonnet model id is retained; otherwise it uses the configured Noter's Sonnet id, or the canonical `sonnet` alias. Register that exact identifier in `worker.contextWindows`. The separate classify model/thinking keys are removed and rejected. Noter remains independently configured; unsupported native effort still fails explicitly. Omit `worker` only for ingestion/read-only operation.
+These are top-level JSON keys, including literal dots. CC and Pi store settings separately. CC Dreamer notes, curate and scoring run on Sonnet: an explicit Sonnet model id is retained; otherwise it uses the configured Noter's Sonnet id, or the canonical `sonnet` alias. Full-check clustering runs on Haiku. Register the Sonnet identifier in `worker.contextWindows`. The separate classify model/thinking keys are removed and rejected. Noter remains independently configured; unsupported native effort still fails explicitly. Omit `worker` only for ingestion/read-only operation.
 
 A fresh worker uses its configured phase model, thinking level and capacity consistently for admission, execution and run records, including borrowed work and catchup. Each workspace task launches with its run's workspace as cwd; native transcripts follow that real cwd. Temporary memory renderings remain under the prepared private `worker.cwd/rendered`; only the run's rendering directory is additionally readable under `--restricted`, denied to Bash writes, and removed at settlement. The worker's Read hook still rejects other files, including unrelated files inside cwd. Capacity is looked up by model name, not copied from another phase. The local `/trace` Settings screen saves edits to this file and applies them to subsequent tasks on the running executor. It reports file save and executor apply separately; already admitted tasks retain their settings. Manual edits outside that command still require a restart.
 
@@ -30,6 +30,7 @@ Core phase bounds use optional top-level keys in the same file:
 | `dreaming.groupItems` | 50 | Maximum candidate items per conversation; cannot exceed 50 |
 | `dreaming.parallelGroups` | 5 | Concurrent group limit; cannot exceed five |
 | `dreaming.notesSteps` / `dreaming.notesTokens` | 10 / 10,000 | Soft response budget / hard notes-file token cap |
+| `dreaming.clusteringSteps` / `dreaming.clusteringContextTokens` | 10 / 30,000 | Full-check soft response / context-growth budgets |
 | `dreaming.curateSteps` / `dreaming.curateContextTokens` | 100 / 200,000 | Dispatcher-proposed soft response / context-growth budgets |
 | `dreaming.scoringSteps` / `dreaming.scoringContextTokens` | 10 / 30,000 | Soft response / context-growth budgets in the same group conversation |
 | `compaction.temporaryTokens` | 10,000 | The one temporary allowance of a context: pending Raw, then unscored Knowledge and knowledge titles, then user words and fact titles together, turn by turn |
@@ -151,6 +152,8 @@ The direct CLI accepts the following existing verbs:
 | `off` | Stop this executor's work and disable memory. |
 | `catchup` | Start one finite Noting drain with ordinary Dreamer threshold checks, or report the active drain. |
 | `dream` | Start one Dreaming run for this session now, whatever the Noter-operation count says; the status shows in `/trace` as `Dream: …`. |
+| `full-check` | Cluster all visible project/global knowledge, curate every group and rescore all survivors without anchors; also available as Full check beside Dream in `/trace`. |
+| `full-check --dry-run` | Model-free items and measured cost estimate; includes persisted groups and committed decisions after clustering. |
 | `stop` | Stop this executor's work without disabling memory. |
 | `project <name>` | Declare this session's shared project. |
 

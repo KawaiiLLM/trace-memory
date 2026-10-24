@@ -9,8 +9,9 @@ export function formGroups(items: readonly CurateItem[], size = 50): CurateItem[
   for (let at = 0; at < items.length; at += size) groups.push(items.slice(at, at + size));
   return groups;
 }
-export function groupText(store: Store, items: readonly CurateItem[]): string {
-  const contents = items.map(item => `- ${item.address}: ${item.value.revision.title ?? "(no title)"}${knowledgeStaleLabel({ staleReasons: store.knowledgeStaleReasons(item.value.revision.id) })}`).join("\n");
+export function groupText(store: Store, items: readonly CurateItem[], clusters?: readonly { label: string; items: number[] }[]): string {
+  const labels = new Map(clusters?.flatMap(cluster => cluster.items.length ? [[cluster.items[0]!, cluster.label] as const] : []));
+  const contents = items.map(item => `${labels.has(item.value.knowledge.id) ? `\n## Cluster ${labels.get(item.value.knowledge.id)}\n\n` : ""}- ${item.address}: ${item.value.revision.title ?? "(no title)"}${knowledgeStaleLabel({ staleReasons: store.knowledgeStaleReasons(item.value.revision.id) })}`).join("\n");
   const bodies = items.map(item => {
     const current = item.value.revision;
     const history = store.listKnowledgeRevisions(current.knowledgeId);

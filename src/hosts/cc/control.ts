@@ -9,7 +9,7 @@ import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } fro
 import { activeFunctionHook, assertOperatorBinding, readBinding, validateNativeSessionId, updateBinding, updateBindingInStoreTransaction, type CcExecutorBinding, type CcSessionBinding } from "./binding.ts";
 import { assignedNativeSession, functionHookNativeProcess, processAncestors } from "./native-session.ts";
 
-export type ControlVerb = "stop" | "off" | "catchup" | "dream";
+export type ControlVerb = "stop" | "off" | "catchup" | "dream" | "full-check";
 export interface CancellationControlReply {
   ok: true;
   verb: "stop" | "off";
@@ -27,14 +27,14 @@ export interface CatchupControlReply {
 /** 146 §18: the manual dream is acknowledged as `starting`; the run reports itself through the executor's status. */
 export interface DreamControlReply {
   ok: true;
-  verb: "dream";
+  verb: "dream" | "full-check";
   dream: CcDreamStatus;
   abortRequested: [];
 }
 export type ControlReply = CancellationControlReply | CatchupControlReply | DreamControlReply;
 export interface CcControlHandlers {
   catchup(): Promise<CcCatchupStatus>;
-  dream?(): Promise<CcDreamStatus>;
+  dream?(fullCheck?: boolean): Promise<CcDreamStatus>;
   /** Must mark the finite drain stopped before core cancellation can settle a worker. */
   beforeCancel(): void;
   /** 70: begin a preemption hold — abort a scan currently running under the binding lock, and block
@@ -125,7 +125,7 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
         try {
           const request = JSON.parse(input.slice(0, newline)) as { verb?: unknown; token?: unknown; path?: unknown; expected?: unknown; turnId?: unknown; reason?: unknown };
           if (request.token !== token || typeof request.verb !== "string" ||
-              (request.verb !== "stop" && request.verb !== "off" && request.verb !== "catchup" && request.verb !== "dream" &&
+              (request.verb !== "stop" && request.verb !== "off" && request.verb !== "catchup" && request.verb !== "dream" && request.verb !== "full-check" &&
                 request.verb !== "settings" && request.verb !== "apply" && request.verb !== "turn-end"))
             throw new Error("invalid CC control request");
           const current = readBinding(config, binding.nativeSessionId);
@@ -169,9 +169,9 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
             const reply: CatchupControlReply = { ok: true, verb, catchup: await handlers.catchup(), abortRequested: [] };
             connection.end(`${JSON.stringify(reply)}\n`); return;
           }
-          if (verb === "dream") {
-            if (!handlers?.dream) throw new Error("dream is unavailable on this executor");
-            const reply: DreamControlReply = { ok: true, verb, dream: await handlers.dream(), abortRequested: [] };
+          if (verb === "dream" || verb === "full-check") {
+            if (!handlers?.dream) throw new Error(`${verb} is unavailable on this executor`);
+            const reply: DreamControlReply = { ok: true, verb, dream: await handlers.dream(verb === "full-check"), abortRequested: [] };
             connection.end(`${JSON.stringify(reply)}\n`); return;
           }
           if (verb !== "stop" && verb !== "off") throw new Error("invalid CC cancellation verb");
@@ -333,7 +333,7 @@ export async function controlSession(config: ResolvedCcHostConfig, nativeSession
   let executor = binding.executor;
   if (!executor || executorLiveness(executor) === "dead") {
     if (verb === "stop") return { state: "not-running", enrollmentChanged: false };
-    if (verb === "catchup" || verb === "dream") return { state: "unavailable", diagnostic: `CC ${verb} requires the session's live executor` };
+    if (verb === "catchup" || verb === "dream" || verb === "full-check") return { state: "unavailable", diagnostic: `CC ${verb} requires the session's live executor` };
     const store = new Store(config.dbPath);
     try {
       const disabled = await disableEnrollment(config, nativeSessionId, store, null);
@@ -347,7 +347,7 @@ export async function controlSession(config: ResolvedCcHostConfig, nativeSession
   if (liveness === "unknown") return { state: "unknown", diagnostic: `cannot establish executor liveness for process ${executor.pid}` };
   if (liveness === "dead") {
     if (verb === "stop") return { state: "not-running", enrollmentChanged: false };
-    if (verb === "catchup" || verb === "dream") return { state: "unavailable", diagnostic: `CC ${verb} requires the session's live executor` };
+    if (verb === "catchup" || verb === "dream" || verb === "full-check") return { state: "unavailable", diagnostic: `CC ${verb} requires the session's live executor` };
     const store = new Store(config.dbPath);
     try {
       const disabled = await disableEnrollment(config, nativeSessionId, store, null);

@@ -12,6 +12,7 @@ import { placementOwner } from "../../src/core/store/processing.ts";
 type Text = string | readonly string[] | ((message: string) => string);
 export interface DreamerScript {
   notes?: Text;
+  clustering?: Text;
   curate?: Partial<Record<string, Text>>;
   scoring?: (group: number, labels: string[], message: string) => Text | undefined;
   curateResult?: Partial<RunAgentResult>;
@@ -53,6 +54,14 @@ export function scriptedDreamer(script: DreamerScript = {}): ScriptedDreamer {
       writeFileSync(`${input.workspace.dir}/notes.md`, pick("notes", script.notes, report, "No repository-specific notes."));
       let next = input.passEnd();
       if (next) { messages.push(next); writeFileSync(`${input.workspace.dir}/notes.md`, pick("notes", script.notes, next, "No repository-specific notes.")); input.passEnd(); }
+    } else if (input.task === "clustering") {
+      const items = readFileSync(`${input.workspace.dir}/items.md`, "utf8").trim().split("\n").map(line => line.split(" ")[0]!);
+      const size = Number(/Group size: at most (\d+)/.exec(report)?.[1] ?? 50);
+      const fallback = Array.from({ length: Math.ceil(items.length / size) }, (_, i) =>
+        `# Group ${i + 1}\n\n## Cluster Topic ${i + 1}\nitems: ${items.slice(i * size, (i + 1) * size).join(", ")}\n`).join("\n");
+      writeFileSync(`${input.workspace.dir}/groups.md`, pick("clustering", script.clustering, report, fallback));
+      const next = input.passEnd();
+      if (next) { messages.push(next); writeFileSync(`${input.workspace.dir}/groups.md`, pick("clustering", script.clustering, next, fallback)); input.passEnd(); }
     } else {
       const group = Number(/group (\d+)/.exec(report)?.[1] ?? 1);
       let scoring = false;

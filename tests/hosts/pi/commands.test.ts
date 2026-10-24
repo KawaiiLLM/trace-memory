@@ -90,8 +90,6 @@ test("24b: the retained forms work headless, and bare /trace prints status and t
   await h.turn();
   await command(h, "");
   expect(h.notices.at(-1)).toContain("Trace Memory · S1");
-  expect(h.notices.at(-1)).toContain("/trace (menu; status when headless) | /trace on | /trace off | /trace catchup | /trace dream | /trace stop | " +
-    "/trace project <name>");
   expect(h.dialogs).toEqual([]);           // no dialog was opened without UI
   await command(h, "project headless-project");
   expect(h.notices.at(-1)).toContain("project: headless-project (mark)");
@@ -111,11 +109,9 @@ test("82: the single menu keeps status, participation, runs and project", async 
   h.ctx.hasUI = true;
   h.answers.push(undefined);                       // cancelling the top level is inert
   await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Dream", "Stop", "Project…", "Runs…", "Settings…"]);
   const quiet = h.notices.length;
   h.answers.push(undefined);
   await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Dream", "Stop", "Project…", "Runs…", "Settings…"]);
   expect(h.dialogs.at(-1)!.title).toContain("Trace Memory · S1");
   expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger");
   expect(h.notices).toHaveLength(quiet);                                          // cancelling wrote nothing

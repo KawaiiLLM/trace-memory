@@ -289,7 +289,7 @@ export class CcCoordinator {
           })();
           return starting;
         },
-        dream: async () => {
+        dream: async (fullCheck = false) => {
           const scheduler = this.scheduler;
           if (!scheduler) return { state: "failed", diagnostic: "CC executor scheduler is unavailable" };
           const active = scheduler.activeDream();
@@ -298,7 +298,7 @@ export class CcCoordinator {
           void (async () => {
             try {
               const projection = await this.requestReconcile("manual dream");
-              if (projection) scheduler.startDream(projection, ticket);
+              if (projection) scheduler.startDream(projection, ticket, fullCheck);
               else scheduler.failDream("authoritative transcript reconciliation is unavailable");
             } catch (error) { scheduler.failDream(error instanceof Error ? error.message : String(error)); }
           })();

@@ -12,7 +12,7 @@ export function classifyAnchors(items: readonly CurateItem[], excluded: Readonly
 export interface ScoreTarget extends Pick<KnowledgeWithRevision, "staleReasons"> { label: string; title: string; text: string; category: KnowledgeCategory; scope: KnowledgeScope; operation?: number; part?: number; knowledgeId?: number; commit?: number }
 export interface CheckedScores { scores: Map<string, number>; problems: string[] }
 /** Split labels are workspace-local until the atomic group commit allocates their identities. */
-export function scoreTargets(items: readonly CurateItem[], operations: readonly KnowledgeOperationInput[]): ScoreTarget[] {
+export function scoreTargets(items: readonly CurateItem[], operations: readonly KnowledgeOperationInput[], all = false): ScoreTarget[] {
   const targets: ScoreTarget[] = [];
   const current = new Map(items.map(item => [item.value.knowledge.id, item.value]));
   operations.forEach((op, index) => {
@@ -23,7 +23,7 @@ export function scoreTargets(items: readonly CurateItem[], operations: readonly 
     if (op.op === "split") op.children.forEach((child, part) => targets.push({ label: `K${id}.child${part + 1}`, title: child.title ?? "(no title)", text: child.text, category: child.category, scope: child.scope ?? op.scope, staleReasons: base.staleReasons, operation: index, part: part + 1 }));
   });
   const consumed = new Set(operations.flatMap(op => op.op === "create" ? [] : op.op === "merge" ? [op.intoKnowledgeId, ...op.absorb.map(item => item.knowledgeId)] : [op.knowledgeId]));
-  for (const item of items) if ((item.score === null || item.scoredCommit !== item.value.revision.id) && !consumed.has(item.value.knowledge.id)) targets.push({ label: `K${item.value.knowledge.id}`, title: item.value.revision.title ?? "(no title)", text: item.value.revision.text, category: item.value.revision.category, scope: item.value.revision.scope, staleReasons: item.value.staleReasons, knowledgeId: item.value.knowledge.id, commit: item.value.revision.id });
+  for (const item of items) if ((all || item.score === null || item.scoredCommit !== item.value.revision.id) && !consumed.has(item.value.knowledge.id)) targets.push({ label: `K${item.value.knowledge.id}`, title: item.value.revision.title ?? "(no title)", text: item.value.revision.text, category: item.value.revision.category, scope: item.value.revision.scope, staleReasons: item.value.staleReasons, knowledgeId: item.value.knowledge.id, commit: item.value.revision.id });
   return targets;
 }
 export function scoringText(anchors: readonly CurateItem[], targets: readonly ScoreTarget[]): string {

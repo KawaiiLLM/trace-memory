@@ -47,6 +47,7 @@ import { Store, type PathPending, type SourceInput, type SourceEntry, type Sourc
 
 import { prepareDreaming, runDreaming, executionLimitMs, CLAIM_LEASE_MARGIN_MS, TASK_GAP_MS, type DreamingFrozen, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
+export { fullCheckDryRun } from "../dreaming/clustering.ts";
 
 
 
@@ -97,6 +98,8 @@ export interface TraceMemoryConfig {
     curateContextTokens: number;
     scoringSteps: number;
     scoringContextTokens: number;
+    clusteringSteps: number;
+    clusteringContextTokens: number;
   };
   /** Per-item length targets for every writer, in units (ticket 145). */
   writing: WritingLimits;
@@ -140,6 +143,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
   },
   dreaming: { triggerOperations: DEFAULT_DREAMING_TRIGGER_OPERATIONS, timeoutMs: 1_800_000,
     candidatesPerSeed: 10, groupItems: 50, parallelGroups: 5, notesSteps: 10, notesTokens: 10_000,
+    clusteringSteps: 10, clusteringContextTokens: 30_000,
     // Dispatcher proposals from the 37-item Sonnet experiment, not maintainer-set limits.
     curateSteps: 100, curateContextTokens: 200_000, scoringSteps: 10, scoringContextTokens: 30_000 },
   writing: { ...DEFAULT_WRITING_LIMITS },
@@ -844,7 +848,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false };
     return { due: phase === "noting" ? notingDue(target) : dreamingDue(target) };
   };
-  const execute = async (phase: Phase, input: NotingInput & { manual?: boolean }): Promise<NotingResult | DreamingResult> => {
+  const execute = async (phase: Phase, input: NotingInput & { manual?: boolean; fullCheck?: boolean }): Promise<NotingResult | DreamingResult> => {
     if (stopping || store.closed || !store.enabled(input.sessionId)) return input.manual
       ? { outcome: "dropped", reason: stopping || store.closed ? "the executor is shutting down" : "Trace Memory is off for this session" }
       : { outcome: "dropped" };
@@ -869,15 +873,17 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           if (input.manual) refusal = "Trace Memory is off for this session";
           return null;
         }
-        const handoff = store.handoff(target.sessionId, "dreaming");
-        // 146 §18: a manual run skips the due test. With no hand-off to resume and nothing to curate there is nothing to do.
+        const previous = store.handoff(target.sessionId, "dreaming");
+        const handoff = input.fullCheck && !previous?.detail?.fullCheck ? null : previous;
+        // A full check bypasses the incremental due test but uses its exclusive claim and execution.
         const visible = store.curateItems(target).filter(item => item.value.revision.scope !== "session");
-        if (input.manual ? !handoff && !visible.length : !dreamingDue(target)) { empty = true; return null; }
-        const groupCount = handoff?.detail?.groups?.length ?? Math.ceil(visible.length / cfg.dreaming.groupItems);
-        executionLimit = executionLimitMs(1 + 2 * Math.max(1, Math.ceil(groupCount / cfg.dreaming.parallelGroups)), cfg.dreaming.timeoutMs);
-        claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerOperations, executionLimit + CLAIM_LEASE_MARGIN_MS, input.manual);
+        if (input.manual || input.fullCheck ? !handoff && !visible.length : !dreamingDue(target)) { empty = true; return null; }
+        const groupCount = handoff?.detail?.groups?.length || Math.ceil((handoff?.detail?.clusteringItems?.length ?? visible.length) / cfg.dreaming.groupItems);
+        const setupTasks = input.fullCheck || handoff?.detail?.fullCheck ? 2 : 1;
+        executionLimit = executionLimitMs(setupTasks + 2 * Math.max(1, Math.ceil(groupCount / cfg.dreaming.parallelGroups)), cfg.dreaming.timeoutMs);
+        claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerOperations, executionLimit + CLAIM_LEASE_MARGIN_MS, input.manual || input.fullCheck);
         if (!claim) {
-          if (input.manual) {
+          if (input.manual || input.fullCheck) {
             const holder = store.dreamerSeatHolder(target.sessionId);
             refusal = holder !== null ? `session S${holder} holds the Dreamer seat` : "a Dreamer is already running for this session";
           }
@@ -886,7 +892,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         projectId = store.getSession(input.sessionId)!.projectId;
         origin = store.triggerOrigin(target, target.triggerEntryId);
         const frozen = prepareDreaming(store, { ...input, ...target }, cfg, claim, target);
-        if (!frozen.groups.length && !handoff) { store.releaseClaim(claim); empty = true; return null; }
+        if (!frozen.groups.length && !frozen.fullCheck && !handoff) { store.releaseClaim(claim); empty = true; return null; }
         // 126 keys the Dreamer's logical task on its session alone, so every run of one session continues one failure streak.
         executionId = store.beginExecution({ sessionId: target.sessionId, phase, origin });
         return frozen;

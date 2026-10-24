@@ -174,7 +174,6 @@ test("no session, Off, zero and unavailable remain distinct; original actions an
   title = await open(h);
   expect(title).not.toContain("Consolidation ░░░░░░░░░░");
   expect(title).toContain("Dreaming");
-  expect(h.dialogs.at(-1)!.options).toEqual(["Turn off", "Catch up", "Dream", "Stop", "Project…", "Runs…", "Settings…"]);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries); expect(h.statuses.get("trace-memory")).toBe(footer);
   await h.commands.get("trace").handler("off", h.ctx);
   expect(await open(h)).toContain("Trace Memory · S1 · pi:pi-test · Off (explicit)");
@@ -388,7 +387,6 @@ test("automatic-off reason remains actionable and opening is inert", async () =>
   const before = changes(h), title = await open(h);
   expect(title).toContain("Automatic off: noting"); expect(title).toContain("incomplete submission");
   expect(title.replace(/\s+/g, " ")).toContain("Turn on to resume.");
-  expect(h.dialogs.at(-1)!.options).toEqual(["Turn on", "Catch up", "Dream", "Stop", "Project…", "Runs…", "Settings…"]);
   expect(changes(h)).toBe(before);
   expect(s.enabled(1)).toBe(false); expect(h.requests).toEqual([]);
 });

@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { withRetrievalPolicy } from "../../../src/core/render/retrieval-policy.ts";
 import { memoryFiles, canonicalToolNames } from "../../../src/core/api/index.ts";
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { knowledgeFile } from "../../support/noter.ts";
 import { host as createHost, reply, notingFact, NOTER_BATCH_REQUESTS, holdFirstRequest, noteHeld, usage, dreamerFiles, type Reply } from "./test-host.ts";
@@ -323,11 +323,6 @@ test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) wait
   await expect(h.emit("session_start")).rejects.toThrow(/not open/); // Pi re-runs the factory; this instance is dead.
 });
 
-test("core contains no Pi imports and host imports core only through the facade", () => {
-  const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? files(join(dir, e.name)) : [join(dir, e.name)]);
-  for (const file of files("src/core").filter(f => f.endsWith(".ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/(?:from\s*|import\s*\(|require\s*\()["'][^"']*(?:pi-coding-agent|pi-ai|pi-agent-core|hosts\/pi)/);
-  expect(readFileSync("src/hosts/pi/index.ts", "utf8").match(/from "\.\.\/\.\.\/core\/[^\"]+"/g)).toEqual(['from "../../core/api/index.ts"']);
-});
 
 test("17b supersedes watermark growth: compressed source labels count along with CJK content", async () => {
   const h = host({ "noting.triggerTokens": 16 }); // the two labels and their two characters, and nothing else

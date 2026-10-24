@@ -7,7 +7,7 @@ import { canonicalToolNames, renderToolNames, validateToolNames, type ToolNames 
  * build composes from, so a file listed here cannot be missing from the bundle. */
 export const PROMPT_FILES = ["noting.md", "dreaming.md", "classifying.md",
   "tasks/noting-write-facts.md", "tasks/noting-write-knowledge.md", "tasks/noting-verify-facts.md", "tasks/noting-verify-knowledge.md",
-  "tasks/curate.md"] as const;
+  "tasks/curate.md", "tasks/clustering.md"] as const;
 export type PromptFile = (typeof PROMPT_FILES)[number];
 const INCLUDE = /<!-- include:\s*([^\s>]+)\s*-->/g;
 

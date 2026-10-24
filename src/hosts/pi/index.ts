@@ -12,7 +12,7 @@ import { agentDirectory, configuration, fixedSettings, parseKnowledgeBudgetInput
 import { runWorker, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
 import { workspaceFileTools } from "./workspace-files.ts";
-import { TraceMemory, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, isThinkingOnly, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, defaultWorkspaceRoot, sweepStaleWorkspaces, retrievalPolicy, toolRejected, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
+import { TraceMemory, fullCheckDryRun, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, isThinkingOnly, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, defaultWorkspaceRoot, sweepStaleWorkspaces, retrievalPolicy, toolRejected, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -329,7 +329,7 @@ export default function (pi: ExtensionAPI) {
   // One admission path for ordinary (own/borrowed) and manual-catchup work (18b): only the target
   // and admission flags differ. `boundary` is absent for ordinary automatic work.
   const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
-      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; manual?: boolean },
+      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; manual?: boolean; fullCheck?: boolean },
       ): Promise<NotingResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
@@ -374,7 +374,7 @@ export default function (pi: ExtensionAPI) {
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
       nativeReadToolTokens, nativeWriteToolTokens, workspaceRoot: defaultWorkspaceRoot(),
       ...(options.boundary ? { boundary: options.boundary } : {}) };
-    return (kind === "dreaming" ? memory.dream({ ...common, ...(options.manual ? { manual: true } : {}) }) : memory.noting(common))
+    return (kind === "dreaming" ? memory.dream({ ...common, ...(options.manual ? { manual: true } : {}), ...(options.fullCheck ? { fullCheck: true } : {}) }) : memory.noting(common))
       .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); endCatchupOnDreamingFailure(kind, target, result); return result; });
   };
   /** 146 Q18: a Dreaming failure retries at the next entry-end check (ruling 10), so it ends an active drain for the same session and
@@ -999,7 +999,7 @@ export default function (pi: ExtensionAPI) {
   };
   // 146 §18: one Dreaming run now, whatever the Noter-operation count says, through the one admission path with `manual: true`.
   // Like `startCatchup` it answers at once; the refusal or the outcome arrives through the status line and a notification.
-  const startDream = () => {
+  const startDream = (fullCheck = false) => {
     if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
     if (dream?.state === "running") { ctx.ui.notify(dreamLine()!, "info"); return; }
     if (!state.sessionId || !state.head) { ctx.ui.notify("Trace Memory: no assistant reply yet; nothing to dream.", "info"); return; }
@@ -1010,7 +1010,7 @@ export default function (pi: ExtensionAPI) {
     const slot: Slot = { target: own };
     slots.set("dreaming", slot); activity.running.set("dreaming", 1); showSpend(context);
     dream = { state: "running" };
-    const promise = attemptPhase(context, "dreaming", own, { borrowed: false, automatic: false, manual: true });
+    const promise = attemptPhase(context, "dreaming", own, { borrowed: false, automatic: false, manual: true, fullCheck });
     slot.result = promise.catch(() => undefined);
     let outcome: string | undefined;
     const handled = promise.then(result => {
@@ -1317,7 +1317,7 @@ export default function (pi: ExtensionAPI) {
   // ---- 24b: the command surface ----
   // `enable`, `disable`, `status` and `runs` are retired — status and runs live in the menu's
   // Current session. Project assignment, catchup and stop retain headless command forms.
-  const commands = "/trace (menu; status when headless) | /trace on | /trace off | /trace catchup | /trace dream | /trace stop | " +
+  const commands = "/trace (menu; status when headless) | /trace on | /trace off | /trace catchup | /trace dream | /trace full-check [--dry-run] | /trace stop | " +
     "/trace project <name>";
   const retiredForms: Record<string, string> = {
     enable: "/trace on", disable: "/trace off",
@@ -1607,6 +1607,7 @@ export default function (pi: ExtensionAPI) {
     if (choice === "Settings…") { await settingsMenu(); return; }
     if (choice === "Catch up") { try { startCatchup(); } catch (error) { ctx.ui.notify(String(error), "error"); } return; }
     if (choice === "Dream") { try { startDream(); } catch (error) { ctx.ui.notify(String(error), "error"); } return; }
+    if (choice === "Full check") { try { startDream(true); } catch (error) { ctx.ui.notify(String(error), "error"); } return; }
     if (choice === "Stop") { stopCatchup(); return; }
     if (choice === "Turn on" || choice === "Turn off") {
       const on = choice === "Turn on";
@@ -1625,6 +1626,11 @@ export default function (pi: ExtensionAPI) {
       if ((verb === "on" || verb === "off") && !rest.length) { toggle(verb === "on"); return; }
       if (verb === "catchup" && !rest.length) { startCatchup(); return; }
       if (verb === "dream" && !rest.length) { startDream(); return; }
+      if (verb === "full-check" && rest.length === 1 && rest[0] === "--dry-run") {
+        if (!state.sessionId) throw new Error("No assistant reply yet");
+        context.ui.notify(JSON.stringify(fullCheckDryRun(memory.store, memory.store.knowledgePath(state.sessionId, state.branch, state.head))), "info"); return;
+      }
+      if (verb === "full-check" && !rest.length) { startDream(true); return; }
       if (verb === "stop" && !rest.length) { stopCatchup(); return; }
       if (verb === "project" && rest.length) { assignProject(rest.join(" ")); return; }
       // A retired subcommand and a malformed argument end in the same place: the usage, and no

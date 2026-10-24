@@ -344,7 +344,8 @@ export class CcAgentWorker {
   }
 
   async run(task: CcAgentTask, maxToolRounds: number): Promise<RunAgentResult> {
-    const settings = this.worker.phases[task.kind];
+    const settings = task.kind === "dreaming" && task.task === "clustering"
+      ? { ...this.worker.phases.dreaming, model: "haiku" } : this.worker.phases[task.kind];
     if (task.model !== undefined && task.model !== settings.model)
       throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
     if (task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)

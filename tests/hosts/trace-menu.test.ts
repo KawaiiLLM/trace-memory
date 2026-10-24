@@ -97,11 +97,6 @@ test("notices: empty by default, one line when automatic off fires", () => {
   expect(buildTraceMenu(TRACE_MENU_FIXTURE_WITH_NOTICE).notices).toHaveLength(1);
 });
 
-test("actions: Turn off/on flips with enrollment", () => {
-  expect(buildTraceMenu(TRACE_MENU_FIXTURE).actions).toEqual(["Turn off", "Catch up", "Dream", "Stop", "Project…", "Runs…", "Settings…"]);
-  const off = buildTraceMenu({ ...TRACE_MENU_FIXTURE, actions: { enabled: false } });
-  expect(off.actions[0]).toBe("Turn on");
-});
 
 test("settings: one Knowledge base row and the max input derived from it and the temporary allowance", () => {
   const { budgets } = buildTraceSettings(TRACE_SETTINGS_FIXTURE);

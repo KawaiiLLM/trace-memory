@@ -179,10 +179,10 @@ export function dreamerFailureNotice(failure: { runId: number; at: string; reaso
 }
 
 export interface MenuActionsInput { enabled: boolean }
-export type MenuAction = "Turn on" | "Turn off" | "Catch up" | "Dream" | "Stop" | "Project…" | "Runs…" | "Settings…";
+export type MenuAction = "Turn on" | "Turn off" | "Catch up" | "Dream" | "Full check" | "Stop" | "Project…" | "Runs…" | "Settings…";
 export function buildActions(input: MenuActionsInput): MenuAction[] {
   const toggle: MenuAction = input.enabled ? "Turn off" : "Turn on";
-  return [toggle, "Catch up", "Dream", "Stop", "Project…", "Runs…", "Settings…"];
+  return [toggle, "Catch up", "Dream", "Full check", "Stop", "Project…", "Runs…", "Settings…"];
 }
 export const toggleConfirmation = (turnOn: boolean, shared: boolean) => ({
   title: `Turn Trace Memory ${turnOn ? "on" : "off"} for this session?`,

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import fs, { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import { declareCcProject, operateCcSession } from "../../src/hosts/cc/operator.
 import { handleCcHook, runCcCommand } from "../../src/hosts/cc/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 
+import { fact, knowledge } from "../support/seed.ts";
 const dirs: string[] = [];
 afterEach(() => { for (const directory of dirs.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
@@ -123,4 +124,34 @@ test("operator rejects a foreign core identity without mutating that session", a
       await expect(operateCcSession(f.config, f.nativeSessionId, command)).rejects.toThrow("authoritative core session");
     expect(store.enabled(victim.id)).toBe(false);
   } finally { store.close(); }
+});
+
+test("full-check dry-run CLI inventories the bound project without creating an execution", async () => {
+  const f = fixture("full-check-preview"), configPath = join(f.directory, "cc.config.json");
+  writeFileSync(configPath, JSON.stringify({ dbPath: f.config.dbPath, stateDir: f.config.stateDir }));
+  await recordSessionStart(f.config, hook(f.nativeSessionId, f.transcriptPath), "2026-01-01T00:00:00.000Z");
+  writeFileSync(f.transcriptPath, [
+    { uuid: "u1", parentUuid: null, type: "user", timestamp: "2026-01-01T00:00:00.000Z", promptId: "p1", promptSource: "typed", userType: "external", message: { role: "user", content: "Keep the project rule." } },
+    { uuid: "a1", parentUuid: "u1", type: "assistant", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "assistant", content: [{ type: "text", text: "Recorded." }] } },
+  ].map(value => `${JSON.stringify(value)}\n`).join(""));
+  const importer = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
+  try {
+    const projected = await importer.reconcile();
+    const path = { sessionId: projected.coreSessionId!, branch: projected.branch, headTurnId: projected.headTurnId! };
+    const store = importer.memory.store;
+    const entry = store.getSourceEntry(store.sourcePath(path.sessionId, path.branch, path.headTurnId)[0]!.id)!;
+    const support = fact(importer.memory, path, "Project rule", [{ entry, text: "Keep the project rule." }]);
+    const item = knowledge(store, path, "project", "constraint", [support.id], "Keep the project rule.", { operation: { title: "Project rule" } });
+    const before = store.listRuns(path.sessionId).map(run => run.id);
+    let output = "";
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { output += String(chunk); return true; });
+    try { await runCcCommand(["cli", "--config", configPath, "--session", f.nativeSessionId, "full-check", "--dry-run"]); }
+    finally { stdout.mockRestore(); }
+    const report = JSON.parse(output);
+    expect(report).toMatchObject({ project: { id: store.getSession(path.sessionId)!.projectId }, count: 1, groups: null, decisions: [], modelCalls: 0 });
+    expect(report.items).toEqual([`K${item.knowledgeId}@v1 [constraint] Project rule`]);
+    expect(report.estimateUsd.curate).toBe(0.17);
+    expect(store.listRuns(path.sessionId).map(run => run.id)).toEqual(before);
+    expect(store.db.prepare("SELECT count(*) AS count FROM task_executions").get()!.count).toBe(0);
+  } finally { importer.close(); }
 });

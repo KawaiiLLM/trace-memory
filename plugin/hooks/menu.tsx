@@ -101,7 +101,7 @@ function buildHeader(input) {
 }
 function buildActions(input) {
   const toggle = input.enabled ? "Turn off" : "Turn on";
-  return [toggle, "Catch up", "Dream", "Stop", "Project\u2026", "Runs\u2026", "Settings\u2026"];
+  return [toggle, "Catch up", "Dream", "Full check", "Stop", "Project\u2026", "Runs\u2026", "Settings\u2026"];
 }
 var toggleConfirmation = (turnOn, shared) => ({
   title: `Turn Trace Memory ${turnOn ? "on" : "off"} for this session?`,
@@ -757,6 +757,7 @@ export const register = (on) => {
       }
       if (value === "catch-up") void act("catchup");
       else if (value === "dream") void act("dream");
+      else if (value === "full-check") void act("full-check");
       else if (value === "stop") void act("stop");
     };
     const message = notice ? <Text>{notice}</Text> : null;

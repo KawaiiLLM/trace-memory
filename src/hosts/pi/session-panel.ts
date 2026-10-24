@@ -78,8 +78,8 @@ export class SessionPanel implements Component {
     if (is("tui.select.up") || data === "k") this.selected = Math.max(0, this.selected - 1);
     else if (is("tui.select.down") || data === "j") this.selected = Math.min(this.actions.length - 1, this.selected + 1);
     else if (is("tui.select.confirm")) { this.done(this.actions[this.selected]); return; }
-    else if (is("tui.select.pageUp")) this.offset = Math.max(0, this.offset - this.pageSize);
-    else if (is("tui.select.pageDown")) this.offset = Math.min(this.maxOffset, this.offset + this.pageSize);
+    else if (is("tui.select.pageUp")) this.offset = Math.max(0, this.offset - Math.max(1, this.pageSize - 2));
+    else if (is("tui.select.pageDown")) this.offset = Math.min(this.maxOffset, this.offset + Math.max(1, this.pageSize - 2));
     this.refresh();
   }
   render(width: number): string[] {
@@ -91,10 +91,11 @@ export class SessionPanel implements Component {
     }
     const help = wrapTextWithAnsi(`${hint("tui.select.up")}/${hint("tui.select.down")} Select | ${hint("tui.select.confirm")} Open | ${hint("tui.select.cancel")} Back`, width);
     const lines = this.body(width, createSessionPaint(this.theme)).split("\n");
+    // Spend the header's spacer on the extra action, retaining the visible context summary.
+    const spacer = lines.indexOf("");
+    if (spacer >= 0) lines.splice(spacer, 1);
     if (height >= 10 && lines.length > height - 1 - help.length - this.actions.length)
       help.push(...wrapTextWithAnsi(`${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} Scroll`, width));
-    // Keep a body row and the selected action even in very short terminals. At 24 rows
-    // all original actions and help fit; the remaining rows belong to the scrollable body.
     const chrome = height >= 10 ? help.slice(0, 3).map(s => this.theme.fg("dim", s)) : [this.theme.fg("dim", `${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} · ${hint("tui.select.cancel")} cancel`)];
     const actionRows = Math.min(this.actions.length, Math.max(1, height - chrome.length - 5));
     this.pageSize = Math.max(1, height - chrome.length - actionRows);

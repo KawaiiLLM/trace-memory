@@ -17,16 +17,17 @@ import type { KnowledgePath, RunInput, Store, TaskClaim, CurateItem, WorkspaceOp
 import { TaskWorkspace, defaultWorkspaceRoot } from "../workspace/run.ts";
 import { checkCurate, decisionsTemplate, formGroups, groupText, type Curated } from "./curate.ts";
 import { classifyAnchors, scoreTargets, scoringText, checkScores, type ScoreTarget } from "./classify.ts";
-import { incrementalCandidates, projectItems, repositoryHead, seedText } from "./candidates.ts";
+import { boundaryOf, incrementalCandidates, projectItems, repositoryHead, seedText } from "./candidates.ts";
+import { checkGroups, clusteringInput, groupsTemplate, type Cluster } from "./clustering.ts";
 import { allowedRoots } from "./roots.ts";
 import type { KnowledgeRevision } from "../model/index.ts";
 
-export type DreamingTask = "notes" | "curate" | "scoring";
-export const DREAMING_TASKS: readonly DreamingTask[] = ["notes", "curate", "scoring"];
+export type DreamingTask = "notes" | "clustering" | "curate" | "scoring";
+export const DREAMING_TASKS: readonly DreamingTask[] = ["notes", "clustering", "curate", "scoring"];
 export const TASK_GAP_MS = 15_000;
 export const CLAIM_LEASE_MARGIN_MS = 60_000;
 export interface DreamingTaskConfig { model: string; thinking?: string; capacity?: { inputTokens: number } }
-export interface DreamingInput extends Omit<NotingInput, "boundary"> {}
+export interface DreamingInput extends Omit<NotingInput, "boundary"> { fullCheck?: boolean }
 export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
@@ -43,11 +44,12 @@ export interface DreamingAgentInput extends AgentControl {
   reportRequest(request: unknown): void;
   deadline: number;
 }
-export interface FrozenGroup { no: number; items: CurateItem[]; run?: number }
+export interface FrozenGroup { no: number; items: CurateItem[]; clusters?: Cluster[]; run?: number }
 export interface DreamingFrozen {
   sessionId: number; branch: string; path: KnowledgePath; claim: TaskClaim; names: ToolNames;
   prompt: string; promptHash: string; model: DreamingTaskConfig; knowledge: string;
   groups: FrozenGroup[]; boundary: DreamerBoundary; seeds: string; notes?: string;
+  fullCheck: boolean; clusteringItems: CurateItem[]; groupsFile?: string; clusteringModel: string;
 }
 /** Groups run in bounded waves; admission reserves enough lease for every wave and notes. */
 export const executionLimitMs = (remaining: number, timeoutMs: number) => remaining * timeoutMs + (remaining + 1) * TASK_GAP_MS;
@@ -55,11 +57,14 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
   path: KnowledgePath & { branch: string; headTurnId: number }): DreamingFrozen {
   if (store.getSession(path.sessionId)!.host.startsWith("cc:") && !input.toolNames) throw new Error("CC Dreamer launch requires exposed tool names");
   const names = validateToolNames(input.toolNames ?? canonicalToolNames), saved = store.handoff(path.sessionId, "dreaming")?.detail;
-  const kept = saved?.groups && saved.boundary ? saved : undefined;
-  const selected = kept?.groups && kept.boundary ? undefined : incrementalCandidates(store, path, config.dreaming.candidatesPerSeed);
+  const kept = saved?.boundary && (!input.fullCheck || saved.fullCheck) ? saved : undefined;
+  const fullCheck = kept?.fullCheck ?? input.fullCheck ?? false;
   const live = new Map(projectItems(store, path).map(item => [item.value.knowledge.id, item]));
-  const groups = kept?.groups && kept.boundary ? kept.groups.map((group, i) => ({ no: i + 1, items: group.items.flatMap(id => live.get(id) ?? []), run: group.run }))
-    : formGroups(selected!.candidates, config.dreaming.groupItems).map((items, i) => ({ no: i + 1, items }));
+  const selected = kept ? undefined : fullCheck ? { candidates: [...live.values()], boundary: boundaryOf(store, [...live.values()]), seeds: [] }
+    : incrementalCandidates(store, path, config.dreaming.candidatesPerSeed);
+  const clusteringItems = kept?.clusteringItems ? kept.clusteringItems.flatMap(id => live.get(id) ?? []) : selected?.candidates ?? [];
+  const groups = kept?.groups ? kept.groups.map((group, i) => ({ no: i + 1, items: group.items.flatMap(id => live.get(id) ?? []), clusters: group.clusters, run: group.run }))
+    : fullCheck ? [] : formGroups(selected!.candidates, config.dreaming.groupItems).map((items, i) => ({ no: i + 1, items }));
   const compact = kept?.knowledge === undefined ? readFacade(store, config).compact(path.sessionId, path.branch, path.headTurnId, [], false, { readingGuide: false }) : undefined;
   const knowledge = kept?.knowledge ?? (compact && "material" in compact && compact.material ? knowledgeBlock(compact.material) : "");
   const prompt = withRetrievalPolicy(loadPrompt("dreaming.md", names, config.writing), names);
@@ -70,6 +75,7 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
     if (!Number.isSafeInteger(model.capacity.inputTokens) || model.capacity.inputTokens < fixed) throw new Error("Dreaming capacity: knowledge prefix and tools exceed model input allowance");
   }
   return { sessionId: path.sessionId, branch: path.branch, path, claim, names, prompt, promptHash: createHash("sha256").update(prompt).digest("hex"), model, knowledge, groups,
+    fullCheck, clusteringItems, groupsFile: kept?.groupsFile, clusteringModel: store.getSession(path.sessionId)!.host.startsWith("cc:") ? "haiku" : model.model,
     boundary: kept?.boundary ?? selected!.boundary, seeds: kept?.seeds ?? seedText(selected!.seeds), ...(kept?.notes === undefined ? {} : { notes: kept.notes }) };
 }
 export interface DreamingRunOptions { workspaceRoot?: string; executionId: string; registerFence(workspace: { close(): void }): void }
@@ -93,7 +99,8 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   const root = options.workspaceRoot ?? defaultWorkspaceRoot();
   let lastRunId = 0;
   const context = { kind: "dreaming" as const, sessionId, branch, headTurnId: path.headTurnId, range: { from: `S${sessionId}`, to: `S${sessionId}` } };
-  const detail = (): HandoffDetail => ({ groups: groups.map(group => ({ items: group.items.map(item => item.value.knowledge.id), ...(group.run ? { run: group.run } : {}) })),
+  const detail = (): HandoffDetail => ({ ...(frozen.fullCheck ? { fullCheck: true, clusteringItems: frozen.clusteringItems.map(item => item.value.knowledge.id), groupsFile: frozen.groupsFile } : {}),
+    groups: groups.map(group => ({ items: group.items.map(item => item.value.knowledge.id), clusters: group.clusters, ...(group.run ? { run: group.run } : {}) })),
     knowledge: frozen.knowledge, seeds: frozen.seeds, boundary: frozen.boundary, ...(frozen.notes === undefined ? {} : { notes: frozen.notes }) });
   const metadata: RunInput = { kind: "dreaming", sessionId, branch, createdAt: new Date().toISOString() };
   bind(context, metadata, { check: () => "admission" }).close();
@@ -101,14 +108,14 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     createdAt: new Date().toISOString(), rangeFrom: `S${sessionId}/${task}`, rangeTo: `S${sessionId}/${task}` });
   // Persist membership before the first model call, including when notes or the first group fails.
   const admitted = store.commitTaskPass({ run: { ...template("notes"), response: JSON.stringify({ task: "admission" }) }, path,
-    handoff: () => ({ nextTask: frozen.notes === undefined ? "notes" : "curate", detail: detail() }) });
+    handoff: () => ({ nextTask: frozen.notes === undefined ? "notes" : frozen.fullCheck && !frozen.groupsFile ? "clustering" : "curate", detail: detail() }) });
   lastRunId = admitted.runId;
 
-  const conversation = async (workspace: TaskWorkspace, initial: "notes" | "curate", text: string,
+  const conversation = async (workspace: TaskWorkspace, initial: "notes" | "clustering" | "curate", text: string,
     report: () => { problems: string[]; text: string }, advance: () => string | undefined,
     current: () => DreamingTask, responses: Map<string, number | undefined>, instructions?: (task: DreamingTask) => string): Promise<Outcome> => {
     options.registerFence(workspace);
-    const started = Date.now(), run = template(initial);
+    const started = Date.now(), run = { ...template(initial), model: initial === "clustering" ? frozen.clusteringModel : frozen.model.model };
     const delivered = new Set<DreamingTask>();
     const deliver = (text: string) => {
       const stage = current();
@@ -132,10 +139,10 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       if (next === undefined) ended = true;
       return next === undefined ? undefined : deliver(next);
     };
-    const input: DreamingAgentInput = { kind: "dreaming", task: initial, sessionId, branch, model: frozen.model.model, thinking: frozen.model.thinking, mode: "subagent",
+    const input: DreamingAgentInput = { kind: "dreaming", task: initial, sessionId, branch, model: run.model!, thinking: frozen.model.thinking, mode: "subagent",
       prompt: frozen.prompt, promptHash: frozen.promptHash, text, tools: binding.tools,
-      workspace: { dir: workspace.dir, read: ["group.md", "seeds.md", "notes.md", "decisions.md", "changes.md", "scoring.md", "scores.md"].map(name => workspace.path(name)),
-        write: (initial === "notes" ? ["notes.md"] : ["decisions.md", "changes.md", "scores.md"]).map(name => workspace.path(name)), roots },
+      workspace: { dir: workspace.dir, read: ["items.md", "groups.md", "group.md", "seeds.md", "notes.md", "decisions.md", "changes.md", "scoring.md", "scores.md"].map(name => workspace.path(name)),
+        write: (initial === "notes" ? ["notes.md"] : initial === "clustering" ? ["groups.md"] : ["decisions.md", "changes.md", "scores.md"]).map(name => workspace.path(name)), roots },
       passEnd, reportResponse: (id, input) => responses.set(id, input), acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
       deadline: started + (initial === "curate" ? 2 : 1) * limits.timeoutMs, call: binding.call };
     let result: RunAgentResult;
@@ -169,15 +176,36 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     if (!out.ok) return failure(out);
     frozen.notes = workspace.text("notes.md");
     const saved = store.commitTaskPass({ run: { ...out.run!, response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), task: "notes", notes: frozen.notes }) }, path,
-      handoff: () => ({ nextTask: "curate", detail: detail() }) });
+      handoff: () => ({ nextTask: frozen.fullCheck && !frozen.groupsFile ? "clustering" : "curate", detail: detail() }) });
     lastRunId = saved.runId;
     workspace.remove();
   }
   const prefix = `${frozen.knowledge}\n\n<repository_notes>\n${frozen.notes}\n</repository_notes>`;
+  if (frozen.fullCheck && frozen.groupsFile === undefined) {
+    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, "clustering").open({
+      "items.md": clusteringInput(store, frozen.clusteringItems), "groups.md": groupsTemplate(frozen.clusteringItems.length, limits.groupItems) });
+    const responses = new Map<string, number | undefined>();
+    const report = () => {
+      const checked = checkGroups(workspace.text("groups.md"), frozen.clusteringItems, limits.groupItems);
+      return { problems: checked.problems, text: [`Task: clustering. Input: ${workspace.path("items.md")}. Output: ${workspace.path("groups.md")}.`,
+        `Group size: at most ${limits.groupItems}.`, usage(responses, limits.clusteringSteps, limits.clusteringContextTokens),
+        checked.problems.length ? `Problems:\n${checked.problems.join("\n")}` : "Problems: none"].join("\n") };
+    };
+    const out = await conversation(workspace, "clustering", `${prefix}\n\n${readingGuide(sessionId, frozen.names)}\n\nCall ${frozen.names.check} first.`,
+      report, () => undefined, () => "clustering", responses, () => loadPrompt("tasks/clustering.md", frozen.names, config.writing));
+    if (!out.ok) return failure(out);
+    frozen.groupsFile = workspace.text("groups.md");
+    const items = new Map(frozen.clusteringItems.map(item => [item.value.knowledge.id, item]));
+    groups.push(...checkGroups(frozen.groupsFile, frozen.clusteringItems, limits.groupItems).groups.map((group, i) => ({
+      no: i + 1, items: group.items.map(id => items.get(id)!), clusters: group.clusters })));
+    lastRunId = store.commitTaskPass({ run: { ...out.run!, response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), task: "clustering", ...detail() }) }, path,
+      handoff: () => ({ nextTask: "curate", detail: detail() }) }).runId;
+    workspace.remove();
+  }
   const runGroup = async (group: FrozenGroup): Promise<Outcome> => {
     let task: DreamingTask = "curate";
     const reviewed = new Map(group.items.map(item => [item.value.knowledge.id, store.knowledgeStaleReasons(item.value.revision.id)]));
-    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `group-${group.no}`).open({ "group.md": groupText(store, group.items),
+    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `group-${group.no}`).open({ "group.md": groupText(store, group.items, group.clusters),
       "seeds.md": frozen.seeds, "decisions.md": decisionsTemplate(group.items), "changes.md": "", "scores.md": "" });
     const responses = new Map<string, number | undefined>();
     const heads = new Map<string, string>();
@@ -208,9 +236,9 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         return `Scoring draft passes. Self-check every score in this same conversation: if most items sit in one band, separate them again; correct any score that breaks the Scale floors. Edit scores.md if needed, call check, then stop; if nothing needs correcting, stop. Nothing is published yet.\n\n${report().text}`;
       }
       curated = readCurate();
-      targets = scoreTargets(group.items, curated.operations);
+      targets = scoreTargets(group.items, curated.operations, frozen.fullCheck);
       sealed = workspace.text("decisions.md") + "\0" + workspace.text("changes.md");
-      writeFileSync(workspace.path("scoring.md"), scoringText(classifyAnchors(projectItems(store, path), new Set(targets.map(target => Number(/^K(\d+)/.exec(target.label)![1])))), targets));
+      writeFileSync(workspace.path("scoring.md"), scoringText(frozen.fullCheck ? [] : classifyAnchors(projectItems(store, path), new Set(targets.map(target => Number(/^K(\d+)/.exec(target.label)![1])))), targets));
       task = "scoring"; responses.clear();
       return `Curate passes. Continue this same conversation with scoring.\n\n${report().text}`;
     };
@@ -225,7 +253,8 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     try {
       const last = groups.every(other => other === group || other.run !== undefined);
       const done = store.commitTaskPass({ run, path, operations: curated!.operations,
-        response: results => JSON.stringify({ ...JSON.parse(run.response ?? "{}"), results }),
+        response: results => JSON.stringify({ ...JSON.parse(run.response ?? "{}"), results, ...(frozen.fullCheck ? { ...detail(), groups: groups.map(other => ({
+          items: other.items.map(item => item.value.knowledge.id), clusters: other.clusters, run: other === group ? undefined : other.run })) } : {}) }),
         after: ({ runId, results }) => {
           const refused = new Set(results.flatMap((result, i) => {
             if (result.ok) return [];

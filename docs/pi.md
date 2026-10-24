@@ -438,6 +438,8 @@ The direct command forms are exactly these, and nothing else acts:
 | `/trace on` / `/trace off` | Enables or disables **this** memory-session identity, at once, without a reload |
 | `/trace catchup` / `/trace stop` | Start and cancel the manual finite drain described below |
 | `/trace dream` | Starts one Dreaming run for this session now, whatever the Noter-operation count says; see below |
+| `/trace full-check` | Cluster all visible project/global items, curate every group and score every survivor without anchors |
+| `/trace full-check --dry-run` | Report items, estimated cost and any saved groups/committed decisions; no model call |
 | `/trace project <name>` | Declares the project after the first assistant reply |
 
 `enable`, `disable`, `status` and `runs` are **retired without aliases**: status and
@@ -447,7 +449,7 @@ the retired function went, and changes nothing — no enrollment change, project
 worker. The retained forms exist because `-p` and rpc sessions have no menu; they are documented
 forms of the same operations the menu performs, not hidden aliases.
 
-Bare `/trace` opens a native menu with four top-level entries:
+Bare `/trace` opens a native menu with these top-level entries:
 
 - **Current session:** a compact context-capacity map and pending/trigger estimates,
   enrollment, project, the session's spend by phase and recovery warnings in a scrollable Pi-themed panel, with
@@ -455,6 +457,7 @@ Bare `/trace` opens a native menu with four top-level entries:
   and `Project` with a name input.
 - **Catch up:** starts (or reports) the manual finite drain described below.
 - **Dream:** the same as `/trace dream`.
+- **Full check:** the same as `/trace full-check`; shares Dream's slot and exclusive claim, with persisted clusters and only uncommitted groups retried. Clustering uses the Dreamer model, following the main agent by default.
 - **Stop:** cancels this executor's background work, including a running or
   waiting catchup. It never changes participation.
 - **Settings:** the global preferences below.
