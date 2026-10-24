@@ -225,7 +225,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     for (const directory of roots) { const repo = repositoryHead(join(directory, "__head_snapshot__")); if (repo) heads.set(repo.root, repo.commit); }
     if (roots.length) for (const item of group.items) for (const file of item.value.revision.files ?? []) { const repo = repositoryHead(file); if (repo) heads.set(repo.root, repo.commit); }
     let curated: Curated | undefined, targets: ScoreTarget[] = [], sealed = "", scoringReview = false;
-    const readCurate = () => checkCurate(store, path, group.items, { name: "decisions.md", text: workspace.text("decisions.md") }, { name: "changes.md", text: workspace.text("changes.md") }, limits.wholeFileLimit);
+    const readCurate = () => checkCurate(store, path, group.items, { name: "decisions.md", text: workspace.text("decisions.md") }, { name: "changes.md", text: workspace.text("changes.md") }, limits.wholeFileLimit, roots);
     const report = () => {
       const checked = task === "curate" ? readCurate() : undefined;
       const problems = checked ? [...checked.problems] : checkScores(workspace.text("scores.md"), targets).problems;
@@ -269,7 +269,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         response: results => JSON.stringify({ ...JSON.parse(run.response ?? "{}"), results, ...(frozen.fullCheck ? { ...detail(), groups: groups.map(other => ({
           items: other.items.map(item => item.value.knowledge.id), clusters: other.clusters, run: other === group ? undefined : other.run })) } : {}) }),
         after: ({ runId, results }) => {
-          const capProblems = wholeFileCapProblems(store, path, limits.wholeFileLimit, curated!.operations, curated!.decisions.map(decision => decision.files), false);
+          const capProblems = wholeFileCapProblems(store, path, limits.wholeFileLimit, curated!.operations, curated!.decisions.map(decision => decision.files), false, roots);
           if (capProblems.length) throw new Error(capProblems.join("\n"));
           const refused = new Set(results.flatMap((result, i) => {
             if (result.ok) return [];

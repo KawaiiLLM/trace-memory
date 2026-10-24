@@ -33,9 +33,12 @@ export const decisionsTemplate = (items: readonly CurateItem[], hasRepository: b
 export interface Decision { item: CurateItem; title: string; files: string[] | null | undefined; decision: string; reason: string; missingGrounds: boolean }
 export interface Curated { problems: string[]; decisions: Decision[]; operations: KnowledgeOperationInput[]; lengths: string[] }
 /** The caller supplies membership: incremental selection and full-check clustering use this same boundary. */
-export function checkCurate(store: Store, path: KnowledgePath, items: readonly CurateItem[], decisionsFile: WorkspaceFile, changesFile: WorkspaceFile, wholeFileLimit = 5): Curated {
+/** `roots` is the run's frozen repository snapshot (163 review): the checker never recomputes it, so a repository appearing mid-run cannot
+ * turn a rootless run's refusal of `files` into acceptance of `None`. */
+export function checkCurate(store: Store, path: KnowledgePath, items: readonly CurateItem[], decisionsFile: WorkspaceFile, changesFile: WorkspaceFile, wholeFileLimit = 5,
+  roots: readonly string[] = allowedRoots(store, path.sessionId)): Curated {
   const parsed = parseBlocks(decisionsFile), checked = plan(store, { kind: "curate", sessionId: path.sessionId, path, file: changesFile });
-  const problems = [...parsed.problems, ...checked.problems], roots = allowedRoots(store, path.sessionId);
+  const problems = [...parsed.problems, ...checked.problems];
   const wanted = new Map(items.map(item => [item.address, item])), seen = new Set<string>();
   const decisions: Decision[] = [];
   for (const block of parsed.blocks) {
@@ -115,7 +118,7 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
       title: decision.title, text: r.text, category: r.category, scope: r.scope, topics: r.topics, supports: r.supports,
       files: decision.files, reason: decision.reason, createdAt: new Date().toISOString() });
   }
-  problems.push(...wholeFileCapProblems(store, path, wholeFileLimit, operations, decisions.map(decision => decision.files)));
+  problems.push(...wholeFileCapProblems(store, path, wholeFileLimit, operations, decisions.map(decision => decision.files), true, roots));
   return { problems, decisions, operations, lengths: checked.lengths.map(length => `${length.block}: ${length.field} ${length.count}/${length.target} (limit ${length.limit})`) };
 }
 
@@ -123,8 +126,7 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
  * group's own items end with: an over-cap address elsewhere is not this group's to fix and must not fail it (159 review). `project` false
  * counts the pool as it stands, for the recheck after publication. */
 export function wholeFileCapProblems(store: Store, path: KnowledgePath, limit: number, operations: readonly KnowledgeOperationInput[],
-  groupFiles: readonly (readonly string[] | null | undefined)[], project = true): string[] {
-  const roots = allowedRoots(store, path.sessionId);
+  groupFiles: readonly (readonly string[] | null | undefined)[], project = true, roots: readonly string[] = allowedRoots(store, path.sessionId)): string[] {
   if (!roots.length) return [];
   const current = new Map(store.curateItems(path).filter(item => item.value.revision.scope !== "session")
     .map(item => [item.value.knowledge.id, item.value.revision.files]));

@@ -17,6 +17,17 @@ test.each(["None", "/missing/file.ts"])("curate without a repository refuses fil
   expect(checked.problems).toContainEqual(expect.stringContaining("no readable repository"));
 });
 
+// 163 review: the run's root snapshot is frozen; a repository that becomes readable mid-run must not let a rootless run write None.
+test("a run frozen without a repository still refuses files after a repository becomes readable", () => {
+  const f = dreamerFixture(memories);
+  f.item("Keep the supported rule");
+  const items = projectItems(f.store, f.path), frozen: string[] = [];
+  f.store.db.prepare("UPDATE sessions SET directory = ? WHERE id = ?").run(process.cwd(), f.session.id); // a root appears mid-run
+  const decisions = decisionText(decisionsTemplate(items, false)).replace("decision:", "files: None\ndecision:");
+  const checked = checkCurate(f.store, f.path, items, { name: "decisions.md", text: decisions }, { name: "changes.md", text: "## none\n" }, 5, frozen);
+  expect(checked.problems).toContainEqual(expect.stringContaining("no readable repository"));
+});
+
 test.each(["update", "split child"])("curate without a repository refuses files in a %s change", operation => {
   const f = dreamerFixture(memories), item = f.item("Two independent supported conditions");
   const changes = operation === "update"
