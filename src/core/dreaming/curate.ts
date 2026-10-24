@@ -34,10 +34,10 @@ export interface Decision { item: CurateItem; title: string; files: string[] | n
 export interface Curated { problems: string[]; decisions: Decision[]; operations: KnowledgeOperationInput[]; lengths: string[]; filesToCheck: (string[] | null | undefined)[] }
 /** The caller supplies membership: incremental selection and full-check clustering use this same boundary. */
 /** `roots` is the run's frozen authorization snapshot: a directory appearing mid-run cannot make a rootless run accept files.
- * `heads` retains start-of-curate commits and captures newly encountered nested repositories once. */
+ * `heads` is shared by all run groups, retains start-of-curate commits and captures newly encountered nested repositories once. */
 export function checkCurate(store: Store, path: KnowledgePath, items: readonly CurateItem[], decisionsFile: WorkspaceFile, changesFile: WorkspaceFile, wholeFileLimit = 5,
   roots: readonly string[] = allowedRoots(store, path.sessionId), heads?: Map<string, string>): Curated {
-  const parsed = parseBlocks(decisionsFile), checked = plan(store, { kind: "curate", sessionId: path.sessionId, path, file: changesFile });
+  const parsed = parseBlocks(decisionsFile), checked = plan(store, { kind: "curate", sessionId: path.sessionId, path, file: changesFile, heads });
   const problems = [...parsed.problems, ...checked.problems];
   const wanted = new Map(items.map(item => [item.address, item])), seen = new Set<string>();
   const decisions: Decision[] = [];
