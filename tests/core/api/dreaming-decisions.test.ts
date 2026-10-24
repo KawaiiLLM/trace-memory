@@ -7,7 +7,7 @@ import { dreamerFixture, writeDecisions } from "../../support/dreamer.ts";
 import { REQUEST } from "../../support/noter.ts";
 import { block } from "../../support/workspace.ts";
 import { knowledgeBatch, session } from "../../support/seed.ts";
-import { repositoryHead } from "../../../src/core/dreaming/candidates.ts";
+import { repositoryHead } from "../../../src/core/dreaming/code-links.ts";
 
 const memories: TraceMemory[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });

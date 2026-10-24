@@ -54,6 +54,9 @@ import type { DirectoryOptions } from "../../../src/core/project/directory.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
 import { factsFile, probe, scriptedNoter, submit, submitEmpty, verifyUnchanged, largestTaskPromptTokens } from "../../support/noter.ts";
+import { checkCurate, decisionsTemplate } from "../../../src/core/dreaming/curate.ts";
+import { projectItems } from "../../../src/core/dreaming/candidates.ts";
+import { decisionText } from "../../support/dreamer.ts";
 
 // 62 excludes temporary directories, where every fixture lives. As in directory-projects.test.ts, the
 // hosts' `directoryAllocation` receives the exclusions a test sets; unset, it keeps the defaults.
@@ -2805,3 +2808,25 @@ test("2026-10-22, 144: allowance order — unextracted Raw, then unscored bodies
   }
 });
 
+test("2026-10-24, 159: curate caps whole-file links project-wide at five current items; function addresses have no cap", () => {
+  const source = join(process.cwd(), "src/core/dreaming/roots.ts"), anchor = `${source}#allowedRoots`;
+  const f = dreamerFixture(), support = f.existingFact();
+  const peer = seedSession(f.store, f.project.id, "pi:repository", { directory: process.cwd() });
+  const peerPath = f.store.knowledgePath(peer.id);
+  const items = Array.from({ length: 6 }, (_, i) => knowledgeBatch(f.store, i < 3 ? peerPath : f.path, [{
+    scope: "project", category: "constraint", supports: [support.id], title: `Facet ${i}`, text: `Preserve facet ${i}`, files: [source],
+  }]).committed[0]!);
+  const group = projectItems(f.store, f.path).slice(0, 1);
+  const decisions = decisionText(decisionsTemplate(group)).replace("files: None", `files: ${source}`);
+  const checked = checkCurate(f.store, f.path, group, { name: "decisions.md", text: decisions }, { name: "changes.md", text: "## none\n" });
+  expect(checked.problems).toEqual([expect.stringContaining("has 6 current items (whole-file limit 5)")]);
+  expect(checkCurate(f.store, f.path, group, { name: "decisions.md", text: decisions }, { name: "changes.md", text: "## none\n" }, 6).problems).toEqual([]);
+  const all = projectItems(f.store, f.path);
+  const anchored = decisionText(decisionsTemplate(all)).replaceAll("files: None", `files: ${anchor}`);
+  const refined = checkCurate(f.store, f.path, all, { name: "decisions.md", text: anchored }, { name: "changes.md", text: "## none\n" }, 1);
+  expect(refined.problems).toEqual([]);
+  expect(refined.operations.map(op => op.files)).toEqual(items.map(() => [anchor]));
+  // 159 review: an over-cap address the group does not link is not its to fix and does not fail it.
+  const elsewhere = decisionText(decisionsTemplate(group)).replace("files: None", `files: ${anchor}`);
+  expect(checkCurate(f.store, f.path, group, { name: "decisions.md", text: elsewhere }, { name: "changes.md", text: "## none\n" }).problems).toEqual([]);
+});

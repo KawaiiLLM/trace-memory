@@ -1,7 +1,8 @@
 import { words, renderKnowledge, knowledgeStaleLabel } from "../render/index.ts";
 import { parseBlocks, plan, list, traceProblem, type WorkspaceFile } from "../workspace/index.ts";
 import type { CurateItem, KnowledgePath, Store, KnowledgeOperationInput } from "../store/index.ts";
-import { allowedRoots, resolveRepositoryPath, repositoryEvidenceProblem } from "./roots.ts";
+import { allowedRoots, repositoryEvidenceProblem } from "./roots.ts";
+import { codeAddress, resolveCodeLink } from "./code-links.ts";
 import type { Cluster } from "./clustering.ts";
 export type { CurateItem } from "../store/index.ts";
 
@@ -32,7 +33,7 @@ export const decisionsTemplate = (items: readonly CurateItem[]) => items.map(ite
 export interface Decision { item: CurateItem; title: string; files: string[] | null; decision: string; reason: string; missingGrounds: boolean }
 export interface Curated { problems: string[]; decisions: Decision[]; operations: KnowledgeOperationInput[]; lengths: string[] }
 /** The caller supplies membership: incremental selection and full-check clustering use this same boundary. */
-export function checkCurate(store: Store, path: KnowledgePath, items: readonly CurateItem[], decisionsFile: WorkspaceFile, changesFile: WorkspaceFile): Curated {
+export function checkCurate(store: Store, path: KnowledgePath, items: readonly CurateItem[], decisionsFile: WorkspaceFile, changesFile: WorkspaceFile, wholeFileLimit = 5): Curated {
   const parsed = parseBlocks(decisionsFile), checked = plan(store, { kind: "curate", sessionId: path.sessionId, path, file: changesFile });
   const problems = [...parsed.problems, ...checked.problems], roots = allowedRoots(store, path.sessionId);
   const wanted = new Map(items.map(item => [item.address, item])), seen = new Set<string>();
@@ -51,7 +52,7 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
     if (!/^(?:ok|unverified|outdated:\s*\S.*|wrong:\s*\S.*)$/.test(value("accuracy"))) problems.push(`${label}: accuracy must be ok, unverified, outdated: <why> or wrong: <why>`);
     if (words(value("title")) > Math.ceil(store.writing.titleWords * 1.1)) problems.push(`${label}: title exceeds target ${store.writing.titleWords}`);
     const files: string[] | null = value("files") === "None" ? null : list(value("files")).flatMap(file => {
-      const resolved = resolveRepositoryPath(file, roots);
+      const resolved = resolveCodeLink(file, roots);
       if ("reason" in resolved) { problems.push(`${label}: files: ${resolved.reason}`); return []; }
       return [resolved.path];
     });
@@ -92,7 +93,7 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
       const raw = child.fields.get("files")?.value;
       if (!raw) { problems.push(`changes.md: K${id} child ${index + 1} requires files`); return; }
       op.children[index]!.files = raw === "None" ? null : list(raw).flatMap(file => {
-        const resolved = resolveRepositoryPath(file, roots);
+        const resolved = resolveCodeLink(file, roots);
         if ("reason" in resolved) { problems.push(`changes.md: child files: ${resolved.reason}`); return []; }
         return [resolved.path];
       });
@@ -111,5 +112,31 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
       title: decision.title, text: r.text, category: r.category, scope: r.scope, topics: r.topics, supports: r.supports,
       files: decision.files, reason: decision.reason, createdAt: new Date().toISOString() });
   }
+  problems.push(...wholeFileCapProblems(store, path, wholeFileLimit, operations, decisions.map(decision => decision.files)));
   return { problems, decisions, operations, lengths: checked.lengths.map(length => `${length.block}: ${length.field} ${length.count}/${length.target} (limit ${length.limit})`) };
+}
+
+/** Counts project-wide projected survivors (other groups, absorbed parents, split children), but reports only the whole-file addresses this
+ * group's own items end with: an over-cap address elsewhere is not this group's to fix and must not fail it (159 review). `project` false
+ * counts the pool as it stands, for the recheck after publication. */
+export function wholeFileCapProblems(store: Store, path: KnowledgePath, limit: number, operations: readonly KnowledgeOperationInput[],
+  groupFiles: readonly (readonly string[] | null | undefined)[], project = true): string[] {
+  const current = new Map(store.curateItems(path).filter(item => item.value.revision.scope !== "session")
+    .map(item => [item.value.knowledge.id, item.value.revision.files]));
+  const additions: (readonly string[] | null | undefined)[] = [];
+  for (const op of project ? operations : []) {
+    if (op.op !== "create") current.delete(op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId);
+    if (op.op === "merge") for (const parent of op.absorb) current.delete(parent.knowledgeId);
+    if (op.op === "archive" || op.scope === "session") continue;
+    additions.push(op.files);
+    if (op.op === "split") for (const child of op.children) if ((child.scope ?? op.scope) !== "session") additions.push(child.files);
+  }
+  const counts = new Map<string, number>(), roots = allowedRoots(store, path.sessionId);
+  const wholeFiles = (files: readonly string[] | null | undefined) => new Set((files ?? []).filter(file => codeAddress(file).symbol === undefined)
+    .map(file => { const resolved = resolveCodeLink(file, roots); return "reason" in resolved ? file : resolved.path; }));
+  for (const files of [...current.values(), ...additions]) for (const address of wholeFiles(files)) counts.set(address, (counts.get(address) ?? 0) + 1);
+  const own = new Set([...groupFiles, ...operations.flatMap(op => op.op === "archive" || op.op === "create" ? [] : [op.files, ...(op.op === "split" ? op.children.map(child => child.files) : [])])]
+    .flatMap(files => [...wholeFiles(files)]));
+  return [...counts].filter(([address, count]) => count > limit && own.has(address)).map(([address, count]) =>
+    `files: ${address} has ${count} current items (whole-file limit ${limit}); use path#symbol function anchors; never drop a real link to pass the check`);
 }

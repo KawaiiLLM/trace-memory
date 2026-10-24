@@ -98,6 +98,8 @@ export interface TraceMemoryConfig {
     scoringContextTokens: number;
     clusteringSteps: number;
     clusteringContextTokens: number;
+    /** Maximum current items linking one whole file; symbol addresses have no cap. */
+    wholeFileLimit: number;
   };
   /** Per-item length targets for every writer, in units (ticket 145). */
   writing: WritingLimits;
@@ -140,7 +142,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     checkKnowledgeContextTokens: 15_000,
   },
   dreaming: { triggerOperations: DEFAULT_DREAMING_TRIGGER_OPERATIONS, timeoutMs: 1_800_000,
-    groupItems: 50, parallelGroups: 5, notesSteps: 10, notesTokens: 10_000,
+    groupItems: 50, parallelGroups: 5, notesSteps: 10, notesTokens: 10_000, wholeFileLimit: 5,
     clusteringSteps: 30, clusteringContextTokens: 150_000,
     // Dispatcher proposals from the 37-item Sonnet experiment, not maintainer-set limits.
     curateSteps: 100, curateContextTokens: 200_000, scoringSteps: 10, scoringContextTokens: 30_000 },

@@ -15,9 +15,10 @@ import type { NotingInput } from "../noting/index.ts";
 import type { HandoffDetail, DreamerBoundary } from "../store/executions.ts";
 import type { KnowledgePath, RunInput, Store, TaskClaim, CurateItem, WorkspaceOperationResult } from "../store/index.ts";
 import { TaskWorkspace, defaultWorkspaceRoot } from "../workspace/run.ts";
-import { checkCurate, decisionsTemplate, groupText, type Curated } from "./curate.ts";
+import { checkCurate, wholeFileCapProblems, decisionsTemplate, groupText, type Curated } from "./curate.ts";
 import { classifyAnchors, scoreTargets, scoringText, checkScores, type ScoreTarget } from "./classify.ts";
-import { incrementalCandidates, projectItems, repositoryHead, trackedAt } from "./candidates.ts";
+import { incrementalCandidates, projectItems, trackedAt } from "./candidates.ts";
+import { repositoryHead } from "./code-links.ts";
 import { candidateGroups, checkGroups, clusteringBatches, clusteringInput, groupsTemplate, type Cluster } from "./clustering.ts";
 import { allowedRoots } from "./roots.ts";
 import type { KnowledgeRevision } from "../model/index.ts";
@@ -224,7 +225,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     for (const directory of roots) { const repo = repositoryHead(join(directory, "__head_snapshot__")); if (repo) heads.set(repo.root, repo.commit); }
     for (const item of group.items) for (const file of item.value.revision.files ?? []) { const repo = repositoryHead(file); if (repo) heads.set(repo.root, repo.commit); }
     let curated: Curated | undefined, targets: ScoreTarget[] = [], sealed = "", scoringReview = false;
-    const readCurate = () => checkCurate(store, path, group.items, { name: "decisions.md", text: workspace.text("decisions.md") }, { name: "changes.md", text: workspace.text("changes.md") });
+    const readCurate = () => checkCurate(store, path, group.items, { name: "decisions.md", text: workspace.text("decisions.md") }, { name: "changes.md", text: workspace.text("changes.md") }, limits.wholeFileLimit);
     const report = () => {
       const checked = task === "curate" ? readCurate() : undefined;
       const problems = checked ? [...checked.problems] : checkScores(workspace.text("scores.md"), targets).problems;
@@ -267,6 +268,8 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         response: results => JSON.stringify({ ...JSON.parse(run.response ?? "{}"), results, ...(frozen.fullCheck ? { ...detail(), groups: groups.map(other => ({
           items: other.items.map(item => item.value.knowledge.id), clusters: other.clusters, run: other === group ? undefined : other.run })) } : {}) }),
         after: ({ runId, results }) => {
+          const capProblems = wholeFileCapProblems(store, path, limits.wholeFileLimit, curated!.operations, curated!.decisions.map(decision => decision.files), false);
+          if (capProblems.length) throw new Error(capProblems.join("\n"));
           const refused = new Set(results.flatMap((result, i) => {
             if (result.ok) return [];
             const op = curated!.operations[i]!;

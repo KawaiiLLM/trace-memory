@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { dirname, relative } from "node:path";
+import { relative } from "node:path";
 import type { Store, KnowledgePath, CurateItem } from "../store/index.ts";
 import type { DreamerBoundary } from "../store/executions.ts";
 import { allowedRoots, resolveRepositoryPath } from "./roots.ts";
+import { codeAddress, committedText, repositoryHead, symbolText } from "./code-links.ts";
 
 export interface CandidateSelection { background: string; candidates: CurateItem[]; boundary: DreamerBoundary }
-export interface RepositoryHead { root: string; commit: string }
 export const projectItems = (store: Store, path: KnowledgePath): CurateItem[] => store.curateItems(path).filter(item => item.value.revision.scope !== "session");
 export function boundaryOf(store: Store, items: readonly CurateItem[]): DreamerBoundary {
   return { fact: Number(store.db.prepare("SELECT COALESCE(MAX(id),0) AS id FROM facts").get()!.id),
@@ -33,18 +33,12 @@ export function lastBoundary(store: Store, path: KnowledgePath): DreamerBoundary
     WHERE p.run_id<=? AND p.pool IN ('global',?) GROUP BY k.knowledge_id`).all(Number(row.id), `project:${projectId}`);
   return { fact, revision, versions: Object.fromEntries(versions.map(value => [String(value.knowledge_id), Number(value.id)])) };
 }
-export function repositoryHead(file: string): RepositoryHead | undefined {
-  try {
-    const root = execFileSync("git", ["-C", dirname(file), "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    const commit = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return { root, commit };
-  } catch { return undefined; }
-}
-/** Whether `file` is tracked at `commit`: an untracked or ignored file has no committed content to compare against later, so it stays unverified. */
+/** The captured file baseline is retained even if the symbol was absent there: that absence counts as changed. */
 export function trackedAt(root: string, commit: string, file: string): boolean {
-  try { execFileSync("git", ["-C", root, "cat-file", "-e", `${commit}:${relative(root, file)}`], { stdio: "ignore" }); return true; } catch { return false; }
+  const link = codeAddress(file);
+  try { execFileSync("git", ["-C", root, "cat-file", "-e", `${commit}:${relative(root, link.path)}`], { stdio: "ignore" }); return true; } catch { return false; }
 }
-/** Content comparison includes working-tree changes; no hashes are invented for non-git files. */
+/** Symbols compare committed text at HEAD; whole-file links retain working-tree diff detection. */
 export function scanChangedFiles(store: Store, path: KnowledgePath, items = projectItems(store, path)): string[] {
   const roots = allowedRoots(store, path.sessionId), background: string[] = [];
   const diffs = new Map<string, string>();
@@ -55,22 +49,30 @@ export function scanChangedFiles(store: Store, path: KnowledgePath, items = proj
     for (const file of r.files) {
       const record = verified.get(file);
       if (!record) continue; // The Noter flags unverified links at publication.
-      const resolved = resolveRepositoryPath(file, roots);
+      const link = codeAddress(file), resolved = resolveRepositoryPath(link.path, roots);
       let diff = "";
-      if ("reason" in resolved) diff = `Missing or unreadable linked file: ${file}: ${resolved.reason}`;
+      if ("reason" in resolved) diff = `${link.symbol === undefined ? "Missing or unreadable linked file" : "symbol missing"}: ${file}: ${resolved.reason}`;
       else {
         const repo = repositoryHead(resolved.path);
         if (!repo) continue;
-        const key = `${repo.root}\0${record.verifiedCommit}\0${resolved.path}`;
+        const key = `${repo.root}\0${record.verifiedCommit}\0${file}`;
         if (diffs.has(key)) diff = diffs.get(key)!;
         else {
-          try { diff = execFileSync("git", ["-C", repo.root, "diff", record.verifiedCommit, "--", relative(repo.root, resolved.path)], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }); }
-          catch { diff = `Cannot compare ${file} against verified commit ${record.verifiedCommit}`; }
+          if (link.symbol !== undefined) {
+            const before = symbolText(committedText(repo.root, record.verifiedCommit, resolved.path), link.symbol);
+            const after = symbolText(committedText(repo.root, repo.commit, resolved.path), link.symbol);
+            diff = after === undefined ? `symbol missing: ${file} at HEAD`
+              : before === undefined ? `Symbol absent at verified commit: ${file}\n${after}`
+              : before !== after ? `--- ${file}@${record.verifiedCommit}\n${before}\n+++ ${file}@${repo.commit}\n${after}` : "";
+          } else {
+            try { diff = execFileSync("git", ["-C", repo.root, "diff", record.verifiedCommit, "--", resolved.path], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }); }
+            catch { diff = `Cannot compare ${file} against verified commit ${record.verifiedCommit}`; }
+          }
           diffs.set(key, diff);
         }
       }
       if (!diff) continue;
-      store.setKnowledgeStale(r.id, { reason: "file_changed", detail: `${file} since ${record.verifiedCommit}` });
+      store.setKnowledgeStale(r.id, { reason: "file_changed", detail: `${file} since ${record.verifiedCommit}${diff.includes("symbol missing:") ? ": symbol missing" : ""}` });
       item.value.staleReasons = store.knowledgeStaleReasons(r.id);
       background.push(`${file}@${record.verifiedCommit}\n${diff}`);
     }

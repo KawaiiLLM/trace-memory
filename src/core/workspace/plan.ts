@@ -13,7 +13,8 @@ import { parseKnowledgeAddress, parseTurnAddress } from "../model/address.ts";
 import { words, wordLimit } from "../render/index.ts";
 import type { FactCommitInput, KnowledgeOperationInput, KnowledgePath, RunInput, Store } from "../store/index.ts";
 import { describeBlock, parseBlocks, problem, type Block, type Section, type WorkspaceFile } from "./parse.ts";
-import { allowedRoots, resolveRepositoryPath } from "../dreaming/roots.ts";
+import { allowedRoots } from "../dreaming/roots.ts";
+import { codeAddress, resolveCodeLink } from "../dreaming/code-links.ts";
 
 export type TaskKind = "noting-facts" | "noting-knowledge" | "curate";
 
@@ -195,14 +196,15 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       const root = session.directory ?? session.startDirectory;
       return paths.map(path => {
         if (task.kind === "curate") {
-          const resolved = resolveRepositoryPath(path, allowedRoots(store, sessionId));
+          const resolved = resolveCodeLink(path, allowedRoots(store, sessionId));
           if ("reason" in resolved) { add(fmt(line("files"), `files: ${resolved.reason}`)); return path; }
           return resolved.path;
         }
-        if (!isAbsolute(path) && !root) { add(fmt(line("files"), `files: cannot resolve relative path \`${path}\`: session root is unknown`)); return path; }
-        const absolute = isAbsolute(path) ? resolve(path) : resolve(root!, path);
+        const link = codeAddress(path);
+        if (!isAbsolute(link.path) && !root) { add(fmt(line("files"), `files: cannot resolve relative path \`${path}\`: session root is unknown`)); return path; }
+        const absolute = isAbsolute(link.path) ? resolve(link.path) : resolve(root!, link.path);
         if (!existsSync(absolute)) add(fmt(line("files"), `files: path does not exist: ${absolute}`));
-        return absolute;
+        return link.symbol === undefined ? absolute : `${absolute}#${link.symbol}`;
       });
     };
     const linkedFiles = files(block);
