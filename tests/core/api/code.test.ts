@@ -28,18 +28,21 @@ test("limits are the ruled ones: 10 s, 256 MB, 10,000 tokens", () => {
 });
 
 test("hits, text, console, return and render print in Pi's layout", async () => {
-  const out = await run("text(hits.map(h => h.role)); console.log('seen', hits.length); return render(hits[0]);");
+  // Ticket 161 changes relevance order; layout does not depend on which role ranks first.
+  const out = await run("text(hits.map(h => h.role).sort()); console.log('seen', hits.length); return render(hits.find(h => h.role === 'user'));");
   expect(out).toMatch(/^Script completed\nWall time \d+\.\d seconds\nOutput:\n/);
-  expect(out).toContain("==> text 1/2 <==\n[\"user\",\"assistant\"]");
+  expect(out).toContain("==> text 1/2 <==\n[\"assistant\",\"user\"]");
   expect(out).toContain("==> text 2/2 <==\n[S1/T1#E1@user] ");
   expect(out).toContain("<console_output>\nseen 2\n</console_output>");
   const single = await run("return hits.length");
   expect(single.endsWith("Output:\n2")).toBe(true); // one text item carries no numbering
 });
 
-test("hits holds at most topk items, and the search's own order", async () => {
+test("hits obey topk after BM25 ranking, not source-entry order", async () => {
+  // Ticket 161: the shorter assistant reply is the stronger match, though its entry comes second.
   expect((await run("return hits.length", { topk: 1 })).endsWith("Output:\n1")).toBe(true);
-  expect((await run("return hits.map(h => h.entry).join()", { topk: 5 })).endsWith("Output:\n1,2")).toBe(true);
+  expect((await run("return hits[0].entry", { topk: 1 })).endsWith("Output:\n2")).toBe(true);
+  expect((await run("return hits.map(h => h.entry).join()", { topk: 5 })).endsWith("Output:\n2,1")).toBe(true);
 });
 
 test("a script that throws fails, keeps its partial output and says where", async () => {

@@ -1,14 +1,12 @@
 // Ticket 136: `search` keeps four parameters (query, scope, layer, topk) and may run a script over its
 // hits (`code`). A hit is one structured item; the default print is one line per item, and code decides
-// what else to print. Order: knowledge, then facts, then Raw; within a layer the closest lexical match
-// first (knowledge), then current, then newer.
-import type { KnowledgeRevision } from "../model/index.ts";
+// what else to print. Order: knowledge, then facts, then Raw; BM25 within each layer,
+// then current non-archived knowledge, then newer.
 import { knowledgeCategoryGroup, KNOWLEDGE_SCOPES, type KnowledgeScope } from "../model/index.ts";
-import type { SourceEntry, Store } from "../store/index.ts";
+import { unicodeLength, type SourceEntry, type Store } from "../store/index.ts";
 import { renderEntryWhole, renderFactPreview, snippet, rawResultText, knowledgeTitle, knowledgeStaleLabel } from "../render/index.ts";
 import { capOutput, formatCodeResult, runCode } from "./code.ts";
 import { knowledgeReadSelection } from "./knowledge-read.ts";
-import { similarity } from "./similarity.ts";
 
 export type SearchLayer = "facts" | "knowledge" | "all" | "raw";
 export const SEARCH_LAYERS: readonly SearchLayer[] = ["knowledge", "facts", "raw", "all"];
@@ -20,7 +18,7 @@ export interface SearchOptions {
   spill?: (text: string) => string;
 }
 export const SEARCH_DEFAULT_TOPK = 10;
-/** Raw is read this many newest Turns at a time. */
+/** Raw bodies are read at most this many candidate Turns at a time. */
 export const SEARCH_CHUNK_TURNS = 25;
 const CHUNK_TURNS = SEARCH_CHUNK_TURNS;
 
@@ -71,6 +69,7 @@ export function searchFacade(store: Store) {
     if (options.scope !== undefined && !KNOWLEDGE_SCOPES.includes(options.scope)) throw new Error("invalid knowledge scope filter");
     const terms = query === undefined ? undefined : searchTerms(query);
     const needles = terms?.map(term => term.toLocaleLowerCase());
+    const ranked = terms?.some(term => unicodeLength(term) >= 3 && !term.includes("\u0000")) ?? false;
     const reader = options.sessionId === undefined ? undefined : store.getSession(options.sessionId) ?? undefined;
     if (options.sessionId !== undefined && !reader) throw new Error(`session S${options.sessionId} does not exist`);
     if (options.scope === "session" && !reader) throw new Error("scope:session requires a session context");
@@ -94,12 +93,12 @@ export function searchFacade(store: Store) {
       const candidates = query === undefined ? [...selection.byCommit.values()]
         : store.searchAddresses(terms!, "knowledge", sessionIds).map(address => selection.byCommit.get(Number(address.split("@")[1]))!);
       const eligible = candidates.filter(revision => revision && selection.eligible(revision));
-      const score = (r: KnowledgeRevision) => query === undefined ? 0 : Math.max(similarity(query, r.text), ...r.topics.map(topic => similarity(query, topic)));
-      const scored = eligible.map(revision => ({ revision, score: score(revision) })).sort((a, b) => query === undefined
-        ? b.revision.createdAt.localeCompare(a.revision.createdAt) || b.revision.id - a.revision.id
-        : b.score - a.score || Number(selection.current.has(b.revision.id)) - Number(selection.current.has(a.revision.id)) || b.revision.id - a.revision.id);
-      const ordinals = store.versionOrdinals(scored.map(({ revision }) => revision.id));
-      for (const { revision: r } of scored) {
+      const ranks = terms === undefined ? new Map<number, number>() : store.searchRanks(terms, "knowledge", eligible.map(r => r.id));
+      eligible.sort((a, b) => (ranks.get(a.id) ?? 0) - (ranks.get(b.id) ?? 0)
+        || (!ranked ? 0 : Number(selection.current.has(b.id) && b.op !== "archive") - Number(selection.current.has(a.id) && a.op !== "archive"))
+        || b.createdAt.localeCompare(a.createdAt) || b.id - a.id);
+      const ordinals = store.versionOrdinals(eligible.map(revision => revision.id));
+      for (const r of eligible) {
         const status = selection.current.has(r.id) ? r.op === "archive" ? "archived" : "current" : "superseded";
         // 101: a legacy archive written before 99 has no body of its own; its parent's stands in.
         const text = r.op === "archive" && !r.text ? selection.byCommit.get(r.parentId ?? -1)?.text ?? "" : r.text;
@@ -116,7 +115,9 @@ export function searchFacade(store: Store) {
       const ids = query === undefined
         ? (sessionIds ?? store.listSessions().map(s => s.id)).flatMap(id => store.listSessionFacts(id).map(fact => fact.id))
         : store.searchAddresses(terms!, "facts", sessionIds).map(address => Number(address.slice(1)));
-      const found = store.factsByIds(ids).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id);
+      const ranks = terms === undefined ? new Map<number, number>() : store.searchRanks(terms, "facts", ids);
+      const found = store.factsByIds(ids).sort((a, b) => (ranks.get(a.id) ?? 0) - (ranks.get(b.id) ?? 0)
+        || b.createdAt.localeCompare(a.createdAt) || b.id - a.id);
       const citing = store.citingKnowledge(found.map(fact => fact.id));
       for (const fact of found) {
         const session = sessionOfTurn(fact.turnId);
@@ -132,8 +133,15 @@ export function searchFacade(store: Store) {
       const turnIds = query === undefined
         ? (sessionIds ?? store.listSessions().map(s => s.id)).flatMap(id => store.listTurns(id).map(turn => turn.id))
         : store.searchAddresses(terms!, "raw", sessionIds).map(address => Number(address.slice(1)));
-      turnIds.sort((a, b) => b - a);
-      // Newest Turns first, a chunk at a time, so a small `topk` reads a few Turns' bodies and not the project's.
+      const ranks = store.rawSearchRanks(terms ?? [], turnIds);
+      const time = (id: number) => ranks.get(id)?.startedAt ?? "";
+      if (!ranked) turnIds.sort((a, b) => b - a);
+      else turnIds.sort((a, b) => (ranks.get(a)?.score ?? 0) - (ranks.get(b)?.score ?? 0)
+        || time(b).localeCompare(time(a)) || b - a);
+      const pending: { hit: Hit; score: number; turn: number }[] = [];
+      const compare = (a: { score: number; turn: number }, b: { score: number; turn: number }) =>
+        a.score - b.score || time(b.turn).localeCompare(time(a.turn)) || b.turn - a.turn;
+      // Read the most promising Turns first. Keep entries behind any unread Turn that could outrank them.
       for (let from = 0; from < turnIds.length; from += CHUNK_TURNS) {
         const chunk = turnIds.slice(from, from + CHUNK_TURNS);
         // Candidates come from metadata alone (id and ordinal). A chunk's bodies are read together, once, the
@@ -145,7 +153,7 @@ export function searchFacade(store: Store) {
         const body = (id: number) => (bodies ??= new Map(store.hydrateSourceEntries(ids).map(entry => [entry.id, entry]))).get(id);
         const cited = store.factsCitingEntries(ids);
         for (const turnId of chunk) {
-          const turn = store.getTurn(turnId);
+          const turn = ranks.get(turnId) ?? store.getTurn(turnId);
           if (!turn) continue;
           for (const { id, entryOrdinal } of refs.get(turnId) ?? []) {
             const entry = () => body(id) ?? raise(`source entry ${id} has no stored body`);
@@ -166,10 +174,32 @@ export function searchFacade(store: Store) {
             });
             // The line opens with its own label, so the snippet leaves out the label the entry's text opens with.
             const snippetBody = () => text().replace(new RegExp(`^\\[T${turnId}#E${entryOrdinal}@${role()}\\] (?:${role()}: )?`), "");
-            yield { item: { layer: "raw", address: `trace://raw/${label}`, session: turn.sessionId, turn: turnId, time: turn.startedAt,
+            const hit: Hit = { item: { layer: "raw", address: `trace://raw/${label}`, session: turn.sessionId, turn: turnId, time: turn.startedAt,
                 entry: entryOrdinal, citedBy: cited.get(id) ?? [], lazy: ["role", "text", "matchLines"] },
               line: () => `[${label}@${role()}] ${snippet(snippetBody(), terms)}`, load: { role, text, matchLines }, chunk: from };
+            if (!ranked) yield hit;
+            else {
+              const fields = ranks.get(turnId)?.fields;
+              const source = entry();
+              // The index scores a Turn's whole prompt or reply; an entry takes that score only if its own text holds a term, so a
+              // tool-only entry is scored by its own calls (161 review).
+              const ownText = source.text.toLocaleLowerCase(), textMatches = needles?.some(term => ownText.includes(term)) ?? false;
+              let score = textMatches ? fields?.get(`0:${source.role === "user" ? "user_prompt" : source.role === "assistant" ? "assistant_text" : ""}`) ?? 0 : 0;
+              for (const call of source.calls) {
+                score = Math.min(score, fields?.get(`${call.ordinal}:tool_name`) ?? 0,
+                  fields?.get(`${call.ordinal}:${source.role === "toolResult" ? "tool_result" : "tool_input"}`) ?? 0);
+              }
+              pending.push({ hit, score, turn: turnId });
+            }
           }
+        }
+        if (ranked) {
+          pending.sort(compare);
+          const nextTurn = turnIds[from + CHUNK_TURNS];
+          const bound = nextTurn === undefined ? undefined : { score: ranks.get(nextTurn)?.score ?? 0, turn: nextTurn };
+          let count = 0;
+          while (count < pending.length && (!bound || compare(pending[count]!, bound) <= 0)) yield pending[count++]!.hit;
+          pending.splice(0, count);
         }
       }
     }

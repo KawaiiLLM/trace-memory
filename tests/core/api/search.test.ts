@@ -84,8 +84,51 @@ test("every knowledge version is a candidate, labelled with its status; the curr
   expect(found.find(l => l.includes("rule one"))).toMatch(/^\[K1@v1\] \(superseded\) \[constraint\/project\]/);
   expect(found.find(l => l.includes("no longer holds"))).toMatch(/^\[K1@v2\] \(archived\) \[constraint\/project\]/);
   expect(kept.knowledgeId).toBe(2);
-  // Closest lexical match first, then current, then newer.
-  expect(lines(memory.search("gadget rule two", "knowledge", f.path))[0]).toContain("[K2@v1]");
+});
+
+// Ticket 161 replaces Jaccard/newest-first ranking, not the AND matching contract.
+test.each(["knowledge", "facts", "raw"] as const)
+("%s ranks an older stronger match before a newer weaker match, including phrases and short terms", layer => {
+  const query = 'quartz "cache plan" 预览';
+  const f = corpus(), labels: string[] = [];
+  let path = f.path;
+  for (const [i, body] of ["quartz cache plan 预览 ".repeat(4), `quartz cache plan 预览 ${"unrelated ".repeat(80)}`].entries()) {
+    const turn = memory.store.appendTurn({ sessionId: f.session.id, parentTurnId: path.headTurnId, kind: "turn",
+      userPrompt: body, startedAt: `2026-10-0${i + 2}T00:00:00Z` });
+    path = { ...path, headTurnId: turn.id };
+    const source = memory.store.hydrateSourceEntries(memory.store.listSourceEntries(f.session.id, turn.id).map(e => e.id))[0]!;
+    const [fact] = facts(memory, path, [{ title: "Search episode", sources: [{ entry: source, text: body }] }]);
+    const rule = knowledge(memory.store, path, "project", "constraint", [fact!.id], body,
+      { operation: { title: "Search episode", createdAt: turn.startedAt } });
+    labels.push(layer === "knowledge" ? `K${rule.knowledgeId}@v1` : layer === "facts" ? `F${fact!.id}` : `S${f.session.id}/T${turn.id}#E1@user`);
+  }
+  const found = lines(memory.search(query, layer, { ...path, topk: 100 }));
+  expect(found.map(line => /^\[([^\]]+)\]/.exec(line)![1])).toEqual(labels);
+  expect(lines(memory.search(query, layer, { ...path, topk: 1 }))[0]).toContain(`[${labels[0]}]`);
+  // No indexable term: the same two hits retain newest-first order.
+  expect(lines(memory.search("预览", layer, path)).map(line => /^\[([^\]]+)\]/.exec(line)![1])).toEqual([...labels].reverse());
+});
+
+test("equal BM25 puts current knowledge before archived and superseded versions, then newest first", () => {
+  const f = corpus(), body = "quartz matching body";
+  const retired = knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], body, { operation: { title: "Same title" } });
+  archive(memory.store, f.path, retired.knowledgeId, retired.commit, [f.widgetFact.id], "invalid", body);
+  const current = knowledge(memory.store, f.path, "project", "constraint", [f.widgetFact.id], body,
+    { operation: { title: "Same title", createdAt: "2026-09-01T00:00:00Z" } });
+  expect(lines(memory.search("quartz", "knowledge", f.path)).map(line => /^\[([^\]]+)\]/.exec(line)![1]))
+    .toEqual([`K${current.knowledgeId}@v1`, `K${retired.knowledgeId}@v2`, `K${retired.knowledgeId}@v1`]);
+});
+
+test("Raw ranking distinguishes entries in one Turn and does not flush weak hits ahead of unread stronger Turns", () => {
+  const f = corpus(), weak = `quartz ${"unrelated ".repeat(80)}`;
+  const labels: string[] = [];
+  for (let i = 0; i < 30; i++) {
+    const turn = memory.store.appendTurn({ sessionId: f.session.id, kind: "turn", userPrompt: "quartz ".repeat(4),
+      assistantText: weak, startedAt: `2026-10-02T00:${String(i).padStart(2, "0")}:00Z` });
+    labels.unshift(`S${f.session.id}/T${turn.id}#E1@user`);
+  }
+  const found = lines(memory.search("quartz", "raw", { ...f.path, topk: 30 })).filter(line => line.startsWith("["));
+  expect(found.map(line => /^\[([^\]]+)\]/.exec(line)![1])).toEqual(labels);
 });
 
 test("the default print is one line per hit, centred on the first match, with the T8727 Raw shape", () => {
@@ -199,6 +242,19 @@ test("terms may match different searched fields without matching JSON punctuatio
   expect(memory.search("AlphaTool gamma", "raw", f.path)).toMatch(/@assistant\]/);
   expect(memory.search("预览 重启", "raw", f.path)).toMatch(/@assistant\]/);
   expect(memory.search("gamma beta", "raw", f.path)).toContain("No hit");
+});
+
+// 161 review: the index scores a Turn's whole reply, so a tool-only entry of a Turn with a strong reply must not borrow that score.
+test("a tool-only Raw entry is ranked by its own calls, not by its Turn's reply text", () => {
+  const f = corpus();
+  const strong = memory.store.appendTurn({ sessionId: f.session.id, kind: "turn", assistantText: "quartz ".repeat(8).trim(), startedAt: "2026-10-02T00:00:00Z" });
+  const input = `quartz ${"unrelated ".repeat(80)}`;
+  memory.store.appendToolCall({ turnId: strong.id, name: "Read", input, status: "attempted" }); // the fixture seeds a tool-only entry
+  const other = memory.store.appendTurn({ sessionId: f.session.id, kind: "turn", assistantText: "quartz one two three four five", startedAt: "2026-10-03T00:00:00Z" });
+  const label = (turnId: number, nth: number) => `S${f.session.id}/T${turnId}#E${memory.store.listSourceEntries(f.session.id, turnId)[nth]!.entryOrdinal}@assistant`;
+  const out = lines(memory.search("quartz", "raw", { topk: 2 }));
+  const top = out.filter(line => line.startsWith("[")).map(line => /^\[([^\]]+)\]/.exec(line)![1]);
+  expect(top).toEqual([label(strong.id, 0), label(other.id, 0)]);
 });
 
 test("one Raw entry can satisfy terms in its text and in different tool calls", () => {

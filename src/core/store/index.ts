@@ -4493,6 +4493,40 @@ export class Store {
     return this.rawLikeScan(patterns, restricted, owners, JSON.stringify(candidates.map(c => c.id)));
   }
 
+  /** Ranking never removes a LIKE hit: topics are not indexed, and Raw phrases may span fields. */
+  searchRanks(terms: readonly string[], layer: "knowledge" | "facts", ids: readonly number[]): Map<number, number> {
+    const indexed = terms.filter(term => unicodeLength(term) >= 3 && !term.includes("\u0000"));
+    if (!indexed.length || !ids.length) return new Map();
+    const table = layer === "knowledge" ? "knowledge_fts" : "facts_fts";
+    return new Map(this.db.prepare(`SELECT rowid AS id, bm25(${table}) AS score FROM ${table}
+      WHERE ${table} MATCH ? AND rowid IN (SELECT value FROM json_each(?))`)
+      .all(indexed.map(ftsPhraseQuery).join(" AND "), JSON.stringify(ids)).map(row => [Number(row.id), Number(row.score)]));
+  }
+
+  /** A Turn's best field is a lower bound on any entry's score (SQLite BM25 is negative). */
+  rawSearchRanks(terms: readonly string[], turnIds: readonly number[]): Map<number, {
+    score: number; fields: Map<string, number>; sessionId: number; startedAt: string;
+  }> {
+    const indexed = terms.filter(term => unicodeLength(term) >= 3 && !term.includes("\u0000"));
+    const ranks = new Map<number, { score: number; fields: Map<string, number>; sessionId: number; startedAt: string }>();
+    if (!indexed.length || !turnIds.length) return ranks;
+    const candidates = JSON.stringify(turnIds);
+    for (const row of this.db.prepare("SELECT id, session_id, started_at FROM turns WHERE id IN (SELECT value FROM json_each(?))").all(candidates))
+      ranks.set(Number(row.id), { score: 0, fields: new Map(), sessionId: Number(row.session_id), startedAt: String(row.started_at) });
+    const rows = this.db.prepare(`SELECT e.turn_id, e.field, c.ordinal, bm25(raw_fts) AS score
+      FROM raw_fts JOIN raw_search_entries e ON e.id = raw_fts.rowid
+      LEFT JOIN tool_calls c ON c.id = e.tool_call_id
+      WHERE raw_fts MATCH ? AND e.turn_id IN (SELECT value FROM json_each(?))`)
+      .all(indexed.map(ftsPhraseQuery).join(" AND "), candidates);
+    for (const row of rows) {
+      const id = Number(row.turn_id), score = Number(row.score);
+      const rank = ranks.get(id)!;
+      rank.score = Math.min(rank.score, score);
+      rank.fields.set(`${row.ordinal ?? 0}:${row.field}`, score);
+    }
+    return ranks;
+  }
+
   searchAddresses(terms: readonly string[], scope: "facts" | "knowledge" | "all" | "raw", sessionIds?: readonly number[]): string[] {
     const patterns = terms.map(term => `%${term.replace(/[\\%_]/g, "\\$&")}%`);
     const owners = JSON.stringify(sessionIds ?? []), restricted = sessionIds !== undefined;
