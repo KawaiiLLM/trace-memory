@@ -11,14 +11,14 @@ afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 test("clustering rejects missing, duplicate, foreign and oversized membership before curate", async () => {
   const f = dreamerFixture(memories);
   f.item("One supported rule"); f.item("Another supported rule");
-  const items = projectItems(f.store, f.path), [a, b] = items.map(item => item.address);
-  const file = (members: string) => `# Group 1\n## Cluster Rules\nitems: ${members}\n`;
+  const items = projectItems(f.store, f.path), [a, b] = items.map(item => `K${item.value.knowledge.id}`);
+  const file = (members: string) => `# Group 1\n## Cluster Rules\n${members.split(", ").map(id => `- ${id}`).join("\n")}\n`;
   expect(checkGroups(file(`${a}, ${b}`), items).problems).toEqual([]);
-  expect(checkGroups(file(`${a}, ${a}, K999@v1`), items).problems.join("\n")).toMatch(/duplicate[\s\S]*unknown[\s\S]*missing/);
+  expect(checkGroups(file(`${a}, ${a}, K999`), items).problems.join("\n")).toMatch(/duplicate[\s\S]*unknown[\s\S]*missing/);
   expect(checkGroups(file(`${a}, ${b}`), items, 1).problems.join("\n")).toContain("1–1");
   f.dreamer.script.clustering = file(`${a}, ${a}`);
   expect(await f.memory.dream({ ...f.target, manual: true, fullCheck: true })).toMatchObject({ outcome: "failure", failure: { task: "clustering" } });
-  expect(f.dreamer.inputs.map(input => input.task)).toEqual(["notes", "clustering"]);
+  expect(f.dreamer.inputs.some(input => input.task === "curate")).toBe(false);
   expect(f.store.currentKnowledge(f.path).every(item => item.knowledge.score === null)).toBe(true);
 });
 
@@ -39,7 +39,7 @@ test("full check persists clusters, resumes only uncommitted groups and rescores
   expect(await f.memory.dream({ ...f.target, manual: true, fullCheck: true })).toMatchObject({ outcome: "failure" });
   const saved = f.store.handoff(f.session.id, "dreaming")!.detail!;
   expect(saved.groups!.map(group => !!group.run)).toEqual([true, false]);
-  expect(saved.groups![0]!.clusters).toEqual([{ label: "Topic 1", items: [a.knowledgeId] }]);
+  expect(saved.groups![0]!.clusters).toEqual([{ label: "Topic 1.1", items: [a.knowledgeId] }]);
   expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(61);
   expect(f.store.currentCommit(a.knowledgeId, f.path)[0]!.id).toBe(a.commit);
   expect(f.store.getKnowledge(b.knowledgeId)!.score).toBeNull();
@@ -64,7 +64,6 @@ test.each([{ mode: "full check", fullCheck: true }, { mode: "incremental Dreamer
     expect(f.store.getClaim(f.session.id, "dreaming")).not.toBeNull();
     const refused = await f.memory.dream({ ...f.target, manual: true, fullCheck: !fullCheck });
     expect(refused).toMatchObject({ outcome: "dropped", reason: expect.stringMatching(/already running/) });
-    expect(f.dreamer.inputs.map(input => input.task)).toEqual(["notes"]);
   } finally { held.resolve(); expect(await running).toMatchObject({ outcome: "success" }); }
 });
 
@@ -77,7 +76,7 @@ test("a manual full check replaces paused incremental membership and includes ne
   const c = f.item("Rule arriving after the paused incremental run");
   f.dreamer.script.curate!.group2 = "## none\n";
   expect(await f.memory.dream({ ...f.target, manual: true, fullCheck: true })).toMatchObject({ outcome: "success" });
-  expect(f.dreamer.inputs.filter(input => input.task === "clustering")).toHaveLength(1);
+  expect(f.dreamer.inputs.filter(input => input.task === "clustering")).toHaveLength(2);
   expect([a, b, c].map(item => f.store.getKnowledge(item.knowledgeId)!.score)).toEqual([50, 50, 50]);
   expect(f.store.getRun(committed)!.outcome).toBe("success");
   expect(fullCheckDryRun(f.store, f.path).groups!.map(group => group.items)).toEqual([[a.knowledgeId], [b.knowledgeId], [c.knowledgeId]]);

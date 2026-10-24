@@ -7,6 +7,7 @@ import { block } from "../../support/workspace.ts";
 
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const dreaming = (c: { systemPrompt?: string }) => c.systemPrompt?.startsWith("# Dreamer") || c.systemPrompt?.startsWith("# Classifying");
+const curating = (c: Parameters<typeof dreamerFiles>[0]) => /Group \d+\. Call/.test(JSON.stringify(c.messages));
 const settle = async (h: ReturnType<typeof host>) => { for (let i = 0; i < 30; i++) await h.drain(); };
 const call = (name: string, args: object): Reply => ({ ...reply(""), stopReason: "toolUse", content: [
   { type: "toolCall", id: `${name}-1`, name, arguments: args as JsonObject },
@@ -47,6 +48,7 @@ for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fenc
         const completed = h.memory.store.listSessionFacts(1).length;
         return extract(c, completed === 0 ? "global" : "session");
       }
+      if (!curating(c)) return retain(c);
       dreams++; await held; return retain(c);
     });
     await command(h, "catchup");
@@ -234,6 +236,7 @@ test.each(["stop", "path", "off", "shutdown"] as const)("86: Pi %s fences catchu
     await h.turn(); seed(h);
     h.provider(async c => {
       if (!dreaming(c)) return notingFact(c);
+      if (!curating(c)) return retain(c);
       dreams++; await held; replied = true;
       return { ...reply(""), stopReason: "error", errorMessage: "late D failure" };
     }, { ignoreAbort: true });
@@ -333,7 +336,7 @@ test("146 Q18 (d): the old path's D fails late after a path switch: the new path
   try {
     await h.turn(); seed(h);
     h.provider(async c => {
-      if (dreaming(c)) { dreams++; await heldD; return fail("old-path D terminal failure"); }
+      if (dreaming(c)) { if (!curating(c)) return retain(c); dreams++; await heldD; return fail("old-path D terminal failure"); }
       if (++nCalls === 1) await heldN;
       return notingFact(c);
     }, { ignoreAbort: true });

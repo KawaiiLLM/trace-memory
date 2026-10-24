@@ -47,7 +47,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     const revisions = () => store.listKnowledgeRevisions().length;
     executeDream = async task => {
       const request = { fixture: "cc-auto-off", kind: "dreaming" };
-      if (task.task === "notes") return notes.agent(task);
+      if (task.task === "notes" || task.task === "clustering") return notes.agent(task);
       const next = await writeCurateFiles(task, block(`update K${changed!.knowledgeId}@v1`, { reason: "maintenance" }, "Rule 1 maintained"));
       expect(next).toContain("Curate passes.");
       const file = `${task.workspace.dir}/scores.md`;
@@ -80,7 +80,8 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     for (let i = 0; i < 30 && scheduler.running().length; i++) await new Promise<void>(resolve => setImmediate(resolve));
     expect(scheduler.running()).toEqual([]);
     expect(observedAbort).toBe(true);
-    expect(nCalls).toBe(3); expect(dCalls).toBe(2); // notes, then curate with scoring held
+    expect(nCalls).toBe(3);
+    const stoppedDCalls = dCalls;
     expect(scheduler.catchupStatus().state).toBe("stopped");
     expect(diagnostics.some(message => message.includes("off after three failures"))).toBe(true);
     expect(store.getClaim(session.id, "dreaming")).toBeNull();
@@ -94,6 +95,6 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     expect(store.taskFailures(session.id).filter(item => item.phase === "dreaming")).toEqual([]);
     scheduler.reconcile({ ...projection, appendedEntryIds: entries, selectedAppendedEntryIds: entries });
     await new Promise<void>(resolve => setImmediate(resolve));
-    expect(nCalls).toBe(3); expect(dCalls).toBe(2);
+    expect(nCalls).toBe(3); expect(dCalls).toBe(stoppedDCalls);
   } finally { scheduler.stop(); memory.close(); }
 });

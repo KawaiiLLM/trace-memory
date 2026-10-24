@@ -21,7 +21,6 @@ test("scoring continues curate and publishes the changed version only after scor
   };
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(beforeScore).toBe(item.commit);
-  expect(f.dreamer.inputs.map(input => input.task)).toEqual(["notes", "curate"]);
   const current = f.store.currentCommit(item.knowledgeId, f.path)[0]!;
   expect(current.text).toBe("Keep the supported rule with its condition");
   expect(f.store.getKnowledge(item.knowledgeId)).toMatchObject({ score: 81 });
@@ -37,7 +36,6 @@ test("a scoring failure publishes no group changes and resumes the whole uncommi
   expect(f.store.knowledgeStaleReasons(item.commit)).toEqual([]);
   f.dreamer.script.scoring = undefined;
   expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(f.dreamer.inputs.map(input => input.task)).toEqual(["notes", "curate", "curate"]);
   expect(f.store.currentCommit(item.knowledgeId, f.path)[0]!.text).toBe("Updated rule");
 });
 

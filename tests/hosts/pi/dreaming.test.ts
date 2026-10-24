@@ -117,6 +117,7 @@ test("136 review SPEC4: a Pi Dreamer's over-long search output is saved and its 
     const toolText = (message: { content?: unknown } | undefined) => ((message?.content as { text?: string }[] | undefined) ?? []).map(part => part.text ?? "").join("");
     let requests = 0, path = "", readBack = "";
     h.provider(async c => {
+      if (!/Group \d+\. Call/.test(JSON.stringify(c.messages))) return dreamerFiles(c) ?? reply("Done");
       requests++;
       const results = c.messages.filter(m => m.role === "toolResult");
       if (requests === 1) return call("s1", "search", { layer: "knowledge", code: "text(Array.from({ length: 40000 }, (_, i) => 'line ' + i + ' word').join('\\n'))" });

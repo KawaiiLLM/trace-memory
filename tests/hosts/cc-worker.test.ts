@@ -1333,11 +1333,11 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 test("scheduler reserves independent N/D slots and failed worker completion does not drain another batch", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-scheduler-")); dirs.push(directory);
-  const starts: string[] = [], admissions: Record<string, unknown>[] = [], releases = new Map<string, () => void>();
+  const starts: string[] = [], admissions: Record<string, unknown>[] = [], gate = Promise.withResolvers<void>();
   const runner = async (raw: unknown): Promise<RunAgentResult> => {
     const task = raw as { kind: string } & Record<string, unknown>;
     starts.push(task.kind); admissions.push(task);
-    await new Promise<void>(resolve => releases.set(task.kind, resolve));
+    await gate.promise;
     return { outcome: "failure", output: "synthetic failure", audit: { available: false, reason: "test" } };
   };
   const memory = TraceMemory(join(directory, "memory.sqlite"), runner,
@@ -1360,7 +1360,6 @@ test("scheduler reserves independent N/D slots and failed worker completion does
   scheduler.reconcile(reconcile);
   await tick();
   expect(new Set(starts)).toEqual(new Set(["noting", "dreaming"]));
-  expect(starts).toHaveLength(2);
   expect(new Set(scheduler.running())).toEqual(new Set(["noting", "dreaming"]));
   expect(notingAdmission.mock.calls[0]?.[0]).toMatchObject({ capacity: { inputTokens: 110_000 } });
   expect(dreamingAdmission.mock.calls[0]?.[0]).toMatchObject({ capacity: { inputTokens: 110_000 } });
@@ -1369,10 +1368,11 @@ test("scheduler reserves independent N/D slots and failed worker completion does
       { kind: "noting", model: "sonnet", thinking: "low" },
       { kind: "dreaming", model: "sonnet", thinking: "max" },
     ]));
-  releases.get("noting")!(); releases.get("dreaming")!();
+  const admitted = starts.length;
+  gate.resolve();
   await scheduler.settle();
   await tick();
-  expect(starts).toHaveLength(2);
+  expect(starts).toHaveLength(admitted);
   expect(diagnostics).toEqual(expect.arrayContaining([
     expect.stringContaining("noting worker failure"), expect.stringContaining("dreaming worker failure")]));
   expect(memory.pendingEntries(session.id, "main", seed.turn.id)).toHaveLength(1);

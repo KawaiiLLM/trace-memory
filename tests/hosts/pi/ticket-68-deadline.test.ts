@@ -19,9 +19,9 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
     let hung = false;
     // The model checks, then its next request hangs past the deadline and answers late with a valid batch.
     h.provider(async (c, abort): Promise<Reply> => {
-      if (!hung && c.messages.some(m => m.role === "toolResult")) {
+      if (!hung && /Group \d+\. Call/.test(JSON.stringify(c.messages)) && c.messages.some(m => m.role === "toolResult")) {
         hung = true; signal = abort; await gate;
-        const file = /File: (\S+?\.md)/.exec(JSON.stringify(c.messages))![1]!;
+        const file = /Changes: (\S+?\.md)/.exec(JSON.stringify(c.messages))![1]!;
         return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "late", name: "write", arguments: {
           path: file, content: block(`update K${item.knowledgeId}@v1`, { reason: "too late" }, "A durable rule, too late") } as never }] };
       }
@@ -33,7 +33,7 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
     expect(JSON.parse(failed.response!).problems.join(" ")).toMatch(/timeout|deadline|300 ms/i);
     expect(signal?.aborted).toBe(true);
     expect(store.getClaim(1, "dreaming")).toBeNull();
-    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "notes" });
+    expect(store.handoff(1, "dreaming")!.detail!.groups!.map(group => group.run)).toEqual([undefined]);
     release(); await h.drain();
     expect(revisions()).toBe(before); // the late write changed nothing
     // The next run is admitted and completes.

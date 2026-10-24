@@ -324,17 +324,16 @@ test("24a/51: concurrent N and D indicator prefers N; off and no-theme fallback"
   const source = h.memory.store.sourcePath(1, "main", 1).find(value => value.entryOrdinal === 1)!;
   fact(h.memory, h.memory.store.knowledgePath(1, "main", 1), "Package manager choice",
     [{ entry: h.memory.store.getSourceEntry(source.id)!, text: "User chose pnpm" }]);
-  const priorRequests = h.requests.length;
   const due = noterWrittenItem(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }, 1);
   expect(h.memory.store.dreamingDue({ sessionId: 1, branch: "main", headTurnId: 1 }, 1)).toBe(true);
 
   // Both phases hold their own real wire requests; D must not be a stand-in for retired C.
   h.provider(async () => new Promise<Reply>(() => {}));
   await h.prompt("second"); await h.answer(); await h.emit("agent_settled"); await h.drain();
-  await vi.waitFor(() => expect(h.requests).toHaveLength(priorRequests + 1));
+  await vi.waitFor(() => expect(h.memory.store.getClaim(1, "dreaming")).not.toBeNull());
   expect(footer(h)).toMatchObject({ glyph: "●", role: "customMessageLabel" });
   await h.prompt("word ".repeat(15_000)); await h.answer("long answer"); await h.drain();
-  await vi.waitFor(() => expect(h.requests).toHaveLength(priorRequests + 2));
+  await vi.waitFor(() => expect(h.memory.store.getClaim(1, "noting")).not.toBeNull());
   expect(h.memory.store.getClaim(1, "dreaming")).not.toBeNull();
   expect(h.memory.store.getClaim(1, "noting")).not.toBeNull();
   expect(footer(h)).toMatchObject({ glyph: "●", role: "accent" });

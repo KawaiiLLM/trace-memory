@@ -88,8 +88,6 @@ export interface TraceMemoryConfig {
     triggerOperations: number;
     /** Cooperative wall-clock deadline shared by every host. */
     timeoutMs: number;
-    /** Dispatcher proposal: the maintainer has not set the per-seed retrieval cap. */
-    candidatesPerSeed: number;
     groupItems: number;
     parallelGroups: number;
     notesSteps: number;
@@ -142,8 +140,8 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     checkKnowledgeContextTokens: 15_000,
   },
   dreaming: { triggerOperations: DEFAULT_DREAMING_TRIGGER_OPERATIONS, timeoutMs: 1_800_000,
-    candidatesPerSeed: 10, groupItems: 50, parallelGroups: 5, notesSteps: 10, notesTokens: 10_000,
-    clusteringSteps: 10, clusteringContextTokens: 30_000,
+    groupItems: 50, parallelGroups: 5, notesSteps: 10, notesTokens: 10_000,
+    clusteringSteps: 30, clusteringContextTokens: 150_000,
     // Dispatcher proposals from the 37-item Sonnet experiment, not maintainer-set limits.
     curateSteps: 100, curateContextTokens: 200_000, scoringSteps: 10, scoringContextTokens: 30_000 },
   writing: { ...DEFAULT_WRITING_LIMITS },
@@ -879,7 +877,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         const visible = store.curateItems(target).filter(item => item.value.revision.scope !== "session");
         if (input.manual || input.fullCheck ? !handoff && !visible.length : !dreamingDue(target)) { empty = true; return null; }
         const groupCount = handoff?.detail?.groups?.length || Math.ceil((handoff?.detail?.clusteringItems?.length ?? visible.length) / cfg.dreaming.groupItems);
-        const setupTasks = input.fullCheck || handoff?.detail?.fullCheck ? 2 : 1;
+        const setupTasks = 2;
         executionLimit = executionLimitMs(setupTasks + 2 * Math.max(1, Math.ceil(groupCount / cfg.dreaming.parallelGroups)), cfg.dreaming.timeoutMs);
         claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerOperations, executionLimit + CLAIM_LEASE_MARGIN_MS, input.manual || input.fullCheck);
         if (!claim) {
@@ -892,7 +890,6 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         projectId = store.getSession(input.sessionId)!.projectId;
         origin = store.triggerOrigin(target, target.triggerEntryId);
         const frozen = prepareDreaming(store, { ...input, ...target }, cfg, claim, target);
-        if (!frozen.groups.length && !frozen.fullCheck && !handoff) { store.releaseClaim(claim); empty = true; return null; }
         // 126 keys the Dreamer's logical task on its session alone, so every run of one session continues one failure streak.
         executionId = store.beginExecution({ sessionId: target.sessionId, phase, origin });
         return frozen;

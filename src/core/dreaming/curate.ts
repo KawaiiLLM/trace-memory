@@ -2,16 +2,21 @@ import { words, renderKnowledge, knowledgeStaleLabel } from "../render/index.ts"
 import { parseBlocks, plan, list, traceProblem, type WorkspaceFile } from "../workspace/index.ts";
 import type { CurateItem, KnowledgePath, Store, KnowledgeOperationInput } from "../store/index.ts";
 import { allowedRoots, resolveRepositoryPath, repositoryEvidenceProblem } from "./roots.ts";
+import type { Cluster } from "./clustering.ts";
 export type { CurateItem } from "../store/index.ts";
 
-export function formGroups(items: readonly CurateItem[], size = 50): CurateItem[][] {
-  const groups: CurateItem[][] = [];
-  for (let at = 0; at < items.length; at += size) groups.push(items.slice(at, at + size));
-  return groups;
-}
-export function groupText(store: Store, items: readonly CurateItem[], clusters?: readonly { label: string; items: number[] }[]): string {
-  const labels = new Map(clusters?.flatMap(cluster => cluster.items.length ? [[cluster.items[0]!, cluster.label] as const] : []));
-  const contents = items.map(item => `${labels.has(item.value.knowledge.id) ? `\n## Cluster ${labels.get(item.value.knowledge.id)}\n\n` : ""}- ${item.address}: ${item.value.revision.title ?? "(no title)"}${knowledgeStaleLabel({ staleReasons: store.knowledgeStaleReasons(item.value.revision.id) })}`).join("\n");
+export function groupText(store: Store, items: readonly CurateItem[], clusters?: readonly Cluster[], references: readonly { id: number; title: string }[] = []): string {
+  const ids = new Set(items.map(item => item.value.knowledge.id));
+  const titles = new Map(references.map(item => [item.id, item.title]));
+  const contents = clusters ? clusters.map(cluster => `## Cluster ${cluster.label}\n\n` +
+    cluster.items.filter(id => ids.has(id)).map(id => {
+      const item = items.find(item => item.value.knowledge.id === id)!, mark = cluster.marks?.[id];
+      return `- ${item.address}: ${item.value.revision.title ?? "(no title)"}${mark ? ` ! ${mark.kind}: ${mark.reason}` : ""}`;
+    }).join("\n")).join("\n\n") : items.map(item => `- ${item.address}: ${item.value.revision.title ?? "(no title)"}`).join("\n");
+  const referenceText = clusters?.map(cluster => {
+    const others = cluster.items.filter(id => !ids.has(id) && titles.has(id));
+    return others.length ? `## Cluster ${cluster.label}\n\n${others.map(id => `- K${id}: ${titles.get(id)}`).join("\n")}` : "";
+  }).filter(Boolean).join("\n\n");
   const bodies = items.map(item => {
     const current = item.value.revision;
     const history = store.listKnowledgeRevisions(current.knowledgeId);
@@ -21,7 +26,7 @@ export function groupText(store: Store, items: readonly CurateItem[], clusters?:
       return `${renderKnowledge({ knowledge: item.value.knowledge, revision: r, staleReasons: store.knowledgeStaleReasons(r.id) }, `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`)}\nfiles: ${files}\nverification: ${JSON.stringify(store.knowledgeFileVerifications(r.id))}\nflags: ${JSON.stringify(store.knowledgeStaleReasons(r.id))}\nreason: ${r.reason}\n\nFacts:\n${facts || "None"}`;
     }).join("\n\n");
   });
-  return `# Contents\n\n${contents}\n\n${bodies.join("\n\n")}\n`;
+  return `# Contents\n\n${contents}\n\n${bodies.join("\n\n")}\n${referenceText ? `\n# Reference only — not candidates\n\n${referenceText}\n` : ""}`;
 }
 export const decisionsTemplate = (items: readonly CurateItem[]) => items.map(item => `## item ${item.address}\ntitle: ${item.value.revision.title ?? ""}\naccuracy: \ngrounds: \nnorms: \nevidence: \nfiles: \ndecision: \nreason: \n`).join("\n");
 export interface Decision { item: CurateItem; title: string; files: string[] | null; decision: string; reason: string; missingGrounds: boolean }

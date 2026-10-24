@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "vitest";
+import { readFileSync } from "node:fs";
 import type { TraceMemory } from "../../source-fixture.ts";
-import { dreamerFixture, scriptedDreamer } from "../../support/dreamer.ts";
+import { decisionText, dreamerFixture, scriptedDreamer } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
 import type { DreamingAgentInput } from "../../../src/core/dreaming/index.ts";
-import { incrementalCandidates } from "../../../src/core/dreaming/candidates.ts";
+import { boundaryOf, incrementalCandidates, projectItems } from "../../../src/core/dreaming/candidates.ts";
+import { checkCurate, decisionsTemplate } from "../../../src/core/dreaming/curate.ts";
 
 const memories: TraceMemory[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -29,7 +31,7 @@ test("one pass can update archive merge and split but never create", async () =>
   expect(f.store.currentCommit(b!.knowledgeId, f.path)[0]!.op).toBe("archive");
   expect(f.store.liveKnowledge(f.path).some(r => r.knowledgeId === d!.knowledgeId)).toBe(false);
   expect(f.store.liveKnowledge(f.path).some(r => r.text === "The other facet")).toBe(true);
-  expect(incrementalCandidates(f.store, f.path, 10)).toMatchObject({ seeds: [], candidates: [] });
+  expect(incrementalCandidates(f.store, f.path)).toMatchObject({ background: "No new background material.", candidates: [] });
 });
 
 test("a failure is counted once per execution and the persisted groups retry without reaching the trigger again", async () => {
@@ -59,4 +61,78 @@ test("a runner ignoring its own deadline fails without publishing the group", as
   f.dreamer.script.instead = { curate: async (_input: DreamingAgentInput) => new Promise(() => {}) };
   expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { class: "timeout" } });
   expect(f.store.currentCommit(original.knowledgeId, f.path)[0]!.id).toBe(original.commit);
+});
+
+test("incremental groups freeze marks and references, share background, and resume only unpublished candidates", async () => {
+  const f = dreamerFixture(memories);
+  f.memory.config.dreaming.groupItems = 3;
+  f.memory.config.dreaming.parallelGroups = 1;
+  const items = Array.from({ length: 8 }, (_, i) => f.item(`Supported body ${i + 1}`, { title: `Rule ${i + 1}` }));
+  const boundary = boundaryOf(f.store, projectItems(f.store, f.path));
+  f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: "main", createdAt: "now", outcome: "success", response: JSON.stringify({ finished: { boundary } }) });
+  for (const item of [items[0]!, items[1]!, items[3]!, items[4]!]) f.store.setKnowledgeStale(item.commit, { reason: "unresolved_check", detail: "Review this ruling" });
+  const ids = items.map(item => item.knowledgeId);
+  f.dreamer.script.clustering = `# Group 1\n## Cluster First\n- K${ids[0]}\n- K${ids[1]}\n- K${ids[2]}\n# Group 2\n## Cluster Second\n- K${ids[3]}\n- K${ids[4]}\n- K${ids[5]}\n# Group 3\n## Cluster Extra\n- K${ids[6]} ! duplicate: Check overlapping rule\n- K${ids[7]}\n`;
+  const inputs: { prefix: string; group: string; decisions: string }[] = [];
+  f.dreamer.script.instead = { curate: async input => {
+    inputs.push({ prefix: input.text.split("\n\nGroup ")[0]!, group: readFileSync(`${input.workspace.dir}/group.md`, "utf8"), decisions: readFileSync(`${input.workspace.dir}/decisions.md`, "utf8") });
+    return scriptedDreamer({ curate: { group2: "## bogus\n" } }).agent(input);
+  } };
+  expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "failure" });
+  const saved = f.store.handoff(f.session.id, "dreaming")!.detail!;
+  expect(saved.groups!.map(group => group.items)).toEqual([[ids[0], ids[1], ids[6]], [ids[3], ids[4]]]);
+  expect(saved.groups![0]!.clusters!.at(-1)!.marks).toEqual({ [ids[6]!]: { kind: "duplicate", reason: "Check overlapping rule" } });
+  expect(inputs[0]!.prefix).toBe(inputs[1]!.prefix);
+  expect(inputs[0]!.prefix.indexOf("</repository_notes>")).toBeLessThan(inputs[0]!.prefix.indexOf("<background_material>"));
+  expect(inputs[0]!.group).toContain(`- K${ids[2]}: Rule 3`);
+  expect(inputs[0]!.group).not.toContain("Supported body 3");
+  expect(inputs[0]!.decisions).not.toContain(`K${ids[2]}@`);
+  expect(f.store.getKnowledge(ids[6]!)!.score).toBe(50);
+  expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE revision_id=? AND pool=?").get(items[6]!.commit, `project:${f.project.id}`)).toEqual({ revision_id: items[6]!.commit });
+  f.dreamer.script.instead = undefined;
+  f.dreamer.script.clustering = "invalid if called again";
+  const before = f.dreamer.inputs.length;
+  expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "success" });
+  expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate"]);
+  expect(f.store.getKnowledge(ids[2]!)!.score).toBeNull();
+});
+
+test("curate refuses a reference item as a decision, mutation target or absorbed merge parent", () => {
+  const f = dreamerFixture(memories), candidate = f.item("Candidate body"), reference = f.item("Reference body");
+  const items = projectItems(f.store, f.path), selected = items.filter(item => item.value.knowledge.id === candidate.knowledgeId);
+  const decisions = decisionText(decisionsTemplate(selected));
+  for (const changes of [
+    block(`update ${reference.ref}`, { reason: "Attempted reference write" }, "Changed reference"),
+    block(`merge ${candidate.ref}`, { absorb: reference.ref, reason: "Attempted reference absorption" }, "Combined rule"),
+  ]) {
+    expect(checkCurate(f.store, f.path, selected, { name: "decisions.md", text: decisions }, { name: "changes.md", text: changes }).problems.join("\n")).toContain("outside this group");
+  }
+  expect(checkCurate(f.store, f.path, selected, { name: "decisions.md", text: decisionText(decisionsTemplate(items)) }, { name: "changes.md", text: "## none\n" }).problems.join("\n")).toContain("expected an item of this group");
+  expect(f.store.currentCommit(reference.knowledgeId, f.path)[0]!.id).toBe(reference.commit);
+});
+
+test("repository notes and full-pool clustering overlap, but neither alone admits curate", async () => {
+  const f = dreamerFixture(memories), item = f.item("A supported rule"), scripted = scriptedDreamer();
+  const notes = Promise.withResolvers<void>(), clustering = Promise.withResolvers<void>(), clustered = Promise.withResolvers<void>();
+  const started: string[] = [];
+  f.dreamer.script.instead = {
+    notes: async input => { started.push("notes"); await notes.promise; return scripted.agent(input); },
+    clustering: async input => {
+      started.push("clustering");
+      expect(readFileSync(`${input.workspace.dir}/batch-1.md`, "utf8")).toContain("A supported rule");
+      await clustering.promise;
+      const result = await scripted.agent(input);
+      clustered.resolve();
+      return result;
+    },
+  };
+  const running = f.dream();
+  expect(new Set(started)).toEqual(new Set(["notes", "clustering"]));
+  clustering.resolve();
+  await clustered.promise;
+  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBeNull();
+  expect(f.dreamer.inputs.some(input => input.task === "curate")).toBe(false);
+  notes.resolve();
+  expect(await running).toMatchObject({ outcome: "success" });
+  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(50);
 });

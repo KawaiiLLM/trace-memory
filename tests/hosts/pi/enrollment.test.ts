@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { afterEach, expect, test } from "vitest";
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { host, reply, notingFact } from "./test-host.ts";
+import { host, reply, notingFact, dreamerFiles } from "./test-host.ts";
 import { TraceMemory, DEFAULT_CONFIG } from "../../../src/core/api/index.ts";
 import { compacted , hydrate } from "../../source-fixture.ts";
 import { fact, knowledge } from "../../support/seed.ts";
@@ -311,15 +311,18 @@ test.each([true, false])("92: disable during D rejects late %s mutation and pres
   // A Noter-written item makes the Dreamer due (2026-10-22).
   knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "project", "constraint", [1], "Retain rule", { operation: { title: "Fixture title" } });
   const original = h.memory.store.listKnowledgeRevisions()[0]!;
-  let release!: () => void, requests = 0;
+  let release!: () => void;
+  const ready = Promise.withResolvers<void>();
   const toolCall = (name: string, args: object) => ({ ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: name, name, arguments: args as never }] });
   // The model calls `check`, then holds; the late reply writes a batch file (or says nothing) after the memory is off.
   h.provider(async c => {
-    if (++requests === 1) return toolCall("check", {});
-    const file = /File: (\S+?\.md)/.exec(JSON.stringify(c.messages))![1]!;
+    if (!/Group \d+\. Call/.test(JSON.stringify(c.messages))) return dreamerFiles(c) ?? reply("Done");
+    if (!c.messages.some(message => message.role === "toolResult")) return toolCall("check", {});
+    const file = /Changes: (\S+?\.md)/.exec(JSON.stringify(c.messages))![1]!;
+    ready.resolve();
     return new Promise(resolve => { release = () => resolve(submit ? toolCall("write", { path: file, content: block(`update K${original.knowledgeId}@v1`, { reason: "Late mutation" }, "Late body") }) : reply("No mutation")); });
   });
-  await h.prompt("next main turn"); await h.answer("D opportunity"); await h.drain(); expect(h.requests).toHaveLength(2);
+  await h.prompt("next main turn"); await h.answer("D opportunity"); await ready.promise;
   await command(h, "off"); h.provider(async () => reply("Stopped"));
   release();
   await h.drain();

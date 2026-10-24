@@ -75,7 +75,7 @@ test("92: N auto-off fences a running D: its late pass changes nothing, its clai
   const ready = Promise.withResolvers<void>(), notes = scriptedDreamer();
   const m = open(":memory:", raw => {
     const input = raw as NotingAgentInput | DreamingAgentInput;
-    if (input.kind === "dreaming") return input.task === "notes" ? notes.agent(input) : scenario(input);
+    if (input.kind === "dreaming") return input.task === "notes" || input.task === "clustering" ? notes.agent(input) : scenario(input);
     return failed(raw);
   });
   const target = seed(m), other = seed(m);

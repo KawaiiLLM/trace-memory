@@ -32,6 +32,15 @@ export function writeDecisions(dir: string, changes = "## none\n"): void {
   const file = `${dir}/decisions.md`;
   writeFileSync(file, decisionText(readFileSync(file, "utf8"), changes));
 }
+export function clusteredItems(addresses: readonly string[], size = 50): string {
+  const groups: string[] = [];
+  for (let at = 0; at < addresses.length; at += size) {
+    const items = addresses.slice(at, at + size), clusters: string[] = [];
+    for (let c = 0; c < items.length; c += 10) clusters.push(`## Cluster Topic ${at / size + 1}.${c / 10 + 1}\n${items.slice(c, c + 10).map(address => `- ${address.split("@")[0]}`).join("\n")}\n`);
+    groups.push(`# Group ${at / size + 1}\n\n${clusters.join("\n")}`);
+  }
+  return groups.join("\n");
+}
 export interface ScriptedDreamer {
   agent: RunAgent; inputs: DreamingAgentInput[]; messages: string[]; reports: string[]; script: DreamerScript;
 }
@@ -57,8 +66,7 @@ export function scriptedDreamer(script: DreamerScript = {}): ScriptedDreamer {
     } else if (input.task === "clustering") {
       const items = readFileSync(`${input.workspace.dir}/items.md`, "utf8").trim().split("\n").map(line => line.split(" ")[0]!);
       const size = Number(/Group size: at most (\d+)/.exec(report)?.[1] ?? 50);
-      const fallback = Array.from({ length: Math.ceil(items.length / size) }, (_, i) =>
-        `# Group ${i + 1}\n\n## Cluster Topic ${i + 1}\nitems: ${items.slice(i * size, (i + 1) * size).join(", ")}\n`).join("\n");
+      const fallback = clusteredItems(items, size);
       writeFileSync(`${input.workspace.dir}/groups.md`, pick("clustering", script.clustering, report, fallback));
       const next = input.passEnd();
       if (next) { messages.push(next); writeFileSync(`${input.workspace.dir}/groups.md`, pick("clustering", script.clustering, next, fallback)); input.passEnd(); }

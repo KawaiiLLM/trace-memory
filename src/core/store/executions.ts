@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { TriggerOrigin } from "../model/index.ts";
 import type { Store, RunInput, Phase } from "./index.ts";
 import { ALL_POOLS } from "./processing.ts";
+import type { Cluster } from "../dreaming/clustering.ts";
 
 /** A logical task: the target session, the phase and its backlog key. Noting's key is its oldest
  * pending entry (`head`). 126: the Dreamer's task is (session, Dreamer), stored under the fixed pool
@@ -96,11 +97,12 @@ export interface DreamerBoundary { fact: number; revision: number; versions: Rec
 export interface HandoffDetail {
   fullCheck?: boolean;
   clusteringItems?: number[];
+  candidates?: number[];
   groupsFile?: string;
-  groups?: { items: number[]; clusters?: { label: string; items: number[] }[]; run?: number }[];
+  groups?: { items: number[]; clusters?: Cluster[]; references?: { id: number; title: string }[]; run?: number }[];
   knowledge?: string;
   notes?: string;
-  seeds?: string;
+  background?: string;
   boundary?: DreamerBoundary;
 }
 export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"]): Handoff | null {

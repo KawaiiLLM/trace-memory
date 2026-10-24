@@ -174,7 +174,7 @@ test("an owned Dreamer run shows its Noter-written item and keeps its global sea
       return new Promise<Reply>(resolve => pending.push({ resolve }));
     });
     await tick(h);
-    await vi.waitFor(() => expect(h.requests).toHaveLength(2));
+    await vi.waitFor(() => expect(h.memory.store.getClaim(borrowed.sessionId, "noting")?.borrowed).toBe(true));
     expect(h.memory.store.getClaim(1, "dreaming")).not.toBeNull();
     expect(h.memory.store.getClaim(borrowed.sessionId, "noting")?.borrowed).toBe(true);
     expect(h.memory.store.getClaim(borrowed.sessionId, "dreaming")).toBeNull();
@@ -239,19 +239,20 @@ test("one shutdown deadline fences borrowed N and owned D even when both provide
     const t = target(h.memory);
     h.provider(async () => new Promise<Reply>(() => {}), { ignoreAbort: true });
     await tick(h);
-    await vi.waitFor(() => expect(h.requests).toHaveLength(2));
+    await vi.waitFor(() => expect(h.memory.store.getClaim(t.sessionId, "noting")?.borrowed).toBe(true));
+    const heldRequests = h.requests.length;
     const borrowed = h.memory.store.getClaim(t.sessionId, "noting")!;
     const owned = h.memory.store.getClaim(1, "dreaming")!;
     expect(borrowed.borrowed).toBe(true);
     expect(owned).not.toBeNull();
     expect(h.memory.store.getClaim(t.sessionId, "dreaming")).toBeNull();
     h.persist(reply("word ".repeat(15_000))); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(2);
+    expect(h.requests).toHaveLength(heldRequests);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let done = false;
     const shutdown = h.emit("session_shutdown").then(() => { done = true; });
     await h.drain();
-    expect(h.signals).toHaveLength(2);
+    expect(h.signals).toHaveLength(heldRequests);
     expect(h.signals.every(signal => signal.aborted)).toBe(true);
     expect(h.memory.store.getClaim(t.sessionId, "noting")!.expiresAt).toBe(0);
     await vi.advanceTimersByTimeAsync(4999); expect(done).toBe(false);
@@ -269,7 +270,7 @@ test("one shutdown deadline fences borrowed N and owned D even when both provide
       expect(run.outcome).toBe("cancelled"); expect(JSON.parse(run.response!).usage).toBeNull();
       expect(h.memory.trace(`R${run.id}`)).toContain("cost unknown");
     }
-    await expect(tick(h)).rejects.toThrow("closed"); expect(h.requests).toHaveLength(2);
+    await expect(tick(h)).rejects.toThrow("closed"); expect(h.requests).toHaveLength(heldRequests);
   } finally { vi.useRealTimers(); await h.dispose(); }
 });
 

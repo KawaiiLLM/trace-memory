@@ -1,13 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { dirname, relative } from "node:path";
 import type { Store, KnowledgePath, CurateItem } from "../store/index.ts";
-import type { KnowledgeRevision } from "../model/index.ts";
 import type { DreamerBoundary } from "../store/executions.ts";
-import { sentenceDiff } from "../render/index.ts";
 import { allowedRoots, resolveRepositoryPath } from "./roots.ts";
 
-export interface Seed { kind: "fact" | "knowledge" | "file"; title: string; objects: string[]; knowledgeId?: number; text: string }
-export interface CandidateSelection { seeds: Seed[]; candidates: CurateItem[]; boundary: DreamerBoundary }
+export interface CandidateSelection { background: string; candidates: CurateItem[]; boundary: DreamerBoundary }
 export interface RepositoryHead { root: string; commit: string }
 export const projectItems = (store: Store, path: KnowledgePath): CurateItem[] => store.curateItems(path).filter(item => item.value.revision.scope !== "session");
 export function boundaryOf(store: Store, items: readonly CurateItem[]): DreamerBoundary {
@@ -25,7 +22,7 @@ export function lastBoundary(store: Store, path: KnowledgePath): DreamerBoundary
   if (!row) return { fact: 0, revision: 0, versions: {} };
   const saved = JSON.parse(String(row.response ?? "{}"))?.finished?.boundary;
   if (saved) return saved;
-  // Existing completed runs predate explicit seed watermarks. Their first task's creation time
+  // Existing completed runs predate explicit watermarks. Their first task's creation time
   // bounds inputs; exact covered versions also exclude that run's own maintenance output.
   const first = store.db.prepare(`SELECT MIN(r.created_at) AS at FROM execution_runs x JOIN runs r ON r.id=x.run_id
     WHERE x.execution_id=(SELECT execution_id FROM execution_runs WHERE run_id=?)`).get(Number(row.id));
@@ -48,12 +45,12 @@ export function trackedAt(root: string, commit: string, file: string): boolean {
   try { execFileSync("git", ["-C", root, "cat-file", "-e", `${commit}:${relative(root, file)}`], { stdio: "ignore" }); return true; } catch { return false; }
 }
 /** Content comparison includes working-tree changes; no hashes are invented for non-git files. */
-export function scanChangedFiles(store: Store, path: KnowledgePath, items = projectItems(store, path)): Seed[] {
-  const roots = allowedRoots(store, path.sessionId), seeds: Seed[] = [];
+export function scanChangedFiles(store: Store, path: KnowledgePath, items = projectItems(store, path)): string[] {
+  const roots = allowedRoots(store, path.sessionId), background: string[] = [];
   const diffs = new Map<string, string>();
   for (const item of items) {
     const r = item.value.revision;
-    if (!r.files) continue; // Neither not-mapped nor explicit None is a file seed.
+    if (!r.files) continue;
     const verified = new Map(store.knowledgeFileVerifications(r.id).map(value => [value.file, value]));
     for (const file of r.files) {
       const record = verified.get(file);
@@ -75,58 +72,23 @@ export function scanChangedFiles(store: Store, path: KnowledgePath, items = proj
       if (!diff) continue;
       store.setKnowledgeStale(r.id, { reason: "file_changed", detail: `${file} since ${record.verifiedCommit}` });
       item.value.staleReasons = store.knowledgeStaleReasons(r.id);
-      seeds.push({ kind: "file", title: r.title ?? file, objects: store.knowledgeObjects(r.id).map(value => value.object), knowledgeId: r.knowledgeId,
-        text: `${file}@${record.verifiedCommit}\n${diff}` });
+      background.push(`${file}@${record.verifiedCommit}\n${diff}`);
     }
   }
-  return seeds;
+  return [...new Set(background)];
 }
-const seedVersion = (revision: KnowledgeRevision) => `${revision.title ?? ""}\n${revision.text}\ncategory: ${revision.category}\nscope: ${revision.scope}\nsupports: ${revision.supports.map(id => `F${id}`).join(", ")}\nfiles: ${revision.files?.join(", ") ?? "None"}`;
-export function incrementalCandidates(store: Store, path: KnowledgePath, cap: number, since = lastBoundary(store, path)): CandidateSelection {
-  const items = projectItems(store, path), live = new Map(items.map(item => [item.value.knowledge.id, item]));
+export function incrementalCandidates(store: Store, path: KnowledgePath, since = lastBoundary(store, path)): CandidateSelection {
+  const items = projectItems(store, path);
   const project = store.getSession(path.sessionId)!.projectId;
-  const seeds: Seed[] = [];
+  const background: string[] = [];
   const facts = store.db.prepare(`SELECT f.id FROM facts f JOIN turns t ON t.id=f.turn_id JOIN sessions s ON s.id=t.session_id
     JOIN runs r ON r.id=f.run_id WHERE f.id>? AND s.project_id=? AND r.kind='noting' ORDER BY f.id`).all(since.fact, project);
   for (const row of facts) {
     const fact = store.getFact(Number(row.id))!;
     if (!store.factOnPath(fact, path)) continue;
-    seeds.push({ kind: "fact", title: fact.title ?? "", objects: fact.objects ?? [], text: `F${fact.id}: ${fact.title ?? "(untitled)"}` });
+    background.push(`F${fact.id} ${fact.title ?? "(untitled)"} — ${(fact.objects ?? []).join(", ")}`);
   }
-  for (const r of store.commitGraph(path).current.filter(revision => revision.scope !== "session")) {
-    if (r.id === since.versions[r.knowledgeId] || r.op === "archive" && since.versions[r.knowledgeId] === undefined && r.id <= since.revision) continue;
-    const oldId = since.versions[r.knowledgeId], old = oldId ? store.getKnowledgeRevision(r.knowledgeId, oldId) : null;
-    seeds.push({ kind: "knowledge", title: r.title ?? "", objects: store.knowledgeObjects(r.id).map(value => value.object), knowledgeId: r.knowledgeId,
-      text: `K${r.knowledgeId}: ${old ? sentenceDiff(seedVersion(old), seedVersion(r)).text : seedVersion(r)}` });
-  }
-  seeds.push(...scanChangedFiles(store, path, items));
-  const objects = new Map<string, { item: CurateItem; weight: number }[]>();
-  for (const item of items) for (const object of store.knowledgeObjects(item.value.revision.id)) {
-    const key = object.object.toLowerCase(), entries = objects.get(key) ?? [];
-    entries.push({ item, weight: object.facts }); objects.set(key, entries);
-  }
-  const queryCounts = new Map<string, number>(), repeatedQueries = new Map<string, number[]>();
-  for (const seed of seeds) for (const text of [seed.title, ...seed.objects]) queryCounts.set(text, (queryCounts.get(text) ?? 0) + 1);
-  const revisions = items.map(item => item.value.revision.id);
-  const candidates = new Map<number, CurateItem>();
-  const add = (item: CurateItem | undefined) => { if (item && !candidates.has(item.value.knowledge.id)) candidates.set(item.value.knowledge.id, item); };
-  for (const seed of seeds) {
-    add(seed.knowledgeId === undefined ? undefined : live.get(seed.knowledgeId));
-    const wanted = new Set(seed.objects.map(object => object.toLowerCase()));
-    const ranked = new Map<CurateItem, number>();
-    for (const object of wanted) for (const entry of objects.get(object) ?? []) ranked.set(entry.item, (ranked.get(entry.item) ?? 0) + entry.weight);
-    [...ranked].sort((a, b) => b[1] - a[1] || a[0].value.knowledge.id - b[0].value.knowledge.id).slice(0, cap).forEach(([item]) => add(item));
-    const hits = new Map<number, number>();
-    for (const text of [seed.title, ...seed.objects]) {
-      const terms = text.match(/[\p{L}\p{N}_./-]+/gu) ?? [];
-      if (!terms.length) continue;
-      const matches = repeatedQueries.get(text) ?? store.searchKnowledge(terms, revisions);
-      if (queryCounts.get(text)! > 1) repeatedQueries.set(text, matches);
-      for (const id of matches) hits.set(id, (hits.get(id) ?? 0) + 1);
-    }
-    [...hits].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, cap).forEach(([id]) => add(live.get(id)));
-  }
-  for (const item of items) if (item.value.staleReasons?.length) add(item);
-  return { seeds, candidates: [...candidates.values()], boundary: boundaryOf(store, items) };
+  background.push(...scanChangedFiles(store, path, items));
+  const candidates = items.filter(item => item.value.revision.id !== since.versions[item.value.knowledge.id] || item.value.staleReasons?.length);
+  return { background: background.join("\n\n") || "No new background material.", candidates, boundary: boundaryOf(store, items) };
 }
-export const seedText = (seeds: readonly Seed[]) => seeds.map(seed => `## ${seed.kind}: ${seed.title}\nobjects: ${seed.objects.join(", ")}\n\n${seed.text}`).join("\n\n") || "No new seeds.";

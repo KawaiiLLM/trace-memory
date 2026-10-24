@@ -14,7 +14,7 @@ import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import type { NativeTask, ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
 import { factsFile, withVerdicts } from "../../support/noter.ts";
-import { decisionText } from "../../support/dreamer.ts";
+import { clusteredItems, decisionText } from "../../support/dreamer.ts";
 
 export type Body = Record<string, any>;
 export const sse = (events: unknown[]) => new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n",
@@ -54,8 +54,7 @@ export const dreamerTurn = (body: Body, tokens = usage(), changes = "## none\n")
     if (written.includes(output)) return say("Done.", tokens);
     const items = readFileSync(path("Input"), "utf8").trim().split("\n").map(line => line.split(" ")[0]!);
     const size = Number(/Group size: at most (\d+)/.exec(report)?.[1] ?? 50);
-    return call("groups", "write", { path: output, content: Array.from({ length: Math.ceil(items.length / size) }, (_, i) =>
-      `# Group ${i + 1}\n\n## Cluster Topic ${i + 1}\nitems: ${items.slice(i * size, (i + 1) * size).join(", ")}\n`).join("\n") }, tokens);
+    return call("groups", "write", { path: output, content: clusteredItems(items, size) }, tokens);
   }
   const files = stage === "notes" ? [{ path: path("File"), content: "No repository-specific notes." }]
     : stage === "curate" ? [{ path: path("Decisions"), content: decisionText(readFileSync(path("Decisions"), "utf8"), changes) }, { path: path("Changes"), content: changes }]

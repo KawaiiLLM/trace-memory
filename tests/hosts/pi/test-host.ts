@@ -1,4 +1,4 @@
-import { decisionText } from "../../support/dreamer.ts";
+import { clusteredItems, decisionText } from "../../support/dreamer.ts";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -144,13 +144,20 @@ export function noterReply(conversation: Conversation, plan: { facts?: string; k
 export function dreamerFiles(conversation: Conversation, plan: { curate?: string } = {}): Reply | undefined {
   const call = (calls: { id: string; name: string; arguments: JsonObject }[]): Reply => ({ ...reply(""), stopReason: "toolUse",
     content: calls.map(value => ({ type: "toolCall" as const, ...value })) });
-  const mentions = conversation.messages.flatMap(m => m.role === "assistant" || !("content" in m) ? [] : [partsText(m.content)]).filter(text => /Task: (notes|curate|scoring)/.test(text));
+  const mentions = conversation.messages.flatMap(m => m.role === "assistant" || !("content" in m) ? [] : [partsText(m.content)]).filter(text => /Task: (notes|clustering|curate|scoring)/.test(text));
   if (!mentions.length) return call([{ id: "check-1", name: "check", arguments: {} }]);
   const report = mentions.at(-1)!;
   const written = conversation.messages.flatMap(m => m.role !== "assistant" || !Array.isArray(m.content) ? [] : m.content
     .flatMap(part => part.type === "toolCall" && part.name === "write" ? [part.arguments?.path] : []));
-  const task = /Task: (notes|curate|scoring)/.exec(report)![1]!;
+  const task = /Task: (notes|clustering|curate|scoring)/.exec(report)![1]!;
   const named = (label: string) => new RegExp(`${label}: (\\S+?\\.md)`).exec(report)![1]!;
+  if (task === "clustering") {
+    const output = named("Output");
+    if (written.includes(output)) return undefined;
+    const items = readFileSync(named("Input"), "utf8").trim().split("\n").filter(Boolean).map(line => line.split(" ")[0]!);
+    const size = Number(/Group size: at most (\d+)/.exec(report)?.[1] ?? 50);
+    return call([{ id: "groups", name: "write", arguments: { path: output, content: clusteredItems(items, size) } }]);
+  }
   const changes = plan.curate ?? "## none\n";
   const files = task === "notes" ? [{ path: named("File"), content: "No repository-specific notes." }]
     : task === "curate" ? [{ path: named("Decisions"), content: decisionText(readFileSync(named("Decisions"), "utf8"), changes) }, { path: named("Changes"), content: changes }]

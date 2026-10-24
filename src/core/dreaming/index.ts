@@ -15,10 +15,10 @@ import type { NotingInput } from "../noting/index.ts";
 import type { HandoffDetail, DreamerBoundary } from "../store/executions.ts";
 import type { KnowledgePath, RunInput, Store, TaskClaim, CurateItem, WorkspaceOperationResult } from "../store/index.ts";
 import { TaskWorkspace, defaultWorkspaceRoot } from "../workspace/run.ts";
-import { checkCurate, decisionsTemplate, formGroups, groupText, type Curated } from "./curate.ts";
+import { checkCurate, decisionsTemplate, groupText, type Curated } from "./curate.ts";
 import { classifyAnchors, scoreTargets, scoringText, checkScores, type ScoreTarget } from "./classify.ts";
-import { boundaryOf, incrementalCandidates, projectItems, repositoryHead, seedText, trackedAt } from "./candidates.ts";
-import { checkGroups, clusteringInput, groupsTemplate, type Cluster } from "./clustering.ts";
+import { incrementalCandidates, projectItems, repositoryHead, trackedAt } from "./candidates.ts";
+import { candidateGroups, checkGroups, clusteringBatches, clusteringInput, groupsTemplate, type Cluster } from "./clustering.ts";
 import { allowedRoots } from "./roots.ts";
 import type { KnowledgeRevision } from "../model/index.ts";
 
@@ -44,11 +44,11 @@ export interface DreamingAgentInput extends AgentControl {
   reportRequest(request: unknown): void;
   deadline: number;
 }
-export interface FrozenGroup { no: number; items: CurateItem[]; clusters?: Cluster[]; run?: number }
+export interface FrozenGroup { no: number; items: CurateItem[]; clusters?: Cluster[]; references?: { id: number; title: string }[]; run?: number }
 export interface DreamingFrozen {
   sessionId: number; branch: string; path: KnowledgePath; claim: TaskClaim; names: ToolNames;
   prompt: string; promptHash: string; model: DreamingTaskConfig; knowledge: string;
-  groups: FrozenGroup[]; boundary: DreamerBoundary; seeds: string; notes?: string;
+  groups: FrozenGroup[]; candidates: number[]; boundary: DreamerBoundary; background: string; notes?: string;
   fullCheck: boolean; clusteringItems: CurateItem[]; groupsFile?: string; clusteringModel: string;
 }
 /** Groups run in bounded waves; admission reserves enough lease for every wave and notes. */
@@ -57,14 +57,13 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
   path: KnowledgePath & { branch: string; headTurnId: number }): DreamingFrozen {
   if (store.getSession(path.sessionId)!.host.startsWith("cc:") && !input.toolNames) throw new Error("CC Dreamer launch requires exposed tool names");
   const names = validateToolNames(input.toolNames ?? canonicalToolNames), saved = store.handoff(path.sessionId, "dreaming")?.detail;
-  const kept = saved?.boundary && (!input.fullCheck || saved.fullCheck) ? saved : undefined;
+  const kept = saved?.boundary && saved.candidates && saved.clusteringItems && (!input.fullCheck || saved.fullCheck) ? saved : undefined;
   const fullCheck = kept?.fullCheck ?? input.fullCheck ?? false;
   const live = new Map(projectItems(store, path).map(item => [item.value.knowledge.id, item]));
-  const selected = kept ? undefined : fullCheck ? { candidates: [...live.values()], boundary: boundaryOf(store, [...live.values()]), seeds: [] }
-    : incrementalCandidates(store, path, config.dreaming.candidatesPerSeed);
-  const clusteringItems = kept?.clusteringItems ? kept.clusteringItems.flatMap(id => live.get(id) ?? []) : selected?.candidates ?? [];
-  const groups = kept?.groups ? kept.groups.map((group, i) => ({ no: i + 1, items: group.items.flatMap(id => live.get(id) ?? []), clusters: group.clusters, run: group.run }))
-    : fullCheck ? [] : formGroups(selected!.candidates, config.dreaming.groupItems).map((items, i) => ({ no: i + 1, items }));
+  const selected = kept ? undefined : incrementalCandidates(store, path);
+  const clusteringItems = kept?.clusteringItems ? kept.clusteringItems.flatMap(id => live.get(id) ?? []) : [...live.values()];
+  const candidates = kept?.candidates ?? (fullCheck ? clusteringItems : selected!.candidates).map(item => item.value.knowledge.id);
+  const groups = kept?.groups?.map((group, i) => ({ no: i + 1, items: group.items.flatMap(id => live.get(id) ?? []), clusters: group.clusters, references: group.references, run: group.run })) ?? [];
   const compact = kept?.knowledge === undefined ? readFacade(store, config).compact(path.sessionId, path.branch, path.headTurnId, [], false, { readingGuide: false }) : undefined;
   const knowledge = kept?.knowledge ?? (compact && "material" in compact && compact.material ? knowledgeBlock(compact.material) : "");
   const prompt = withRetrievalPolicy(loadPrompt("dreaming.md", names, config.writing), names);
@@ -76,7 +75,7 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
   }
   return { sessionId: path.sessionId, branch: path.branch, path, claim, names, prompt, promptHash: createHash("sha256").update(prompt).digest("hex"), model, knowledge, groups,
     fullCheck, clusteringItems, groupsFile: kept?.groupsFile, clusteringModel: store.getSession(path.sessionId)!.host.startsWith("cc:") ? "haiku" : model.model,
-    boundary: kept?.boundary ?? selected!.boundary, seeds: kept?.seeds ?? seedText(selected!.seeds), ...(kept?.notes === undefined ? {} : { notes: kept.notes }) };
+    candidates, boundary: kept?.boundary ?? selected!.boundary, background: kept?.background ?? selected!.background, ...(kept?.notes === undefined ? {} : { notes: kept.notes }) };
 }
 export interface DreamingRunOptions { workspaceRoot?: string; executionId: string; registerFence(workspace: { close(): void }): void }
 interface DreamingBinding {
@@ -99,21 +98,22 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   const root = options.workspaceRoot ?? defaultWorkspaceRoot();
   let lastRunId = 0;
   const context = { kind: "dreaming" as const, sessionId, branch, headTurnId: path.headTurnId, range: { from: `S${sessionId}`, to: `S${sessionId}` } };
-  const detail = (): HandoffDetail => ({ ...(frozen.fullCheck ? { fullCheck: true, clusteringItems: frozen.clusteringItems.map(item => item.value.knowledge.id), groupsFile: frozen.groupsFile } : {}),
-    groups: groups.map(group => ({ items: group.items.map(item => item.value.knowledge.id), clusters: group.clusters, ...(group.run ? { run: group.run } : {}) })),
-    knowledge: frozen.knowledge, seeds: frozen.seeds, boundary: frozen.boundary, ...(frozen.notes === undefined ? {} : { notes: frozen.notes }) });
+  const detail = (): HandoffDetail => ({ fullCheck: frozen.fullCheck, clusteringItems: frozen.clusteringItems.map(item => item.value.knowledge.id),
+    candidates: frozen.candidates, groupsFile: frozen.groupsFile,
+    groups: groups.map(group => ({ items: group.items.map(item => item.value.knowledge.id), clusters: group.clusters, references: group.references, ...(group.run ? { run: group.run } : {}) })),
+    knowledge: frozen.knowledge, background: frozen.background, boundary: frozen.boundary, ...(frozen.notes === undefined ? {} : { notes: frozen.notes }) });
   const metadata: RunInput = { kind: "dreaming", sessionId, branch, createdAt: new Date().toISOString() };
   bind(context, metadata, { check: () => "admission" }).close();
   const template = (task: DreamingTask): RunInput => ({ ...metadata, model: frozen.model.model, mode: "subagent", promptHash: frozen.promptHash,
     createdAt: new Date().toISOString(), rangeFrom: `S${sessionId}/${task}`, rangeTo: `S${sessionId}/${task}` });
   // Persist membership before the first model call, including when notes or the first group fails.
   const admitted = store.commitTaskPass({ run: { ...template("notes"), response: JSON.stringify({ task: "admission" }) }, path,
-    handoff: () => ({ nextTask: frozen.notes === undefined ? "notes" : frozen.fullCheck && !frozen.groupsFile ? "clustering" : "curate", detail: detail() }) });
+    handoff: () => ({ nextTask: frozen.notes === undefined ? "notes" : frozen.groupsFile === undefined ? "clustering" : "curate", detail: detail() }) });
   lastRunId = admitted.runId;
 
   const conversation = async (workspace: TaskWorkspace, initial: "notes" | "clustering" | "curate", text: string,
     report: () => { problems: string[]; text: string }, advance: () => string | undefined,
-    current: () => DreamingTask, responses: Map<string, number | undefined>, instructions?: (task: DreamingTask) => string): Promise<Outcome> => {
+    current: () => DreamingTask, responses: Map<string, number | undefined>, instructions?: (task: DreamingTask) => string, batchNames: string[] = []): Promise<Outcome> => {
     options.registerFence(workspace);
     const started = Date.now(), run = { ...template(initial), model: initial === "clustering" ? frozen.clusteringModel : frozen.model.model };
     const delivered = new Set<DreamingTask>();
@@ -141,7 +141,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     };
     const input: DreamingAgentInput = { kind: "dreaming", task: initial, sessionId, branch, model: run.model!, thinking: frozen.model.thinking, mode: "subagent",
       prompt: frozen.prompt, promptHash: frozen.promptHash, text, tools: binding.tools,
-      workspace: { dir: workspace.dir, read: ["items.md", "groups.md", "group.md", "seeds.md", "notes.md", "decisions.md", "changes.md", "scoring.md", "scores.md"].map(name => workspace.path(name)),
+      workspace: { dir: workspace.dir, read: ["items.md", "groups.md", "group.md", "background.md", "notes.md", "decisions.md", "changes.md", "scoring.md", "scores.md", ...batchNames].map(name => workspace.path(name)),
         write: (initial === "notes" ? ["notes.md"] : initial === "clustering" ? ["groups.md"] : ["decisions.md", "changes.md", "scores.md"]).map(name => workspace.path(name)), roots },
       passEnd, reportResponse: (id, input) => responses.set(id, input), acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
       deadline: started + (initial === "curate" ? 2 : 1) * limits.timeoutMs, call: binding.call };
@@ -162,51 +162,62 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   };
   const failure = (out: Outcome, group?: number): DreamingResult => ({ outcome: out.outcome === "cancelled" ? "cancelled" : "failure", runId: out.runId, problems: out.problems,
     failure: { task: out.task, class: out.class, groups: group ? [{ group, task: out.task, class: out.class }] : [] } });
-  if (frozen.notes === undefined) {
-    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, "notes").open({ "seeds.md": frozen.seeds, "notes.md": "" });
+  const prepareNotes = async (): Promise<Outcome | undefined> => {
+    if (frozen.notes !== undefined) return;
+    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, "notes").open({ "background.md": frozen.background, "notes.md": "" });
     const responses = new Map<string, number | undefined>();
     const report = () => {
       const count = tokens(workspace.text("notes.md")), problems = count > limits.notesTokens ? [`notes.md: ${count} tokens exceeds ${limits.notesTokens}`] : [];
       if (!workspace.text("notes.md").trim()) problems.push("notes.md: write repository notes, or None when no repository applies");
-      return { problems, text: [`Task: notes. File: ${workspace.path("notes.md")}. Input: ${workspace.path("seeds.md")}`,
+      return { problems, text: [`Task: notes. File: ${workspace.path("notes.md")}. Input: ${workspace.path("background.md")}`,
         `Repositories you may read: ${roots.join(", ") || "none"}`, usage(responses, limits.notesSteps),
         `Notes: ${count}/${limits.notesTokens} tokens. Explore the repositories once and write notes for all groups; do not change repository files.`, ...problems].join("\n") };
     };
     const out = await conversation(workspace, "notes", `${frozen.knowledge}\n\n${readingGuide(sessionId, frozen.names)}\n\nCall ${frozen.names.check} first.`, report, () => undefined, () => "notes", responses);
-    if (!out.ok) return failure(out);
+    if (!out.ok) return out;
     frozen.notes = workspace.text("notes.md");
     const saved = store.commitTaskPass({ run: { ...out.run!, response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), task: "notes", notes: frozen.notes }) }, path,
-      handoff: () => ({ nextTask: frozen.fullCheck && !frozen.groupsFile ? "clustering" : "curate", detail: detail() }) });
+      handoff: () => ({ nextTask: frozen.groupsFile === undefined ? "clustering" : "curate", detail: detail() }) });
     lastRunId = saved.runId;
     workspace.remove();
-  }
-  const prefix = `${frozen.knowledge}\n\n<repository_notes>\n${frozen.notes}\n</repository_notes>`;
-  if (frozen.fullCheck && frozen.groupsFile === undefined) {
+    return out;
+  };
+  const prepareClusters = async (): Promise<Outcome | undefined> => {
+    if (frozen.groupsFile !== undefined) return;
+    const batches = clusteringBatches(frozen.clusteringItems);
     const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, "clustering").open({
-      "items.md": clusteringInput(store, frozen.clusteringItems), "groups.md": groupsTemplate(frozen.clusteringItems.length, limits.groupItems) });
+      "items.md": clusteringInput(store, frozen.clusteringItems), ...batches, "groups.md": groupsTemplate(frozen.clusteringItems.length, limits.groupItems) });
     const responses = new Map<string, number | undefined>();
     const report = () => {
       const checked = checkGroups(workspace.text("groups.md"), frozen.clusteringItems, limits.groupItems);
       return { problems: checked.problems, text: [`Task: clustering. Input: ${workspace.path("items.md")}. Output: ${workspace.path("groups.md")}.`,
+        `Full-text batches: ${Object.keys(batches).map(name => workspace.path(name)).join(", ") || "none"}.`,
         `Group size: at most ${limits.groupItems}.`, usage(responses, limits.clusteringSteps, limits.clusteringContextTokens),
         checked.problems.length ? `Problems:\n${checked.problems.join("\n")}` : "Problems: none"].join("\n") };
     };
-    const out = await conversation(workspace, "clustering", `${prefix}\n\n${readingGuide(sessionId, frozen.names)}\n\nCall ${frozen.names.check} first.`,
-      report, () => undefined, () => "clustering", responses, () => loadPrompt("tasks/clustering.md", frozen.names, config.writing));
-    if (!out.ok) return failure(out);
+    const out = await conversation(workspace, "clustering", `${frozen.knowledge}\n\n${readingGuide(sessionId, frozen.names)}\n\nCall ${frozen.names.check} first.`,
+      report, () => undefined, () => "clustering", responses, () => loadPrompt("tasks/clustering.md", frozen.names, config.writing), Object.keys(batches));
+    if (!out.ok) return out;
     frozen.groupsFile = workspace.text("groups.md");
     const items = new Map(frozen.clusteringItems.map(item => [item.value.knowledge.id, item]));
-    groups.push(...checkGroups(frozen.groupsFile, frozen.clusteringItems, limits.groupItems).groups.map((group, i) => ({
-      no: i + 1, items: group.items.map(id => items.get(id)!), clusters: group.clusters })));
+    groups.push(...candidateGroups(checkGroups(frozen.groupsFile, frozen.clusteringItems, limits.groupItems).groups, new Set(frozen.candidates), limits.groupItems).map((group, i) => ({
+      no: i + 1, items: group.items.map(id => items.get(id)!), clusters: group.clusters,
+      references: group.clusters.flatMap(cluster => cluster.items.filter(id => !group.items.includes(id)).map(id => ({
+        id, title: items.get(id)!.value.revision.title ?? "(no title)" }))) })));
     lastRunId = store.commitTaskPass({ run: { ...out.run!, response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), task: "clustering", ...detail() }) }, path,
-      handoff: () => ({ nextTask: "curate", detail: detail() }) }).runId;
+      handoff: () => ({ nextTask: frozen.notes === undefined ? "notes" : "curate", detail: detail() }) }).runId;
     workspace.remove();
-  }
+    return out;
+  };
+  const setup = await Promise.all([prepareNotes(), prepareClusters()]);
+  const failedSetup = setup.find(out => out && !out.ok);
+  if (failedSetup) return failure(failedSetup);
+  const prefix = `${frozen.knowledge}\n\n<repository_notes>\n${frozen.notes}\n</repository_notes>\n\n<background_material>\n${frozen.background}\n</background_material>`;
   const runGroup = async (group: FrozenGroup): Promise<Outcome> => {
     let task: DreamingTask = "curate";
     const reviewed = new Map(group.items.map(item => [item.value.knowledge.id, store.knowledgeStaleReasons(item.value.revision.id)]));
-    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `group-${group.no}`).open({ "group.md": groupText(store, group.items, group.clusters),
-      "seeds.md": frozen.seeds, "decisions.md": decisionsTemplate(group.items), "changes.md": "", "scores.md": "" });
+    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `group-${group.no}`).open({ "group.md": groupText(store, group.items, group.clusters, group.references),
+      "decisions.md": decisionsTemplate(group.items), "changes.md": "", "scores.md": "" });
     const responses = new Map<string, number | undefined>();
     const heads = new Map<string, string>();
     // Freeze repository HEAD before curate, never at commit or from model-authored data.
@@ -223,7 +234,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         if (repo && !heads.has(repo.root)) problems.push(`files: no start-of-curate HEAD recorded for repository ${repo.root}`);
       }
       return { problems, text: [`Task: ${task} (group ${group.no} of ${groups.length}).`,
-        `Input: ${workspace.path("group.md")}. Seeds: ${workspace.path("seeds.md")}.`,
+        `Input: ${workspace.path("group.md")}.`,
         `Decisions: ${workspace.path("decisions.md")}. Changes: ${workspace.path("changes.md")}. Scores: ${workspace.path("scores.md")}.`,
         ...(task === "scoring" ? [`Scoring input: ${workspace.path("scoring.md")}. Items: ${targets.map(target => target.label).join(", ")}`] : []),
         `Repositories you may read: ${roots.join(", ") || "none"}`, usage(responses, task === "curate" ? limits.curateSteps : limits.scoringSteps, task === "curate" ? limits.curateContextTokens : limits.scoringContextTokens),

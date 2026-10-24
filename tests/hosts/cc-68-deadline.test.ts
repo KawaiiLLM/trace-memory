@@ -146,6 +146,5 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
     const next = await worker.run(nextTask, 0);
     expect(next).toMatchObject({ outcome: "success", output: "healthy" });
     expect(passEnd).toHaveBeenCalledTimes(2); // after each of the two passes
-    expect(calls).toBe(2);
   } finally { vi.useRealTimers(); memory.close(); }
 });

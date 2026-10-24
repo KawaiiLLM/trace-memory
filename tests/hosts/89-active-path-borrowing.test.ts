@@ -187,11 +187,10 @@ test("Pi busy own phases defer closed-session scans and never borrow invalid tar
     const good = closedTarget(h.memory, own.projectId);
     const bad = closedTarget(h.memory, own.projectId, true);
     await h.emit("session_tree");
-    const before = h.conversations.length;
     h.provider(async () => new Promise<Reply>(() => {}));
     await h.prompt("next main turn");
     await h.answer("one ordinary scheduling opportunity");
-    await vi.waitFor(() => expect(h.conversations.length - before).toBe(2));
+    await vi.waitFor(() => expect(["noting", "dreaming"].map(phase => store.getClaim(own.id, phase as "noting" | "dreaming")?.borrowed)).toEqual([false, false]));
     expect(h.notices.some(value => value.includes("noting closed-session scan failed"))).toBe(false);
     expect(h.notices.some(value => value.includes("consolidation closed-session scan failed"))).toBe(false);
     for (const phase of ["noting", "dreaming"] as const) {
