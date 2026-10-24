@@ -153,6 +153,29 @@ test("code retrieves facts and knowledge, checker replaces duplicate create, pro
   expect(f.memory.store.knowledgeStaleReasons(current.find(item => item.knowledge.id === unresolved)!.revision.id)).toContainEqual({ reason: "unresolved_check", detail: "needs merge" });
 });
 
+test("a Noter negation on a held branch flags its supporting knowledge when the latest Turn is a sibling", async () => {
+  let oldFact = 0, source = "";
+  const f = fixture(async input => {
+    await submit(input, f.memory, { noteInput: [{ title: "Package manager replaced", sources: source, negate: [[`F${oldFact}`, "strong"]] }] });
+    return OK;
+  });
+  const store = f.memory.store, rootEntries = store.sourcePath(f.session.id, "main", f.path.headTurnId);
+  oldFact = facts(f.memory, f.path, [{ title: "Use pnpm", sources: [{ entry: store.getSourceEntry(rootEntries[0]!.id)!, text: "Use pnpm" }] }])[0]!.id;
+  const item = knowledge(store, f.path, "session", "constraint", [oldFact], "Use pnpm");
+  const held = store.appendTurn({ sessionId: f.session.id, parentTurnId: f.path.headTurnId, kind: "turn", userPrompt: "Use npm instead", startedAt: "now" });
+  const sibling = store.appendTurn({ sessionId: f.session.id, parentTurnId: f.path.headTurnId, kind: "turn", userPrompt: "Keep using pnpm here", startedAt: "now" });
+  const heldEntry = store.listSourceEntries(f.session.id).find(entry => entry.turnId === held.id)!;
+  store.selectSourcePath(f.session.id, "held", [...rootEntries.map(entry => entry.id), heldEntry.id]);
+  const heldPath = { ...f.path, branch: "held", headTurnId: held.id };
+  source = `[T${held.id}#E${heldEntry.entryOrdinal}] Use npm instead`;
+  expect(store.knowledgePath(f.session.id).headTurnId).toBe(sibling.id);
+  const result = await f.memory.noting(heldPath);
+  expect(result).toMatchObject({ outcome: "success" });
+  if (result.outcome !== "success") throw new Error("Noter did not publish");
+  expect(result.facts).toEqual([expect.objectContaining({ turnId: held.id })]);
+  expect(store.knowledgeStaleReasons(item.commit)).toEqual([{ reason: "negated_fact", detail: `F${oldFact} negated by Noter run R${result.runId}` }]);
+});
+
 test("budgets count responses rather than tool calls and report growth without stopping at the budget", async () => {
   const f = fixture(async input => {
     input.reportResponse!("first", 1000);

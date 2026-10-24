@@ -45,7 +45,7 @@ Current writers author or inherit file mappings as follows:
 | Metadata-only Dreamer keep | Changed title or files creates an ordinary immutable update with the unchanged body and supports |
 | Trusted lower-level maintenance | Historical exact-parent copy rules remain; the routine grouped file contract does not infer mappings |
 
-Routine Dreamer resolves files to absolute paths under the project's allowed roots. Code, never the model, records the repository HEAD captured at curate start for every resulting linked file. Verification metadata is not part of the knowledge body. Missing mappings alone do not flag historical knowledge.
+Routine Dreamer resolves files to absolute paths under the project's allowed roots. Code, never the model, records the repository HEAD captured at curate start only for resulting linked files present at that commit. Untracked, ignored or non-git files receive no verification baseline (their edits cannot be detected) and are not re-flagged once the Dreamer has processed the item. Verification metadata is not part of the knowledge body. Missing mappings alone do not flag historical knowledge.
 
 The migration adds only metadata columns/tables and the FTS index, except for rebuilding the existing fact-relation CHECK to admit `caused_by`. It preserves relation rows and indexes, and runs inside Store's schema transaction and foreign-key check. Production deployment still requires an SQLite-backup-API backup and stopped executors; measuring a disposable production copy is not a deployment migration.
 

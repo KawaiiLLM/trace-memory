@@ -17,7 +17,7 @@ import type { KnowledgePath, RunInput, Store, TaskClaim, CurateItem, WorkspaceOp
 import { TaskWorkspace, defaultWorkspaceRoot } from "../workspace/run.ts";
 import { checkCurate, decisionsTemplate, formGroups, groupText, type Curated } from "./curate.ts";
 import { classifyAnchors, scoreTargets, scoringText, checkScores, type ScoreTarget } from "./classify.ts";
-import { boundaryOf, incrementalCandidates, projectItems, repositoryHead, seedText } from "./candidates.ts";
+import { boundaryOf, incrementalCandidates, projectItems, repositoryHead, seedText, trackedAt } from "./candidates.ts";
 import { checkGroups, clusteringInput, groupsTemplate, type Cluster } from "./clustering.ts";
 import { allowedRoots } from "./roots.ts";
 import type { KnowledgeRevision } from "../model/index.ts";
@@ -281,13 +281,20 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
             if (!processed.some(item => item.id === r.id)) processed.push(r);
           }
           for (const r of processed) {
-            for (const file of r.files ?? []) { const repo = repositoryHead(file), commit = repo && heads.get(repo.root); if (commit) store.setKnowledgeFileVerification(r.id, { file, verifiedCommit: commit, verifiedAt: new Date().toISOString() }); }
             const source = results.findIndex(result => result.ok && result.committed.some(item => item.commit === r.id));
             const op = curated!.operations[source];
             const parent = op && op.op !== "create" ? op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId : r.knowledgeId;
             const decision = curated!.decisions.find(value => value.item.value.knowledge.id === parent);
             for (const flag of reviewed.get(parent) ?? []) store.clearKnowledgeStale(r.id, flag);
-            for (const flag of lateFlags.get(parent) ?? []) store.setKnowledgeStale(r.id, flag);
+            for (const file of r.files ?? []) {
+              const repo = repositoryHead(file), commit = repo && heads.get(repo.root);
+              // ponytail: an untracked, ignored or non-git file gets no baseline (its edits cannot be detected, as 「无 git 的文件先不做哈希」) and no
+              // new flag: a flag the Dreamer can never clear would bring the item back as a candidate on every run.
+              if (commit && trackedAt(repo.root, commit, file)) store.setKnowledgeFileVerification(r.id, { file, verifiedCommit: commit, verifiedAt: new Date().toISOString() });
+            }
+            // A flag that arrived after the group's input was frozen was not reviewed: the result carries it, from every merge parent.
+            const parents = op?.op === "merge" ? [op.intoKnowledgeId, ...op.absorb.map(base => base.knowledgeId)] : [parent];
+            for (const flag of parents.flatMap(id => lateFlags.get(id) ?? [])) store.setKnowledgeStale(r.id, flag);
             if (decision?.missingGrounds) store.setKnowledgeStale(r.id, { reason: "missing_grounds", detail: decision.reason });
             frozen.boundary.versions[r.knowledgeId] = r.id;
           }
