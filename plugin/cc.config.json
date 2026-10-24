@@ -1,6 +1,7 @@
 {
   "stateDir": null,
   "closedSessionScope": "project",
+  "writeResponseTimeoutMs": 8000,
   "notingModel": "haiku",
   "notingThinking": "xhigh",
   "dreaming.model": "sonnet",

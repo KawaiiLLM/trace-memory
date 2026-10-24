@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ClosedSessionScope, type ConfigOverride, type TraceMemoryConfig } from "../../core/api/index.ts";
 import { MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-settings.ts";
 import { retireConsolidationSettings } from "../retired-settings.ts";
+import { writeResponseTimeout } from "./write-gate.ts";
 
 export const CC_AGENT_SDK_VERSION = "0.1.77";
 export const CC_CONTEXT_HEADROOM = 10_000;
@@ -68,6 +69,8 @@ export interface CcHostConfig extends Partial<{ [K in keyof TraceMemoryConfig["n
   finalSyncStablePolls?: number;
   /** Bound for a write tool to observe its exact native assistant call in the transcript. */
   writeSourceTimeoutMs?: number;
+  /** Function-hook wait for the response containing a foreground write (1–9000 ms). */
+  writeResponseTimeoutMs?: number;
   closedSessionScope?: ClosedSessionScope;
   /** Required to admit N/D work. Hosts that only ingest/read may omit it. */
   worker?: CcWorkerConfig;
@@ -87,6 +90,7 @@ export interface ResolvedCcHostConfig {
   finalSyncTimeoutMs: number;
   finalSyncStablePolls: number;
   writeSourceTimeoutMs: number;
+  writeResponseTimeoutMs: number;
   closedSessionScope: ClosedSessionScope;
   /** Validated core configuration assembled from the CC file's flat phase keys. */
   coreConfig: TraceMemoryConfig;
@@ -205,6 +209,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
     finalSyncTimeoutMs: positive("finalSyncTimeoutMs", input.finalSyncTimeoutMs ?? 5_000),
     finalSyncStablePolls: positive("finalSyncStablePolls", input.finalSyncStablePolls ?? 2),
     writeSourceTimeoutMs: positive("writeSourceTimeoutMs", input.writeSourceTimeoutMs ?? 5_000),
+    writeResponseTimeoutMs: writeResponseTimeout(input.writeResponseTimeoutMs),
     closedSessionScope, coreConfig, ...(worker ? { worker } : {}),
   };
 }

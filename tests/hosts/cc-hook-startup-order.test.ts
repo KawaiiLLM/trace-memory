@@ -17,7 +17,10 @@ async function fixture() {
   let session = "first";
   const run = vi.fn(async (_argv: string[], _options?: { stdin: string }) => ({ exitCode: 0, stdout: "", stderr: "" }));
   const status = vi.fn(), log = vi.fn();
+  const timeout = deferred<void>();
   const host = { plugin: { root: "/isolated/plugin" }, session: { id: async () => session },
+    fs: { read: vi.fn(async () => JSON.stringify({ writeResponseTimeoutMs: 100 })) },
+    clock: { sleep: vi.fn((_ms: number, _options: { signal: AbortSignal }) => timeout.promise) },
     process: { run }, command: { register: async () => undefined }, ui: { status, log } };
   await handlers.get("session.start")!(host, {}, async () => undefined);
   const startupCalls = run.mock.calls.map(([argv]) => argv);
@@ -26,7 +29,7 @@ async function fixture() {
   const result = { stop_reason: "end_turn" };
   const next = vi.fn(async function* () { yield* chunks; return result; });
   return { handlers, host, run, next, status, log, startupCalls, chunks, result,
-    setSession: (id: string) => { session = id; } };
+    timeout, setSession: (id: string) => { session = id; } };
 }
 
 async function collect(stream: AsyncGenerator<unknown, unknown>) {
@@ -154,4 +157,140 @@ test("consumer cancellation closes the delegated model stream", async () => {
   expect((await stream.next()).done).toBe(false);
   await stream.return(undefined);
   expect(closed).toHaveBeenCalledOnce();
+});
+
+interface HookFixture {
+  host: unknown;
+  handlers: Map<string, Function>;
+  result: unknown;
+}
+
+async function pendingResponse(f: HookFixture, ids: string[], turnId = "turn-one") {
+  const tail = deferred<void>(), controller = new AbortController();
+  const next = Object.assign(async function* () {
+    for (const id of ids) yield { kind: "tool", id, name: "mcp__traceMemory__note" };
+    await tail.promise;
+    return f.result;
+  }, { signal: controller.signal });
+  const stream = f.handlers.get("turn.step")!(f.host, { ...step, turnId }, next) as AsyncGenerator;
+  for (const id of ids) expect((await stream.next()).value.id).toBe(id);
+  return { stream, tail, controller };
+}
+
+function writeCall(f: HookFixture, id: string, signal = new AbortController().signal,
+  tool = "mcp__traceMemory__note") {
+  const event = { tool, tool_use_id: id, title: id };
+  const next = Object.assign(vi.fn(async (e: unknown) => ({ native: e })), { signal });
+  const result = f.handlers.get("tool.call")!(f.host, event, next);
+  return { event, next, result };
+}
+
+test("parallel foreground writes wait for their own response and preserve native permission dispatch", async () => {
+  const f = await fixture();
+  const response = await pendingResponse(f, ["note", "memory"]);
+  const first = writeCall(f, "note"), second = writeCall(f, "memory", undefined, "mcp__plugin_trace-memory_traceMemory__memory");
+  await vi.waitFor(() => expect(f.host.clock.sleep).toHaveBeenCalledTimes(2));
+  expect(first.next).not.toHaveBeenCalled();
+  expect(second.next).not.toHaveBeenCalled();
+  response.tail.resolve();
+  expect((await response.stream.next()).done).toBe(true);
+  expect(await first.result).toEqual({ native: first.event });
+  expect(await second.result).toEqual({ native: second.event });
+  expect(first.next.mock.calls[0]![0]).toBe(first.event);
+  // A call dispatched after response completion never starts a timeout.
+  expect(await writeCall(f, "note").result).toEqual({ native: first.event });
+  expect(f.host.clock.sleep.mock.calls.every(([, options]) => options.signal.aborted)).toBe(true);
+});
+
+test("overlapping sessions and steps cannot release each other's writes", async () => {
+  const f = await fixture();
+  const first = await pendingResponse(f, ["one"]);
+  const one = writeCall(f, "one");
+  const second = await pendingResponse(f, ["two"], "turn-two");
+  const two = writeCall(f, "two");
+  f.setSession("other");
+  const other = await pendingResponse(f, ["one"], "turn-other");
+  const otherCall = writeCall(f, "one");
+  f.setSession("first");
+  second.tail.resolve();
+  await second.stream.next();
+  await two.result;
+  expect(one.next).not.toHaveBeenCalled();
+  expect(otherCall.next).not.toHaveBeenCalled();
+  first.tail.resolve(); await first.stream.next(); await one.result;
+  expect(otherCall.next).not.toHaveBeenCalled();
+  f.setSession("other");
+  other.tail.resolve(); await other.stream.next(); await otherCall.result;
+  expect(one.next).toHaveBeenCalledOnce();
+  expect(two.next).toHaveBeenCalledOnce();
+  expect(otherCall.next).toHaveBeenCalledOnce();
+});
+
+test("ordinary tools and another server's writes keep eager native dispatch", async () => {
+  const f = await fixture(), response = await pendingResponse(f, ["own-write"]);
+  for (const tool of ["mcp__traceMemory__search", "mcp__other__note", "Bash"]) {
+    const call = writeCall(f, "other-tool", undefined, tool);
+    expect(await call.result).toEqual({ native: call.event });
+  }
+  expect(f.host.clock.sleep).not.toHaveBeenCalled();
+  response.tail.resolve(); await response.stream.next();
+});
+
+test("call cancellation releases only that waiter without dispatching a write", async () => {
+  const f = await fixture(), response = await pendingResponse(f, ["cancel", "keep"]);
+  const abort = new AbortController(), cancelled = writeCall(f, "cancel", abort.signal), kept = writeCall(f, "keep");
+  abort.abort();
+  expect(await cancelled.result).toHaveProperty("deny");
+  expect(cancelled.next).not.toHaveBeenCalled();
+  expect(kept.next).not.toHaveBeenCalled();
+  response.tail.resolve(); await response.stream.next(); await kept.result;
+  expect(kept.next).toHaveBeenCalledOnce();
+});
+
+test("a new native session cancels an old response wait without dispatch", async () => {
+  const f = await fixture(), response = await pendingResponse(f, ["old-session"]);
+  const call = writeCall(f, "old-session");
+  await vi.waitFor(() => expect(f.host.clock.sleep).toHaveBeenCalledOnce());
+  f.setSession("after-clear");
+  await f.handlers.get("session.start")!(f.host, {}, async () => undefined);
+  expect(await call.result).toHaveProperty("deny");
+  expect(call.next).not.toHaveBeenCalled();
+  response.tail.resolve(); await response.stream.next();
+});
+
+test("turn interruption releases waiting writes even while the response stream is stalled", async () => {
+  const f = await fixture(), response = await pendingResponse(f, ["cancel"]);
+  const call = writeCall(f, "cancel");
+  response.controller.abort();
+  expect(await call.result).toHaveProperty("deny");
+  expect(call.next).not.toHaveBeenCalled();
+  response.tail.resolve(); await response.stream.next();
+});
+
+test("failed and abandoned response streams release writes without executing them", async () => {
+  for (const fails of [true, false]) {
+    const f = await fixture(), tail = deferred<void>();
+    const next = Object.assign(async function* () {
+      yield { kind: "tool", id: "failed", name: "mcp__traceMemory__memory" };
+      await tail.promise;
+      throw new Error("provider failed");
+    }, { signal: new AbortController().signal });
+    const stream = f.handlers.get("turn.step")!(f.host, step, next) as AsyncGenerator;
+    await stream.next();
+    const call = writeCall(f, "failed");
+    if (fails) { tail.resolve(); await expect(stream.next()).rejects.toThrow("provider failed"); }
+    else await stream.return(undefined);
+    expect(await call.result).toHaveProperty("deny");
+    expect(call.next).not.toHaveBeenCalled();
+  }
+});
+
+test("the response wait bound forwards the original call to native binding while a response is stalled", async () => {
+  const f = await fixture(), response = await pendingResponse(f, ["bounded"]);
+  const call = writeCall(f, "bounded");
+  await vi.waitFor(() => expect(f.host.clock.sleep).toHaveBeenCalledWith(100, expect.anything()));
+  f.timeout.resolve();
+  expect(await call.result).toEqual({ native: call.event });
+  expect(call.next.mock.calls[0]![0]).toBe(call.event);
+  response.tail.resolve(); await response.stream.next();
 });

@@ -193,3 +193,11 @@ test("144: a cc.config.json that still carries dreaming.maxToolRounds fails to l
     expect(() => resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", "dreaming.maxToolRounds": value } as never))
       .toThrow(/Removed setting dreaming\.maxToolRounds/);
 });
+
+test("the foreground response wait is configurable within the native hook budget", () => {
+  const f = fixture();
+  expect(resolveCcHostConfig({ ...f.input, writeResponseTimeoutMs: 9_000 }).writeResponseTimeoutMs).toBe(9_000);
+  for (const value of [0, -1, 1.5, Infinity, 9_001])
+    expect(() => resolveCcHostConfig({ ...f.input, writeResponseTimeoutMs: value }))
+      .toThrow(/Invalid CC writeResponseTimeoutMs/);
+});

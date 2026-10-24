@@ -5,6 +5,20 @@ import { MEMORY_READ_ONLY, memoryPath } from "../../src/core/model/address.ts";
 import { retrievalPolicy } from "../../src/core/render/retrieval-policy.ts";
 import { ccPluginToolNames } from "../../src/hosts/cc/tool-names.ts";
 import { sessionEnabled } from "../../src/hosts/cc/session-enabled.ts";
+import { CcWriteGate, isCcForegroundWrite, waitForWriteResponse, writeResponseTimeout } from "../../src/hosts/cc/write-gate.ts";
+
+interface WriteGateHost {
+  plugin: { root: string };
+  session: { id(): Promise<string> };
+  fs: { read(path: string): Promise<string> };
+  clock: { sleep(ms: number, options: { signal: AbortSignal }): Promise<void> };
+}
+interface WriteEvent { tool: string; tool_use_id: string; agentId?: string }
+interface WriteNext {
+  (event: WriteEvent): Promise<unknown>;
+  signal?: AbortSignal;
+}
+const writeGate = new CcWriteGate();
 
 type Reply = { menu: TraceMenuInput; settings: SettingsInput; models: string[]; context: { presence: "confirmed" | "unavailable"; estimatedMessagesTokens?: number; memory?: CcMemorySplit }; runs: { id: number; phase: string; status: string; cost: number | null; partial: boolean; at: string }[] };
 type Screen = "main" | "settings" | "runs" | "project" | "confirm" | "edit" | "model-other";
@@ -177,6 +191,7 @@ export const register = (on: any) => {
 
   on("session.start", async ($: any, e: any, next: any) => {
     registeredSession = "";
+    writeGate.cancel();
     try {
       pluginRoot = $.plugin.root;
       if (!pluginRoot) throw new Error("Claude Code plugin root is unavailable");
@@ -207,18 +222,43 @@ export const register = (on: any) => {
       if (session !== await $.session.id()) throw new Error("Trace Memory: native session changed during function hook registration");
       registeredSession = session;
     }
-    return yield* next(e);
+    const response = writeGate.begin(session, e.turnId, next.signal);
+    const stream = next(e);
+    let complete = false;
+    try {
+      for (;;) {
+        const item = await stream.next();
+        if (item.done) { complete = true; return item.value; }
+        if (item.value.kind === "tool" && isCcForegroundWrite(item.value.name)) response.calls.add(item.value.id);
+        yield item.value;
+      }
+    } finally {
+      response.finish(complete && !next.signal?.aborted);
+      await stream.return?.();
+    }
   });
 
-  // A subagent never writes memory: the Noter runs in its own worker, not as an agent of this session.
-  on("tool.call", async (_$: any, e: any, next: any) => {
-    const name = String(e.tool).match(/^mcp__(?:traceMemory|plugin_trace-memory_traceMemory)__(note|memory)$/)?.[1];
-    if (!name || !e.agentId || unavailable) return next(e);
-    return { deny: "Trace Memory: note and memory are not available to subagents" };
+  // A subagent never writes memory. Main-agent writes retain native permissions and exact-source binding.
+  on("tool.call", async ($: WriteGateHost, e: WriteEvent, next: WriteNext) => {
+    if (!isCcForegroundWrite(e.tool) || unavailable) return next(e);
+    if (e.agentId) return { deny: "Trace Memory: note and memory are not available to subagents" };
+    const session = await $.session.id();
+    const response = writeGate.find(session, e.tool_use_id);
+    if (response) {
+      const config: unknown = JSON.parse(await $.fs.read(`${$.plugin.root}/cc.config.json`));
+      const timeout = writeResponseTimeout(config && typeof config === "object" && "writeResponseTimeoutMs" in config
+        ? config.writeResponseTimeoutMs : undefined);
+      const complete = await waitForWriteResponse(response, next.signal, signal => $.clock.sleep(timeout, { signal }));
+      if (!complete) return { deny: "Trace Memory: foreground write cancelled before its response finished" };
+    }
+    if (next.signal?.aborted || session !== await $.session.id())
+      return { deny: "Trace Memory: foreground write cancelled or native session changed" };
+    return next(e);
   });
 
   on("turn.complete", async ($: any, e: any, next: any) => {
     if (!e.agentId && !unavailable) {
+      writeGate.cancel(await $.session.id(), e.turnId);
       try {
         const session = await $.session.id();
         const result = await $.process.run(["node", `${$.plugin.root}/dist/cc.cjs`, "hook-turn", "--config", `${$.plugin.root}/cc.config.json`],

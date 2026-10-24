@@ -442,7 +442,72 @@ function sessionEnabled(binding, store) {
   return binding.coreSessionId === null ? binding.enrollment.choice ?? binding.enrollment.defaultEnabled : store.enabled(binding.coreSessionId);
 }
 
+// src/hosts/cc/write-gate.ts
+var DEFAULT_WRITE_RESPONSE_TIMEOUT_MS = 8e3;
+function writeResponseTimeout(value = DEFAULT_WRITE_RESPONSE_TIMEOUT_MS) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 9e3)
+    throw new Error("Invalid CC writeResponseTimeoutMs: expected an integer from 1 to 9000");
+  return value;
+}
+var isCcForegroundWrite = (tool) => /^mcp__(?:traceMemory|plugin_trace-memory_traceMemory)__(note|memory)$/.test(tool);
+var WriteResponseStep = class {
+  calls = /* @__PURE__ */ new Set();
+  completion = Promise.withResolvers();
+  ready = this.completion.promise;
+  result;
+  abort = () => this.finish(false);
+  session;
+  turn;
+  signal;
+  constructor(session, turn, signal) {
+    this.session = session;
+    this.turn = turn;
+    this.signal = signal;
+    signal?.addEventListener("abort", this.abort, { once: true });
+    if (signal?.aborted) this.finish(false);
+  }
+  finish(complete) {
+    if (this.result !== void 0) return;
+    this.result = complete;
+    this.signal?.removeEventListener("abort", this.abort);
+    this.completion.resolve(complete);
+  }
+};
+var CcWriteGate = class {
+  steps = /* @__PURE__ */ new Set();
+  begin(session, turn, signal) {
+    const step = new WriteResponseStep(session, turn, signal);
+    this.steps.add(step);
+    return step;
+  }
+  find(session, call) {
+    for (const step of this.steps) if (step.session === session && step.calls.has(call)) return step;
+    return void 0;
+  }
+  cancel(session, turn) {
+    for (const step of this.steps) if ((session === void 0 || step.session === session) && (turn === void 0 || step.turn === turn)) {
+      step.finish(false);
+      this.steps.delete(step);
+    }
+  }
+};
+async function waitForWriteResponse(step, signal, sleep) {
+  if (signal?.aborted) return false;
+  if (step.result !== void 0) return step.result;
+  const timer = new AbortController();
+  const cancelled = Promise.withResolvers();
+  const abort = () => cancelled.resolve(false);
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    return await Promise.race([step.ready, cancelled.promise, sleep(timer.signal).then(() => true)]);
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    timer.abort();
+  }
+}
+
 // plugin/hooks/index.tsx
+var writeGate = new CcWriteGate();
 var screen = "main";
 var reply;
 var breakdown;
@@ -620,6 +685,7 @@ export const register = (on) => {
   });
   on("session.start", async ($, e, next) => {
     registeredSession = "";
+    writeGate.cancel();
     try {
       pluginRoot = $.plugin.root;
       if (!pluginRoot) throw new Error("Claude Code plugin root is unavailable");
@@ -650,15 +716,42 @@ export const register = (on) => {
       if (session !== await $.session.id()) throw new Error("Trace Memory: native session changed during function hook registration");
       registeredSession = session;
     }
-    return yield* next(e);
+    const response = writeGate.begin(session, e.turnId, next.signal);
+    const stream = next(e);
+    let complete = false;
+    try {
+      for (; ; ) {
+        const item = await stream.next();
+        if (item.done) {
+          complete = true;
+          return item.value;
+        }
+        if (item.value.kind === "tool" && isCcForegroundWrite(item.value.name)) response.calls.add(item.value.id);
+        yield item.value;
+      }
+    } finally {
+      response.finish(complete && !next.signal?.aborted);
+      await stream.return?.();
+    }
   });
-  on("tool.call", async (_$, e, next) => {
-    const name = String(e.tool).match(/^mcp__(?:traceMemory|plugin_trace-memory_traceMemory)__(note|memory)$/)?.[1];
-    if (!name || !e.agentId || unavailable) return next(e);
-    return { deny: "Trace Memory: note and memory are not available to subagents" };
+  on("tool.call", async ($, e, next) => {
+    if (!isCcForegroundWrite(e.tool) || unavailable) return next(e);
+    if (e.agentId) return { deny: "Trace Memory: note and memory are not available to subagents" };
+    const session = await $.session.id();
+    const response = writeGate.find(session, e.tool_use_id);
+    if (response) {
+      const config = JSON.parse(await $.fs.read(`${$.plugin.root}/cc.config.json`));
+      const timeout = writeResponseTimeout(config && typeof config === "object" && "writeResponseTimeoutMs" in config ? config.writeResponseTimeoutMs : void 0);
+      const complete = await waitForWriteResponse(response, next.signal, (signal) => $.clock.sleep(timeout, { signal }));
+      if (!complete) return { deny: "Trace Memory: foreground write cancelled before its response finished" };
+    }
+    if (next.signal?.aborted || session !== await $.session.id())
+      return { deny: "Trace Memory: foreground write cancelled or native session changed" };
+    return next(e);
   });
   on("turn.complete", async ($, e, next) => {
     if (!e.agentId && !unavailable) {
+      writeGate.cancel(await $.session.id(), e.turnId);
       try {
         const session = await $.session.id();
         const result = await $.process.run(
