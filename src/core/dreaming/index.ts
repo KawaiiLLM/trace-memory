@@ -259,8 +259,9 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
             for (const flag of reviewed.get(parent) ?? []) store.clearKnowledgeStale(r.id, flag);
             for (const file of r.files ?? []) {
               const repo = repositoryHead(file), commit = repo && heads.get(repo.root);
+              // ponytail: an untracked, ignored or non-git file gets no baseline (its edits cannot be detected, as 「无 git 的文件先不做哈希」) and no
+              // new flag: a flag the Dreamer can never clear would bring the item back as a candidate on every run.
               if (commit && trackedAt(repo.root, commit, file)) store.setKnowledgeFileVerification(r.id, { file, verifiedCommit: commit, verifiedAt: new Date().toISOString() });
-              else store.setKnowledgeStale(r.id, { reason: "unverified_file", detail: file });
             }
             // A flag that arrived after the group's input was frozen was not reviewed: the result carries it, from every merge parent.
             const parents = op?.op === "merge" ? [op.intoKnowledgeId, ...op.absorb.map(base => base.knowledgeId)] : [parent];

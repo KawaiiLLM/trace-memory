@@ -62,7 +62,7 @@ test("curate refuses a split without primary supports even when the child names 
   expect(f.store.currentCommit(item.knowledgeId, f.path)[0]).toMatchObject({ op: "split", text: "Use pnpm", supports: item.supports });
 });
 
-test("a linked file absent from the captured commit stays unverified after curate", async () => {
+test("a linked file absent from the captured commit gets no verified commit, and the processed item is not re-flagged", async () => {
   // Reuse the checkout's HEAD without writing Git metadata.
   const dir = mkdtempSync(fileURLToPath(new URL("../../../.dreamer-untracked-", import.meta.url)));
   try {
@@ -92,7 +92,7 @@ test("a linked file absent from the captured commit stays unverified after curat
     const current = f.store.currentCommit(item.knowledgeId, f.path)[0]!;
     expect(current.files).toEqual([file]);
     expect(f.store.knowledgeFileVerifications(current.id)).toEqual([]);
-    expect(f.store.knowledgeStaleReasons(current.id)).toEqual([unverified]);
+    expect(f.store.knowledgeStaleReasons(current.id)).toEqual([]); // processed; a flag it can never clear would recur every run
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
