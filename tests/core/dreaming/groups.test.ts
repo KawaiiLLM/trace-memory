@@ -14,7 +14,9 @@ test("one candidate group tops up, one marked item at a time, touched clustering
   const groups = candidateGroups(clustering, new Set(range(3, 45)));
   expect(groups.map(value => value.items)).toEqual([[1, 2, ...range(3, 45), 51, 52, 101]]); // 102 and 103 do not fit
   expect(groups[0]!.clusters.flatMap(cluster => cluster.items).includes(50)).toBe(true); // title-only reference
-  expect(candidateGroups(clustering, new Set())).toEqual([]);
+  // No candidates: the marked items alone fill one group (158 review); no marks and no candidates give no group.
+  expect(candidateGroups(clustering, new Set()).map(value => value.items)).toEqual([[1, 2, 51, 52, 101, 102, 103]]);
+  expect(candidateGroups([group(1, 5)], new Set())).toEqual([]);
 });
 
 test("more than fifty candidates form clustering parts, merge in order, then fill orphan marks without opening a group", () => {

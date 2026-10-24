@@ -54,7 +54,6 @@ export function checkGroups(text: string, items: readonly CurateItem[], size = 5
 /** 2026-10-24: marked items top a group up to `size` one by one, in clustering order (「把一组的候选知识填到50为止，多余的丢弃」); unrelated
  * marks only fill space left (「如果最后还有空位，将剩下的可疑条目填进去」) and never open a group. */
 export function candidateGroups(clustering: readonly ClusteredGroup[], candidates: ReadonlySet<number>, size = 50): ClusteredGroup[] {
-  if (!candidates.size) return [];
   const selected = new Set(candidates);
   const marked = (group: ClusteredGroup) => group.clusters.flatMap(cluster => cluster.items.filter(id => cluster.marks?.[id]));
   const groups: number[][] = [];
@@ -80,7 +79,8 @@ export function candidateGroups(clustering: readonly ClusteredGroup[], candidate
     const remaining = clustering.filter(group => !touched.includes(group)).flatMap(marked);
     for (const group of groups) fill(group, remaining);
   }
-  return groups.map(ids => {
+  // No candidates is the one-group case too: marked items alone fill it (158 review); a group nothing filled is dropped.
+  return groups.filter(ids => ids.length).map(ids => {
     const members = new Set(ids);
     const clusters = clustering.flatMap(group => group.clusters).filter(cluster => cluster.items.some(id => members.has(id)));
     return { items: clusters.flatMap(cluster => cluster.items.filter(id => members.has(id))), clusters };
