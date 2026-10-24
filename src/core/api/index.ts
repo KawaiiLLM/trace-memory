@@ -103,11 +103,12 @@ export interface TraceMemoryConfig {
   };
   /** Per-item length targets for every writer, in units (ticket 145). */
   writing: WritingLimits;
-  /** Episodic bases and the one temporary allowance of a context (144 §7.3). */
+  /** Episodic bases and independent temporary body/pointer pools (165). */
   compaction: {
     factsTokens: number;
     rawTokens: number;
     temporaryTokens: number;
+    pointerTokens: number;
     userTurns: number;
     titleTurns: number;
     userEntryTokens: number;
@@ -151,6 +152,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     factsTokens: 10_000,
     rawTokens: 10_000,
     temporaryTokens: 10_000,
+    pointerTokens: 10_000,
     userTurns: 100,
     titleTurns: 100,
     userEntryTokens: 300,
@@ -183,9 +185,8 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "dreaming.maxToolRounds": "the Dreamer has no tool-round limit (each task is bounded by dreaming.timeoutMs); remove this key",
   "dreaming.classifyModel": "scoring is part of the curate conversation and uses the Dreamer's model; remove this key",
   "dreaming.classifyThinking": "scoring is part of the curate conversation and uses the Dreamer's thinking; remove this key",
-  "compaction.overflowTokens": "use compaction.temporaryTokens (a fixed configuration value, default 10,000; no longer derived from the Noting, Consolidation and Dreamer triggers)",
-  // Ticket 144 stage 4: one temporary allowance per context replaces the Knowledge-only shared allowance.
-  "compaction.sharedAllowanceTokens": "one temporary allowance, compaction.temporaryTokens, replaces it; remove this key",
+  "compaction.overflowTokens": "use compaction.temporaryTokens for bodies and compaction.pointerTokens for pointers (10,000 each by default)",
+  "compaction.sharedAllowanceTokens": "use compaction.temporaryTokens for bodies and compaction.pointerTokens for pointers; remove this key",
   "consolidation.subagentModeDefault": "Consolidation is retired; remove this key",
   "consolidation.knowledgeTokens": "remove it and use Settings to edit the bound database's Knowledge base",
   "noting.nearThreshold": "remove it; Noting lexical NEAR review no longer exists",

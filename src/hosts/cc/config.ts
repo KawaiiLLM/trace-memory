@@ -50,8 +50,9 @@ export interface CcHostConfig extends Partial<{ [K in keyof TraceMemoryConfig["n
   notingThinking?: string;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
-  /** The one temporary allowance of a context (144 stage 4 §7.3). */
+  /** Independent temporary body and pointer pools (165). */
   "compaction.temporaryTokens"?: number;
+  "compaction.pointerTokens"?: number;
   "compaction.userTurns"?: number;
   "compaction.titleTurns"?: number;
   "compaction.userEntryTokens"?: number;
@@ -130,7 +131,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("CC configuration is required");
   const retired = retireConsolidationSettings(input);
   input = retired.values;
-  // Ruling 2026-10-22: the Noter runs fresh only; one temporary allowance replaces the Knowledge-only shared allowance;
+  // Superseding rulings: the Noter runs fresh only; body/pointer pools replace the Knowledge-only shared allowance;
   // the length caps are counted in units (ticket 145); Dreaming is due by Noter operations (ticket 146).
   // A leftover key of any of them fails the load with core's removed-setting message.
   for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds", "dreaming.classifyModel", "dreaming.classifyThinking", "writing.titleTokens", "writing.bodyTokens", "dreaming.triggerTokens"])
@@ -185,6 +186,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
     })),
     compaction: {
       ...(input["compaction.temporaryTokens"] === undefined ? {} : { temporaryTokens: input["compaction.temporaryTokens"] }),
+      ...(input["compaction.pointerTokens"] === undefined ? {} : { pointerTokens: input["compaction.pointerTokens"] }),
       ...(input["compaction.userTurns"] === undefined ? {} : { userTurns: input["compaction.userTurns"] }),
       ...(input["compaction.titleTurns"] === undefined ? {} : { titleTurns: input["compaction.titleTurns"] }),
       ...(input["compaction.userEntryTokens"] === undefined ? {} : { userEntryTokens: input["compaction.userEntryTokens"] }),

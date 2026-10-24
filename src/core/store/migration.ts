@@ -173,6 +173,7 @@ export function migrateStage4Schema144(db: DatabaseSync): void {
   add("task_handoffs", "detail", "TEXT");
   add("knowledge_deliveries", "titles", "TEXT NOT NULL DEFAULT '[]'");
   add("knowledge_deliveries", "temporary_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK (temporary_tokens >= 0)");
+  add("knowledge_deliveries", "pointer_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK (pointer_tokens >= 0)");
   if (!tableExists(db, "knowledge_base_policy")) {
     db.exec("CREATE TABLE knowledge_base_policy (id INTEGER PRIMARY KEY CHECK(id = 1), base_tokens INTEGER NOT NULL CHECK(base_tokens BETWEEN 0 AND 9007199254740991))");
     db.exec("INSERT INTO knowledge_base_policy SELECT 1, global_tokens + project_tokens + session_tokens FROM knowledge_budget_policy WHERE id = 1");

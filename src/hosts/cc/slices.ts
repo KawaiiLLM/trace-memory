@@ -25,13 +25,13 @@ const address = (item: TransportItem, sessionId: number | null): string => item.
 /** Core's selection order for knowledge (144 §7.5): its rank when it ranked the item, otherwise newest commit first. */
 const knowledgeRank = (item: Extract<TransportItem, { kind: "knowledge" }>): number => item.rank ?? -item.commitId;
 /** Whether a knowledge item is charged to the temporary allowance rather than the Knowledge base. */
-const temporaryKnowledge = (item: TransportItem): boolean => item.kind === "knowledge" && item.allowance === "temporary";
+const temporaryKnowledge = (item: TransportItem): boolean => item.kind === "knowledge" && (item.allowance === "temporary" || item.allowance === "pointer");
 
 /** Transport selection only: core has already selected and rendered whole items. Pack their
  * unchanged texts under the native per-hook limit; never identify members from arbitrary prose.
  * Capacity drops the lowest-priority whole item and names it in a receipt. */
 export function sliceCcInjection(binding: CcVisibleBinding, items: readonly TransportItem[],
-  warning?: string, knowledgeAllowance = Infinity, temporaryAllowance = Infinity): (CcHookOutput | null)[] {
+  warning?: string, knowledgeAllowance = Infinity, temporaryAllowance = Infinity, pointerAllowance = Infinity): (CcHookOutput | null)[] {
   if (binding.coreSession === null && items.some(item => item.kind === "raw"))
     throw new Error("CC Raw transport needs a bound core session");
   const slots: { items: TransportItem[] }[] = Array.from({ length: CC_SLICE_COUNT }, () => ({ items: [] }));
@@ -84,9 +84,12 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
       return sections.length ? tokens(sections.join("\n\n")) : 0;
     };
     const whole = knowledgeTokens(members);
-    const baseCost = knowledgeTokens(members.filter(item => !temporaryKnowledge(item) && !(item.kind === "receipt" && item.allowance === "temporary")));
-    const temporaryCost = whole - baseCost + members.reduce((sum, item) => sum + ((item.kind === "raw" || item.kind === "fact") ? item.charge ?? 0 : 0), 0);
-    return { membership: { ...membership(members, index), knowledgeTokens: baseCost, temporaryTokens: temporaryCost },
+    const baseMembers = members.filter(item => !temporaryKnowledge(item) && !(item.kind === "receipt" && (item.allowance === "temporary" || item.allowance === "pointer")));
+    const baseCost = knowledgeTokens(baseMembers);
+    const bodiesCost = knowledgeTokens(members.filter(item => !("allowance" in item) || item.allowance !== "pointer"));
+    const temporaryCost = bodiesCost - baseCost + members.reduce((sum, item) => sum + ((item.kind === "raw" || item.kind === "fact") ? item.charge ?? 0 : 0), 0);
+    const pointerCost = whole - bodiesCost;
+    return { membership: { ...membership(members, index), knowledgeTokens: baseCost, temporaryTokens: temporaryCost, pointerTokens: pointerCost },
       parts: sections.flatMap((section, at) => at ? ["\n\n", ...section] : section) };
   };
   const encode = (members: TransportItem[], index: number) => {
@@ -147,10 +150,10 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   }
   for (const item of ordered.filter(item => item.kind === "raw" || item.kind === "fact")) if (!tryPlace(item)) omit(item);
   const costs = () => slots.reduce((sum, slot, index) => {
-    const { knowledgeTokens, temporaryTokens } = assemble(slot.items, index).membership;
-    return { base: sum.base + knowledgeTokens, temporary: sum.temporary + temporaryTokens };
-  }, { base: 0, temporary: 0 });
-  const fits = () => { const cost = costs(); return cost.base <= knowledgeAllowance && cost.temporary <= temporaryAllowance; };
+    const { knowledgeTokens, temporaryTokens, pointerTokens } = assemble(slot.items, index).membership;
+    return { base: sum.base + knowledgeTokens, temporary: sum.temporary + temporaryTokens, pointer: sum.pointer + pointerTokens };
+  }, { base: 0, temporary: 0, pointer: 0 });
+  const fits = () => { const cost = costs(); return cost.base <= knowledgeAllowance && cost.temporary <= temporaryAllowance && cost.pointer <= pointerAllowance; };
   const remove = (item: TransportItem) => {
     const slot = slots.find(slot => slot.items.includes(item))!;
     slot.items.splice(slot.items.indexOf(item), 1);
@@ -158,9 +161,11 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   };
   const placed = (item: TransportItem) => slots.some(slot => slot.items.includes(item));
   const lowestBase = () => [...ordered].reverse().find(item => (item.kind === "state" || item.kind === "knowledge" && !temporaryKnowledge(item)) && placed(item));
-  const lowestTemporary = () => [...ordered].reverse().find(item => temporaryKnowledge(item) && placed(item));
-  // Evicting a temporary item never lowers the base cost, so the base check only ever evicts base items.
-  const lowestKnowledge = () => costs().base > knowledgeAllowance ? lowestBase() : lowestTemporary() ?? lowestBase();
+  const lowestTemporary = () => [...ordered].reverse().find(item => item.kind === "knowledge" && item.allowance === "temporary" && placed(item));
+  const lowestPointer = () => [...ordered].reverse().find(item => item.kind === "knowledge" && item.allowance === "pointer" && placed(item));
+  // Evict only from the pool whose framing exceeds its cap.
+  const lowestKnowledge = () => costs().base > knowledgeAllowance ? lowestBase()
+    : costs().temporary > temporaryAllowance ? lowestTemporary() ?? lowestBase() : lowestPointer() ?? lowestBase();
   // Same admission priorities as character packing: lowest-ranked first, state notices last. Final segment
   // framing belongs to K; host JSON framing and Fact/Raw do not. Two loops, base first: removing a slice's last
   // base item moves its framing to the temporary cost, and removing a temporary item never changes the base cost,
@@ -175,6 +180,11 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     if (!item) break;
     remove(item);
   }
+  while (costs().pointer > pointerAllowance) {
+    const item = lowestPointer();
+    if (!item) break;
+    remove(item);
+  }
   if (omitted.length) {
     const receipt: TransportItem = { kind: "receipt", text: "" };
     // Last in selection priority, not last in physical slot: first-fit may leave holes.
@@ -182,7 +192,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
       receipt.text = `omitted ${omitted.length} whole items at CC inline capacity; expand: ${expandList(omitted)}`;
       receipt.knowledge = omittedKnowledge;
       // 144 §7.2: a receipt is charged to the allowance of the material it reports.
-      receipt.allowance = omittedKnowledge && !omittedBase ? "temporary" : "base";
+      receipt.allowance = omittedKnowledge && !omittedBase ? "pointer" : "base";
       const isPlaced = tryPlace(receipt);
       if (isPlaced && fits()) break;
       // Choose while the receipt's cost still counts: taking it out first can hide a base overrun it caused.

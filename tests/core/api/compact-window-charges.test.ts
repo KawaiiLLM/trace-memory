@@ -29,7 +29,7 @@ test("133/73: Raw overflow and its receipt are charged once, and facts cannot sp
     legacyFacts(memory.store, { kind: "noting", sessionId: session.id, branch: "main", createdAt: at }, [{
       sources: [{ entry: user, address: `T${turn.id}#user` }], text: "fact ".repeat(45), category: "observation", actor: "user", createdAt: at,
     }]);
-    Object.assign(memory.config.compaction, { rawTokens: 30, factsTokens: 40, temporaryTokens: 100 });
+    Object.assign(memory.config.compaction, { rawTokens: 60, factsTokens: 40, temporaryTokens: 200, pointerTokens: 100 }); // 165: Raw base holds its framing/receipt
     const result = memory.compact(session.id, "main", turn.id);
     if ("native" in result) throw new Error("native");
     expect(result.truncated?.raw?.entries).toBeGreaterThan(0);
@@ -38,12 +38,12 @@ test("133/73: Raw overflow and its receipt are charged once, and facts cannot sp
     const windowText = result.text.slice(guide.length + 2);
     expect(windowText).toContain("earlier entries omitted from the Raw window");
     const charged = result.charged!;
-    const total = charged.knowledge + charged.facts + charged.raw + charged.temporary;
+    const total = charged.knowledge + charged.facts + charged.raw + charged.temporary + charged.pointer;
     expect(tokens(windowText)).toBeLessThanOrEqual(total);
     expect(total).toBeLessThanOrEqual(charged.envelope);
     expect(charged.facts).toBeLessThanOrEqual(40);
     expect(charged.temporary).toBeGreaterThan(0);
-    expect(charged.temporary).toBeLessThanOrEqual(100);
+    expect(charged.temporary).toBeLessThanOrEqual(200);
   } finally { memory.close(); }
 });
 
@@ -64,7 +64,7 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
       operations: [{ files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", knowledgeId: base.knowledgeId, baseCommit: base.commit, supports: [noted.facts[0]!.id], reason: "archive", createdAt: at }] });
     if (!archived.ok) throw new Error(JSON.stringify(archived));
     const visible = noVisibility(); visible.knowledgeCommitIds.add(base.commit); // a status notice is now due
-    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 1 });
+    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 1, pointerTokens: 1 }); // 165
     const result = memory.compact(session.id, "main", turn.id, visible);
     if ("native" in result) throw new Error("native");
     expect(result.text).toBe(readingGuide(session.id, canonicalToolNames)); // fixed framing, no window titles, tags or receipts

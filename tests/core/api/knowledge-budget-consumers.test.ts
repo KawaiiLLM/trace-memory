@@ -73,6 +73,7 @@ test("144: with a zero Knowledge base an unscored item rides only the temporary 
   expect(tokens(borrowed.text)).toBeLessThanOrEqual(20_000);
 
   f.memory.config.compaction.temporaryTokens = 0;
+  f.memory.config.compaction.pointerTokens = 0; // 165: disable both pools
   expect(f.memory.injection(f.target).text).toBe("");
   const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId);
   expect("native" in compact).toBe(false);

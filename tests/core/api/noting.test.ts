@@ -371,6 +371,7 @@ test("64c: no knowledge category bypasses the cap, newer commits are kept, and o
   setKnowledgeCapacity(memory, 3_000);
   scoreAll(memory.store); // the Knowledge base carries scored items
   memory.config.compaction.temporaryTokens = 0; // this test is about the base window: no titles
+  memory.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
   const cap = 3_000;
   const injection = memory.injection({ sessionId, branch: "main", headTurnId: first.id });
   const text = injection.text;

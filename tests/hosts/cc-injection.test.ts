@@ -253,5 +253,7 @@ test("73: SessionStart injection reads the resolved configuration, not the defau
     return output?.hookSpecificOutput.additionalContext;
   };
   expect(await build()).toContain("config knowledge"); // default allowance (10,000): fits
-  expect(await build(1)).toBeUndefined(); // configured allowance (1): the same body no longer fits
+  const tight = await build(1);
+  expect(tight).not.toContain("config knowledge"); // configured body pool excludes the body
+  expect(tight).toContain("(title only)"); // 165: the independent pointer pool still delivers it
 });

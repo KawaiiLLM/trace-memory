@@ -66,14 +66,12 @@ test("35d Settings edits the bound database row, shows derived diagnostics, and 
   h.answers.push("Settings…", undefined);
   await command(h, "");
   expect(h.dialogs.at(-1)!.title).toContain(join(h.dir, "trace.db"));
-  expect(h.dialogs.at(-1)!.title).toContain("knowledge base 20,000 + temporary allowance 10,000 = 30,000 max input");
   expect(h.dialogs.at(-1)!.options![0]).toBe("Knowledge base: 20,000");
   expect(h.dialogs.at(-1)!.options!.filter(option => /Knowledge budget|^(Global|Project|Session) /.test(option))).toEqual([]); // one row, not three
   await edit(h, "Knowledge base: 20000", "21000");
   expect(h.memory.knowledgeBase()).toBe(21_000);
   expect(h.memory.store.db.prepare("SELECT base_tokens FROM knowledge_base_policy WHERE id = 1").get()!.base_tokens).toBe(21_000);
   expect(h.notices.at(-1)).toContain("saved Knowledge base = 21000 tokens");
-  expect(h.notices.at(-1)).toContain("maximum Knowledge input 31000");
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   expect(h.requests).toEqual([]);
 
@@ -328,7 +326,7 @@ test("24b: editing a setting starts no worker", async () => {
 
 test("144: the Knowledge-only shared allowance is a removed setting on Pi's flat layers and its nested config", () => {
   const key = "compaction.sharedAllowanceTokens";
-  expect(() => parseLayer({ [key]: 10_000 })).toThrow(/Removed setting compaction\.sharedAllowanceTokens: one temporary allowance, compaction\.temporaryTokens/);
+  expect(() => parseLayer({ [key]: 10_000 })).toThrow(/Removed setting compaction\.sharedAllowanceTokens/);
   expect(() => validateConfig({ compaction: { sharedAllowanceTokens: 10_000 } } as never)).toThrow(/Removed setting compaction\.sharedAllowanceTokens/);
   const h = setup();
   expect(() => configuration(h.dir, JSON.stringify({ [key]: 10_000 }), join(h.dir, "agent"))).toThrow(/Removed setting compaction\.sharedAllowanceTokens/);

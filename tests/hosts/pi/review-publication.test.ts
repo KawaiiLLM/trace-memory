@@ -56,9 +56,10 @@ test.each(["budget", "new knowledge"] as const)("64c: publication reprices %s wi
     if (change === "budget") expect(result.compaction.summary).toContain("rule ".repeat(6_000));
     else {
       expect(result.compaction.summary).toContain("external-39 ".repeat(10)); // newer optional Knowledge is kept
-      expect(result.compaction.summary).toMatch(/omitted \d+ constraint knowledge; expand: trace:\/\/K\d+/);
-      expect(result.compaction.summary).toContain("more up to trace://K1"); // omission range includes K2
-      expect(result.compaction.summary).not.toContain("[K2@2]");
+      // 165: omitted bodies remain discoverable as titles rather than receipt-only ids.
+      const supplied = result.compaction.details.traceMemory.supplied;
+      expect(supplied.knowledgeTitleCommitIds).toContain(2);
+      expect(supplied.knowledgeCommitIds).not.toContain(2);
       expect(result.compaction.summary).not.toContain("external-0 ".repeat(300));
     }
     expect(s.listRuns(1).filter(run => run.kind === "dreaming")).toEqual([]);

@@ -91,6 +91,7 @@ test("92 actual retained costs, including obsolete bodies and repeated carriers,
   expect(cost).toBe(tokens(offered.text.slice(prefix.length)));
   setKnowledgeCapacity(f.memory, 5000);
   f.memory.config.compaction.temporaryTokens = 0; // this test pins the base arithmetic: no title for what the base cannot hold
+  f.memory.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
   const retained = { ...noVisibility(), knowledgeCommitIds: new Set([old.commit]), knowledgeTokens: 5000 - cost };
   const tag = vi.spyOn(f.store, "versionTag");
   try {

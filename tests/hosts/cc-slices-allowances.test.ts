@@ -3,18 +3,17 @@ import { decodeCcInjection, encodeCcInjection, type CcVisibleBinding } from "../
 import { sliceCcInjection } from "../../src/hosts/cc/slices.ts";
 import type { TransportItem } from "../../src/core/render/material.ts";
 
-// 144 stage 4 §7.5: the CC slicer trims in core's selection order with two caps kept apart. A slice's header records
-// `t` = what it charged to the Knowledge base and `u` = what it charged to the temporary allowance.
+// 165: CC preserves three independent caps; t/u/v record base/body/pointer charges.
 
 const binding: CcVisibleBinding = { db: "unit-db", nativeSession: "native-144", coreSession: 1 };
 type K = Extract<TransportItem, { kind: "knowledge" }>;
-const knowledge = (commitId: number, rank: number, allowance: "base" | "temporary", size = 200, over: Partial<K> = {}): K => ({ kind: "knowledge", commitId,
+const knowledge = (commitId: number, rank: number, allowance: "base" | "temporary" | "pointer", size = 200, over: Partial<K> = {}): K => ({ kind: "knowledge", commitId,
   text: `[K${commitId}@${commitId}] [constraint/project] ${"word ".repeat(Math.ceil(size / 5))}`, category: "constraint", address: `K${commitId}@${commitId}`, form: "body", allowance, rank, ...over });
 const decoded = (slices: ReturnType<typeof sliceCcInjection>) => slices.flatMap(slice => {
   const text = slice?.hookSpecificOutput.additionalContext;
   return text ? [decodeCcInjection(text, binding)!] : [];
 });
-const sum = (slices: ReturnType<typeof sliceCcInjection>, key: "knowledgeTokens" | "temporaryTokens") =>
+const sum = (slices: ReturnType<typeof sliceCcInjection>, key: "knowledgeTokens" | "temporaryTokens" | "pointerTokens") =>
   decoded(slices).reduce((total, header) => total + (header[key] ?? 0), 0);
 const commits = (slices: ReturnType<typeof sliceCcInjection>) => decoded(slices).flatMap(header => header.commits).sort((a, b) => a - b);
 
@@ -29,7 +28,7 @@ test("a high-score old item outranks a low-score new one when the base cap trims
 });
 
 test("base full with temporary room: temporary items are delivered and both caps hold", () => {
-  const items = [knowledge(1, 0, "base"), knowledge(2, 1, "temporary"), knowledge(3, 2, "temporary", 200, { form: "title", text: "[K3@3] [constraint/project] (title only) T" })];
+  const items = [knowledge(1, 0, "base"), knowledge(2, 1, "temporary"), knowledge(3, 2, "pointer", 200, { form: "title", text: "[K3@3] [constraint/project] (title only) T" })];
   const baseOnly = sum(sliceCcInjection(binding, [items[0]!]), "knowledgeTokens");
   const slices = sliceCcInjection(binding, items, undefined, baseOnly, 400);
   expect(commits(slices)).toEqual([1, 2]);
@@ -86,14 +85,28 @@ test("Raw omitted for capacity lowers u", () => {
   expect(sum(huge, "temporaryTokens")).toBe(100);
 });
 
-test("the wire header carries titles and the temporary charge; an old header still decodes", () => {
-  const text = encodeCcInjection(binding, { text: "body", knowledgeCommitIds: [1], knowledgeTitleCommitIds: [2, 3], knowledgeTokens: 11, temporaryTokens: 7 });
+test("the wire digest protects both pool charges and still accepts old carriers", () => {
+  const text = encodeCcInjection(binding, { text: "body", knowledgeCommitIds: [1], knowledgeTitleCommitIds: [2, 3], knowledgeTokens: 11, temporaryTokens: 7, pointerTokens: 9 });
   const header = decodeCcInjection(text, binding)!;
-  expect(header).toMatchObject({ commits: [1], titles: [2, 3], knowledgeTokens: 11, temporaryTokens: 7 });
+  expect(header).toMatchObject({ commits: [1], titles: [2, 3], knowledgeTokens: 11, temporaryTokens: 7, pointerTokens: 9 });
   const plain = decodeCcInjection(encodeCcInjection(binding, { text: "body", knowledgeCommitIds: [1], knowledgeTokens: 11 }), binding)!;
   expect(plain.titles).toEqual([]);
   expect(plain.temporaryTokens).toBeUndefined();
   expect(decodeCcInjection(text.replace('"u":7', '"u":8'), binding)).toBeNull(); // the digest covers the accounting
+  expect(decodeCcInjection(text.replace('"v":9', '"v":10'), binding)).toBeNull();
+});
+
+test("body-cap trimming preserves pointers and pointer-cap trimming preserves bodies", () => {
+  const body = knowledge(1, 0, "temporary", 400);
+  const title = knowledge(2, 1, "pointer", 200, { form: "title", text: "[K2@2] [constraint/project] (title only) Pointer" });
+  const bodyTight = sliceCcInjection(binding, [body, title], undefined, 0, 1, 1_000);
+  expect(commits(bodyTight)).toEqual([]);
+  expect(decoded(bodyTight).flatMap(header => header.titles)).toEqual([2]);
+  expect(sum(bodyTight, "pointerTokens")).toBeLessThanOrEqual(1_000);
+  const pointerTight = sliceCcInjection(binding, [body, title], undefined, 1_000, 1_000, 1);
+  expect(commits(pointerTight)).toEqual([1]);
+  expect(decoded(pointerTight).flatMap(header => header.titles)).toEqual([]);
+  expect(sum(pointerTight, "temporaryTokens")).toBeLessThanOrEqual(1_000);
 });
 
 const tokens = (text: string): number => text.length;

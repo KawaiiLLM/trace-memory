@@ -32,6 +32,7 @@ function fixture(texts: (string | { text: string; category: "constraint" | "open
   if (!created.ok) throw new Error(created.problems.join("; "));
   scoreAll(memory.store); // the Knowledge base carries scored items
   memory.config.compaction.temporaryTokens = 0; // these tests are about the base window: no titles
+  memory.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
   recorded(memory, session.id, "main", evidence.id);
   const pending = Array.isArray(pendingText) ? pendingText : [pendingText];
   const turn = memory.store.appendTurn({ sessionId: session.id, parentTurnId: evidence.id, kind: "turn", userPrompt: pending[0]!, startedAt: "2026-09-16T00:01:00Z" });
@@ -48,6 +49,7 @@ test("fresh Noter prices the native Read, Write and Edit definitions", () => {
   // This boundary prices mandatory input only; optional history may legitimately shrink first.
   f.memory.config.compaction.factsTokens = 0;
   f.memory.config.compaction.temporaryTokens = 1;
+  f.memory.config.compaction.pointerTokens = 1;
   const nativeReadToolTokens = 402, nativeWriteToolTokens = 385; // Read, and Write with Edit
   const definitions = pricedToolDefinitions(notingToolDefinitions, canonicalToolNames);
   const input = { ...f.target, nativeReadToolTokens, nativeWriteToolTokens, boundary: { exactEntryIds: f.pending } };

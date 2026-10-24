@@ -70,6 +70,7 @@ test("34c: a knowledge cap that cannot hold a complete foreground item emits not
   try {
     setKnowledgeCapacity(f.m, 5_000);
     f.m.config.compaction.temporaryTokens = 0; // with a temporary allowance the misfit would show as a title
+    f.m.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
     f.note("Evidence");
     expect(f.knowledge("A complete rule " + "word ".repeat(6_000))).toContain("committed");
     expect(f.m.inject(f.s.id)).toBe("");
@@ -125,6 +126,7 @@ test("review 2026-09-08: the Receipts heading is charged to the budgets it is em
   try {
     setKnowledgeCapacity(f.m, 5_000);
     f.m.config.compaction.temporaryTokens = 0; // with a temporary allowance the misfit would show as a title
+    f.m.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
     f.note("Evidence");
     expect(f.knowledge("word ".repeat(6_000))).toContain("committed");
     // 34c foreground publication emits no omission-only block when no complete item fits.

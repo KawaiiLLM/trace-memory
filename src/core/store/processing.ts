@@ -14,8 +14,8 @@ export const DEFAULT_DREAMING_TRIGGER_OPERATIONS = 30;
  * session's pools. Rows written before 126 keep the one pool they named. */
 export const ALL_POOLS = "all";
 
-/** Database policy owns the base window only. The temporary allowance is a fixed configuration value
- * (`compaction.temporaryTokens`), never derived from the maintenance triggers (73). */
+/** Database policy owns only the base. Both temporary pools are fixed configuration values,
+ * independent of maintenance triggers (165). */
 export function deriveKnowledgeBudgets(values: KnowledgeBudgetValues, stored = false): KnowledgeBudgets {
   const label = (field: KnowledgeBudgetField) => `${field[0]!.toUpperCase()}${field.slice(1)} Knowledge budget`;
   for (const field of ["global", "project", "session"] as const) if (!Number.isSafeInteger(values[field]) || values[field] < 0)
