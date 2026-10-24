@@ -51,35 +51,19 @@ export function checkGroups(text: string, items: readonly CurateItem[], size = 5
   return { groups, problems };
 }
 
-/** 2026-10-24: marked items top a group up to `size` one by one, in clustering order (「把一组的候选知识填到50为止，多余的丢弃」); unrelated
- * marks only fill space left (「如果最后还有空位，将剩下的可疑条目填进去」) and never open a group. */
+/** 2026-10-24: every marked item joins the candidates (「有可疑标记的全部加入作为补充候选」). At most `size` → one group; more → a part per
+ * clustering group (each holds at most `size` items), parts merged in clustering order while they fit. */
 export function candidateGroups(clustering: readonly ClusteredGroup[], candidates: ReadonlySet<number>, size = 50): ClusteredGroup[] {
-  const selected = new Set(candidates);
-  const marked = (group: ClusteredGroup) => group.clusters.flatMap(cluster => cluster.items.filter(id => cluster.marks?.[id]));
+  const all = new Set([...candidates, ...clustering.flatMap(group => group.clusters.flatMap(cluster => cluster.items.filter(id => cluster.marks?.[id])))]);
   const groups: number[][] = [];
-  const fill = (target: number[], ids: readonly number[]) => {
-    for (const id of ids) {
-      if (target.length >= size) return;
-      if (!selected.has(id)) { target.push(id); selected.add(id); }
-    }
-  };
-  const touched = clustering.filter(group => group.items.some(id => candidates.has(id)));
-  if (candidates.size <= size) {
-    const target = clustering.flatMap(group => group.items.filter(id => candidates.has(id)));
-    fill(target, [...touched, ...clustering.filter(group => !touched.includes(group))].flatMap(marked));
-    groups.push(target);
-  } else {
-    for (const group of touched) {
-      const part = group.items.filter(id => candidates.has(id));
-      fill(part, marked(group));
-      const current = groups.at(-1);
-      if (current && current.length + part.length <= size) current.push(...part);
-      else groups.push(part);
-    }
-    const remaining = clustering.filter(group => !touched.includes(group)).flatMap(marked);
-    for (const group of groups) fill(group, remaining);
+  if (all.size <= size) groups.push(clustering.flatMap(group => group.items.filter(id => all.has(id))));
+  else for (const group of clustering) {
+    const part = group.items.filter(id => all.has(id)), current = groups.at(-1);
+    if (!part.length) continue;
+    if (current && current.length + part.length <= size) current.push(...part);
+    else groups.push(part);
   }
-  // No candidates is the one-group case too: marked items alone fill it (158 review); a group nothing filled is dropped.
+  // No candidates and no marks give no group.
   return groups.filter(ids => ids.length).map(ids => {
     const members = new Set(ids);
     const clusters = clustering.flatMap(group => group.clusters).filter(cluster => cluster.items.some(id => members.has(id)));
