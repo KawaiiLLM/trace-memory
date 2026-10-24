@@ -14,7 +14,7 @@ export interface DreamerScript {
   notes?: Text;
   clustering?: Text;
   curate?: Partial<Record<string, Text>>;
-  scoring?: (group: number, labels: string[], message: string) => Text | undefined;
+  scoring?: (batch: number, labels: string[], message: string) => Text | undefined;
   curateResult?: Partial<RunAgentResult>;
   instead?: Partial<Record<DreamingTask, (input: DreamingAgentInput) => Promise<RunAgentResult> | RunAgentResult>>;
 }
@@ -71,8 +71,8 @@ export function scriptedDreamer(script: DreamerScript = {}): ScriptedDreamer {
       const next = input.passEnd();
       if (next) { messages.push(next); writeFileSync(`${input.workspace.dir}/groups.md`, pick("clustering", script.clustering, next, fallback)); input.passEnd(); }
     } else {
-      const group = Number(/group (\d+)/.exec(report)?.[1] ?? 1);
-      let scoring = false;
+      const group = Number(/(?:group|batch) (\d+)/.exec(report)?.[1] ?? 1);
+      const scoring = input.task === "scoring";
       for (let round = 0; round < 6; round++) {
         input.reportResponse?.(`${group}-${round}`, 1000 + round * 100);
         if (!scoring) {
@@ -81,13 +81,12 @@ export function scriptedDreamer(script: DreamerScript = {}): ScriptedDreamer {
           writeDecisions(input.workspace.dir, changes);
           writeFileSync(`${input.workspace.dir}/changes.md`, changes);
         } else {
-          const labels = [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+(?:\.child\d+)?/g)].map(match => match[0]);
-          writeFileSync(`${input.workspace.dir}/scores.md`, pick(`scoring:${group}`, script.scoring?.(group, labels, report), report, labels.map(label => `${label} 50`).join("\n")));
+          const labels = [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+/g)].map(match => match[0]);
+          writeFileSync(`${input.workspace.dir}/scores.md`, pick(`scoring:${group}`, script.scoring?.(group, labels, report), report, labels.map(label => `${label} 4 4 4`).join("\n")));
         }
         const next = input.passEnd();
         if (!next) break;
         messages.push(next); report = next;
-        if (next.startsWith("Curate passes.")) scoring = true;
       }
     }
     return { outcome: "success", output: "Done.", request: REQUEST, usage: { tokens: 12 }, ...(input.task === "curate" ? script.curateResult : {}) } as RunAgentResult;

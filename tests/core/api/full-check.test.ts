@@ -22,36 +22,30 @@ test("clustering rejects missing, duplicate, foreign and oversized membership be
   expect(f.store.currentKnowledge(f.path).every(item => item.knowledge.score === null)).toBe(true);
 });
 
-test("full check persists clusters, resumes only uncommitted groups and rescores already scored keeps without anchors", async () => {
+test("full check persists clusters, resumes only uncommitted groups and rescores already scored keeps after all groups", async () => {
   const f = dreamerFixture(memories); f.memory.config.dreaming.groupItems = 1;
   const a = f.item("First supported rule"), b = f.item("Second supported rule");
   f.store.db.prepare("UPDATE knowledge SET score=90,scored_commit=? WHERE id=?").run(a.commit, a.knowledgeId);
   f.dreamer.script.curate!.group2 = "## bogus\n";
-  const scoring: string[] = [];
   f.dreamer.script.instead = { curate: async input => {
     expect(readFileSync(`${input.workspace.dir}/group.md`, "utf8")).toContain("## Cluster Topic");
-    return scriptedDreamer({ curate: f.dreamer.script.curate, scoring: (_group, labels, message) => {
-      const text = readFileSync(`${input.workspace.dir}/scoring.md`, "utf8");
-      if (message.startsWith("Curate passes.")) expect(message.split("<scoring_input>\n")[1]?.split("</scoring_input>")[0]).toBe(text);
-      scoring.push(text);
-      return labels.map(label => `${label} 61`).join("\n");
-    } }).agent(input);
+    return scriptedDreamer({ curate: f.dreamer.script.curate }).agent(input);
   } };
   expect(fullCheckDryRun(f.store, f.path)).toMatchObject({ count: 2, groups: null, decisions: [], modelCalls: 0 });
   expect(await f.memory.dream({ ...f.target, manual: true, fullCheck: true })).toMatchObject({ outcome: "failure" });
   const saved = f.store.handoff(f.session.id, "dreaming")!.detail!;
   expect(saved.groups!.map(group => !!group.run)).toEqual([true, false]);
   expect(saved.groups![0]!.clusters).toEqual([{ label: "Topic 1.1", items: [a.knowledgeId] }]);
-  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(61);
+  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(90); // 167: no scoring before all groups commit.
   expect(f.store.currentCommit(a.knowledgeId, f.path)[0]!.id).toBe(a.commit);
   expect(f.store.getKnowledge(b.knowledgeId)!.score).toBeNull();
   expect(fullCheckDryRun(f.store, f.path)).toMatchObject({ count: 2, groups: saved.groups, decisions: [{ runId: saved.groups![0]!.run }] });
   f.dreamer.script.curate!.group2 = "## none\n";
   const before = f.dreamer.inputs.length;
   expect(await f.memory.dream({ ...f.target, manual: true, fullCheck: true })).toMatchObject({ outcome: "success" });
-  expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate"]);
-  expect(f.store.getKnowledge(b.knowledgeId)!.score).toBe(61);
-  expect(scoring.every(text => text.includes("None available") && !text.includes(" 90\n"))).toBe(true);
+  expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate", "scoring"]);
+  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(51);
+  expect(f.store.getKnowledge(b.knowledgeId)!.score).toBe(51);
   expect(f.store.currentKnowledge(f.path).map(item => item.revision.files)).toEqual([null, null]);
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
 });
@@ -79,7 +73,7 @@ test("a manual full check replaces paused incremental membership and includes ne
   f.dreamer.script.curate!.group2 = "## none\n";
   expect(await f.memory.dream({ ...f.target, manual: true, fullCheck: true })).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.filter(input => input.task === "clustering")).toHaveLength(2);
-  expect([a, b, c].map(item => f.store.getKnowledge(item.knowledgeId)!.score)).toEqual([50, 50, 50]);
+  expect([a, b, c].map(item => f.store.getKnowledge(item.knowledgeId)!.score)).toEqual([51, 51, 51]);
   expect(f.store.getRun(committed)!.outcome).toBe("success");
   expect(fullCheckDryRun(f.store, f.path).groups!.map(group => group.items)).toEqual([[a.knowledgeId], [b.knowledgeId], [c.knowledgeId]]);
 });

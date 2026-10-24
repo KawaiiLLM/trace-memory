@@ -46,6 +46,7 @@ export { defaultWorkspaceRoot, sweepStaleWorkspaces } from "../noting/workspace.
 import { Store, type PathPending, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
 import { prepareDreaming, runDreaming, executionLimitMs, CLAIM_LEASE_MARGIN_MS, TASK_GAP_MS, type DreamingFrozen, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
+import { SCORING_BATCH_ITEMS } from "../dreaming/classify.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
 export { fullCheckDryRun } from "../dreaming/clustering.ts";
 
@@ -146,7 +147,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     groupItems: 50, parallelGroups: 5, notesSteps: 10, notesTokens: 10_000, wholeFileLimit: 5,
     clusteringSteps: 30, clusteringContextTokens: 150_000,
     // Dispatcher proposals from the 37-item Sonnet experiment, not maintainer-set limits.
-    curateSteps: 100, curateContextTokens: 200_000, scoringSteps: 10, scoringContextTokens: 30_000 },
+    curateSteps: 100, curateContextTokens: 200_000, scoringSteps: 10, scoringContextTokens: 60_000 },
   writing: { ...DEFAULT_WRITING_LIMITS },
   compaction: {
     factsTokens: 10_000,
@@ -183,8 +184,8 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "consolidation.maxToolRounds": "Consolidation is retired; remove this key",
   // Ticket 144 stage 4: the Dreamer's tasks are bounded by dreaming.timeoutMs; the only value it ever took was 0.
   "dreaming.maxToolRounds": "the Dreamer has no tool-round limit (each task is bounded by dreaming.timeoutMs); remove this key",
-  "dreaming.classifyModel": "scoring is part of the curate conversation and uses the Dreamer's model; remove this key",
-  "dreaming.classifyThinking": "scoring is part of the curate conversation and uses the Dreamer's thinking; remove this key",
+  "dreaming.classifyModel": "scoring uses the Dreamer's model; remove this key",
+  "dreaming.classifyThinking": "scoring uses the Dreamer's thinking; remove this key",
   "compaction.overflowTokens": "use compaction.temporaryTokens for bodies and compaction.pointerTokens for pointers (10,000 each by default)",
   "compaction.sharedAllowanceTokens": "use compaction.temporaryTokens for bodies and compaction.pointerTokens for pointers; remove this key",
   "consolidation.subagentModeDefault": "Consolidation is retired; remove this key",
@@ -881,7 +882,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         if (input.manual || input.fullCheck ? !handoff && !visible.length : !dreamingDue(target)) { empty = true; return null; }
         const groupCount = handoff?.detail?.groups?.length || Math.ceil((handoff?.detail?.clusteringItems?.length ?? visible.length) / cfg.dreaming.groupItems);
         const setupTasks = 2;
-        executionLimit = executionLimitMs(setupTasks + 2 * Math.max(1, Math.ceil(groupCount / cfg.dreaming.parallelGroups)), cfg.dreaming.timeoutMs);
+        const scoringTasks = Math.max(1, Math.ceil((handoff?.detail?.scoringTargets?.length ?? visible.length) / SCORING_BATCH_ITEMS));
+        executionLimit = executionLimitMs(setupTasks + Math.max(1, Math.ceil(groupCount / cfg.dreaming.parallelGroups)) + scoringTasks, cfg.dreaming.timeoutMs);
         claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerOperations, executionLimit + CLAIM_LEASE_MARGIN_MS, input.manual || input.fullCheck);
         if (!claim) {
           if (input.manual || input.fullCheck) {

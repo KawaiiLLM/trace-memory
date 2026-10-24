@@ -119,13 +119,15 @@ export interface FactRelation {
   strength: RelationStrength;
 }
 
+export interface ScoreRatings { consequence: number; frequency: number; current: number }
 export interface Knowledge {
   id: number;
   projectId: number | null; // stable identity attribution; each commit carries its scope
   originSessionId: number;
   author: string;
-  /** Classify score 1-100 (144 stage 4 §6), null until classified. It orders injection and belongs to the identity, not to a version. */
+  /** Importance and its three ratings belong to the last scored revision; legacy scores have no ratings. */
   score: number | null;
+  ratings: ScoreRatings | null;
 }
 
 export interface KnowledgeRevision {

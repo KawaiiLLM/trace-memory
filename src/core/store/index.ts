@@ -17,6 +17,7 @@ import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, with
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_OPERATIONS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
 import { tokens } from "../render/index.ts";
 import { factObjects, isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
+import { ratingScore, type RatedTarget } from "../dreaming/classify.ts";
 import type {
   Actor,
   Knowledge,
@@ -785,7 +786,9 @@ function toFact(row: any): Fact {
 
 function toKnowledge(row: any): Knowledge {
   return { id: row.id, projectId: row.project_id, originSessionId: row.origin_session_id, author: row.author,
-    score: row.score === null || row.score === undefined ? null : Number(row.score) };
+    score: row.score === null || row.score === undefined ? null : Number(row.score),
+    ratings: row.score_consequence == null || row.score_frequency == null || row.score_current == null ? null
+      : { consequence: Number(row.score_consequence), frequency: Number(row.score_frequency), current: Number(row.score_current) } };
 }
 
 function toKnowledgeRevision(row: any): KnowledgeRevision {
@@ -3982,12 +3985,12 @@ export class Store {
    * moves only with a committed pass. */
   commitTaskPass(input: { run: RunInput; path: KnowledgePath; operations?: readonly KnowledgeOperationInput[];
     response?: (results: WorkspaceOperationResult[]) => string;
-    /** Classify scores (§6.6): written only for an item whose current version is the one shown (`commit`); the rest wait for the next run. */
-    scores?: readonly { knowledgeId: number; commit: number; score: number }[];
+    /** Ratings publish only when the current version is still the one shown; changed targets wait for the next run. */
+    scores?: readonly RatedTarget[];
     /** Both are decided once the run exists: the hand-off's curate runs include this run, the coverage includes what it wrote. */
     cover?: (done: { runId: number; results: WorkspaceOperationResult[] }) => readonly { id: number; pool?: string }[];
     handoff: (done: { runId: number; results: WorkspaceOperationResult[] }) => { nextTask: string; detail: NonNullable<Handoff["detail"]> } | null;
-    /** Additional group status, verification and provisional-score publication, inside this transaction. */
+    /** Additional group status and verification, inside this transaction. */
     after?: (done: { runId: number; results: WorkspaceOperationResult[] }) => void;
     finish?: { boundary: DreamerBoundary } }): { runId: number; results: WorkspaceOperationResult[] } {
     return this.transaction(() => {
@@ -3995,8 +3998,13 @@ export class Store {
       const sessionId = input.run.sessionId!;
       if (input.scores?.length) {
         const current = new Map(this.liveKnowledge(input.path).map(revision => [revision.knowledgeId, revision.id]));
-        const set = this.db.prepare("UPDATE knowledge SET score = ?, scored_commit = ?, scored_run = ? WHERE id = ?");
-        for (const { knowledgeId, commit, score } of input.scores) if (current.get(knowledgeId) === commit) set.run(score, commit, done.runId, knowledgeId);
+        const set = this.db.prepare("UPDATE knowledge SET score = ?, scored_commit = ?, scored_run = ?, score_consequence = ?, score_frequency = ?, score_current = ? WHERE id = ?");
+        for (const rating of input.scores) {
+          if (![rating.consequence, rating.frequency, rating.current].every(value => Number.isInteger(value) && value >= 1 && value <= 5))
+            throw new Error("Score ratings must be integers 1–5");
+          if (current.get(rating.knowledgeId) === rating.commit)
+            set.run(ratingScore(rating), rating.commit, done.runId, rating.consequence, rating.frequency, rating.current, rating.knowledgeId);
+        }
       }
       input.after?.(done);
       const cover = input.cover?.(done) ?? [];

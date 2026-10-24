@@ -78,3 +78,21 @@ test("a fresh database has a base of 20,000, scores within 1 to 100, and a hand-
     f.store.db.exec("UPDATE knowledge SET score = 100");
   } finally { f.store.close(); }
 });
+
+test("rating migration preserves legacy scores and provenance, accepts only integer ratings and reopens idempotently", () => {
+  const f = database();
+  f.store.db.prepare("UPDATE knowledge SET score=73,scored_commit=1,scored_run=?").run(f.run.id);
+  const before = rows(f.store, "knowledge", ["score_consequence", "score_frequency", "score_current"]);
+  for (const dimension of ["consequence", "frequency", "current"]) f.store.db.exec(`ALTER TABLE knowledge DROP COLUMN score_${dimension}`);
+  f.store.close();
+  for (let opens = 0; opens < 2; opens++) {
+    const upgraded = new Store(f.file);
+    try {
+      expect(rows(upgraded, "knowledge", ["score_consequence", "score_frequency", "score_current"])).toEqual(before);
+      expect(upgraded.getKnowledge(1)).toMatchObject({ score: 73, ratings: null });
+      for (const dimension of ["consequence", "frequency", "current"])
+        for (const value of [0, 6, 2.5]) expect(() => upgraded.db.prepare(`UPDATE knowledge SET score_${dimension}=?`).run(value)).toThrow();
+      expect(upgraded.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { upgraded.close(); }
+  }
+});

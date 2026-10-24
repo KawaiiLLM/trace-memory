@@ -116,7 +116,7 @@ for (const success of [true, false]) test(`92: ordinary D ${success ? "success s
   } finally { release(); await h.dispose(); }
 });
 
-test("86: a kept Dreamer batch survives a later terminal failure, with no extra eligibility check", async () => {
+test("a committed Dreamer group survives scoring failure, with no extra eligibility check", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -131,12 +131,12 @@ test("86: a kept Dreamer batch survives a later terminal failure, with no extra 
       return dreamerFiles(c, { curate: block(`update K${initial.knowledgeId}@v1`, { reason: "Update before failure" }, "Maintained rule " + "word ".repeat(120)) }) ?? reply("Done");
     }, { autoStop: false });
     await h.turn(); await vi.waitFor(() => expect(waiting).toBe(true));
-    expect(store.listKnowledgeRevisions()).toHaveLength(1); // curate's batch is a proposal: nothing is applied before verify passes
+    expect(store.listKnowledgeRevisions()).toHaveLength(2); // 167: curate commits before scoring.
     const before = eligible.mock.calls.length;
     release(); await settle(h);
-    expect(store.listKnowledgeRevisions()).toHaveLength(1);
+    expect(store.listKnowledgeRevisions()).toHaveLength(2);
     expect(store.listRuns(1).filter(r => r.kind === "dreaming").at(-1)!.outcome).toBe("failure");
-    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "curate", detail: { groups: [{ items: [initial.knowledgeId] }] } });
+    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "scoring", detail: { groups: [{ items: [initial.knowledgeId] }] } });
     expect(eligible.mock.calls.length).toBe(before);
     eligible.mockRestore();
   } finally { release(); await h.dispose(); }

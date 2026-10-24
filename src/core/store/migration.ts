@@ -170,6 +170,8 @@ export function migrateStage4Schema144(db: DatabaseSync): void {
   add("knowledge", "score", "INTEGER CHECK (score IS NULL OR score BETWEEN 0 AND 100)"); // classify writes 1-100; 0 is only the deployment step's revived budget archives
   add("knowledge", "scored_commit", "INTEGER REFERENCES knowledge_revisions(id)");
   add("knowledge", "scored_run", "INTEGER REFERENCES runs(id)");
+  for (const dimension of ["consequence", "frequency", "current"])
+    add("knowledge", `score_${dimension}`, `INTEGER CHECK (score_${dimension} IS NULL OR (typeof(score_${dimension}) = 'integer' AND score_${dimension} BETWEEN 1 AND 5))`);
   add("task_handoffs", "detail", "TEXT");
   add("knowledge_deliveries", "titles", "TEXT NOT NULL DEFAULT '[]'");
   add("knowledge_deliveries", "temporary_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK (temporary_tokens >= 0)");

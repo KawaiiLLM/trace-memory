@@ -236,7 +236,6 @@ test("Raw entry ends reuse a not-due Dreaming result; restore re-arms the next e
     h.provider(async c => dreamerFiles(c) ?? reply("Done"));
     expect(h.requests).toHaveLength(0);
     h.persist(reply("next entry")); await h.emit("tool_execution_start"); await h.drain();
-    expect(h.memory.store.getKnowledge(1)).toMatchObject({ score: 50 });
     expect(h.memory.store.noterOperations(h.memory.store.knowledgePath(1))).toBe(0);
   } finally { due.mockRestore(); }
 });
