@@ -82,8 +82,7 @@ function buildPendingSection(input) {
     heading: "Pending / trigger",
     noting: pendingRow("Noting", input.noting),
     dreamingHeading: "Dreaming",
-    dreaming: [pendingRow("pending", input.dreaming.pending)],
-    ...input.dreaming.next ? { dreamingNext: { label: "next curate", value: input.dreaming.next } } : {}
+    dreaming: [pendingRow("pending", input.dreaming.pending)]
   };
 }
 function buildSpendSection(input) {
@@ -129,7 +128,7 @@ function buildTraceMenu(input) {
 function buildSettingsBudgets(input) {
   return {
     rows: [{ label: "Knowledge base", value: formatTokens(input.base) }],
-    derivedLine: `\u2192 knowledge base ${formatTokens(input.base)} + temporary allowance ${formatTokens(input.temporaryTokens)} = ${formatTokens(input.base + input.temporaryTokens)} max input`
+    derivedLine: `\u2192 knowledge base ${formatTokens(input.base)} + body pool ${formatTokens(input.temporaryTokens)} + pointer pool ${formatTokens(input.pointerTokens)} = ${formatTokens(input.base + input.temporaryTokens + input.pointerTokens)} max input`
   };
 }
 function buildSettingsWorkers(input) {
@@ -139,7 +138,7 @@ function buildSettingsChoices(input) {
   const base = buildSettingsBudgets(input.budgets).rows[0];
   const budgets = [{ id: "knowledgeBase", label: `${base.label}: ${base.value}` }];
   const workers = input.workers.flatMap((w) => {
-    const phase = { Noter: "noting", Dreamer: "dreaming", Classifier: "classify" }[w.phase];
+    const phase = { Noter: "noting", Dreamer: "dreaming" }[w.phase];
     return [
       { id: `${phase}.model`, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
       { id: `${phase}.thinking`, label: `${w.phase} thinking: ${w.thinking}`, source: w.sources?.thinking }
@@ -176,7 +175,7 @@ var TRACE_MENU_FIXTURE = {
   },
   pending: {
     noting: { tokens: 3200, trigger: 1e4 },
-    dreaming: { pending: { tokens: 12, trigger: 30, unit: "operations" }, next: "merge-split" }
+    dreaming: { pending: { tokens: 12, trigger: 30, unit: "operations" } }
   },
   spend: {
     session: 1.23,
@@ -194,7 +193,7 @@ var TRACE_MENU_FIXTURE_WITH_NOTICE = {
 };
 var TRACE_SETTINGS_FIXTURE = {
   database: "~/.trace-memory/trace.db",
-  budgets: { base: 2e4, temporaryTokens: 1e4 },
+  budgets: { base: 2e4, temporaryTokens: 1e4, pointerTokens: 1e4 },
   workers: [
     { phase: "Noter", model: "follow foreground", thinking: "inherit" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" }
@@ -368,8 +367,7 @@ function renderTraceMenu(input, cc) {
     pendingLines: [
       pendingLine("Noting", model.pending.noting),
       `  ${model.pending.dreamingHeading}`,
-      ...model.pending.dreaming.map((row) => pendingLine(row.label, row, "    ")),
-      ...model.pending.dreamingNext ? [`    ${model.pending.dreamingNext.label.padEnd(13)} ${model.pending.dreamingNext.value}`] : []
+      ...model.pending.dreaming.map((row) => pendingLine(row.label, row, "    "))
     ],
     spendLines: [model.spend.sessionLine, `        ${model.spend.phaseLine}`, model.spend.todayLine],
     notices: model.notices,
@@ -757,7 +755,6 @@ export const register = (on) => {
       }
       if (value === "catch-up") void act("catchup");
       else if (value === "dream") void act("dream");
-      else if (value === "full-check") void act("full-check");
       else if (value === "stop") void act("stop");
     };
     const message = notice ? <Text>{notice}</Text> : null;
