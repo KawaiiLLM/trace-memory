@@ -1858,6 +1858,14 @@ export class Store {
     return claim;
   }
 
+  /** Extend a live owned claim without shortening its lease or reviving a fenced token. */
+  extendClaim(claim: TaskClaim, leaseMs: number): boolean {
+    const now = Date.now();
+    return !!this.db.prepare(`UPDATE task_claims SET expires_at = MAX(expires_at, ?)
+      WHERE session_id = ? AND phase = ? AND token = ? AND executor_id = ? AND reserved = 0 AND expires_at > ?`)
+      .run(now + leaseMs, claim.sessionId, claim.phase, claim.token, claim.executorId, now).changes;
+  }
+
   releaseClaim(claim: TaskClaim): boolean {
     return !!this.db.prepare("DELETE FROM task_claims WHERE session_id = ? AND phase = ? AND token = ? AND executor_id = ?")
       .run(claim.sessionId, claim.phase, claim.token, claim.executorId).changes;

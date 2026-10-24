@@ -79,7 +79,10 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
     fullCheck, clusteringItems, groupsFile: kept?.groupsFile, clusteringModel: store.getSession(path.sessionId)!.host.startsWith("cc:") ? "haiku" : model.model,
     candidates, boundary: kept?.boundary ?? selected!.boundary, background: kept?.background ?? selected!.background, ...(kept?.notes === undefined ? {} : { notes: kept.notes }) };
 }
-export interface DreamingRunOptions { workspaceRoot?: string; executionId: string; registerFence(workspace: { close(): void }): void }
+export interface DreamingRunOptions {
+  workspaceRoot?: string; executionId: string; registerFence(workspace: { close(): void }): void;
+  extendExecution(remainingTasks: number): void;
+}
 interface DreamingBinding {
   call: CallFence; tools: ToolDefinition[]; sequence: unknown[]; fetched: unknown;
   close(): void; acknowledgeRequest(): void; reportRequest(request: unknown): void;
@@ -329,6 +332,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     lastRunId = store.commitTaskPass({ run: { ...template("scoring"), response: JSON.stringify({ task: "scoring-admission" }) }, path,
       handoff: () => ({ nextTask: "scoring", detail: detail() }) }).runId;
   }
+  options.extendExecution(Math.ceil((frozen.scoringTargets.length - frozen.scoringResults.length) / SCORING_BATCH_ITEMS));
   while (frozen.scoringResults.length < frozen.scoringTargets.length) {
     const targets = frozen.scoringTargets.slice(frozen.scoringResults.length, frozen.scoringResults.length + SCORING_BATCH_ITEMS);
     const text = scoringText(targets), batch = Math.floor(frozen.scoringResults.length / SCORING_BATCH_ITEMS) + 1;
