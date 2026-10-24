@@ -128,12 +128,12 @@ export interface NotingMaterial extends SharedMaterial {
 export type TransportItem =
   /** `form`: a title-only item's text is its header line (144 §7.4). `allowance` and `rank` are core's selection:
    * the Knowledge base's items come first, then the temporary allowance's, each in delivery order (§7.5). */
-  | { kind: "knowledge"; text: string; category: string; commitId: number; address: string; form?: "body" | "title"; allowance?: "base" | "temporary"; rank?: number }
+  | { kind: "knowledge"; text: string; category: string; commitId: number; address: string; form?: "body" | "title"; allowance?: "base" | "temporary" | "pointer"; rank?: number }
   | { kind: "state"; text: string; address: string; receipt: { fromCommit: number; toCommits: number[] } }
   | { kind: "fact"; text: string; factId: number; pending: boolean; allowance?: "temporary"; charge?: number }
   | { kind: "raw"; text: string; entryId: number; address: string; pending: boolean; allowance?: "temporary"; charge?: number }
   /** `allowance`: which cap pays for a Knowledge receipt (the base when it has room, 144 §7.2). */
-  | { kind: "receipt"; text: string; knowledge?: boolean; allowance?: "base" | "temporary" };
+  | { kind: "receipt"; text: string; knowledge?: boolean; allowance?: "base" | "temporary" | "pointer" };
 
 /** A whole selected domain item can be independently framed when its transport has several
  * unordered carriers. The host only decides which complete framed items fit each carrier. */

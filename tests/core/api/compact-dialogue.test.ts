@@ -28,7 +28,7 @@ test("133/140: user words default to one hundred anchor-inclusive path turns, ar
       return memory.store.getSourceEntry(memory.store.listSourceEntries(session.id, turn.id)[0]!.id)!;
     });
     recorded(memory, session.id, "main", parent!);
-    Object.assign(memory.config.compaction, { rawTokens: 1, temporaryTokens: 2000 });
+    Object.assign(memory.config.compaction, { rawTokens: 1, temporaryTokens: 2000, pointerTokens: 2000 });
     const result = memory.compact(session.id, "main", parent!);
     if ("native" in result) throw new Error("native");
     expect(result.material!.earlierUsers!.map(e => e.id)).toEqual(users.slice(2).filter((_, index) => index !== 2).map(e => e.id));
@@ -42,7 +42,7 @@ test("133/140: user words default to one hundred anchor-inclusive path turns, ar
     const shorter = memory.compact(session.id, "main", parent!);
     if ("native" in shorter) throw new Error("native");
     expect(shorter.material!.earlierUsers!.map(e => e.id)).toEqual(users.slice(-5).map(e => e.id));
-    memory.config.compaction.temporaryTokens = 250;
+    memory.config.compaction.pointerTokens = 250;
     const limited = memory.compact(session.id, "main", parent!);
     if ("native" in limited) throw new Error("native");
     expect(limited.material!.earlierUsers).toEqual([]); // newest does not fit; older small entries cannot skip it
@@ -64,9 +64,9 @@ test("133: titles default to one hundred anchor-inclusive path turns, are config
         [{ title: `Episode ${index}`, sources: [{ entry: source, text: `evidence-${index} `.repeat(100) }] }])[0]!;
     });
     recorded(memory, session.id, "main", parent!);
-    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1000, temporaryTokens: 1 });
+    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1000, temporaryTokens: 1, pointerTokens: 1 });
     const baseline = memory.compact(session.id, "main", parent!);
-    memory.config.compaction.temporaryTokens = 20000; // room for both kinds to reach their 100 turns (140)
+    memory.config.compaction.pointerTokens = 20000; // 165: pointer pool holds the 140 balanced fill
     const result = memory.compact(session.id, "main", parent!);
     if ("native" in result || "native" in baseline) throw new Error("native");
     expect(result.supplied.factIds).toEqual(baseline.supplied.factIds);
@@ -76,7 +76,7 @@ test("133: titles default to one hundred anchor-inclusive path turns, are config
     expect(result.material!.factTitles![0]).toBe(`[T${expected[0]!.turnId}] ${at}\n[F${expected[0]!.id}] ${expected[0]!.title}`);
     expect(result.text.indexOf("Earlier facts (titles only")).toBeLessThan(result.text.indexOf("Recent facts (by Turn)"));
     expect(result.material!.receipts.some(line => line.includes(`trace://F${seeded[5]!.id}`))).toBe(true);
-    expect(result.charged!.temporary).toBeLessThanOrEqual(20000);
+    expect(result.charged!.pointer).toBeLessThanOrEqual(20000);
     memory.config.compaction.titleTurns = 7;
     const shorter = memory.compact(session.id, "main", parent!);
     if ("native" in shorter) throw new Error("native");
@@ -120,7 +120,7 @@ test("133: titles stop at the newest non-fitting title, skip untitled facts, and
     const [large] = facts(memory, { sessionId: session.id, branch: "main", headTurnId: latest.id },
       [{ title: "Oversized ".repeat(400), sources: [{ entry: newestSource, text: "newest evidence" }] }]);
     recorded(memory, session.id, "main", latest.id);
-    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 200 });
+    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 200, pointerTokens: 200 });
     const stopped = memory.compact(session.id, "main", latest.id);
     if ("native" in stopped) throw new Error("native");
     expect(stopped.material!.factTitles).toEqual([]); // break, not continue to the older small title
@@ -137,12 +137,12 @@ test("133: titles stop at the newest non-fitting title, skip untitled facts, and
     expect(receipt).toContain(`trace://F${untitled.id}`);
     expect(receipt).not.toContain(`trace://F${small!.id}`);
     expect(olderFits.charged!.facts).toBe(charge([receipt]) + charge(["Receipts:"]));
-    expect(olderFits.charged!.temporary).toBe(
+    expect(olderFits.charged!.pointer).toBe(
       charge([xmlBlock("episodic", ""), FACT_TITLES_TITLE]) + charge(olderFits.material!.factTitles!));
   } finally { memory.close(); }
 });
 
-test("133: pending Raw has first claim, user words next, and fact titles take only their remainder", () => {
+test("pending Raw and the balanced pointer fill use independent capacities", () => {
   const { memory, session } = setup();
   try {
     const old = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: at, userPrompt: "human ".repeat(30) });
@@ -151,18 +151,18 @@ test("133: pending Raw has first claim, user words next, and fact titles take on
       [{ title: "An older episode to locate after compaction", sources: [{ entry: source, text: "historical evidence ".repeat(30) }] }]);
     recorded(memory, session.id, "main", old.id);
     const latest = memory.store.appendTurn({ sessionId: session.id, parentTurnId: old.id, kind: "turn", startedAt: at, userPrompt: "pending ".repeat(60) });
-    Object.assign(memory.config.compaction, { rawTokens: 100, factsTokens: 1, temporaryTokens: 80 });
+    Object.assign(memory.config.compaction, { rawTokens: 100, factsTokens: 1, temporaryTokens: 80, pointerTokens: 250 });
     const result = memory.compact(session.id, "main", latest.id);
     if ("native" in result) throw new Error("native");
     expect(result.supplied.entries.map(e => e.id)).toEqual(memory.store.listSourceEntries(session.id, latest.id).map(e => e.id));
     expect(result.material!.earlierUsers!.map(e => e.id)).toEqual([source.id]);
-    expect(result.material!.factTitles).toEqual([]);
+    expect(result.material!.factTitles).toEqual([`[T${old.id}] ${at}\n[F${olderFact!.id}] An older episode to locate after compaction`]);
     memory.config.compaction.temporaryTokens = 40;
     const rawFirst = memory.compact(session.id, "main", latest.id);
     if ("native" in rawFirst) throw new Error("native");
     expect(rawFirst.supplied.entries.map(e => e.id)).toEqual(result.supplied.entries.map(e => e.id));
-    expect(rawFirst.material!.earlierUsers).toEqual([]);
-    expect(rawFirst.material!.factTitles).toEqual([]);
+    expect(rawFirst.material!.earlierUsers).toEqual(result.material!.earlierUsers);
+    expect(rawFirst.material!.factTitles).toEqual(result.material!.factTitles);
     memory.config.compaction.temporaryTokens = 250;
     const roomy = memory.compact(session.id, "main", latest.id);
     if ("native" in roomy) throw new Error("native");
@@ -171,7 +171,7 @@ test("133: pending Raw has first claim, user words next, and fact titles take on
   } finally { memory.close(); }
 });
 
-test("133: default pending Raw fills its 20k base-plus-temporary window, within the emitted 50k envelope (the shared allowance is gone)", () => {
+test("pending Raw fills only its 20k base-plus-body pool inside the 60k two-pool envelope", () => {
   const { memory, session } = setup();
   try {
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: at, userPrompt: "pending source" });
@@ -180,7 +180,7 @@ test("133: default pending Raw fills its 20k base-plus-temporary window, within 
     const source = memory.store.sourcePath(session.id, "main", turn.id);
     const result = memory.compact(session.id, "main", turn.id);
     if ("native" in result) throw new Error("native");
-    expect(result.charged!.envelope).toBe(50_000);
+    expect(result.charged!.envelope).toBe(60_000);
     expect(result.charged!.raw).toBe(10_000);
     const rawCharge = result.charged!.raw + result.charged!.temporary;
     expect(rawCharge).toBeGreaterThan(18_000);
@@ -193,7 +193,7 @@ test("133: default pending Raw fills its 20k base-plus-temporary window, within 
     const rawReceipts = result.material!.receipts.filter(receipt => receipt.includes("earlier entries omitted from the Raw window"));
     expect(rawWindowTokens([next.content, ...kept.map(entry => entry.view)], [...next.receipts, ...rawReceipts])).toBeGreaterThan(20_000);
     const charged = result.charged!;
-    expect(charged.knowledge + charged.facts + charged.raw + charged.temporary).toBeLessThanOrEqual(charged.envelope);
+    expect(charged.knowledge + charged.facts + charged.raw + charged.temporary + charged.pointer).toBeLessThanOrEqual(charged.envelope);
   } finally { memory.close(); }
 });
 
@@ -201,7 +201,7 @@ test("133: live tasks survive exhausted windows and are included in measured tex
   const { memory, session } = setup();
   try {
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: at, userPrompt: "pending" });
-    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 1 });
+    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 1, pointerTokens: 1 });
     const without = memory.compact(session.id, "main", turn.id);
     const withTask = memory.compact(session.id, "main", turn.id, [], false,
       { runningTasks: [{ id: "live1", kind: "Explore", description: "Investigate the active branch", status: "running" }] });
@@ -226,7 +226,7 @@ function titledTurns(turns: number, userText: (index: number) => string, title: 
     const source = memory.store.getSourceEntry(memory.store.listSourceEntries(session.id, turn.id)[0]!.id)!;
     return facts(memory, { sessionId: session.id, branch: "main", headTurnId: turn.id }, [{ title: title(index), sources: [{ entry: source, text: `evidence-${index}` }] }])[0]!;
   });
-  Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 3000 });
+  Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 3000, pointerTokens: 3000 });
   return { memory, session, seeded, head: parent!, recorded: (to = parent!) => recorded(memory, session.id, "main", to) };
 }
 const userTurnsOf = (m: { earlierUsers?: { view: string }[] }) => (m.earlierUsers ?? []).map(e => Number(/^\[T(\d+)#/.exec(e.view)![1]));
@@ -250,7 +250,7 @@ test.each([
     expect(users.length).toBeGreaterThan(3); expect(titles.length).toBeGreaterThan(3);
     expect(users.length).toBeLessThan(60); // the allowance ran out before the reach
     expect(Math.min(...titles) - Math.min(...users)).toBe(apart);
-    expect(result.charged!.temporary).toBeLessThanOrEqual(3000);
+    expect(result.charged!.pointer).toBeLessThanOrEqual(3000);
   } finally { memory.close(); }
 });
 
@@ -258,7 +258,7 @@ test("140: a kind at its own reach drops out and the other continues alone to it
   const { memory, session, seeded, head, recorded: record } = titledTurns(40, i => `user-${i}`, i => `Episode ${i}`);
   try {
     record();
-    Object.assign(memory.config.compaction, { temporaryTokens: 20000, userTurns: 10, titleTurns: 40 });
+    Object.assign(memory.config.compaction, { pointerTokens: 20000, userTurns: 10, titleTurns: 40 });
     const result = memory.compact(session.id, "main", head);
     if ("native" in result) throw new Error("native");
     expect(Math.min(...userTurnsOf(result.material!))).toBe(head - 9);
@@ -280,25 +280,6 @@ test("140: the first item that does not fit stops both kinds, and the receipts l
   } finally { memory.close(); }
 });
 
-test("140: pending Raw still borrows first, and the two kinds fill what it leaves", () => {
-  const depth = (pending: boolean) => {
-    const { memory, session, seeded, head, recorded: record } = titledTurns(60, i => i >= 57 ? `pending-${i} ${"word ".repeat(700)}` : `user-${i}`, i => `Episode ${i}`);
-    try {
-      memory.config.compaction.rawTokens = 1500; // the three pending entries fill it and borrow the rest
-      record(pending ? seeded[56]!.turnId : head);
-      const result = memory.compact(session.id, "main", head);
-      if ("native" in result) throw new Error("native");
-      expect(result.truncated).toBeUndefined();
-      if (pending) expect(result.material!.entries).toHaveLength(3);
-      expect(result.charged!.temporary).toBeLessThanOrEqual(3000);
-      const users = userTurnsOf(result.material!), titles = titleTurnsOf(result.material!);
-      return { users: Math.min(...users), titles: Math.min(...titles) };
-    } finally { memory.close(); }
-  };
-  const free = depth(false), borrowing = depth(true);
-  expect(borrowing.users).toBeGreaterThan(free.users); // the borrowed Raw took its share first
-  expect(borrowing.titles).toBeGreaterThan(free.titles);
-});
 
 test("140: an entry appended to an older turn after a newer turn was written keeps the user receipt true to what was shown", () => {
   const { memory, session } = setup();
@@ -310,7 +291,7 @@ test("140: an entry appended to an older turn after a newer turn was written kee
     const [second] = memory.store.listSourceEntries(session.id, t2.id);
     const address = (e: { turnId: number; entryOrdinal: number }) => `T${e.turnId}#E${e.entryOrdinal}`;
     recorded(memory, session.id, "main", t2.id);
-    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 150 });
+    Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 150, pointerTokens: 150 });
     const result = memory.compact(session.id, "main", t2.id);
     if ("native" in result) throw new Error("native");
     expect(result.material!.entries).toEqual([]);
@@ -321,7 +302,7 @@ test("140: an entry appended to an older turn after a newer turn was written kee
     expect(receipt[0]).toContain("omitted 2 earlier");
     expect(result.charged!.temporary).toBeLessThanOrEqual(150);
     // With room for all three, they display by path (turn, then entry), not by write order.
-    memory.config.compaction.temporaryTokens = 3000;
+    memory.config.compaction.pointerTokens = 3000;
     const all = memory.compact(session.id, "main", t2.id);
     if ("native" in all) throw new Error("native");
     expect(all.material!.earlierUsers!.map(e => e.id)).toEqual([e1!.id, e2!.id, second!.id]);

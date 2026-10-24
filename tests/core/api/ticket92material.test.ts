@@ -137,14 +137,14 @@ test("133: fresh receipt-only temporary context trims before rejecting an exact 
   recorded(f.memory, f.session.id, "main", f.turn.id);
   seedSourceEntry(f.memory, f.turn.id, "assistant", "pending reply");
   f.select();
-  const config = { ...f.memory.config, compaction: { ...f.memory.config.compaction, factsTokens: 1, temporaryTokens: 100 } };
+  const config = { ...f.memory.config, compaction: { ...f.memory.config.compaction, factsTokens: 1, temporaryTokens: 100, pointerTokens: 100 } }; // 165
   const input = { ...f.target };
   const complete = freezeNoting(f.store, input, config);
   expect(complete.prepared!.material.earlierUsers).toEqual([]);
   expect(complete.prepared!.material.factTitles).toEqual([]);
   expect(complete.prepared!.material.receipts.join("\n")).toContain("user");
   const withoutTemporary = freezeNoting(f.store, input,
-    { ...config, compaction: { ...config.compaction, temporaryTokens: 0 } });
+    { ...config, compaction: { ...config.compaction, temporaryTokens: 0, pointerTokens: 0 } });
   const fixed = tokens(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames)) + largestTaskPromptTokens() + tokens(JSON.stringify(pricedToolDefinitions(notingToolDefinitions, canonicalToolNames)));
   const inputTokens = fixed + tokens(withoutTemporary.prepared!.text);
   expect(fixed + tokens(complete.prepared!.text)).toBeGreaterThan(inputTokens);

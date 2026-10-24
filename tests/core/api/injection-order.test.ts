@@ -4,8 +4,7 @@ import { tokens } from "../../../src/core/render/index.ts";
 import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { injectionFixture as fixture, closeInjectionFixtures } from "../../support/injection.ts";
 
-// 144 stage 4 §7: knowledge is injected in score order within the Knowledge base; one temporary allowance per
-// context carries unscored items, then titles of scored items that missed the base.
+// 165: scored bodies use the base; overflow bodies and all omitted knowledge titles use separate pools.
 
 afterEach(closeInjectionFixtures);
 const shown = (text: string, label: string) => text.includes(`${label} word`);
@@ -50,6 +49,7 @@ test("what fits nowhere is named even when only the mandatory reselection can ma
   const u = f.create("UNSCORED", 400, null);
   setKnowledgeInjection(f.memory, exact);
   f.memory.config.compaction.temporaryTokens = 0; // U fits nowhere
+  f.memory.config.compaction.pointerTokens = 0; // 165: neither body nor title fits
   const delivery = f.memory.injection(f.target);
   expect(delivery.text).toContain(`trace://K${u.knowledgeId}`);
   expect(delivery.knowledgeCommitIds).toContain(a.commit);
@@ -57,7 +57,7 @@ test("what fits nowhere is named even when only the mandatory reselection can ma
   expect(delivery.temporaryTokens ?? 0).toBe(0);
 });
 
-test("unscored items ride the temporary allowance newest first, then titles of scored misfits", () => {
+test("unscored bodies fill newest first while scored and unscored misfits retain their titles", () => {
   const f = fixture();
   const scoredBig = f.create("SCOREDBIG", 3_000, 60), unscoredOld = f.create("UNSCOREDOLD", 300, null), unscoredNew = f.create("UNSCOREDNEW", 300, null);
   setKnowledgeInjection(f.memory, 1_000); // SCOREDBIG misses the base
@@ -70,6 +70,7 @@ test("unscored items ride the temporary allowance newest first, then titles of s
   f.memory.config.compaction.temporaryTokens = 450; // room for only the newest unscored body
   const tight = f.memory.injection(f.target);
   expect(tight.knowledgeCommitIds).toEqual([unscoredNew.commit]);
+  expect(tight.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([scoredBig.commit, unscoredOld.commit]));
 });
 
 test("base full, temporary left: temporary items arrive with their own framing and both caps hold", () => {
@@ -100,7 +101,7 @@ test("a title is delivered once, is not re-sent, and a later body upgrades it", 
   expect(first.knowledgeCommitIds).toEqual([]);
   expect(first.knowledgeTitleCommitIds).toEqual([big.commit]);
   const after = { ...noVisibility(), knowledgeCommitIds: new Set(first.knowledgeCommitIds), knowledgeTitleCommitIds: new Set(first.knowledgeTitleCommitIds),
-    knowledgeTokens: first.knowledgeTokens!, temporaryTokens: first.temporaryTokens! };
+    knowledgeTokens: first.knowledgeTokens!, temporaryTokens: first.temporaryTokens!, pointerTokens: first.pointerTokens! };
   expect(f.memory.injection(f.target, after).text).toBe(""); // not re-sent while it is still a title
   // Base room appears: the body is delivered although a title for the same version is visible.
   setKnowledgeInjection(f.memory, 5_000);
@@ -117,14 +118,15 @@ test("delivery rows carry the titles and the temporary charge; a title does not 
   const first = f.memory.injection(f.target);
   const owner = "test";
   f.memory.store.recordKnowledgeDelivery({ owner, turnId: f.target.headTurnId }, [{ knowledgeCommitIds: first.knowledgeCommitIds, knowledgeTitleCommitIds: first.knowledgeTitleCommitIds,
-    knowledgeStates: [], knowledgeTokens: first.knowledgeTokens!, temporaryTokens: first.temporaryTokens! }]);
+    knowledgeStates: [], knowledgeTokens: first.knowledgeTokens!, temporaryTokens: first.temporaryTokens!, pointerTokens: first.pointerTokens! }]);
   const view = deliveredView(f.memory.store.deliveredKnowledge({ owner, sessionId: f.session.id, branch: "main", headTurnId: f.target.headTurnId }));
   expect(view.knowledgeCommitIds.has(big.commit)).toBe(false);
   expect([...view.knowledgeTitleCommitIds!]).toEqual([big.commit]);
   expect(view.temporaryTokens).toBe(first.temporaryTokens);
+  expect(view.pointerTokens).toBe(first.pointerTokens);
 });
 
-test("compaction spends the one temporary allowance in order: pending Raw, then unscored knowledge, then titles", () => {
+test("compaction keeps knowledge titles when pending Raw exhausts the body pool", () => {
   const f = fixture();
   const unscored = f.create("UNSCORED", 400, null), scoredBig = f.create("SCOREDBIG", 3_000, 60);
   setKnowledgeInjection(f.memory, 1_000);
@@ -133,14 +135,14 @@ test("compaction spends the one temporary allowance in order: pending Raw, then 
   expect(roomy.supplied.knowledgeCommitIds).toEqual([unscored.commit]);
   expect(roomy.supplied.knowledgeTitleCommitIds).toEqual([scoredBig.commit]);
   expect(roomy.supplied.temporaryTokens).toBe(roomy.charged!.temporary);
-  expect(roomy.charged!.envelope).toBe(f.memory.knowledgeBase() + f.memory.config.compaction.factsTokens + f.memory.config.compaction.rawTokens + f.memory.config.compaction.temporaryTokens); // three windows and one temporary allowance
+  expect(roomy.charged!.envelope).toBe(f.memory.knowledgeBase() + f.memory.config.compaction.factsTokens + f.memory.config.compaction.rawTokens + f.memory.config.compaction.temporaryTokens + f.memory.config.compaction.pointerTokens);
   expect(roomy.charged!.temporary).toBeLessThanOrEqual(f.memory.config.compaction.temporaryTokens);
-  // The Raw walk goes first: with the allowance all consumed by pending Raw nothing is left for knowledge.
+  // 165: exhausting body capacity does not remove pointers.
   f.memory.config.compaction.temporaryTokens = 1;
   const none = f.memory.compact(f.session.id, "main", f.target.headTurnId);
   if ("native" in none) throw new Error(none.reason);
   expect(none.supplied.knowledgeCommitIds).toEqual([]);
-  expect(none.supplied.knowledgeTitleCommitIds ?? []).toEqual([]);
+  expect(none.supplied.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([scoredBig.commit, unscored.commit]));
 });
 
 test("a compaction that spent the temporary allowance on pending Raw leaves none for the next prompt", () => {

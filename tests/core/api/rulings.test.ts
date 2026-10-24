@@ -109,15 +109,16 @@ test("2026-10-24: every search term must occur in one item, while a quoted phras
   expect(tool.execute({ query: '"预览 3090"', layer: "facts" })).toContain("No hit");
 });
 
-/** Tight-budget cases bound the one temporary allowance explicitly; no window can borrow a base. */
-const compactionWindows = (knowledge: number, facts: number, raw: number, temporary = 0) => {
+/** Tight-budget cases bound both temporary pools explicitly (165). */
+const compactionWindows = (knowledge: number, facts: number, raw: number, temporary = 0, pointer = 0) => {
   setKnowledgeInjection(memory, Math.max(0, knowledge));
   memory.config.compaction.factsTokens = facts;
   memory.config.compaction.rawTokens = raw;
   memory.config.compaction.temporaryTokens = temporary;
+  memory.config.compaction.pointerTokens = pointer;
 };
 const defaultWindows = () => compactionWindows(memory.knowledgeBase(),
-  DEFAULT_CONFIG.compaction.factsTokens, DEFAULT_CONFIG.compaction.rawTokens, DEFAULT_CONFIG.compaction.temporaryTokens);
+  DEFAULT_CONFIG.compaction.factsTokens, DEFAULT_CONFIG.compaction.rawTokens, DEFAULT_CONFIG.compaction.temporaryTokens, DEFAULT_CONFIG.compaction.pointerTokens);
 /** The per-window accounting of one custom replacement (28a item 6). */
 const charged = (result: ReturnType<typeof memory.compact>) => {
   if ("native" in result) throw new Error(`expected a custom replacement, got: ${result.reason}`);
@@ -1360,8 +1361,8 @@ test("73/133: core material uses independent windows, truncates newest-first and
     role: "assistant", text: "PENDING RAW", raw: "", calls: [] });
   const full = memory.compact(s.id, "main", t.id);
   const text = compacted(full), windows = charged(full);
-  expect(windows.envelope).toBe(50_000); // three bases and the one temporary allowance (144)
-  expect(windows.knowledge + windows.facts + windows.raw + windows.temporary).toBeLessThanOrEqual(windows.envelope);
+  expect(windows.envelope).toBe(60_000); // 165: three bases and two independent pools
+  expect(windows.knowledge + windows.facts + windows.raw + windows.temporary + windows.pointer).toBeLessThanOrEqual(windows.envelope);
   for (const marker of ["OLDER FACT", "RECENT FACT", "PENDING RAW", "EXTRACTED RAW"]) expect(text).toContain(marker);
   memory.config.render.episodicBlockTokens = 40;
   expect(compacted(memory.compact(s.id, "main", t.id))).toBe(text);
@@ -1501,7 +1502,7 @@ test("30: the shipped profile is 2,000/100/100 and the retired B and secondary k
 // or silently retired to make room for them.
 test("133 configuration: compaction bases and temporary allowance settings use positive safe-integer validation", () => {
   const open = (compaction: Record<string, number>) => sourceSeededMemory(join(directory, "windows.sqlite"), async () => ok([]), { compaction } as never);
-  for (const key of ["factsTokens", "rawTokens", "temporaryTokens", "userTurns", "titleTurns", "userEntryTokens"] as const) {
+  for (const key of ["factsTokens", "rawTokens", "temporaryTokens", "pointerTokens", "userTurns", "titleTurns", "userEntryTokens"] as const) {
     expect(() => open({ [key]: 0 })).toThrow(`Invalid compaction.${key}: expected a positive safe integer`);
     expect(() => open({ [key]: 1.5 })).toThrow(`Invalid compaction.${key}: expected a positive safe integer`);
     const set = open({ [key]: 4_321 });
@@ -1594,6 +1595,7 @@ test("64c: the knowledge cap remains hard and recency, not category, selects who
   write("reference", "reference tail");
   scoreAll(memory.store); // the Knowledge base carries scored items
   memory.config.compaction.temporaryTokens = 0; // the base cap is hard; with a temporary allowance a misfit would show as a title
+  memory.config.compaction.pointerTokens = 0; // 165: isolate the base from both pools
   const cap = 5_000;
   setKnowledgeCapacity(memory, cap);
   const injected = memory.inject(s.id);
@@ -2697,12 +2699,13 @@ test("2026-10-24, 153: title-only delivery distinguishes authored titles from un
   expect(delivery.knowledgeCommitIds).toEqual([]);
   expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([titled.commit, untitled.commit]));
   check(delivery.text);
-  expect(delivery.knowledgeTokens! + delivery.temporaryTokens!).toBe(tokens(delivery.text.split("\n\n").slice(1).join("\n\n")));
+  expect(delivery.knowledgeTokens! + delivery.temporaryTokens! + delivery.pointerTokens!).toBe(tokens(delivery.text.split("\n\n").slice(1).join("\n\n")));
   const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId);
   if ("native" in compact) throw new Error(compact.reason);
   check(compact.text);
   expect(compact.supplied.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([titled.commit, untitled.commit]));
   expect(compact.supplied.temporaryTokens).toBe(compact.charged!.temporary);
+  expect(compact.supplied.pointerTokens).toBe(compact.charged!.pointer);
 });
 
 // Maintainer, 2026-10-22 (144): verify reads the working directories of the project's sessions. 2026-10-23 (148): a session's root is its directory,
@@ -2740,7 +2743,7 @@ test("2026-10-22, 144: the base fills in score order, ties newest first; the fir
   // The misfits become titles in score order, one by one from the temporary allowance.
   expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([tieOld.commit, low.commit]));
   expect(titled("TIEOLD") && titled("LOW")).toBe(true);
-  expect(delivery.knowledgeTokens! + delivery.temporaryTokens!).toBe(tokens(delivery.text.split("\n\n").slice(1).join("\n\n")));
+  expect(delivery.knowledgeTokens! + delivery.temporaryTokens! + delivery.pointerTokens!).toBe(tokens(delivery.text.split("\n\n").slice(1).join("\n\n")));
   expect(delivery.knowledgeTokens!).toBeLessThanOrEqual(2_000);
 });
 
@@ -2753,59 +2756,36 @@ test("2026-10-22, 144: a high-score item that does not fit stops the base: a low
   expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([huge.commit, small.commit]));
 });
 
-test("2026-10-22, 144: an ordinary prompt may spend the temporary allowance a context has left, and no more", () => {
+// 165 supersedes 144's single-pool admission and remaining-capacity rulings.
+test("2026-10-24: overflow bodies cannot crowd knowledge titles out of the independent pointer pool", () => {
   const f = injectionFixture();
-  const base = f.create("BASE", 100, 80), unscored = f.create("UNSCORED", 100, null);
-  const spent: VisibleView = { ...noVisibility(), knowledgeCommitIds: new Set([base.commit]), knowledgeTokens: 500, temporaryTokens: 10_000 };
-  expect(f.memory.injection(f.target, spent).text).toBe(""); // a compaction spent the 10k
-  const roomy: VisibleView = { ...spent, temporaryTokens: 9_000 };
-  expect(f.memory.injection(f.target, roomy).knowledgeCommitIds).toEqual([unscored.commit]);
+  setKnowledgeBase(f.memory, 0);
+  const scored = f.create("SCORED", 3_000, 90);
+  const old = f.create("OLD", 400, null), fresh = f.create("FRESH", 400, null);
+  Object.assign(f.memory.config.compaction, { temporaryTokens: 550, pointerTokens: 1_000 });
+  const delivery = f.memory.injection(f.target);
+  expect(delivery.knowledgeCommitIds).toEqual([fresh.commit]);
+  expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([scored.commit, old.commit]));
+  expect(delivery.temporaryTokens!).toBeLessThanOrEqual(550);
+  expect(delivery.pointerTokens!).toBeLessThanOrEqual(1_000);
+  const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId);
+  if ("native" in compact) throw new Error(compact.reason);
+  expect(compact.supplied.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([scored.commit, old.commit]));
+  expect(compact.charged!.temporary).toBeLessThanOrEqual(550);
+  expect(compact.charged!.pointer).toBeLessThanOrEqual(1_000);
 });
 
-test("2026-10-22, 144: allowance order — unextracted Raw, then unscored bodies, then titles of scored misfits, then fact titles and user words; the room an earlier kind uses is not left to a later one", () => {
-  // Kinds 1..4. `build(n)` offers the first n kinds only, so its cost at a roomy allowance is what those n kinds need.
-  const build = (kinds: number) => {
-    const f = injectionFixture(), { memory, session } = f;
-    setKnowledgeBase(memory, 1_000); // a scored 3,000-word item cannot enter the base
-    const unscored = kinds >= 2 ? f.create("UNSCORED", 300, null) : null;
-    const misfit = kinds >= 3 ? f.create("MISFIT", 3_000, 60) : null;
-    let head = f.target.headTurnId;
-    const entryIds = memory.store.sourcePath(session.id, "main", head).map(entry => entry.id);
-    for (let i = 0; i < 6; i++) { // present in every build so that Raw's receipt is the same; only kind 4 may use them
-      const turn = memory.store.appendTurn({ sessionId: session.id, parentTurnId: head, kind: "turn", startedAt: "now", userPrompt: `user-${i} ${"word ".repeat(20)}` });
-      head = turn.id;
-      const source = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "fixture", nativeId: `user-${i}`, role: "user", text: `user-${i} ${"word ".repeat(20)}`, raw: "", calls: [] });
-      entryIds.push(source.id);
-      memory.selectEntries(session.id, "main", entryIds);
-      seedFacts(memory, { sessionId: session.id, branch: "main", headTurnId: turn.id }, [{ title: `Episode ${i}`, sources: [{ entry: source, text: `evidence-${i} `.repeat(100) }] }]);
-    }
-    recorded(memory, session.id, "main", head);
-    const pending = memory.appendEntry({ sessionId: session.id, turnId: head, nativeLineage: "fixture", nativeId: "pending", role: "assistant", text: "pending " + "other ".repeat(600), raw: "", calls: [] }); // (a)
-    memory.selectEntries(session.id, "main", [...entryIds, pending.id]);
-    Object.assign(memory.config.compaction, { rawTokens: 200, factsTokens: 1, ...(kinds < 4 ? { userTurns: 0, titleTurns: 0 } : {}) });
-    return (allowance: number) => {
-      memory.config.compaction.temporaryTokens = allowance;
-      const result = memory.compact(session.id, "main", head);
-      if ("native" in result) throw new Error(`native at ${allowance}: ${result.reason}`);
-      const delivered = [result.supplied.entries.length > 0, !!unscored && result.supplied.knowledgeCommitIds.includes(unscored.commit),
-        !!misfit && (result.supplied.knowledgeTitleCommitIds ?? []).includes(misfit.commit),
-        (result.material!.earlierUsers?.length ?? 0) + (result.material!.factTitles?.length ?? 0) > 0];
-      return { delivered, temporary: result.charged!.temporary };
-    };
-  };
-  const need = [1, 2, 3, 4].map(kinds => {
-    const roomy = build(kinds)(100_000);
-    expect(roomy.delivered, `kinds 1..${kinds} all present when there is room`).toEqual([0, 1, 2, 3].map(index => index < kinds));
-    return roomy.temporary;
-  });
-  expect(need[0]).toBeLessThan(need[1]!); expect(need[1]).toBeLessThan(need[2]!); expect(need[2]).toBeLessThan(need[3]!); // each kind costs something
-  const full = build(4);
-  for (const kinds of [1, 2, 3]) {
-    const exact = full(need[kinds - 1]!);
-    expect(exact.delivered, `allowance of exactly kinds 1..${kinds}`).toEqual([0, 1, 2, 3].map(index => index < kinds)); // the later kinds compete and get nothing
-    expect(exact.temporary).toBeLessThanOrEqual(need[kinds - 1]!);
-    expect(full(need[kinds]!).delivered[kinds], `kind ${kinds + 1} arrives once its room is added`).toBe(true);
-  }
+test("2026-10-24: ordinary deliveries spend each pool independently and compaction starts fresh pools", () => {
+  const f = injectionFixture();
+  setKnowledgeBase(f.memory, 0);
+  const item = f.create("UNSCORED", 100, null);
+  const spent: VisibleView = { ...noVisibility(), knowledgeTokens: 0, temporaryTokens: 10_000, pointerTokens: 10_000 };
+  expect(f.memory.injection(f.target, spent).text).toBe("");
+  expect(f.memory.injection(f.target, { ...spent, pointerTokens: 0 }).knowledgeTitleCommitIds).toEqual([item.commit]);
+  expect(f.memory.injection(f.target, { ...spent, temporaryTokens: 0 }).knowledgeCommitIds).toEqual([item.commit]);
+  const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId, spent);
+  if ("native" in compact) throw new Error(compact.reason);
+  expect(compact.supplied.knowledgeCommitIds).toEqual([item.commit]);
 });
 
 test("2026-10-24, 159: curate caps whole-file links project-wide at five current items; function addresses have no cap", () => {

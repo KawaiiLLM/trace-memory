@@ -142,6 +142,7 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   const { s, t, user } = seeded();
   const raw = views(s.id, t.id);
   memory.config.compaction.temporaryTokens = 1; // isolate full-fact receipts from the new title index
+  memory.config.compaction.pointerTokens = 1; // 165: isolate full-fact receipts
   // Facts have an independent window; its omission receipt follows the complete Raw block.
   const factReceipt = "omitted 1 older facts; expand: trace://F1";
   memory.config.compaction.factsTokens = charge([factReceipt]) + charge(["Receipts:"]);
@@ -244,6 +245,7 @@ function overloaded() {
 test("25a/92: default N material has independent 10k facts and Raw windows plus Knowledge within K", async () => {
   const { s, t } = overloaded();
   memory.config.compaction.temporaryTokens = 1;
+  memory.config.compaction.pointerTokens = 1;
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const material = calls.at(-1)!.material as NotingAgentInput["material"];
   const factReceipts = material.receipts.filter(r => r.includes(" older facts; expand: "));
@@ -262,6 +264,7 @@ test("25a/92: default N material has independent 10k facts and Raw windows plus 
 test("45/92: N sends Knowledge within the database-derived cap without borrowing from facts or Raw", async () => {
   const { s, t } = overloaded();
   memory.config.compaction.temporaryTokens = 1;
+  memory.config.compaction.pointerTokens = 1;
   const knowledge = memory.store.currentKnowledge({ sessionId: s.id, branch: "main", headTurnId: t.id });
   // Leave room for omission receipts but less than another whole item; the receipt must actually emit.
   const cap = wholeKnowledge(knowledge.slice(-15), value => renderKnowledge(value, tag(value.knowledge.id, value.revision.id), true)).cost + 200;
@@ -331,6 +334,7 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   // omits a whole body that no longer fits without removing it from storage or dropping its topics.
   setKnowledgeCapacity(memory, exactForeground - 1);
   memory.config.compaction.temporaryTokens = 0; // with a temporary allowance the misfit would show as a title
+  memory.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
   expect(memory.inject(s.id)).not.toContain(`[${tag(1, changed.commit)}]`);
   expect(memory.store.knowledgeRevision(changed.commit)!.topics).toEqual(["packaging", "storage"]);
   // Restore enough room for the subject and the explicitly accounted worker trigger.
@@ -379,6 +383,7 @@ test("25a 2026-09-09: the history and Raw allowances are independent — neither
 test("25a 2026-09-09: a Noter freeze keeps its history inside the reserved allowance even when the Raw batch is tiny", async () => {
   const { s, t, user } = seeded();
   memory.config.compaction.temporaryTokens = 1;
+  memory.config.compaction.pointerTokens = 1;
   for (let i = 0; i < 8; i++) seedFact(memory, { sessionId: s.id, branch: "main", headTurnId: t.id },
     `History ${i}`, [{ entry: user, text: `history ${i} ` + "word ".repeat(120) }]);
   // Independent facts cap: a small Raw batch cannot enlarge it.
@@ -592,6 +597,7 @@ test("64c/92: foreground and fresh N keep the same newer items and receipt omitt
   setKnowledgeCapacity(memory, 5_000);
   scoreAll(memory.store);
   memory.config.compaction.temporaryTokens = 0; // nothing for titles: what misses the base is omitted with a receipt
+  memory.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const injected = memory.injection(target);
   const frozen = freezeNoting(memory.store, { ...target }, memory.config);

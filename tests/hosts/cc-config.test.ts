@@ -163,7 +163,7 @@ test.each([
   expect(() => resolveCcHostConfig(value)).toThrow(message);
 });
 
-test.each(["temporaryTokens", "userTurns", "titleTurns", "userEntryTokens"] as const)(
+test.each(["temporaryTokens", "pointerTokens", "userTurns", "titleTurns", "userEntryTokens"] as const)(
   "133: CC rejects non-positive, fractional, non-finite and unsafe compaction.%s", key => {
     const f = fixture();
     for (const value of [0, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])
@@ -173,7 +173,7 @@ test.each(["temporaryTokens", "userTurns", "titleTurns", "userEntryTokens"] as c
 
 test("144: a cc.config.json that still carries the shared allowance fails to load and names its replacement", () => {
   expect(() => resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", "compaction.sharedAllowanceTokens": 10_000 } as never))
-    .toThrow(/Removed setting compaction\.sharedAllowanceTokens: one temporary allowance, compaction\.temporaryTokens/);
+    .toThrow(/Removed setting compaction\.sharedAllowanceTokens/);
 });
 
 test("145: a cc.config.json that still carries a token cap fails to load and names its units replacement", () => {

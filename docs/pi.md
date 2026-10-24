@@ -95,14 +95,14 @@ For example, either settings file can contain:
 
 `compaction.factsTokens` and `compaction.rawTokens` retain their independent 10,000-token bases.
 The database-owned Knowledge base is the safe-integer sum of Global, Project and Session budgets,
-defaulting to 4,000, 15,000 and 1,000. The one temporary allowance, `compaction.temporaryTokens` (10,000; ticket 144), is not derived from phase triggers
-(`compaction.sharedAllowanceTokens` is a removed setting). Knowledge fills its base in score order; the allowance is
-filled in order: pending Raw overflow, then unscored Knowledge (newest first), then titles of scored Knowledge that missed the
-base, then human user words within `compaction.userTurns` (100) and uncovered fact
+defaulting to 4,000, 15,000 and 1,000. Two independent temporary pools each default to 10,000 (165).
+The body pool, `compaction.temporaryTokens`, takes pending Raw overflow, then unscored Knowledge newest first.
+The pointer pool, `compaction.pointerTokens`, takes titles of all Knowledge not shown whole by score (unscored last), ties newest first,
+then human user words within `compaction.userTurns` (100) and uncovered fact
 titles within `compaction.titleTurns` (100), filled together turn by turn, newest first (each turn's
 user entries, then its titles), so both reach the same depth; the first item that does not fit stops
 both. Both reaches include the anchor and count path turns; unused room never reaches older turns.
-User entries use the renderer's middle cut with `compaction.userEntryTokens` (300). All four new settings require positive safe integers.
+User entries use the renderer's middle cut with `compaction.userEntryTokens` (300). Both pools and all reach/entry-cap settings require positive safe integers.
 Full facts do not borrow, and none of the bases lends to another.
 
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
@@ -110,7 +110,7 @@ from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a n
 `dreaming.triggerOperations` is configurable: its default is 30, compared with the number of Noter knowledge operations
 (creates and updates) since the last covered Dreamer pass (146). `dreaming.triggerTokens` is removed: a settings file that still
 carries it fails to load by name. Foreground publication may use the Knowledge base and what the context's
-temporary allowance has left. Database budget edits accept exact
+body and pointer pools have left, independently. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
 connections to that database. The budgets size injection and compaction only: they trigger no Dreamer run and decide none's success.
 Running requests keep their frozen admitted capacities; later admissions use the current policy. Actual
@@ -203,7 +203,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   identities for archive/supersede/merge/split notices. Notice visibility is separate and never grants
   a replacement body. The publication contains no Fact, Raw, pool-scheduling metadata,
   command-generation metadata or omission-only block. Retained applicable Knowledge bodies and notices
-  consume the Knowledge base (20,000 tokens at the default policy); what the context's temporary allowance has charged limits the unscored items and titles. Missing state
+  consume the Knowledge base (20,000 tokens at defaults); unscored bodies and knowledge titles consume independent body/pointer pools. Missing state
   transitions fit as a deterministic whole-item prefix before complete new bodies; only selected
   transition receipts persist. Knowledge keeps category groups and chronological display inside each
   group. The common header says items are grouped by category, position does not compare items across categories, and a newer same-object item within a category stands
@@ -624,7 +624,7 @@ global default through its own settings load; there is no cross-process watcher.
 Editing a preference starts no worker and starts nothing else. The same Settings
 screen separately edits the bound database's Knowledge base. That
 value is database policy, not a Pi global preference, and saves never copy it into `settings.json`.
-The screen shows the Knowledge base, the temporary allowance and their maximum Knowledge input separately.
+The screen shows the Knowledge base, both temporary pools and their maximum Knowledge input separately.
 
 All configuration layers validate before use, including masked values. Unknown or
 removed keys fail by name. Counts and token limits require positive safe integers;
@@ -679,10 +679,10 @@ Successful allocations are repriced before publication; cancellation still publi
 | No material candidates | Nothing to supply or omit; guide or tasks alone are not material | Delegate without a custom delivery |
 | `{native: true, reason}` | Unexpected host-caught error, including a live-task lookup failure | Delegate to Pi's native compaction |
 
-The default envelope is 50,000 tokens: Knowledge 20,000, full facts 10,000, Raw 10,000
-and the one temporary allowance 10,000.
-Pending Raw has first claim on the temporary allowance; unscored Knowledge, knowledge titles, earlier user words and fact titles
-fill only its remainder, in that order. Each emitted section's headings, groups and receipts are charged.
+The default envelope is 60,000 tokens: Knowledge 20,000, full facts 10,000, Raw 10,000
+and independent body/pointer pools of 10,000 each (165).
+Pending Raw has first claim on the body pool, followed by unscored Knowledge. The pointer pool independently
+holds knowledge titles, then the balanced earlier-user/fact-title fill. Headings, groups and receipts are charged.
 
 Inside `<episodic>` the order is fact titles, full facts, earlier user messages, Raw, running tasks.
 The optional pi-subagents service at `Symbol.for("@gotgenes/pi-subagents:service")` supplies

@@ -68,13 +68,14 @@ const charged = (result: ReturnType<typeof memory.compact>) => {
 /** 133: tight cases bound both independent allowances, without borrowing any other base. */
 const setWindows = (knowledge: number, facts: number, raw: number, allowance = 0) => {
   setKnowledgeCapacity(memory, Math.max(3, knowledge));
-  Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw, temporaryTokens: allowance });
+  Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw, temporaryTokens: allowance, pointerTokens: allowance }); // 165: bound both pools
 };
 const defaultWindows = () => {
   memory.setKnowledgeBase(20_000);
   memory.config.compaction.factsTokens = 10_000;
   memory.config.compaction.rawTokens = 10_000;
   memory.config.compaction.temporaryTokens = 10_000;
+  memory.config.compaction.pointerTokens = 10_000;
 };
 
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
@@ -147,6 +148,7 @@ test("64c category display and commit recency retain whole newer items; lines ar
   // omission-only block. Receipt accounting for compaction and worker material remains separate.
   setKnowledgeCapacity(memory, 5_000);
   memory.config.compaction.temporaryTokens = 0; // with a temporary allowance the misfit would show as a title
+  memory.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
   expect(memory.inject(s.id)).toBe("");
   // A binding cap drops the oldest commits regardless of category; receipts grant no body visibility.
   const guidePrefix = `${readingGuide(s.id, canonicalToolNames)}\n\n`;
@@ -355,8 +357,8 @@ test("23 conversation-dense acceptance, rescaled by 73: a dozen long replies fit
   };
   const view = (entry: Parameters<typeof renderEntry>[0]) => renderEntry(entry, memory.config.render, memory.resultText).content;
   const total = (views: string[]) => tokens(views.join("\n\n"));
-  const capacity = memory.knowledgeBase() + memory.config.compaction.factsTokens + memory.config.compaction.rawTokens
-    + memory.config.compaction.temporaryTokens;
+  // 165: pending Raw cannot spend Knowledge/fact bases or pointer capacity.
+  const capacity = memory.config.compaction.rawTokens + memory.config.compaction.temporaryTokens;
   // Long replies with few tool calls: the shape the retired compact-only view handled.
   const dozen = dense(12, 1_000);
   memory.store.appendToolCall({ turnId: dozen.parent, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
@@ -791,8 +793,8 @@ test("92/133: Knowledge fills its base while full facts remain independently cap
   expect(text).toContain("older facts; expand:");
   expect(windows.knowledge).toBeGreaterThan(17_000);
   expect(windows.raw).toBeGreaterThan(5_000);
-  expect(windows.envelope).toBe(50_000);
-  expect(windows.knowledge + windows.facts + windows.raw + windows.temporary).toBeLessThanOrEqual(windows.envelope);
+  expect(windows.envelope).toBe(60_000); // 165: two pools
+  expect(windows.knowledge + windows.facts + windows.raw + windows.temporary + windows.pointer).toBeLessThanOrEqual(windows.envelope);
   expect(facts.some(fact => text.includes(`[F${fact.id}]`))).toBe(true);
   expect(facts.some(fact => !text.includes(`[F${fact.id}]`))).toBe(true);
   for (let i = 0; i < 3; i++) expect(text).toContain(`RAW_${i}`);

@@ -32,23 +32,24 @@ Core phase bounds use optional top-level keys in the same file:
 | `dreaming.clusteringSteps` / `dreaming.clusteringContextTokens` | 30 / 150,000 | Every-run clustering soft response / context-growth budgets |
 | `dreaming.curateSteps` / `dreaming.curateContextTokens` | 100 / 200,000 | Dispatcher-proposed soft response / context-growth budgets |
 | `dreaming.scoringSteps` / `dreaming.scoringContextTokens` | 10 / 30,000 | Soft response / context-growth budgets in the same group conversation |
-| `compaction.temporaryTokens` | 10,000 | The one temporary allowance of a context: pending Raw, then unscored Knowledge and knowledge titles, then user words and fact titles together, turn by turn |
+| `compaction.temporaryTokens` | 10,000 | Body pool: pending Raw overflow, then unscored Knowledge newest first (165) |
+| `compaction.pointerTokens` | 10,000 | Independent pointer pool: titles of Knowledge not shown whole by score, then user words and fact titles together by newest path turn (165/140) |
 | `compaction.userTurns` | 100 | User-word reach including the anchor, counted along its path |
 | `compaction.titleTurns` | 100 | Fact-title reach including the anchor, counted along its path |
 | `compaction.userEntryTokens` | 300 | Middle-cut cap for each earlier human user entry |
 | `writing.titleWords` | 20 | Title target of a fact or knowledge item in units (each CJK character, and each run of letters and digits, counts 1), for every writer; a check refuses only above target + 10%, rounded up (22) |
 | `writing.bodyWords` | 200 | Body target of a fact (its segments summed) or knowledge item in units, for every writer; refused only above 220 |
 
-The shared material allowance is this configured value, not derived from the N or D triggers.
+Both temporary pools are configured independently of the Noter and Dreamer triggers.
 Noter publishes facts and knowledge together; facts have no later processing queue. Database pool
 budgets size injection and compaction only: they trigger no Dreamer run and decide none's success. The Dreamer
 curates the knowledge (merge, split, archive, rewrite), verifies its own changes against facts and the repositories,
 and classifies items by importance (1 to 100); a task with nothing to do makes no model call.
 
-Compaction retains the existing 10k Raw and 10k full-fact windows. The temporary allowance
-carries unscored Knowledge and knowledge titles, missing user words and uncovered fact titles
-without filling beyond the configured reaches. Noter uses the same rules at its batch endpoint,
-and reduces optional temporary material before full historical facts during capacity negotiation.
+Compaction retains the 20k Knowledge, 10k Raw and 10k full-fact bases. Independent 10k body and
+pointer pools make the default envelope 60k before the guide and live tasks. Bodies cannot crowd out titles.
+Noter shares selection at its batch endpoint without extending the configured reaches;
+capacity negotiation reduces pointers, then overflow bodies, then full historical facts.
 The episodic order is titles, full facts, user words, Raw, running tasks.
 
 The compaction hook supplies running/waiting agents from `$.agent.list()`. Claude Code 2.1.293

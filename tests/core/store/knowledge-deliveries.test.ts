@@ -39,8 +39,8 @@ test("97 a node's delivered state is its lineage's records; a sibling's are not 
     f.store.recordKnowledgeDelivery({ owner: f.owner }, [f.part([a], 5)]); // the root, before any Turn
     f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t2.id }, [f.part([b], 7)]);
     f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t3.id }, [f.part([c], 11)]);
-    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a, b]), knowledgeStates: new Set(), knowledgeTokens: 12, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
-    expect(f.at(f.t3.id)).toEqual({ knowledgeCommitIds: new Set([a, c]), knowledgeStates: new Set(), knowledgeTokens: 16, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
+    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a, b]), knowledgeStates: new Set(), knowledgeTokens: 12, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
+    expect(f.at(f.t3.id)).toEqual({ knowledgeCommitIds: new Set([a, c]), knowledgeStates: new Set(), knowledgeTokens: 16, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
     expect(f.at(f.t1.id).knowledgeCommitIds).toEqual(new Set([a]));
     // Another context's records are never this one's.
     expect(f.store.deliveredKnowledge({ owner: "cc:other", sessionId: null, headTurnId: null }).knowledgeTokens).toBe(0);
@@ -71,10 +71,10 @@ test("97 a compaction node starts from its own supplement: versions, notices and
     const compacted = f.compaction(f.t2.id), after = f.turn(compacted.id, "after");
     f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: compacted.id }, [f.part([b], 20), f.part([c], 30)]);
     f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: after.id }, [f.part([], 4, [`${b}>${c}`])]);
-    expect(f.at(after.id)).toEqual({ knowledgeCommitIds: new Set([b, c]), knowledgeStates: new Set([`${b}>${c}`]), knowledgeTokens: 54, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
+    expect(f.at(after.id)).toEqual({ knowledgeCommitIds: new Set([b, c]), knowledgeStates: new Set([`${b}>${c}`]), knowledgeTokens: 54, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
     // The node before the compaction keeps its own state; a compaction with no supplement starts empty.
-    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a]), knowledgeStates: new Set([`${a}>${b}`]), knowledgeTokens: 5, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
-    expect(f.at(f.compaction(after.id).id)).toEqual({ knowledgeCommitIds: new Set(), knowledgeStates: new Set(), knowledgeTokens: 0, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
+    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a]), knowledgeStates: new Set([`${a}>${b}`]), knowledgeTokens: 5, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
+    expect(f.at(f.compaction(after.id).id)).toEqual({ knowledgeCommitIds: new Set(), knowledgeStates: new Set(), knowledgeTokens: 0, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
   } finally { f.store.close(); }
 });
 
@@ -89,12 +89,12 @@ test("97 a compaction's supplement waits under its key until the import binds it
     f.store.recordKnowledgeDelivery({ owner: f.owner, nodeKey: "k2", follows: "leaf-2" }, [f.part([a], 2)]);
     expect(f.store.compactionDeliveryKey(f.owner, "leaf-2")).toBe("k1"); // the oldest unbound
     expect(f.store.compactionDeliveryKey("cc:other", "leaf-2")).toBeNull();
-    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a]), knowledgeStates: new Set(), knowledgeTokens: 5, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
-    expect(f.at(f.t2.id, [{ key: "k1", compaction: true }])).toEqual({ knowledgeCommitIds: new Set([b]), knowledgeStates: new Set(), knowledgeTokens: 9, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
+    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a]), knowledgeStates: new Set(), knowledgeTokens: 5, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
+    expect(f.at(f.t2.id, [{ key: "k1", compaction: true }])).toEqual({ knowledgeCommitIds: new Set([b]), knowledgeStates: new Set(), knowledgeTokens: 9, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
     expect(f.at(f.t2.id, [{ key: null, compaction: true }]).knowledgeTokens).toBe(0);
     const compacted = f.compaction(f.t2.id);
     f.store.bindDeliveryNode("k1", f.sessionId, compacted.id);
-    expect(f.at(compacted.id)).toEqual({ knowledgeCommitIds: new Set([b]), knowledgeStates: new Set(), knowledgeTokens: 9, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
+    expect(f.at(compacted.id)).toEqual({ knowledgeCommitIds: new Set([b]), knowledgeStates: new Set(), knowledgeTokens: 9, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
     expect(f.at(f.t2.id).knowledgeTokens).toBe(5);
     expect(f.store.compactionDeliveryKey(f.owner, "leaf-2")).toBe("k2");
     expect(() => f.store.recordKnowledgeDelivery({ owner: f.owner, follows: "leaf-2" }, [f.part([a], 1)])).toThrow("needs its key");
@@ -107,7 +107,7 @@ test("97 notices are a set; cost is summed per delivery, never deduplicated by v
     const [a, b] = f.versions as [number, number];
     f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id }, [f.part([a], 9, [`${a}>${b}`])]);
     f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t2.id }, [f.part([a], 9, [`${a}>${b}`])]);
-    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a]), knowledgeStates: new Set([`${a}>${b}`]), knowledgeTokens: 18, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
+    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a]), knowledgeStates: new Set([`${a}>${b}`]), knowledgeTokens: 18, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
     // Empty parts are not rows.
     expect(f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t2.id }, [f.part([], 0)])).toEqual([]);
   } finally { f.store.close(); }
@@ -138,13 +138,13 @@ test("97 another connection's records and bindings reach a warm reader's cached 
     other.recordKnowledgeDelivery({ owner: f.owner, nodeKey: "p2" }, [f.part([b], 3)]);
     expect(f.at(f.t2.id).knowledgeCommitIds).toEqual(new Set([a]));
     other.bindDeliveryNode("p2", f.sessionId, f.t2.id);
-    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a, b]), knowledgeStates: new Set(), knowledgeTokens: 5, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
+    expect(f.at(f.t2.id)).toEqual({ knowledgeCommitIds: new Set([a, b]), knowledgeStates: new Set(), knowledgeTokens: 5, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
     // A row at an ancestor reaches its cached descendants, but not past a compaction.
     other.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id }, [f.part([c], 7)]);
     expect(f.at(f.t2.id).knowledgeTokens).toBe(12);
     expect(f.at(after.id).knowledgeTokens).toBe(0);
     other.recordKnowledgeDelivery({ owner: f.owner, turnId: compacted.id }, [f.part([c], 1)]);
-    expect(f.at(after.id)).toEqual({ knowledgeCommitIds: new Set([c]), knowledgeStates: new Set(), knowledgeTokens: 1, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
+    expect(f.at(after.id)).toEqual({ knowledgeCommitIds: new Set([c]), knowledgeStates: new Set(), knowledgeTokens: 1, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
     f.store.close();
     const restarted = new Store(f.path);
     try { expect(restarted.deliveredKnowledge({ owner: f.owner, sessionId: f.sessionId, headTurnId: f.t2.id }).knowledgeTokens).toBe(12); }
@@ -163,4 +163,36 @@ test("97 migration adds the delivery tables to an existing database without touc
     expect(reopened.db.prepare("SELECT COUNT(*) AS n FROM knowledge_deliveries").get()).toEqual({ n: 0 });
     expect(reopened.deliveredKnowledge({ owner: f.owner, sessionId: f.sessionId, headTurnId: f.t2.id }).knowledgeTokens).toBe(0);
   } finally { reopened.close(); }
+});
+
+test("independent pool charges survive reopen, inherit only on their path, and reset at compaction", () => {
+  const f = fixture();
+  const part = { ...f.part([f.versions[0]!], 11), temporaryTokens: 17, pointerTokens: 23 };
+  f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id }, [part]);
+  f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t2.id }, [{ ...part, temporaryTokens: 3, pointerTokens: 5 }]);
+  f.store.close();
+  const reopened = new Store(f.path);
+  try {
+    expect(reopened.deliveredKnowledge({ owner: f.owner, sessionId: f.sessionId, headTurnId: f.t2.id }))
+      .toMatchObject({ temporaryTokens: 20, pointerTokens: 28 });
+    expect(reopened.deliveredKnowledge({ owner: f.owner, sessionId: f.sessionId, headTurnId: f.t3.id }))
+      .toMatchObject({ temporaryTokens: 17, pointerTokens: 23 });
+    const compact = reopened.appendTurn({ sessionId: f.sessionId, parentTurnId: f.t2.id, kind: "compaction", startedAt: at });
+    expect(reopened.deliveredKnowledge({ owner: f.owner, sessionId: f.sessionId, headTurnId: compact.id }))
+      .toMatchObject({ temporaryTokens: 0, pointerTokens: 0 });
+  } finally { reopened.close(); }
+});
+
+test("opening pre-pointer delivery rows preserves their recorded charge and adds an empty pointer charge", () => {
+  const f = fixture();
+  f.store.recordKnowledgeDelivery({ owner: f.owner, turnId: f.t1.id }, [{ ...f.part([f.versions[0]!], 11), temporaryTokens: 17 }]);
+  f.store.db.exec("ALTER TABLE knowledge_deliveries DROP COLUMN pointer_tokens");
+  f.store.close();
+  for (let open = 0; open < 2; open++) {
+    const reopened = new Store(f.path);
+    try {
+      expect(reopened.deliveredKnowledge({ owner: f.owner, sessionId: f.sessionId, headTurnId: f.t1.id }))
+        .toMatchObject({ knowledgeTokens: 11, temporaryTokens: 17, pointerTokens: 0, knowledgeCommitIds: new Set([f.versions[0]!]) });
+    } finally { reopened.close(); }
+  }
 });

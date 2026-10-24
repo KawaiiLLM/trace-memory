@@ -39,6 +39,7 @@ const carrierOf = (entry: ContextEntry, binding: VisibleBinding): Carrier | unde
   // 144 §7.4: the title-only versions and the temporary allowance a carrier charged; absent means none.
   if (supplied.knowledgeTitleCommitIds !== undefined && !(Array.isArray(supplied.knowledgeTitleCommitIds) && supplied.knowledgeTitleCommitIds.every(positiveId))) return;
   if (supplied.temporaryTokens !== undefined && !(Number.isSafeInteger(supplied.temporaryTokens) && Number(supplied.temporaryTokens) >= 0)) return;
+  if (supplied.pointerTokens !== undefined && !(Number.isSafeInteger(supplied.pointerTokens) && Number(supplied.pointerTokens) >= 0)) return;
   if (!Array.from(supplied.entries).every(item => object(item) && positiveId(item.id) && text(item.nativeId)
       && ((item.view === "bounded" && item.tier === undefined)
         || (item.view === undefined && (item.tier === 1 || item.tier === 2))))
