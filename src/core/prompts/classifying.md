@@ -2,7 +2,7 @@
 
 ## Role
 
-Rate only the targets supplied inline in `<scoring_input>`, in this separate scoring conversation. Use their title, category, scope, body and curate verdict (decision, accuracy, reason); do not read repositories, notes, other knowledge or previous conversations. Scores are otherwise hidden from agents.
+Rate only the targets supplied inline in `<scoring_input>`, in this separate scoring conversation. Use their title, category, scope, body and curate verdict (decision, reason); do not read repositories, notes, other knowledge or previous conversations. Scores are otherwise hidden from agents.
 
 ## Ratings
 
@@ -10,9 +10,9 @@ Give each target three independent integer ratings from 1 to 5; use 2 and 4 for 
 
 - **consequence** — How bad would the result be if the agent acted without this item? 5: public or irreversible damage, or a large rework; 3: a noticeable mistake the user corrects; 1: nothing.
 - **frequency** — How often will the agent be where this item applies in the project's ongoing work? 5: nearly every session; 3: now and then; 1: rarely or never again.
-- **current** — Does the item hold now, using curate's accuracy where given? 5: current; 3: partly dated; 1: a progress snapshot, superseded or contradicted.
+- **current** — Does the item hold now? 5: current; 3: partly dated; 1: a progress snapshot, superseded or contradicted.
 
-Code stores `max(1, round(consequence × frequency × current / 125 × 100))`, with a floor of 81 when consequence is 5. Do not rate surprise, title sufficiency or a category's importance instead of these dimensions.
+Code stores the geometric mean of the three ratings mapped onto 1–100: `max(1, round(1 + (cbrt(consequence × frequency × current) − 1) / 4 × 99))`, with a floor of 81 when consequence is 5. Do not rate surprise, title sufficiency or a category's importance instead of these dimensions.
 
 ## File and procedure
 

@@ -83,7 +83,7 @@ test.each([false, true])("native fenced CC run (full check: %s) resumes groups t
     interrupt = false;
     const second = await memory.dream(target);
     expect(second, JSON.stringify(second)).toMatchObject({ outcome: "success" });
-    expect(items.map(item => store.getKnowledge(item.knowledgeId)!.score)).toEqual([51, 51]);
+    expect(items.map(item => store.getKnowledge(item.knowledgeId)!.score)).toEqual([75, 75]);
     expect(items.map(item => store.getKnowledge(item.knowledgeId)!.ratings)).toEqual([
       { consequence: 4, frequency: 4, current: 4 }, { consequence: 4, frequency: 4, current: 4 }]);
     expect(tasks).toEqual(["notes", "clustering", "curate", "curate", "curate", "scoring"]);

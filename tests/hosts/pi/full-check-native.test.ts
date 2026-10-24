@@ -31,7 +31,7 @@ test.each([false, true])("native Pi run (full check: %s) resumes groups then sco
     interrupt = false;
     await f.h.commands.get("trace")!.handler(fullCheck ? "full-check" : "dream", f.h.ctx);
     await vi.waitFor(() => expect(store.handoff(1, "dreaming")).toBeNull(), { timeout: 10_000 });
-    expect(items.map(item => store.getKnowledge(item.knowledgeId)!.score)).toEqual([51, 51]);
+    expect(items.map(item => store.getKnowledge(item.knowledgeId)!.score)).toEqual([75, 75]);
     expect(items.map(item => store.getKnowledge(item.knowledgeId)!.ratings)).toEqual([
       { consequence: 4, frequency: 4, current: 4 }, { consequence: 4, frequency: 4, current: 4 }]);
     expect(store.currentKnowledge(path).map(item => item.revision.files)).toEqual([null, null]);

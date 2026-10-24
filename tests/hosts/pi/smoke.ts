@@ -164,7 +164,7 @@ try {
   const group = runs.find(run => JSON.parse(run.response!).task === "group")!;
   assert.equal(group.mode, "subagent");
   assert.deepEqual(store.getKnowledge(item.knowledgeId)!.ratings, { consequence: 4, frequency: 4, current: 4 });
-  assert.equal(store.getKnowledge(item.knowledgeId)!.score, 51);
+  assert.equal(store.getKnowledge(item.knowledgeId)!.score, 75);
   const archive = store.listCommitsByRun(group.id)[0]!;
   assert.equal(archive.actorRole, "dreaming");
   assert.deepEqual(store.listFactsByRun(runs[0]!.id), []);

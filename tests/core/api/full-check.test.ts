@@ -44,8 +44,8 @@ test("full check persists clusters, resumes only uncommitted groups and rescores
   const before = f.dreamer.inputs.length;
   expect(await f.memory.dream({ ...f.target, manual: true, fullCheck: true })).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate", "scoring"]);
-  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(51);
-  expect(f.store.getKnowledge(b.knowledgeId)!.score).toBe(51);
+  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(75);
+  expect(f.store.getKnowledge(b.knowledgeId)!.score).toBe(75);
   expect(f.store.currentKnowledge(f.path).map(item => item.revision.files)).toEqual([null, null]);
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
 });
@@ -73,7 +73,7 @@ test("a manual full check replaces paused incremental membership and includes ne
   f.dreamer.script.curate!.group2 = "## none\n";
   expect(await f.memory.dream({ ...f.target, manual: true, fullCheck: true })).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.filter(input => input.task === "clustering")).toHaveLength(2);
-  expect([a, b, c].map(item => f.store.getKnowledge(item.knowledgeId)!.score)).toEqual([51, 51, 51]);
+  expect([a, b, c].map(item => f.store.getKnowledge(item.knowledgeId)!.score)).toEqual([75, 75, 75]);
   expect(f.store.getRun(committed)!.outcome).toBe("success");
   expect(fullCheckDryRun(f.store, f.path).groups!.map(group => group.items)).toEqual([[a.knowledgeId], [b.knowledgeId], [c.knowledgeId]]);
 });

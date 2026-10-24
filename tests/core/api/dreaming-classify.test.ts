@@ -24,7 +24,7 @@ test("all curate groups commit before one isolated scoring conversation publishe
     expect(input.workspace.roots).toEqual([]);
     expect(input.workspace.write.map(file => file.split("/").at(-1))).toEqual(["scores.md"]);
     expect(input.tools.map(tool => tool.name)).toEqual(["check"]);
-    expect(input.text).toContain('Curate verdict: {"decision":"update","accuracy":"ok","reason":"Preserve the supported understanding"}');
+    expect(input.text).toContain('Curate verdict: {"decision":"update","reason":"Preserve the supported understanding"}');
     expect(new Set(labels)).toEqual(new Set([`K${a.knowledgeId}`, `K${b.knowledgeId}`]));
     return `K${a.knowledgeId} 5 1 1\nK${b.knowledgeId} 4 4 4\n`;
   };
@@ -32,7 +32,7 @@ test("all curate groups commit before one isolated scoring conversation publishe
   const result = await f.memory.dream({ ...f.target, toolNames: { ...canonicalToolNames, search: "mcp__t__search", note: "mcp__t__note", memory: "mcp__t__memory", check: "mcp__t__check" } });
   expect(result, JSON.stringify(result)).toMatchObject({ outcome: "success" });
   expect(f.store.getKnowledge(a.knowledgeId)).toMatchObject({ score: 81, ratings: { consequence: 5, frequency: 1, current: 1 } });
-  expect(f.store.getKnowledge(b.knowledgeId)).toMatchObject({ score: 51, ratings: { consequence: 4, frequency: 4, current: 4 } });
+  expect(f.store.getKnowledge(b.knowledgeId)).toMatchObject({ score: 75, ratings: { consequence: 4, frequency: 4, current: 4 } });
   expect(f.dreamer.inputs.filter(input => input.task === "scoring")).toHaveLength(1);
 });
 
@@ -52,7 +52,7 @@ test("failed scoring keeps committed changes and a reopened executor retries sco
   expect(await next.dream(f.target)).toMatchObject({ outcome: "success" });
   expect(replacement.inputs.map(input => input.task)).toEqual(["scoring"]);
   expect(next.store.currentCommit(item.knowledgeId, f.path)[0]!.id).toBe(current.id);
-  expect(next.store.getKnowledge(item.knowledgeId)).toMatchObject({ score: 51, ratings: { consequence: 4, frequency: 4, current: 4 } });
+  expect(next.store.getKnowledge(item.knowledgeId)).toMatchObject({ score: 75, ratings: { consequence: 4, frequency: 4, current: 4 } });
   expect(next.store.db.prepare("SELECT scored_commit FROM knowledge WHERE id=?").get(item.knowledgeId)!.scored_commit).toBe(current.id);
 });
 
@@ -66,7 +66,7 @@ test("a version changed during scoring cannot receive the old version's ratings"
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.store.currentCommit(a.knowledgeId, f.path)[0]!.id).toBe(concurrent);
   expect(f.store.getKnowledge(a.knowledgeId)).toMatchObject({ score: null, ratings: null });
-  expect(f.store.getKnowledge(b.knowledgeId)!.score).toBe(51);
+  expect(f.store.getKnowledge(b.knowledgeId)!.score).toBe(75);
   expect(f.store.db.prepare("SELECT 1 FROM knowledge_processed WHERE revision_id=?").get(concurrent)).toBeUndefined();
 });
 
@@ -86,7 +86,7 @@ test("sequential scoring batches retain passed ratings on failure and publish al
   f.dreamer.script.scoring = (_batch, labels) => labels.map(label => `${label} 1 1 1`).join("\n");
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["scoring"]);
-  expect(items.map(item => f.store.getKnowledge(item.knowledgeId)!.score)).toEqual([...Array(100).fill(22), 1]);
+  expect(items.map(item => f.store.getKnowledge(item.knowledgeId)!.score)).toEqual([...Array(100).fill(51), 1]);
 });
 
 test.each([1, 200])("curate splitting into %i children reserves time and ownership for every scoring batch", async children => {
@@ -112,7 +112,7 @@ test.each([1, 200])("curate splitting into %i children reserves time and ownersh
     await vi.runAllTimersAsync();
     const result = await running;
     expect(result, JSON.stringify(result)).toMatchObject({ outcome: "success" });
-    expect(f.store.liveKnowledge(f.path).map(revision => f.store.getKnowledge(revision.knowledgeId)!.score)).toEqual(Array(children + 1).fill(51));
+    expect(f.store.liveKnowledge(f.path).map(revision => f.store.getKnowledge(revision.knowledgeId)!.score)).toEqual(Array(children + 1).fill(75));
     expect(leases).toHaveLength(Math.ceil((children + 1) / 100));
     for (const lease of leases) {
       expect(lease.expiresAt).toBeGreaterThanOrEqual(initialExpiry);

@@ -24,8 +24,8 @@ test("groups commit independently and a retry runs only the uncommitted group wi
   const resumed = f.dreamer.inputs.findLast(input => input.task === "curate")!;
   expect(resumed.text).toContain("Group 2.");
   expect(resumed.text.split("\n\nGroup ")[0]).toBe(firstInputs[1]!.text.split("\n\nGroup ")[0]);
-  expect(f.store.getKnowledge(a.knowledgeId)?.score).toBe(51);
-  expect(f.store.getKnowledge(b.knowledgeId)?.score).toBe(51);
+  expect(f.store.getKnowledge(a.knowledgeId)?.score).toBe(75);
+  expect(f.store.getKnowledge(b.knowledgeId)?.score).toBe(75);
   expect(f.store.noterOperations(f.path)).toBe(1);
 });
 

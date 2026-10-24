@@ -52,7 +52,7 @@ test("a late Noter version stays pending when its frozen predecessor is processe
   } };
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.store.noterOperations(f.path)).toBe(1);
-  expect(f.store.getKnowledge(original.knowledgeId)?.score).toBe(51);
+  expect(f.store.getKnowledge(original.knowledgeId)?.score).toBe(75);
 });
 
 test("a runner ignoring its own deadline fails without publishing the group", async () => {
@@ -95,9 +95,9 @@ test("incremental groups freeze marks and references, share background, and resu
   const before = f.dreamer.inputs.length;
   expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate", "scoring"]);
-  expect(f.store.getKnowledge(ids[6]!)!.score).toBe(51);
+  expect(f.store.getKnowledge(ids[6]!)!.score).toBe(75);
   expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE revision_id=? AND pool=?").get(items[6]!.commit, `project:${f.project.id}`)).toEqual({ revision_id: items[6]!.commit });
-  expect(f.store.getKnowledge(ids[2]!)!.score).toBe(51); // 167: all current unscored items are scoring targets.
+  expect(f.store.getKnowledge(ids[2]!)!.score).toBe(75); // 167: all current unscored items are scoring targets.
 });
 
 test("curate refuses a reference item as a decision, mutation target or absorbed merge parent", () => {
@@ -137,5 +137,5 @@ test("repository notes and full-pool clustering overlap, but neither alone admit
   expect(f.dreamer.inputs.some(input => input.task === "curate")).toBe(false);
   notes.resolve();
   expect(await running).toMatchObject({ outcome: "success" });
-  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(51);
+  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(75);
 });

@@ -88,7 +88,7 @@ test("shutdown preserves a committed group and a reopened executor resumes only 
   expect(next.store.handoff(f.session.id, "dreaming")!.detail!.groups!.map(group => !!group.run)).toEqual([true, false]);
   expect(await next.dream(f.target)).toMatchObject({ outcome: "success" });
   expect(replacement.inputs.map(input => input.task)).toEqual(["curate", "scoring"]);
-  expect(next.store.getKnowledge(b.knowledgeId)!.score).toBe(51);
+  expect(next.store.getKnowledge(b.knowledgeId)!.score).toBe(75);
   expect(next.store.noterOperations(f.path)).toBe(0);
   release.resolve(); await late.promise;
   expect(next.store.handoff(f.session.id, "dreaming")).toBeNull();

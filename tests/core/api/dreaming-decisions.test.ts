@@ -30,7 +30,7 @@ test("a keep may publish an immutable metadata version; missing grounds flag it 
   expect(current).toMatchObject({ title: "Precise label", text: "The supported body remains unchanged", supports: item.supports, files: null });
   expect(f.store.getKnowledgeRevision(item.knowledgeId, item.commit)!.title).toBe("Old label");
   expect(f.store.knowledgeStaleReasons(current.id)).toEqual([{ reason: "missing_grounds", detail: "Preserve the supported understanding" }]);
-  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(51);
+  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(75);
 });
 
 test("a merge carries a stale reason arriving on an absorbed item during curate to the survivor", async () => {
@@ -101,5 +101,5 @@ test("oversized repository notes cannot publish a group; retry can replace the n
   f.dreamer.script.notes = "No additional repository notes.";
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.store.noterOperations(f.path)).toBe(0);
-  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(51);
+  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(75);
 });

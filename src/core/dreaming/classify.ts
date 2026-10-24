@@ -5,8 +5,9 @@ export interface ScoreVerdict { decision: string; accuracy: string; reason: stri
 export interface ScoreTarget { label: string; title: string; text: string; category: KnowledgeCategory; scope: KnowledgeScope; knowledgeId: number; commit: number; verdict?: ScoreVerdict }
 export interface RatedTarget extends ScoreRatings { knowledgeId: number; commit: number }
 export const SCORING_BATCH_ITEMS = 100;
+// Geometric mean of the three ratings, mapped 1–5 → 1–100 (2026-10-25 ruling: 「可以用几何平均折算」).
 export const ratingScore = ({ consequence, frequency, current }: ScoreRatings): number =>
-  Math.max(consequence === 5 ? 81 : 1, Math.round(consequence * frequency * current / 125 * 100));
+  Math.max(consequence === 5 ? 81 : 1, Math.round(1 + (Math.cbrt(consequence * frequency * current) - 1) / 4 * 99));
 
 export function scoreTargets(items: readonly CurateItem[], verdicts: Readonly<Record<string, ScoreVerdict>>, all = false): ScoreTarget[] {
   return items.filter(item => all || item.score === null || item.scoredCommit !== item.value.revision.id).map(item => {
@@ -16,7 +17,7 @@ export function scoreTargets(items: readonly CurateItem[], verdicts: Readonly<Re
   });
 }
 export function scoringText(targets: readonly ScoreTarget[]): string {
-  return targets.map(target => `${target.label}\n${target.title}\n${target.category}; ${target.scope}\n${target.text}\nCurate verdict: ${target.verdict ? JSON.stringify(target.verdict) : "not provided"}`).join("\n\n") + "\n";
+  return targets.map(target => `${target.label}\n${target.title}\n${target.category}; ${target.scope}\n${target.text}\nCurate verdict: ${target.verdict ? JSON.stringify({ decision: target.verdict.decision, reason: target.verdict.reason }) : "not provided"}`).join("\n\n") + "\n";
 }
 export function checkScores(text: string, targets: readonly ScoreTarget[]): { scores: Map<string, ScoreRatings>; problems: string[] } {
   const scores = new Map<string, ScoreRatings>(), problems: string[] = [], wanted = new Set(targets.map(target => target.label));
