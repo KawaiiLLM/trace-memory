@@ -719,13 +719,15 @@ export const register = (on) => {
     const response = writeGate.begin(session, e.turnId, next.signal);
     const stream = next(e);
     let complete = false;
+    let stopReason;
     try {
       for (; ; ) {
         const item = await stream.next();
         if (item.done) {
-          complete = true;
+          complete = typeof stopReason === "string" && stopReason.length > 0 && item.value?.stopReason === stopReason;
           return item.value;
         }
+        if (item.value.kind === "stop") stopReason = item.value.stopReason;
         if (item.value.kind === "tool" && isCcForegroundWrite(item.value.name)) response.calls.add(item.value.id);
         yield item.value;
       }

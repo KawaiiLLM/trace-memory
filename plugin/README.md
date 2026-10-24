@@ -112,8 +112,12 @@ Thinking-only entries remain in the processing batch and are marked processed on
 Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` in the **Claude Code process environment** before launching it. An interactive installation can set the variable in Claude Code settings' `env` block. SDK-launched processes and fresh `CLAUDE_CONFIG_DIR` directories do not necessarily inherit those personal settings: pass the variable explicitly to the CC child process. `claude plugin validate` checks the module; it does not prove runtime loading. Use `--debug` to confirm that the hooks module loaded. A disabled module may be reported only in the debug log, not stream-json output.
 
 Main-agent `note` and `memory` calls wait in `tool.call` until their containing model response's
-`turn.step` stream finishes, then pass unchanged to Claude Code's permissions and the executor's
-exact persisted-call binding. Other tools remain eager; subagents remain denied. The gate matches
+`turn.step` stream finishes with a terminal `stop` chunk and a matching, nonempty result
+`stopReason`, then pass unchanged to Claude Code's permissions and the executor's exact
+persisted-call binding. Claude Code 2.1.293 can return `stopReason: "tool_use"` for a failed
+partial response without emitting a `stop` chunk; iterator completion or the result alone
+does not release the write. Null or missing stop reasons cancel it too.
+Other tools remain eager; subagents remain denied. The gate matches
 streamed tool-use IDs within their own session and step, so parallel calls share a boundary and
 overlapping responses cannot release each other's writes. Cancellation or stream failure releases
 waiters without dispatching a write.

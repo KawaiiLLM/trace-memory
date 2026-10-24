@@ -225,10 +225,16 @@ export const register = (on: any) => {
     const response = writeGate.begin(session, e.turnId, next.signal);
     const stream = next(e);
     let complete = false;
+    let stopReason: string | undefined;
     try {
       for (;;) {
         const item = await stream.next();
-        if (item.done) { complete = true; return item.value; }
+        if (item.done) {
+          complete = typeof stopReason === "string" && stopReason.length > 0 && item.value?.stopReason === stopReason;
+          return item.value;
+        }
+        // 2.1.293 can normalize a failed partial response's result to tool_use without a stop frame.
+        if (item.value.kind === "stop") stopReason = item.value.stopReason;
         if (item.value.kind === "tool" && isCcForegroundWrite(item.value.name)) response.calls.add(item.value.id);
         yield item.value;
       }
