@@ -80,20 +80,23 @@ test("incremental groups freeze marks and references, share background, and resu
   } };
   expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "failure" });
   const saved = f.store.handoff(f.session.id, "dreaming")!.detail!;
-  expect(saved.groups!.map(group => group.items)).toEqual([[ids[0], ids[1], ids[6]], [ids[3], ids[4]]]);
-  expect(saved.groups![0]!.clusters!.at(-1)!.marks).toEqual({ [ids[6]!]: { kind: "duplicate", reason: "Check overlapping rule" } });
+  // Five candidates with the marked item exceed the group size of 3: parts per clustering group, merged while they fit (2026-10-24).
+  expect(saved.groups!.map(group => group.items)).toEqual([[ids[0], ids[1]], [ids[3], ids[4], ids[6]]]);
+  expect(saved.groups![1]!.clusters!.at(-1)!.marks).toEqual({ [ids[6]!]: { kind: "duplicate", reason: "Check overlapping rule" } });
   expect(inputs[0]!.prefix).toBe(inputs[1]!.prefix);
   expect(inputs[0]!.prefix.indexOf("</repository_notes>")).toBeLessThan(inputs[0]!.prefix.indexOf("<background_material>"));
   expect(inputs[0]!.group).toContain(`- K${ids[2]}: Rule 3`);
   expect(inputs[0]!.group).not.toContain("Supported body 3");
   expect(inputs[0]!.decisions).not.toContain(`K${ids[2]}@`);
-  expect(f.store.getKnowledge(ids[6]!)!.score).toBe(50);
-  expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE revision_id=? AND pool=?").get(items[6]!.commit, `project:${f.project.id}`)).toEqual({ revision_id: items[6]!.commit });
+  expect(f.store.getKnowledge(ids[0]!)!.score).toBe(50); // group 1 published
+  expect(f.store.getKnowledge(ids[6]!)!.score).toBeNull(); // the marked item sits in the failed group 2
   f.dreamer.script.instead = undefined;
   f.dreamer.script.clustering = "invalid if called again";
   const before = f.dreamer.inputs.length;
   expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate"]);
+  expect(f.store.getKnowledge(ids[6]!)!.score).toBe(50); // the resumed group 2 scores and covers the marked candidate
+  expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE revision_id=? AND pool=?").get(items[6]!.commit, `project:${f.project.id}`)).toEqual({ revision_id: items[6]!.commit });
   expect(f.store.getKnowledge(ids[2]!)!.score).toBeNull();
 });
 
