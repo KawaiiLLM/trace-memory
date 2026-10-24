@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { SourceNormalizationError, type SourceBlock, type SourceNormalizer } from "../../core/model/source.ts";
 import type { SourceInput } from "../../core/store/index.ts";
 import type { ResultExtractor } from "../../core/render/index.ts";
+import { transcriptChunks, transcriptLines } from "./transcript-lines.ts";
 
 /** Ticket 107: this host's result-text extractor, registered at every `TraceMemory(` call site so all
  * views render a result identically. Storage keeps `{content, toolUseResult}` (`classifySourceRecord`);
@@ -616,18 +617,18 @@ export class CcTranscriptCursor {
         if (readSync(descriptor, marker, 0, 1, this.completeOffset - 1) !== 1 || marker[0] !== 0x0a) reset = true;
       }
       const start = reset ? 0 : this.completeOffset;
-      const bytes = Buffer.allocUnsafe(stamp.size - start);
-      let read = 0;
-      while (read < bytes.length) {
-        const amount = readSync(descriptor, bytes, read, bytes.length - read, start + read);
-        if (!amount) throw new Error("native transcript changed while it was being read");
-        read += amount;
+      // Keep the read snapshot until its stamp is checked, including for the lazy UUID pass.
+      const chunks: Buffer[] = [];
+      let completeLength = 0, read = 0;
+      for (const chunk of transcriptChunks(descriptor, start, stamp.size, true)) {
+        chunks.push(chunk);
+        const newline = chunk.lastIndexOf(0x0a);
+        if (newline >= 0) completeLength = read + newline + 1;
+        read += chunk.length;
       }
       const after = fstatSync(descriptor);
       if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || after.dev !== before.dev || after.ino !== before.ino)
         throw new Error("native transcript changed while it was being read");
-      const finalNewline = bytes.lastIndexOf(0x0a);
-      const completeLength = finalNewline < 0 ? 0 : finalNewline + 1;
       const completeOffset = start + completeLength;
       onPhase?.("read", performance.now() - readStart);
       const indexStart = performance.now();
@@ -656,16 +657,22 @@ export class CcTranscriptCursor {
       // A boundary's logical parent may be written later in this very read; found by one lazy parse of it, only when a boundary needs it.
       let chunkIds: Set<string> | undefined, fell: string | undefined;
       const firstLine = lines;
-      const chunkUuids = (): Set<string> => new Set(bytes.subarray(0, completeLength).toString("utf8").split("\n").flatMap((line, index) => {
-        if (!line) return [];
-        const failed = (why: string) => new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${firstLine + index + 1}: ${why}`));
-        let parsed: unknown;
-        try { parsed = JSON.parse(line); } catch (error) { throw failed(String(error)); }
-        const record = object(parsed);
-        if (!record) throw failed("expected an object");
-        const found = nativeId(record);
-        return found ? [found] : [];
-      }));
+      const chunkUuids = (): Set<string> => {
+        const ids = new Set<string>();
+        let lineNumber = firstLine;
+        for (const { raw } of transcriptLines(chunks)) {
+          lineNumber += 1;
+          if (!raw) continue;
+          const failed = (why: string) => new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${lineNumber}: ${why}`));
+          let parsed: unknown;
+          try { parsed = JSON.parse(raw); } catch (error) { throw failed(String(error)); }
+          const record = object(parsed);
+          if (!record) throw failed("expected an object");
+          const found = nativeId(record);
+          if (found) ids.add(found);
+        }
+        return ids;
+      };
       const file: CcLineageFile = {
         before: id => scanNodes.has(id),
         anywhere: id => scanNodes.has(id) || (chunkIds ??= chunkUuids()).has(id),
@@ -678,10 +685,8 @@ export class CcTranscriptCursor {
         fellBack: missing => { fell = missing; fallbacks.add(missing); },
       };
       let beginning = 0;
-      while (beginning < completeLength) {
-        const ending = bytes.indexOf(0x0a, beginning);
-        const raw = bytes.subarray(beginning, ending).toString("utf8");
-        beginning = ending + 1; lines += 1;
+      for (const { raw, bytes } of transcriptLines(chunks)) {
+        beginning += bytes; lines += 1;
         if (!raw) continue;
         let parsed: unknown;
         try { parsed = JSON.parse(raw); }
@@ -987,21 +992,16 @@ export function readTranscriptTail(path: string, offset: number): CcNativeRecord
   try {
     const size = fstatSync(descriptor).size;
     if (size < offset) return null;
-    const bytes = Buffer.allocUnsafe(size - offset);
-    let read = 0;
-    while (read < bytes.length) {
-      const amount = readSync(descriptor, bytes, read, bytes.length - read, offset + read);
-      if (!amount) break;
-      read += amount;
-    }
-    const complete = bytes.subarray(0, bytes.subarray(0, read).lastIndexOf(0x0a) + 1).toString("utf8");
-    return complete.split("\n").filter(Boolean).map(line => {
+    const records: CcNativeRecord[] = [];
+    for (const { raw } of transcriptLines(transcriptChunks(descriptor, offset, size))) {
+      if (!raw) continue;
       let parsed: unknown;
-      try { parsed = JSON.parse(line); } catch (error) { throw new Error(`invalid completed transcript record in the tail: ${String(error)}`); }
+      try { parsed = JSON.parse(raw); } catch (error) { throw new Error(`invalid completed transcript record in the tail: ${String(error)}`); }
       const record = object(parsed);
       if (!record) throw new Error("invalid completed transcript record in the tail: expected an object");
-      return record as CcNativeRecord;
-    });
+      records.push(record as CcNativeRecord);
+    }
+    return records;
   } finally { closeSync(descriptor); }
 }
 
@@ -1017,7 +1017,7 @@ export interface CcTranscriptHead {
 function* linesBefore(path: string, offset: number): Generator<string> {
   const descriptor = openSync(path, "r");
   try {
-    let end = offset, carry = Buffer.alloc(0);
+    let end = offset, fragments: Buffer[] = [], pendingBytes = 0;
     while (end > 0) {
       const start = Math.max(0, end - (1 << 20)), chunk = Buffer.allocUnsafe(end - start);
       for (let read = 0; read < chunk.length;) {
@@ -1025,12 +1025,21 @@ function* linesBefore(path: string, offset: number): Generator<string> {
         if (!amount) throw new Error("native transcript changed while it was being read");
         read += amount;
       }
-      const data = Buffer.concat([chunk, carry]), first = start > 0 ? data.indexOf(0x0a) : -1;
-      if (start > 0 && first < 0) { carry = data; end = start; continue; }
-      carry = start > 0 ? data.subarray(0, first) : Buffer.alloc(0);
-      yield* data.subarray(first + 1).toString("utf8").split("\n").reverse().filter(Boolean);
+      let ending = chunk.length, newline: number;
+      while ((newline = chunk.lastIndexOf(0x0a, ending - 1)) >= 0) {
+        const fragment = chunk.subarray(newline + 1, ending);
+        const raw = fragments.length
+          ? Buffer.concat([fragment, ...fragments.reverse()], fragment.length + pendingBytes).toString("utf8")
+          : fragment.toString("utf8");
+        fragments = []; pendingBytes = 0;
+        if (raw) yield raw;
+        ending = newline;
+        if (!ending) break;
+      }
+      if (ending) { fragments.push(chunk.subarray(0, ending)); pendingBytes += ending; }
       end = start;
     }
+    if (pendingBytes) yield Buffer.concat(fragments.reverse(), pendingBytes).toString("utf8");
   } finally { closeSync(descriptor); }
 }
 
@@ -1088,22 +1097,13 @@ export function readTranscriptCreatedAt(path: string): string | null {
   try { descriptor = openSync(path, "r"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
   try {
-    let pending = "", position = 0;
-    const chunk = Buffer.allocUnsafe(64 * 1024);
-    for (;;) {
-      const amount = readSync(descriptor, chunk, 0, chunk.length, position);
-      if (!amount) return null;
-      position += amount;
-      pending += chunk.subarray(0, amount).toString("utf8");
-      let newline: number;
-      while ((newline = pending.indexOf("\n")) >= 0) {
-        const line = pending.slice(0, newline); pending = pending.slice(newline + 1);
-        if (!line) continue;
-        let record: unknown;
-        try { record = JSON.parse(line); } catch { return null; }
-        const created = nativeCreatedAt([record as CcNativeRecord]);
-        if (created) return created;
-      }
+    for (const { raw } of transcriptLines(transcriptChunks(descriptor, 0))) {
+      if (!raw) continue;
+      let record: unknown;
+      try { record = JSON.parse(raw); } catch { return null; }
+      const created = nativeCreatedAt([record as CcNativeRecord]);
+      if (created) return created;
     }
+    return null;
   } finally { closeSync(descriptor); }
 }

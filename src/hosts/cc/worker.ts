@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { createSdkMcpServer, query, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -12,6 +12,7 @@ import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 import { materializeCcWorkerRead, saveCcWorkerOutput } from "./files.ts";
 import { CC_WORKER_SERVER_NAME, ccWorkerToolNames } from "./tool-names.ts";
+import { transcriptChunks, transcriptLines } from "./transcript-lines.ts";
 
 export type CcAgentTask = NotingAgentInput | DreamingAgentInput;
 /** Called for every runtime-journal-worthy event this worker produces, before or after it returns
@@ -38,16 +39,21 @@ export function ccNativeTranscriptPath(environment: NodeJS.ProcessEnv, cwd: stri
  * finds never changes the run's outcome, reason, usage or commits — only whether `nativeLog` is
  * reported and what `verification` notes. */
 function verifyNativeLog(path: string, nativeSessionId: string): string | undefined {
-  let content: string;
-  try { content = readFileSync(path, "utf8"); }
+  let descriptor: number;
+  try { descriptor = openSync(path, "r"); }
   catch { return `native session file is missing at ${path}`; }
-  const firstLine = content.split("\n").find(line => line.trim().length > 0);
-  if (firstLine === undefined) return `native session file at ${path} is empty`;
-  let parsed: unknown;
-  try { parsed = JSON.parse(firstLine); } catch { return `native session file at ${path} has unparsable content`; }
-  const found = (parsed as { sessionId?: unknown } | null)?.sessionId;
-  return found === nativeSessionId ? undefined
-    : `native session file at ${path} holds session ${JSON.stringify(found)}, expected ${nativeSessionId}`;
+  try {
+    for (const { raw } of transcriptLines(transcriptChunks(descriptor, 0), true)) {
+      if (!raw.trim()) continue;
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); } catch { return `native session file at ${path} has unparsable content`; }
+      const found = (parsed as { sessionId?: unknown } | null)?.sessionId;
+      return found === nativeSessionId ? undefined
+        : `native session file at ${path} holds session ${JSON.stringify(found)}, expected ${nativeSessionId}`;
+    }
+    return `native session file at ${path} is empty`;
+  } catch { return `native session file is missing at ${path}`; }
+  finally { closeSync(descriptor); }
 }
 
 /** The one place both return paths report `nativeLog`/`verification` (78). No init received: neither
