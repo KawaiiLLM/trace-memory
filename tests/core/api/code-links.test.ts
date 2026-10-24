@@ -50,6 +50,17 @@ test("split children count toward the projected cap and merge removes consumed m
   expect(checkCurate(f.store, f.path, items, { name: "decisions.md", text: merged }, { name: "changes.md", text: merge }, 1).problems).toEqual([]);
 });
 
+test("a session-scoped split primary still counts its project-scoped child toward the whole-file cap", () => {
+  const f = fixture(), a = f.item("Mixed-scope facets");
+  f.item("Other project facet");
+  const items = projectItems(f.store, f.path);
+  const split = block(`split ${a.ref}`, { scope: "session", supports: `F${a.supports[0]}`, reason: "Separate scopes" }, "Session facet") +
+    `\n### child\ntitle: Project facet\ncategory: constraint\nscope: project\ntopics:\nsupports: F${a.supports[0]}\nfiles: ${source}\nreason: Project condition\n\nProject facet\n`;
+  const decisions = decisionText(decisionsTemplate(items), split).replaceAll("files: None", `files: ${source}`);
+  expect(checkCurate(f.store, f.path, items, { name: "decisions.md", text: decisions }, { name: "changes.md", text: split }, 1).problems)
+    .toEqual([expect.stringContaining("has 2 current items (whole-file limit 1)")]);
+});
+
 test("parallel groups recheck the whole-file cap at publication and roll back the losing group's changes, scores and coverage", async () => {
   const f = fixture(); f.memory.config.dreaming.groupItems = 1; f.memory.config.dreaming.wholeFileLimit = 1;
   const a = f.item("First facet"), b = f.item("Second facet");

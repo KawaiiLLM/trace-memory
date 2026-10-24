@@ -19,10 +19,12 @@ export function committedText(root: string, commit: string, address: string): st
 }
 
 interface Token { text: string; start: number; end: number }
-/** Only lexical boundaries: comments, strings, templates and regexes cannot close a declaration's braces. */
+/** Lexical declaration boundaries without a runtime parser. */
 function tokens(source: string): Token[] {
   const out: Token[] = [];
   let at = 0;
+  // shortcut: regexes after control-flow heads and TSX need grammar context; use a parser if these must be supported.
+  let expectsExpression = true;
   const quoted = (quote: string) => {
     at++;
     while (at < source.length) {
@@ -48,10 +50,8 @@ function tokens(source: string): Token[] {
     if (source.startsWith("//", at)) { while (at < source.length && source[at] !== "\n") at++; continue; }
     if (source.startsWith("/*", at)) { const end = source.indexOf("*/", at + 2); at = end < 0 ? source.length : end + 2; continue; }
     const start = at;
-    if (c === "\"" || c === "'" || c === "`") { quoted(c); out.push({ text: "literal", start, end: at }); continue; }
-    const previous = out.at(-1)?.text;
-    if (c === "/" && (!previous || /^(?:[=(:,&|?;{\[]|return|throw|case|=>)$/.test(previous) ||
-      previous === "!" && !/^[\w$)\]]+$/.test(out.at(-2)?.text ?? ""))) {
+    if (c === "\"" || c === "'" || c === "`") { quoted(c); out.push({ text: "literal", start, end: at }); expectsExpression = false; continue; }
+    if (c === "/" && expectsExpression) {
       at++;
       let bracket = false;
       while (at < source.length) {
@@ -62,11 +62,16 @@ function tokens(source: string): Token[] {
         else if (c === "/" && !bracket) break;
       }
       while (/[a-z]/i.test(source[at] ?? "") && at < source.length) at++;
-      out.push({ text: "literal", start, end: at }); continue;
+      out.push({ text: "literal", start, end: at }); expectsExpression = false; continue;
     }
     if (/[\w$]/.test(c)) { while (at < source.length && /[\w$]/.test(source[at]!)) at++; }
-    else at += source.startsWith("=>", at) ? 2 : 1;
-    out.push({ text: source.slice(start, at), start, end: at });
+    else at += source.startsWith("=>", at) || source.startsWith("++", at) || source.startsWith("--", at) ? 2 : 1;
+    const text = source.slice(start, at);
+    // Unary ! still expects its operand; postfix ! still follows a complete expression.
+    if (!["!", "++", "--"].includes(text))
+      expectsExpression = /^[\w$]/.test(text) ? /^(?:return|throw|case|delete|void|typeof|new|in|of|yield|await|instanceof)$/.test(text)
+        : ![")", "]", "}", "."].includes(text);
+    out.push({ text, start, end: at });
   }
   return out;
 }
@@ -106,6 +111,14 @@ export function symbolText(source: string | undefined, symbol: string): string |
     if (symbol === "default" && lex[body]?.text === "function" && lex[body + 1]?.text === "(") body++;
     if (declaration[3]) {
       // A variable link names an arrow function, not an arbitrary initializer.
+      // Type annotations may contain their own arrows; only inspect the initializer.
+      while (body < lex.length && !["=", ";"].includes(lex[body]!.text)) {
+        const pair = { "(": ")", "[": "]", "{": "}", "<": ">" }[lex[body]!.text];
+        if (pair) { const end = close(body, lex[body]!.text, pair); if (end < 0) break; body = end; }
+        body++;
+      }
+      if (lex[body]?.text !== "=") continue;
+      body++;
       while (body < lex.length && !["=>", ";"].includes(lex[body]!.text)) {
         const pair = { "(": ")", "[": "]", "{": "}", "<": ">" }[lex[body]!.text];
         if (pair) { const end = close(body, lex[body]!.text, pair); if (end < 0) break; body = end; }
@@ -115,7 +128,15 @@ export function symbolText(source: string | undefined, symbol: string): string |
       body++;
       if (lex[body]?.text !== "{") {
         let end = body;
-        while (end < lex.length && lex[end]!.text !== ";") {
+        while (end < lex.length && ![";", "}"].includes(lex[end]!.text)) {
+          const token = lex[end]!, previous = lex[end - 1]!;
+          if (end > body && /[\r\n\u2028\u2029]/.test(source.slice(previous.end, token.start))) {
+            const complete = /^(?:[\w$]+|[)\]}!]|\+\+|--)$/.test(previous.text) &&
+              !/^(?:await|yield|new|delete|void|typeof|in|instanceof|as|satisfies)$/.test(previous.text);
+            const continues = /^(?:[([.?:+\-*/%<>=&|^]|in|instanceof|as|satisfies)$/.test(token.text) ||
+              token.text === "!" && lex[end + 1]?.text === "=" || source[token.start] === "`";
+            if (complete && !continues) break;
+          }
           if (["(", "[", "{"].includes(lex[end]!.text)) {
             const paired = close(end, lex[end]!.text, { "(": ")", "[": "]", "{": "}" }[lex[end]!.text]!);
             if (paired < 0) break;
@@ -153,7 +174,12 @@ export function symbolText(source: string | undefined, symbol: string): string |
         }
       }
     }
-    while (body < lex.length && !["{", ";"].includes(lex[body]!.text)) body++;
+    while (body < lex.length && !["{", ";"].includes(lex[body]!.text)) {
+      // Constraints and extends expressions can contain braces before the class body.
+      const pair = declaration[2] && { "<": ">", "(": ")", "[": "]" }[lex[body]!.text];
+      if (pair) { const end = close(body, lex[body]!.text, pair); if (end < 0) break; body = end; }
+      body++;
+    }
     if (lex[body]?.text !== "{") continue;
     const end = close(body, "{", "}");
     if (end >= 0) {
