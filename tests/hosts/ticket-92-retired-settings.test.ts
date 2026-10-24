@@ -65,7 +65,6 @@ test("92/07: CC uses the same canonical upgrade and preserves frozen phase snaps
   fs.writeFileSync(path, JSON.stringify(input)); const report = vi.fn();
   const before = resolveCcHostConfig(input);
   expect(before.removedSettings).toEqual([...RETIRED_CONSOLIDATION_KEYS]);
-  expect(Object.keys(before.worker!.phases)).toEqual(["noting", "dreaming", "classify"]);
   upgradeSettingsFile(path, undefined, values => resolveCcHostConfig(values as unknown as typeof input), report);
   const upgraded = JSON.parse(fs.readFileSync(path, "utf8"));
   expect(upgraded.notingModel).toBe("sonnet"); expect(upgraded["dreaming.model"]).toBe("opus");

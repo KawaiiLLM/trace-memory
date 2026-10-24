@@ -310,7 +310,6 @@ export function renderTraceMenu(input: TraceMenuInput, cc: { breakdown?: CcConte
       pendingLine("Noting", model.pending.noting),
       `  ${model.pending.dreamingHeading}`,
       ...model.pending.dreaming.map(row => pendingLine(row.label, row, "    ")),
-      ...(model.pending.dreamingNext ? [`    ${model.pending.dreamingNext.label.padEnd(13)} ${model.pending.dreamingNext.value}`] : []),
     ],
     spendLines: [model.spend.sessionLine, `        ${model.spend.phaseLine}`, model.spend.todayLine],
     notices: model.notices,

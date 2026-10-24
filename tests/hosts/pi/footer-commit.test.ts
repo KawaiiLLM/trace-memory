@@ -28,7 +28,7 @@ test("24a review: a footer refresh with session-scoped knowledge reads no run au
     const bodies = countRunBodies();
     try {
       await h.emit("agent_end");
-      expect(h.statuses.get("trace-memory")).toMatch(/memory: 1\/1 /); // the scoped current version is pending for D
+      expect(h.statuses.get("trace-memory")).toMatch(/memory: 0\/1 /); // Session knowledge remains visible but is outside routine D (156).
       expect(bodies.chars()).toBe(0);
     } finally { bodies.restore(); }
   } finally { await h.dispose(); }

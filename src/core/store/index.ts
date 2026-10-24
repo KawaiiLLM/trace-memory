@@ -11,7 +11,7 @@ import { migratePropagation154, migrateDreaming, migrateDreamingRanges64d, migra
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
-import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome, CURATE_ROTATION, type CuratePair } from "./executions.ts";
+import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome, type DreamerBoundary } from "./executions.ts";
 import { DELIVERIES_SQL, STATE_KEY, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_OPERATIONS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
@@ -535,6 +535,11 @@ export type KnowledgeStaleReason = "negated_fact" | "file_changed" | "unresolved
 export interface KnowledgeFileVerification { file: string; verifiedCommit: string; verifiedAt: string }
 export interface KnowledgeStale { reason: KnowledgeStaleReason; detail: string }
 
+export interface CurateItem {
+  value: KnowledgeWithRevision; address: string; pool: string; covered: boolean;
+  dates?: string; score: number | null; scoredCommit: number | null;
+}
+
 export type KnowledgeOperationInput =
   | {
       /** Required even when explicitly preserving an unmapped parent with undefined. */
@@ -720,6 +725,7 @@ export class KnowledgeVersionProblem extends Error {
 export interface KnowledgeWithRevision {
   knowledge: Knowledge;
   revision: KnowledgeRevision;
+  staleReasons?: KnowledgeStale[];
 }
 
 // ---- Row mapping helpers ----
@@ -2405,8 +2411,21 @@ export class Store {
           for (const flag of input.held.flags ?? []) {
             const revision = this.currentKnowledge(input.held.path).find(item => item.knowledge.id === flag.knowledgeId)?.revision;
             if (!revision || revision.id !== flag.revisionId) throw new Error(`flag K${flag.knowledgeId}: version is no longer current`);
-            this.setKnowledgeStale(revision.id, { reason: "unresolved_check", detail: "Noter check could not resolve" });
+            this.setKnowledgeStale(revision.id, { reason: "unresolved_check", detail: flag.reason });
           }
+        }
+        // Flag at publication, not when a later Dreamer happens to discover the item.
+        const publicationPath = this.knowledgePath(sessionId);
+        const negated = new Set(input.run.kind === "noting" ? facts.flatMap((fact, i) => fact.negate?.length && this.factOnPath(this.getFact(batchIds[i]!)!, publicationPath) ? fact.negate.map(rel => resolve(rel.target, i)) : []) : []);
+        if (negated.size) for (const { revision } of this.currentKnowledge(publicationPath)) {
+          for (const id of revision.supports) if (negated.has(id))
+            this.setKnowledgeStale(revision.id, { reason: "negated_fact", detail: `F${id} negated by Noter run R${runId}` });
+        }
+        for (const audit of knowledgeAudit) for (const committed of audit.committed) {
+          const revision = this.getKnowledgeRevision(committed.knowledgeId, committed.commit)!;
+          const verified = new Set(this.knowledgeFileVerifications(revision.id).map(value => value.file));
+          for (const file of revision.files ?? []) if (!verified.has(file))
+            this.setKnowledgeStale(revision.id, { reason: "unverified_file", detail: file });
         }
         let response: Record<string, unknown>;
         try { const parsed = JSON.parse(input.responseForFacts?.(batchIds) ?? input.run.response ?? "{}"); response = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : { output: parsed }; }
@@ -2581,21 +2600,22 @@ export class Store {
       .map(row => ({ object: String(row.object), facts: Number(row.facts) }));
   }
 
-  /** All terms must occur in the same version's title/body; callers apply their own visibility. */
-  searchKnowledge(terms: readonly string[]): number[] {
-    if (!terms.length) return [];
+  /** All terms must occur in one version's title/body; an explicit version set also bounds matching. */
+  searchKnowledge(terms: readonly string[], revisions?: readonly number[]): number[] {
+    if (!terms.length || revisions?.length === 0) return [];
+    const allowed = revisions === undefined ? undefined : JSON.stringify(revisions);
     const indexed = terms.filter(term => unicodeLength(term) >= 3 && !term.includes("\u0000"));
     const candidates = indexed.length ? this.searchTermBatches(indexed, (batch, remaining) =>
       this.db.prepare(`SELECT rowid AS id FROM knowledge_fts WHERE knowledge_fts MATCH ?
         ${remaining === undefined ? "" : "AND rowid IN (SELECT value FROM json_each(?))"}`)
-        .all(batch.map(ftsPhraseQuery).join(" AND "), ...(remaining === undefined ? [] : [remaining])) as { id: number }[]) : undefined;
+        .all(batch.map(ftsPhraseQuery).join(" AND "), ...(remaining === undefined ? [] : [remaining])) as { id: number }[], allowed) : undefined;
     const patterns = terms.map(term => `%${term.replace(/[\\%_]/g, "\\$&")}%`);
     const rows = this.searchTermBatches(patterns, (batch, remaining) =>
       this.db.prepare(`SELECT id,knowledge_id FROM knowledge_revisions WHERE
         ${remaining === undefined ? "" : "id IN (SELECT value FROM json_each(?)) AND"}
         ${batch.map(() => "(title LIKE ? ESCAPE '\\' OR text LIKE ? ESCAPE '\\')").join(" AND ")} ORDER BY id`)
         .all(...(remaining === undefined ? [] : [remaining]), ...batch.flatMap(pattern => [pattern, pattern])) as { id: number; knowledge_id: number }[],
-      candidates === undefined ? undefined : JSON.stringify(candidates.map(row => row.id)));
+      candidates === undefined ? allowed : JSON.stringify(candidates.map(row => row.id)));
     return [...new Set(rows.map(row => row.knowledge_id))].sort((a, b) => a - b);
   }
 
@@ -3942,9 +3962,9 @@ export class Store {
     /** Both are decided once the run exists: the hand-off's curate runs include this run, the coverage includes what it wrote. */
     cover?: (done: { runId: number; results: WorkspaceOperationResult[] }) => readonly { id: number; pool?: string }[];
     handoff: (done: { runId: number; results: WorkspaceOperationResult[] }) => { nextTask: string; detail: NonNullable<Handoff["detail"]> } | null;
-    /** 144 stage 5 §3.2: the run's pair, given by the pass that may end the run. When `handoff` returns null the run is finished in this
-     * same transaction: `finished: { pair, advanced }` joins the run's body, `advanced` only if the pair is the one due (Q13). */
-    finish?: { pair: CuratePair } }): { runId: number; results: WorkspaceOperationResult[] } {
+    /** Additional group status, verification and provisional-score publication, inside this transaction. */
+    after?: (done: { runId: number; results: WorkspaceOperationResult[] }) => void;
+    finish?: { boundary: DreamerBoundary } }): { runId: number; results: WorkspaceOperationResult[] } {
     return this.transaction(() => {
       const done = this.commitWorkspaceRun({ run: input.run, path: input.path, operations: input.operations ?? [], response: input.response });
       const sessionId = input.run.sessionId!;
@@ -3953,6 +3973,7 @@ export class Store {
         const set = this.db.prepare("UPDATE knowledge SET score = ?, scored_commit = ?, scored_run = ? WHERE id = ?");
         for (const { knowledgeId, commit, score } of input.scores) if (current.get(knowledgeId) === commit) set.run(score, commit, done.runId, knowledgeId);
       }
+      input.after?.(done);
       const cover = input.cover?.(done) ?? [];
       const metadata = cover.length ? this.commitGraphInput(undefined, sessionId).metadata : undefined;
       for (const { id, pool } of cover) {
@@ -3968,25 +3989,14 @@ export class Store {
         // 146 Q16: only a finished run resets the failure streak, as the Noter's does at its success; a kept batch or an applied group does not.
         this.db.prepare("UPDATE task_failures SET count = 0 WHERE session_id = ? AND phase = 'dreaming' AND pool = ?").run(sessionId, ALL_POOLS);
         if (input.finish) {
-          const advanced = input.finish.pair === this.nextCuratePair(this.getSession(sessionId)!.projectId);
           const body = JSON.parse(String(this.db.prepare("SELECT response FROM run_bodies WHERE run_id = ?").get(done.runId)?.response ?? "{}"));
-          this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify({ ...body, finished: { pair: input.finish.pair, advanced } }), done.runId);
+          this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify({ ...body, finished: input.finish }), done.runId);
         }
       }
       return done;
     });
   }
 
-  /** 146 ruling 13: the pair the project's next Dreamer run performs. The newest run of the project's sessions that finished
-   * and advanced the rotation names the pair just done; none (or only runs from before the pairs, whose body has no `finished.pair`)
-   * starts at `update-archive`. */
-  nextCuratePair(projectId: number): CuratePair {
-    const row = this.db.prepare(`SELECT json_extract(b.response, '$.finished.pair') AS pair FROM runs r
-      JOIN run_bodies b ON b.run_id = r.id JOIN sessions s ON s.id = r.session_id
-      WHERE s.project_id = ? AND r.kind = 'dreaming' AND json_extract(b.response, '$.finished.advanced') = 1 ORDER BY r.id DESC LIMIT 1`).get(projectId);
-    const at = CURATE_ROTATION.indexOf(row?.pair as CuratePair);
-    return CURATE_ROTATION[(at + 1) % CURATE_ROTATION.length]!;
-  }
 
   /** The ids among these whose execution has an outcome (the CC importer's pin release, §1.2). */
   settledExecutions(ids: readonly string[]): Set<string> {
@@ -4177,7 +4187,7 @@ export class Store {
   /** 144 stage 4 §4.1: the live items of the session's three pools (global, its project, itself), oldest change first, each with
    * its address, whether its current version is covered (processed in its pool), the UTC dates of its supporting facts
    * and its score (null until classified). */
-  curateItems(path: KnowledgePath): { value: KnowledgeWithRevision; address: string; pool: string; covered: boolean; dates?: string; score: number | null; scoredCommit: number | null }[] {
+  curateItems(path: KnowledgePath): CurateItem[] {
     const input = this.commitGraphInput(undefined, path.sessionId);
     const projectId = this.getSession(path.sessionId)!.projectId;
     const pools = new Set(["global", `project:${projectId}`, `session:${path.sessionId}`]);
@@ -4188,10 +4198,16 @@ export class Store {
     const scores = new Map(this.db.prepare("SELECT id, score, scored_commit FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify([...knowledge.keys()])).map(row => [Number(row.id), { score: row.score === null ? null : Number(row.score), commit: row.scored_commit === null ? null : Number(row.scored_commit) }]));
     const covered = this.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?");
+    const staleReasons = new Map<number, KnowledgeStale[]>();
+    for (const row of this.db.prepare(`SELECT revision_id,reason,detail FROM knowledge_stale_reasons
+      WHERE revision_id IN (SELECT value FROM json_each(?)) ORDER BY revision_id,reason,detail`).all(JSON.stringify(live.map(item => item.revision.id)))) {
+      const id = Number(row.revision_id), reasons = staleReasons.get(id) ?? [];
+      reasons.push({ reason: row.reason as KnowledgeStaleReason, detail: String(row.detail) }); staleReasons.set(id, reasons);
+    }
     const day = (id: number) => { const time = input.metadata.facts.get(id)?.fact.createdAt; return time && !isNaN(Date.parse(time)) ? new Date(time).toISOString().slice(0, 10) : undefined; };
     return live.map(({ revision, pool }) => {
       const days = revision.supports.flatMap(id => day(id) ?? []).sort();
-      return { value: { knowledge: knowledge.get(revision.knowledgeId)!, revision }, pool,
+      return { value: { knowledge: knowledge.get(revision.knowledgeId)!, revision, staleReasons: staleReasons.get(revision.id) }, pool,
         address: `K${revision.knowledgeId}@v${this.versionOrdinal(revision.knowledgeId, revision.id)}`,
         covered: !!covered.get(pool, revision.id), score: scores.get(revision.knowledgeId)?.score ?? null, scoredCommit: scores.get(revision.knowledgeId)?.commit ?? null,
         ...(days.length ? { dates: days[0] === days.at(-1) ? days[0] : `${days[0]}..${days.at(-1)}` } : {}) };
@@ -4207,6 +4223,7 @@ export class Store {
     const revisions = input.metadata.revisions!, parents = input.parents;
     const byPool = new Map<string, KnowledgeRevision[]>();
     for (const revision of this.liveKnowledge(path, input)) {
+      if (revision.scope === "session") continue;
       const pool = placementOwner(this, { revision }, input.metadata);
       const items = byPool.get(pool); if (items) items.push(revision); else byPool.set(pool, [revision]);
     }

@@ -1,9 +1,10 @@
-// The repositories curate and verify may read (ticket 144 stage 4 §5.4, stage 5 §3.7): one function names the allowed roots, one deny list applies to
+// The repositories the Dreamer may read: one function names the allowed roots; one deny list applies to
 // Read, Grep, Glob and to the files `evidence:` cites. Both hosts and the file check call these and nothing else.
 
 import { realpathSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Store } from "../store/index.ts";
 
 /** The roots are the working directories of the project's sessions (user rulings, 2026-10-22 and 2026-10-23): a session's
@@ -76,17 +77,25 @@ export function resolveRepositoryPath(reference: string, given: readonly string[
 
 /** The `evidence:` form `<path>[:<line>[-<line>]]` (§5.4): the problem, or null when it names an existing file under a root. */
 export function repositoryEvidenceProblem(reference: string, roots: readonly string[]): string | null {
-  const match = /^(.+?)(?::(\d+)(?:-(\d+))?)?$/.exec(reference);
-  if (!match) return "expected <path>[:<line>[-<line>]]";
+  const pinned = /^(.*)@([0-9a-f]{7,40})$/.exec(reference);
+  const match = /^(.+?)(?::(\d+)(?:-(\d+))?)?$/.exec(pinned?.[1] ?? reference);
+  if (!match) return "expected <path>[:<line>[-<line>]][@commit]";
   const resolved = resolveRepositoryPath(match[1]!, roots);
   if ("reason" in resolved) return resolved.reason;
-  return statSync(resolved.path).isFile() ? null : `${match[1]} is not a file`;
+  if (!statSync(resolved.path).isFile()) return `${match[1]} is not a file`;
+  if (pinned) {
+    try {
+      const root = execFileSync("git", ["-C", dirname(resolved.path), "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      execFileSync("git", ["-C", root, "cat-file", "-e", `${pinned[2]}:${relative(root, resolved.path)}`], { stdio: "ignore" });
+    } catch { return `${reference} is not a file at that repository commit`; }
+  }
+  return null;
 }
 
-/** One Grep or Glob call confined to the roots (curate and verify): the directory it searches, resolved, and for a Grep the exclusion of secret
+/** One Grep or Glob call confined to the Dreamer's roots: the directory it searches, resolved, and for a Grep the exclusion of secret
  * files. Throws the reason a call is refused. */
 export function confineSearch(input: { path?: unknown; glob?: unknown; pattern?: unknown }, roots: readonly string[], tool: "grep" | "glob"): { path: string; glob?: string } {
-  if (!roots.length) throw new Error("Grep and Glob read repositories during curate and verify only, and this session has none");
+  if (!roots.length) throw new Error("Grep and Glob need an allowed Dreamer repository root; this session has none");
   if (typeof input.path !== "string" || !isAbsolute(input.path)) throw new Error(`name an absolute directory in path; allowed: ${roots.join(", ")}`);
   const resolved = resolveRepositoryPath(input.path, roots);
   if ("reason" in resolved) throw new Error(resolved.reason);

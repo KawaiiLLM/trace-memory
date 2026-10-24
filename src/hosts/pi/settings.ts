@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { CONFIG_SECTIONS, DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ConfigOverride, type ClosedSessionScope } from "../../core/api/index.ts";
-import { CLASSIFY_SETTING_KEYS, PHASE_SETTING_KEYS, THINKING_LEVELS } from "../phase-settings.ts";
+import { PHASE_SETTING_KEYS, THINKING_LEVELS } from "../phase-settings.ts";
 import { retireConsolidationSettings, upgradeSettingsFile } from "../retired-settings.ts";
 
 /** The section of a Pi settings file this extension owns, and its status/entry identity in the host. */
@@ -39,15 +39,11 @@ function settings(cwd: string, agentDir = agentDirectory()) {
 // rule rejects it like any other misspelling instead of silently accepting a setting that does nothing.
 // Each live phase has its own configured worker thinking level,
 // `inherit` (the default) or one of Pi's own levels.
-const settingKeyPairs = [...Object.values(PHASE_SETTING_KEYS), CLASSIFY_SETTING_KEYS];
+const settingKeyPairs = Object.values(PHASE_SETTING_KEYS);
 const phaseSettingKeys = settingKeyPairs.flatMap(keys => [keys.model, keys.thinking]);
 const hostStrings = ["dbPath", "runsDir", ...phaseSettingKeys];
 export const thinkingChoices = ["inherit", ...THINKING_LEVELS];
 const thinkingKeys = settingKeyPairs.map(keys => keys.thinking);
-/** The key that decides classify's model or thinking. Pi's Dreamer tasks follow the main agent's model unless `dreaming.model`
- * is set (user ruling, 2026-10-22), and a classify key that is absent follows the Dreamer's. */
-export const classifySettingKey = (flat: FlatConfig, kind: "model" | "thinking") =>
-  flat[CLASSIFY_SETTING_KEYS[kind]] === undefined ? PHASE_SETTING_KEYS.dreaming[kind] : CLASSIFY_SETTING_KEYS[kind];
 /** One flat `section.key` layer, checked exactly as the load path checks it: every known section key
  * typed against its default, unknown keys and misspellings rejected by name, host strings required to
  * be strings, and core's own `validateConfig` over the result. 24b's settings writer validates the
@@ -134,20 +130,17 @@ export function writeGlobal(settingsFile: string, key: string, value: string): v
 // ---- 24b: the preferences the Settings view offers, and how each one reads ----------------------
 // Global preferences: the model/thinking keys of both phases plus the closed-session borrowing scope.
 // No advanced editor or second scheduling mechanism.
-export type Preference = { name: string; key: string } & ({ phase: "noting" | "dreaming" | "classify"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
+export type Preference = { name: string; key: string } & ({ phase: "noting" | "dreaming"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
 export const preferences: Preference[] = [
   { name: "Noter model", key: PHASE_SETTING_KEYS.noting.model, phase: "noting", kind: "model" },
   { name: "Noter thinking", key: PHASE_SETTING_KEYS.noting.thinking, phase: "noting", kind: "thinking" },
   { name: "Dreamer model", key: PHASE_SETTING_KEYS.dreaming.model, phase: "dreaming", kind: "model" },
   { name: "Dreamer thinking", key: PHASE_SETTING_KEYS.dreaming.thinking, phase: "dreaming", kind: "thinking" },
-  { name: "Classify model", key: CLASSIFY_SETTING_KEYS.model, phase: "classify", kind: "model" },
-  { name: "Classify thinking", key: CLASSIFY_SETTING_KEYS.thinking, phase: "classify", kind: "thinking" },
   { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
 ];
 const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope
   : p.kind === "model" ? "session" : "inherit";
-export const preferenceValue = (flat: FlatConfig, p: Preference) => p.phase === "classify"
-  ? flat[classifySettingKey(flat, p.kind)] ?? preferenceDefault(p) : flat[p.key] ?? preferenceDefault(p);
+export const preferenceValue = (flat: FlatConfig, p: Preference) => flat[p.key] ?? preferenceDefault(p);
 export const shownValue = (raw: unknown) => raw === "session" ? "follow foreground" : String(raw);
 /** One Settings line: the effective value, its layer and the layers it masks. */
 export const preferenceLine = (p: Preference, loaded: Pick<Loaded, "flat" | "sources" | "layers">) => {

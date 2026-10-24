@@ -90,7 +90,7 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
           type: "tool_use", id: "check-1", name: ccWorkerToolNames.check, input: {},
         }], usage: { input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
         const checked = await client.callTool({ name: "check", arguments: {}, _meta: { "claudecode/toolUseId": "check-1" } });
-        expect((checked.content as { text: string }[])[0]!.text).toMatch(/Task: curate/);
+        expect((checked.content as { text: string }[])[0]!.text).toMatch(/Task: notes/);
         yield { type: "assistant", session_id: "timed-child", message: { id: "late-round", content: [{
           type: "tool_use", id: "late-check", name: ccWorkerToolNames.check, input: {},
         }], usage: { input_tokens: 2, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
@@ -129,8 +129,8 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
     await vi.advanceTimersByTimeAsync(1000);
     const result = await running;
     // The task fails as a timeout at its own deadline; its work is kept for the next run (2026-10-22 failure ruling).
-    expect(result).toMatchObject({ outcome: "failure", failure: { task: "curate", class: "timeout" } });
-    expect(memory.store.handoff(session.id, "dreaming")).toMatchObject({ nextTask: "curate" });
+    expect(result).toMatchObject({ outcome: "failure", failure: { task: "notes", class: "timeout" } });
+    expect(memory.store.handoff(session.id, "dreaming")).toMatchObject({ nextTask: "notes" });
     expect(memory.store.getClaim(session.id, "dreaming")).toBeNull();
     await lateFinished;
     expect(lateRejected).toBe(true);

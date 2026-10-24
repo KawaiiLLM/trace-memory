@@ -26,17 +26,17 @@ test("92: native Noter writes optional relations without NEAR feedback", async (
 });
 
 test.each(["noting", "dreaming"] as const)("117/125: native %s gets no end review after a length stop and the truncated run stays a failure", async kind => {
-  const f = await fixture({ "noting.triggerTokens": 1e9 });
+  const f = await fixture({ "noting.triggerTokens": 1e9 }), phase = kind === "noting" ? "Noting" : "Dreamer";
   try {
-    f.script(body => !worker(body, kind === "noting" ? "Noting" : "Dreaming") ? say("Parent ready.")
+    f.script(body => !worker(body, phase) ? say("Parent ready.")
       : JSON.stringify(body.messages).includes("Host followup") ? say("Reviewed.")
       : sse([{ id: "c", object: "chat.completion.chunk", created: 1, model: "test",
         choices: [{ index: 0, delta: { role: "assistant", content: "Truncated." }, finish_reason: "length" }], usage: usage() }]));
     await f.turn();
     const passEnd = vi.fn(() => "Host followup");
-    const result = await runNative(f.task({ kind, task: `${kind === "noting" ? "Noting (facts and knowledge)" : "Dreaming (knowledge extraction)"} material`, passEnd }));
+    const result = await runNative(f.task({ kind, systemPrompt: kind === "noting" ? "# Noting (facts and knowledge)" : "# Dreamer", task: `${phase} material`, passEnd }));
     expect(passEnd).toHaveBeenCalledTimes(kind === "dreaming" ? 1 : 0); // the Dreamer still reports its rounds
-    expect(f.sent.filter(body => worker(body, kind === "noting" ? "Noting" : "Dreaming") &&
+    expect(f.sent.filter(body => worker(body, phase) &&
       JSON.stringify(body.messages).includes("Host followup"))).toHaveLength(0);
     expect(result.outcome).toBe("failure");
   } finally { await f.dispose(); }

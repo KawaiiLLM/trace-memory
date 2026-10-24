@@ -6,16 +6,19 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import type { CcReconcileResult } from "../../src/hosts/cc/importer.ts";
 import { knowledgeBatch } from "../support/seed.ts";
 import { block } from "../support/workspace.ts";
+import { scriptedDreamer, writeCurateFiles } from "../support/dreamer.ts";
 
 // Real scheduler + core lifecycle; the provider is an explicit in-process worker stub, not native CC.
 test("92/07: CC catchup third N failure cancels active D without losing exact settlement authority", async () => {
   let executeDream!: (task: DreamingAgentInput) => Promise<RunAgentResult>;
   let nCalls = 0, dCalls = 0;
+  const ready = Promise.withResolvers<void>(), notes = scriptedDreamer();
   const memory = sourceSeededMemory(":memory:", async raw => {
     const task = raw as NotingAgentInput | DreamingAgentInput;
     const request = { fixture: "cc-auto-off", kind: task.kind };
     task.reportRequest(request);
     if (task.kind === "dreaming") { dCalls++; return executeDream(task); }
+    await ready.promise;
     nCalls++;
     return { outcome: "failure", output: "intentional Noter failure", request };
   }, { dreaming: { triggerOperations: 1 } });
@@ -38,26 +41,23 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     expect(factReceipt.factIds).toHaveLength(1);
     const fid = factReceipt.factIds[0];
     // Noter-written items make the Dreamer due (2026-10-22).
-    const written = knowledgeBatch(store, target, [1, 2, 3].map(n => ({ scope: "session" as const, category: "constraint" as const, supports: [fid], text: `Rule ${n}`, title: "Fixture title" })));
+    const written = knowledgeBatch(store, target, [1, 2, 3].map(n => ({ scope: "project" as const, category: "constraint" as const, supports: [fid], text: `Rule ${n}`, title: "Fixture title" })));
     const [changed, skipped, untouched] = written.committed;
     let observedAbort = false, lateWrite!: () => string | undefined, claim: ReturnType<typeof store.getClaim> = null, revisionsAtAbort = 0;
     const revisions = () => store.listKnowledgeRevisions().length;
-    const fileOf = async (task: DreamingAgentInput) => /(?:Your file|File): (\S+?\.md)/.exec(String(await task.tools.find(tool => tool.name === "check")!.execute({})))![1]!;
     executeDream = async task => {
       const request = { fixture: "cc-auto-off", kind: "dreaming" };
-      if (task.task === "curate") { // the batch is kept at its pass end, before the stop
-        writeFileSync(await fileOf(task), block(`update K${changed!.knowledgeId}@v1`, { reason: "maintenance" }, "Rule 1 maintained"));
-        expect(task.passEnd()).toBeUndefined();
-        return { outcome: "success", output: "curated", request };
-      }
-      expect(task.task).toBe("verify");
-      const file = await fileOf(task);
+      if (task.task === "notes") return notes.agent(task);
+      const next = await writeCurateFiles(task, block(`update K${changed!.knowledgeId}@v1`, { reason: "maintenance" }, "Rule 1 maintained"));
+      expect(next).toContain("Curate passes.");
+      const file = `${task.workspace.dir}/scores.md`;
       claim = store.getClaim(session.id, "dreaming");
       lateWrite = () => {
-        writeFileSync(file, block(`edit 1 update K${changed!.knowledgeId}@v1`, { evidence: `trace://F${fid}` }, "Late rewrite"));
+        writeFileSync(file, `K${changed!.knowledgeId} 88\n`);
         return task.passEnd();
       };
       const signal = task.signal;
+      ready.resolve();
       if (!signal) throw Error("Dreamer worker has no cancellation signal");
       return new Promise(resolve => signal.addEventListener("abort", () => {
         observedAbort = true;
@@ -80,7 +80,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     for (let i = 0; i < 30 && scheduler.running().length; i++) await new Promise<void>(resolve => setImmediate(resolve));
     expect(scheduler.running()).toEqual([]);
     expect(observedAbort).toBe(true);
-    expect(nCalls).toBe(3); expect(dCalls).toBe(2); // curate, then verify
+    expect(nCalls).toBe(3); expect(dCalls).toBe(2); // notes, then curate with scoring held
     expect(scheduler.catchupStatus().state).toBe("stopped");
     expect(diagnostics.some(message => message.includes("off after three failures"))).toBe(true);
     expect(store.getClaim(session.id, "dreaming")).toBeNull();
@@ -88,7 +88,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     expect(revisions()).toBe(revisionsAtAbort); // curate's batch is kept as a proposal, nothing is applied before verify passes; the late write added nothing
     expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1");
     expect(store.currentCommit(untouched!.knowledgeId, target)[0]!.id).toBe(untouched!.commit);
-    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`session:${session.id}`)!.n).toBe(0); // coverage is written when verify passes, and it did not
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`project:${project.id}`)!.n).toBe(0);
     expect(memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id)).toEqual(entries);
     expect(store.listRuns(session.id).filter(run => run.kind === "dreaming").at(-1)?.outcome).toBe("cancelled");
     expect(store.taskFailures(session.id).filter(item => item.phase === "dreaming")).toEqual([]);

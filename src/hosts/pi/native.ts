@@ -247,7 +247,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     await session.waitForIdle();
     // A native prompt includes the whole tool loop and provider retries. Only now is this a pass end. The same child, counters
     // and retry accounting survive the follow-ups core authorizes: as many passes as the stop hook returns a message for
-    // (a Noter's repair or next step, a Dreaming task's next batch; core bounds the count).
+    // (a Noter's repair or next step, or Dreamer's curate-to-scoring transition; core bounds the count).
     for (let pass = 1; task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted"; pass++) {
       // Only a normally ended pass gets a follow-up, so a truncated one stays the run's failure (125).
       const normal = terminal !== undefined && terminal.stopReason !== "length" && !terminal.errorMessage;

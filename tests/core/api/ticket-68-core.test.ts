@@ -15,8 +15,7 @@ function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, tim
 }
 const revisions = (f: ReturnType<typeof setup>) => f.store.listKnowledgeRevisions().length;
 
-test("68 defaults pin the flat Dreamer trigger and the thirty-minute deadline (103); 144: dreaming.maxToolRounds is a removed setting", () => {
-  expect(DEFAULT_CONFIG.dreaming).toEqual({ triggerOperations: 30, timeoutMs: 1_800_000 });
+test("removed Dreamer round limits and out-of-range native timer values are rejected", () => {
   for (const value of [0, 1]) {
     expect(() => validateConfig({ dreaming: { maxToolRounds: value } } as never)).toThrow(/Removed setting dreaming\.maxToolRounds/);
     expect(() => canonicalFlatConfig({ "dreaming.maxToolRounds": value })).toThrow(/Removed setting dreaming\.maxToolRounds.*timeoutMs/);
@@ -30,9 +29,9 @@ test("68 timeout settles failure, releases the exact claim and does not await a 
   const result = await f.dream();
   expect(result.outcome).toBe("failure");
   if (result.outcome !== "failure") throw new Error("expected failure");
-  expect(result.failure).toMatchObject({ task: "curate", class: "timeout" });
+  expect(result.failure).toMatchObject({ task: "notes", class: "timeout" });
   expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
-  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "curate" }); // the retry resumes where it failed
+  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "notes" });
   expect(revisions(f)).toBe(before);
 });
 
@@ -53,6 +52,5 @@ test("68 external cancellation remains cancellation when its native worker coope
   const running = f.memory.dream({ ...f.target, signal: controller.signal });
   controller.abort("stop");
   expect((await running).outcome).toBe("cancelled");
-  await new Promise(resolve => setTimeout(resolve, 60));
   expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
 });

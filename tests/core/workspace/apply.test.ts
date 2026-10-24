@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { memoryFiles } from "../../../src/core/api/files.ts";
 import { applyWorkspace, overCaps, plan, type ApplyResult } from "../../../src/core/workspace/index.ts";
-import { curatePairOf, type CurateOperation } from "../../../src/core/store/executions.ts";
 import { block, workspaceBatch, type WorkspaceBatch } from "../../support/workspace.ts";
 import { withVerdicts } from "../../support/noter.ts";
 
@@ -12,8 +11,8 @@ afterEach(() => { for (const b of opened.splice(0)) b.memory.close(); });
 const file = (text: string, name = "file.md") => ({ name, text });
 const noting = (b: WorkspaceBatch, facts: string, knowledge: string) =>
   applyWorkspace(b.store, { kind: "noting", scope: b.scope, facts: file(withVerdicts(facts), "facts.md"), knowledge: file(withVerdicts(knowledge), "knowledge.md") });
-const dreaming = (b: WorkspaceBatch, operation: CurateOperation, text: string) =>
-  applyWorkspace(b.store, { kind: "curate", pair: curatePairOf(operation), sessionId: b.session.id, path: b.path, file: file(text, `curate-${operation}.md`) });
+const dreaming = (b: WorkspaceBatch, operation: string, text: string) =>
+  applyWorkspace(b.store, { kind: "curate", sessionId: b.session.id, path: b.path, file: file(text, `curate-${operation}.md`) });
 const ok = (result: ApplyResult) => { if (!result.ok) throw new Error(result.problems.join("\n")); return result; };
 const current = (b: WorkspaceBatch, knowledgeId: number) => b.store.currentCommit(knowledgeId, b.path);
 const read = (b: WorkspaceBatch, address: string) => memoryFiles(b.memory, b.path).read(address).content;
@@ -196,7 +195,7 @@ describe("the caps in force at apply", () => {
   test("a title, a body, an archive explanation and each split child are counted against the caps now in force", () => {
     const b = workspaceBatch({ bodyWords: 4 });
     opened.push(b);
-    const operation = (kind: CurateOperation, text: string) => plan(b.store, { kind: "curate", pair: curatePairOf(kind), sessionId: b.session.id, path: b.path, file: file(text, "curate.md") }).knowledge[0]!.make().operation!;
+    const operation = (_kind: string, text: string) => plan(b.store, { kind: "curate", sessionId: b.session.id, path: b.path, file: file(text, "curate.md") }).knowledge[0]!.make().operation!;
     const item = b.item("one two three");
     const small = operation("update", block(`update ${item.ref}`, { reason: "r" }, "one two three"));
     expect(overCaps(b.store, small)).toEqual([]);

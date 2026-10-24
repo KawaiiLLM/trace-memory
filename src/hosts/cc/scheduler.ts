@@ -268,9 +268,6 @@ export class CcTaskScheduler {
     return { ...target, borrowed, automatic, executorSessionId: target.sessionId, model: execution.model, capacity: execution.capacity, maxReadChars: CC_MAX_RESULT_CHARS,
       toolNames: ccWorkerToolNames, nativeReadToolTokens: CC_NATIVE_READ_TOOL_TOKENS,
       nativeWriteToolTokens: CC_NATIVE_WRITE_TOOL_TOKENS + CC_NATIVE_BASH_TOOL_TOKENS + (phase === "dreaming" ? CC_NATIVE_SEARCH_TOOL_TOKENS : 0), workspaceRoot: ccWorkspaceRoot(this.worker!.cwd),
-      // Stage 4 §1.2: the Dreamer's classify task runs on its own triple, frozen here with the others.
-      ...(phase === "dreaming" ? { classify: { model: this.worker!.phases.classify.model,
-        thinkingLevel: this.worker!.phases.classify.thinking, capacity: this.worker!.phases.classify.capacity } } : {}),
       thinkingLevel: execution.thinking, subagentThinkingLevel: execution.thinking, ...(boundary ? { boundary } : {}) };
   }
 

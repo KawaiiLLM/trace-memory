@@ -1,94 +1,107 @@
-// Dreaming's curate task (ticket 144 stage 4 §4, ticket 146): the pool view, the groups of at most 100 items, the batches of at most
-// 20 inside a group, the prefix a group's tasks share, the check of a batch file and what is applied from it.
+import { words, renderKnowledge, knowledgeStaleLabel } from "../render/index.ts";
+import { parseBlocks, plan, list, traceProblem, type WorkspaceFile } from "../workspace/index.ts";
+import type { CurateItem, KnowledgePath, Store, KnowledgeOperationInput } from "../store/index.ts";
+import { allowedRoots, resolveRepositoryPath, repositoryEvidenceProblem } from "./roots.ts";
+export type { CurateItem } from "../store/index.ts";
 
-import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup } from "../model/index.ts";
-import { problem, plan, type CheckResult, type WorkspaceFile } from "../workspace/index.ts";
-import { renderKnowledge, tokens, withFactDates, withKnowledgeCost } from "../render/index.ts";
-import type { KnowledgePath, Store, WorkspaceOperationResult } from "../store/index.ts";
-import { CURATE_ROTATION, type CuratePair } from "../store/executions.ts";
-import type { PlannedBlock } from "../workspace/plan.ts";
-
-/** 146 rulings 2 and 3: a curate agent takes at most this many items, all shown whole; it works through them in batches of at most
- * `CURATE_BATCH_ITEMS`, each of one category. Named constants, like `CLASSIFY_PASS_ITEMS`. */
-export const CURATE_GROUP_ITEMS = 100;
-export const CURATE_BATCH_ITEMS = 20;
-
-export type CurateItem = ReturnType<Store["curateItems"]>[number];
-export type Category = (typeof KNOWLEDGE_CATEGORIES)[number];
-const groupOf = (item: CurateItem): Category => knowledgeCategoryGroup(item.value.revision.category);
-
-/** One item rendered whole, as the group prefix shows it. */
-export function wholeText(store: Store, item: CurateItem): string {
-  const body = renderKnowledge(item.value, item.address, false, store.writing);
-  return withFactDates(withKnowledgeCost(body, tokens(body)), item.dates);
+export function formGroups(items: readonly CurateItem[], size = 50): CurateItem[][] {
+  const groups: CurateItem[][] = [];
+  for (let at = 0; at < items.length; at += size) groups.push(items.slice(at, at + size));
+  return groups;
 }
-/** What an item costs in a prefix: its whole rendering and the separator after it. */
-export const wholeCost = (store: Store, item: CurateItem): number => tokens(wholeText(store, item)) + 1;
-const headingOf = (category: Category) => `## ${category} (${CURATE_GROUP_ITEMS})\n\n`;
-export const headingCost = (category: Category) => tokens(headingOf(category));
-
-/** The prefix a group's tasks share (§2.4): the group's items whole, by category, oldest change first. `total` is the size of the whole pool. */
-export function curatePrefix(store: Store, path: KnowledgePath, items: readonly CurateItem[] = store.curateItems(path), total = store.curateItems(path).length) {
-  const text = KNOWLEDGE_CATEGORIES.map(category => ({ category, items: items.filter(item => groupOf(item) === category) })).filter(part => part.items.length)
-    .map(part => `## ${part.category} (${part.items.length})\n\n${part.items.map(item => wholeText(store, item)).join("\n\n")}`).join("\n\n");
-  return { text: `Knowledge of this group: ${items.length} of the session's ${total} current items, by category:\n\n${text || "none"}` };
-}
-
-/** §2.2: the groups of a run. Largest category first, each category whole into the first group that has room for it by item count and by
- * token cost; a category that does not fit an empty group is cut into consecutive chunks. Deterministic, not optimal. `room` is the input
- * allowance left for a group's items (Infinity without one). An item that fits no empty group alone refuses the formation. */
-export function formGroups(items: readonly CurateItem[], price: (item: CurateItem) => number, room = Infinity): { groups: CurateItem[][] } | { refusal: string } {
-  // Priced once each: the chunking below re-totals growing chunks, which re-rendered every item thousands of times.
-  const prices = new Map(items.map(item => [item, price(item)] as const)), cost = (item: CurateItem) => prices.get(item)!;
-  const byCategory = new Map<Category, CurateItem[]>();
-  for (const item of [...items].sort((a, b) => a.value.revision.id - b.value.revision.id)) { const list = byCategory.get(groupOf(item)); if (list) list.push(item); else byCategory.set(groupOf(item), [item]); }
-  const total = (list: readonly CurateItem[]) => list.reduce((sum, item) => sum + cost(item), 0);
-  const categories = [...byCategory.keys()].sort((a, b) => byCategory.get(b)!.length - byCategory.get(a)!.length
-    || total(byCategory.get(b)!) - total(byCategory.get(a)!) || KNOWLEDGE_CATEGORIES.indexOf(a) - KNOWLEDGE_CATEGORIES.indexOf(b));
-  interface Open { parts: Map<Category, CurateItem[]>; count: number; cost: number }
-  const fits = (open: Open, category: Category, chunk: readonly CurateItem[]) => open.count + chunk.length <= CURATE_GROUP_ITEMS
-    && open.cost + total(chunk) + (open.parts.has(category) ? 0 : headingCost(category)) <= room;
-  const empty = (): Open => ({ parts: new Map(), count: 0, cost: 0 });
-  const opened: Open[] = [];
-  const put = (category: Category, chunk: CurateItem[]) => {
-    let at = opened.find(open => fits(open, category, chunk));
-    if (!at) opened.push(at = empty());
-    if (!at.parts.has(category)) { at.cost += headingCost(category); at.parts.set(category, []); }
-    at.parts.get(category)!.push(...chunk); at.count += chunk.length; at.cost += total(chunk);
-  };
-  for (const category of categories) {
-    const list = byCategory.get(category)!;
-    if (fits(empty(), category, list)) { put(category, list); continue; }
-    for (let at = 0; at < list.length;) {
-      const chunk: CurateItem[] = [];
-      while (at < list.length && fits(empty(), category, [...chunk, list[at]!])) chunk.push(list[at++]!);
-      if (!chunk.length) return { refusal: `${list[at]!.address} costs ${cost(list[at]!)} tokens and fits no group alone (room ${room})` };
-      put(category, chunk);
-    }
-  }
-  const order = new Map(KNOWLEDGE_CATEGORIES.flatMap(category => (byCategory.get(category) ?? []).map((item, i) => [item, [KNOWLEDGE_CATEGORIES.indexOf(category), i] as const] as const)));
-  const rank = (item: CurateItem) => order.get(item)![0] * 1e6 + order.get(item)![1];
-  const groups = opened.map(open => KNOWLEDGE_CATEGORIES.flatMap(category => open.parts.get(category) ?? []).sort((a, b) => rank(a) - rank(b)));
-  return { groups: groups.sort((a, b) => rank(a[0]!) - rank(b[0]!)) };
-}
-
-/** §4.1: the batches of a group's items, in prefix order: each category's items cut into consecutive batches of at most 20. */
-export function batchesOf(items: readonly CurateItem[]): { category: Category; items: CurateItem[] }[] {
-  return KNOWLEDGE_CATEGORIES.flatMap(category => {
-    const own = items.filter(item => groupOf(item) === category);
-    return Array.from({ length: Math.ceil(own.length / CURATE_BATCH_ITEMS) }, (_, i) => ({ category, items: own.slice(i * CURATE_BATCH_ITEMS, (i + 1) * CURATE_BATCH_ITEMS) }));
+export function groupText(store: Store, items: readonly CurateItem[]): string {
+  const contents = items.map(item => `- ${item.address}: ${item.value.revision.title ?? "(no title)"}${knowledgeStaleLabel({ staleReasons: store.knowledgeStaleReasons(item.value.revision.id) })}`).join("\n");
+  const bodies = items.map(item => {
+    const current = item.value.revision;
+    const history = store.listKnowledgeRevisions(current.knowledgeId);
+    return `# ${item.address}${knowledgeStaleLabel({ staleReasons: store.knowledgeStaleReasons(current.id) })}\n\n` + history.map(r => {
+      const facts = r.supports.map(id => { const fact = store.getFact(id)!; return `- F${id}: ${fact.title ?? "(untitled)"}\n${fact.text}`; }).join("\n");
+      const files = r.files === undefined ? "(not mapped)" : r.files === null ? "None" : r.files.join(", ");
+      return `${renderKnowledge({ knowledge: item.value.knowledge, revision: r, staleReasons: store.knowledgeStaleReasons(r.id) }, `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`)}\nfiles: ${files}\nverification: ${JSON.stringify(store.knowledgeFileVerifications(r.id))}\nflags: ${JSON.stringify(store.knowledgeStaleReasons(r.id))}\nreason: ${r.reason}\n\nFacts:\n${facts || "None"}`;
+    }).join("\n\n");
   });
+  return `# Contents\n\n${contents}\n\n${bodies.join("\n\n")}\n`;
 }
-
-export const batchFileName = (index: number, category: string) => `curate-${index + 1}-${category}.md`;
-
-/** The check of a curate batch file: the Stage 2 plan for either operation of the run's pair (never `create`). A batch may act on any live item of the
- * session's pools, inside or outside it (ruling 3); merged items share one category and scope, which the plan checks. A file the agent
- * never wrote fails (it is not read as `## none`). */
-export function checkBatch(store: Store, path: KnowledgePath, file: WorkspaceFile & { written: boolean }, pair: CuratePair): CheckResult & { planned: PlannedBlock[] } {
-  if (!file.written) return { ok: false, problems: [problem(file, 0, file.name, "not written: write this batch's file, with `## none` when nothing in it needs a change")], lengths: [], planned: [] };
-  const planned = plan(store, { kind: "curate", pair, sessionId: path.sessionId, path, file });
-  return { ok: !planned.problems.length, problems: planned.problems, lengths: planned.lengths, planned: planned.knowledge };
+export const decisionsTemplate = (items: readonly CurateItem[]) => items.map(item => `## item ${item.address}\ntitle: ${item.value.revision.title ?? ""}\naccuracy: \ngrounds: \nnorms: \nevidence: \nfiles: \ndecision: \nreason: \n`).join("\n");
+export interface Decision { item: CurateItem; title: string; files: string[] | null; decision: string; reason: string; missingGrounds: boolean }
+export interface Curated { problems: string[]; decisions: Decision[]; operations: KnowledgeOperationInput[]; lengths: string[] }
+/** The caller supplies membership: incremental selection and full-check clustering use this same boundary. */
+export function checkCurate(store: Store, path: KnowledgePath, items: readonly CurateItem[], decisionsFile: WorkspaceFile, changesFile: WorkspaceFile): Curated {
+  const parsed = parseBlocks(decisionsFile), checked = plan(store, { kind: "curate", sessionId: path.sessionId, path, file: changesFile });
+  const problems = [...parsed.problems, ...checked.problems], roots = allowedRoots(store, path.sessionId);
+  const wanted = new Map(items.map(item => [item.address, item])), seen = new Set<string>();
+  const decisions: Decision[] = [];
+  for (const block of parsed.blocks) {
+    const item = wanted.get(block.target), label = `decisions.md:${block.line}`;
+    if (block.op !== "item" || !item) { problems.push(`${label}: expected an item of this group`); continue; }
+    if (seen.has(block.target)) problems.push(`${label}: duplicate item ${block.target}`);
+    seen.add(block.target);
+    const fields = block.fields;
+    const keys = ["title", "accuracy", "grounds", "norms", "evidence", "files", "decision", "reason"];
+    for (const key of keys) if (!fields.get(key)?.value.trim()) problems.push(`${label}: fill ${key}`);
+    for (const key of fields.keys()) if (!keys.includes(key)) problems.push(`${label}: unknown key ${key}`);
+    if (block.body || block.children.length) problems.push(`${label}: item takes only its checklist keys`);
+    const value = (key: string) => fields.get(key)?.value ?? "";
+    if (!/^(?:ok|unverified|outdated:\s*\S.*|wrong:\s*\S.*)$/.test(value("accuracy"))) problems.push(`${label}: accuracy must be ok, unverified, outdated: <why> or wrong: <why>`);
+    if (words(value("title")) > Math.ceil(store.writing.titleWords * 1.1)) problems.push(`${label}: title exceeds target ${store.writing.titleWords}`);
+    const files: string[] | null = value("files") === "None" ? null : list(value("files")).flatMap(file => {
+      const resolved = resolveRepositoryPath(file, roots);
+      if ("reason" in resolved) { problems.push(`${label}: files: ${resolved.reason}`); return []; }
+      return [resolved.path];
+    });
+    if (files && new Set(files).size !== files.length) problems.push(`${label}: duplicate linked file`);
+    const decision = value("decision");
+    if (!/^(?:keep|update|archive|merge|split|merged into K[1-9]\d*)$/.test(decision)) problems.push(`${label}: unknown decision ${decision}`);
+    for (const evidence of list(value("evidence"))) {
+      if (evidence === "None") continue;
+      const problem = evidence.startsWith("trace://") ? traceProblem(store, evidence) : repositoryEvidenceProblem(evidence, roots);
+      if (problem) problems.push(`${label}: evidence ${evidence}: ${problem}`);
+    }
+    decisions.push({ item, title: value("title"), files, decision, reason: value("reason"), missingGrounds: /^(?:None|missing|unverified)(?:\b|$)/i.test(value("grounds")) });
+  }
+  for (const address of wanted.keys()) if (!seen.has(address)) problems.push(`decisions.md: missing ${address}`);
+  const byId = new Map(decisions.map(decision => [decision.item.value.knowledge.id, decision]));
+  const operations: KnowledgeOperationInput[] = [];
+  const consumed = new Map<number, string>();
+  const mark = (id: number, operation: string) => {
+    if (consumed.has(id)) problems.push(`changes.md: K${id} has more than one operation`);
+    consumed.set(id, operation);
+  };
+  for (const entry of checked.knowledge) {
+    const op = entry.make().operation;
+    if (!op || op.op === "create") continue;
+    const id = op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId, decision = byId.get(id);
+    if (!decision) { problems.push(`changes.md: ${entry.block.target} is outside this group`); continue; }
+    mark(id, op.op);
+    if (decision.decision !== op.op) problems.push(`changes.md: K${id} disagrees with decision ${decision.decision}`);
+    if (op.op !== "archive" && (op.title ?? decision.item.value.revision.title) !== decision.title) problems.push(`changes.md: K${id} title disagrees with decisions.md`);
+    op.files = decision.files;
+    if (op.op === "merge") for (const absorbed of op.absorb) {
+      mark(absorbed.knowledgeId, `merged into K${id}`);
+      if (!byId.has(absorbed.knowledgeId)) problems.push(`changes.md: merge cannot absorb K${absorbed.knowledgeId} outside this group`);
+    }
+    if (op.op === "split") entry.block.children.forEach((child, index) => {
+      const raw = child.fields.get("files")?.value;
+      if (!raw) { problems.push(`changes.md: K${id} child ${index + 1} requires files`); return; }
+      op.children[index]!.files = raw === "None" ? null : list(raw).flatMap(file => {
+        const resolved = resolveRepositoryPath(file, roots);
+        if ("reason" in resolved) { problems.push(`changes.md: child files: ${resolved.reason}`); return []; }
+        return [resolved.path];
+      });
+      if (!child.fields.has("supports")) problems.push(`changes.md: K${id} child ${index + 1} requires explicit supports`);
+    });
+    operations.push(op);
+  }
+  for (const decision of decisions) {
+    const r = decision.item.value.revision, id = r.knowledgeId;
+    if (decision.decision !== "keep") {
+      if (consumed.get(id) !== decision.decision) problems.push(`decisions.md: K${id} has no matching ${decision.decision} change`);
+      continue;
+    }
+    if (consumed.has(id)) problems.push(`decisions.md: kept K${id} also has a change`);
+    if (decision.title !== r.title || JSON.stringify(decision.files) !== JSON.stringify(r.files)) operations.push({ op: "update", knowledgeId: id, baseCommit: r.id,
+      title: decision.title, text: r.text, category: r.category, scope: r.scope, topics: r.topics, supports: r.supports,
+      files: decision.files, reason: decision.reason, createdAt: new Date().toISOString() });
+  }
+  return { problems, decisions, operations, lengths: checked.lengths.map(length => `${length.block}: ${length.field} ${length.count}/${length.target} (limit ${length.limit})`) };
 }
-export { CURATE_ROTATION, type CuratePair };
-export type { WorkspaceOperationResult };

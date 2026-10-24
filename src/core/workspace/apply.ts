@@ -6,11 +6,10 @@
 import { describeBlock, type Block, type WorkspaceFile } from "./parse.ts";
 import { plan, type NotingScope, type PlannedBlock } from "./plan.ts";
 import type { KnowledgePath, RunInput, Store } from "../store/index.ts";
-import type { CuratePair } from "../store/executions.ts";
 
 export type ApplyInput =
   | { kind: "noting"; scope: NotingScope; facts: WorkspaceFile; knowledge: WorkspaceFile; run?: RunInput }
-  | { kind: "curate"; pair: CuratePair; sessionId: number; path?: KnowledgePath; file: WorkspaceFile; run?: RunInput };
+  | { kind: "curate"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile; run?: RunInput };
 
 /** What publishing did with one block. `versions` are the versions it wrote, as `K<id>@v<n>`. */
 export interface BlockResult {
@@ -32,12 +31,12 @@ export type ApplyResult =
 
 export function applyWorkspace(store: Store, input: ApplyInput): ApplyResult {
   if (input.kind === "noting") return applyNoting(store, input);
-  const planned = plan(store, { kind: "curate", pair: input.pair, sessionId: input.sessionId, path: input.path, file: input.file });
+  const planned = plan(store, { kind: "curate", sessionId: input.sessionId, path: input.path, file: input.file });
   if (planned.problems.length) return { ok: false, problems: planned.problems };
   const path = planned.path!;
   const blocks = planned.knowledge;
   const run: RunInput = input.run ?? { kind: "dreaming", sessionId: path.sessionId, branch: path.branch ?? null, createdAt: new Date().toISOString() };
-  const done = store.commitWorkspaceRun({ run, path, operations: blocks.map(entry => entry.make().operation!), response: results => JSON.stringify({ workspace: input.kind, pair: input.pair,
+  const done = store.commitWorkspaceRun({ run, path, operations: blocks.map(entry => entry.make().operation!), response: results => JSON.stringify({ workspace: input.kind,
     blocks: blocks.map((entry, i) => ({ block: describeBlock(entry.block), line: entry.block.line, result: results[i] })) }) });
   return { ok: true, runId: done.runId, factIds: {}, blocks: blocks.map((entry, i): BlockResult => {
     const result = done.results[i]!, where = describeBlock(entry.block);

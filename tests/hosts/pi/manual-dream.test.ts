@@ -13,7 +13,7 @@ function seed(h: ReturnType<typeof host>) {
   const path = h.memory.store.knowledgePath(1, "main", 1);
   const source = h.memory.store.sourcePath(1, "main", 1).map(entry => h.memory.store.getSourceEntry(entry.id)!).find(entry => entry.turnId === 1 && entry.entryOrdinal === 1)!;
   fact(h.memory, path, "Keep conclusion", [{ entry: source, text: "Keep this conclusion." }]);
-  knowledge(h.memory.store, path, "session", "constraint", [1], "Rule " + "word ".repeat(120), { operation: { title: "Fixture title" } });
+  knowledge(h.memory.store, path, "project", "constraint", [1], "Rule " + "word ".repeat(120), { operation: { title: "Fixture title" } });
 }
 const dreamExecutions = (h: ReturnType<typeof host>) => h.memory.store.db.prepare(
   "SELECT outcome FROM task_executions WHERE session_id = 1 AND phase = 'dreaming' ORDER BY rowid").all().map(row => row.outcome);

@@ -19,7 +19,7 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     const noted = JSON.parse(factResult);
     expect(noted.factIds).toHaveLength(1);
     // Noter-written items make the Dreamer due (2026-10-22).
-    const written = knowledgeBatch(store, target, [1, 2, 3].map(n => ({ scope: "session" as const, category: "constraint" as const, supports: [noted.factIds[0]], text: `Rule ${n}`, title: "Fixture title" })));
+    const written = knowledgeBatch(store, target, [1, 2, 3].map(n => ({ scope: "project" as const, category: "constraint" as const, supports: [noted.factIds[0]], text: `Rule ${n}`, title: "Fixture title" })));
     const [changed, skipped, untouched] = written.committed;
     const entries = f.memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id);
     const dreamReady = new Promise<void>(resolve => { ready = resolve; });
@@ -27,18 +27,16 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     const revisions = () => store.listKnowledgeRevisions().length;
     const rewrite = block(`update K${changed!.knowledgeId}@v1`, { reason: "maintenance" }, "Rule 1 maintained");
     const late = (conversation: { messages: unknown[] }): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "late", name: "write", arguments: {
-      path: /Your file: (\S+?\.md)/.exec(JSON.stringify(conversation.messages))![1]!,
-      content: block(`edit 1 update K${changed!.knowledgeId}@v1`, { evidence: `trace://F${noted.factIds[0]}` }, "Late rewrite") } as never }] });
+      path: /Scores: (\S+?\.md)/.exec(JSON.stringify(conversation.messages))![1]!,
+      content: `K${changed!.knowledgeId} 88\n` } as never }] });
     f.provider(async (conversation, signal): Promise<Reply> => {
       if (conversation.systemPrompt?.startsWith("# Noting")) {
         await dreamReady; nCalls++;
         return { ...reply(""), stopReason: "error", errorMessage: "intentional Noter failure" };
       }
       expect(conversation.systemPrompt).toMatch(/^# (Dreamer|Classifying)/);
-      const verifying = /Task: verify/.test(JSON.stringify(conversation.messages));
-      if (!verifying) return dreamerFiles(conversation, { curate: rewrite }) ?? reply("Done");
-      // Verify has its first request answered with check; the next one is held in flight until memory goes off.
-      if (conversation.messages.length < 3) return dreamerFiles(conversation)!;
+      const scoring = /Task: scoring/.test(JSON.stringify(conversation.messages));
+      if (!scoring) return dreamerFiles(conversation, { curate: rewrite }) ?? reply("Done");
       claim = store.getClaim(session.id, "dreaming");
       if (!signal) throw Error("Dreamer provider request has no cancellation signal");
       ready();
@@ -63,7 +61,7 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     expect(revisions()).toBe(revisionsAtAbort);
     expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1");
     expect(store.currentCommit(untouched!.knowledgeId, target)[0]!.id).toBe(untouched!.commit);
-    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`session:${session.id}`)!.n).toBe(0); // coverage is written when verify passes, and it did not
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`project:${session.projectId}`)!.n).toBe(0);
     expect(store.currentCommit(changed!.knowledgeId, target)[0]!.id).toBe(changed!.commit);
     expect(f.memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id)).toEqual(entries);
     expect(store.taskFailures(session.id).filter(item => item.phase === "dreaming")).toEqual([]);

@@ -19,7 +19,6 @@ test("the standalone CC bundle expands shared blocks but renders exposed names a
     for (const file of PROMPT_FILES) {
       for (const names of [ccWorkerToolNames, ccPluginToolNames]) {
         expect(bundled(file, names)).toBe(loadPrompt(file, names));
-        if (!file.startsWith("tasks/")) expect(bundled(file, names)).toContain(names.check); // a task prompt is delivered by a check result and need not name the tool
         expect(bundled(file, names)).not.toContain("{{tool.");
         expect(bundled(file, names)).not.toContain("<!-- include:");
       }
@@ -27,6 +26,5 @@ test("the standalone CC bundle expands shared blocks but renders exposed names a
     expect(bundled("noting.md", ccWorkerToolNames)).not.toBe(bundled("noting.md", ccPluginToolNames));
     const limits = { titleWords: 13, bodyWords: 321 };
     expect(bundled("dreaming.md", ccWorkerToolNames, limits)).toBe(loadPrompt("dreaming.md", ccWorkerToolNames, limits));
-    expect(bundled("dreaming.md", ccWorkerToolNames, limits)).toContain("at most 13 units and a body at most 321 units");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -1,4 +1,4 @@
-import { confirmEvery } from "../../support/dreamer.ts";
+import { decisionText } from "../../support/dreamer.ts";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -140,24 +140,23 @@ export function noterReply(conversation: Conversation, plan: { facts?: string; k
     : (task === "extract-facts" ? plan.facts : plan.knowledge) ?? "## none\n";
   return call([{ id: `write-${written.length + 1}`, name: "write", arguments: { path: file, content } }]);
 }
-/** The scripted Dreamer's side of a run (ticket 144 stage 4, 146), as a model behaves on the wire: call `check`, write the file the latest
- * message names (`## none` for each curate batch file the first `check` result lists, a `## confirm <n>` for every change of verify's change
- * file, every item 50 for the scorer), stop. Returns undefined when the model has nothing left to say. */
-export function dreamerFiles(conversation: Conversation, plan: { curate?: string; verify?: string } = {}): Reply | undefined {
+/** The native provider writes the same pre-made deliverables as a real Dreamer. */
+export function dreamerFiles(conversation: Conversation, plan: { curate?: string } = {}): Reply | undefined {
   const call = (calls: { id: string; name: string; arguments: JsonObject }[]): Reply => ({ ...reply(""), stopReason: "toolUse",
     content: calls.map(value => ({ type: "toolCall" as const, ...value })) });
-  const mentions = conversation.messages.flatMap(m => m.role === "assistant" ? [] : [partsText((m as { content: unknown }).content)]).filter(text => /(?:Your file|File): \S+\.md/.test(text));
+  const mentions = conversation.messages.flatMap(m => m.role === "assistant" || !("content" in m) ? [] : [partsText(m.content)]).filter(text => /Task: (notes|curate|scoring)/.test(text));
   if (!mentions.length) return call([{ id: "check-1", name: "check", arguments: {} }]);
   const report = mentions.at(-1)!;
-  const written = conversation.messages.flatMap(m => m.role !== "assistant" || !Array.isArray(m.content) ? [] : (m.content as { type: string; name?: string; arguments?: { path?: string } }[])
-    .filter(part => part.type === "toolCall" && part.name === "write").map(part => part.arguments?.path));
-  const files = /^Task: curate/m.test(report) ? [...report.matchAll(/^batch \d+ of \d+, category \w+\. Items: .*?\. File: (\S+?\.md)/gm)].map(match => match[1]!)
-    : [/(?:Your file|File): (\S+?\.md)/.exec(report)![1]!];
-  const todo = files.filter(file => !written.includes(file));
-  if (!todo.length) return undefined;
-  const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
-  return call(todo.map((file, i) => ({ id: `write-${written.length + i + 1}`, name: "write", arguments: { path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n"
-    : (/^Task: verify/m.test(report) ? plan.verify ?? confirmEvery(report) : /^Task: curate/m.test(report) ? plan.curate : undefined) ?? "## none\n" } })));
+  const written = conversation.messages.flatMap(m => m.role !== "assistant" || !Array.isArray(m.content) ? [] : m.content
+    .flatMap(part => part.type === "toolCall" && part.name === "write" ? [part.arguments?.path] : []));
+  const task = /Task: (notes|curate|scoring)/.exec(report)![1]!;
+  const named = (label: string) => new RegExp(`${label}: (\\S+?\\.md)`).exec(report)![1]!;
+  const changes = plan.curate ?? "## none\n";
+  const files = task === "notes" ? [{ path: named("File"), content: "No repository-specific notes." }]
+    : task === "curate" ? [{ path: named("Decisions"), content: decisionText(readFileSync(named("Decisions"), "utf8"), changes) }, { path: named("Changes"), content: changes }]
+    : [{ path: named("Scores"), content: [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+(?:\.child\d+)?/g)].map(match => `${match[0]} 50`).join("\n") }];
+  const todo = files.filter(file => !written.includes(file.path));
+  return todo.length ? call(todo.map((file, i) => ({ id: `write-${written.length + i + 1}`, name: "write", arguments: file }))) : undefined;
 }
 /** Four stages, each with check, write and stop. */
 export const NOTER_BATCH_REQUESTS = 12;

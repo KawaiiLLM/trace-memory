@@ -128,19 +128,16 @@ export const dreamingPendingInput = (pending: { operations: number; trigger: num
   pending ? { tokens: pending.operations, trigger: pending.trigger, unit: "operations", ...(pending.atLeast ? { atLeast: true } : {}) }
     : { tokens: null, trigger, unit: "operations" };
 
-/** Dreaming's one condition (146 §1): the Noter knowledge operations not yet covered by a Dreamer run, against the trigger.
- * `next`: the curate pair the project's next run performs (146 ruling 13, `Store.nextCuratePair`); absent without a session. */
+/** Noter knowledge operations not yet covered by a Dreamer run, against the unchanged trigger. */
 export interface PendingSectionInput {
   noting: PendingInput;
-  dreaming: { pending: PendingInput; next?: string };
+  dreaming: { pending: PendingInput };
 }
 export interface PendingSection {
   heading: string;
   noting: PendingRow;
   dreamingHeading: string;
   dreaming: PendingRow[];
-  /** Not a token amount, so not a `PendingRow`: both hosts print it as `label  value` under the bar rows. */
-  dreamingNext?: { label: string; value: string };
 }
 export function buildPendingSection(input: PendingSectionInput): PendingSection {
   return {
@@ -148,7 +145,6 @@ export function buildPendingSection(input: PendingSectionInput): PendingSection 
     noting: pendingRow("Noting", input.noting),
     dreamingHeading: "Dreaming",
     dreaming: [pendingRow("pending", input.dreaming.pending)],
-    ...(input.dreaming.next ? { dreamingNext: { label: "next curate", value: input.dreaming.next } } : {}),
   };
 }
 
@@ -245,22 +241,21 @@ export function buildSettingsBudgets(input: SettingsBudgetsInput): SettingsBudge
   };
 }
 
-/** `Classifier` is the Dreamer's scoring task, a settings group of its own (stage 4 §1.2), not a phase. */
-export interface WorkerRowInput { phase: "Noter" | "Dreamer" | "Classifier"; model: string; thinking: string; source?: string; sources?: { model?: string; thinking?: string } }
+export interface WorkerRowInput { phase: "Noter" | "Dreamer"; model: string; thinking: string; source?: string; sources?: { model?: string; thinking?: string } }
 export interface WorkerRow { phase: string; model: string; thinking: string; source?: string; sources?: WorkerRowInput["sources"] }
 export interface SettingsWorkers { rows: WorkerRow[] }
 export function buildSettingsWorkers(input: WorkerRowInput[]): SettingsWorkers {
   return { rows: input.map(w => ({ ...w })) };
 }
 
-export type SettingsRowId = "knowledgeBase" | "noting.model" | "noting.thinking" | "dreaming.model" | "dreaming.thinking" | "classify.model" | "classify.thinking" | "closedSessionScope";
+export type SettingsRowId = "knowledgeBase" | "noting.model" | "noting.thinking" | "dreaming.model" | "dreaming.thinking" | "closedSessionScope";
 export interface SettingsChoice { id: SettingsRowId; label: string }
 /** Stable row identifiers and labels: adapters implement edits, not menu copy or ordering. */
 export function buildSettingsChoices(input: SettingsInput): SettingsChoice[] {
   const base = buildSettingsBudgets(input.budgets).rows[0]!;
   const budgets: SettingsChoice[] = [{ id: "knowledgeBase", label: `${base.label}: ${base.value}` }];
   const workers: SettingsChoice[] = input.workers.flatMap(w => {
-    const phase = ({ Noter: "noting", Dreamer: "dreaming", Classifier: "classify" } as const)[w.phase];
+    const phase = ({ Noter: "noting", Dreamer: "dreaming" } as const)[w.phase];
     return ([{ id: `${phase}.model` as SettingsRowId, label: `${w.phase} model: ${w.model}`, source: w.sources?.model ?? w.source },
       { id: `${phase}.thinking` as SettingsRowId, label: `${w.phase} thinking: ${w.thinking}`, source: w.sources?.thinking }]).map(row => ({ id: row.id, label: `${row.label}${row.source ? ` (${row.source})` : ""}` }));
   });
@@ -318,7 +313,7 @@ export const TRACE_MENU_FIXTURE: TraceMenuInput = {
   },
   pending: {
     noting: { tokens: 3_200, trigger: 10_000 },
-    dreaming: { pending: { tokens: 12, trigger: 30, unit: "operations" }, next: "merge-split" },
+    dreaming: { pending: { tokens: 12, trigger: 30, unit: "operations" } },
   },
   spend: {
     session: 1.23,

@@ -46,7 +46,6 @@ function workerConfig(directory: string, claudeExecutable = "/opt/homebrew/bin/c
   return resolveCcHostConfig({ dbPath: join(directory, "database", "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "claude-sonnet-4-5", notingThinking: "medium",
     "dreaming.model": "claude-sonnet-4-5", "dreaming.thinking": "medium",
-    "dreaming.classifyModel": "claude-sonnet-4-5", "dreaming.classifyThinking": "medium",
     worker: { claudeExecutable, contextWindows: { "claude-sonnet-4-5": 200_000, sonnet: 200_000 },
       cwd: directory, responseOriginTimeoutMs: 20 } });
 }
@@ -557,12 +556,12 @@ test("simultaneous phase workers keep model and thinking selection isolated", as
     ...(kind === "dreaming" ? { passEnd: vi.fn(() => undefined) } : {}) }) as unknown as CcAgentTask;
   const results = await Promise.all([
     worker.run(task("noting", "sonnet", "low"), 0),
-    worker.run(task("dreaming", "opus-d", "max"), 0),
+    worker.run(task("dreaming", "sonnet", "max"), 0),
   ]);
   expect(results.map(result => result.thinking)).toEqual([
     { requested: "low", effective: "low" }, { requested: "max", effective: "max" },
   ]);
-  expect(new Set(observed.map(value => `${value.model}/${value.effort}`))).toEqual(new Set(["sonnet/low", "opus-d/max"]));
+  expect(new Set(observed.map(value => `${value.model}/${value.effort}`))).toEqual(new Set(["sonnet/low", "sonnet/max"]));
 });
 
 test("worker rejects runtime metadata that does not support the selected phase thinking", async () => {
@@ -1351,7 +1350,7 @@ test("scheduler reserves independent N/D slots and failed worker completion does
   expect(manual.find(value => value.name === "note")!.execute({ title: "Pending fact", sources: `[T${seed.turn.id}#E1] A separate pending fact.` })).toContain("ok: F1");
   // Only a Noter-written item makes a Dreamer due (2026-10-22).
   knowledgeBatch(memory.store, { sessionId: session.id, branch: "main", headTurnId: seed.turn.id },
-    [{ scope: "session", category: "constraint", supports: [1], text: "Pending maintenance", title: "Fixture title" }]);
+    [{ scope: "project", category: "constraint", supports: [1], text: "Pending maintenance", title: "Fixture title" }]);
   const diagnostics: string[] = [], notingAdmission = vi.spyOn(memory, "noting"), dreamingAdmission = vi.spyOn(memory, "dream");
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, message => diagnostics.push(message));
   const reconcile = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: seed.turn.id,
@@ -1364,11 +1363,11 @@ test("scheduler reserves independent N/D slots and failed worker completion does
   expect(starts).toHaveLength(2);
   expect(new Set(scheduler.running())).toEqual(new Set(["noting", "dreaming"]));
   expect(notingAdmission.mock.calls[0]?.[0]).toMatchObject({ capacity: { inputTokens: 110_000 } });
-  expect(dreamingAdmission.mock.calls[0]?.[0]).toMatchObject({ capacity: { inputTokens: 310_000 } });
+  expect(dreamingAdmission.mock.calls[0]?.[0]).toMatchObject({ capacity: { inputTokens: 110_000 } });
   expect(admissions.map(task => ({ kind: task.kind, model: task.model, thinking: task.subagentThinkingLevel })))
     .toEqual(expect.arrayContaining([
       { kind: "noting", model: "sonnet", thinking: "low" },
-      { kind: "dreaming", model: "opus-d", thinking: "max" },
+      { kind: "dreaming", model: "sonnet", thinking: "max" },
     ]));
   releases.get("noting")!(); releases.get("dreaming")!();
   await scheduler.settle();
@@ -1676,8 +1675,8 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
   scheduler.reconcile(reconcile); await tick();
   expect(new Set(starts)).toEqual(new Set(["noting", "dreaming"]));
   expect(new Set(scheduler.running())).toEqual(new Set(["noting", "dreaming"]));
-  expect(admissions.find(value => value.kind === "dreaming")).toMatchObject({ model: "opus-d",
-    thinkingLevel: "max", subagentThinkingLevel: "max", capacity: { inputTokens: 310_000 } });
+  expect(admissions.find(value => value.kind === "dreaming")).toMatchObject({ model: "sonnet",
+    thinkingLevel: "max", subagentThinkingLevel: "max", capacity: { inputTokens: 110_000 } });
   for (const release of releases.values()) release();
   await scheduler.settle(); await tick();
   expect(starts).toHaveLength(2);
@@ -1756,13 +1755,13 @@ test("scheduler borrows an eligible closed target only at the executor turn end"
   memory.close();
 });
 
-test.each(["curate", "verify", "classify"] as const)("a %s task's Read, Grep and Glob hooks follow its roots and retain the secret deny list", async dreamingTask => {
+test.each(["notes", "curate"] as const)("a %s task's Read, Grep and Glob hooks follow its roots and retain the secret deny list", async dreamingTask => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-roots-")); dirs.push(directory);
   const root = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-root-"))), outside = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-outside-")));
   dirs.push(root, outside);
   writeFileSync(join(root, "a.ts"), "export {};\n"); writeFileSync(join(root, ".env"), "SECRET=1\n"); writeFileSync(join(outside, "b.txt"), "x\n");
   const workspaceDir = join(directory, "workspaces", "run"); mkdirSync(workspaceDir, { recursive: true });
-  const workspace = { dir: workspaceDir, read: [], write: [], roots: dreamingTask !== "classify" ? [root] : [] };
+  const workspace = { dir: workspaceDir, read: [], write: [], roots: [root] };
   const decisions: Record<string, string> = {};
   let additional: string[] = [];
   const fakeQuery = ((request: { options: Record<string, any> }) => {
@@ -1786,20 +1785,15 @@ test.each(["curate", "verify", "classify"] as const)("a %s task's Read, Grep and
   expect((await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0)).outcome).toBe("success");
   const rendering = additional.at(-1)!;
   expect(rendering.startsWith(join(directory, "rendered") + sep)).toBe(true);
-  if (dreamingTask !== "classify") {
-    expect(decisions).toMatchObject({ under: "allow", env: "deny", outside: "deny", grep: "allow" });
-    expect(additional).toEqual([root, rendering]);
-  } else {
-    expect(decisions).toMatchObject({ under: "deny", env: "deny", outside: "deny" });
-    expect(additional).toEqual([rendering]);
-  }
+  expect(decisions).toMatchObject({ under: "allow", env: "deny", outside: "deny", grep: "allow" });
+  expect(additional).toEqual([root, rendering]);
 });
 
-// 146 §9.2: the scorer corrects its file with Edit in the self-check step; Edit on any other path is refused.
-test("a classify task's Write|Edit hook allows its own file and refuses another path", async () => {
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-classify-"))); dirs.push(directory);
+// 156: in-conversation scoring may edit its scores file, never an unrelated path.
+test("a curate conversation's Write|Edit hook confines scoring writes to its workspace file", async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-scoring-"))); dirs.push(directory);
   const workspaceDir = join(directory, "workspaces", "run"); mkdirSync(workspaceDir, { recursive: true });
-  const file = join(workspaceDir, "classify-1.md"), other = join(directory, "other.md");
+  const file = join(workspaceDir, "scores.md"), other = join(directory, "other.md");
   writeFileSync(file, "K1 50\n"); writeFileSync(other, "x\n");
   const decisions: Record<string, string> = {};
   const fakeQuery = ((request: { options: Record<string, any> }) => {
@@ -1815,13 +1809,13 @@ test("a classify task's Write|Edit hook allows its own file and refuses another 
     stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
     return stream;
   }) as any;
-  const task = { kind: "dreaming", task: "classify", text: "material", prompt: "instructions", tools: [], workspace: { dir: workspaceDir, read: [file], write: [file], roots: [] },
+  const task = { kind: "dreaming", task: "curate", text: "material", prompt: "instructions", tools: [], workspace: { dir: workspaceDir, read: [file], write: [file], roots: [] },
     acknowledgeRequest: vi.fn(), passEnd: vi.fn(() => undefined), reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
   expect((await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0)).outcome).toBe("success");
   expect(decisions).toEqual({ edit: "allow", write: "allow", other: "deny" });
 });
 
-test.each(["write", "verify-noting", "curate", "verify", "classify"] as const)(
+test.each(["write", "verify-noting", "notes", "curate"] as const)(
   "workspace %s launches with fail-closed Bash, read-only renderings and a transcript under its real cwd", async stage => {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-bash-"))); dirs.push(directory);
     const cwd = join(directory, "workspaces", "run"), home = join(directory, "home");
@@ -1829,7 +1823,7 @@ test.each(["write", "verify-noting", "curate", "verify", "classify"] as const)(
     const database = join(directory, "database"), agent = join(directory, "custom-pi-agent");
     for (const path of [cwd, home, root, database, agent]) mkdirSync(path, { recursive: true });
     const noting = stage === "write" || stage === "verify-noting";
-    const roots = !noting && stage !== "classify" ? [root] : [];
+    const roots = !noting ? [root] : [];
     const privateDirectories = [join(home, ".trace-memory"), join(home, ".pi", "agent"), database, agent];
     let spill: ((text: string) => string) | undefined;
     let snapshot = "";
@@ -1838,7 +1832,7 @@ test.each(["write", "verify-noting", "curate", "verify", "classify"] as const)(
       const options = request.options!;
       const stream = (async function* () {
         expect(options.cwd).toBe(cwd);
-        expect(options.tools).toEqual(["Read", "Write", "Edit", "Bash", ...(!noting && stage !== "classify" ? ["Grep", "Glob"] : [])]);
+        expect(options.tools).toEqual(["Read", "Write", "Edit", "Bash", ...(!noting ? ["Grep", "Glob"] : [])]);
         expect(options.allowedTools).toEqual(options.tools);
         expect(options).toMatchObject({ permissionMode: "dontAsk", settingSources: [], plugins: [], strictMcpConfig: true });
         expect(options.extraArgs).toMatchObject({ restricted: null });

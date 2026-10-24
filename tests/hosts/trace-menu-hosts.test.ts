@@ -96,13 +96,6 @@ test("Claude Code Pending: compact figures and whole-number percentages, same as
   expect(rendered.pendingLines[0]).toContain("3.2k / 10k");
 });
 
-test("Dreaming's next curate pair prints as one row under the pending bar on both hosts (144 stage 5, maintainer A)", () => {
-  const row = "    next curate   merge-split";
-  const cc = renderTraceMenu(TRACE_MENU_FIXTURE, {}).pendingLines;
-  expect(cc.indexOf(row)).toBe(cc.findIndex(line => line.includes("pending")) + 1);
-  const pi = renderPiTraceMenu(TRACE_MENU_FIXTURE, 120).map(l => l.replace(/\x1b\[[0-9;]*m/g, ""));
-  expect(pi.indexOf(row)).toBe(pi.findIndex(line => line.includes("pending")) + 1);
-});
 
 test("Pi grid: every legend line lands in the same column, including rows past the grid's last row", () => {
   const lines = renderPiTraceMenu(TRACE_MENU_FIXTURE, 120).map(l => l.replace(/\x1b\[[0-9;]*m/g, ""));

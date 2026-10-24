@@ -95,11 +95,9 @@ export class CcResponseOrigins {
     if (this.failure) throw this.failure;
     const responseId = message.message.id;
     if (typeof responseId !== "string" || !responseId) throw this.fail(new Error("CC assistant response has no valid message.id"));
-    if (this.task.kind === "noting") {
-      const usage = message.message.usage;
-      const input = usage?.input_tokens === undefined ? undefined : usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
-      this.task.reportResponse?.(responseId, input !== undefined && Number.isFinite(input) ? input : undefined);
-    }
+    const usage = message.message.usage;
+    const input = usage?.input_tokens === undefined ? undefined : usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    this.task.reportResponse?.(responseId, input !== undefined && Number.isFinite(input) ? input : undefined);
     const blocks = message.message.content.filter((block): block is Extract<typeof block, { type: "tool_use" }> => block.type === "tool_use");
     if (!this.responseIds.has(responseId)) {
       this.responseIds.add(responseId);
@@ -346,8 +344,7 @@ export class CcAgentWorker {
   }
 
   async run(task: CcAgentTask, maxToolRounds: number): Promise<RunAgentResult> {
-    // Stage 4 §1.2: the classify task runs on its own triple; every other task on its phase's.
-    const settings = this.worker.phases[task.kind === "dreaming" && task.task === "classify" ? "classify" : task.kind];
+    const settings = this.worker.phases[task.kind];
     if (task.model !== undefined && task.model !== settings.model)
       throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
     if (task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
@@ -415,9 +412,7 @@ export class CcAgentWorker {
       } catch (error) { return { reason: error instanceof Error ? error.message : String(error) }; }
       return { path: file };
     };
-    // Stage 5 §3.7: curate and verify may read repositories, through Read, Grep and Glob confined to their roots (one function, one deny
-    // list); classify has no roots, so its calls are refused. Equal roots keep curate's and verify's first requests alike.
-    const searches = task.kind === "dreaming" && task.task !== "classify";
+    const searches = task.kind === "dreaming";
     const onSearch = async (raw: unknown) => {
       const event = raw as { tool_name?: unknown; tool_input?: Record<string, unknown> };
       try {

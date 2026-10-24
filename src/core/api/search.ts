@@ -5,7 +5,7 @@
 import type { KnowledgeRevision } from "../model/index.ts";
 import { knowledgeCategoryGroup, KNOWLEDGE_SCOPES, type KnowledgeScope } from "../model/index.ts";
 import type { SourceEntry, Store } from "../store/index.ts";
-import { renderEntryWhole, renderFactPreview, snippet, rawResultText, knowledgeTitle } from "../render/index.ts";
+import { renderEntryWhole, renderFactPreview, snippet, rawResultText, knowledgeTitle, knowledgeStaleLabel } from "../render/index.ts";
 import { capOutput, formatCodeResult, runCode } from "./code.ts";
 import { knowledgeReadSelection } from "./knowledge-read.ts";
 import { similarity } from "./similarity.ts";
@@ -108,7 +108,7 @@ export function searchFacade(store: Store) {
         yield { item: { layer: "knowledge", address: `trace://K${r.knowledgeId}@v${version}`, time: r.createdAt, text, title,
             id: r.knowledgeId, version, status, archiveKind: r.archiveKind ?? null, category: group, scope: r.scope, topics: r.topics,
             supports: r.supports, reason: r.reason },
-          line: () => `[K${r.knowledgeId}@v${version}] ${status === "current" ? "" : `(${status}) `}[${group}/${r.scope}] ${title} — ${snippet(text, terms)}` };
+          line: () => `[K${r.knowledgeId}@v${version}] ${status === "current" ? "" : `(${status}) `}[${group}/${r.scope}] ${title}${knowledgeStaleLabel({ staleReasons: store.knowledgeStaleReasons(r.id) })} — ${snippet(text, terms)}` };
       }
     }
 

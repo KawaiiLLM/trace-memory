@@ -8,14 +8,6 @@ import { ALL_POOLS } from "./processing.ts";
  * key `ALL_POOLS`. Rows written before 104 keep their revision `head`; rows from 104 to 126 keep the
  * one pool they named. */
 export interface LogicalTask { sessionId: number; phase: Phase; head?: number; origin?: TriggerOrigin | null }
-/** 146 ruling 13 (supersedes 144 stage 5 §3.1's four-step rotation): one pair of curate operations per run. The curate agent of a group
- * proposes, item by item, one operation of the pair or none; the project's rotation (`Store.nextCuratePair`) alternates the pairs in this order. */
-export const CURATE_PAIRS = { "update-archive": ["update", "archive"], "merge-split": ["merge", "split"] } as const;
-export type CuratePair = keyof typeof CURATE_PAIRS;
-export type CurateOperation = (typeof CURATE_PAIRS)[CuratePair][number];
-export const CURATE_ROTATION = Object.keys(CURATE_PAIRS) as CuratePair[];
-/** The pair a curate operation belongs to. */
-export const curatePairOf = (operation: CurateOperation): CuratePair => CURATE_ROTATION.find(pair => (CURATE_PAIRS[pair] as readonly string[]).includes(operation))!;
 export type ExecutionOutcome = "success" | "failure" | "cancelled" | "conflict";
 const TASK_KEY_SQL = `head INTEGER CHECK(head > 0), pool TEXT CHECK(pool IS NULL OR phase = 'dreaming' AND head IS NULL)`;
 export const TASK_EXECUTIONS_TABLE = `CREATE TABLE IF NOT EXISTS task_executions (
@@ -98,10 +90,16 @@ export function beginExecution(store: Store, task: LogicalTask): string {
 /** What a passed first task leaves for the second: the files live in the first task's run body, so a restarted or
  * borrowing executor finds them with this one indexed read. */
 export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; nextTask: string; runId: number; branch: string | null; entryIds: number[]; createdAt: string;
-  /** Dreamer rows only (146 §3.4): the pair a resumed run repeats and, once a task has committed, the run's groups frozen as knowledge ids.
-   * `run` on a batch is the kept run of its file; `verifyRun` is the group's applied verify. */
+  /** Frozen incremental groups and shared prefix survive an interrupted run. */
   detail?: HandoffDetail }
-export interface HandoffDetail { pair?: CuratePair; groups?: { batches: { category: string; items: number[]; run?: number }[]; verifyRun?: number }[] }
+export interface DreamerBoundary { fact: number; revision: number; versions: Record<string, number> }
+export interface HandoffDetail {
+  groups?: { items: number[]; run?: number }[];
+  knowledge?: string;
+  notes?: string;
+  seeds?: string;
+  boundary?: DreamerBoundary;
+}
 export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"]): Handoff | null {
   const row = store.db.prepare("SELECT * FROM task_handoffs WHERE session_id = ? AND phase = ?").get(sessionId, phase);
   return row ? { sessionId, phase, nextTask: String(row.next_task), runId: Number(row.run_id), branch: row.branch === null ? null : String(row.branch),
@@ -127,8 +125,8 @@ export function linkExecutionRun(store: Store, runId: number, input: RunInput): 
   store.db.prepare("INSERT INTO execution_runs VALUES (?,?)").run(runId, input.executionId);
 }
 
-/** What a failed Dreamer task tells settlement: the task that failed, and the pair a resumed run repeats. */
-export interface TaskFailure { task: string; pair?: CuratePair }
+/** The stage at which an execution failed. */
+export interface TaskFailure { task: string }
 
 /** Caller owns the terminal decision.
  * Dreamer calls it alongside completeDreaming in the final-check transaction, not at a write. */
@@ -142,9 +140,9 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
       throw new Error("Terminal run must belong to the execution");
     // `conflict` is the retired Dreamer exception: only old rows carry it, and nothing settles a new run that way.
     if (outcome === "conflict") throw new Error("Conflict settlement is retired");
-    // 144 stage 4 §3.2: a Dreamer run is complete when its last run is a classify pass (or the no-work classify run) and no
-    // hand-off remains for the session.
-    const dreamerDone = () => JSON.parse(run!.response ?? "{}").task === "classify" && !store.handoff(Number(row.session_id), "dreaming");
+    // 156: only the final atomic group commit writes `finished`, after both curate and scoring.
+    // Completion also requires that no saved group hand-off remains.
+    const dreamerDone = () => !!JSON.parse(run!.response ?? "{}").finished && !store.handoff(Number(row.session_id), "dreaming");
     if (outcome === "success" && (run.outcome !== "success" || (row.phase === "dreaming" && !dreamerDone())))
       throw new Error("Execution success requires established business completion");
     const now = new Date().toISOString();
@@ -184,6 +182,5 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
  * count and the failure streak are not touched here. */
 function keepDreamerRetry(store: Store, sessionId: number, runId: number, failure: TaskFailure | undefined): void {
   const handoff = store.handoff(sessionId, "dreaming");
-  const detail = { ...handoff?.detail, ...(handoff?.detail?.pair || !failure?.pair ? {} : { pair: failure.pair }) };
-  writeHandoff(store, { sessionId, phase: "dreaming", nextTask: handoff?.nextTask ?? failure?.task ?? "curate", runId: handoff?.runId ?? runId, branch: null, entryIds: [], detail });
+  writeHandoff(store, { sessionId, phase: "dreaming", nextTask: handoff?.nextTask ?? failure?.task ?? "notes", runId: handoff?.runId ?? runId, branch: null, entryIds: [], detail: handoff?.detail });
 }

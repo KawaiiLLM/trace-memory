@@ -139,7 +139,6 @@ try {
   dreamer.provider(async conversation => {
     assert.ok(/^# (Dreamer|Classifying)/.test(conversation.systemPrompt ?? ""));
     assert.ok(!conversation.tools?.some(t => t.name === "note" || t.name === "memory"));
-    // The first run of a project performs the rotation's first pair, update+archive; verify confirms it and its pass applies it.
     return dreamerFiles(conversation, { curate: block(`update ${heading}`, { reason: "Smoke tidy" }, "Remember the choice, tidied.") }) ?? reply("Done");
   });
   await dreamer.turn(); await dreamer.drain();
@@ -149,10 +148,10 @@ try {
   assert.equal(composition.bodyHash.length, 64);
   assert.ok(composition.raw > 0, "installed compaction carries assembly-time Raw estimates");
   const runs = store.listRuns(1).filter(run => run.kind === "dreaming");
-  assert.deepEqual(runs.map(run => [JSON.parse(run.response!).task, run.outcome]), [["curate", "success"], ["verify", "success"], ["classify", "success"]]);
-  assert.equal(runs[0]!.mode, "subagent");
-  assert.deepEqual(store.listCommitsByRun(runs[0]!.id), []); // curate applies nothing: its batch is a kept proposal
-  const archive = store.listCommitsByRun(runs[1]!.id)[0]!; // verify's pass applied the confirmed update
+  assert.ok(runs.every(run => run.outcome === "success"));
+  const group = runs.find(run => JSON.parse(run.response!).task === "group")!;
+  assert.equal(group.mode, "subagent");
+  const archive = store.listCommitsByRun(group.id)[0]!;
   assert.equal(archive.actorRole, "dreaming");
   assert.deepEqual(store.listFactsByRun(runs[0]!.id), []);
   assert.deepEqual(archive.supports, [facts.facts[0]!.id]);
@@ -171,7 +170,7 @@ try {
   await dreamer.commands.get("trace").handler("", dreamer.ctx);
   assert.ok(dreamer.notices.at(-1)!.includes("Compaction: bounded entry views"));
   assert.equal(dreamer.requests.length, requestsAfterRecovery, "reading the persisted recovery warning starts no worker");
-  console.log("Dreamer smoke passed: per-entry native child, curate update kept, verify applied, coverage, persisted custom carrier and read-only status.");
+  console.log("Dreamer smoke passed: native notes then curate/scoring in one child, atomic update/scores/coverage, persisted custom carrier and read-only status.");
 } finally { await dreamer.dispose(); }
 
 // 22b: the long-history regression, on the same entry the case above used — the installed one under

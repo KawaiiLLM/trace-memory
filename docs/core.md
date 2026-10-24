@@ -23,10 +23,10 @@ Ordinary reads use host-native limits; offset/limit continuations use the origin
 
 ## Propagation data (154)
 
-The store accepts fact objects and causal annotations now; Noter and Dreamer workspace formats and prompts remain unchanged until 155/156.
+The store retains fact objects and causal annotations from 154. The Noter (155) and incremental Dreamer (156) now consume this metadata through their current workspace formats.
 
 - **Fact objects:** optional names must occur case-insensitively in the body, not merely the title. Core trims names, removes case-insensitive duplicates while keeping the first spelling, and stores the authored list in `facts.objects`. `fact_objects(fact_id, name, object_key)` and its `(object_key, fact_id)` index serve `factsMentioningObject(name)` without scanning bodies. Old facts have no objects record and are not backfilled.
-- **Relations:** `caused_by` accepts at most two existing fact targets and renders through the same relation renderer as `support` and `negate`. Causation is an annotation, never a trigger or an applicability rule. `support` remains accepted for the current writers; its removal from new Noter output belongs to 155.
+- **Relations:** `caused_by` accepts at most two existing fact targets and renders through the same relation renderer as `support` and `negate`. Causation is an annotation, never a trigger or an applicability rule. Historical/manual writers retain `support`; new Noter output uses `caused_by` instead (155).
 - **Files:** each Store operation requires its own `files` property, including every split child. An array contains opaque code-file paths; `#` has no special meaning. JSON `null` means explicitly no code files; SQL `NULL` means no mapping record. A maintenance writer may explicitly pass `undefined` only when copying an unmapped parent. Omission is refused, and a create cannot pass `undefined`. Duplicate paths are removed exactly, without interpreting or resolving them.
 - **Status:** `knowledge_file_verifications(revision_id, file, verified_commit, verified_at)` stores code-authored verification for a linked path. `setKnowledgeFileVerification`, `clearKnowledgeFileVerification` and `knowledgeFileVerifications` mutate/read it without a version. An update or archive whose explicit mapping equals its parent's copies verification; a different mapping, merge, split or create starts unverified.
 - **Staleness:** `knowledge_stale_reasons(revision_id, reason, detail)` represents the flag by one or more reasons. Supported reasons are `negated_fact`, `file_changed`, `unresolved_check`, `unverified_file` and `missing_grounds`. `setKnowledgeStale` adds a reason, `clearKnowledgeStale` removes one exact reason/detail or all reasons, and `knowledgeStaleReasons` reads them. The final Noter transaction applies stage-4 flags as `unresolved_check`; no automatic scanner is introduced. Status changes affect neither applicability, rewind, scores nor version history.
@@ -41,12 +41,11 @@ Current writers author or inherit file mappings as follows:
 | Noter workspace create | Required explicit `files:` list or `None`; resolve relative paths from the session root and require existence |
 | Noter workspace update | Required explicit `files:` list or `None`, with the same path validation; no inheritance |
 | Noter concurrent update converted to create | Keep explicit paths or `null`; an unmapped base becomes `null` on the new identity |
-| Dreamer curate/verify update/archive | Copy the exact base's mapping, including no record |
-| Dreamer merge | Copy the primary parent's mapping; never union mappings implicitly |
-| Dreamer split primary | Copy its parent's mapping |
-| Dreamer split children | `null` per new identity |
+| Routine Dreamer keep/update/archive/merge/split | Every reviewed item explicitly declares current files or `None`; split children declare their own files |
+| Metadata-only Dreamer keep | Changed title or files creates an ordinary immutable update with the unchanged body and supports |
+| Trusted lower-level maintenance | Historical exact-parent copy rules remain; the routine grouped file contract does not infer mappings |
 
-Dreamer proposal reload restores an explicit `undefined` property lost in JSON, so an unmapped-parent copy remains explicit through the existing curate/verify handoff. Metadata-only maintenance uses an ordinary update with the parent's body and empty Dreamer supports; existing support inheritance copies the parent's facts. The pre-144 deployment revival runs before this migration and remains historical unmapped data; its versions are included in the FTS backfill.
+Routine Dreamer resolves files to absolute paths under the project's allowed roots. Code, never the model, records the repository HEAD captured at curate start for every resulting linked file. Verification metadata is not part of the knowledge body. Missing mappings alone do not flag historical knowledge.
 
 The migration adds only metadata columns/tables and the FTS index, except for rebuilding the existing fact-relation CHECK to admit `caused_by`. It preserves relation rows and indexes, and runs inside Store's schema transaction and foreign-key check. Production deployment still requires an SQLite-backup-API backup and stopped executors; measuring a disposable production copy is not a deployment migration.
 
@@ -103,24 +102,17 @@ Noting uses the incremental pending count, stopping at its trigger. Dreaming ret
 
 ## Dreamer execution
 
-Dreaming (144, stage 4) maintains the quality and readability of the knowledge a session sees. It no longer keeps
-knowledge inside a budget: nothing is archived to make it fit, and the pool budgets decide no trigger, success or
-failure. One run is one admission, one claim and one execution of three tasks, in order, each through `runAgent`:
-**curate**, **verify** and **classify**. Every task delivers a file that `check` verifies; the hosts' follow-up loop
-and the tools are shared with the Noter's workspace files (`src/core/workspace/`).
+Routine Dreaming (156) maintains visible project/global knowledge for quality and readability. Session knowledge is excluded, including from its trigger count. Nothing is archived to fit an injection budget. One execution owns the database-wide Dreamer claim, one repository-notes task and bounded groups whose curate and scoring stages share a conversation.
 
-**Trigger and coverage.** The pool identities are `global`, `project:<id>` and `session:<id>`. A version is *covered*
-when `knowledge_processed` holds `(pool, revision)` for the pool that owns it, written by a passed curate or verify
-pass (never on failure) for the versions its batches showed and wrote. At every main-session entry end (above) a run is
-due when `Store.dreamingDue` says so: a hand-off row asks for a retry or resume, or `Store.noterOperations` reaches
-`dreaming.triggerOperations` (30 by default). That count is the number of Noter `create` and `update` revisions that no
-covered revision of their pool hides, each revision once, reached by walking back from the live items (the walk goes on
-past a Noter revision, so a second update of one item counts again); manual and Dreamer revisions never count, so the
-Dreamer cannot retrigger itself. A failure resets no count and sets no floor. The footer's changed count is the exact
-number (`Store.noterOperations`), and the `/trace` Dreaming row shows it against the trigger as `n / 30 Noter ops`. One database-wide
-Dreamer seat remains (the live claim). The claim lease outlives the execution backstop; a stale or lost claim cannot
-commit, and cancellation closes every tool binding and workspace of the task at once (the cancellation fence), so a
-late write or pass end changes nothing.
+**Trigger and coverage.** A hand-off makes a run due immediately; otherwise `dreaming.triggerOperations` defaults to 30 uncovered Noter create/update revisions reachable from live project/global items. Each revision counts once, including successive updates of one identity. Manual and Dreamer revisions do not count. Successful group publication writes exact per-pool coverage for reviewed versions and its outputs; stale/refused inputs remain pending. Cancellation fences tools and workspaces; a stale or lost claim cannot publish.
+
+**Incremental selection.** The boundary is the last successful Dreamer run for the project. Seeds include new project Noter fact titles/objects, changed knowledge with a sentence diff from its last-run version, and linked files changed against their verified commits. Each seed adds itself when live, then up to `dreaming.candidatesPerSeed` ranked object matches and the same number of ranked text matches. The default 10 is a dispatcher proposal, not a maintainer-set cap. Every flagged item is included without that cap; there is no total candidate limit. Candidates are deduplicated in seed order, keeping adjacent matches together, then split by `dreaming.groupItems` (default/max 50). `dreaming.parallelGroups` defaults to, and cannot exceed, five.
+
+Successful pre-156 runs have no explicit watermark: their first recorded task time and exact covered versions initialize it, preserving work published during that run as new seeds. Old uncommitted proposals are replaced with incremental groups, never replayed as verify/classify tasks.
+
+A newly visible current item, or a different current version, is a knowledge seed even when its revision id is older than the saved watermark.
+
+**Source flags.** Noter publication flags currently directly supported knowledge when it negates a fact, flags newly linked unverified files, and retains the actual unresolved-check reason. Incremental scanning flags changed linked files. Agent-facing knowledge headings show `可能过时` and stored reasons, including injection, retrieval, reads and group histories. Legacy unmapped knowledge is not stale merely because it has no file record.
 
 ### Current revisions and write bases
 
@@ -150,8 +142,8 @@ historical reads do not make stale revisions writable.
 ### Operations and supports
 
 N and manual writers may update a visible current tagged base; only the Dreamer may merge or split.
-The Dreamer's files may also archive and create. Manual Knowledge writes expose
-fact-backed create/update/archive; the retired Consolidation stage historically exposed only create.
+The Dreamer's files may also archive, but never create a standalone identity. A split may create its explicit children.
+Manual knowledge writes expose fact-backed create/update/archive; retired Consolidation historically exposed only create.
 
 An update accepts exactly one body form (135):
 - **Full text:** `text` is the complete replacement; category, scope and topics remain required.
@@ -195,59 +187,23 @@ schema migration in parent-before-child order; an all-empty ancestry remains emp
 
 ### Tasks
 
-**curate** runs one conversation for each **group**: the pool's live items are split into groups of at most 100 items
-(`formGroups`, `src/core/dreaming/curate.ts`: largest category first, each category whole into the first group with room
-by item count and by the model's input allowance, a category cut only when it fits no empty group), frozen as knowledge
-ids in the hand-off (`detail.groups`). A group's first message is its prefix (every item whole, by category) and tells the
-model to call `check`, whose first result lists the group's **batches**, at most 20 items of one category each, with one
-file per batch, and carries the task's instructions (`prompts/tasks/curate-<pair>.md`, priced in the capacity check). Groups
-curate and verify side by side; each group's verify follows its own curate, and classify follows all groups. A group's
-failure does not stop its siblings. A run performs **one pair of operations** (146 ruling 13), alternating per project `update`+`archive` and `merge`+`split`
-(`Store.nextCuratePair`, derived from the newest finished run that advanced it; a project with none starts at `update-archive`; the hand-off's `detail.pair`
-repeats a failed run's pair on resume). The curate agent of a group decides item by item which operation of the pair to propose, or none, so proposals never conflict,
-and checks each item against both operations' smell lists; verify is the same for both pairs. The agent writes the batch files in order, one block per item, of the run's two operations only (never `create`), and stops
-once: the stop hook runs one final check over every file (a file never written fails it) and allows one repair. When the
-conversation ends, whatever the outcome but a cancellation, each file that passes is **kept** in its run record as a
-proposal and recorded as the batch's `run`; a resume does only the batches without one. A batch may act on any live item of
-the session's pools. Nothing is applied before verify passes. A merge names its primary, which keeps its identity; a split keeps the named
-item as its primary part. An archive is `invalid` or `inadmissible` with a statement. Files that fail the check
-twice fail the group's curate. It reads the repositories of the session's directories like verify.
+**Repository notes.** One task explores the allowed project repositories before any group starts. It receives the Dreamer system prompt and the knowledge-only compact prefix. It writes `notes.md`; code rejects notes over `dreaming.notesTokens` (default/max 10,000). Every group receives the byte-identical system → knowledge → notes prefix. No `CONTEXT.md`, facts or Raw block is injected into it.
 
-**verify** gives every proposal one verdict, in a second conversation with the same first request (so it reads the
-cache curate wrote). Its change file numbers each proposal with its current and proposed text (a stale base is shown);
-its file holds `## confirm <n>`, `## edit <n> <op> <K@v>` (same operation and target; body, title, category, scope,
-topics and supports of what the change produces; omitted fields keep the proposal's) or `## revert <n>`. Its pass applies
-the confirmed and edited operations in change order in one transaction: a stale base or an operation over the caps in
-force now is refused for that operation and left for the next run. It makes no model call when curate proposed nothing,
-and it writes coverage.
+**Curate.** Each group receives `group.md` with a contents list, complete history, every version's direct facts with titles, linked files, verification and stale reasons. A pre-made `decisions.md` requires one checklist per item: `title`, `accuracy`, `grounds`, `norms`, `evidence`, `files`, `decision`, `reason`. Accuracy is `ok`, `unverified`, `outdated: <why>` or `wrong: <why>`. Files must be explicit, including `None`; relative paths resolve under project roots. Evidence accepts Trace Memory addresses, repository paths and paths pinned to real commits. All decisions are keep/update/archive/merge/split or the absorbed parent's merge destination. One `changes.md` holds the operations; no target or absorbed parent may cross the group boundary. Split children explicitly declare supports and files.
 
-**classify** scores items 1 to 100 by what forgetting them would cost, in passes of at most 100 items, each in a fresh
-conversation; the passes run side by side under one deadline. A pass is two steps: its file passes the check, the stop hook
-sends the self-check message, and the file is applied once it passes again after the model's Edit. The pass whose commit
-finds every other pass applied finishes the run. The set is fixed when the task starts: all items up to 100, above that the unscored and changed ones with
-up to 30 scored items as anchors. A score is stored beside the version chain, for the version the scorer was shown, and
-an item keeps its score when it changes. It makes no model call when there is nothing to score.
+**Rulings and missing grounds.** Missing verification grounds produce a persistent `missing_grounds` stale flag rather than reverting knowledge. If code disagrees with a ruling, preserve the ruling and add one sentence describing the current implementation. Duplicate content is merged, not archived. Keep may change title/files through an ordinary metadata-only revision; no silent side mutation replaces history.
+
+**Scoring.** Once curate passes its stop check, the stop hook advances to scoring inside that same conversation. `scoring.md` includes prospective changed/new or unscored results and up to 30 old scored anchors, even in a small pool; unchanged scored candidates can still anchor the scale. The model writes `scores.md`, one integer 1–100 per target; split children use local labels until publication allocates identities. Scores are otherwise absent from curate input. The first passing score stop requests the retained self-check in that conversation; only the passing self-check permits publication. An empty target set needs no score review.
+
+**Budgets.** Every check reports model-response steps and input-context growth. Several tool calls in one response count as one step. Notes default to 10 steps/10k tokens, curate to 100 steps/+200k context and scoring to 10 steps/+30k across draft and self-check. The curate defaults are dispatcher proposals from the 37-item Sonnet experiment. Step/context budgets are guidance, not hard stops. The corresponding advanced keys are `notesSteps`, `notesTokens`, `curateSteps`, `curateContextTokens`, `scoringSteps`, `scoringContextTokens`, under `dreaming`. A failed file gets one repair at each stop-check step; a second failed check at that step fails the group.
 
 ### Hand-off, retry and completion
 
-A passed task writes a hand-off row, so a restart, a stop or a failure resumes at the first task (and, for curate, the
-batches without a kept file) not done; coverage, applied batches and scores are written in the same transaction as the pass. A
-failed run leaves its hand-off, so the next entry-end check is due and resumes there: no wait for a threshold, no
-`waitFrom` floor, and the Noter-operation count is not reset. A failure counts toward switching memory off like the
-Noter's (see "Final business failure" below). Each task has the wall-clock bound `dreaming.timeoutMs`
-(1,800,000 ms by default, no tool-round ceiling), clamped by the execution backstop; expiry fences the task and fails it.
-A run completes when classify has finished and no hand-off remains: the final classify pass (or the no-work classify) commits
-`finished: { operation, advanced }` into its run body in the same transaction that removes the hand-off, and settlement
-never reopens a run that carries it (a later failure is recorded and nothing more).
+The hand-off persists group membership, the incremental boundary, the knowledge prefix, notes and committed group run ids. Each group publishes operations, scores, file verification and coverage in one transaction after both stages pass. A failed sibling does not undo successful groups. Restart repeats curate only for uncommitted groups; there is no kept partial-batch proposal or separate verify task. Stale operations are refused individually under existing Store checks; their versions are not falsely covered.
 
-Evidence rules, titles and lengths are the Noter's (`src/core/workspace/`). Pending changes, change files and range reads
-use the same lossless sentence-first unified diff. Project relabelling creates no processing event or revision; it
-removes destination-pool coverage only for moved-in project versions, so returning versions count again.
+`dreaming.timeoutMs` remains the wall-clock safety bound, default 1,800,000 ms; a group conversation reserves two stage intervals. The execution backstop reserves bounded waves plus notes, and the claim outlives it. Expiry fences the task and fails it. A failed run is due again at the next eligible checkpoint without a threshold wait or count reset; cancellation does not count as a business failure. Only a complete run resets its failure streak.
 
-**History.** The earlier Dreamer (pool budgets, a frozen 10,000-token pending range, `memory` calls with skips and
-numbered refusals, an end review, a budget-checked success and a three-failure switch-off) is removed; its tickets (103,
-104, 125, 126, 127, 131, 143) and the old [external-conflict design](dreamer-external-conflict.md) with its
-[verification record](dreamer-external-conflict-verification.md) are historical evidence only.
+The final group transaction removes the hand-off and records `finished.boundary` in its run body. Settlement never reopens that completed run. The old operation rotation, category batches, verify verdict files and independently scheduled classify passes are removed by 156. Historical pool-budget and external-conflict designs remain historical evidence only.
 
 ## Runtime and verification
 
@@ -1132,7 +1088,7 @@ selection query. Manual catchup drains its frozen Noting boundary. Ticket 68 che
 at start and after every successful catchup-owned phase completion; C and D use ordinary eligibility.
 Ticket 86 immediately retries a failed Noting step in the same phase and boundary, without checking
 other phases. A failed Dreaming run is not retried inside the drain (146, ruling 10: it retries at the next entry-end check): it ends the drain for the same session and path, whoever started the run, and counts once toward the Dreamer's streak. Both phases use the ordinary three-consecutive-failures rule; off or cancellation also ends the drain.
-`dream({ manual: true })` (146 §18) starts a Dreaming run now: it skips only the due test, and keeps enrollment, the database-wide seat, the claim and the lease. It resumes a hand-off with the hand-off's pair, writes coverage, advances the rotation and counts toward the streak like any run. A refusal creates no execution: `dropped` carries its reason (memory off, another session holds the seat, a Dreamer already runs for this session) and `empty` means there is nothing to curate and no hand-off.
+`dream({ manual: true })` starts incremental Dreaming now, skipping only the due threshold. Enrollment, seat, claim, current-base and lease checks remain. It resumes uncommitted groups with the saved prefix/notes, writes coverage and counts toward the ordinary failure streak. Refusal creates no execution; `empty` means no visible project/global candidates and no hand-off.
 It no longer freezes a fact set for forced below-threshold Consolidation. The *exact* target is what a host that re-admits a frozen batch names: `exactEntryIds`
 (27d's `entryIds`) and `exactFactIds` (29e). Under either, the freeze selects exactly those pending
 members, trims optional material to fit them — the Noter's history, the Consolidator's knowledge

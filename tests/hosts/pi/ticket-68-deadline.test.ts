@@ -33,13 +33,13 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
     expect(JSON.parse(failed.response!).problems.join(" ")).toMatch(/timeout|deadline|300 ms/i);
     expect(signal?.aborted).toBe(true);
     expect(store.getClaim(1, "dreaming")).toBeNull();
-    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "curate" }); // the next run starts again at curate
+    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "notes" });
     release(); await h.drain();
     expect(revisions()).toBe(before); // the late write changed nothing
     // The next run is admitted and completes.
     h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
     await h.turn(); await h.drain();
-    expect(store.listRuns(1).filter(run => run.kind === "dreaming").map(run => run.outcome).slice(-3)).toEqual(["success", "success", "success"]);
+    expect(store.noterOperations(store.knowledgePath(1))).toBe(0);
     expect(store.getClaim(1, "dreaming")).toBeNull();
     expect(store.enabled(1)).toBe(true);
   } finally { release(); await h.dispose(); }

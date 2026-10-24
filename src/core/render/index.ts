@@ -567,12 +567,16 @@ export function knowledgeTitle(r: Pick<KnowledgeRevision, "title" | "text">, tit
   return r.title ?? `(no title) ${knowledgeOpening(r.text, titleWords)}…`;
 }
 
-export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`, showSize = false,
+export const knowledgeStaleLabel = (value: Pick<KnowledgeWithRevision, "staleReasons">): string => value.staleReasons?.length
+  ? ` [可能过时: ${value.staleReasons.map(reason => `${reason.reason}: ${reason.detail}`).join("; ")}]` : "";
+
+export function renderKnowledge(value: KnowledgeWithRevision, address = `K${value.knowledge.id}@${value.revision.id}`, showSize = false,
   limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
+  const { knowledge, revision: r } = value;
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
   const size = showSize ? ` (${words(r.text)}/${limits.bodyWords} units, limit ${wordLimit(limits.bodyWords)})` : "";
   const tags = `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size}`;
-  return `${tags} ${r.title ?? "(no title)"}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  return `${tags} ${r.title ?? "(no title)"}${knowledgeStaleLabel(value)}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 /** Canonical headings contain an address and category/scope; price without re-rendering metadata. */
@@ -613,7 +617,7 @@ export function renderKnowledgePreview(value: KnowledgeWithRevision, status: str
     ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
     ...(fields.has("links") ? [`parents: ${parents.map(shown).join(", ") || "none"}`, `children: ${children.map(shown).join(", ") || "none"}`] : []),
   ];
-  return renderPreview(`[${shown(r)}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] `, r.text,
+  return renderPreview(`[${shown(r)}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${knowledgeStaleLabel(value)} `, r.text,
     suffix.length ? ` · ${suffix.join(" · ")}` : "", cap, fields.has("text"));
 }
 
@@ -627,11 +631,11 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
     const whole = [renderKnowledge(value, shown(value.revision), false, limits),
       ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
       `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
-    const prefix = `[${shown(value.revision)}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] ${value.revision.title ?? "(no title)"}\n`;
+    const prefix = `[${shown(value.revision)}] [${knowledgeCategoryGroup(value.revision.category)}/${value.revision.scope}] ${value.revision.title ?? "(no title)"}${knowledgeStaleLabel(value)}\n`;
     return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
   }
   const r = value.revision, label = versionLabel ? ` [${versionLabel}]` : "", title = fields.has("text") ? r.title ?? "(no title)" : knowledgeTitle(r, limits.titleWords);
-  const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${title}\n`;
+  const prefix = `[${shown(r)}]${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${title}${knowledgeStaleLabel(value)}\n`;
   const suffix = [
     ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports, supportTitles)}${fields.has("topics") ? topicList(r.topics) : ""}`] : []),
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
@@ -640,7 +644,7 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, parents: Know
     ...(fields.has("links") ? [`\n  parents: ${addresses(parents)}`, `\n  children: ${addresses(children)}`] : []),
     ...(historyLine ? [`\n${selectedCommitLine(r, fields, versionLabel ?? (address ? `K${r.knowledgeId}` : undefined))}`] : []),
   ].join("");
-  if (!fields.has("text")) return `${address ? `[K${value.knowledge.id}]` : `[${shown(r)}]`}${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${title}` + suffix;
+  if (!fields.has("text")) return `${address ? `[K${value.knowledge.id}]` : `[${shown(r)}]`}${label} [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${title}${knowledgeStaleLabel(value)}` + suffix;
   const rendered = renderSemantic(prefix, r.text, suffix, cap);
   // A content cap may omit part of the body. Such a preview is never a version handle.
   return !address || rendered === prefix + r.text + suffix ? rendered
@@ -876,9 +880,10 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
 }
 
 /** One title-only line (144 §7.4); an untitled item's bounded opening is explicitly marked (153). */
-export function renderKnowledgeTitle({ knowledge, revision: r }: KnowledgeWithRevision, address = `K${knowledge.id}@${r.id}`,
+export function renderKnowledgeTitle(value: KnowledgeWithRevision, address = `K${value.knowledge.id}@${value.revision.id}`,
   limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
-  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.title == null ? `(opening only) ${knowledgeOpening(r.text, limits.titleWords)}…` : `(title only) ${r.title}`}`;
+  const { knowledge, revision: r } = value;
+  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.title == null ? `(opening only) ${knowledgeOpening(r.text, limits.titleWords)}…` : `(title only) ${r.title}`}${knowledgeStaleLabel(value)}`;
 }
 
 export interface SelectedKnowledge extends BudgetedKnowledge {

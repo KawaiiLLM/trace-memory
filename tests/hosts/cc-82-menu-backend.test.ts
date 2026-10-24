@@ -24,46 +24,30 @@ const setup = () => {
     contextWindows: { "claude-sonnet-5": 200_000, "claude-opus-5-5": 250_000 } };
   const input = { dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), worker,
     notingModel: "claude-sonnet-5", notingThinking: "high", consolidationModel: "claude-sonnet-5",
-    consolidationThinking: "high", "dreaming.model": "claude-opus-5-5", "dreaming.thinking": "high", "dreaming.classifyModel": "claude-sonnet-5", closedSessionScope: "project" as const };
-  const text = ` {\n  "dbPath": ${JSON.stringify(input.dbPath)},\n  "stateDir": ${JSON.stringify(input.stateDir)},\n  "custom": { "unrelated": [1, 2] },\n  "worker": {\n    "claudeExecutable": "/usr/bin/false",\n    "claudeVersion": "2.1.280",\n    "cwd": ${JSON.stringify(dir)},\n    "contextWindows": {\n      "claude-sonnet-5": 200000,\n      "claude-opus-5-5": 250000\n    }\n  },\n  "notingModel": "claude-sonnet-5",\n  "notingThinking": "high",\n  "consolidationModel": "claude-sonnet-5",\n  "consolidationThinking": "high",\n  "dreaming.model": "claude-opus-5-5",\n  "dreaming.thinking": "high",\n  "dreaming.classifyModel": "claude-sonnet-5",\n  "closedSessionScope": "project"\n}\n`;
+    consolidationThinking: "high", "dreaming.model": "claude-sonnet-5", "dreaming.thinking": "high", closedSessionScope: "project" as const };
+  const text = ` {\n  "dbPath": ${JSON.stringify(input.dbPath)},\n  "stateDir": ${JSON.stringify(input.stateDir)},\n  "custom": { "unrelated": [1, 2] },\n  "worker": {\n    "claudeExecutable": "/usr/bin/false",\n    "claudeVersion": "2.1.280",\n    "cwd": ${JSON.stringify(dir)},\n    "contextWindows": {\n      "claude-sonnet-5": 200000,\n      "claude-opus-5-5": 250000\n    }\n  },\n  "notingModel": "claude-sonnet-5",\n  "notingThinking": "high",\n  "consolidationModel": "claude-sonnet-5",\n  "consolidationThinking": "high",\n  "dreaming.model": "claude-sonnet-5",\n  "dreaming.thinking": "high",\n  "closedSessionScope": "project"\n}\n`;
   writeFileSync(path, text);
   const config = resolveCcHostConfig(input);
   return { dir, path, session, text, config };
 };
 
-test("the classify rows show and save the two classify keys on the existing settings route", async () => {
-  const f = setup();
-  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.session,
-    transcript_path: join(f.dir, "native.jsonl"), source: "startup" }, null);
-  const menu = readCcMenu(f.config, f.session, f.config);
-  expect(menu.settings.workers.map(w => w.phase)).toEqual(["Noter", "Dreamer", "Classifier"]);
-  expect(menu.settings.workers[2]).toMatchObject({ model: "claude-sonnet-5", thinking: "high" });
-  expect(buildSettingsChoices(menu.settings).map(row => row.id)).toEqual(expect.arrayContaining(["classify.model", "classify.thinking"]));
-  const model = editedCcConfig(f.text, "classify.model", "claude-opus-5-5");
-  expect(JSON.parse(model)["dreaming.classifyModel"]).toBe("claude-opus-5-5");
-  const thinking = editedCcConfig(model, "classify.thinking", "low");
-  const resolved = resolveCcHostConfig(JSON.parse(thinking)).worker!.phases;
-  expect(resolved.classify).toMatchObject({ model: "claude-opus-5-5", thinking: "low" });
-  expect(resolved.dreaming).toMatchObject({ model: "claude-opus-5-5", thinking: "high" }); // the Dreamer's rows are untouched
-  expect(() => editedCcConfig(f.text, "classify.thinking", "inherit")).toThrow("thinking must be");
-});
 
  test("settings edit preserves unrelated formatting and enforces model capacity and CC-only choices", () => {
   const f = setup();
   const thinking = editedCcConfig(f.text, "noting.thinking", "medium");
   expect(thinking).toBe(f.text.replace('"notingThinking": "high"', '"notingThinking": "medium"'));
   const offered = Object.keys(f.config.worker!.contextWindows);
-  for (const id of ["noting.model", "dreaming.model"] as const) for (const model of offered) {
+  for (const id of ["noting.model", "dreaming.model"] as const) for (const model of offered.filter(model => id !== "dreaming.model" || /sonnet/i.test(model))) {
     const selected = resolveCcHostConfig(JSON.parse(editedCcConfig(f.text, id, model)));
     expect(selected.worker!.phases[id === "noting.model" ? "noting" : "dreaming"].model).toBe(model);
     expect(selected.worker!.contextWindows).toEqual(f.config.worker!.contextWindows);
   }
-  const added = editedCcConfig(f.text, "dreaming.model", "claude-new", "180000");
+  const added = editedCcConfig(f.text, "dreaming.model", "claude-sonnet-new", "180000");
   expect(added).toContain('"custom": { "unrelated": [1, 2] }');
   expect(added).toContain('"claude-opus-5-5": 250000');
-  expect(added).toContain('"claude-new": 180000');
-  expect(resolveCcHostConfig(JSON.parse(added)).worker!.contextWindows["claude-new"]).toBe(180000);
-  expect(resolveCcHostConfig(JSON.parse(added)).worker!.phases.dreaming.model).toBe("claude-new");
+  expect(added).toContain('"claude-sonnet-new": 180000');
+  expect(resolveCcHostConfig(JSON.parse(added)).worker!.contextWindows["claude-sonnet-new"]).toBe(180000);
+  expect(resolveCcHostConfig(JSON.parse(added)).worker!.phases.dreaming.model).toBe("claude-sonnet-new");
   expect(added).toContain('"claudeExecutable": "/usr/bin/false",\n    "claudeVersion"');
   expect(() => editedCcConfig(f.text, "dreaming.model", "claude-new")).toThrow("requires a context capacity");
   expect(() => editedCcConfig(f.text, "noting.thinking", "inherit")).toThrow("thinking must be");

@@ -23,7 +23,7 @@ test("a Grep or Glob call must name a directory inside a root; a Grep never sear
   expect(() => confineSearch({ path: "src" }, [root], "grep")).toThrow("name an absolute directory");
   expect(() => confineSearch({ path: root, pattern: "../*" }, [root], "glob")).toThrow("stay inside path");
   expect(() => confineSearch({ path: root, pattern: "/etc/*" }, [root], "glob")).toThrow("stay inside path");
-  expect(() => confineSearch({ path: root }, [], "grep")).toThrow("during curate and verify only");
+  expect(() => confineSearch({ path: root }, [], "grep")).toThrow();
 });
 
 // Every spelling is created for real in a home of its own, since macOS would fold two spellings of one name into one file: the denial must

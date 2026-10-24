@@ -87,8 +87,8 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     const dreaming = memory.dreamingPending(target);
     const spend = session ? memory.spend(session.id) : null;
     const active = effective ?? config;
-    const workers: SettingsInput["workers"] = (["noting", "dreaming", "classify"] as const).map((phase, index) => {
-      const name = (["Noter", "Dreamer", "Classifier"] as const)[index]!;
+    const workers: SettingsInput["workers"] = (["noting", "dreaming"] as const).map((phase, index) => {
+      const name = (["Noter", "Dreamer"] as const)[index]!;
       const current = effective?.worker?.phases[phase];
       const saved = config.worker?.phases[phase];
       const sources = !effective ? { model: "effective configuration unavailable", thinking: "effective configuration unavailable" }
@@ -124,8 +124,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
       header: { session: session ? `S${session.id}` : "unbound", project: project?.name ?? "unavailable", enabled,
         explicit: binding.enrollment.choice !== null },
       context: { model: "Claude Code" },
-      pending: { noting: pending("noting"), dreaming: { pending: dreamingPendingInput(dreaming.pending, null),
-        ...(session ? { next: store.nextCuratePair(session.projectId) } : {}) } },
+      pending: { noting: pending("noting"), dreaming: { pending: dreamingPendingInput(dreaming.pending, null) } },
       spend: { session: spend?.cost ?? 0, sessionUnknown: spend?.unknown ?? 0,
         noting: { runs: spend?.runs.noting ?? 0, cost: spend?.costs.noting ?? 0 },
         consolidation: { runs: spend?.runs.consolidation ?? 0, cost: spend?.costs.consolidation ?? 0 },

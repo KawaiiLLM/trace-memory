@@ -405,7 +405,7 @@ function dreamingScenarios(size: string): Sample[] {
       measure("Dreamer admission/material (rollback each sample)", () => {
         try { store.transaction(() => {
           const frozen = prepareDreaming(store, { ...target, model: "perf" } as never, memory.config, claim, target);
-          if (!frozen.groups.length || tokens(frozen.groups[0]!.text) <= 0) throw new Error("Dreamer prefix is empty");
+          if (!frozen.groups.length || tokens(frozen.knowledge) <= 0) throw new Error("Dreamer prefix is empty");
           throw rollback;
         }); } catch (error) { if (error !== rollback) throw error; }
       }, `${note}; the pool prefix, every category`),

@@ -3,6 +3,7 @@ import type { Store } from "../store/index.ts";
 import type { NotingScope } from "../workspace/index.ts";
 import { parseBlocks, type WorkspaceFile } from "../workspace/parse.ts";
 import { list } from "../workspace/plan.ts";
+import { knowledgeStaleLabel } from "../render/index.ts";
 
 function seeds(file: WorkspaceFile) {
   const blocks = parseBlocks(file).blocks.filter(block => block.op !== "none" && !block.fields.get("verdict")?.value.startsWith("reverted — "));
@@ -38,5 +39,5 @@ export function relatedKnowledge(store: Store, scope: NotingScope, files: { fact
     if (terms.length) for (const id of store.searchKnowledge(terms)) found.add(id);
   }
   return "# Related knowledge\n\n" + ([...found].map(id => visible.find(item => item.knowledge.id === id)).filter(item => item !== undefined).slice(0, cap).map(({ revision }) =>
-    `## K${revision.knowledgeId}@v${store.versionOrdinal(revision.knowledgeId, revision.id)}\ntitle: ${revision.title ?? "(untitled)"}\ncategory: ${revision.category}\nscope: ${revision.scope}\nfiles: ${revision.files === undefined ? "(not mapped)" : revision.files === null ? "None" : revision.files.join(", ")}\n\n${revision.text}`).join("\n\n") || "None") + "\n";
+    `## K${revision.knowledgeId}@v${store.versionOrdinal(revision.knowledgeId, revision.id)}${knowledgeStaleLabel({ staleReasons: store.knowledgeStaleReasons(revision.id) })}\ntitle: ${revision.title ?? "(untitled)"}\ncategory: ${revision.category}\nscope: ${revision.scope}\nfiles: ${revision.files === undefined ? "(not mapped)" : revision.files === null ? "None" : revision.files.join(", ")}\n\n${revision.text}`).join("\n\n") || "None") + "\n";
 }

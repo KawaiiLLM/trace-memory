@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "vitest";
 import { sourceSeededMemory, compacted } from "../../source-fixture.ts";
 import { fact as seedFact, knowledge as seedKnowledge, legacyKnowledge } from "../../support/seed.ts";
 import { memoryFiles } from "../../../src/core/api/files.ts";
-import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
+import { groupText } from "../../../src/core/dreaming/curate.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>;
 afterEach(() => memory?.close());
@@ -38,7 +38,7 @@ test("whole knowledge views keep authored titles and mark untitled headers witho
     injection: memory.inject(session.id),
     compaction: compacted(memory.compact(session.id, "main", path.headTurnId)),
     knowledge: memoryFiles(memory, path).read(`trace://knowledge/S${session.id}`).content,
-    dreamer: curatePrefix(memory.store, path).text,
+    dreamer: groupText(memory.store, memory.store.curateItems(path)),
   };
   for (const [name, view] of Object.entries(views)) {
     const [head, body] = header(view, withTitle.knowledgeId);

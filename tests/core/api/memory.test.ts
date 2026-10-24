@@ -7,7 +7,6 @@ import { knowledgeFile, submit, submitEmpty, verifyUnchanged } from "../../suppo
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { applyWorkspace } from "../../../src/core/workspace/index.ts";
 import { block } from "../../support/workspace.ts";
-import { pairOfText } from "../../support/dreamer.ts";
 let memory: ReturnType<typeof sourceSeededMemory>, triggerEntryId: number;
 afterEach(() => memory?.close());
 const create = { files: null, op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
@@ -42,7 +41,7 @@ const liveTokens = (knowledgeId: number) => {
 const dreamPath = () => ({ sessionId: 1, branch: "main", headTurnId: 1, triggerEntryId });
 /** A curate file applied as a Dreamer's batch would be: the Dreamer's writes are files, checked and applied by core. */
 const curate = (text: string) => {
-  const result = applyWorkspace(memory.store, { kind: "curate", pair: pairOfText(text), sessionId: 1, path: dreamPath(), file: { name: "curate.md", text } });
+  const result = applyWorkspace(memory.store, { kind: "curate", sessionId: 1, path: dreamPath(), file: { name: "curate.md", text } });
   if (!result.ok) throw new Error(result.problems.join("\n"));
   return result;
 };
@@ -330,7 +329,7 @@ test("21a 2026-09-08: merge and archive of a curate file carry their supports an
   expect(memory.store.currentCommit(1)[0]).toMatchObject({ files: null, op: "archive", archiveKind: "invalid", text: "The user withdrew the rule; nothing replaces it.",
     supports: [1], reason: "The user withdrew the rule.", category: "constraint", scope: "project" });
   // A block without a reason is a check problem, and nothing is written.
-  const bare = applyWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: 1, path: dreamPath(), file: { name: "curate.md", text: block("update K1@v3", {}, "Use pnpm") } });
+  const bare = applyWorkspace(memory.store, { kind: "curate", sessionId: 1, path: dreamPath(), file: { name: "curate.md", text: block("update K1@v3", {}, "Use pnpm") } });
   expect(bare).toMatchObject({ ok: false, problems: [expect.stringContaining("missing required field `reason`")] });
 });
 

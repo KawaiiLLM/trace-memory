@@ -119,7 +119,7 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
   expect(f.store.currentKnowledge(childPath).map(v => v.revision.id)).toEqual([merged.commit]);
   // Many-way merges are legal (2026-10-22); this one is refused because an absorbed base is the primary's own superseded version.
   const before = f.store.listKnowledgeRevisions().length;
-  const malformed = applyWorkspace(f.store, { kind: "curate", pair: "merge-split", sessionId: f.session.id, path: childPath, file: { name: "curate.md", text: block(`merge ${history(f.store, f.created.knowledgeId, merged.commit)}`,
+  const malformed = applyWorkspace(f.store, { kind: "curate", sessionId: f.session.id, path: childPath, file: { name: "curate.md", text: block(`merge ${history(f.store, f.created.knowledgeId, merged.commit)}`,
     { absorb: `${history(f.store, childOnly.knowledgeId, childOnly.commit)}, ${history(f.store, f.created.knowledgeId, f.created.commit)}`,
       supports: `F${f.rootFact}`, reason: "invalid fixture" }, "illegal three-parent merge") } });
   expect(malformed.ok ? malformed.blocks.map(entry => entry.reason).join("\n") : malformed.problems.join("\n")).toMatch(/not the latest effective applicable revision|cannot absorb itself/);
@@ -147,7 +147,7 @@ test("64b/34a: trusted Dreamer split is atomic and keeps the item as its primary
   const child = (title: string, category: string, text: string) => `\n### child\ntitle: ${title}\ncategory: ${category}\nscope: project\ntopics: first\nsupports: F${facts.facts[0]!.id}\nreason: separate independent rules\n\n${text}\n`;
   // One child with no body: the file is refused whole and nothing is written.
   const before = revisions();
-  const invalid = applyWorkspace(fstore, { kind: "curate", pair: "merge-split", sessionId: session.id, path, file: { name: "curate.md", text: block(`split ${ref}`, { reason: "separate independent rules" }, "Primary part.")
+  const invalid = applyWorkspace(fstore, { kind: "curate", sessionId: session.id, path, file: { name: "curate.md", text: block(`split ${ref}`, { reason: "separate independent rules" }, "Primary part.")
     + child("Fixture child", "constraint", "first rule") + `\n### child\ntitle: Fixture child\ncategory: goal\nscope: project\ntopics:\nsupports: F${facts.facts[0]!.id}\nreason: x\n\n` } });
   expect(invalid.ok).toBe(false);
   expect(revisions()).toBe(before);

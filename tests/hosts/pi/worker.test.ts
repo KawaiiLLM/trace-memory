@@ -55,15 +55,15 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
   } finally { await f.dispose(); }
 });
 
-test.each(["extract-facts", "check-facts", "write-knowledge", "check-knowledge", "curate", "verify", "classify"] as const)(
+test.each(["extract-facts", "check-facts", "write-knowledge", "check-knowledge", "notes", "curate"] as const)(
   "a %s worker executes Pi Bash in its workspace beside its confined tools", async stage => {
     const f = await fixture();
     try {
       const dir = join(f.h.dir, "workspace"); mkdirSync(dir);
-      const noting = stage !== "curate" && stage !== "verify" && stage !== "classify";
+      const noting = stage !== "notes" && stage !== "curate";
       const workspace = noting ? { dir, facts: join(dir, "facts.md"), knowledge: join(dir, "knowledge.md"), read: [], write: [] }
         : { dir, read: [], write: [], roots: [] };
-      const files = workspaceFileTools(f.h.dir, workspace, !noting && stage !== "classify");
+      const files = workspaceFileTools(f.h.dir, workspace, !noting);
       f.script(body => body.messages.some((message: { role: string }) => message.role === "tool")
         ? say("Bash finished.") : call("workspace-bash", "bash", { command: "printf 'workspace output\\n' > bash-result.txt; pwd" }));
       const frozen = { ...task(), kind: noting ? "noting" : "dreaming", task: stage,
@@ -78,7 +78,7 @@ test.each(["extract-facts", "check-facts", "write-knowledge", "check-knowledge",
       expect(existsSync(join(f.h.dir, "bash-result.txt"))).toBe(false);
       const last = f.sent.at(-1)!;
       expect(last.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(
-        ["read", "write", "edit", ...(!noting && stage !== "classify" ? ["grep", "find"] : []), "bash"]);
+        ["read", "write", "edit", ...(!noting ? ["grep", "find"] : []), "bash"]);
       const answer = last.messages.find((message: { role: string }) => message.role === "tool");
       expect(answer.content.trim()).toBe(realpathSync(dir));
       expect(JSON.parse(readFileSync(result.nativeLog!, "utf8").split("\n")[0]!).cwd).toBe(dir);

@@ -2,7 +2,6 @@ import { afterEach, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { curatePrefix } from "../../../src/core/dreaming/curate.ts";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { applyWorkspace } from "../../../src/core/workspace/index.ts";
 import { coverKnowledge, curateNow, curateWrite, scriptedDreamer } from "../../support/dreamer.ts";
@@ -10,7 +9,6 @@ import { block } from "../../support/workspace.ts";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
 import { declarationContext } from "../project-declaration-context.ts";
 import { archive, clearSupports, entry, knowledge, knowledgeBatch, legacyFacts, updateKnowledge } from "../../support/seed.ts";
-import { pairOfText } from "../../support/dreamer.ts";
 
 const stores: Store[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); });
@@ -183,7 +181,7 @@ test.each(["update", "archive", "split"] as const)("126 writable set: a %s base 
     : op === "archive" ? block(`archive ${ref}`, { kind: "invalid", reason: "cross pool" }, WITHDRAWN)
     : block(`split ${ref}`, { reason: "cross pool" }, "forbidden") + `\n### child\ntitle: Fixture child\ncategory: constraint\nscope: project\ntopics:\nsupports: ${supports}\nreason: cross pool\n\none\n`;
   const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(foreign.knowledgeId) };
-  const result = applyWorkspace(f.store, { kind: "curate", pair: pairOfText(text), sessionId: f.session.id, path: f.target, file: { name: "curate.md", text } });
+  const result = applyWorkspace(f.store, { kind: "curate", sessionId: f.session.id, path: f.target, file: { name: "curate.md", text } });
   // Either the file fails its check or the block is refused; in both nothing is written and the reason names the foreign version.
   const reasons = result.ok ? result.blocks.flatMap(entry => entry.status === "refused" ? [entry.reason ?? ""] : []) : result.problems;
   expect(reasons.length).toBeGreaterThan(0);
@@ -196,7 +194,7 @@ test.each(["update", "archive", "split"] as const)("126 writable set: a %s base 
 test("64c merge scope: merge parents from two of the session's pools are refused without side effects", () => {
   const f = setup(), global = f.create("global"), project = f.create("project");
   const before = { revisions: f.store.listKnowledgeRevisions(), links: f.store.listKnowledgeLinks(project.knowledgeId) };
-  const result = applyWorkspace(f.store, { kind: "curate", pair: "merge-split", sessionId: f.session.id, path: f.target, file: { name: "curate.md", text:
+  const result = applyWorkspace(f.store, { kind: "curate", sessionId: f.session.id, path: f.target, file: { name: "curate.md", text:
     block(`merge K${global.knowledgeId}@v1`, { absorb: `K${project.knowledgeId}@v1`, category: "constraint", scope: "global", reason: "cross pool" }, "forbidden merge") } });
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.problems.join(" ")).toContain("merged items share one scope");
@@ -243,8 +241,8 @@ test("67: the Dreamer's due read batches graph and processing history independen
       const start = performance.now();
       const changed = f.store.noterOperations(f.target);
       const elapsedMs = performance.now() - start;
-      expect(changed).toBe(count);
-      expect(f.store.noterOperations(f.target)).toBe(count);
+      expect(changed).toBe(count * 2 / 3);
+      expect(f.store.noterOperations(f.target)).toBe(count * 2 / 3);
       expect(graphInput).toHaveBeenCalledTimes(2); // one per read, never one per identity
       expect(graph).toHaveBeenCalledTimes(1); // the second read takes the live-set memo of the first
       prepares.push(prepare.mock.calls.length);
@@ -406,21 +404,8 @@ test("139: the curate material shows the UTC date range of the supports of the v
   expect(story.datesOf(story.ids.updated.commit)).toBe("2026-10-03"); // its own support, not merged with the earlier version's
   expect(story.datesOf(story.ids.archive.commit)).toBeUndefined(); // an archived item is not live: the curate view does not list it
   expect(story.datesOf(story.ids.bare.commit)).toBeUndefined();
-  const prefix = curatePrefix(story.f.store, story.f.target).text;
-  expect(prefix).toMatch(/\(\d+ tokens; facts 2026-10-02\.\.2026-10-05\)/);
-  expect(prefix).toMatch(/\(\d+ tokens; facts 2026-10-03\)/);
 });
 
-test("139: the dates never count toward item tokens", () => {
-  const dated = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T23:30:00.000Z"]);
-  const plain = datedStory(["now", "now", "now"]);
-  const withDates = curatePrefix(dated.f.store, dated.f.target).text, without = curatePrefix(plain.f.store, plain.f.target).text;
-  expect(without).not.toContain("facts 20");
-  expect(withDates).toContain("facts 20");
-  // The label on every item states the same cost, with or without dates.
-  const cost = (text: string) => [...text.matchAll(/\((\d+) tokens[;)]/g)].map(match => match[1]);
-  expect(cost(withDates)).toEqual(cost(without));
-});
 
 test("139: the fact dates of the whole material cost no per-item or per-fact query", () => {
   const story = datedStory(["2026-10-01T22:00:00-05:00", "2026-10-05T01:00:00.000Z", "2026-10-03T23:30:00.000Z"]);

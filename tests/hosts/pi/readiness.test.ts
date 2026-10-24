@@ -49,7 +49,7 @@ test("64c: Pi does not borrow a due closed-session Dreamer target", async () => 
       [{ sources: [{ entry, address: `T${turn.id}#E${entry.entryOrdinal}` }], actor: "user", category: "decision",
         text: "closed rule", createdAt: "now" }], [entry.id]);
     // A Noter-written item makes the closed session's Dreamer due (2026-10-22).
-    knowledge(store, { sessionId: closed.id, branch: "main", headTurnId: turn.id }, "session", "constraint", [noted.facts[0]!.id], "closed rule", { operation: { title: "Fixture title" } });
+    knowledge(store, { sessionId: closed.id, branch: "main", headTurnId: turn.id }, "project", "constraint", [noted.facts[0]!.id], "closed rule", { operation: { title: "Fixture title" } });
     store.closeSession(closed.id);
     h.memory.config.dreaming.triggerOperations = 1;
     expect(h.memory.taskEligibility("dreaming", { sessionId: closed.id, branch: "main", headTurnId: turn.id })).toEqual({ due: true });

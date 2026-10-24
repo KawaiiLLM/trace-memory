@@ -92,18 +92,3 @@ export function parseBlocks(file: WorkspaceFile): Parsed {
   return { blocks, problems };
 }
 
-export interface ScoreLine { knowledgeId: number; score: number; line: number }
-
-/** A classify file: no blocks, one `K<id> <score>` line per item, the score an integer from 1 to 100. */
-export function parseScores(file: WorkspaceFile): { scores: ScoreLine[]; problems: string[] } {
-  const scores: ScoreLine[] = [], problems: string[] = [];
-  file.text.split(/\r?\n/).forEach((text, i) => {
-    if (!text.trim()) return;
-    const match = /^K([1-9]\d*)[ \t]+(\d+)$/.exec(text.trim());
-    if (!match) { problems.push(problem(file, i + 1, "score line", `expected \`K<id> <score>\`, got "${text.trim().slice(0, 60)}"`)); return; }
-    const score = Number(match[2]);
-    if (score < 1 || score > 100) problems.push(problem(file, i + 1, `score line K${match[1]}`, `the score must be an integer from 1 to 100, got ${score}`));
-    else scores.push({ knowledgeId: Number(match[1]), score, line: i + 1 });
-  });
-  return { scores, problems };
-}

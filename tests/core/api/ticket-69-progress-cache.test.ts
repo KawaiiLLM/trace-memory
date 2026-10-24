@@ -79,7 +79,7 @@ test("ticket 69: the cache invalidates on N knowledge publication and Dreamer co
     const primed = memory.progress(sessionId, "main", turnId);
     expect(primed).toMatchObject({ facts: 1, knowledge: 0 });
     const consolidated = commitNoterKnowledge(store, { run: { sessionId, branch: "main", createdAt: time },
-      operations: [{ files: null, op: "create", title: "Fixture title", handle: "$k", author: "test", text: "durable rule", category: "constraint", scope: "session",
+      operations: [{ files: null, op: "create", title: "Fixture title", handle: "$k", author: "test", text: "durable rule", category: "constraint", scope: "project",
         supports: [noted.facts[0]!.id], topics: [], reason: "evidence", createdAt: time }] });
     if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
     const afterConsolidation = memory.progress(sessionId, "main", turnId);

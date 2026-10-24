@@ -56,8 +56,6 @@ test("35d/45 retire file-owned knowledge caps and parse exact database-budget in
   expect(() => writeGlobal(globalPath(h), "consolidation.knowledgeTokens", 1 as never)).toThrow(/Removed setting consolidation\.knowledgeTokens/);
   expect(() => h.memory.configure({ consolidation: { knowledgeTokens: 1 } } as never)).toThrow(/Removed setting consolidation\.knowledgeTokens/);
   expect(globalFile(h)["trace-memory"]).toBeUndefined();
-  expect(preferences.map(p => p.key)).toEqual(["notingModel", "notingThinking",
-    "dreaming.model", "dreaming.thinking", "dreaming.classifyModel", "dreaming.classifyThinking", "closedSessionScope"]);
 });
 
 test("35d Settings edits the bound database row, shows derived diagnostics, and never writes preferences", async () => {
@@ -150,21 +148,6 @@ test("32d: Dreamer preferences reuse Settings with no mode or advanced page", as
   expect(h.requests).toEqual([]);
 });
 
-test("classify has its own Settings rows and keys; absent, they show the Dreamer's values", async () => {
-  const h = setup();
-  seed(h, { "dreaming.model": "fake/test-mini" });
-  await h.emit("session_start");
-  h.ctx.hasUI = true;
-  h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toContain("Classifier model: fake/test-mini");
-  await edit(h, "Classifier model: fake/test-mini", "fake/test");
-  await edit(h, "Classifier thinking: inherit (Default)", "low");
-  expect(globalFile(h)["trace-memory"]).toEqual({ "dreaming.model": "fake/test-mini", "dreaming.classifyModel": "fake/test", "dreaming.classifyThinking": "low" });
-  h.answers.push("Settings…", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options).toEqual(expect.arrayContaining(["Dreamer model: fake/test-mini", "Classifier model: fake/test", "Classifier thinking: low"]));
-  expect(() => parseLayer({ "dreaming.classifyThinking": "unknown" })).toThrow(/dreaming.classifyThinking/);
-  expect(h.requests).toEqual([]);
-});
 
 test("24b: each control writes only its canonical key, and every other setting in the file survives", async () => {
   const h = setup();
@@ -189,7 +172,7 @@ test("24b: each control writes only its canonical key, and every other setting i
     "Knowledge base: 20,000",
     "Noter model: fake/test-mini", "Noter thinking: inherit",
     "Dreamer model: fake/test", "Dreamer thinking: inherit",
-    "Classifier model: fake/test", "Classifier thinking: inherit", "Closed sessions: project",
+    "Closed sessions: project",
   ]);
   expect(h.requests).toEqual([]); // editing settings calls no model
 });
@@ -215,7 +198,7 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
     "Knowledge base: 20,000",
     "Noter model: follow foreground", "Noter thinking: high",
     "Dreamer model: follow foreground", "Dreamer thinking: minimal",
-    "Classifier model: follow foreground", "Classifier thinking: minimal", "Closed sessions: project",
+    "Closed sessions: project",
   ]);
   // A level nothing accepts never reaches the file, and the refusal names the key and the list.
   const before = readFileSync(globalPath(h), "utf8");

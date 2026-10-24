@@ -329,10 +329,9 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     h.ctx.hasUI = false;
     await h.turn(); await h.drain();
     const runs = store.listRuns(1).filter(run => run.kind === "dreaming");
-    expect(runs.map(run => run.outcome)).toEqual(["success", "success", "success"]); // curate, verify, classify
-    expect(runs.every(run => run.mode === "subagent")).toBe(true);
-    expect(h.requests.length).toBeGreaterThan(requests);
-    expect(store.listFactsByRun(runs[0]!.id)).toEqual([]);
+    expect(store.getKnowledge(item.knowledgeId)).toMatchObject({ score: 50 });
+    expect(runs.find(run => JSON.parse(run.response ?? "{}").task === "group")).toMatchObject({ outcome: "success", mode: "subagent" });
+    expect(runs.flatMap(run => store.listFactsByRun(run.id))).toEqual([]);
     expect(store.db.prepare("SELECT 1 FROM knowledge_processed WHERE pool = ? AND revision_id = ?").get(pool, item.commit)).toBeTruthy(); // curate covered what it showed
   } finally { await h.dispose(); }
 });

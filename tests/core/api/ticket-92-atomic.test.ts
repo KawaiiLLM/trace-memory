@@ -182,10 +182,10 @@ for (const when of ["write", "verify"] as const)
     const created = current.find(item => item.knowledge.id !== seed.base.knowledgeId)!;
     expect(created.revision.text).toContain(seed.tag);
     expect(created.revision.supports).toHaveLength(2);
-    // The Noter's converted create is uncovered Noter work: it counts toward the Dreamer's trigger.
+    // Session-scoped converted creates remain uncovered but do not trigger routine Dreamer (156).
     expect(created.revision.actorRole).toBe("noting");
     expect(f.memory.store.curateItems(f.path).find(item => item.value.revision.id === created.revision.id)).toMatchObject({ covered: false });
-    expect(f.memory.store.noterOperations(f.path)).toBeGreaterThanOrEqual(1);
+    expect(f.memory.store.noterOperations(f.path)).toBe(0);
     if (!("runId" in result)) throw new Error("missing run");
     const audit = JSON.parse(f.memory.store.getRun(result.runId!)!.response!);
     expect(audit.knowledgeOperations[0].requested.op).toBe("update");

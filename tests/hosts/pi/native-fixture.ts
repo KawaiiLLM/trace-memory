@@ -14,6 +14,7 @@ import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import type { NativeTask, ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 import { memoryReadTool } from "../../../src/hosts/pi/memory-files.ts";
 import { factsFile, withVerdicts } from "../../support/noter.ts";
+import { decisionText } from "../../support/dreamer.ts";
 
 export type Body = Record<string, any>;
 export const sse = (events: unknown[]) => new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n",
@@ -39,27 +40,26 @@ export const noterTurn = (body: Body, fact: Record<string, unknown> = {}, tokens
     : task === "extract-facts" ? (Object.keys(fact).length ? factsFile([fact as never]) : "## none\n") : knowledge;
   return call(`write-${written.length + 1}`, "write", { path: file, content }, tokens);
 };
-/** The scripted Dreamer on the wire (ticket 144, stage 4): call `check`; write the file the latest report or follow-up names (`## none` for
- * curate and verify, every listed item 50 for the scorer); stop. Returns the reply to the request `body` holds. */
+/** Native wire replies fill the grouped Dreamer's pre-made files. */
 export const dreamerTurn = (body: Body, tokens = usage()): Response => {
   const text = (message: Body) => typeof message.content === "string" ? message.content : (message.content ?? []).map((part: Body) => part.text ?? "").join("");
-  const named = (body.messages ?? []).filter((m: Body) => m.role !== "assistant" && m.role !== "system").map(text).filter((value: string) => /(?:Your file|File): \S+\.md/.test(value));
+  const named = (body.messages ?? []).filter((m: Body) => m.role !== "assistant" && m.role !== "system").map(text).filter((value: string) => /Task: (notes|curate|scoring)/.test(value));
   if (!named.length) return call("check-1", "check", {}, tokens);
   const report = named.at(-1)!;
   const written = (body.messages ?? []).flatMap((m: Body) => (m.tool_calls ?? []).filter((c: Body) => c.function?.name === "write").map((c: Body) => JSON.parse(c.function.arguments).path));
-  // A curate report lists a file for each batch of its group (146); the other tasks name one.
-  const files = /^Task: curate/m.test(report) ? [...report.matchAll(/^batch \d+ of \d+, category \w+\. Items: .*?\. File: (\S+?\.md)/gm)].map(match => match[1]!)
-    : [/(?:Your file|File): (\S+?\.md)/.exec(report)![1]!];
-  const todo = files.filter(file => !written.includes(file));
-  if (!todo.length) return say("Done.", tokens);
-  const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
-  const writes = todo.map(file => ({ path: file, content: /classify-\d+\.md$/.test(file) ? ids.map(id => `K${id} 50`).join("\n") + "\n" : "## none\n" }));
+  const stage = /Task: (notes|curate|scoring)/.exec(report)![1]!;
+  const path = (label: string) => new RegExp(`${label}: (\\S+?\\.md)`).exec(report)![1]!;
+  const files = stage === "notes" ? [{ path: path("File"), content: "No repository-specific notes." }]
+    : stage === "curate" ? [{ path: path("Decisions"), content: decisionText(readFileSync(path("Decisions"), "utf8")) }, { path: path("Changes"), content: "## none\n" }]
+    : [{ path: path("Scores"), content: [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+(?:\.child\d+)?/g)].map(match => `${match[0]} 50`).join("\n") }];
+  const writes = files.filter(file => !written.includes(file.path));
+  if (!writes.length) return say("Done.", tokens);
   return writes.length === 1 ? call(`write-${written.length + 1}`, "write", writes[0], tokens) : calls(`write-${written.length + 1}`, "write", writes, tokens);
 };
 export const broken = () => new Response(JSON.stringify({ error: { message: "provider exploded" } }), { status: 500, headers: { "content-type": "application/json" } });
 
 /** Tell the child's requests from the parent's by the production prompt they carry. */
-export const worker = (body: Body, phase = "Noting") => JSON.stringify(body).includes(phase === "Noting" ? "Noting (facts and knowledge)" : `${phase} (knowledge extraction)`) ;
+export const worker = (body: Body, phase = "Noting") => JSON.stringify(body).includes(phase === "Noting" ? "Noting (facts and knowledge)" : `# ${phase}`);
 export const toolResults = (body: Body) => (body.messages ?? []).filter((m: Body) => m.role === "tool").length;
 /** 26a: whether this body already carries the child's own `note` submission, so a scripted Noter
  * answers with its closing reply instead of submitting twice. Unlike `toolResults`, an inherited

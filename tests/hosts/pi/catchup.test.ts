@@ -181,7 +181,7 @@ test("an owned Dreamer run shows its Noter-written item and keeps its global sea
     expect(firstDreamer).toContain(`K${due.knowledgeId}`);
     openGate(); for (const item of pending) item.resolve(reply("Done"));
     await h.drain();
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success", "success", "success"]); // curate, verify, classify
+    await vi.waitFor(() => expect(h.memory.store.noterOperations(h.memory.store.knowledgePath(1))).toBe(0));
     expect(h.memory.store.getKnowledge(due.knowledgeId)).not.toBeNull();
   } finally { await h.dispose(); }
 });

@@ -1,7 +1,7 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ClosedSessionScope, type ConfigOverride, type TraceMemoryConfig } from "../../core/api/index.ts";
-import { CLASSIFY_SETTING_KEYS, MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-settings.ts";
+import { MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-settings.ts";
 import { retireConsolidationSettings } from "../retired-settings.ts";
 
 export const CC_AGENT_SDK_VERSION = "0.1.77";
@@ -37,12 +37,12 @@ export interface ResolvedCcPhaseConfig {
 
 export interface ResolvedCcWorkerConfig extends Omit<CcWorkerConfig, "responseOriginTimeoutMs" | "contextWindows" | "claudeVersion"> {
   contextWindows: Readonly<Record<string, number>>;
-  /** `classify` (stage 4 §1.2) is the Dreamer's scoring task, with its own model and thinking, never the Dreamer's. */
-  phases: Readonly<Record<MemoryPhase, ResolvedCcPhaseConfig>> & { classify: ResolvedCcPhaseConfig };
+  phases: Readonly<Record<MemoryPhase, ResolvedCcPhaseConfig>>;
   responseOriginTimeoutMs: number;
 }
 
-export interface CcHostConfig extends Partial<{ [K in keyof TraceMemoryConfig["noting"] as `noting.${K}`]: number }> {
+export interface CcHostConfig extends Partial<{ [K in keyof TraceMemoryConfig["noting"] as `noting.${K}`]: number }>,
+  Partial<{ [K in keyof TraceMemoryConfig["dreaming"] as `dreaming.${K}`]: number }> {
   /** Omitted uses the same ~/.trace-memory/trace.db default as the Pi host. */
   dbPath?: string;
   stateDir: string;
@@ -50,11 +50,6 @@ export interface CcHostConfig extends Partial<{ [K in keyof TraceMemoryConfig["n
   notingThinking?: string;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
-  /** Optional: the Dreamer's classify task; absent, `sonnet` and the Noter's thinking (ruling 2026-10-21 「评级任务用sonnet」). */
-  "dreaming.classifyModel"?: string;
-  "dreaming.classifyThinking"?: string;
-  "dreaming.triggerOperations"?: number;
-  "dreaming.timeoutMs"?: number;
   /** The one temporary allowance of a context (144 stage 4 §7.3). */
   "compaction.temporaryTokens"?: number;
   "compaction.userTurns"?: number;
@@ -85,8 +80,6 @@ export interface ResolvedCcHostConfig {
   notingThinking?: string;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
-  "dreaming.classifyModel"?: string;
-  "dreaming.classifyThinking"?: string;
   baseline?: string;
   retry?: CcRetryConfig;
   pollIntervalMs: number;
@@ -117,14 +110,12 @@ function retry(input: CcRetryConfig | undefined): CcRetryConfig | undefined {
   return { maxRetries: input.maxRetries };
 }
 
-/** classify's model when its key is absent: Sonnet, whatever the Dreamer runs on. */
-export const CC_CLASSIFY_DEFAULT_MODEL = "sonnet";
-
-function phaseFields(input: CcHostConfig, phase: MemoryPhase | "classify"): { model: string; thinking: CcEffort } {
-  const keys = phase === "classify" ? CLASSIFY_SETTING_KEYS : PHASE_SETTING_KEYS[phase];
-  // classify never borrows the Dreamer's keys: an absent model is Sonnet, an absent thinking level is the Noter's (also Sonnet's).
-  const model = input[keys.model as keyof CcHostConfig] ?? (phase === "classify" ? CC_CLASSIFY_DEFAULT_MODEL : undefined);
-  const thinking = input[keys.thinking as keyof CcHostConfig] ?? (phase === "classify" ? input.notingThinking : undefined);
+function phaseFields(input: CcHostConfig, phase: MemoryPhase): { model: string; thinking: CcEffort } {
+  const keys = PHASE_SETTING_KEYS[phase];
+  const configured = input["dreaming.model"];
+  const model = phase === "dreaming" ? (typeof configured === "string" && /sonnet/i.test(configured) ? configured
+    : typeof input.notingModel === "string" && /sonnet/i.test(input.notingModel) ? input.notingModel : "sonnet") : input[keys.model];
+  const thinking = input[keys.thinking];
   if (typeof model !== "string" || !model.trim())
     throw new Error(`Invalid CC ${keys.model}: an explicit non-empty model id is required when worker is configured`);
   if (model === "session") throw new Error(`Invalid CC ${keys.model}: session inheritance is unavailable in the CC worker`);
@@ -142,7 +133,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   // Ruling 2026-10-22: the Noter runs fresh only; one temporary allowance replaces the Knowledge-only shared allowance;
   // the length caps are counted in units (ticket 145); Dreaming is due by Noter operations (ticket 146).
   // A leftover key of any of them fails the load with core's removed-setting message.
-  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds", "writing.titleTokens", "writing.bodyTokens", "dreaming.triggerTokens"])
+  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds", "dreaming.classifyModel", "dreaming.classifyThinking", "writing.titleTokens", "writing.bodyTokens", "dreaming.triggerTokens"])
     if (Object.hasOwn(input, key)) canonicalFlatConfig({ [key]: true });
   const dbPath = input.dbPath === undefined ? join(homedir(), ".trace-memory", "trace.db") : input.dbPath;
   if (typeof dbPath !== "string" || !dbPath.trim()) throw new Error("CC dbPath must be a non-empty absolute path when specified");
@@ -167,7 +158,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       throw new Error("Invalid CC worker.cwd: expected an absolute path");
     if (!value.contextWindows || typeof value.contextWindows !== "object" || Array.isArray(value.contextWindows))
       throw new Error("Invalid CC worker.contextWindows: expected model-to-capacity object");
-    const phases = Object.fromEntries([...MEMORY_PHASES, "classify" as const].map(phase => {
+    const phases = Object.fromEntries(MEMORY_PHASES.map(phase => {
       const selected = phaseFields(input, phase);
       if (!Object.hasOwn(value.contextWindows, selected.model))
         throw new Error(`Invalid CC worker.contextWindows: no capacity for selected ${phase} model ${selected.model}`);
@@ -180,7 +171,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       contextWindows: { ...value.contextWindows }, phases, cwd: resolve(value.cwd),
       responseOriginTimeoutMs: positive("worker.responseOriginTimeoutMs", value.responseOriginTimeoutMs ?? 5_000) };
   }
-  const phaseValues = Object.fromEntries([...Object.values(PHASE_SETTING_KEYS), CLASSIFY_SETTING_KEYS].flatMap(keys =>
+  const phaseValues = Object.fromEntries(Object.values(PHASE_SETTING_KEYS).flatMap(keys =>
     [keys.model, keys.thinking].flatMap(key => input[key as keyof CcHostConfig] === undefined ? [] : [[key, input[key as keyof CcHostConfig]]]))) as Partial<ResolvedCcHostConfig>;
   const coreConfig = validateConfig({
     closedSessionScope,
@@ -188,10 +179,10 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       const value = input[`noting.${key}` as keyof CcHostConfig];
       return value === undefined ? [] : [[key, value]];
     })),
-    ...(input["dreaming.triggerOperations"] === undefined && input["dreaming.timeoutMs"] === undefined ? {} : { dreaming: {
-      ...(input["dreaming.triggerOperations"] === undefined ? {} : { triggerOperations: input["dreaming.triggerOperations"] }),
-      ...(input["dreaming.timeoutMs"] === undefined ? {} : { timeoutMs: input["dreaming.timeoutMs"] }),
-    } }),
+    dreaming: Object.fromEntries(Object.keys(DEFAULT_CONFIG.dreaming).flatMap(key => {
+      const value = input[`dreaming.${key}` as keyof CcHostConfig];
+      return value === undefined ? [] : [[key, value]];
+    })),
     compaction: {
       ...(input["compaction.temporaryTokens"] === undefined ? {} : { temporaryTokens: input["compaction.temporaryTokens"] }),
       ...(input["compaction.userTurns"] === undefined ? {} : { userTurns: input["compaction.userTurns"] }),

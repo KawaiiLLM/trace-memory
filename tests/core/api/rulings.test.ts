@@ -24,15 +24,13 @@ import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeCapacity, setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
-import { dreamerFixture as makeDreamerFixture, noterWrittenItem, pairOfText, proposalsOf, scriptedDreamer, writeCurateFiles, type DreamerScript } from "../../support/dreamer.ts";
+import { dreamerFixture as makeDreamerFixture, noterWrittenItem, scriptedDreamer, writeCurateFiles, type DreamerScript } from "../../support/dreamer.ts";
 import { buildPendingSection } from "../../../src/hosts/trace-menu.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
-import { checkVerify } from "../../../src/core/dreaming/changes.ts";
-import { CURATE_ROTATION } from "../../../src/core/dreaming/curate.ts";
 import { tokens as renderTokens, words, wordLimit } from "../../../src/core/render/index.ts";
 import { CcTaskScheduler } from "../../../src/hosts/cc/scheduler.ts";
 import { budgetArchive, receiptCommit, scoreAll } from "../../support/seed.ts";
-import { block as workspaceBlock, workspaceBatch } from "../../support/workspace.ts";
+import { block as workspaceBlock, workspaceBatch, type WorkspaceBatch } from "../../support/workspace.ts";
 import { applyWorkspace, checkWorkspace } from "../../../src/core/workspace/index.ts";
 import { allowedRoots } from "../../../src/core/dreaming/roots.ts";
 import { resolveCcHostConfig } from "../../../src/hosts/cc/config.ts";
@@ -43,7 +41,6 @@ import * as ccNative from "../../../src/hosts/cc/native-session.ts";
 import { CcImporter } from "../../../src/hosts/cc/importer.ts";
 import { DatabaseSync } from "node:sqlite";
 import { Store } from "../../../src/core/store/index.ts";
-import { curatePairOf, type CuratePair } from "../../../src/core/store/executions.ts";
 import { archive as seedArchive, knowledgeBatch, updateKnowledge } from "../../support/seed.ts";
 import { entry as seedEntry, fact as seedFact, facts as seedFacts, knowledge as seedKnowledge, legacyArchive, legacyFacts, legacyKnowledge, session as seedSession } from "../../support/seed.ts";
 import { ccCompaction, ccDeltaInjection, databaseIdentity, decodeCcInjection } from "../../../src/hosts/cc/injection.ts";
@@ -707,7 +704,7 @@ test("2026-10-21, 144: '更新旧条目仍然受限，手写也一样，不要�
   expect(write([update(old, { edits: [{ old: "word", new: "rule" }] })]).results[0]).toContain("over the limit of 220 (target 200)");
   expect(write([update(old, { text: "Use pnpm", category: "constraint", scope: "project", topics: [] })]).committed).toHaveLength(1);
   // The Dreamer's curate file is checked by the same limits.
-  const refused = checkWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+  const refused = checkWorkspace(memory.store, { kind: "curate", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, commitOf(created))}`, { reason: "Touch an old item" }, long) } });
   expect(refused.problems.join("\n")).toContain("over the limit of 220 (target 200)");
   // The limits are configuration, not constants.
@@ -752,7 +749,7 @@ test("144/2026-10-22: a merge without a title takes the named primary's title, t
   const older = committed("Older rule", "Use pnpm"), newer = committed("Newer rule", "Avoid npm");
   const survivor = committed("Survivor rule", "Pin the Node version");
   const legacy = legacyKnowledge(memory.store, path, { text: "Legacy rule body", category: "constraint", scope: "project", supports: [1] });
-  const merge = (primary: string, absorb: string) => ({ kind: "curate" as const, pair: "merge-split" as const, sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+  const merge = (primary: string, absorb: string) => ({ kind: "curate" as const, sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`merge ${primary}`, { absorb, reason: "Merged duplicate knowledge." }, "Merged body.") } });
   // Names the newer one: it keeps its identity and its title.
   const merged = applyWorkspace(memory.store, merge(history(newer.knowledgeId, commitOf(newer)), history(older.knowledgeId, commitOf(older))));
@@ -793,7 +790,7 @@ test("2026-10-22: a split keeps the original identity as the primary part, creat
   const original = (write([{ ...create, text: "Use pnpm and keep the lockfile" }]).committed as Array<{ knowledgeId: number; version: string }>)
     .map(item => ({ ...item, commit: commitOf(item) }))[0]!;
   const child = (title: string, category: string, text: string) => `\n### child\ntitle: ${title}\ncategory: ${category}\nscope: project\ntopics:\nsupports: F1\nreason: split out\n\n${text}\n`;
-  const result = applyWorkspace(memory.store, { kind: "curate", pair: "merge-split", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+  const result = applyWorkspace(memory.store, { kind: "curate", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`split ${history(original.knowledgeId, original.commit)}`, { reason: "Two independent rules." }, "Use pnpm")
       + child("Lockfile", "reference", "Keep the lockfile") + child("Registry", "goal", "Use the mirror") } });
   if (!result.ok) throw new Error(result.problems.join("\n"));
@@ -915,11 +912,8 @@ function curateWrite(path: { sessionId: number; headTurnId: number; branch: stri
     if (op.op === "merge") fields.absorb = op.absorb.map(address).join(", ");
     return workspaceBlock(`${op.op} ${address(op.id)}`, fields, op.text);
   });
-  // A curate file holds the operations of one pair (146 ruling 13): a mixed list becomes consecutive single-pair files, applied in order.
-  const grouped: { pair: CuratePair; text: string[] }[] = [];
-  operations.forEach((op, i) => { const pair = curatePairOf(op.op); if (grouped.at(-1)?.pair === pair) grouped.at(-1)!.text.push(blocks[i]!); else grouped.push({ pair, text: [blocks[i]!] }); });
-  const applied = grouped.map(group => applyWorkspace(store, { kind: "curate", pair: group.pair, sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
-    file: { name: "curate.md", text: group.text.join("\n") } }));
+  const applied = blocks.map(text => applyWorkspace(store, { kind: "curate", sessionId: path.sessionId, path: { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId },
+    file: { name: "curate.md", text } }));
   for (const each of applied) if (!each.ok) throw new Error(each.problems.join("\n"));
   const result = { ok: true as const, blocks: applied.flatMap(each => each.ok ? each.blocks : []) };
   const refused = result.blocks.filter(entry => entry.status !== "applied");
@@ -1160,7 +1154,7 @@ test("64b: stale absorbed bases name the surviving current commit across merge l
     id: tagged(1, merged.commit), ...content(root.fact, "Surviving current conclusion") }]);
   const survivor = updatedReceipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === 1)!;
   publish(other);
-  const stale = applyWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: other.sessionId, path: { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId },
+  const stale = applyWorkspace(memory.store, { kind: "curate", sessionId: other.sessionId, path: { sessionId: other.sessionId, branch: other.branch, headTurnId: other.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`update ${history(second.knowledgeId, second.commit)}`, { reason: "Substantive correction of the recorded conclusion.", supports: other.fact }, "Invalid absorbed edit") } });
   const rejected = stale.ok ? stale.blocks.map(entry => entry.reason ?? "").join("\n") : stale.problems.join("\n");
   expect(rejected).toContain(`current: ${history(survivor.knowledgeId, survivor.commit)}`);
@@ -1784,16 +1778,16 @@ test("64b/21a: a curate update's supports face the same session/project/global t
     publish(c);
     const created = c.writeCommitted([{ files: null, op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope, reason: "Admitted for the scope check." }])[0]!;
     const allowed = origin === c || scope === "global" || (scope === "project" && origin === same);
-    const checked = checkWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
+    const checked = checkWorkspace(memory.store, { kind: "curate", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
       file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `Retired on ${origin.branch} evidence.`, supports: origin.fact }, "Changed body.") } });
     expect(checked.problems.length === 0, `${scope} from ${origin.branch}: ${checked.problems.join("; ")}`).toBe(allowed);
   }
   // Reason prose cannot adopt a foreign fact.
   const created = c.writeCommitted([{ files: null, op: "create", title: "Fixture title", topics: [], ...content(c.fact), scope: "session", reason: "Admitted for the reason-bypass check." }])[0]!;
-  const prose = checkWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
+  const prose = checkWorkspace(memory.store, { kind: "curate", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `The user adopted ${outside.fact} on this path.` }, "Changed body.") } });
   expect(prose.problems).toEqual([]); // it inherits the parent's evidence; the fact named in the reason is not a citation
-  const applied = applyWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
+  const applied = applyWorkspace(memory.store, { kind: "curate", sessionId: c.sessionId, path: { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId },
     file: { name: "curate.md", text: workspaceBlock(`update ${history(created.knowledgeId, created.commit)}`, { reason: `The user adopted ${outside.fact} on this path.` }, "Changed body.") } });
   if (!applied.ok) throw new Error(applied.problems.join("\n"));
   expect(memory.store.currentCommit(created.knowledgeId, c)[0]!.supports).toEqual([Number(c.fact.slice(1))]);
@@ -1852,7 +1846,7 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   // A label is written by the ordinary manual call, with no model call and no independent catalog block.
   expect(write([{ ...create, topics: ["packaging"] }]).committed).toHaveLength(1);
   // Topics stay inherited on archives; the archive block requires an explicit kind and takes no topics.
-  const archiveFile = (fields: Record<string, string>) => checkWorkspace(memory.store, { kind: "curate", pair: "update-archive", sessionId: s.id,
+  const archiveFile = (fields: Record<string, string>) => checkWorkspace(memory.store, { kind: "curate", sessionId: s.id,
     path: { sessionId: s.id, branch: "main", headTurnId: 1 }, file: { name: "curate.md", text: workspaceBlock("archive K1@v1", fields, "No longer holds.") } }).problems.join("\n");
   expect(archiveFile({ reason: "r" })).toContain("missing required field `kind`");
   expect(archiveFile({ kind: "invalid", reason: "r", topics: "packaging" })).toContain("field `topics` is not allowed here");
@@ -2145,12 +2139,11 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
   let enteredDreaming = () => {};
   const dreamingStarted = new Promise<void>(resolve => { enteredDreaming = resolve; });
   const submissions: unknown[] = [];
+  const worker = scriptedDreamer();
   const dreamer = scriptedDreamer({ instead: { curate: async input => {
-    input.acknowledgeRequest();
     enteredDreaming();
     await heldDreaming;
-    await writeCurateFiles(input, "## none\n");
-    return ok([]);
+    return worker.agent(input);
   } } });
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     if ((raw as { kind: string }).kind === "dreaming") return dreamer.agent(raw);
@@ -2280,88 +2273,16 @@ test("47/118: search reads every version without bypassing write validation", ()
 
 
 
-// 2026-10-22 (smell classes, Dreaming half), pairs per 146 ruling 13: a curate run and its verify get exactly the classes of the run's two operations, and no other.
-test("2026-10-22, 146 ruling 13: each curate run and its verify get exactly their pair's two smell classes, and the verify procedure", () => {
-  const block = (name: string) => renderLimits(readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8").trimEnd(), DEFAULT_WRITING_LIMITS);
-  const pairs = { "update-archive": ["update", "archive"], "merge-split": ["merge", "split"] } as const;
-  for (const task of ["curate", "verify"] as const) for (const [pair, own] of Object.entries(pairs) as [keyof typeof pairs, readonly string[]][]) {
-    const composed = loadPrompt(`tasks/${task}-${pair}.md`);
-    expect(composed).not.toContain("<!-- include:");
-    for (const other of ["update", "merge", "split", "archive"]) {
-      if (own.includes(other)) expect(composed, `${task}-${pair} has ${other}`).toContain(block(`smells-${other}`));
-      else expect(composed, `${task}-${pair} lacks ${other}`).not.toContain(block(`smells-${other}`));
-    }
-    expect(composed.includes(block("verify-procedure"))).toBe(task === "verify");
-    expect(composed).not.toContain(block("smells-facts"));
-    expect(composed).not.toContain(block("smells-create"));
-  }
-  // The system prompt holds no class and no operation's instructions: they travel with the first check result (stage 5 §0).
-  const system = loadPrompt("dreaming.md");
-  for (const name of ["smells-update", "smells-merge", "smells-split", "smells-archive", "verify-procedure"]) expect(system).not.toContain(block(name));
-});
 
-test("2026-10-22, 144: 「合并实际没有发生，核查通过后才发生」 — curate's changes apply only after verify; every change gets confirm, edit or revert", async () => {
-  const f = dreamerFixture();
-  const rule = f.item("Use pnpm everywhere", { category: "constraint" });
-  f.dreamer.script.curate!.constraint = workspaceBlock(`update ${rule.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
-  let during = "";
-  f.dreamer.script.verify = report => { during = f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text; void report; return "## confirm 1\n"; };
-  expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(during).toBe("Use pnpm everywhere"); // nothing was applied while verify worked
-  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere, tidied");
-  // A verdict file that misses a change is refused: every change has one.
-  const g = dreamerFixture();
-  const other = g.item("Use pnpm everywhere", { category: "constraint" });
-  g.dreamer.script.curate!.constraint = workspaceBlock(`update ${other.ref}`, { reason: "tidy" }, "Tidied");
-  g.dreamer.script.verify = ["## none\n", "## confirm 1\n"];
-  expect(await g.dream()).toMatchObject({ outcome: "success" });
-  expect(g.dreamer.messages[0]).toContain("is not a verdict");
-});
 
-test("2026-10-22, 144: Dreaming creates no knowledge, that is the Noter's job (maintainer, translated) — a curate file refuses create in either pair", async () => {
+test("2026-10-23/24, 156: Dreaming handles all four maintenance operations but never create", () => {
   const f = dreamerFixture();
   const item = f.item("Rule one", { category: "constraint" });
   const created = { title: "Fresh rule", category: "constraint", scope: "project", topics: "", supports: `F${item.supports[0]}`, reason: "new" };
-  for (const pair of ["update-archive", "merge-split"] as const)
-    expect(checkWorkspace(f.store, workspaceCurate(f, workspaceBlock("create", created, "A fresh rule."), pair)).problems.join("\n")).toContain("`## create` is not allowed in a curate file");
+  expect(checkWorkspace(f.store, workspaceCurate(f, workspaceBlock("create", created, "A fresh rule."))).problems.join("\n")).toContain("`## create` is not allowed in a curate file");
 });
 
-// Maintainer, 2026-10-22 (ticket 146 ruling 13, superseding 144 stage 5's four-step rotation): the rotation can shrink to two kinds, update+archive and merge+split, then B (maintainer, translated) over two parallel agents.
-test("2026-10-22, 146 ruling 13: a run performs one pair, update+archive then merge+split; the one curate agent may propose either operation of its pair per item, and none outside it", async () => {
-  const f = dreamerFixture();
-  const a = f.item("Rule A", { category: "constraint" }), b = f.item("Rule B", { category: "constraint" }), c = f.item("Rule C", { category: "constraint" });
-  const update = workspaceBlock(`update ${a.ref}`, { reason: "tidy" }, "Rule A, tidied");
-  const archive = workspaceBlock(`archive ${b.ref}`, { kind: "invalid", reason: "superseded" }, "Superseded by rule C, which carries the same ruling.");
-  // Both operations of the pair pass one check; an operation of the other pair is refused.
-  expect(checkWorkspace(f.store, workspaceCurate(f, `${update}\n${archive}`, "update-archive")).problems).toEqual([]);
-  expect(checkWorkspace(f.store, workspaceCurate(f, workspaceBlock(`merge ${a.ref}`, { absorb: c.ref, reason: "same" }, "Merged."), "update-archive")).problems.join("\n"))
-    .toContain("`## merge` is not allowed in a curate file; allowed: `update`, `archive`");
-  expect(checkWorkspace(f.store, workspaceCurate(f, update, "merge-split")).problems.join("\n")).toContain("`## update` is not allowed in a curate file; allowed: `merge`, `split`");
-  // A run proposes both for different items, verify confirms, and both are applied.
-  expect(f.store.nextCuratePair(f.project.id)).toBe("update-archive");
-  f.dreamer.script.curate!.constraint = `${update}\n${archive}`;
-  expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(f.store.currentCommit(a.knowledgeId, f.path)[0]!.text).toBe("Rule A, tidied");
-  expect(f.store.currentCommit(b.knowledgeId, f.path)[0]).toMatchObject({ op: "archive", archiveKind: "invalid" });
-  // The rotation then alternates: merge+split, and a lap returns to update+archive.
-  const order: string[] = [];
-  f.dreamer.script.curate = {};
-  for (let lap = 0; lap < 3; lap++) {
-    order.push(f.store.nextCuratePair(f.project.id));
-    f.item(`Later rule ${lap}`, { category: "reference" });
-    expect(await f.dream()).toMatchObject({ outcome: "success" });
-  }
-  expect(order).toEqual(["merge-split", "update-archive", "merge-split"]);
-});
 
-test("2026-10-22, 144: /trace shows the next curate pair and no running batch (maintainer chose A) — after an update+archive run finishes the Dreaming section's row says merge-split", async () => {
-  const f = dreamerFixture();
-  const row = () => buildPendingSection({ noting: { tokens: 0, trigger: 1 }, dreaming: { pending: { tokens: 0, trigger: 1 }, next: f.store.nextCuratePair(f.project.id) } }).dreamingNext;
-  expect(row()).toEqual({ label: "next curate", value: "update-archive" });
-  f.item("Rule one", { category: "constraint" });
-  expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(row()).toEqual({ label: "next curate", value: "merge-split" });
-});
 
 // Maintainer, 2026-10-22: 「同一个project，如果另一个会话触发了Dreamer，按理说它处理的部分已经包含本会话N产生的project级以上的知识，所以处理完后应该同时将本会话的对应的project级以上待处理知识标记为完成，避免重复处理」.
 // Coverage is keyed by pool and revision, not by session, so no per-session bookkeeping carries it.
@@ -2376,7 +2297,7 @@ test("2026-10-22: a Dreamer run of another session in the same project covers th
   const noteA = (scope: "global" | "project" | "session") => noterWrittenItem(f.memory, f.path as never, f.existingFact(`A ${scope} fact`).id, scope);
   const projectA = noteA("project"), globalA = noteA("global"), sessionA = noteA("session");
   noterWrittenItem(f.memory, pathB as never, factB.id); // B's own trigger
-  expect(f.store.noterOperations(f.path)).toBe(4); // A's three and B's project item, which A sees too
+  expect(f.store.noterOperations(f.path)).toBe(3); // Routine Dreamer excludes A's session item (156).
   let late!: { commit: number };
   f.next(async raw => { late = noteA("project"); return f.dreamer.agent(raw); }); // A's Noter writes while B's run is under way
   expect(await f.memory.dream({ ...pathB, model: "scripted" })).toMatchObject({ outcome: "success" });
@@ -2384,7 +2305,7 @@ test("2026-10-22: a Dreamer run of another session in the same project covers th
   expect(covered).toEqual(expect.arrayContaining([projectA.commit, globalA.commit]));
   expect(covered).not.toContain(sessionA.commit);
   expect(covered).not.toContain(late.commit);
-  expect(f.store.noterOperations(f.path)).toBe(2); // A's session item and the one written mid-run
+  expect(f.store.noterOperations(f.path)).toBe(1); // Only the project item written mid-run remains due.
 });
 
 // Maintainer, 2026-10-22, at the deployment start: 「1. 部署时将未归档的现行知识视为无评分的最高级，因预算被归档的视为0分并取消归档，等下次整理时统一重评分。
@@ -2393,8 +2314,7 @@ test("2026-10-22: a Dreamer run of another session in the same project covers th
 test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live items 100, revives only budget archives at 0, marks earlier Noter changes processed, and a second open changes nothing", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-deploy-")), file = join(dir, "m.sqlite");
   try {
-    const seen: number[] = [];
-    const f = dreamerFixture({ classify: (_pass, ids) => { seen.push(...ids); return undefined; } });
+    const f = dreamerFixture();
     f.memory.close(); // the fixture above is only the scripted agent; the database below is a file
     const old = makeDreamerFixture(dreamers, {}, file);
     const support = old.existingFact("Deployment fact").id;
@@ -2435,10 +2355,6 @@ test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live item
     new Store(file).close(); // a second open
     expect(snapshot()).toEqual(before);
 
-    noterWrittenItem(memory, old.path as never, support); // one new Noter change past the trigger
-    expect(store.dreamingDue(old.path, 1)).toBe(true);
-    expect(await memory.dream({ sessionId: old.path.sessionId, branch: "main", headTurnId: old.path.headTurnId!, model: "scripted" })).toMatchObject({ outcome: "success" });
-    expect([...seen].sort((a, b) => a - b)).toEqual([...live, budget.knowledgeId, Number(store.db.prepare("SELECT MAX(id) AS id FROM knowledge").get()!.id)].sort((a, b) => a - b));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -2613,8 +2529,8 @@ test("133: pending Raw uses only the temporary allowance; unused Knowledge allow
 
 
 // Ticket 144, Stage 2: the workspace file contract. Each ruling it implements has a named test.
-const workspaceCurate = (b: ReturnType<typeof workspaceBatch>, text: string, pair = pairOfText(text)) =>
-  ({ kind: "curate" as const, pair, sessionId: b.session.id, path: b.path, file: { name: "curate.md", text } });
+const workspaceCurate = (b: WorkspaceBatch, text: string) =>
+  ({ kind: "curate" as const, sessionId: b.session.id, path: b.path, file: { name: "curate.md", text } });
 
 test("2026-10-21/22: a file holds at most one record per knowledge item, an absorbed item included", () => {
   const b = workspaceBatch();
@@ -2648,8 +2564,7 @@ test("2026-10-21/22: update keeps the identity and adds a version; Dreaming make
     if (!result.ok) throw new Error(result.problems.join("\n"));
     expect(result.blocks[0]!.versions).toEqual([`K${item.knowledgeId}@v2`]);
     const created = { title: "Fresh rule", category: "constraint", scope: "project", topics: "", supports: `F${item.supports[0]}`, reason: "new" };
-    for (const pair of ["update-archive", "merge-split"] as const)
-      expect(checkWorkspace(b.store, workspaceCurate(b, workspaceBlock("create", created, "A fresh rule."), pair)).problems.join("\n")).toContain("`## create` is not allowed in a curate file");
+    expect(checkWorkspace(b.store, workspaceCurate(b, workspaceBlock("create", created, "A fresh rule."))).problems.join("\n")).toContain("`## create` is not allowed in a curate file");
   } finally { b.memory.close(); }
 });
 
@@ -2668,16 +2583,6 @@ test("2026-10-22: split children may take their own category", () => {
   } finally { b.memory.close(); }
 });
 
-test("2026-10-21: a verify correction without evidence is refused", () => {
-  const b = workspaceBatch();
-  try {
-    const item = b.item("Rule one");
-    const changes = proposalsOf(b.memory, b.path, ["update", workspaceBlock(`update ${item.ref}`, { reason: "tidy" }, "Rule one, tidied.")]);
-    const verify = (fields: Record<string, string>) => checkVerify(b.store, b.path, { name: "verify.md", text: workspaceBlock(`edit 1 update ${item.ref}`, fields, "Rule one, corrected.") }, changes, () => null);
-    expect(verify({}).problems.join("\n")).toContain("missing required field `evidence`");
-    expect(verify({ evidence: `trace://F${item.supports[0]}` }).problems).toEqual([]);
-  } finally { b.memory.close(); }
-});
 
 test("2026-10-21/22: the Noter writes no parents, merge, split or archive", () => {
   const b = workspaceBatch();
@@ -2731,43 +2636,7 @@ test("2026-10-22, 146 — Dreaming is due at the 30th Noter operation and not th
   expect(due()).toBe(true); // the 30th operation
 });
 
-test("2026-10-21, 144: '整理 → 核查 → 评级；先不轮换' — one run does curate, then verify, then classify, each category in turn within that one run", async () => {
-  const f = dreamerFixture();
-  const rule = f.item("Use pnpm everywhere", { category: "constraint" });
-  f.item("The lockfile is committed", { category: "reference" });
-  f.dreamer.script.curate!.constraint = workspaceBlock(`update ${rule.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
-  expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(taskNames(f)).toEqual(["curate", "verify", "classify"]); // one curate conversation visited both categories; classify came last
-  expect(f.dreamer.reports[0]).toContain("batch 1 of 2");
-  const covered = f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed").get()!.n;
-  expect(Number(covered)).toBeGreaterThanOrEqual(2); // no rotation: both categories were covered by this run
-});
 
-// retry at the next checkpoint, keep the count, switch trace off after consecutive failures, do not wait for the next threshold (maintainer, translated)
-test("2026-10-22, 146 — a failed run is retried at the next check with no new Noter operation, no threshold and no wait, the operation count is not reset, and curate's output stays as a proposal until verify passes", async () => {
-  const f = dreamerFixture();
-  const rule = f.item("Use pnpm everywhere", { category: "constraint" });
-  f.dreamer.script.curate!.constraint = workspaceBlock(`update ${rule.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
-  f.dreamer.script.instead = { verify: () => ({ outcome: "failure", output: "429 rate limit" }) as never };
-  const operations = f.store.noterOperations(f.path);
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    expect(await f.dream(), `attempt ${attempt}`).toMatchObject({ outcome: "failure", failure: { task: "verify", class: "provider error" } });
-    f.memory.config.dreaming.triggerOperations = Number.MAX_SAFE_INTEGER; // no threshold is reached: only the hand-off makes the next check due
-    expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: true });
-    f.memory.config.dreaming.triggerOperations = 1;
-    expect(f.store.noterOperations(f.path)).toBe(operations); // a failure resets no count
-    expect(f.store.handoff(f.session.id, "dreaming")!.detail).not.toHaveProperty("waitFrom");
-  }
-  expect(executionReasons(f)).toEqual(["verify g1: provider error", "verify g1: provider error"]); // the class label stays; no retry or wait suffix
-  expect(f.store.enabled(f.session.id)).toBe(true); // two failures in a row leave memory on
-  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere"); // curate's output is kept as a proposal, not yet published
-  expect(f.store.handoff(f.session.id, "dreaming")).toMatchObject({ nextTask: "verify", detail: { groups: [{ batches: [{ category: "constraint", run: expect.any(Number) }] }] } });
-  delete f.dreamer.script.instead;
-  expect(await f.dream()).toMatchObject({ outcome: "success" }); // the next check resumes at verify; no new Noter operation was needed
-  expect(taskNames(f).filter(task => task === "curate")).toHaveLength(1); // curate did not run again
-  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
-  expect(f.store.currentCommit(rule.knowledgeId, f.path)[0]!.text).toBe("Use pnpm everywhere, tidied"); // published once the resumed verify passed
-});
 
 // consecutive failures switch trace off; follow Magic Context's practice (maintainer, translated)
 test("2026-10-22, 146 supersedes the 2026-10-21 failure-handling ruling — the third consecutive Dreamer failure switches memory off like the Noter's, the first two do not, and the Dreamer's streak is its own row", async () => {
@@ -2780,41 +2649,12 @@ test("2026-10-22, 146 supersedes the 2026-10-21 failure-handling ruling — the 
     expect(f.store.enabled(f.session.id), `after failure ${failure}`).toBe(failure < 3);
   }
   expect(results.slice(0, 2).every(result => !("automaticOff" in result))).toBe(true);
-  expect(results[2]).toMatchObject({ outcome: "failure", automaticOff: expect.stringMatching(/^Trace Memory: S\d+ dreaming off after three failures \(R\d+, R\d+, R\d+\); curate g1: error\. Use \/trace on to resume\.$/) });
+  expect(results[2]).toMatchObject({ outcome: "failure", automaticOff: expect.stringMatching(/^Trace Memory: S\d+ dreaming off after three failures \(R\d+, R\d+, R\d+\); notes: error\. Use \/trace on to resume\.$/) });
   expect(f.store.taskFailures(f.session.id).map(row => [row.phase, row.count])).toEqual([["dreaming", 3]]); // the Noter's row is separate
   expect(f.store.handoff(f.session.id, "dreaming")).not.toBeNull(); // the hand-off stays; /trace on resumes it
 });
 
-test("2026-10-21, 144: '超过 100 条后按 MC 的方法做，只评变更过的部分、按每批 100 条分批，并附加 30 条已评过的作为参照' — up to 100 items, one pass; beyond, passes of 100, and a later run scores only what changed beside 30 scored anchors", async () => {
-  const f = dreamerFixture();
-  const items = Array.from({ length: 105 }, (_, i) => f.item(`Rule number ${i}`, { category: "reference", title: `Rule ${i}` }));
-  const classify = () => f.dreamer.inputs.filter(input => input.task === "classify");
-  const shown = (text: string) => (text.match(/^K\d+ \[/gm) ?? []).length;
-  expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(classify().map(input => shown(input.text))).toEqual([100, 5]);
-  updateKnowledge(f.store, f.path, items[0]!.knowledgeId, items[0]!.commit, "Rule number 0, changed", items[0]!.supports, "reference");
-  f.item("A new rule", { category: "reference", title: "New rule" });
-  f.dreamer.inputs.length = 0;
-  expect(await f.dream()).toMatchObject({ outcome: "success" });
-  const text = classify()[0]!.text, cut = text.indexOf("Items to score");
-  expect(classify()).toHaveLength(1);
-  expect([shown(text.slice(0, cut)), shown(text.slice(cut))]).toEqual([30, 2]); // 30 scored anchors, then the changed and the new item only
-});
 
-test("2026-10-22, 144: '所有交付都是文件，包括评级任务，这样方便agent自己check自查' — curate, verify and classify each deliver one file the model checks with `check`; no task is given a memory-writing tool", async () => {
-  const f = dreamerFixture({ classify: (_pass, ids) => ids.map(id => `K${id} 77`).join("\n") + "\n" });
-  const rule = f.item("Use pnpm everywhere", { category: "constraint" });
-  f.dreamer.script.curate!.constraint = workspaceBlock(`update ${rule.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
-  expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(taskNames(f)).toEqual(["curate", "verify", "classify"]);
-  for (const input of f.dreamer.inputs) {
-    expect(input.tools.map(tool => tool.name), input.task).toContain("check");
-    expect(input.tools.map(tool => tool.name), input.task).not.toContain("memory");
-    expect(input.workspace.write, input.task).toHaveLength(1); // the one file the task may write
-  }
-  const score = f.store.db.prepare("SELECT score FROM knowledge WHERE id = ?").get(rule.knowledgeId)!.score;
-  expect(score).toBe(77); // classify's scores came from its file
-});
 
 test("2026-10-21, 144: '归档这个机制会取消' — a run whose pools are far over the old pool budgets completes, and nothing is archived for budget", async () => {
   const f = dreamerFixture();
@@ -2825,35 +2665,6 @@ test("2026-10-21, 144: '归档这个机制会取消' — a run whose pools are f
   expect(f.store.currentKnowledge(f.path).map(value => value.knowledge.id).sort()).toEqual(rules.map(rule => rule.knowledgeId).sort()); // all still current
 });
 
-test("2026-10-22, 144: '只需要核实整理阶段的修改，N对知识的修改不用再次核实' — verify's change file lists this run's curate changes only, and verify cannot write a Noter's or a manual version", async () => {
-  let changes = "";
-  const f = dreamerFixture();
-  const tidied = f.item("Use pnpm everywhere", { category: "constraint", title: "Use pnpm" }), noter = f.item("Releases are tagged by hand", { category: "constraint", title: "Tag releases" });
-  const manualSupport = f.existingFact("Manual support");
-  const manual = knowledgeBatch(f.store, f.path, [{ scope: "project", category: "constraint", supports: [manualSupport.id], title: "Manual rule", text: "A hand-written rule" }],
-    { kind: "manual", createdAt: "now" }).committed[0]!;
-  const manualRef = `K${manual.knowledgeId}@v${f.store.versionOrdinal(manual.knowledgeId, manual.commit)}`;
-  f.dreamer.script.curate!.constraint = workspaceBlock(`update ${tidied.ref}`, { reason: "tidy" }, "Use pnpm everywhere, tidied");
-  let attempt = 0;
-  f.dreamer.script.verify = report => {
-    changes ||= readFileSync(/Change file: (\S+)/.exec(report)![1]!, "utf8");
-    if (attempt++) return "## confirm 1\n";
-    // Verdicts are numbered changes of this run: a verdict for an item curate did not propose has no number to carry it, and an edit that names another item is refused.
-    const evidence = (item: { supports: number[] }) => `trace://F${item.supports[0]}`;
-    return workspaceBlock(`edit 1 update ${noter.ref}`, { evidence: evidence(noter) }, "Tags are made by hand") + workspaceBlock("confirm 2");
-  };
-  const outcome = await f.dream();
-  expect(outcome, JSON.stringify(outcome)).toMatchObject({ outcome: "success" });
-  expect(changes).toContain(`update K${tidied.knowledgeId}`);
-  expect(changes).not.toContain(`K${noter.knowledgeId}`);
-  expect(changes).not.toContain(`K${manual.knowledgeId}`);
-  const refusal = f.dreamer.messages[0]!; // the first verify file failed its check: there is no change 2, and an edit cannot name another item than its change's
-  expect(refusal).toContain("there is no change 2");
-  expect(refusal).toContain(`names K${noter.knowledgeId}@v1; change 1 is on K${tidied.knowledgeId}@v1`);
-  const text = (id: number) => f.store.currentKnowledge(f.path).find(value => value.knowledge.id === id)!.revision.text;
-  expect(text(noter.knowledgeId)).toBe("Releases are tagged by hand");
-  expect(text(manual.knowledgeId)).toBe("A hand-written rule");
-});
 
 // ---- 144 stage 4 part 5: injection by score and the one temporary allowance ----
 afterEach(closeInjectionFixtures);
@@ -2994,12 +2805,3 @@ test("2026-10-22, 144: allowance order — unextracted Raw, then unscored bodies
   }
 });
 
-test("2026-10-24: all worker prompts permit Bash and require read-only use outside the workspace without network access", () => {
-  const noter = "You may use Bash to search and edit your workspace files in batches: grep, sed and scripts. Outside your workspace it is read-only: never change repositories, configuration or other files, and never use the network.";
-  const dreamer = "You may use Bash to search, read and inspect: grep, sed, git log/show/diff, and scripts over your workspace files. Outside your workspace it is read-only: never change repositories, configuration or other files, and never use the network.";
-  for (const tools of [canonicalToolNames, ccPluginToolNames]) {
-    expect(loadPrompt("noting.md", tools)).toContain(noter);
-    expect(loadPrompt("dreaming.md", tools)).toContain(dreamer);
-    expect(loadPrompt("classifying.md", tools)).toContain(dreamer);
-  }
-});

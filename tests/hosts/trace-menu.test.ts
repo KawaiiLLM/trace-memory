@@ -64,7 +64,6 @@ test("pending: Noting/Dreaming rows with compact ratios and whole-number percent
   expect(pending.dreaming).toEqual([
     { label: "pending", tokens: 12, trigger: 30, ratio: 0.4, percent: "40%", amount: "12 / 30 Noter ops" },
   ]);
-  expect(pending.dreamingNext).toEqual({ label: "next curate", value: "merge-split" });
 });
 
 test("pending: the Dreaming row counts Noter operations; at the trigger it shows at-least, and an unavailable count shows no number", () => {

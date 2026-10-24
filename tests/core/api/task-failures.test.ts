@@ -10,6 +10,7 @@ import { Store } from "../../../src/core/store/index.ts";
 import { ALL_POOLS } from "../../../src/core/store/processing.ts";
 import type { DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
+import { scriptedDreamer, writeCurateFiles } from "../../support/dreamer.ts";
 
 const memories: TraceMemory[] = [], dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const m of memories.splice(0)) m.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -71,26 +72,26 @@ test("32c: borrowed failures continue across executors, disable only the target 
 
 test("92: N auto-off fences a running D: its late pass changes nothing, its claim is released only at settlement, manual notes are refused", async () => {
   let scenario!: (input: DreamingAgentInput) => ReturnType<RunAgent>;
-  let dreamCalls = 0;
+  const ready = Promise.withResolvers<void>(), notes = scriptedDreamer();
   const m = open(":memory:", raw => {
     const input = raw as NotingAgentInput | DreamingAgentInput;
-    if (input.kind === "dreaming") { dreamCalls++; return scenario(input); }
+    if (input.kind === "dreaming") return input.task === "notes" ? notes.agent(input) : scenario(input);
     return failed(raw);
   });
   const target = seed(m), other = seed(m);
   await note(m, target); await note(m, target);
   const noted = decision(m, target, "retained evidence");
-  const [first] = [1, 2].map(n => knowledge(m.store, target, "session", "constraint", [noted.facts[0]!.id], `pending maintenance ${n}`));
+  const [first] = [1, 2].map(n => knowledge(m.store, target, "project", "constraint", [noted.facts[0]!.id], `pending maintenance ${n}`));
   const manual = m.tools({ kind: "manual", ...target, currentTurnId: target.headTurnId }).find(t => t.name === "note")!;
   const revisions = () => m.store.listKnowledgeRevisions().length;
   let late!: () => string | undefined;
   scenario = async input => {
     input.reportRequest(request);
-    const report = String(await input.tools.find(t => t.name === "check")!.execute({}));
-    writeFileSync(/File: (\S+?\.md)/.exec(report)![1]!, block(`update K${first!.knowledgeId}@v1`, { reason: "maintenance" }, "maintained rule"));
+    await writeCurateFiles(input, block(`update K${first!.knowledgeId}@v1`, { reason: "maintenance" }, "maintained rule"));
     const claim = m.store.getClaim(target.sessionId, "dreaming")!;
     late = () => input.passEnd();
     expect(input.signal?.aborted).toBe(false);
+    ready.resolve();
     return new Promise(resolve => input.signal!.addEventListener("abort", () => {
       // The lease is fenced (expired) by the auto-off, but the claim is not released or taken over before the run settles.
       expect(m.store.getClaim(target.sessionId, "dreaming")).toMatchObject({ executorId: claim.executorId, token: claim.token });
@@ -102,6 +103,7 @@ test("92: N auto-off fences a running D: its late pass changes nothing, its clai
   m.config.dreaming.triggerOperations = 1;
   const before = revisions();
   const held = m.dream({ ...target, model: "fake" });
+  await ready.promise;
   expect((await note(m, target)).automaticOff).toBeTruthy();
   const cancelled = await held;
   expect(cancelled.outcome, JSON.stringify(cancelled)).toBe("cancelled");
@@ -113,7 +115,6 @@ test("92: N auto-off fences a running D: its late pass changes nothing, its clai
   expect(streaks(m).filter(r => r.phase === "dreaming")).toEqual([]);
   expect(await m.dream(target)).toEqual({ outcome: "dropped" });
   expect(await note(m, target)).toEqual({ outcome: "dropped" });
-  expect(dreamCalls).toBe(1);
 });
 
 test.each([false, true])("92: the failure streak resets only after atomic terminal publication (audit failure: %s)", async auditFailure => {

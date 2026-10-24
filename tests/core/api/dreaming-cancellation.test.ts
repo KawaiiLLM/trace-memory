@@ -1,119 +1,98 @@
-// Ticket 146 §3.3: a Dreaming execution has several calls in flight (one per group), and an execution-level cancellation must end every one
-// of them even when a runner ignores abort. The fence is closed first, so a late write of an ignored runner changes nothing.
 import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DreamingAgentInput, RunAgentResult } from "../../../src/core/api/index.ts";
-import { sourceSeededMemory, type TraceMemory } from "../../source-fixture.ts";
-import { dreamerFixture as makeDreamerFixture, listedBatches, noterWrittenItem, scriptedDreamer, type DreamerFixture } from "../../support/dreamer.ts";
+import { tmpdir } from "node:os";
+import { TraceMemory as openMemory, type TraceMemory } from "../../../src/core/api/index.ts";
+import { dreamerFixture, scriptedDreamer, writeCurateFiles } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
 import { REQUEST } from "../../support/noter.ts";
 
-const memories: TraceMemory[] = [];
-const dirs: string[] = [];
-afterEach(() => { for (const memory of memories.splice(0)) memory.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+const memories: TraceMemory[] = [], directories: string[] = [];
+afterEach(() => { for (const memory of memories.splice(0)) memory.close(); for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
-/** Two groups (60 constraint, 50 reference) and a Noter-written trigger item. */
-function setup(dbPath?: string) {
-  const f = makeDreamerFixture(memories, {}, dbPath);
-  const rules = Array.from({ length: 60 }, (_, i) => f.item(`rule ${i}`, { category: "constraint", title: `r ${i}` }));
-  Array.from({ length: 50 }, (_, i) => f.item(`reference ${i}`, { category: "reference", title: `f ${i}` }));
-  noterWrittenItem(f.memory, f.path as never, f.existingFact("trigger").id);
-  return { f, rules };
-}
-const execution = (f: DreamerFixture) => f.store.db.prepare("SELECT outcome, reason FROM task_executions ORDER BY rowid").all() as { outcome: string | null; reason: string | null }[];
-const count = (f: DreamerFixture) => Number(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")?.count ?? 0);
-const revisions = (f: DreamerFixture) => Number(f.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions").get()!.n);
-const deadline = (ms: number) => new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`did not end within ${ms} ms`)), ms));
-
-/** Three conversations, held in flight: the first never answers and ignores abort (it writes a late update when released), the others wait for abort. */
-function hung(f: DreamerFixture, rule: { ref: string }) {
-  let started = 0, release!: () => void;
-  const late = new Promise<void>(resolve => { release = resolve; });
-  const lateRan = { value: false, message: "" as string | undefined };
-  const body = (first: boolean) => async (raw: unknown): Promise<RunAgentResult> => {
-    const input = raw as DreamingAgentInput;
+for (const source of ["stop", "signal", "off"] as const) test(`${source} closes every group fence and refuses late publication without counting a failure`, async () => {
+  const f = dreamerFixture(memories); f.memory.config.dreaming.groupItems = 1;
+  const items = [f.item("Rule one"), f.item("Rule two")];
+  const ready = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), finished = Promise.withResolvers<void>();
+  let started = 0, late = 0;
+  f.dreamer.script.instead = { curate: async input => {
     input.reportRequest(REQUEST);
-    input.reportProgress?.({ usage: { input: 3 } } as never);
-    started++;
-    if (!first) return new Promise<RunAgentResult>(resolve => input.signal!.addEventListener("abort", () => resolve({ outcome: "cancelled", output: "stopped", request: REQUEST }), { once: true }));
-    const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
-    await late;
-    writeFileSync(listedBatches(report)[0]!.file, block(`update ${rule.ref}`, { reason: "late" }, "Late text"));
-    lateRan.value = true; lateRan.message = input.passEnd();
-    return { outcome: "success", output: "late", request: REQUEST };
-  };
-  f.next(body(true)); f.next(body(false));
-  return { started: () => started, release: () => release(), lateRan };
-}
-
-test("an ordinary stop ends every group's wait although one runner ignores abort: cancelled, not counted, claim released, the same executor runs the next execution", async () => {
-  const { f, rules } = setup();
-  const h = hung(f, rules[0]!);
-  const before = revisions(f);
-  const running = f.dream();
-  while (h.started() < 2) await new Promise(resolve => setTimeout(resolve, 2));
-  f.memory.cancelTasks(); // what /trace stop calls: it does not stop the executor
-  expect(await Promise.race([running, deadline(2000)])).toMatchObject({ outcome: "cancelled" });
-  expect(execution(f)).toEqual([{ outcome: "cancelled", reason: expect.any(String) }]);
-  expect(count(f)).toBe(0);
-  expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
-  h.release(); await new Promise(resolve => setTimeout(resolve, 20));
-  expect(h.lateRan).toEqual({ value: true, message: undefined }); // the fence was closed: the stop hook has nothing to say
-  expect(revisions(f)).toBe(before);
-  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
-  expect(await f.dream()).toMatchObject({ outcome: "success" }); // the same executor admits and runs again
-});
-
-test("the admitting call's own signal cancels the execution the same way", async () => {
-  const { f, rules } = setup();
-  const h = hung(f, rules[0]!);
+    if (++started === 2) ready.resolve();
+    await release.promise;
+    writeFileSync(`${input.workspace.dir}/changes.md`, "## none\n");
+    expect(input.passEnd()).toBeUndefined();
+    if (++late === 2) finished.resolve();
+    return { outcome: "success", request: REQUEST, output: "late" };
+  } };
   const controller = new AbortController();
   const running = f.memory.dream({ ...f.target, signal: controller.signal });
-  while (h.started() < 2) await new Promise(resolve => setTimeout(resolve, 2));
-  controller.abort();
-  expect(await Promise.race([running, deadline(2000)])).toMatchObject({ outcome: "cancelled" });
-  expect(count(f)).toBe(0);
-  h.release();
-  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  await ready.promise;
+  if (source === "signal") controller.abort();
+  else if (source === "off") { f.store.setEnrollment(f.session.id, false); f.memory.cancelTasks(); }
+  else f.memory.cancelTasks();
+  expect(await running).toMatchObject({ outcome: "cancelled" });
+  release.resolve(); await finished.promise;
+  for (const item of items) expect(f.store.currentCommit(item.knowledgeId, f.path)[0]!.id).toBe(item.commit);
+  expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
+  expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")?.count ?? 0).toBe(0);
+  expect(f.store.handoff(f.session.id, "dreaming")!.detail!.groups!.every(group => group.run === undefined)).toBe(true);
 });
 
-test("a shutdown forces every wait, the late runner changes nothing, and a new executor on the same database resumes from what was committed", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "tm-146-shutdown-")); dirs.push(dir);
-  const file = join(dir, "memory.sqlite");
-  const { f, rules } = setup(file);
-  const h = hung(f, rules[0]!);
-  const before = revisions(f);
-  const running = f.dream();
-  while (h.started() < 2) await new Promise(resolve => setTimeout(resolve, 2));
-  f.memory.close(); memories.pop();
-  await Promise.race([running, deadline(2000)]); // execute ends although the first runner never answers
-  h.release(); await new Promise(resolve => setTimeout(resolve, 20));
-  const dreamer = scriptedDreamer();
-  const memory = sourceSeededMemory(file, dreamer.agent); memories.push(memory);
-  memory.config.dreaming.triggerOperations = 1;
-  const rows = memory.store.db.prepare("SELECT outcome FROM task_executions").all();
-  expect(rows).toEqual([{ outcome: null }]); // the execution was never settled: no verdict, no count
-  expect(memory.store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions").get()).toEqual({ n: before });
-  expect(await memory.dream({ ...f.target })).toMatchObject({ outcome: "success" });
-});
-
-test("a call that has a deadline reports its own usage: a group's deadline result carries that group's progress, not another group's", async () => {
-  const { f } = setup();
-  f.memory.config.dreaming.timeoutMs = 150;
-  const calls: number[] = [];
-  const stuck = (usage: number) => async (raw: unknown) => {
-    const input = raw as DreamingAgentInput;
+test("a lost-claim executor cannot overwrite a later executor's completed group, handoff or failure streak", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "trace-dreamer-takeover-")); directories.push(directory);
+  const file = join(directory, "memory.sqlite"), f = dreamerFixture(memories, {}, file), item = f.item("Original supported rule");
+  const ready = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  f.dreamer.script.instead = { curate: async input => {
     input.reportRequest(REQUEST);
-    input.reportProgress?.({ usage: { input: usage } } as never);
-    calls.push(usage);
-    return new Promise<RunAgentResult>(() => {});
-  };
-  f.next(stuck(7)); f.next(stuck(9));
-  await f.dream();
-  const inputs = f.store.db.prepare("SELECT b.response AS response FROM runs r JOIN run_bodies b ON b.run_id = r.id WHERE r.kind = 'dreaming'").all()
-    .map(row => JSON.parse(String(row.response)));
-  expect(calls.sort()).toEqual([7, 9]);
-  expect(inputs.map(response => response.usage?.input).sort()).toEqual([7, 9]); // each failed run keeps its own call's usage
+    expect(await writeCurateFiles(input, block(`update ${item.ref}`, { reason: "first executor" }, "First executor proposal"))).toBeDefined();
+    writeFileSync(join(input.workspace.dir, "scores.md"), `K${item.knowledgeId} 65\n`);
+    expect(input.passEnd()).toBeDefined();
+    ready.resolve(); await release.promise;
+    writeFileSync(join(input.workspace.dir, "scores.md"), `K${item.knowledgeId} 65\n`);
+    expect(input.passEnd()).toBeUndefined();
+    return { outcome: "success", output: "Late completion", request: REQUEST };
+  } };
+  const old = f.dream(); await ready.promise;
+  expect(f.store.releaseClaim(f.store.getClaim(f.session.id, "dreaming")!)).toBe(true);
+  const replacement = scriptedDreamer({ curate: { group1: block(`update ${item.ref}`, { reason: "replacement executor" }, "Replacement executor rule") } });
+  const next = openMemory(file, replacement.agent, { dreaming: { triggerOperations: 1 } }); memories.push(next);
+  expect(await next.dream(f.target)).toMatchObject({ outcome: "success" });
+  const revision = next.store.currentCommit(item.knowledgeId, f.path)[0]!;
+  const streak = next.store.taskFailures(f.session.id);
+  const coverage = next.store.db.prepare("SELECT * FROM knowledge_processed ORDER BY revision_id").all();
+  release.resolve();
+  expect(await old).toMatchObject({ outcome: "failure" });
+  expect(next.store.currentCommit(item.knowledgeId, f.path)[0]).toEqual(revision);
+  expect(revision.text).toBe("Replacement executor rule");
+  expect(next.store.handoff(f.session.id, "dreaming")).toBeNull();
+  expect(next.store.taskFailures(f.session.id)).toEqual(streak);
+  expect(next.store.db.prepare("SELECT * FROM knowledge_processed ORDER BY revision_id").all()).toEqual(coverage);
+  expect(next.store.enabled(f.session.id)).toBe(true);
+});
+
+test("shutdown preserves a committed group and a reopened executor resumes only its uncommitted sibling", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "trace-dreamer-reopen-")); directories.push(directory);
+  const file = join(directory, "memory.sqlite"), f = dreamerFixture(memories, {}, file);
+  f.memory.config.dreaming.groupItems = 1; f.memory.config.dreaming.parallelGroups = 1;
+  const a = f.item("First supported rule"), b = f.item("Second supported rule");
+  const ready = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), late = Promise.withResolvers<void>(), normal = scriptedDreamer();
+  let group = 0;
+  f.dreamer.script.instead = { curate: async input => {
+    if (++group === 1) return normal.agent(input);
+    input.reportRequest(REQUEST); ready.resolve(); await release.promise;
+    expect(input.passEnd()).toBeUndefined(); late.resolve();
+    return { outcome: "success", output: "Late completion", request: REQUEST };
+  } };
+  const running = f.dream(); await ready.promise;
+  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(50);
+  f.memory.close(); await running;
+  const replacement = scriptedDreamer(), next = openMemory(file, replacement.agent, { dreaming: { triggerOperations: 1 } }); memories.push(next);
+  expect(next.store.handoff(f.session.id, "dreaming")!.detail!.groups!.map(group => !!group.run)).toEqual([true, false]);
+  expect(await next.dream(f.target)).toMatchObject({ outcome: "success" });
+  expect(replacement.inputs.map(input => input.task)).toEqual(["curate"]);
+  expect(next.store.getKnowledge(b.knowledgeId)!.score).toBe(50);
+  expect(next.store.noterOperations(f.path)).toBe(0);
+  release.resolve(); await late.promise;
+  expect(next.store.handoff(f.session.id, "dreaming")).toBeNull();
+  expect(next.store.taskFailures(f.session.id).every(row => row.count === 0)).toBe(true);
 });

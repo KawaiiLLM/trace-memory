@@ -45,7 +45,7 @@ export { NOTING_CAPACITY, NOTING_MEMBERSHIP } from "../noting/index.ts";
 export { defaultWorkspaceRoot, sweepStaleWorkspaces } from "../noting/workspace.ts";
 import { Store, type PathPending, type SourceInput, type SourceEntry, type SourceEntryMeta, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
-import { prepareDreaming, runDreaming, executionLimitMs, remainingTasks, CLAIM_LEASE_MARGIN_MS, TASK_GAP_MS, type DreamingFrozen, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
+import { prepareDreaming, runDreaming, executionLimitMs, CLAIM_LEASE_MARGIN_MS, TASK_GAP_MS, type DreamingFrozen, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
 
 
@@ -87,6 +87,16 @@ export interface TraceMemoryConfig {
     triggerOperations: number;
     /** Cooperative wall-clock deadline shared by every host. */
     timeoutMs: number;
+    /** Dispatcher proposal: the maintainer has not set the per-seed retrieval cap. */
+    candidatesPerSeed: number;
+    groupItems: number;
+    parallelGroups: number;
+    notesSteps: number;
+    notesTokens: number;
+    curateSteps: number;
+    curateContextTokens: number;
+    scoringSteps: number;
+    scoringContextTokens: number;
   };
   /** Per-item length targets for every writer, in units (ticket 145). */
   writing: WritingLimits;
@@ -128,7 +138,10 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     checkKnowledgeSteps: 8,
     checkKnowledgeContextTokens: 15_000,
   },
-  dreaming: { triggerOperations: DEFAULT_DREAMING_TRIGGER_OPERATIONS, timeoutMs: 1_800_000 },
+  dreaming: { triggerOperations: DEFAULT_DREAMING_TRIGGER_OPERATIONS, timeoutMs: 1_800_000,
+    candidatesPerSeed: 10, groupItems: 50, parallelGroups: 5, notesSteps: 10, notesTokens: 10_000,
+    // Dispatcher proposals from the 37-item Sonnet experiment, not maintainer-set limits.
+    curateSteps: 100, curateContextTokens: 200_000, scoringSteps: 10, scoringContextTokens: 30_000 },
   writing: { ...DEFAULT_WRITING_LIMITS },
   compaction: {
     factsTokens: 10_000,
@@ -164,6 +177,8 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "consolidation.maxToolRounds": "Consolidation is retired; remove this key",
   // Ticket 144 stage 4: the Dreamer's tasks are bounded by dreaming.timeoutMs; the only value it ever took was 0.
   "dreaming.maxToolRounds": "the Dreamer has no tool-round limit (each task is bounded by dreaming.timeoutMs); remove this key",
+  "dreaming.classifyModel": "scoring is part of the curate conversation and uses the Dreamer's model; remove this key",
+  "dreaming.classifyThinking": "scoring is part of the curate conversation and uses the Dreamer's thinking; remove this key",
   "compaction.overflowTokens": "use compaction.temporaryTokens (a fixed configuration value, default 10,000; no longer derived from the Noting, Consolidation and Dreamer triggers)",
   // Ticket 144 stage 4: one temporary allowance per context replaces the Knowledge-only shared allowance.
   "compaction.sharedAllowanceTokens": "one temporary allowance, compaction.temporaryTokens, replaces it; remove this key",
@@ -255,6 +270,9 @@ export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
     if (name === "render.entryTokens" && (value as number) > 2_000) throw new Error(`Invalid ${name}: at most 2000`);
     if ((key === "toolInputTokens" || key === "toolResultTokens") && (value as number) > TOOL_CALL_CEILING) throw new Error(`Invalid ${name}: at most ${TOOL_CALL_CEILING}`);
   }
+  if (cfg.dreaming.groupItems > 50) throw new Error("Invalid dreaming.groupItems: at most 50");
+  if (cfg.dreaming.parallelGroups > 5) throw new Error("Invalid dreaming.parallelGroups: at most 5");
+  if (cfg.dreaming.notesTokens > 10_000) throw new Error("Invalid dreaming.notesTokens: at most 10000");
   if (cfg.dreaming.timeoutMs > 2_147_483_647) throw new Error("Invalid dreaming.timeoutMs: expected at most 2147483647 for the native timer");
   return cfg;
 }
@@ -853,8 +871,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         }
         const handoff = store.handoff(target.sessionId, "dreaming");
         // 146 §18: a manual run skips the due test. With no hand-off to resume and nothing to curate there is nothing to do.
-        if (input.manual ? !handoff && !store.curateItems(target).length : !dreamingDue(target)) { empty = true; return null; }
-        executionLimit = executionLimitMs(remainingTasks(handoff?.nextTask), cfg.dreaming.timeoutMs);
+        const visible = store.curateItems(target).filter(item => item.value.revision.scope !== "session");
+        if (input.manual ? !handoff && !visible.length : !dreamingDue(target)) { empty = true; return null; }
+        const groupCount = handoff?.detail?.groups?.length ?? Math.ceil(visible.length / cfg.dreaming.groupItems);
+        executionLimit = executionLimitMs(1 + 2 * Math.max(1, Math.ceil(groupCount / cfg.dreaming.parallelGroups)), cfg.dreaming.timeoutMs);
         claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerOperations, executionLimit + CLAIM_LEASE_MARGIN_MS, input.manual);
         if (!claim) {
           if (input.manual) {
@@ -866,6 +886,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         projectId = store.getSession(input.sessionId)!.projectId;
         origin = store.triggerOrigin(target, target.triggerEntryId);
         const frozen = prepareDreaming(store, { ...input, ...target }, cfg, claim, target);
+        if (!frozen.groups.length && !handoff) { store.releaseClaim(claim); empty = true; return null; }
         // 126 keys the Dreamer's logical task on its session alone, so every run of one session continues one failure streak.
         executionId = store.beginExecution({ sessionId: target.sessionId, phase, origin });
         return frozen;

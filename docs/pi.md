@@ -123,13 +123,8 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 ```
 
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
-- `dreaming.model` and `dreaming.thinking` use the same model/thinking Settings selectors,
-  defaults and precedence as the other phases. Dreamer has no new settings page. The classify task has its own
-  `dreaming.classifyModel` and `dreaming.classifyThinking` rows in the same Settings; admission resolves both triples and freezes them for the run.
-  `dreaming.maxToolRounds` is a removed setting (the Dreamer has no tool-round limit); a leftover key fails the load by name. The shared `dreaming.timeoutMs` default is
-  1,800,000 milliseconds, applied to each of the Dreamer's three tasks (curate, verify, classify). Expiry fails the
-  task, fences its workspace and releases its claim. Provider retries do not reset the deadline. After a pass the host asks
-  for one repair of a file that fails its check, then ends the task.
+- `dreaming.model` and `dreaming.thinking` use the existing Settings selectors and follow the foreground model/thinking until explicitly set. Admission freezes that choice for notes, curate and in-conversation scoring. The separate `dreaming.classifyModel` and `dreaming.classifyThinking` keys are removed and fail load by name.
+  `dreaming.timeoutMs` defaults to 1,800,000 ms per stage interval; a grouped curate/scoring conversation reserves two intervals. Expiry fences the workspace and releases its claim. Step/context budgets are soft and reported by each check; the notes file alone has a hard 10,000-token ceiling.
 - `notingModel` and `consolidationModel` accept `provider/model-id`, or `session`. Omission
   and `session` both resolve to the current session model's audited provider/id.
 - `notingThinking` and `consolidationThinking` (26d) accept `inherit` (the default) or one of Pi's
@@ -255,19 +250,9 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   context: since 27a the host reports `contextWindow - 10,000` as the input allowance
   (see "Request capacity" below). An oldest entry that cannot fit remains
   pending with a capacity notification. Unknown model capacity still leaves work pending.
-- Dreaming is checked **per session** at each entry end through arming, over `global`, this session's
-  project and this session together. A run is due when the Noter operations since the last covered Dreamer pass reach
-  `dreaming.triggerOperations` (30 by default; each Noter create or update counted once, a second update of one item counts again, manual and
-  Dreamer revisions never counted), or when a hand-off row asks for a retry or resume. One run covers all three pools and
-  runs three tasks: **curate** (groups of at most 100 items side by side, each worked in batches of at most 20 with one file per batch, blocks of either operation of the run's pair, alternating `update`+`archive` and `merge`+`split`; the files that pass are kept and nothing is applied before verify), **verify** (per group, one confirm, edit or revert for every proposal, against
-  facts, Raw and the session's repositories; its pass applies the confirmed and edited ones) and **classify** (importance scores 1 to 100, in fresh passes of at most 100 items that run side by side, each with a self-check step). Each task writes a
-  file in its own workspace with Pi's `write`/`edit` and `check`, and ends when the model stops; a task with nothing to do
-  makes no model call. A passed task leaves a hand-off, so a stop or failure resumes where it left off at the next entry-end check, with no wait for a
-  threshold and no count reset; three consecutive failed runs switch memory off for the session, as the Noter's do. A group's curate first request is its prefix (every item of the group whole) and
-  its verify reuses it. Exact current bases and the live database-wide Dreamer claim are checked atomically; a stale base is
-  refused for that operation only. Ordinary completion starts no next run, even while the session remains due. The earlier
-  pool-budget Dreamer (a frozen 10,000-token range, `memory` skips, an end review) is removed. There is no automatic Raw
-  block or `note` tool.
+- Dreaming is checked per session at entry end through arming. Only visible global/project knowledge participates; session knowledge is outside routine Dreaming and its operation trigger. The default trigger remains 30 uncovered Noter create/update operations, or an existing retry hand-off.
+  One notes task explores repositories, then groups of at most 50 run with at most five in flight. Each group reviews one checklist and one changes file, may keep/update/archive/merge/split, and scores changed/new or unscored results in the same native conversation. A group publishes atomically only after both stages pass. A completed group is not replayed; an interrupted group restarts curate with the saved notes and prefix. Three consecutive business failures disable memory; cancellation does not.
+  All groups share system → knowledge-only compact → repository notes. Complete histories and facts live in `group.md`, not injected Raw or facts blocks. The worker has no `note` or `memory` write tool. Repository tools retain the existing deny list. See [the current execution contract](core.md#dreamer-execution).
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable
@@ -563,7 +548,7 @@ completion. Bars cap at 100%; numbers and percentages do not:
 - **Consolidation:** applicable unconsolidated facts, including group framing and
   relations, through the same renderer and threshold calculation as eligibility.
 - **Dreaming:** one row (146): the Noter operations since the last covered Dreamer pass against
-  `dreaming.triggerOperations`, as `n / 30 Noter ops` (`≥30` once the count has reached the trigger), and a `next curate` row naming the pair the project's next run performs (`update-archive` or `merge-split`). The bar does not imply that the database-wide seat is available. The notice area also shows the
+  `dreaming.triggerOperations`, as `n / 30 Noter ops` (`≥30` once the count reaches the trigger). There is no next-operation-pair row. The bar does not imply that the database-wide seat is available. The notice area also shows the
   Dreamer's latest failure while no later run has succeeded: `Dreamer failed: <task>: <class> (R<run>, <UTC time>)`.
   Three consecutive Dreamer failures switch memory off like the Noter's; this notice does not depend on the automatic-off state.
 
@@ -595,8 +580,6 @@ path (the Noter has no execution-mode preference: it runs fresh only, 2026-10-22
 | Noter thinking | inherit / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `notingThinking` | `inherit` |
 | Dreamer model | Follow foreground / an available `provider/model-id` | `dreaming.model` | `session` |
 | Dreamer thinking | inherit / one of Pi's levels | `dreaming.thinking` | `inherit` |
-| Classifier model | Follow foreground / an available `provider/model-id` | `dreaming.classifyModel` | the Dreamer's model, which follows the main agent's until set (user ruling, 2026-10-22) |
-| Classifier thinking | inherit / one of Pi's levels | `dreaming.classifyThinking` | the Dreamer's thinking |
 | Closed-session scope | off / project / global | `closedSessionScope` | `project` |
 
 **The thinking entries (26d/32d)** choose the level this phase's runs think at;
@@ -787,7 +770,7 @@ resolved independently, so an external commit at the same leaf remains observabl
 
 ## Manual dream (146)
 
-`/trace dream` starts one Dreaming run for the current session, whatever the Noter-operation count says. Like `/trace catchup` it answers at once (`Dream: starting`) and reports through the `/trace` status line and a notification: `Dream: running`, then `completed`, `failed — <reason>` or `stopped`. It is an ordinary run in every other way: it needs memory on, respects the database-wide seat, resumes a hand-off with the hand-off's pair, writes coverage, advances the rotation and counts toward the three-failure rule. It is refused, with the reason on the status line and no execution, while this executor's Dreamer slot is taken, while another session holds the seat, and when there is nothing to curate. `/trace stop` ends it as `stopped`. A failure of a manual dream ends an active catchup drain for the same session and branch.
+`/trace dream` starts one incremental Dreamer run now, skipping only the operation threshold. It reports starting/running/completed/failed/stopped through the existing status line and notifications. It retains enrollment, the database-wide seat, claim, saved uncommitted groups, coverage and ordinary three-failure accounting; it neither rotates operations nor starts a full-pool sweep.
 
 ## Manual catchup and stop (18b)
 

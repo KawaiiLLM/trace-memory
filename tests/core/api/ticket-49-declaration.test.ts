@@ -109,7 +109,7 @@ test.each(["project", "global"] as const)("86: declaring session's Dreamer block
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
 });
 
-test.each(["global", "project", "session"] as const)("86: declaring session's %s Dreamer backlog blocks declaration", scope => {
+test.each(["global", "project"] as const)("86: declaring session's %s Dreamer backlog blocks declaration", scope => {
   const f = base(false);
   knowledge(f, scope);
   f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;

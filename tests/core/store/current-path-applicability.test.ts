@@ -327,7 +327,7 @@ test("64b scope visibility: global current hides older visible revisions, reject
 
     const privateParent = create(store, ownerPath, ownerFact.id, "session", "private merge parent");
     const before = store.listKnowledgeRevisions().length;
-    const check = (text: string) => checkWorkspace(store, { kind: "curate", pair: "merge-split", sessionId: owner.id, file: { name: "curate.md", text } }).problems.join("\n");
+    const check = (text: string) => checkWorkspace(store, { kind: "curate", sessionId: owner.id, file: { name: "curate.md", text } }).problems.join("\n");
     expect(check(block(`merge ${history(widened)}`, { absorb: history(privateParent), reason: "Must be refused." }, "illegal cross-scope merge"))).toContain("merged items share one scope"); // 126: both parents are writable; scope still refuses
     expect(store.listKnowledgeRevisions()).toHaveLength(before);
     expect(store.currentCommit(widened.knowledgeId, ownerPath).map(item => item.id)).toEqual([widened.commit]);

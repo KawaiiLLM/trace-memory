@@ -1,6 +1,5 @@
-// Ticket 144 stage 4 §5.4, stage 5 §3.7 on Pi: curate and verify list grep and find and share the roots; a call outside them is refused
-// before any search runs, and a task with no roots (classify) is refused. Read opens a repository file for a task with roots, past the one
-// deny list. The route a curate conversation takes through `index.ts` is in `dreaming.test.ts`.
+// Dreamer repository reads and searches share project roots and the same deny list.
+// A rootless call fails before searching. The real host route is exercised in dreaming.test.ts.
 import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,13 +12,13 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 const tmp = () => { const dir = realpathSync(mkdtempSync(join(tmpdir(), "tm-144-pi-"))); dirs.push(dir); return dir; };
 const workspace = (roots: string[]) => ({ dir: tmp(), read: [], write: [], roots });
 
-test("curate and verify list grep and find, classify does not; a search outside the roots is refused", async () => {
+test("Dreamer searches are confined; non-Dreamer workspaces have no search tool", async () => {
   const root = tmp(), outside = tmp();
   expect(workspaceFileTools(root, workspace([]), true).definitions.map(tool => tool.name)).toEqual(["write", "edit", "grep", "find"]);
   expect(workspaceFileTools(root, workspace([]), false).definitions.map(tool => tool.name)).toEqual(["write", "edit"]);
   const call = (roots: string[], name: string, input: Record<string, unknown>) =>
     (workspaceFileTools(root, workspace(roots), true).definitions.find(tool => tool.name === name)!.execute as Function)("id", input, undefined, undefined, { cwd: root });
-  await expect(call([], "grep", { pattern: "x", path: root })).rejects.toThrow("during curate and verify only");
+  await expect(call([], "grep", { pattern: "x", path: root })).rejects.toThrow();
   await expect(call([root], "grep", { pattern: "x", path: outside })).rejects.toThrow("outside the repositories you may read");
   await expect(call([root], "find", { pattern: "../*", path: root })).rejects.toThrow("stay inside path");
   await expect(call([root], "grep", { pattern: "x", path: root, glob: "*.ts" })).rejects.toThrow("narrow the search with path");

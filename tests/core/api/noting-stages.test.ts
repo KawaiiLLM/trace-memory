@@ -150,7 +150,7 @@ test("code retrieves facts and knowledge, checker replaces duplicate create, pro
     const revision = current.find(item => item.knowledge.id === id)!.revision;
     expect(revision.text).toBe("Use pnpm"); expect(revision.supports).toEqual([newFact.id]);
   }
-  expect(f.memory.store.knowledgeStaleReasons(current.find(item => item.knowledge.id === unresolved)!.revision.id)).toContainEqual({ reason: "unresolved_check", detail: "Noter check could not resolve" });
+  expect(f.memory.store.knowledgeStaleReasons(current.find(item => item.knowledge.id === unresolved)!.revision.id)).toContainEqual({ reason: "unresolved_check", detail: "needs merge" });
 });
 
 test("budgets count responses rather than tool calls and report growth without stopping at the budget", async () => {

@@ -6,7 +6,6 @@ import { sourceSeededMemory as TraceMemory } from "../../source-fixture.ts";
 import { Store, type KnowledgeOperationInput, type KnowledgeFiles } from "../../../src/core/store/index.ts";
 import { entry, facts, knowledgeBatch, legacyFact, legacyKnowledge, session } from "../../support/seed.ts";
 import { renderFact } from "../../../src/core/render/index.ts";
-import { buildChanges } from "../../../src/core/dreaming/changes.ts";
 import { plan } from "../../../src/core/workspace/plan.ts";
 
 const at = "2026-10-24T00:00:00.000Z";
@@ -229,22 +228,6 @@ test("knowledge trigram retrieval ANDs terms within one version, searches every 
   expect(f.store.db.prepare("SELECT count(*) AS n FROM knowledge_fts").get()!.n).toBe(f.store.listKnowledgeRevisions().length);
 });
 
-test("Dreamer proposals preserve an unmapped maintenance copy across their JSON handoff", () => {
-  const f = fixture(), old = legacyKnowledge(f.store, f.path, { ...f.common, title: "Legacy title" });
-  f.store.db.prepare("UPDATE knowledge_revisions SET title=? WHERE id=?").run("Legacy title", old.commit);
-  const planned = plan(f.store, { kind: "curate", pair: "update-archive", sessionId: f.owner.id, path: f.path,
-    file: { name: "curate.md", text: `## update K${old.knowledgeId}@v1\nreason: clarify\n\nStore keeps records\n` } });
-  expect(planned.problems).toEqual([]);
-  const operation = planned.knowledge[0]!.make().operation!;
-  expect(Object.hasOwn(operation, "files")).toBe(true);
-  expect(operation.files).toBeUndefined();
-  const run = f.store.recordRun({ ...f.run, kind: "dreaming", outcome: "success", response: JSON.stringify({ proposed: [{ block: "update", operation }] }) });
-  const restored = buildChanges(f.store, f.path, [run.id]).proposals[0]!.operation;
-  expect(Object.hasOwn(restored, "files")).toBe(true);
-  const saved = f.store.commitWorkspaceRun({ run: { ...f.run, kind: "dreaming" }, path: f.path, operations: [restored] }).results[0]!;
-  expect(saved.ok, JSON.stringify(saved)).toBe(true);
-  if (saved.ok) expect(f.store.knowledgeRevision(saved.committed[0]!.commit)).not.toHaveProperty("files");
-});
 
 test("the additive migration preserves legacy rows and support relations, backfills every version and is idempotent", () => {
   const dir = mkdtempSync(join(tmpdir(), "tm-propagation-migration-")); dirs.push(dir);

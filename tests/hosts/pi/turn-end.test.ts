@@ -19,7 +19,7 @@ function seedKnowledge(h: ReturnType<typeof host>) {
   const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
   const receipt = JSON.parse(tools.find(t => t.name === "note")!.execute({ title: "Package choice", sources: "[T1#E1] Use pnpm" }));
   expect(receipt.factIds).toHaveLength(1);
-  knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "session", "constraint", receipt.factIds, "Use pnpm", { operation: { title: "Fixture title" } });
+  knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "project", "constraint", receipt.factIds, "Use pnpm", { operation: { title: "Fixture title" } });
 }
 test.each(["session_start", "enable"] as const)(
   "%s imports check Noting without waiting for another native entry", async boundary => {
@@ -92,7 +92,7 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
   const h = host({ "noting.triggerTokens": 300, "dreaming.triggerOperations": 1 });
   h.provider(async c => {
     if (c.systemPrompt?.startsWith("# Dreamer") || c.systemPrompt?.startsWith("# Classifying")) return dreamerFiles(c) ?? reply("Done");
-    return notingFact(c, "## create\ntitle: Fixture title\ncategory: constraint\nscope: session\ntopics: \nsupports: f1\nfiles: None\nreason: Package choice\n\nUse pnpm\n");
+    return notingFact(c, "## create\ntitle: Fixture title\ncategory: constraint\nscope: project\ntopics: \nsupports: f1\nfiles: None\nreason: Package choice\n\nUse pnpm\n");
   });
   await h.prompt("short");
   await h.emit("message_end", { message: reply("short") });
@@ -104,8 +104,8 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
   expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual(Array(4).fill(["noting", "success"]));
   h.persist(reply("next entry"));
   await h.emit("tool_execution_start"); await h.drain();
-  // One Dreamer run is a run for each task: curate's batch, verify with nothing to check, and the scoring pass.
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => [JSON.parse(r.response!).task, r.outcome])).toEqual([["curate", "success"], ["verify", "success"], ["classify", "success"]]);
+  expect(h.memory.store.noterOperations(h.memory.store.knowledgePath(1))).toBe(0);
+  expect(h.memory.store.currentKnowledge().map(item => item.revision.text)).toEqual(["Use pnpm"]);
 });
 
 test("busy entries queue nothing; the next entry after publication admits the next batch", async () => {
@@ -236,6 +236,7 @@ test("Raw entry ends reuse a not-due Dreaming result; restore re-arms the next e
     h.provider(async c => dreamerFiles(c) ?? reply("Done"));
     expect(h.requests).toHaveLength(0);
     h.persist(reply("next entry")); await h.emit("tool_execution_start"); await h.drain();
-    expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["success", "success", "success"]); // curate, verify, classify
+    expect(h.memory.store.getKnowledge(1)).toMatchObject({ score: 50 });
+    expect(h.memory.store.noterOperations(h.memory.store.knowledgePath(1))).toBe(0);
   } finally { due.mockRestore(); }
 });

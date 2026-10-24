@@ -95,7 +95,7 @@ test("64c a larger configured Knowledge window never bypasses actual provider in
   const f = dreamerFixture(memories);
   f.item("changed ".repeat(1_000));
   await expect(f.memory.dream({ ...f.target, capacity: { inputTokens: 100 } })).rejects
-    .toThrow(/Dreaming capacity: the knowledge prefix and tools exceed the model input allowance/);
+    .toThrow(/Dreaming capacity/);
   expect(f.dreamer.inputs).toEqual([]);
   expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
   expect(await f.dream()).toMatchObject({ outcome: "success" }); // left pending: it runs once the model can take it

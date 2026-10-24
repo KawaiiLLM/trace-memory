@@ -1,60 +1,46 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import type { RunAgentResult } from "../../src/core/api/index.ts";
-import type { DreamingAgentInput } from "../../src/core/dreaming/index.ts";
+import type { DreamingAgentInput, DreamingTask, DreamingResult } from "../../src/core/dreaming/index.ts";
 import type { RunAgent, TraceMemory } from "../source-fixture.ts";
 import { REQUEST } from "./noter.ts";
-import { block, workspaceBatch } from "./workspace.ts";
-import { applyWorkspace, describeBlock, plan } from "../../src/core/workspace/index.ts";
-import { CURATE_ROTATION, curatePairOf, type CurateOperation, type CuratePair } from "../../src/core/store/executions.ts";
-import type { Proposal } from "../../src/core/dreaming/changes.ts";
-import type { KnowledgePath, Store } from "../../src/core/store/index.ts";
+import { block, workspaceBatch, type WorkspaceBatch } from "./workspace.ts";
+import { applyWorkspace, parseBlocks } from "../../src/core/workspace/index.ts";
+import type { KnowledgePath, Store, KnowledgeOperationInput } from "../../src/core/store/index.ts";
 import { knowledge as seedKnowledge } from "./seed.ts";
 import { placementOwner } from "../../src/core/store/processing.ts";
 
-/** A scripted Dreamer (ticket 144, stages 4 and 5): the stand-in for the model behind `runAgent` in tests that run the real Dreaming
- * tasks. Like a host, it calls `check`, writes the file `check` names, meets the stop hook after every pass and follows the next
- * batch it is handed. The test states only WHAT each file holds: file text, or a list of texts when the first attempt is expected
- * to fail the check and the repair should say something else. A curate category with no entry writes `## none`; a verify file with
- * no entry confirms every numbered change (stage 5 §9.8), and a script a test supplies is used exactly as given; a classify pass with no
- * entry scores every item 50. */
 type Text = string | readonly string[] | ((message: string) => string);
 export interface DreamerScript {
-  /** The curate batch files by category: a category's text goes to its first listed batch, and `"batch<b>"` names batch b of the group. A batch with no entry writes `## none`. A conversation writes every batch file in order, then meets the
-   * stop hook; the repair message names the failing batches, and their files are written again with the next text of a list. */
+  notes?: Text;
   curate?: Partial<Record<string, Text>>;
-  /** Verify's file. */
-  verify?: Text;
-  /** Classify's file for each pass (1-based); `ids` are the pass's items. A pass writes its file and then meets the self-check step (146): by
-   * default it stops again without editing; `{ write, edit }` gives the file of step 1 and the text an Edit leaves in step 2. */
-  classify?: (pass: number, ids: number[], message: string) => Text | { write: Text; edit?: Text } | undefined;
-  /** Result of the curate conversation (a failure, a cancellation); absent: success. */
+  scoring?: (group: number, labels: string[], message: string) => Text | undefined;
   curateResult?: Partial<RunAgentResult>;
-  /** Run instead of the scripted conversation for one task (a runner that hangs, ignores abort, or records its input). */
-  instead?: Partial<Record<"curate" | "verify" | "classify", (input: DreamingAgentInput) => Promise<RunAgentResult> | RunAgentResult>>;
+  instead?: Partial<Record<DreamingTask, (input: DreamingAgentInput) => Promise<RunAgentResult> | RunAgentResult>>;
 }
-
-const FILE: Record<string, RegExp> = { curate: /File: (\S+?\.md)/, verify: /Your file: (\S+?\.md)/, classify: /File: (\S+?\.md)/ };
-/** The batches a curate `check` result (or a repair) lists: `batch b of n, category X. Items: …. File: path`. */
-export const listedBatches = (report: string) => [...report.matchAll(/^batch (\d+) of (\d+), category (\w+)\. Items: .*?\. File: (\S+?\.md)/gm)]
-  .map(match => ({ no: Number(match[1]), of: Number(match[2]), category: match[3]!, file: match[4]! }));
-
-/** The default verify file: `## confirm <n>` for every change numbered in the change file the report names. */
-export const confirmEvery = (report: string): string => {
-  const changes = /Change file: (\S+?\.md)/.exec(report)?.[1];
-  const numbers = changes ? [...readFileSync(changes, "utf8").matchAll(/^## (\d+) · /gm)].map(match => match[1]!) : [];
-  return numbers.length ? numbers.map(n => `## confirm ${n}\n`).join("\n") : "## none\n";
-};
-
-export function scriptedDreamer(script: DreamerScript = {}) {
-  script.curate ??= {}; // a test may fill in a batch after the run is built
-  const inputs: DreamingAgentInput[] = [], messages: string[] = [], selfChecks: string[] = [], reports: string[] = [], attempts = new Map<string, number>();
-  const pick = (key: string, planned: Text | undefined, report: string): string => {
-    const attempt = attempts.get(key) ?? 0;
-    attempts.set(key, attempt + 1);
-    if (typeof planned === "function") return planned(report);
-    if (typeof planned === "string") return planned;
-    const list = planned ?? ["## none\n"];
-    return list[Math.min(attempt, list.length - 1)]!;
+export function decisionText(templateText: string, changes = "## none\n"): string {
+  const template = parseBlocks({ name: "decisions.md", text: templateText });
+  const operations = parseBlocks({ name: "changes.md", text: changes }).blocks;
+  return template.blocks.map(item => {
+    const operation = operations.find(op => op.target === item.target);
+    const merged = operations.find(op => op.op === "merge" && op.fields.get("absorb")?.value.split(",").map(value => value.trim()).includes(item.target));
+    const decision = merged ? `merged into ${merged.target.split("@")[0]}` : operation?.op ?? "keep";
+    return `## item ${item.target}\ntitle: ${operation?.fields.get("title")?.value ?? item.fields.get("title")?.value ?? ""}\naccuracy: ok\ngrounds: Recorded facts\nnorms: Reviewed\nevidence: None\nfiles: None\ndecision: ${decision}\nreason: Preserve the supported understanding\n`;
+  }).join("\n");
+}
+export function writeDecisions(dir: string, changes = "## none\n"): void {
+  const file = `${dir}/decisions.md`;
+  writeFileSync(file, decisionText(readFileSync(file, "utf8"), changes));
+}
+export interface ScriptedDreamer {
+  agent: RunAgent; inputs: DreamingAgentInput[]; messages: string[]; reports: string[]; script: DreamerScript;
+}
+export function scriptedDreamer(script: DreamerScript = {}): ScriptedDreamer {
+  script.curate ??= {};
+  const inputs: DreamingAgentInput[] = [], messages: string[] = [], reports: string[] = [];
+  const attempts = new Map<string, number>();
+  const pick = (key: string, text: Text | undefined, report: string, fallback: string) => {
+    const at = attempts.get(key) ?? 0; attempts.set(key, at + 1);
+    return typeof text === "function" ? text(report) : typeof text === "string" ? text : text?.[Math.min(at, text.length - 1)] ?? fallback;
   };
   const agent = async (raw: unknown): Promise<RunAgentResult> => {
     const input = raw as DreamingAgentInput;
@@ -63,101 +49,65 @@ export function scriptedDreamer(script: DreamerScript = {}) {
     input.reportRequest(REQUEST);
     let report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
     reports.push(report);
-    if (input.task === "curate") {
-      const nth = new Map<string, number>(), all = listedBatches(report).map(batch => ({ ...batch, nth: nth.set(batch.category, (nth.get(batch.category) ?? 0) + 1).get(batch.category)! }));
-      let listed = all;
-      for (let round = 0; round < 10; round++) {
-        for (const batch of listed) {
-          const planned = script.curate?.[`batch${batch.no}`] ?? (batch.nth === 1 ? script.curate?.[batch.category] : undefined);
-          const attempt = typeof planned === "function" ? planned(report) : typeof planned === "string" ? planned : (planned ?? ["## none\n"])[Math.min(round, (planned ?? [""]).length - 1)]!;
-          writeFileSync(batch.file, attempt);
+    if (input.task === "notes") {
+      writeFileSync(`${input.workspace.dir}/notes.md`, pick("notes", script.notes, report, "No repository-specific notes."));
+      let next = input.passEnd();
+      if (next) { messages.push(next); writeFileSync(`${input.workspace.dir}/notes.md`, pick("notes", script.notes, next, "No repository-specific notes.")); input.passEnd(); }
+    } else {
+      const group = Number(/group (\d+)/.exec(report)?.[1] ?? 1);
+      let scoring = false;
+      for (let round = 0; round < 6; round++) {
+        input.reportResponse?.(`${group}-${round}`, 1000 + round * 100);
+        if (!scoring) {
+          const configured = script.curate?.[`group${group}`] ?? Object.entries(script.curate ?? {}).find(([key]) => !key.startsWith("group"))?.[1];
+          const changes = pick(`curate:${group}`, configured, report, "## none\n");
+          writeDecisions(input.workspace.dir, changes);
+          writeFileSync(`${input.workspace.dir}/changes.md`, changes);
+        } else {
+          const labels = [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+(?:\.child\d+)?/g)].map(match => match[0]);
+          writeFileSync(`${input.workspace.dir}/scores.md`, pick(`scoring:${group}`, script.scoring?.(group, labels, report), report, labels.map(label => `${label} 50`).join("\n")));
         }
-        const message = input.passEnd();
-        if (message === undefined) break;
-        messages.push(message);
-        report = message;
-        const failing = new Set(listedBatches(message).map(batch => batch.file));
-        listed = all.filter(batch => failing.has(batch.file));
+        const next = input.passEnd();
+        if (!next) break;
+        messages.push(next); report = next;
+        if (next.startsWith("Curate passes.")) scoring = true;
       }
-    } else for (let turn = 0, step2 = false, planned: ReturnType<NonNullable<DreamerScript["classify"]>> | undefined, asked = false; turn < 50; turn++) {
-      const file = FILE[input.task]!.exec(report)![1]!;
-      let text: string | undefined;
-      if (input.task === "verify") text = pick(`verify:${/group (\d+)/.exec(report)?.[1] ?? 1}`, script.verify ?? confirmEvery(report), report);
-      else {
-        const ids = [...(/Items: (.*)/.exec(report)?.[1] ?? "").matchAll(/K(\d+)/g)].map(match => Number(match[1]));
-        const pass = Number(/pass (\d+)/.exec(report)?.[1] ?? 1);
-        if (!asked) { asked = true; planned = script.classify?.(pass, ids, report); }
-        const plan: { write?: Text; edit?: Text } = planned !== undefined && typeof planned === "object" && "write" in planned ? planned : { write: planned as Text | undefined };
-        if (step2) text = plan.edit === undefined ? undefined : pick(`classify:${pass}:edit`, plan.edit, report);
-        else text = pick(`classify:${pass}`, plan.write ?? ids.map(id => `K${id} 50`).join("\n") + "\n", report);
-      }
-      if (text !== undefined) writeFileSync(file, text);
-      const message = input.passEnd();
-      if (message === undefined) break;
-      if (input.task === "classify" && /Step 2 of 2/.test(message)) { selfChecks.push(message); step2 = true; continue; }
-      messages.push(message);
-      report = message;
     }
     return { outcome: "success", output: "Done.", request: REQUEST, usage: { tokens: 12 }, ...(input.task === "curate" ? script.curateResult : {}) } as RunAgentResult;
   };
-  return { agent, inputs, messages, selfChecks, reports, script };
+  return { agent, inputs, messages, reports, script };
 }
-
-/** A session whose Dreamer is `scriptedDreamer`, due at the first check. `memories` collects what the test must close. A test swaps in
- * its own runner (one that waits, or ignores a stop) for the calls that follow with `next`. */
-export function dreamerFixture(memories: TraceMemory[], script: DreamerScript = {}, dbPath?: string) {
-  const dreamer = scriptedDreamer(script);
-  const runners: RunAgent[] = [];
+export interface DreamerFixture extends WorkspaceBatch {
+  dreamer: ScriptedDreamer;
+  target: { sessionId: number; branch: string; headTurnId: number; model: string };
+  dream(): Promise<DreamingResult>;
+  next(agent: RunAgent): void;
+}
+export function dreamerFixture(memories: TraceMemory[], script: DreamerScript = {}, dbPath?: string): DreamerFixture {
+  const dreamer = scriptedDreamer(script), runners: RunAgent[] = [];
   const b = workspaceBatch({ agent: raw => (runners.shift() ?? dreamer.agent)(raw), dbPath });
-  memories.push(b.memory);
-  b.memory.config.dreaming.triggerOperations = 1;
+  memories.push(b.memory); b.memory.config.dreaming.triggerOperations = 1;
   const target = { sessionId: b.session.id, branch: "main", headTurnId: b.path.headTurnId!, model: "scripted" };
-  const dream = () => b.memory.dream(target);
-  /** Reach a later pair by real cycles (stage 5 §9.8): Noter-written items that reach the trigger, then one empty `dream()`, until
-   * the project's next pair is `pair`. Never seeds run records or edits the rotation. */
-  const cycleTo = async (pair: CuratePair) => {
-    for (let guard = 0; b.store.nextCuratePair(b.project.id) !== pair; guard++) {
-      if (guard > CURATE_ROTATION.length) throw new Error(`cycleTo(${pair}) did not converge`);
-      noterWrittenItem(b.memory, b.path as never, b.existingFact(`Cycle fact ${guard}`).id);
-      const result = await dream();
-      if (result.outcome !== "success") throw new Error(`cycleTo: a cycle ended ${result.outcome}`);
-    }
-  };
-  return { ...b, dreamer, target, dream, cycleTo, next: (agent: RunAgent) => { runners.push(agent); } };
+  return { ...b, dreamer, target, dream: () => b.memory.dream(target), next: (agent: RunAgent) => { runners.push(agent); } };
 }
-export type DreamerFixture = ReturnType<typeof dreamerFixture>;
-
-/** The curate model of a test that does something the scripted one does not: it calls `check`, writes the batch files `check` lists with
- * `texts` (in batch order; a batch with no text is left unwritten), and meets the stop hook once. Returns the hook's answer (the repair message,
- * or undefined when the task is over). */
 export async function writeCurateFiles(input: DreamingAgentInput, ...texts: string[]): Promise<string | undefined> {
-  const report = String(await input.tools.find(tool => tool.name === "check")!.execute({}));
-  listedBatches(report).forEach((batch, i) => { if (texts[i] !== undefined) writeFileSync(batch.file, texts[i]!); });
+  await input.tools.find(tool => tool.name === "check")!.execute({});
+  if (input.task === "notes") writeFileSync(`${input.workspace.dir}/notes.md`, texts[0] ?? "No repository notes.");
+  else {
+    writeDecisions(input.workspace.dir, texts[0]);
+    writeFileSync(`${input.workspace.dir}/changes.md`, texts[0] ?? "## none\n");
+  }
   return input.passEnd();
 }
-
-/** Part 4b: the vehicle for tests whose subject is what a merge, split, archive or update leaves in the Store, not the Dreamer's run.
- * It applies a curate file to a path through the same check and `commitWorkspaceRun` a Dreamer's pass uses, and throws on a file that
- * fails its check. A curate file holds the operations of one pair (146 ruling 13): `operation` names one, or a text that mixes pairs is split into
- * consecutive single-pair files, applied in order. Each operation still commits or is refused on its own: read `blocks` for a stale base. */
-export function curateNow(memory: { store: Store }, path: KnowledgePath, text: string, operation?: CurateOperation) {
-  const groups: { pair: CuratePair; text: string }[] = [];
-  if (operation) groups.push({ pair: curatePairOf(operation), text });
-  else for (const segment of text.split(/^(?=## )/m).filter(part => part.trim())) {
-    const pair = curatePairOf(/^## (\w+)/.exec(segment)?.[1] as CurateOperation);
-    if (groups.at(-1)?.pair === pair) groups.at(-1)!.text += segment; else groups.push({ pair, text: segment });
-  }
-  const done = groups.map(group => {
-    const result = applyWorkspace(memory.store, { kind: "curate", pair: group.pair, sessionId: path.sessionId, path, file: { name: `curate-${group.pair}.md`, text: group.text } });
-    if (!result.ok) throw new Error(result.problems.join("\n"));
-    return result;
-  });
-  return { ok: true as const, runId: done.at(-1)!.runId, factIds: {}, blocks: done.flatMap(result => result.blocks) };
+export function curateNow(memory: { store: Store }, path: KnowledgePath, text: string, _operation?: string) {
+  const result = applyWorkspace(memory.store, { kind: "curate", sessionId: path.sessionId, path, file: { name: "changes.md", text } });
+  if (!result.ok) throw new Error(result.problems.join("\n"));
+  return result;
 }
 /** `K<id>@v<n>` of a committed version. */
 export const versionRef = (store: Store, knowledgeId: number, commit: number) => `K${knowledgeId}@v${store.versionOrdinal(knowledgeId, commit)}`;
 
-type Operation = import("../../src/core/store/index.ts").KnowledgeOperationInput;
+type Operation = KnowledgeOperationInput;
 /** The store-level operations a Dreamer's pass would commit, written as curate files and applied with `curateNow`. For tests that seed
  * lineage (updates, merges, splits) and need the versions back: every block must apply. Returns the committed versions in operation order
  * (a split: the primary part, then its children). Dreaming has no create (stage 5): a `create` goes straight to the Store write path
@@ -221,20 +171,3 @@ export function coverKnowledge(store: Store, path: KnowledgePath, revisionIds: r
   return run.id;
 }
 
-/** The pair a curate file names, from its first block's heading (for a test helper that takes the file's text only). */
-export const pairOfText = (text: string): CuratePair => curatePairOf(/^## (update|merge|split|archive)\b/m.exec(text)?.[1] as CurateOperation ?? "update");
-
-/** The proposals a curate run kept (stage 5 §4.2), compiled from curate blocks the way the batch check does: one entry per block, in change order. */
-export function proposalsOf(memory: { store: Store }, path: KnowledgePath, ...entries: [CurateOperation, string][]): Proposal[] {
-  return entries.flatMap(([operation, text]) => {
-    const planned = plan(memory.store, { kind: "curate", pair: curatePairOf(operation), sessionId: path.sessionId, path, file: { name: "curate.md", text } });
-    if (planned.problems.length) throw new Error(planned.problems.join("\n"));
-    return planned.knowledge.map(entry => ({ run: 0, category: "constraint", block: describeBlock(entry.block), operation: entry.make().operation as Proposal["operation"] }));
-  }).map((proposal, i) => ({ ...proposal, n: i + 1 }));
-}
-/** A curate batch run as `commitTaskPass` records it, for tests of the change file: the proposals, and nothing applied. */
-export function keptBatch(memory: { store: Store }, path: KnowledgePath, category: string, ...entries: [CurateOperation, string][]): number {
-  const proposed = proposalsOf(memory, path, ...entries).map(({ block, operation }) => ({ block, operation }));
-  return memory.store.recordRun({ kind: "dreaming", sessionId: path.sessionId, branch: path.branch ?? null, createdAt: new Date().toISOString(), outcome: "success",
-    response: JSON.stringify({ task: "curate", category, proposed }) }).id;
-}

@@ -8,7 +8,7 @@ import { statusBody } from "./session-status.ts";
 import { showSessionPanel } from "./session-panel.ts";
 import { renderTraceMenu, renderTraceSettings } from "./trace-menu-view.ts";
 import { buildActions, buildSettingsChoices, dreamerFailureNotice, dreamingPendingInput, MENU_INPUTS, parseRunsCount, toggleConfirmation, type TraceMenuInput, type SettingsInput } from "../trace-menu.ts";
-import { agentDirectory, classifySettingKey, configuration, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
+import { agentDirectory, configuration, fixedSettings, parseKnowledgeBudgetInput, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
 import { workspaceFileTools } from "./workspace-files.ts";
@@ -154,7 +154,7 @@ export default function (pi: ExtensionAPI) {
       return path;
     });
     // The Noter writes its two workspace files with Pi's own write and edit, confined to exactly those paths (ticket 144).
-    const files = workspaceFileTools(callContext.cwd, input.workspace, input.kind === "dreaming" && input.task !== "classify");
+    const files = workspaceFileTools(callContext.cwd, input.workspace, input.kind === "dreaming");
     return runWorker(input, {
       model: model as unknown as WorkerModel | undefined, checkCapacity, tools, fileTools: files?.definitions as never,
       runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
@@ -360,9 +360,6 @@ export default function (pi: ExtensionAPI) {
     };
     const main = resolveTriple(kind === "noting" ? "Noting" : "Dreaming", modelName(kind), PHASE_SETTING_KEYS[kind].thinking);
     if ("permanent" in main) return Promise.resolve({ outcome: "dropped", permanent: main.permanent } as const);
-    const classifyTriple = kind === "dreaming"
-      ? resolveTriple("Classify", modelNameOf(classifySettingKey(flat, "model")), classifySettingKey(flat, "thinking")) : undefined;
-    if (classifyTriple && "permanent" in classifyTriple) return Promise.resolve({ outcome: "dropped", permanent: classifyTriple.permanent } as const);
     const { selectedModel, subagentThinking, capacity } = main;
     // Fresh Pi children expose the native Read definition via memoryReadTool. Price that same
     // description and schema beside Core's memory tools.
@@ -374,7 +371,6 @@ export default function (pi: ExtensionAPI) {
       ...(kind === "dreaming" ? [createGrepToolDefinition(context.cwd), createFindToolDefinition(context.cwd)] : [])]
       .reduce((sum, { name, description, parameters }) => sum + tokens(JSON.stringify({ name, description, parameters })), 0);
     const common = { ...target, model: selectedModel, thinkingLevel: inheritedThinking, subagentThinkingLevel: subagentThinking,
-      ...(classifyTriple ? { classify: { model: classifyTriple.selectedModel, thinkingLevel: classifyTriple.subagentThinking, capacity: classifyTriple.capacity } } : {}),
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
       nativeReadToolTokens, nativeWriteToolTokens, workspaceRoot: defaultWorkspaceRoot(),
       ...(options.boundary ? { boundary: options.boundary } : {}) };
@@ -1464,7 +1460,7 @@ export default function (pi: ExtensionAPI) {
     saveGlobal(p, choice === follow ? "session" : choice);
   };
   const settingsInput = (): SettingsInput => {
-    const worker = (phase: "Noter" | "Dreamer" | "Classifier", key: "noting" | "dreaming" | "classify") => {
+    const worker = (phase: "Noter" | "Dreamer", key: "noting" | "dreaming") => {
       const pref = (kind: Preference["kind"]) => preferences.find(p => p.phase === key && p.kind === kind);
       const model = pref("model")!, thinking = pref("thinking")!;
       const effective = (p: Preference) => shownValue(preferenceValue(flat, p));
@@ -1473,7 +1469,7 @@ export default function (pi: ExtensionAPI) {
         sources: { model: source(model), thinking: source(thinking) } };
     };
     return { database: dbPath, budgets: { base: memory.knowledgeBase(), temporaryTokens: memory.config.compaction.temporaryTokens },
-      workers: [worker("Noter", "noting"), worker("Dreamer", "dreaming"), worker("Classifier", "classify")],
+      workers: [worker("Noter", "noting"), worker("Dreamer", "dreaming")],
       closedSessionScope: memory.config.closedSessionScope,
       closedSessionSource: sources.closedSessionScope && sources.closedSessionScope !== "Global"
         ? `${sources.closedSessionScope} setting — this edit will not take effect` : undefined };
@@ -1577,8 +1573,7 @@ export default function (pi: ExtensionAPI) {
           ...(["Conversation", "Other"] as const).map(name => ({ name, tokens: composition.amounts[name] })),
         ], complete: composition.complete },
       pending: { noting: { tokens: noting.tokens, trigger: noting.trigger, ...(noting.state === "known" && noting.atLeast ? { atLeast: true, entries: noting.entries } : {}) },
-        dreaming: { pending: dreamingPendingInput(dreaming.pending, memory.config.dreaming.triggerOperations),
-          ...(state.sessionId ? { next: memory.store.nextCuratePair(memory.store.getSession(state.sessionId)!.projectId) } : {}) } },
+        dreaming: { pending: dreamingPendingInput(dreaming.pending, memory.config.dreaming.triggerOperations) } },
       spend: { session: totals?.cost ?? 0, sessionUnknown: totals?.unknown ?? 0,
         noting: { runs: totals?.runs.noting ?? 0, cost: totals?.costs.noting ?? 0 },
         consolidation: { runs: totals?.runs.consolidation ?? 0, cost: totals?.costs.consolidation ?? 0 },

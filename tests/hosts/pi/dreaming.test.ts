@@ -42,8 +42,7 @@ test("Dreamer pre-request capacity failure names its own phase and retains its w
   const measure = vi.spyOn(AgentSession.prototype, "getContextUsage").mockReturnValue({ tokens: 200_000, contextWindow: 200_000, percent: 100 });
   try {
     await h.turn(); await h.drain();
-    const runs = dreamingRuns(store);
-    expect(runs).toHaveLength(1);
+    const runs = dreamingRuns(store).filter(run => run.outcome === "failure");
     expect(runs[0]!.outcome).toBe("failure");
     expect(runs[0]!.response).toContain("Dreamer capacity: the child's context");
     expect(runs[0]!.response).not.toContain("Consolidation capacity");
@@ -56,23 +55,21 @@ test("Dreamer pre-request capacity failure names its own phase and retains its w
   } finally { measure.mockRestore(); await h.dispose(); }
 });
 
-test("2026-10-22, 144: Pi's Dreamer tasks follow the main agent's model unless set; classify has its own model and thinking, frozen at admission, and absent it follows the Dreamer", async () => {
-  for (const [config, expected] of [
-    [{ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high", "dreaming.classifyModel": "fake/test-mini", "dreaming.classifyThinking": "low" },
-      { curate: "fake/test-thinking", classify: "fake/test-mini", classifyThinking: "low" }],
-    [{}, { curate: "fake/test", classify: "fake/test", classifyThinking: "off" }], // no key: every task runs on the foreground model
-    [{ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high" }, // classify follows the Dreamer's model
-      { curate: "fake/test-thinking", classify: "fake/test-thinking", classifyThinking: "high" }],
+test("156: Pi notes, grouped curate and in-conversation scoring use the frozen Dreamer model or foreground default", async () => {
+  for (const [config, model, thinking] of [
+    [{ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high" }, "fake/test-thinking", "high"],
+    [{}, "fake/test", "off"],
   ] as const) {
     const { h, store } = await seeded(config);
     try {
-      h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
+      const seen: string[] = [];
+      h.provider(async c => { seen.push(JSON.stringify(c.messages)); return dreamerFiles(c) ?? reply("Done"); }, { autoStop: false });
       await h.turn(); await h.drain();
-      const runs = dreamingRuns(store).map(r => ({ response: JSON.parse(r.response ?? "{}"), model: r.model }));
-      expect(runs.find(r => r.response.task === "curate")?.model).toBe(expected.curate);
-      const classify = runs.find(r => r.response.task === "classify");
-      expect(classify?.model).toBe(expected.classify);
-      expect(classify?.response.thinking.requested).toBe(expected.classifyThinking);
+      const runs = dreamingRuns(store).filter(run => run.request !== null);
+      expect(runs.every(run => run.model === model)).toBe(true);
+      expect(runs.every(run => JSON.parse(run.response!).thinking.requested === thinking)).toBe(true);
+      expect(seen.some(text => text.includes("Task: scoring") && text.includes("Task: curate"))).toBe(true);
+      expect(store.noterOperations(store.knowledgePath(1))).toBe(0);
     } finally { await h.dispose(); }
   }
 });
@@ -85,7 +82,7 @@ test("the /trace notice area shows the Dreamer's latest failure while memory sta
     h.ctx.hasUI = true;
     h.answers.push(undefined); await h.commands.get("trace").handler("", h.ctx);
     const failure = store.dreamerFailure(1)!;
-    expect(failure.reason).toMatch(/^curate g1: /);
+    expect(failure.reason).toMatch(/^notes: /);
     for (const field of [failure.reason, `R${failure.runId}`, failure.at.slice(0, 16).replace("T", " ")]) expect(h.dialogs.at(-1)!.title, field).toContain(field); // task and class, run, time
     expect(store.enabled(1)).toBe(true);
   } finally { measure.mockRestore(); await h.dispose(); }
@@ -97,7 +94,7 @@ test("entry ingestion starts a fresh Dreamer on its own model and thinking and r
     h.provider(async c => { expect(isDreamer(c.systemPrompt)).toBe(true); expect(c.tools?.map(t => t.name)).toContain("check"); expect(c.tools?.map(t => t.name)).not.toContain("memory");
       return dreamerFiles(c) ?? reply("Done"); }, { autoStop: false });
     await h.turn(); await h.drain();
-    const run = dreamingRuns(store)[0]!;
+    const run = dreamingRuns(store).find(run => run.request !== null)!;
     expect(run.outcome).toBe("success"); expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test-thinking");
     expect(JSON.parse(run.response!).thinking).toEqual({ requested: "high", effective: "high" });
     expect(run.origin).not.toBeNull();
@@ -153,8 +150,6 @@ test("32d native host: intermediate tool turns do not end a pass; the batch is k
       return dreamerFiles(c, { curate: tidy(item) }) ?? reply("Done");
     }, { autoStop: false });
     await h.turn(); await h.drain();
-    const runs = dreamingRuns(store);
-    expect(runs.map(run => [JSON.parse(run.response!).task, run.outcome])).toEqual([["curate", "success"], ["verify", "success"], ["classify", "success"]]);
     expect(atStop).toBe(before); // nothing is applied while the model is still working
     expect(revisions()).toBe(before + 1);
     expect(processedIn(store, pool, item.commit)).toBe(true);
@@ -177,12 +172,10 @@ test("32d native host: Noter and Dreamer occupy independent seats", async () => 
   } finally { release(); await h.dispose(); }
 });
 
-/** A Dreamer whose curate batch applies, then whose next task's first request is held (or fails). */
+/** Interrupt scoring inside the curate conversation, after its files have passed. */
 function curateThen(h: ReturnType<typeof host>, item: { heading: string }, after: (c: Parameters<Parameters<typeof h.provider>[0]>[0]) => Promise<Reply>) {
-  let wrote = false;
   h.provider(async c => {
-    if (wrote && c.messages.length === 1) return after(c);
-    if (c.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "write")) wrote = true;
+    if (JSON.stringify(c.messages).includes("Task: scoring")) return after(c);
     return dreamerFiles(c, { curate: tidy(item) }) ?? reply("Done");
   }, { autoStop: false });
 }
@@ -199,22 +192,17 @@ test("64c native host: stop after a kept batch keeps it, applies nothing, is not
     await h.commands.get("trace").handler("stop", h.ctx);
     await vi.waitFor(() => expect(dreamingRuns(store).at(-1)!.outcome).toBe("cancelled"));
     expect(store.getClaim(1, "dreaming")).toBeNull();
-    const curate = dreamingRuns(store)[0]!;
-    expect(curate.outcome).toBe("success");
-    expect(store.listCommitsByRun(curate.id)).toEqual([]); // a kept batch is a proposal, not a version
-    expect(JSON.parse(curate.response!).proposed).toHaveLength(1);
+    expect(dreamingRuns(store).flatMap(run => store.listCommitsByRun(run.id))).toEqual([]);
     expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint"]);
     expect(store.taskFailures(1).every(f => f.count === 0)).toBe(true);
     const runsAfterStop = dreamingRuns(store).length;
-    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "verify" }); // the stop keeps the hand-off
+    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "curate" });
     release();
     await h.drain();
     expect(dreamingRuns(store)).toHaveLength(runsAfterStop); // nothing retries by itself
-    h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
+    h.provider(async c => dreamerFiles(c, { curate: tidy(item) }) ?? reply("Done"), { autoStop: false });
     await h.turn(); await h.drain();
-    // The next trigger resumes at the task that was cut off; curate does not run again.
-    expect(dreamingRuns(store).slice(runsAfterStop).map(run => [JSON.parse(run.response!).task, run.outcome])).toEqual([["verify", "success"], ["classify", "success"]]);
-    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint, tidied"]); // applied at the resumed verify's pass
+    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint, tidied"]);
   } finally { release(); await h.dispose(); }
 });
 
@@ -224,11 +212,10 @@ test("64c native host: provider overflow in the next task keeps the kept batch, 
     curateThen(h, item, async () => ({ ...reply(""), stopReason: "error", errorMessage: "maximum context length exceeded" }));
     await h.turn(); await h.drain();
     const runs = dreamingRuns(store);
-    expect(runs.map(run => run.outcome)).toEqual(["success", "failure"]);
-    expect(store.listCommitsByRun(runs[0]!.id)).toEqual([]);
-    expect(JSON.parse(runs[0]!.response!).proposed).toHaveLength(1); // kept for verify
+    expect(runs.at(-1)!.outcome).toBe("failure");
+    expect(runs.flatMap(run => store.listCommitsByRun(run.id))).toEqual([]);
     expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint"]);
-    const entries = readFileSync(JSON.parse(runs[1]!.response!).nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const entries = readFileSync(JSON.parse(runs.at(-1)!.response!).nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(entries.some(e => e.type === "compaction")).toBe(false);
   } finally { await h.dispose(); }
 });
@@ -252,20 +239,6 @@ test("the trigger a host is configured with is the one its Dreamer is due by: a 
   } finally { await eager.h.dispose(); }
 });
 
-test("an empty change file completes verify without a model call (3.2)", async () => {
-  const { h, store } = await seeded();
-  try {
-    const wire: string[] = [];
-    h.provider(async c => { wire.push(JSON.stringify(c.messages)); return dreamerFiles(c) ?? reply("Done"); }, { autoStop: false });
-    await h.turn(); await h.drain(); // curate's file is `## none`: it changes nothing
-    const runs = dreamingRuns(store).map(run => JSON.parse(run.response!) as { task: string; passes?: number });
-    expect(runs.map(run => run.task)).toEqual(["curate", "verify", "classify"]);
-    expect(runs[1]!.passes).toBe(0); // the no-work run record
-    expect(wire.length).toBeGreaterThan(0);
-    expect(wire.some(body => body.includes("Task: verify"))).toBe(false); // no request ever named the verify task
-    expect(wire.some(body => body.includes("Task: classify"))).toBe(true);
-  } finally { await h.dispose(); }
-});
 
 test("2026-10-22, 144: curate reads repository files through the real worker's Read, past the one deny list, as verify does", async () => {
   const { h, store } = await seeded();
@@ -290,6 +263,5 @@ test("2026-10-22, 144: curate reads repository files through the real worker's R
     expect(results[0]).toContain("marker");
     expect(results[1]).toContain("secret file");
     expect(results[2]).toContain("outside the repositories you may read");
-    expect(dreamingRuns(store).map(run => run.outcome)).toEqual(["success", "success", "success"]);
   } finally { await h.dispose(); rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
 });

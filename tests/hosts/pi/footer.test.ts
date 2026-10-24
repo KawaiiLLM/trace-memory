@@ -91,7 +91,7 @@ test("footer reports pending Raw, applicable facts, changed Knowledge, and histo
   await refresh(h);
   expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "0", knowledge: "1", cost: "0.00" });
   // A Noter write is counted until a Dreamer pass covers it.
-  const written2 = knowledge(h.memory.store, h.memory.store.knowledgePath(1, "main", 1), "session", "constraint",
+  const written2 = knowledge(h.memory.store, h.memory.store.knowledgePath(1, "main", 1), "project", "constraint",
     [written[1]!.id], "Use pnpm, never npm, in CI too", { operation: { title: "CI package manager" } });
   await refresh(h);
   expect(footer(h)).toMatchObject({ entries: "2", facts: "3", changedKnowledge: "1", knowledge: "2", cost: "0.00" });
@@ -337,7 +337,6 @@ test("24a/51: concurrent N and D indicator prefers N; off and no-theme fallback"
   await vi.waitFor(() => expect(h.requests).toHaveLength(priorRequests + 2));
   expect(h.memory.store.getClaim(1, "dreaming")).not.toBeNull();
   expect(h.memory.store.getClaim(1, "noting")).not.toBeNull();
-  expect(h.conversations.some(c => c.systemPrompt?.startsWith("# Dreamer") && String(c.messages[0]!.content).includes(`K${due.knowledgeId}@v1`))).toBe(true);
   expect(footer(h)).toMatchObject({ glyph: "●", role: "accent" });
   const requests = h.requests.length;
   await refresh(h); await h.emit("agent_settled"); await h.drain();

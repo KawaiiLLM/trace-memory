@@ -331,7 +331,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const factLine = (id: number, relations: readonly FactRelation[] = store.listFactRelations(id)) => renderFact(store.getFact(id)!, [...relations]);
   const factGroups = (facts: Fact[], relations = store.listFactRelationsOf(facts.map(fact => fact.id))) =>
     renderFactGroups(facts, f => factLine(f.id, relations.get(f.id) ?? []), store.factTurnTimes(facts));
-  const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge(value,
+  const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge({ ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
     `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, false, store.writing);
   // The knowledge part of the shared material contract (20a): the applicable commits at one node,
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
@@ -413,7 +413,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         ...(transport ? { transportItems: states.slice(0, stateCount).map(transportState) } : {}) };
     }
     const selectedStates = states.slice(0, stateCount);
-    const titleLine = (value: KnowledgeWithRevision) => renderKnowledgeTitle(value,
+    const titleLine = (value: KnowledgeWithRevision) => renderKnowledgeTitle({ ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
       `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, store.writing);
     const statesText = selectedStates.map(state => state.text);
     const statesCost = tokens(injectionText({ knowledge: [], receipts: [] }, statesText));
@@ -493,6 +493,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // formats these values only; it must not consult a later database state.
       const knowledgeBody = (value: KnowledgeWithRevision, parents: KnowledgeRevision[], children: KnowledgeRevision[], status?: string,
         historyLine = false, titles = supportTitles) => {
+        value = { ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) };
         const { knowledge, revision } = value;
         const labels = new Map([revision, ...parents, ...children].map(r => [r.id,
           `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`]));
@@ -748,9 +749,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const knowledgeNoticeCost = noteTextCost(noteKept) + receiptCharge(noteOmittedReceipt);
       const notice = sessionKnowledgeNotice(sessionId);
       // The count is part of the rendered line, so the budget below charges it like any other text.
-      const line = options.showKnowledgeSize ? (value: KnowledgeWithRevision) => renderKnowledge(value,
+      const line = options.showKnowledgeSize ? (value: KnowledgeWithRevision) => renderKnowledge({ ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
         `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, true, store.writing) : knowledgeLine;
-      const titleLine = (value: KnowledgeWithRevision) => renderKnowledgeTitle(value,
+      const titleLine = (value: KnowledgeWithRevision) => renderKnowledgeTitle({ ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
         `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, store.writing);
 
       // ---- 2. Raw second: the newest contiguous span. Pending entries borrow from temporary;

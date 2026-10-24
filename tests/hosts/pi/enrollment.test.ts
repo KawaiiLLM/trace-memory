@@ -191,7 +191,7 @@ test("92: Settings shows N/D preferences with effective sources and masked layer
     "Knowledge base: 20,000",
     "Noter model: follow foreground", "Noter thinking: high (Project setting — this edit will not take effect)",
     "Dreamer model: fake/test", "Dreamer thinking: inherit",
-    "Classifier model: fake/test", "Classifier thinking: inherit", "Closed sessions: project",
+    "Closed sessions: project",
   ]);
   expect(h.dialogs.at(-1)!.title).toContain(join(h.dir, "trace.db"));
   expect(h.dialogs.at(-1)!.title).toContain("knowledge base 20,000 + temporary allowance 10,000 = 30,000 max input");
@@ -309,7 +309,7 @@ test.each([true, false])("92: disable during D rejects late %s mutation and pres
   const h = setup({ "dreaming.triggerOperations": 1 }); await h.turn();
   expect(seedFact(h, "Pending knowledge").id).toBe(1);
   // A Noter-written item makes the Dreamer due (2026-10-22).
-  knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "session", "constraint", [1], "Retain rule", { operation: { title: "Fixture title" } });
+  knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "project", "constraint", [1], "Retain rule", { operation: { title: "Fixture title" } });
   const original = h.memory.store.listKnowledgeRevisions()[0]!;
   let release!: () => void, requests = 0;
   const toolCall = (name: string, args: object) => ({ ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: name, name, arguments: args as never }] });
@@ -324,7 +324,7 @@ test.each([true, false])("92: disable during D rejects late %s mutation and pres
   release();
   await h.drain();
   expect(h.memory.store.listKnowledgeRevisions()).toEqual([original]);
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").map(r => r.outcome)).toEqual(["cancelled"]);
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming").at(-1)!.outcome).toBe("cancelled");
   expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(1); // historical backlog untouched
 });
 
