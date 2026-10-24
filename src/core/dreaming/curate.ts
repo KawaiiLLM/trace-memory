@@ -80,6 +80,8 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
       mark(absorbed.knowledgeId, `merged into K${id}`);
       if (!byId.has(absorbed.knowledgeId)) problems.push(`changes.md: merge cannot absorb K${absorbed.knowledgeId} outside this group`);
     }
+    // 「拆分时必须填每个分支分到的事实」: the primary part names its facts too, or it would inherit every parent fact.
+    if (op.op === "split" && !entry.block.fields.has("supports")) problems.push(`changes.md: K${id} split requires explicit supports for its primary part`);
     if (op.op === "split") entry.block.children.forEach((child, index) => {
       const raw = child.fields.get("files")?.value;
       if (!raw) { problems.push(`changes.md: K${id} child ${index + 1} requires files`); return; }

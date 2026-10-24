@@ -2415,7 +2415,8 @@ export class Store {
           }
         }
         // Flag at publication, not when a later Dreamer happens to discover the item.
-        const publicationPath = this.knowledgePath(sessionId);
+        // The Noter's held path is the branch it wrote for; the session's latest Turn may be on a sibling branch.
+        const publicationPath = input.held?.path ?? this.knowledgePath(sessionId);
         const negated = new Set(input.run.kind === "noting" ? facts.flatMap((fact, i) => fact.negate?.length && this.factOnPath(this.getFact(batchIds[i]!)!, publicationPath) ? fact.negate.map(rel => resolve(rel.target, i)) : []) : []);
         if (negated.size) for (const { revision } of this.currentKnowledge(publicationPath)) {
           for (const id of revision.supports) if (negated.has(id))

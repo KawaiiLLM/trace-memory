@@ -43,6 +43,10 @@ export function repositoryHead(file: string): RepositoryHead | undefined {
     return { root, commit };
   } catch { return undefined; }
 }
+/** Whether `file` is tracked at `commit`: an untracked or ignored file has no committed content to compare against later, so it stays unverified. */
+export function trackedAt(root: string, commit: string, file: string): boolean {
+  try { execFileSync("git", ["-C", root, "cat-file", "-e", `${commit}:${relative(root, file)}`], { stdio: "ignore" }); return true; } catch { return false; }
+}
 /** Content comparison includes working-tree changes; no hashes are invented for non-git files. */
 export function scanChangedFiles(store: Store, path: KnowledgePath, items = projectItems(store, path)): Seed[] {
   const roots = allowedRoots(store, path.sessionId), seeds: Seed[] = [];
