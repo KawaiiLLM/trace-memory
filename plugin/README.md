@@ -93,6 +93,8 @@ Omit `dbPath` to use `~/.trace-memory/trace.db`, the same default as Pi. An exis
 
 For startup, resume and clear, SessionStart uses 24 command slots, each at most 10,000 UTF-16 code units. An elected producer freezes one rendering; the other slots read their independently identified parts. Empty slots print nothing. Whole items that do not fit are named in omission receipts. Staging records the publication as delivered in the database; hooks read the delivered state from there and never read carriers back from the transcript. The plugin also registers SessionEnd, a stdio MCP server and the function-hooks `/trace` command.
 
+CC omission receipts retain the omitted material's pool: base bodies charge the Knowledge base, overflow bodies charge the body pool, and titles charge the pointer pool. Mixed omissions use separate receipts per pool. A pool overrun never evicts knowledge from another pool.
+
 ## Automatic scheduling
 
 After every ingested main-session entry, N and D may each start one run under the existing seats (141). Busy phases queue nothing, and ordinary task completion schedules nothing; the next entry after settlement checks afresh. Automatic failures retry at a later entry end; three consecutive failures still disable memory. Manual catchup keeps its completion checkpoints, and closed-session borrowing remains turn-end-driven. Noting uses the incremental pending counter; Dreaming retains a not-due result until its progress signal (coverage, hand-off, failure and score changes) or selected/enrollment state changes.
