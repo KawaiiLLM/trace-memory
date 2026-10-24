@@ -49,7 +49,7 @@ export interface DreamingFrozen {
   sessionId: number; branch: string; path: KnowledgePath; claim: TaskClaim; names: ToolNames;
   prompt: string; promptHash: string; model: DreamingTaskConfig; knowledge: string;
   groups: FrozenGroup[]; candidates: number[]; boundary: DreamerBoundary; background: string; notes?: string;
-  fullCheck: boolean; clusteringItems: CurateItem[]; groupsFile?: string; clusteringModel: string;
+  fullCheck: boolean; clusteringItems: CurateItem[]; groupsFile?: string; clusteringModel: string; scoringModel: string;
   scoreVerdicts: Record<string, ScoreVerdict>; scoringTargets?: ScoreTarget[]; scoringResults: RatedTarget[];
 }
 /** Groups run in bounded waves; admission reserves enough lease for every wave and notes. */
@@ -77,6 +77,8 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
   return { sessionId: path.sessionId, branch: path.branch, path, claim, names, prompt, promptHash: createHash("sha256").update(prompt).digest("hex"), model, knowledge, groups,
     scoreVerdicts: kept?.scoreVerdicts ?? {}, scoringTargets: kept?.scoringTargets, scoringResults: kept?.scoringResults ?? [],
     fullCheck, clusteringItems, groupsFile: kept?.groupsFile, clusteringModel: store.getSession(path.sessionId)!.host.startsWith("cc:") ? "haiku" : model.model,
+    // 2026-10-25: 「评分用 Opus high」 on Claude Code; Pi keeps the Dreamer's model.
+    scoringModel: store.getSession(path.sessionId)!.host.startsWith("cc:") ? "opus" : model.model,
     candidates, boundary: kept?.boundary ?? selected!.boundary, background: kept?.background ?? selected!.background, ...(kept?.notes === undefined ? {} : { notes: kept.notes }) };
 }
 export interface DreamingRunOptions {
@@ -122,7 +124,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     options.registerFence(workspace);
     const started = Date.now(), scoring = initial === "scoring";
     const prompt = scoring ? loadPrompt("classifying.md", frozen.names, config.writing) : frozen.prompt;
-    const run = { ...template(initial), promptHash: createHash("sha256").update(prompt).digest("hex"), model: initial === "clustering" ? frozen.clusteringModel : frozen.model.model };
+    const run = { ...template(initial), promptHash: createHash("sha256").update(prompt).digest("hex"), model: initial === "clustering" ? frozen.clusteringModel : initial === "scoring" ? frozen.scoringModel : frozen.model.model };
     let delivered = false;
     const deliver = (text: string) => {
       if (!instructions || delivered) return text;

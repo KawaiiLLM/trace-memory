@@ -1807,7 +1807,8 @@ test("a scoring task's Write|Edit hook confines writes to its workspace file", a
       yield { type: "result", subtype: "success", session_id: "edit", is_error: false, result: "ok", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
     })() as any;
-    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    // Scoring is pinned to Opus at high on Claude Code (2026-10-25).
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }, { value: "opus", supportedEffortLevels: ["high"] }];
     return stream;
   }) as any;
   const task = { kind: "dreaming", task: "scoring", text: "material", prompt: "instructions", tools: [], workspace: { dir: workspaceDir, read: [file], write: [file], roots: [] },

@@ -4,7 +4,7 @@
   "notingModel": "haiku",
   "notingThinking": "xhigh",
   "dreaming.model": "sonnet",
-  "dreaming.thinking": "high",
+  "dreaming.thinking": "xhigh",
   "noting.triggerTokens": 10000,
   "dreaming.triggerOperations": 30,
   "dreaming.timeoutMs": 1800000,

@@ -344,12 +344,14 @@ export class CcAgentWorker {
   }
 
   async run(task: CcAgentTask, maxToolRounds: number): Promise<RunAgentResult> {
-    // Clustering is pinned to Haiku at xhigh (2026-10-25: 「跑聚类的 haiku也统一xhigh」); its frozen thinking is the Dreamer's, so it is not compared.
-    const clustering = task.kind === "dreaming" && task.task === "clustering";
-    const settings = clustering ? { ...this.worker.phases.dreaming, model: "haiku", thinking: "xhigh" as const } : this.worker.phases[task.kind];
+    // Pinned Dreamer tasks (2026-10-25): clustering on Haiku at xhigh (「跑聚类的 haiku也统一xhigh」), scoring on Opus at high (「评分用 Opus high」).
+    // Their frozen thinking is the Dreamer's, so it is not compared.
+    const pinned = task.kind !== "dreaming" ? undefined : task.task === "clustering" ? { model: "haiku", thinking: "xhigh" as const }
+      : task.task === "scoring" ? { model: "opus", thinking: "high" as const } : undefined;
+    const settings = pinned ? { ...this.worker.phases.dreaming, ...pinned } : this.worker.phases[task.kind];
     if (task.model !== undefined && task.model !== settings.model)
       throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
-    if (!clustering && task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
+    if (!pinned && task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
       throw new Error(`CC ${task.kind} task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}`);
     if (!task.reader?.sessionId || !task.reader.branch || !task.reader.headTurnId || !task.reader.projectId)
       throw new Error("CC worker needs a frozen Core reader target");
