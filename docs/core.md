@@ -21,6 +21,14 @@ Ticket 137: the retrieval policy (`src/core/render/retrieval-policy.ts`) says wh
 
 Ordinary reads use host-native limits; offset/limit continuations use the original `trace://` path and render again without exposing backing paths or adding model-visible text. Session knowledge, compaction views and exact entries are whole on main sessions and Pi children; CC fresh workers retain SDK Read limits. One shared guide (at most 200 Core-estimated tokens) is emitted once per injection/material, never once per knowledge block. It is fixed framing outside the Knowledge, facts, Raw and shared selection windows; its actual bytes still count toward delivered text and model capacity. Read records no delivery or state. Search pagination is unchanged.
 
+## Search ranking (161)
+
+Search keeps its case-insensitive AND matching: every whitespace-separated term must occur in one item, and double quotes keep an exact phrase. Knowledge includes every eligible version and still searches topics; facts search title/body; Raw rechecks each exact source-entry Read after the indexed candidates and real-column LIKE recheck. Scope, visibility, hit fields, layer sections and the shared `topk` cap are unchanged.
+
+Within each layer, SQLite BM25 ranks the indexable terms as AND-ed phrases over that layer's full-text index. Terms below three Unicode characters, and terms containing NUL, remain recheck-only. With no indexable term, search keeps newest-first order. BM25 ties put current non-archived knowledge before superseded or archived versions, then newer timestamps and ids first. Scores never compare different layers; a query still prints Knowledge, facts, then Raw. Without a query, the layers still merge newest first.
+
+The existing indexes do not cover every matching unit: Knowledge topics are not indexed, and Raw indexes individual Turn/tool fields. A true hit without a full AND match in one indexed document keeps a neutral score instead of disappearing. A Raw entry uses its best matching field's BM25, restricted to its role and calls; multiple occurrences backed by the same indexed field share its score. Raw reads promising Turns in bounded chunks and holds weaker entries until no unread Turn can outrank them, so an early weak entry cannot hide a stronger hit in a later chunk.
+
 ## Propagation data (154)
 
 The store retains fact objects and causal annotations from 154. The Noter (155) and incremental Dreamer (156) now consume this metadata through their current workspace formats.
