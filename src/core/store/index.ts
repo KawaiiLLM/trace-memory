@@ -2626,7 +2626,7 @@ export class Store {
     const chars = [...text.replace(/[\s\p{P}\p{S}]/gu, "")], grams = new Set<string>();
     for (let i = 0; i + 3 <= chars.length; i++) grams.add(chars.slice(i, i + 3).join(""));
     if (!grams.size || !revisions.length || limit <= 0) return [];
-    // ponytail: one OR query per text; a long body makes a long query, so callers pass titles and opening sentences.
+    // ponytail: one OR query per text; a body capped at 200 units stays a short query.
     return (this.db.prepare(`SELECT rowid AS id FROM knowledge_fts WHERE knowledge_fts MATCH ? AND rowid IN (SELECT value FROM json_each(?))
       ORDER BY bm25(knowledge_fts) LIMIT ?`).all([...grams].map(ftsPhraseQuery).join(" OR "), JSON.stringify(revisions), limit) as { id: number }[]).map(row => row.id);
   }
