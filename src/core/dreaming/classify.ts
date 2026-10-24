@@ -4,10 +4,24 @@ import { knowledgeStaleLabel } from "../render/index.ts";
 
 export const CLASSIFY_ANCHORS = 30;
 /** Stratified old scored versions, including small pools; changed candidates do not anchor themselves. */
+/** 2026-10-24 (「参考的分布要有多样性」): anchors are drawn round-robin from every (score band, category) cell, highest band first, each cell
+ * alternating its highest and lowest remaining scores, so the high bands and every category show even when the pool is mostly mid-scored
+ * (the simulation's quantile anchors left Sonnet scoring rulings below their 61–80 band). */
 export function classifyAnchors(items: readonly CurateItem[], excluded: ReadonlySet<number> = new Set()): CurateItem[] {
   const scored = items.filter(item => !excluded.has(item.value.knowledge.id) && item.score !== null && item.scoredCommit === item.value.revision.id)
     .sort((a, b) => a.score! - b.score! || a.value.revision.id - b.value.revision.id);
-  return scored.length <= CLASSIFY_ANCHORS ? scored : Array.from({ length: CLASSIFY_ANCHORS }, (_, i) => scored[Math.floor(i * (scored.length - 1) / (CLASSIFY_ANCHORS - 1))]!);
+  if (scored.length <= CLASSIFY_ANCHORS) return scored;
+  const cells = new Map<string, CurateItem[]>();
+  for (const item of scored) {
+    const key = `${4 - Math.min(4, Math.floor((item.score! - 1) / 20))}:${item.value.revision.category}`; // band 81–100 sorts first
+    cells.set(key, [...(cells.get(key) ?? []), item]);
+  }
+  const queues = [...cells].sort(([a], [b]) => a.localeCompare(b)).map(([, cell]) =>
+    cell.map((_, i) => cell[i % 2 ? Math.floor(i / 2) : cell.length - 1 - Math.floor(i / 2)]!));
+  const picked: CurateItem[] = [];
+  for (let round = 0; picked.length < CLASSIFY_ANCHORS; round++)
+    for (const queue of queues) if (round < queue.length && picked.length < CLASSIFY_ANCHORS) picked.push(queue[round]!);
+  return picked.sort((a, b) => a.score! - b.score! || a.value.revision.id - b.value.revision.id);
 }
 export interface ScoreTarget extends Pick<KnowledgeWithRevision, "staleReasons"> { label: string; title: string; text: string; category: KnowledgeCategory; scope: KnowledgeScope; operation?: number; part?: number; knowledgeId?: number; commit?: number }
 export interface CheckedScores { scores: Map<string, number>; problems: string[] }

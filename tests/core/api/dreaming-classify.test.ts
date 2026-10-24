@@ -39,13 +39,20 @@ test("a scoring failure publishes no group changes and resumes the whole uncommi
   expect(f.store.currentCommit(item.knowledgeId, f.path)[0]!.text).toBe("Updated rule");
 });
 
-test("incremental scoring uses 30 stratified old anchors even when the target pool is small", () => {
-  const items = Array.from({ length: 60 }, (_, at) => ({ score: at + 1, scoredCommit: at + 1,
-    value: { knowledge: { id: at + 1 }, revision: { id: at + 1, knowledgeId: at + 1 } } }) as CurateItem);
+// 2026-10-24 (「参考的分布要有多样性」): anchors cover every score band and category, not the pool's quantiles.
+test("incremental scoring draws 30 anchors across score bands and categories, so a mid-heavy pool still shows its high bands", () => {
+  const item = (id: number, score: number, category: string) => ({ score, scoredCommit: id,
+    value: { knowledge: { id }, revision: { id, knowledgeId: id, category } } }) as unknown as CurateItem;
+  // 80 mid-scored understanding items, 4 constraints at 70–80, 2 constraints at 85+, 3 open items at 30, 2 references at 10.
+  const items = [...Array.from({ length: 80 }, (_, i) => item(i + 1, 41 + (i % 20), "understanding")),
+    ...[70, 74, 77, 80].map((score, i) => item(100 + i, score, "constraint")), item(110, 85, "constraint"), item(111, 92, "constraint"),
+    ...[1, 2, 3].map(i => item(120 + i, 30, "open")), item(130, 10, "reference"), item(131, 12, "reference")];
   const anchors = classifyAnchors(items, new Set([1]));
   expect(anchors).toHaveLength(30);
-  expect(anchors[0]!.score).toBe(2);
-  expect(anchors.at(-1)!.score).toBe(60);
+  expect(anchors.filter(anchor => anchor.score! > 60).map(anchor => anchor.score)).toEqual([70, 74, 77, 80, 85, 92]); // every high anchor kept
+  expect(new Set(anchors.map(anchor => (anchor.value.revision as { category: string }).category))).toEqual(new Set(["understanding", "constraint", "open", "reference"]));
+  expect(anchors.some(anchor => anchor.value.knowledge.id === 1)).toBe(false); // excluded targets are never anchors
+  expect(anchors.map(anchor => anchor.score)).toEqual([...anchors.map(anchor => anchor.score)].sort((a, b) => a! - b!));
   expect(classifyAnchors(items.slice(0, 4))).toEqual(items.slice(0, 4));
 });
 
