@@ -1,8 +1,8 @@
 {
   "stateDir": null,
   "closedSessionScope": "project",
-  "notingModel": "sonnet",
-  "notingThinking": "high",
+  "notingModel": "haiku",
+  "notingThinking": "xhigh",
   "dreaming.model": "sonnet",
   "dreaming.thinking": "high",
   "noting.triggerTokens": 10000,
@@ -13,7 +13,8 @@
     "claudeExecutable": null,
     "contextWindows": {
       "sonnet": null,
-      "opus": null
+      "opus": null,
+      "haiku": null
     },
     "cwd": null
   }

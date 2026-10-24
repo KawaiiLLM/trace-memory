@@ -344,11 +344,12 @@ export class CcAgentWorker {
   }
 
   async run(task: CcAgentTask, maxToolRounds: number): Promise<RunAgentResult> {
-    const settings = task.kind === "dreaming" && task.task === "clustering"
-      ? { ...this.worker.phases.dreaming, model: "haiku" } : this.worker.phases[task.kind];
+    // Clustering is pinned to Haiku at xhigh (2026-10-25: 「跑聚类的 haiku也统一xhigh」); its frozen thinking is the Dreamer's, so it is not compared.
+    const clustering = task.kind === "dreaming" && task.task === "clustering";
+    const settings = clustering ? { ...this.worker.phases.dreaming, model: "haiku", thinking: "xhigh" as const } : this.worker.phases[task.kind];
     if (task.model !== undefined && task.model !== settings.model)
       throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
-    if (task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
+    if (!clustering && task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
       throw new Error(`CC ${task.kind} task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}`);
     if (!task.reader?.sessionId || !task.reader.branch || !task.reader.headTurnId || !task.reader.projectId)
       throw new Error("CC worker needs a frozen Core reader target");
