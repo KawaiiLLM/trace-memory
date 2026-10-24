@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { TraceMemory } from "../../source-fixture.ts";
-import { decisionText, dreamerFixture } from "../../support/dreamer.ts";
+import { decisionText, dreamerFixture, finishCurate } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
 import { checkCurate, decisionsTemplate } from "../../../src/core/dreaming/curate.ts";
 import { projectItems } from "../../../src/core/dreaming/candidates.ts";
@@ -73,7 +73,7 @@ test.each((["keep", "update", "merge", "split", "archive"] as const).flatMap(ope
     const decisions = `${input.workspace.dir}/decisions.md`;
     writeFileSync(decisions, decisionText(readFileSync(decisions, "utf8"), changes || "## none\n").replaceAll("files: None", "files: unchanged"));
     writeFileSync(`${input.workspace.dir}/changes.md`, changes || "## none\n");
-    expect(input.passEnd()).toBeUndefined(); // 167: scoring is separate from curate.
+    expect(await finishCurate(input)).toBeUndefined();
     return { outcome: "success", output: "Done", request: REQUEST };
   } };
   const result = await f.memory.dream({ ...f.target, fullCheck: true });

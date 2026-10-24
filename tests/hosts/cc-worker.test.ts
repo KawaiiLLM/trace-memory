@@ -1790,8 +1790,8 @@ test.each(["notes", "curate"] as const)("a %s task's Read, Grep and Glob hooks f
   expect(additional).toEqual([root, rendering]);
 });
 
-// 167: a separate scoring task may edit its scores file, never an unrelated path.
-test("a scoring task's Write|Edit hook confines writes to its workspace file", async () => {
+// 169: scoring writes share the curate workspace and cannot escape it.
+test("a curate conversation's Write|Edit hook permits its scores file but refuses unrelated paths", async () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "tm-cc-worker-scoring-"))); dirs.push(directory);
   const workspaceDir = join(directory, "workspaces", "run"); mkdirSync(workspaceDir, { recursive: true });
   const file = join(workspaceDir, "scores.md"), other = join(directory, "other.md");
@@ -1807,11 +1807,10 @@ test("a scoring task's Write|Edit hook confines writes to its workspace file", a
       yield { type: "result", subtype: "success", session_id: "edit", is_error: false, result: "ok", errors: [],
         usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
     })() as any;
-    // Scoring is pinned to Opus at high on Claude Code (2026-10-25).
-    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }, { value: "opus", supportedEffortLevels: ["high"] }];
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
     return stream;
   }) as any;
-  const task = { kind: "dreaming", task: "scoring", text: "material", prompt: "instructions", tools: [], workspace: { dir: workspaceDir, read: [file], write: [file], roots: [] },
+  const task = { kind: "dreaming", task: "curate", text: "material", prompt: "instructions", tools: [], workspace: { dir: workspaceDir, read: [file], write: [file], roots: [] },
     acknowledgeRequest: vi.fn(), passEnd: vi.fn(() => undefined), reader: { sessionId: 1, branch: "main", headTurnId: 1, projectId: 1 } } as unknown as CcAgentTask;
   expect((await new NativeCcAgentWorker(workerConfig(directory), { query: fakeQuery }).run(task, 0)).outcome).toBe("success");
   expect(decisions).toEqual({ edit: "allow", write: "allow", other: "deny" });

@@ -57,11 +57,11 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     await vi.waitFor(() => expect(store.getClaim(session.id, "dreaming")).toBeNull());
     expect(abortChecked).toBe(true);
     expect(nCalls).toBe(3);
-    // 167: curate is committed before scoring; a late scoring write after abort changes nothing.
+    // 169: scoring and curate are unpublished; a late write after abort changes nothing.
     expect(revisions()).toBe(revisionsAtAbort);
-    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1 maintained");
+    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1");
     expect(store.currentCommit(untouched!.knowledgeId, target)[0]!.id).toBe(untouched!.commit);
-    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`project:${session.projectId}`)!.n).toBe(4);
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`project:${session.projectId}`)!.n).toBe(0);
     expect(store.getKnowledge(changed!.knowledgeId)!.score).toBeNull();
     expect(f.memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id)).toEqual(entries);
     expect(store.taskFailures(session.id).filter(item => item.phase === "dreaming")).toEqual([]);

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TraceMemory } from "../../source-fixture.ts";
-import { dreamerFixture, scriptedDreamer, writeDecisions } from "../../support/dreamer.ts";
+import { dreamerFixture, finishCurate, scriptedDreamer, writeDecisions } from "../../support/dreamer.ts";
 import { REQUEST } from "../../support/noter.ts";
 import { block } from "../../support/workspace.ts";
 import { knowledgeBatch, session } from "../../support/seed.ts";
@@ -21,7 +21,7 @@ test("a keep may publish an immutable metadata version; missing grounds flag it 
     const decisions = join(input.workspace.dir, "decisions.md");
     writeFileSync(decisions, readFileSync(decisions, "utf8").replace("title: Old label", "title: Precise label").replace("grounds: Recorded facts", "grounds: missing original grounds"));
     writeFileSync(join(input.workspace.dir, "changes.md"), "## none\n");
-    expect(input.passEnd()).toBeUndefined(); // 167: curate ends without scoring.
+    expect(await finishCurate(input)).toBeUndefined();
     return { outcome: "success", output: "Done", request: REQUEST };
   } };
   expect(await f.dream()).toMatchObject({ outcome: "success" });
@@ -79,7 +79,7 @@ test("a linked file absent from the captured commit gets no verified commit, and
       const decisions = join(input.workspace.dir, "decisions.md");
       writeFileSync(decisions, readFileSync(decisions, "utf8").replace("files: None", `files: ${file}`));
       writeFileSync(join(input.workspace.dir, "changes.md"), "## none\n");
-      expect(input.passEnd()).toBeUndefined();
+      expect(await finishCurate(input)).toBeUndefined();
       return { outcome: "success", output: "Done", request: REQUEST };
     } };
     expect(await f.dream()).toMatchObject({ outcome: "success" });

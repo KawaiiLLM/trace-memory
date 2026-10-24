@@ -6,7 +6,7 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import type { CcReconcileResult } from "../../src/hosts/cc/importer.ts";
 import { knowledgeBatch } from "../support/seed.ts";
 import { block } from "../support/workspace.ts";
-import { scriptedDreamer } from "../support/dreamer.ts";
+import { scriptedDreamer, writeCurateFiles } from "../support/dreamer.ts";
 
 // Real scheduler + core lifecycle; the provider is an explicit in-process worker stub, not native CC.
 test("92/07: CC catchup third N failure cancels active D without losing exact settlement authority", async () => {
@@ -48,7 +48,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     executeDream = async task => {
       const request = { fixture: "cc-auto-off", kind: "dreaming" };
       if (task.task === "notes" || task.task === "clustering") return notes.agent(task);
-      if (task.task === "curate") return scriptedDreamer({ curate: { group1: block(`update K${changed!.knowledgeId}@v1`, { reason: "maintenance" }, "Rule 1 maintained") } }).agent(task);
+      await writeCurateFiles(task, block(`update K${changed!.knowledgeId}@v1`, { reason: "maintenance" }, "Rule 1 maintained"));
       const file = `${task.workspace.dir}/scores.md`;
       claim = store.getClaim(session.id, "dreaming");
       lateWrite = () => {
@@ -85,10 +85,10 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     expect(diagnostics.some(message => message.includes("off after three failures"))).toBe(true);
     expect(store.getClaim(session.id, "dreaming")).toBeNull();
     expect(lateWrite()).toBeUndefined();
-    expect(revisions()).toBe(revisionsAtAbort); // 167: curate is already committed; late scoring adds nothing.
-    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1 maintained");
+    expect(revisions()).toBe(revisionsAtAbort); // 169: the group is unpublished; late scoring adds nothing.
+    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1");
     expect(store.currentCommit(untouched!.knowledgeId, target)[0]!.id).toBe(untouched!.commit);
-    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`project:${project.id}`)!.n).toBe(4);
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`project:${project.id}`)!.n).toBe(0);
     expect(store.getKnowledge(changed!.knowledgeId)!.score).toBeNull();
     expect(memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id)).toEqual(entries);
     expect(store.listRuns(session.id).filter(run => run.kind === "dreaming").at(-1)?.outcome).toBe("cancelled");

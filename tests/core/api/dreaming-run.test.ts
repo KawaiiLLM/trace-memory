@@ -88,16 +88,16 @@ test("incremental groups freeze marks and references, share background, and resu
   expect(inputs[0]!.group).toContain(`- K${ids[2]}: Rule 3`);
   expect(inputs[0]!.group).not.toContain("Supported body 3");
   expect(inputs[0]!.decisions).not.toContain(`K${ids[2]}@`);
-  expect(f.store.getKnowledge(ids[0]!)!.score).toBeNull(); // 167: group 1 committed, scoring waits.
+  expect(f.store.getKnowledge(ids[0]!)!.score).toBe(75);
   expect(f.store.getKnowledge(ids[6]!)!.score).toBeNull(); // the marked item sits in the failed group 2
   f.dreamer.script.instead = undefined;
   f.dreamer.script.clustering = "invalid if called again";
   const before = f.dreamer.inputs.length;
   expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "success" });
-  expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate", "scoring"]);
+  expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate"]);
   expect(f.store.getKnowledge(ids[6]!)!.score).toBe(75);
   expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE revision_id=? AND pool=?").get(items[6]!.commit, `project:${f.project.id}`)).toEqual({ revision_id: items[6]!.commit });
-  expect(f.store.getKnowledge(ids[2]!)!.score).toBe(75); // 167: all current unscored items are scoring targets.
+  expect(f.store.getKnowledge(ids[2]!)!.score).toBeNull(); // A title-only reference is not this group's target (169).
 });
 
 test("curate refuses a reference item as a decision, mutation target or absorbed merge parent", () => {

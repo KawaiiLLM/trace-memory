@@ -146,8 +146,8 @@ try {
     for (const message of conversation.messages) {
       if (message.role !== "user" || typeof message.content !== "string" || !message.content.includes("<scoring_input>")) continue;
       const inline = message.content.split("<scoring_input>\n")[1]?.split("</scoring_input>")[0];
-      assert.ok(inline?.includes("Remember the choice, tidied."), "the separate native scoring input contains the committed body");
-      assert.ok(!conversation.messages.some(m => m.role === "user" && typeof m.content === "string" && m.content.includes("Task: curate")), "scoring has fresh context");
+      assert.ok(inline?.includes("Remember the choice, tidied."), "the native scoring continuation contains the resulting body");
+      assert.ok(conversation.messages.some(m => m.role === "toolResult" && JSON.stringify(m.content).includes("Task: curate")), "scoring retains the curate conversation");
       scoringDelivered = true;
     }
     return dreamerFiles(conversation, { curate: block(`update ${heading}`, { reason: "Smoke tidy" }, "Remember the choice, tidied.") }) ?? reply("Done");
@@ -184,7 +184,7 @@ try {
   await dreamer.commands.get("trace").handler("", dreamer.ctx);
   assert.ok(dreamer.notices.at(-1)!.includes("Compaction: bounded entry views"));
   assert.equal(dreamer.requests.length, requestsAfterRecovery, "reading the persisted recovery warning starts no worker");
-  console.log("Dreamer smoke passed: native notes, curate commit, separate scoring child, persisted ratings, custom carrier and read-only status.");
+  console.log("Dreamer smoke passed: native notes, curate-to-scoring continuation, atomic changes and ratings, custom carrier and read-only status.");
 } finally { await dreamer.dispose(); }
 
 // 22b: the long-history regression, on the same entry the case above used — the installed one under

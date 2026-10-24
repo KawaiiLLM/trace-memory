@@ -14,7 +14,7 @@ export interface DreamerScript {
   notes?: Text;
   clustering?: Text;
   curate?: Partial<Record<string, Text>>;
-  scoring?: (batch: number, labels: string[], message: string) => Text | undefined;
+  scoring?: (group: number, labels: string[], message: string) => Text | undefined;
   curateResult?: Partial<RunAgentResult>;
   instead?: Partial<Record<DreamingTask, (input: DreamingAgentInput) => Promise<RunAgentResult> | RunAgentResult>>;
 }
@@ -72,16 +72,15 @@ export function scriptedDreamer(script: DreamerScript = {}): ScriptedDreamer {
       if (next) { messages.push(next); writeFileSync(`${input.workspace.dir}/groups.md`, pick("clustering", script.clustering, next, fallback)); input.passEnd(); }
     } else {
       const group = Number(/(?:group|batch) (\d+)/.exec(report)?.[1] ?? 1);
-      const scoring = input.task === "scoring";
       for (let round = 0; round < 6; round++) {
         input.reportResponse?.(`${group}-${round}`, 1000 + round * 100);
-        if (!scoring) {
+        if (!report.startsWith("Task: scoring") && !report.includes("Task: scoring (group")) {
           const configured = script.curate?.[`group${group}`] ?? Object.entries(script.curate ?? {}).find(([key]) => !key.startsWith("group"))?.[1];
           const changes = pick(`curate:${group}`, configured, report, "## none\n");
           writeDecisions(input.workspace.dir, changes);
           writeFileSync(`${input.workspace.dir}/changes.md`, changes);
         } else {
-          const labels = [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+/g)].map(match => match[0]);
+          const labels = [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+(?:\.child\d+)?/g)].map(match => match[0]);
           writeFileSync(`${input.workspace.dir}/scores.md`, pick(`scoring:${group}`, script.scoring?.(group, labels, report), report, labels.map(label => `${label} 4 4 4`).join("\n")));
         }
         const next = input.passEnd();
@@ -113,6 +112,15 @@ export async function writeCurateFiles(input: DreamingAgentInput, ...texts: stri
     writeDecisions(input.workspace.dir, texts[0]);
     writeFileSync(`${input.workspace.dir}/changes.md`, texts[0] ?? "## none\n");
   }
+  return input.passEnd();
+}
+/** Finish valid custom curate files through the same conversation's scoring stage. */
+export async function finishCurate(input: DreamingAgentInput): Promise<string | undefined> {
+  const next = input.passEnd();
+  if (!next?.includes("<scoring_input>")) throw new Error(`Curate did not advance to scoring: ${next}`);
+  const labels = [...(next.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+(?:\.child\d+)?/g)].map(match => match[0]);
+  writeFileSync(`${input.workspace.dir}/scores.md`, labels.map(label => `${label} 4 4 4`).join("\n"));
+  await input.tools.find(tool => tool.name === "check")!.execute({});
   return input.passEnd();
 }
 export function curateNow(memory: { store: Store }, path: KnowledgePath, text: string, _operation?: string) {

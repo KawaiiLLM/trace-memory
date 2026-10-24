@@ -59,7 +59,7 @@ test("multiple failed groups count once per execution, and a committed sibling c
   expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")!.count).toBe(1);
   f.dreamer.script.curate!.group1 = "## none\n";
   expect(await f.dream()).toMatchObject({ outcome: "failure" });
-  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBeNull(); // 167: groups commit before scoring.
+  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(75); // 169: the successful sibling publishes its own ratings.
   expect(f.store.getKnowledge(b.knowledgeId)!.score).toBeNull();
   expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")!.count).toBe(2);
   expect(await f.dream()).toMatchObject({ outcome: "failure", automaticOff: expect.any(String) });

@@ -4,10 +4,10 @@ import { fixture, dreamerTurn, say, worker, type Body } from "./native-fixture.t
 import { fact, knowledge } from "../../support/seed.ts";
 import { fullCheckDryRun } from "../../../src/core/dreaming/clustering.ts";
 
-test.each([false, true])("native Pi run (full check: %s) resumes groups then scores every target in a fresh conversation", async fullCheck => {
+test.each([false, true])("native Pi run (full check: %s) scores in each curate conversation and resumes only failed groups", async fullCheck => {
   const f = await fixture({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9, "dreaming.groupItems": 1, "dreaming.parallelGroups": 1 });
   let interrupt = true;
-  const firsts: Body[] = [];
+  const firsts: Body[] = [], scoring: Body[] = [];
   try {
     f.script(() => say("Recorded.")); await f.turn("Keep both rules.");
     const store = f.h.memory.store, path = store.knowledgePath(1, "main", 1);
@@ -17,6 +17,7 @@ test.each([false, true])("native Pi run (full check: %s) resumes groups then sco
     f.script(body => {
       if (!worker(body, "Dreamer")) return say("Recorded.");
       if (!body.messages.some((message: Body) => message.role === "assistant")) firsts.push(body);
+      if (JSON.stringify(body.messages).includes("<scoring_input>")) scoring.push(body);
       return dreamerTurn(body, undefined, interrupt && JSON.stringify(body.messages).includes("Task: curate (group 2") ? "## bogus\n" : "## none\n");
     });
     await f.h.commands.get("trace")!.handler("full-check --dry-run", f.h.ctx);
@@ -25,7 +26,7 @@ test.each([false, true])("native Pi run (full check: %s) resumes groups then sco
     await vi.waitFor(() => expect(store.getClaim(1, "dreaming")).toBeNull(), { timeout: 10_000 });
     const saved = store.handoff(1, "dreaming")!.detail!;
     expect(saved.groups!.map(group => !!group.run)).toEqual([true, false]);
-    expect(store.getKnowledge(items[0]!.knowledgeId)!.score).toBeNull();
+    expect(store.getKnowledge(items[0]!.knowledgeId)!.score).toBe(75);
     expect(store.getKnowledge(items[1]!.knowledgeId)!.score).toBeNull();
     if (fullCheck) expect(fullCheckDryRun(store, path).decisions).toHaveLength(1);
     interrupt = false;
@@ -39,12 +40,11 @@ test.each([false, true])("native Pi run (full check: %s) resumes groups then sco
     expect(runs.filter(run => run.task === "clustering")).toHaveLength(1);
     expect(runs.filter(run => run.task === "group").map(run => run.group)).toEqual([1, 2]);
     if (fullCheck) expect(fullCheckDryRun(store, path).decisions).toHaveLength(2);
-    expect(firsts).toHaveLength(6); // notes, clustering, two groups, group retry, separate scoring
-    const scoring = firsts.find(body => JSON.stringify(body.messages).includes("<scoring_input>"))!;
-    expect(JSON.stringify(scoring.messages)).not.toContain("Task: curate");
-    expect(JSON.stringify(scoring.messages)).toContain("Curate verdict:");
+    expect(firsts).toHaveLength(5); // notes, clustering, two groups, group retry; no scoring conversation (169).
+    expect(scoring.some(body => JSON.stringify(body.messages).includes("Task: curate (group 1"))).toBe(true);
+    expect(scoring.some(body => JSON.stringify(body.messages).includes("Task: curate (group 2"))).toBe(true);
     const logs = runs.flatMap(run => run.nativeLog ? [String(run.nativeLog)] : []);
-    expect(logs.length).toBe(6);
+    expect(logs.length).toBe(5);
     for (const log of logs) expect(readFileSync(log, "utf8")).toContain('"role":"assistant"');
   } finally { await f.dispose(); }
 }, 30_000);

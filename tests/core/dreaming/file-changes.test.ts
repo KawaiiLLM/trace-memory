@@ -5,7 +5,7 @@ import type * as ChildProcess from "node:child_process";
 import { workspaceBatch, type WorkspaceBatch } from "../../support/workspace.ts";
 import { knowledgeBatch, session } from "../../support/seed.ts";
 import { scanChangedFiles } from "../../../src/core/dreaming/candidates.ts";
-import { dreamerFixture, writeDecisions } from "../../support/dreamer.ts";
+import { dreamerFixture, finishCurate, writeDecisions } from "../../support/dreamer.ts";
 import { REQUEST } from "../../support/noter.ts";
 
 const git = vi.hoisted(() => ({ root: "", before: "", after: "", diff: "", head: "head" }));
@@ -106,7 +106,7 @@ test.each(["primary", "split child"])("a newly linked nested repository freezes 
     expect(String(await check())).toContain("Problems: none");
     git.head = "head";
     expect(String(await check())).toContain("Problems: none");
-    expect(input.passEnd()).toBeUndefined(); // 167: curate ends before separate scoring.
+    expect(await finishCurate(input)).toBeUndefined();
     return { outcome: "success", output: "Done", request: REQUEST };
   } };
   try {
@@ -144,7 +144,7 @@ test("parallel curate groups share the first captured nested repository HEAD", a
       firstChecked.resolve();
       await secondChecked.promise;
     } else secondChecked.resolve();
-    expect(input.passEnd()).toBeUndefined();
+    expect(await finishCurate(input)).toBeUndefined();
     return { outcome: "success", output: "Done", request: REQUEST };
   } };
   try {

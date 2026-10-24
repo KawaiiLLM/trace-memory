@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TraceMemory } from "../../source-fixture.ts";
-import { dreamerFixture, decisionText, writeDecisions } from "../../support/dreamer.ts";
+import { dreamerFixture, decisionText, finishCurate, writeDecisions } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
 import { knowledgeBatch, session } from "../../support/seed.ts";
 import { REQUEST } from "../../support/noter.ts";
@@ -73,7 +73,7 @@ test("parallel groups recheck the whole-file cap at publication and roll back th
     const file = join(input.workspace.dir, "decisions.md");
     writeFileSync(file, readFileSync(file, "utf8").replace("files: None", `files: ${source}`));
     writeFileSync(join(input.workspace.dir, "changes.md"), "## none\n");
-    expect(input.passEnd()).toBeUndefined(); // 167: scoring is a later task.
+    expect(await finishCurate(input)).toBeUndefined();
     if (++arrived === 2) release();
     await barrier;
     return { outcome: "success", output: "Done", request: REQUEST };

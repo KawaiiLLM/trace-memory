@@ -1858,14 +1858,6 @@ export class Store {
     return claim;
   }
 
-  /** Extend a live owned claim without shortening its lease or reviving a fenced token. */
-  extendClaim(claim: TaskClaim, leaseMs: number): boolean {
-    const now = Date.now();
-    return !!this.db.prepare(`UPDATE task_claims SET expires_at = MAX(expires_at, ?)
-      WHERE session_id = ? AND phase = ? AND token = ? AND executor_id = ? AND reserved = 0 AND expires_at > ?`)
-      .run(now + leaseMs, claim.sessionId, claim.phase, claim.token, claim.executorId, now).changes;
-  }
-
   releaseClaim(claim: TaskClaim): boolean {
     return !!this.db.prepare("DELETE FROM task_claims WHERE session_id = ? AND phase = ? AND token = ? AND executor_id = ?")
       .run(claim.sessionId, claim.phase, claim.token, claim.executorId).changes;
@@ -3994,7 +3986,7 @@ export class Store {
   commitTaskPass(input: { run: RunInput; path: KnowledgePath; operations?: readonly KnowledgeOperationInput[];
     response?: (results: WorkspaceOperationResult[]) => string;
     /** Ratings publish only when the current version is still the one shown; changed targets wait for the next run. */
-    scores?: readonly RatedTarget[];
+    scores?: (done: { runId: number; results: WorkspaceOperationResult[] }) => readonly RatedTarget[];
     /** Both are decided once the run exists: the hand-off's curate runs include this run, the coverage includes what it wrote. */
     cover?: (done: { runId: number; results: WorkspaceOperationResult[] }) => readonly { id: number; pool?: string }[];
     handoff: (done: { runId: number; results: WorkspaceOperationResult[] }) => { nextTask: string; detail: NonNullable<Handoff["detail"]> } | null;
@@ -4004,10 +3996,11 @@ export class Store {
     return this.transaction(() => {
       const done = this.commitWorkspaceRun({ run: input.run, path: input.path, operations: input.operations ?? [], response: input.response });
       const sessionId = input.run.sessionId!;
-      if (input.scores?.length) {
+      const scores = input.scores?.(done);
+      if (scores?.length) {
         const current = new Map(this.liveKnowledge(input.path).map(revision => [revision.knowledgeId, revision.id]));
         const set = this.db.prepare("UPDATE knowledge SET score = ?, scored_commit = ?, scored_run = ?, score_consequence = ?, score_frequency = ?, score_current = ? WHERE id = ?");
-        for (const rating of input.scores) {
+        for (const rating of scores) {
           if (![rating.consequence, rating.frequency, rating.current].every(value => Number.isInteger(value) && value >= 1 && value <= 5))
             throw new Error("Score ratings must be integers 1–5");
           if (current.get(rating.knowledgeId) === rating.commit)

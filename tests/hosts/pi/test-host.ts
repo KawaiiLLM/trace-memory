@@ -161,7 +161,7 @@ export function dreamerFiles(conversation: Conversation, plan: { curate?: string
   const changes = plan.curate ?? "## none\n";
   const files = task === "notes" ? [{ path: named("File"), content: "No repository-specific notes." }]
     : task === "curate" ? [{ path: named("Decisions"), content: decisionText(readFileSync(named("Decisions"), "utf8"), changes) }, { path: named("Changes"), content: changes }]
-    : [{ path: named("Scores"), content: [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+/g)].map(match => `${match[0]} 4 4 4`).join("\n") }];
+    : [{ path: named("Scores"), content: [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+(?:\.child\d+)?/g)].map(match => `${match[0]} 4 4 4`).join("\n") }];
   const todo = files.filter(file => !written.includes(file.path));
   return todo.length ? call(todo.map((file, i) => ({ id: `write-${written.length + i + 1}`, name: "write", arguments: file }))) : undefined;
 }
