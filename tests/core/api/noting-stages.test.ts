@@ -212,7 +212,7 @@ for (const missing of ["field", "path"]) test(`knowledge rejects a missing files
   expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
 });
 
-test("retrieval uses fact-title and Raw-only hits, knowledge titles, and configured result caps", () => {
+test("retrieval: facts from new facts, knowledge only from new knowledge by similarity, and configured result caps", () => {
   const f = fixture(async () => OK);
   const entry = f.memory.store.getSourceEntry(f.memory.store.listSourceEntries(1)[0]!.id)!;
   const [raw, lexical] = facts(f.memory, f.path, [
@@ -229,4 +229,10 @@ test("retrieval uses fact-title and Raw-only hits, knowledge titles, and configu
   const item = knowledge(f.memory.store, f.path, "session", "constraint", [raw!.id], "Existing conclusion", { operation: { title: "knowledgeneedle" } });
   const files = { facts: seed("no-match"), knowledge: { name: "knowledge.md", text: knowledgeFile(f.memory, { ...create, title: "knowledgeneedle", supports: [`F${raw!.id}`] }) } };
   expect(relatedKnowledge(f.memory.store, scope, files, 20)).toContain(`## K${item.knowledgeId}@v1`);
+  // Ruling 2026-10-23: new knowledge retrieves old knowledge; the new facts alone retrieve none. A CJK title, one "word", is still found by similarity.
+  const cjk = knowledge(f.memory.store, f.path, "session", "constraint", [raw!.id], "旧结论", { operation: { title: "整理分批由代理自己推进" } });
+  const factOnly = { facts: seed("整理分批由代理自己推进"), knowledge: { name: "knowledge.md", text: "## none\n" } };
+  expect(relatedKnowledge(f.memory.store, scope, factOnly, 20)).not.toContain(`## K${cjk.knowledgeId}@v1`);
+  const similar = { facts: seed("no-match"), knowledge: { name: "knowledge.md", text: knowledgeFile(f.memory, { ...create, title: "整理分批的推进方式", supports: [`F${raw!.id}`] }) } };
+  expect(relatedKnowledge(f.memory.store, scope, similar, 20)).toContain(`## K${cjk.knowledgeId}@v1`);
 });

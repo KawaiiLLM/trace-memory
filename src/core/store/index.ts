@@ -2620,6 +2620,17 @@ export class Store {
     return [...new Set(rows.map(row => row.knowledge_id))].sort((a, b) => a - b);
   }
 
+  /** Versions most similar to `text`, by BM25 over the text's trigrams, any of which may match (unlike `searchKnowledge`, which needs every
+   * word: a CJK title has no spaces, so it is one word and finds little but itself). Returns version ids, best first. */
+  similarKnowledge(text: string, revisions: readonly number[], limit: number): number[] {
+    const chars = [...text.replace(/[\s\p{P}\p{S}]/gu, "")], grams = new Set<string>();
+    for (let i = 0; i + 3 <= chars.length; i++) grams.add(chars.slice(i, i + 3).join(""));
+    if (!grams.size || !revisions.length || limit <= 0) return [];
+    // ponytail: one OR query per text; a long body makes a long query, so callers pass titles and opening sentences.
+    return (this.db.prepare(`SELECT rowid AS id FROM knowledge_fts WHERE knowledge_fts MATCH ? AND rowid IN (SELECT value FROM json_each(?))
+      ORDER BY bm25(knowledge_fts) LIMIT ?`).all([...grams].map(ftsPhraseQuery).join(" OR "), JSON.stringify(revisions), limit) as { id: number }[]).map(row => row.id);
+  }
+
   listKnowledgeLinks(knowledgeId: number): KnowledgeLink[] {
     return (this.db.prepare(
       "SELECT * FROM knowledge_links WHERE from_knowledge = ? ORDER BY from_commit, kind, to_knowledge, to_commit",
