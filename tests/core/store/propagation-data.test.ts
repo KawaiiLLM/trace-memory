@@ -300,7 +300,10 @@ test("word indexes publish authored fact content and immutable knowledge updates
   expect(f.store.similarKnowledge("pulsar", ids, 20)).toEqual([changed.commit]);
   expect(f.store.similarKnowledge("nebula", [changed.commit], 20)).toEqual([]);
   expect(f.store.db.prepare("SELECT tf FROM knowledge_word_postings WHERE term='pulsar' AND document_id=?").get(changed.commit)!.tf).toBe(2);
-  const tables = ["fact_word_documents", "fact_word_terms", "fact_word_postings", "knowledge_word_documents", "knowledge_word_terms", "knowledge_word_postings"];
+  const tables = ["fact_word_stats", "fact_word_documents", "fact_word_terms", "fact_word_postings", "knowledge_word_stats", "knowledge_word_documents", "knowledge_word_terms", "knowledge_word_postings"];
+  // The maintained corpus size matches the documents after first writes and replacements alike.
+  for (const corpus of ["fact", "knowledge"]) expect(f.store.db.prepare(`SELECT total FROM ${corpus}_word_stats`).get()!.total)
+    .toBe(f.store.db.prepare(`SELECT count(*) AS n FROM ${corpus}_word_documents`).get()!.n);
   const snapshot = () => tables.map(table => f.store.db.prepare(`SELECT * FROM ${table} ORDER BY 1,2`).all());
   const before = snapshot();
   const row = { turnId: f.turn.id, text: "Transientword", category: "observation" as const, actor: "user" as const,
@@ -319,7 +322,7 @@ test("word similarity backfills both corpora without changing source rows and re
   const old = legacyFact(f.store, f.path, [{ entry: f.source, address: `T${f.turn.id}#E1` }], "星云 nebula");
   const legacy = legacyKnowledge(f.store, f.path, { ...f.common, text: "星云 nebula" });
   for (let i = 0; i < 4; i++) f.create(null, `Background${i}`);
-  const tables = ["fact_word_documents", "fact_word_terms", "fact_word_postings", "knowledge_word_documents", "knowledge_word_terms", "knowledge_word_postings"];
+  const tables = ["fact_word_stats", "fact_word_documents", "fact_word_terms", "fact_word_postings", "knowledge_word_stats", "knowledge_word_documents", "knowledge_word_terms", "knowledge_word_postings"];
   f.store.db.exec(tables.map(table => `DROP TABLE ${table}`).join(";") + "; PRAGMA user_version=3");
   const factsBefore = f.store.db.prepare("SELECT * FROM facts ORDER BY id").all();
   const versionsBefore = f.store.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all();
@@ -336,6 +339,8 @@ test("word similarity backfills both corpora without changing source rows and re
     if (open) expect(rows).toEqual(indexed); else indexed = rows;
     expect(store.db.prepare("SELECT count(*) AS n FROM fact_word_documents").get()!.n).toBe(factsBefore.length);
     expect(store.db.prepare("SELECT count(*) AS n FROM knowledge_word_documents").get()!.n).toBe(versionsBefore.length);
+    expect(store.db.prepare("SELECT total FROM fact_word_stats").get()!.total).toBe(factsBefore.length);
+    expect(store.db.prepare("SELECT total FROM knowledge_word_stats").get()!.total).toBe(versionsBefore.length);
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     store.close(); stores.splice(stores.indexOf(store), 1);
   }

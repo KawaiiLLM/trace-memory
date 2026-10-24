@@ -16,16 +16,21 @@ export class WordSimilarity {
   private readonly removePostings;
   private readonly removeEmptyTerms;
   private readonly putDocument;
+  private readonly hasDocument;
+  private readonly countDocument;
   private readonly putFrequency;
   private readonly putPosting;
   private readonly updateNorm;
   private readonly ranked;
 
   constructor(db: DatabaseSync, corpus: Corpus) {
-    const documents = `${corpus}_word_documents`, terms = `${corpus}_word_terms`, postings = `${corpus}_word_postings`;
+    const documents = `${corpus}_word_documents`, terms = `${corpus}_word_terms`, postings = `${corpus}_word_postings`, stats = `${corpus}_word_stats`;
     this.removeFrequencies = db.prepare(`UPDATE ${terms} SET df=df-1 WHERE term IN (SELECT term FROM ${postings} WHERE document_id=?)`);
     this.removeEmptyTerms = db.prepare(`DELETE FROM ${terms} WHERE df=0 AND term IN (SELECT term FROM ${postings} WHERE document_id=?)`);
     this.removePostings = db.prepare(`DELETE FROM ${postings} WHERE document_id=?`);
+    // The corpus size is a maintained count: an exact count(*) would walk the whole table on every call (170 review).
+    this.hasDocument = db.prepare(`SELECT 1 FROM ${documents} WHERE document_id=?`);
+    this.countDocument = db.prepare(`UPDATE ${stats} SET total=total+1 WHERE id=1`);
     this.putDocument = db.prepare(`INSERT INTO ${documents}(document_id,norm) VALUES (?,1) ON CONFLICT(document_id) DO UPDATE SET norm=1`);
     this.putFrequency = db.prepare(`INSERT INTO ${terms}(term,df) VALUES (?,1) ON CONFLICT(term) DO UPDATE SET df=df+1`);
     this.putPosting = db.prepare(`INSERT INTO ${postings}(term,document_id,tf) VALUES (?,?,?)`);
@@ -33,13 +38,13 @@ export class WordSimilarity {
       SELECT nullif(sqrt(sum(weight*weight)),0) FROM (
         SELECT (1+ln(p.tf))*max(ln((n.total-t.df+0.5)/(t.df+0.5)),0) AS weight
         FROM ${postings} p JOIN ${terms} t ON t.term=p.term
-        CROSS JOIN (SELECT count(*) AS total FROM ${documents}) n WHERE p.document_id=?
+        CROSS JOIN (SELECT total FROM ${stats} WHERE id=1) n WHERE p.document_id=?
       )),1) WHERE document_id=?`);
     // Unary + keeps SQLite on term ranges, not one primary-key seek per (query term, candidate).
     this.ranked = db.prepare(`WITH query AS MATERIALIZED (
       SELECT j.key AS term,(1+ln(j.value))*pow(ln((n.total-t.df+0.5)/(t.df+0.5)),2) AS weight
       FROM json_each(?) j JOIN ${terms} t ON t.term=j.key
-      CROSS JOIN (SELECT count(*) AS total FROM ${documents}) n WHERE 2*t.df<n.total
+      CROSS JOIN (SELECT total FROM ${stats} WHERE id=1) n WHERE 2*t.df<n.total
     ) SELECT p.document_id AS id,sum(q.weight*(1+ln(p.tf)))/d.norm AS score
       FROM query q CROSS JOIN ${postings} p ON p.term=q.term
       JOIN ${documents} d ON d.document_id=p.document_id
@@ -52,6 +57,7 @@ export class WordSimilarity {
     this.removeFrequencies.run(id);
     this.removeEmptyTerms.run(id);
     this.removePostings.run(id);
+    if (!this.hasDocument.get(id)) this.countDocument.run();
     this.putDocument.run(id);
     for (const [term, tf] of wordFrequencies(`${title ?? ""} ${text}`)) {
       this.putFrequency.run(term);
