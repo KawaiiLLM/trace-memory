@@ -214,16 +214,16 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   const failedSetup = setup.find(out => out && !out.ok);
   if (failedSetup) return failure(failedSetup);
   const prefix = `${frozen.knowledge}\n\n<repository_notes>\n${frozen.notes}\n</repository_notes>\n\n<background_material>\n${frozen.background}\n</background_material>`;
+  const heads = new Map<string, string>();
+  // Known repositories freeze before any group starts; nested ones freeze on first checked path, never at publication.
+  for (const directory of roots) { const repo = repositoryHead(join(directory, "__head_snapshot__")); if (repo && !heads.has(repo.root)) heads.set(repo.root, repo.commit); }
+  if (roots.length) for (const group of groups) for (const item of group.items) for (const file of item.value.revision.files ?? []) { const repo = repositoryHead(file); if (repo && !heads.has(repo.root)) heads.set(repo.root, repo.commit); }
   const runGroup = async (group: FrozenGroup): Promise<Outcome> => {
     let task: DreamingTask = "curate";
     const reviewed = new Map(group.items.map(item => [item.value.knowledge.id, store.knowledgeStaleReasons(item.value.revision.id)]));
     const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `group-${group.no}`).open({ "group.md": groupText(store, group.items, group.clusters, group.references),
       "decisions.md": decisionsTemplate(group.items, roots.length > 0), "changes.md": "", "scores.md": "" });
     const responses = new Map<string, number | undefined>();
-    const heads = new Map<string, string>();
-    // Existing repositories freeze before curate; nested ones freeze on first checked path, never at publication.
-    for (const directory of roots) { const repo = repositoryHead(join(directory, "__head_snapshot__")); if (repo && !heads.has(repo.root)) heads.set(repo.root, repo.commit); }
-    if (roots.length) for (const item of group.items) for (const file of item.value.revision.files ?? []) { const repo = repositoryHead(file); if (repo && !heads.has(repo.root)) heads.set(repo.root, repo.commit); }
     let curated: Curated | undefined, targets: ScoreTarget[] = [], sealed = "", scoringReview = false;
     const readCurate = () => checkCurate(store, path, group.items, { name: "decisions.md", text: workspace.text("decisions.md") }, { name: "changes.md", text: workspace.text("changes.md") }, limits.wholeFileLimit, roots, heads);
     const report = () => {

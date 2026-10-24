@@ -196,7 +196,7 @@ export function resolveCodeLink(address: string, roots: readonly string[], heads
   const repo = link.symbol !== undefined || heads ? repositoryHead(resolved.path) : undefined;
   if (repo && heads && !heads.has(repo.root)) heads.set(repo.root, repo.commit);
   if (link.symbol === undefined) return resolved;
-  if (!repo || symbolText(committedText(repo.root, repo.commit, resolved.path), link.symbol) === undefined)
-    return { reason: `${address}: symbol missing at HEAD (or ambiguous; use Class.method)` };
+  if (!repo || symbolText(committedText(repo.root, heads?.get(repo.root) ?? repo.commit, resolved.path), link.symbol) === undefined)
+    return { reason: `${address}: symbol missing at ${heads ? "captured commit" : "HEAD"} (or ambiguous; use Class.method)` };
   return { path: `${resolved.path}#${link.symbol}` };
 }

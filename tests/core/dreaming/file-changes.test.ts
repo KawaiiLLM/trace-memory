@@ -49,45 +49,47 @@ test.each([
   expect(background).toEqual(changed ? [expect.stringContaining(address)] : []);
 });
 
-test("a symbol added during curate retains the captured file baseline and is flagged on the next scan", async () => {
+test("a symbol absent at the first checked nested HEAD stays refused after HEAD gains it", async () => {
   const memories: WorkspaceBatch["memory"][] = [], f = dreamerFixture(memories);
-  const dir = mkdtempSync("/private/tmp/code-links-baseline-"); directories.push(dir);
+  const root = mkdtempSync("/private/tmp/code-links-baseline-"); directories.push(root);
+  const dir = join(root, "repository"); mkdirSync(dir);
   const file = join(dir, "rule.ts"), address = `${file}#target`;
   writeFileSync(file, "export function target() { return 1; }");
   Object.assign(git, { root: dir, head: "verified", before: "const other = 1;", after: "export function target() { return 1; }", diff: "" });
-  session(f.store, f.project.id, "pi:code-links-baseline", { directory: dir });
+  session(f.store, f.project.id, "pi:code-links-baseline", { directory: root });
   const item = f.item("A newly grounded rule");
+  const reports: string[] = [], stops: (string | undefined)[] = [];
   f.dreamer.script.instead = { curate: async input => {
-    git.head = "head"; // A repository commit arrives after the start-of-curate snapshot.
     input.reportRequest(REQUEST);
-    await input.tools.find(tool => tool.name === "check")!.execute({});
+    const check = () => input.tools.find(tool => tool.name === "check")!.execute({});
+    await check();
     writeDecisions(input.workspace.dir);
     const decisions = join(input.workspace.dir, "decisions.md");
     writeFileSync(decisions, readFileSync(decisions, "utf8").replace("files: None", `files: ${address}`));
     writeFileSync(join(input.workspace.dir, "changes.md"), "## none\n");
-    expect(input.passEnd()).toContain("Curate passes.");
-    writeFileSync(join(input.workspace.dir, "scores.md"), `K${item.knowledgeId} 60\n`);
-    expect(input.passEnd()).toBeDefined();
-    expect(input.passEnd()).toBeUndefined();
+    reports.push(String(await check()));
+    git.head = "head";
+    reports.push(String(await check()));
+    stops.push(input.passEnd(), input.passEnd());
     return { outcome: "success", output: "Done", request: REQUEST };
   } };
   try {
-    expect(await f.dream()).toMatchObject({ outcome: "success" });
+    expect(await f.dream()).toMatchObject({ outcome: "failure" });
+    expect(reports).toEqual([expect.stringContaining("symbol missing"), expect.stringContaining("symbol missing")]);
+    expect(stops).toEqual([expect.stringContaining("symbol missing"), undefined]);
     const current = f.store.currentCommit(item.knowledgeId, f.path)[0]!;
-    expect(f.store.knowledgeFileVerifications(current.id)).toEqual([{ file: address, verifiedCommit: "verified", verifiedAt: expect.any(String) }]);
-    scanChangedFiles(f.store, f.path);
-    expect(f.store.knowledgeStaleReasons(current.id)).toEqual([{ reason: "file_changed", detail: `${address} since verified` }]);
+    expect(current.id).toBe(item.commit);
+    expect(f.store.knowledgeFileVerifications(current.id)).toEqual([]);
   } finally { for (const memory of memories) memory.close(); }
 });
 
-test.each(["primary", "split child", "repaired symbol"])("a newly linked nested repository freezes its first checked HEAD for the %s", async part => {
+test.each(["primary", "split child"])("a newly linked nested repository freezes its first checked HEAD for the %s", async part => {
   const memories: WorkspaceBatch["memory"][] = [], f = dreamerFixture(memories);
   const root = mkdtempSync("/private/tmp/nested-head-"); directories.push(root);
   const nested = join(root, "repository"); mkdirSync(nested);
   const file = join(nested, "rule.ts"), address = `${file}#target`;
   writeFileSync(file, "export function target() { return 1; }");
-  Object.assign(git, { root: nested, head: "verified", before: "export function target() { return 1; }", after: "export function target() { return 2; }", diff: "" });
-  if (part === "repaired symbol") git.before = "const other = 1;";
+  Object.assign(git, { root: nested, head: "verified", before: "export function target() { return 1; }", after: "const other = 1;", diff: "" });
   session(f.store, f.project.id, "pi:nested-repository", { directory: root });
   const item = f.item("A newly grounded rule");
   f.dreamer.script.instead = { curate: async input => {
@@ -101,7 +103,7 @@ test.each(["primary", "split child", "repaired symbol"])("a newly linked nested 
     const decisions = join(input.workspace.dir, "decisions.md");
     if (part !== "split child") writeFileSync(decisions, readFileSync(decisions, "utf8").replace("files: None", `files: ${address}`));
     writeFileSync(join(input.workspace.dir, "changes.md"), changes);
-    expect(String(await check())).toContain(part === "repaired symbol" ? "symbol missing at HEAD" : "Problems: none");
+    expect(String(await check())).toContain("Problems: none");
     git.head = "head";
     expect(String(await check())).toContain("Problems: none");
     const scoring = input.passEnd();
@@ -117,6 +119,47 @@ test.each(["primary", "split child", "repaired symbol"])("a newly linked nested 
     const linked = f.store.curateItems(f.path).find(item => item.value.revision.files?.includes(address))!.value.revision;
     expect(f.store.knowledgeFileVerifications(linked.id)).toEqual([{ file: address, verifiedCommit: "verified", verifiedAt: expect.any(String) }]);
     scanChangedFiles(f.store, f.path);
-    expect(f.store.knowledgeStaleReasons(linked.id)).toEqual([{ reason: "file_changed", detail: `${address} since verified` }]);
+    expect(f.store.knowledgeStaleReasons(linked.id)).toEqual([{ reason: "file_changed", detail: `${address} since verified: symbol missing` }]);
+  } finally { for (const memory of memories) memory.close(); }
+});
+
+test("parallel curate groups share the first captured nested repository HEAD", async () => {
+  const memories: WorkspaceBatch["memory"][] = [], f = dreamerFixture(memories);
+  const root = mkdtempSync("/private/tmp/parallel-head-"); directories.push(root);
+  const nested = join(root, "repository"); mkdirSync(nested);
+  const file = join(nested, "rule.ts"), address = `${file}#target`;
+  writeFileSync(file, "export function target() { return 1; }");
+  Object.assign(git, { root: nested, head: "verified", before: "export function target() { return 1; }", after: "export function target() { return 2; }", diff: "" });
+  session(f.store, f.project.id, "pi:parallel-head", { directory: root });
+  f.memory.config.dreaming.groupItems = 1;
+  f.memory.config.dreaming.parallelGroups = 2;
+  const items = [f.item("First grounded rule"), f.item("Second grounded rule")];
+  const firstChecked = Promise.withResolvers<void>(), secondChecked = Promise.withResolvers<void>();
+  f.dreamer.script.instead = { curate: async input => {
+    input.reportRequest(REQUEST);
+    const first = input.text.includes("Group 1.");
+    if (!first) await firstChecked.promise;
+    writeDecisions(input.workspace.dir);
+    const decisions = join(input.workspace.dir, "decisions.md");
+    writeFileSync(decisions, readFileSync(decisions, "utf8").replace("files: None", `files: ${address}`));
+    writeFileSync(join(input.workspace.dir, "changes.md"), "## none\n");
+    await input.tools.find(tool => tool.name === "check")!.execute({});
+    if (first) {
+      git.head = "head";
+      firstChecked.resolve();
+      await secondChecked.promise;
+    } else secondChecked.resolve();
+    const scoring = input.passEnd()!;
+    const labels = /Items: ([^\n]*)/.exec(scoring)![1]!.split(", ");
+    writeFileSync(join(input.workspace.dir, "scores.md"), labels.map(label => `${label} 70`).join("\n"));
+    input.passEnd(); input.passEnd();
+    return { outcome: "success", output: "Done", request: REQUEST };
+  } };
+  try {
+    expect(await f.dream()).toMatchObject({ outcome: "success" });
+    for (const item of items) {
+      const current = f.store.currentCommit(item.knowledgeId, f.path)[0]!;
+      expect(f.store.knowledgeFileVerifications(current.id)).toEqual([{ file: address, verifiedCommit: "verified", verifiedAt: expect.any(String) }]);
+    }
   } finally { for (const memory of memories) memory.close(); }
 });

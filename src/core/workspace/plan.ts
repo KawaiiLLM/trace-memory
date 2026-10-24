@@ -26,7 +26,7 @@ export type WorkspaceTask =
   /** `facts` is the run's facts file; its labels are what `supports:` may cite besides `F<id>`. */
   | { kind: "noting-knowledge"; scope: NotingScope; file: WorkspaceFile; facts: WorkspaceFile; checked?: boolean; allowFlags?: boolean }
   /** One pass can update, archive, merge and split, never create. */
-  | { kind: "curate"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile };
+  | { kind: "curate"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile; heads?: Map<string, string> };
 
 /** The host-measured length of one title or body in units, whether or not it is over its limit; the limit is the target plus 10% (145). */
 export interface Length { block: string; field: "title" | "body"; count: number; target: number; limit: number }
@@ -196,7 +196,7 @@ function planKnowledge(store: Store, task: Exclude<WorkspaceTask, { kind: "notin
       const root = session.directory ?? session.startDirectory;
       return paths.map(path => {
         if (task.kind === "curate") {
-          const resolved = resolveCodeLink(path, allowedRoots(store, sessionId));
+          const resolved = resolveCodeLink(path, allowedRoots(store, sessionId), task.heads);
           if ("reason" in resolved) { add(fmt(line("files"), `files: ${resolved.reason}`)); return path; }
           return resolved.path;
         }
