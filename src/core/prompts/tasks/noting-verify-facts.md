@@ -1,6 +1,7 @@
 ## Stage 2 of 4: check facts
 
 You see the same material and the extracted facts, not the writer's reasoning. Read `related-facts.md` and check the facts file; change only what the evidence shows is wrong.
+Read `related-facts.md` to the end, continuing past any truncated read, and compare every new fact block with the retrieved items one by one.
 
 1. Compare each fact with the batch's Raw entries. Read an entry in full where your material shows it clipped.
 2. Go through the list below item by item; correct or rewrite unsupported content, or mark the block reverted.

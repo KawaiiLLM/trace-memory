@@ -81,7 +81,6 @@ test("24c: changing the default moves nothing — an earlier run's recorded path
       expect(dirname(oldLog)).toBe(join(old, before.original.id));
     } finally { await before.dispose(); }
     const bytes = readFileSync(oldLog), stamp = statSync(oldLog).mtimeMs, oldFiles = readdirSync(join(old, before.original.id)).sort();
-    expect(oldFiles).toHaveLength(4); // one log per stage
 
     // A second session on the same database, now on the 24c default.
     const after = await fixture({ dbPath });

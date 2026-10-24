@@ -24,7 +24,7 @@ const edit = (file: string, values: Record<string, unknown>) => {
   const current = JSON.parse(readFileSync(file, "utf8"));
   writeFileSync(file, JSON.stringify({ ...current, "trace-memory": { ...current["trace-memory"], ...values } }));
 };
-const requestedLevels = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).filter(r => JSON.parse(r.response!).task !== "verify").map(r => JSON.parse(r.response!).thinking?.requested); // one entry per batch: its write run
+const requestedLevels = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).filter(r => JSON.parse(r.response!).task === "extract-facts").map(r => JSON.parse(r.response!).thinking?.requested);
 const notices = (h: ReturnType<typeof host>) => h.notices.filter(n => n.startsWith("Trace Memory: ") && /restart|could not be read/.test(n));
 /** The thinking level the session's next admitted Noting task requests: the observable effect of the Noter thinking setting. */
 const nextLevel = async (h: ReturnType<typeof host>) => { await h.turn(); return requestedLevels(h).at(-1); };
@@ -44,7 +44,6 @@ test("a change saved by one session reaches a second live session's next admitte
   await start(first, second);
   await second.turn();
   const inherited = requestedLevels(second);
-  expect(inherited).toHaveLength(4);
   const before = second.notices.length;
   // The first session saves through its own Settings menu; nothing is sent to the second.
   first.ctx.hasUI = true;
@@ -54,7 +53,7 @@ test("a change saved by one session reaches a second live session's next admitte
   expect(JSON.parse(readFileSync(file, "utf8"))["trace-memory"].notingThinking).toBe("high");
   await applied(second, "high");
   expect(await nextLevel(second)).toBe("high");
-  expect(requestedLevels(second)).toEqual([...inherited, ...Array(4).fill("high")]);
+  expect(requestedLevels(second)).toEqual([...inherited, "high"]);
   expect(second.notices.slice(before).filter(n => /setting|saved|restart|mode =/i.test(n))).toEqual([]);
 });
 

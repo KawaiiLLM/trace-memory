@@ -288,7 +288,7 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   ] }).ok).toBe(true);
   resolve(success([])); const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
-  const run = memory.store.getRun(result.runId)!;
+  const run = memory.store.listRuns(sessionId).filter(run => JSON.parse(run.response!).task === "extract-facts").at(-1)!;
   expect(JSON.parse(run.response!)).not.toHaveProperty("readKnowledgeCommits");
   expect(JSON.parse(run.request!)).toEqual(request);
   expect(run.model).toBe("fake-model"); expect(run.promptHash).toMatch(/^[0-9a-f]{64}$/);

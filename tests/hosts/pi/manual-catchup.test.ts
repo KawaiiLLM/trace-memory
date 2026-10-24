@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { host, reply, notingFact, emptyNote, NOTER_BATCH_REQUESTS, type Reply } from "./test-host.ts";
+import { host, reply, notingFact, emptyNote, EMPTY_NOTER_BATCH_REQUESTS, FACT_NOTER_BATCH_REQUESTS, type Reply } from "./test-host.ts";
 
 // Ticket 18b — manual catchup and stop. Parent scenarios 18 (manual finite drain), 19 (capacity
 // and command parity), 20 (stop and resume) and 21 (drain lifecycle), plus the three named revert
@@ -107,12 +107,12 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
     h.provider(async c => emptyNote(c) ?? reply("No durable material."));
     release[0]!(reply("No durable material.")); // the ordinary run finishes, but does not chain a catchup batch
     await settle(h);
-    expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS);
+    expect(h.requests).toHaveLength(EMPTY_NOTER_BATCH_REQUESTS);
     expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(4);
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
     await command(h, "catchup"); // the ordinary run exhausted Raw; finish the waiting drain without another launch
     await settle(h);
-    expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS);
+    expect(h.requests).toHaveLength(EMPTY_NOTER_BATCH_REQUESTS);
     expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(4);
     expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(2);
     await command(h, "");
@@ -256,7 +256,7 @@ test("18b 2026-09-08: a failure after one successful Noting batch preserves it a
     let notingCalls = 0;
     h.provider(async c => {
       notingCalls++;
-      return notingCalls <= NOTER_BATCH_REQUESTS ? notingFact(c) : { ...reply(""), stopReason: "error" as const, errorMessage: "boom" };
+      return notingCalls <= FACT_NOTER_BATCH_REQUESTS ? notingFact(c) : { ...reply(""), stopReason: "error" as const, errorMessage: "boom" };
     });
     await command(h, "catchup");
     await settle(h);
@@ -313,7 +313,7 @@ test("18b 2026-09-08: stop prevents the next batch from being scheduled even whe
       await settle(h);
     } finally { spy.mockRestore(); }
     expect(stoppedOnce).toBe(true);
-    expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch, both tasks; stop forbids a second batch
+    expect(h.requests).toHaveLength(EMPTY_NOTER_BATCH_REQUESTS); // stop forbids a second batch
     expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(4);
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0);
     await command(h, "");

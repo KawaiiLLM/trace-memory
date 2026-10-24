@@ -5,7 +5,7 @@ import { loadPrompt } from "../prompts/load.ts";
 import type { ToolNames } from "../prompts/tool-names.ts";
 import type { WritingLimits } from "../model/index.ts";
 import type { TraceMemoryConfig } from "../api/index.ts";
-import { checkWorkspace, type CheckResult, type Length, type NotingScope, type WorkspaceFile } from "../workspace/index.ts";
+import { checkWorkspace, parseBlocks, type CheckResult, type Length, type NotingScope, type WorkspaceFile } from "../workspace/index.ts";
 import { TaskWorkspace, defaultWorkspaceRoot, sweepStaleWorkspaces, type StopCheck } from "../workspace/run.ts";
 import type { Store } from "../store/index.ts";
 import { relatedFacts, relatedKnowledge } from "./retrieval.ts";
@@ -74,6 +74,12 @@ export class NotingWorkspace extends TaskWorkspace {
   read(): NotingFiles & { files: { facts: WorkspaceFile; knowledge: WorkspaceFile } } {
     const facts = this.text("facts.md"), knowledge = this.text("knowledge.md");
     return { facts, knowledge, files: { facts: { name: "facts.md", text: facts }, knowledge: { name: "knowledge.md", text: knowledge } } };
+  }
+  noWork(): boolean {
+    if (this.task !== "check-facts" && this.task !== "check-knowledge") return false;
+    const { files } = this.read();
+    const parsed = parseBlocks(this.task === "check-facts" ? files.facts : files.knowledge);
+    return parsed.blocks.length === 1 && parsed.blocks[0]!.op === "none" && this.check().ok;
   }
   private verify() {
     const { facts: text, knowledge: knowledgeText, files } = this.read();

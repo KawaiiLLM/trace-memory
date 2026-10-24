@@ -273,8 +273,9 @@ test("startup imports admit Noting at the newest persisted entry without another
       rangeTo: `S1/T${newest.turnId}`, origin: { sessionId: 1, entryIds: [newest.id] } });
     expect(inputs[0]!.entryIds).toEqual(entries.map(entry => entry.id));
     expect(entries.every(entry => importer.memory.store.entryNoted(entry.id))).toBe(true);
+    const admittedCalls = inputs.length;
     await coordinator.requestReconcile("same imported leaf"); await scheduler.settle();
-    expect(inputs).toHaveLength(4);
+    expect(inputs).toHaveLength(admittedCalls);
   } finally { await coordinator.shutdown("test"); spy.mockRestore(); }
 });
 

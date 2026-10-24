@@ -1,5 +1,5 @@
 // Ticket 155 supersedes the two tasks/two steps contract with four independently resumed stages.
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,6 +69,93 @@ test("four conversations share their first request and each stage owns exactly o
       [inputs[0]!.prompt, inputs[0]!.promptHash, inputs[0]!.text, inputs[0]!.tools.map(({ execute, ...schema }) => schema)]);
     expect(input.workspace.write).toEqual([input.task.endsWith("facts") ? input.workspace.facts : input.workspace.knowledge]);
   }
+});
+
+for (const hasFacts of [false, true]) test(`empty knowledge publishes with ${hasFacts ? "a checked fact" : "both checks skipped"}`, async () => {
+  const calls: string[] = [];
+  const f = fixture(async input => {
+    calls.push(input.task);
+    await submit(input, f.memory, { noteInput: hasFacts ? [fact] : [] });
+    return OK;
+  });
+  expect(await f.run()).toMatchObject({ outcome: "success", facts: hasFacts ? [expect.objectContaining({ text: "Use pnpm" })] : [] });
+  expect(calls).toEqual(hasFacts ? ["extract-facts", "check-facts", "write-knowledge"] : ["extract-facts", "write-knowledge"]);
+  const runs = f.memory.store.listRuns(1).filter(run => run.kind === "noting");
+  expect(runs.map(run => run.outcome)).toEqual(["success", "success", "success", "success"]);
+  for (const run of runs.filter(run => !calls.includes(JSON.parse(run.response!).task))) {
+    expect(JSON.parse(run.response!)).toMatchObject({ noWork: true, problems: [], budget: { steps: 0 }, files: { knowledge: expect.any(String) } });
+    expect(run.request).toBeNull();
+    expect(JSON.parse(run.response!).nativeLog).toBeUndefined();
+  }
+  expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
+  expect(f.memory.store.pendingEntries(1, "main", 1)).toEqual([]);
+  expect(f.memory.store.handoff(1, "noting")).toBeNull();
+  expect(f.memory.store.taskFailures(1).find(row => row.phase === "noting")?.count ?? 0).toBe(0);
+  expect(f.memory.spend(1).unknown).toBe(0);
+});
+
+test("empty facts skip their check without skipping a nonempty knowledge check", async () => {
+  let support = 0;
+  const calls: string[] = [];
+  const f = fixture(async input => {
+    calls.push(input.task);
+    await submit(input, f.memory, { memoryInput: { ...create, supports: [`F${support}`] } });
+    return OK;
+  });
+  const entry = f.memory.store.getSourceEntry(f.memory.store.sourcePath(1, "main", 1)[0]!.id)!;
+  support = facts(f.memory, f.path, [{ title: "Prior ruling", sources: [{ entry, text: "Use pnpm" }] }])[0]!.id;
+  expect(await f.run()).toMatchObject({ outcome: "success", facts: [] });
+  expect(calls).toEqual(["extract-facts", "write-knowledge", "check-knowledge"]);
+  expect(f.memory.store.currentKnowledge(f.path).map(item => item.revision.supports)).toEqual([[support]]);
+  expect(f.memory.store.pendingEntries(1, "main", 1)).toEqual([]);
+});
+
+for (const passed of ["extract-facts", "write-knowledge"] as const) test(`resume after ${passed} skips its empty check and publishes once`, async () => {
+  const calls: string[] = [];
+  const f = fixture(async input => { calls.push(input.task); await submit(input, f.memory); return OK; });
+  const commit = f.memory.store.commitNotingStage.bind(f.memory.store);
+  const interruption = vi.spyOn(f.memory.store, "commitNotingStage").mockImplementation(input => {
+    const result = commit(input);
+    if (JSON.parse(input.run.response!).task === passed) throw new Error("interrupted after durable handoff");
+    return result;
+  });
+  await expect(f.run()).rejects.toThrow("interrupted after durable handoff");
+  interruption.mockRestore();
+  expect(f.memory.store.handoff(1, "noting")?.nextTask).toBe(passed === "extract-facts" ? "check-facts" : "check-knowledge");
+  expect(f.memory.store.pendingEntries(1, "main", 1)).toHaveLength(2);
+  calls.length = 0;
+  f.restart();
+  expect(await f.run()).toMatchObject({ outcome: "success", facts: [] });
+  expect(calls).toEqual(passed === "extract-facts" ? ["write-knowledge"] : []);
+  const runs = f.memory.store.listRuns(1).filter(run => run.kind === "noting");
+  expect(runs.map(run => JSON.parse(run.response!).task)).toEqual(NOTING_TASKS);
+  expect(runs.map(run => run.outcome)).toEqual(["success", "success", "success", "success"]);
+  expect(f.memory.store.pendingEntries(1, "main", 1)).toEqual([]);
+  expect(f.memory.store.handoff(1, "noting")).toBeNull();
+  expect(f.memory.store.taskFailures(1).find(row => row.phase === "noting")?.count ?? 0).toBe(0);
+});
+
+test("a skipped facts check hands off to knowledge writing and a later failure counts only once", async () => {
+  let fail = true;
+  const calls: string[] = [];
+  const f = fixture(async input => {
+    calls.push(input.task);
+    if (input.task === "write-knowledge") {
+      expect(f.memory.store.handoff(1, "noting")?.nextTask).toBe("write-knowledge");
+      if (fail) { input.reportRequest(REQUEST); return { ...OK, outcome: "failure", output: "provider failed" }; }
+    }
+    await submit(input, f.memory);
+    return OK;
+  });
+  expect(await f.run()).toMatchObject({ outcome: "failure", problems: ["provider failed"] });
+  expect(calls).toEqual(["extract-facts", "write-knowledge"]);
+  expect(f.memory.store.taskFailures(1).find(row => row.phase === "noting")?.count).toBe(1);
+  expect(f.memory.store.pendingEntries(1, "main", 1)).toHaveLength(2);
+  fail = false; calls.length = 0; f.restart();
+  expect(await f.run()).toMatchObject({ outcome: "success", facts: [] });
+  expect(calls).toEqual(["write-knowledge"]);
+  expect(f.memory.store.pendingEntries(1, "main", 1)).toEqual([]);
+  expect(f.memory.store.taskFailures(1).find(row => row.phase === "noting")?.count ?? 0).toBe(0);
 });
 
 for (const task of ["check-facts", "check-knowledge"] as const) test(`${task} refuses a missing verdict and a second failed stop is terminal`, async () => {

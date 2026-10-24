@@ -79,7 +79,7 @@ test("26b/92: every N launch path freezes the same level — automatic work, bor
     await command(h, "catchup");
     await settle(h);
     expect(h.memory.store.listRuns(1).length, "manual catchup ran at least one run of its own").toBeGreaterThan(beforeCatchup);
-    const runs = [...h.memory.store.listRuns(1), ...h.memory.store.listRuns(tail.sessionId)].filter(r => r.kind !== "manual" && r.response);
+    const runs = [...h.memory.store.listRuns(1), ...h.memory.store.listRuns(tail.sessionId)].filter(r => r.kind !== "manual" && r.response && !JSON.parse(r.response).noWork);
     expect(runs.length).toBeGreaterThanOrEqual(3);
     expect(runs.map(r => r.kind).includes("noting")).toBe(true);
     expect(runs.map(r => r.kind).includes("consolidation")).toBe(false);
@@ -119,7 +119,7 @@ test("26d/92: every N subagent path takes its configured level — explicit suba
     await command(h, "catchup");
     await settle(h);
     expect(h.memory.store.listRuns(1).length, "manual catchup ran at least one run of its own").toBeGreaterThan(beforeCatchup);
-    const runs = [...h.memory.store.listRuns(1), ...h.memory.store.listRuns(tail.sessionId)].filter(r => r.kind !== "manual" && r.response);
+    const runs = [...h.memory.store.listRuns(1), ...h.memory.store.listRuns(tail.sessionId)].filter(r => r.kind !== "manual" && r.response && !JSON.parse(r.response).noWork);
     expect(runs.map(r => r.kind).includes("consolidation")).toBe(false);
     expect(h.memory.store.listRuns(tail.sessionId).length).toBeGreaterThan(0); // borrowed closed-session work ran
     // Each run asked for its own phase's level, never the foreground `off`; the default model
@@ -160,6 +160,6 @@ test("26d: the configured level is frozen at admission — a preference saved wh
     const before = h.requests.length;
     await h.turn();
     expect(h.requests.slice(before).every((body: any) => body.reasoning_effort === undefined)).toBe(true);
-    expect(thinkingOf(h.memory.store.listRuns(1).filter(r => r.kind === "noting").at(-1)!)).toEqual({ requested: "off", effective: "off" });
+    expect(thinkingOf(h.memory.store.listRuns(1).filter(r => r.kind === "noting" && !JSON.parse(r.response!).noWork).at(-1)!)).toEqual({ requested: "off", effective: "off" });
   } finally { await h.dispose(); }
 });

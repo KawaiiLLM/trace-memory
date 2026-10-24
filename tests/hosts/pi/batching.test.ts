@@ -3,7 +3,7 @@ import { TraceMemory, renderEntry, tokens, toolDefinitions, DEFAULT_CONFIG, type
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { conversationOf, dreamerFiles, host, NOTER_BATCH_REQUESTS, reply, usage } from "./test-host.ts";
+import { conversationOf, dreamerFiles, host, EMPTY_NOTER_BATCH_REQUESTS as NOTER_BATCH_REQUESTS, reply, usage } from "./test-host.ts";
 import { largestTaskPromptTokens, submit, verifyUnchanged } from "../../support/noter.ts";
 import { noterWrittenItem } from "../../support/dreamer.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";

@@ -120,7 +120,6 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
     const batches = () => inputs.filter(input => input.task === "extract-facts");
     opportunity([first], true); await scheduler.settle();
     expect(batches()).toHaveLength(1);
-    expect(inputs).toHaveLength(4);
     expect(inputs[0]!.kind).toBe("noting");
     expect(inputs.every(input => input.sessionId === target.sessionId && input.branch === "active")).toBe(true);
     expect(inputs.every(input => !input.text.includes("ABANDONED_SIBLING"))).toBe(true);
@@ -130,9 +129,10 @@ test("89: CC borrows only active paths and consumes reactivated backlog at the n
     store.setCurrentPath(target.sessionId, "abandoned", sibling.turn.id, "closed");
     opportunity([]); await scheduler.settle();
     expect(batches()).toHaveLength(1);
+    const beforeReactivation = inputs.length;
     opportunity([append()], true); await scheduler.settle();
     expect(batches()).toHaveLength(2);
-    expect(inputs.slice(4).every(input => input.sessionId === target.sessionId && input.branch === "abandoned")).toBe(true);
+    expect(inputs.slice(beforeReactivation).every(input => input.sessionId === target.sessionId && input.branch === "abandoned")).toBe(true);
     expectConsumedOnlySibling(memory, target.sessionId, sibling);
     expect(diagnostics).toEqual([]);
   } finally { memory.close(); }

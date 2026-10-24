@@ -212,7 +212,7 @@ test("19b 2026-09-08: a host stub that receives structured material and declares
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.problems).toBeUndefined();
   expect(memory.store.listSessionFacts(sessionId).map(f => f.text)).toEqual([`Observed at T${t.id}#E1`]);
-  const run = memory.store.getRun(result.runId)!;
+  const run = memory.store.listRuns(sessionId).find(run => JSON.parse(run.response!).task === "extract-facts")!;
   expect(run.outcome).toBe("success");
   expect(run.request).toBeNull(); // nothing fabricated
   const response = JSON.parse(run.response!);

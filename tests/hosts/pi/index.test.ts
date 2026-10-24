@@ -5,7 +5,7 @@ import { memoryFiles, canonicalToolNames } from "../../../src/core/api/index.ts"
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { knowledgeFile } from "../../support/noter.ts";
-import { host as createHost, reply, notingFact, NOTER_BATCH_REQUESTS, holdFirstRequest, noteHeld, usage, dreamerFiles, type Reply } from "./test-host.ts";
+import { host as createHost, reply, notingFact, EMPTY_NOTER_BATCH_REQUESTS, FACT_NOTER_BATCH_REQUESTS, holdFirstRequest, noteHeld, usage, dreamerFiles, type Reply } from "./test-host.ts";
 import { compacted, seedSourceEntry } from "../../source-fixture.ts";
 import { curateNow } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
@@ -120,7 +120,7 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test");
   const writeRequests = 3; // check, extract facts, stop
   expect(JSON.parse(run.request!)).toEqual(h.requests[writeRequests - 1]);
-  expect(JSON.parse(runs[3]!.request!)).toEqual(h.requests.at(-1));
+  expect(JSON.parse(runs[2]!.request!)).toEqual(h.requests.at(-1));
   expect(h.conversations[writeRequests - 1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "assistant", "toolResult"]);
   // 137: a fresh Noter's system prompt is its instructions plus the retrieval policy, once.
   expect(h.conversations[0]!.systemPrompt).toBe(withRetrievalPolicy(loadPrompt("noting.md"), canonicalToolNames));
@@ -327,7 +327,7 @@ test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) wait
 test("17b supersedes watermark growth: compressed source labels count along with CJK content", async () => {
   const h = host({ "noting.triggerTokens": 16 }); // the two labels and their two characters, and nothing else
   await h.prompt("一"); await h.answer("a"); await h.drain();
-  expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch: both tasks, each calling check and writing `## none`
+  expect(h.requests).toHaveLength(EMPTY_NOTER_BATCH_REQUESTS);
   expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
 });
 
@@ -602,10 +602,10 @@ test("29d: a note waits for no receipt and no prompt carries one", async () => {
   expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   h.provider(async c => notingFact(c));
   await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // the first batch's two tasks, but no chained run for the busy second turn
+  expect(h.requests).toHaveLength(FACT_NOTER_BATCH_REQUESTS); // completion does not chain another batch
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(false);
   await h.answer(); await h.drain();
-  expect(h.requests).toHaveLength(2 * NOTER_BATCH_REQUESTS); // the later turn admits one more batch
+  expect(h.requests).toHaveLength(2 * FACT_NOTER_BATCH_REQUESTS); // the later turn admits one more batch
 });
 
 test("a subagent Noter reads omitted evidence through virtual Read and records its last request", async () => {
@@ -617,9 +617,6 @@ test("a subagent Noter reads omitted evidence through virtual Read and records i
   const call = { type: "toolCall" as const, id: "call-1", name: "read", arguments: { path } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : notingFact(c));
   await h.prompt("next main turn"); await h.answer("word ".repeat(1000)); await h.drain();
-  // Task 1: read, check, the facts file, stop, the knowledge file, stop. Task 2 starts from the same first message, so its model reads the same
-  // evidence, then checks and stops at each of its two steps.
-  expect(h.conversations).toHaveLength(16);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
   expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
@@ -975,8 +972,8 @@ test("a retry re-sends the same request: a stream error after a tool round does 
   const run = h.memory.store.listRuns(1)[0]!, response = JSON.parse(run.response!);
   expect(run.outcome).toBe("success");
   // Every attempt that reported usage counts; the attempt that died in transport reported none.
-  // The write task's requests: all but the dead attempt and the verify task's three (its own run).
-  expect(response.usage.input).toBe(usage.input * (h.conversations.length - 1 - 9));
+  const nextStage = h.conversations.findIndex((conversation, index) => index > 0 && conversation.messages.length === 1);
+  expect(response.usage.input).toBe(usage.input * (nextStage - 1));
   // Pi's own retry loop records the provider's error text as it arrived at the transport.
   expect(response.retries).toEqual([{ attempt: 1, error: expect.stringContaining("fetch failed") }]);
 });

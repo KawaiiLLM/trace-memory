@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { expect, test, vi } from "vitest";
 import { TraceMemory, type NotingAgentInput } from "../../../src/core/api/index.ts";
-import { host, reply, notingFact, dreamerFiles, NOTER_BATCH_REQUESTS, type Reply } from "./test-host.ts";
+import { host, reply, notingFact, dreamerFiles, NOTER_BATCH_REQUESTS, EMPTY_NOTER_BATCH_REQUESTS, type Reply } from "./test-host.ts";
 import { knowledge } from "../../support/seed.ts";
 import { largestTaskPromptTokens, submit } from "../../support/noter.ts";
 import { submitEmpty } from "../../support/noter.ts";
@@ -99,7 +99,7 @@ test("closed tiny pending Raw is borrowed below own trigger; noted-only, live an
     const noted = target(h.memory, { noted: true, facts: 1 });
     const pending = target(h.memory);
     await tick(h);
-    expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch: both tasks
+    expect(h.requests).toHaveLength(EMPTY_NOTER_BATCH_REQUESTS);
     expect(h.memory.store.listRuns(pending.sessionId).filter(r => r.kind === "noting")).toHaveLength(4);
     expect(h.memory.pendingEntries(pending.sessionId, pending.branch, pending.headTurnId)).toEqual([]);
     expect(h.memory.store.listRuns(live.sessionId)).toHaveLength(0);
@@ -426,7 +426,7 @@ test("failed own capacity admission leaves its N slot free for a smaller closed 
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);
     await tick(h);
-    expect(h.requests, h.notices.join("\n")).toHaveLength(NOTER_BATCH_REQUESTS);
+    expect(h.requests, h.notices.join("\n")).toHaveLength(EMPTY_NOTER_BATCH_REQUESTS);
     expect(h.conversations[0]!.messages[0]!.content).toContain(`S${t.sessionId}/T${t.headTurnId}`);
     expect(h.notices.join(" ")).toContain("Noting capacity: selected evidence cannot fit the model context");
     expect(h.memory.store.getClaim(1, "noting")).toBeNull();

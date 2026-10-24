@@ -167,6 +167,8 @@ export function dreamerFiles(conversation: Conversation, plan: { curate?: string
 }
 /** Four stages, each with check, write and stop. */
 export const NOTER_BATCH_REQUESTS = 12;
+export const EMPTY_NOTER_BATCH_REQUESTS = 6;
+export const FACT_NOTER_BATCH_REQUESTS = 9;
 /** The Noter has staged its files (its write task wrote them). */
 export const noteHeld = (conversation: Conversation): boolean => conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "write");
 export const emptyNote = (conversation: Conversation): Reply | undefined =>
