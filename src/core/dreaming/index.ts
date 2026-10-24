@@ -252,12 +252,16 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
             if (!processed.some(item => item.id === r.id)) processed.push(r);
           }
           for (const r of processed) {
-            for (const file of r.files ?? []) { const repo = repositoryHead(file), commit = repo && heads.get(repo.root); if (commit && trackedAt(repo.root, commit, file)) store.setKnowledgeFileVerification(r.id, { file, verifiedCommit: commit, verifiedAt: new Date().toISOString() }); }
             const source = results.findIndex(result => result.ok && result.committed.some(item => item.commit === r.id));
             const op = curated!.operations[source];
             const parent = op && op.op !== "create" ? op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId : r.knowledgeId;
             const decision = curated!.decisions.find(value => value.item.value.knowledge.id === parent);
             for (const flag of reviewed.get(parent) ?? []) store.clearKnowledgeStale(r.id, flag);
+            for (const file of r.files ?? []) {
+              const repo = repositoryHead(file), commit = repo && heads.get(repo.root);
+              if (commit && trackedAt(repo.root, commit, file)) store.setKnowledgeFileVerification(r.id, { file, verifiedCommit: commit, verifiedAt: new Date().toISOString() });
+              else store.setKnowledgeStale(r.id, { reason: "unverified_file", detail: file });
+            }
             // A flag that arrived after the group's input was frozen was not reviewed: the result carries it, from every merge parent.
             const parents = op?.op === "merge" ? [op.intoKnowledgeId, ...op.absorb.map(base => base.knowledgeId)] : [parent];
             for (const flag of parents.flatMap(id => lateFlags.get(id) ?? [])) store.setKnowledgeStale(r.id, flag);
