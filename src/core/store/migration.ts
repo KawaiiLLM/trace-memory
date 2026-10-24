@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { isAbsolute } from "node:path";
 import type { Store } from "./index.ts";
 import { placementOwner } from "./processing.ts";
 import { assignVersionTag } from "./version-tags.ts";
@@ -132,6 +133,26 @@ export function migrateFactsFts160(db: DatabaseSync): void {
     title, text, content = '', contentless_delete = 1, tokenize = 'trigram'
   );
   INSERT INTO facts_fts(rowid, title, text) SELECT id, title, text FROM facts`);
+}
+
+/** Fill historical read roots once, without consulting native files or changing project assignment. */
+export function migrateStartDirectories163(db: DatabaseSync): void {
+  if (!db.isTransaction) throw new Error("163 migration requires Store's schema transaction");
+  if (Number(db.prepare("PRAGMA user_version").get()!.user_version) >= 3) return;
+  const entries = db.prepare(`SELECT r.content FROM source_entries e JOIN source_entry_raw r ON r.entry_id = e.id
+    WHERE e.session_id = ? ORDER BY e.id`);
+  const update = db.prepare("UPDATE sessions SET start_directory = ? WHERE id = ?");
+  for (const session of db.prepare(`SELECT id FROM sessions WHERE directory IS NULL AND start_directory IS NULL
+    AND (host LIKE 'cc:%' OR host LIKE 'pi:%')`).all() as { id: number }[]) {
+    for (const entry of entries.iterate(session.id)) {
+      let cwd: unknown;
+      try { cwd = JSON.parse(JSON.parse(String(entry.content)).raw)?.cwd; } catch { continue; }
+      if (typeof cwd !== "string" || !isAbsolute(cwd)) continue;
+      update.run(cwd, session.id);
+      break;
+    }
+  }
+  db.exec("PRAGMA user_version = 3");
 }
 
 /** Ticket 144, Stage 4: the columns Dreaming's curate, verify and classify tasks need. Every column is nullable or

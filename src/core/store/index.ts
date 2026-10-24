@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assignVersionTag, migrateVersionTags } from "./version-tags.ts";
 import { DatabaseSync } from "node:sqlite";
 import { resolveFactSource, sourceAddressScope } from "../model/source.ts";
-import { migrateFactsFts160, migratePropagation154, migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateDeploymentData144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
+import { migrateStartDirectories163, migrateFactsFts160, migratePropagation154, migrateDreaming, migrateDreamingRanges64d, migrateKnowledgeLineage, migrateFactAndKnowledge92, migrateFactSegments93, migrateArchiveKind99, migrateKnowledgeTitle144, migrateInadmissibleKind144, migrateStage4Schema144, migrateDeploymentData144, migrateKnowledgeSubtraction, type Migration64dReport } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
@@ -600,7 +600,7 @@ export type KnowledgeOperationInput =
       scope: KnowledgeScope;
       topics: string[];
       /** Each child is a new identity recorded as split from the item; scope, supports and reason default to the operation's. */
-      children: { title?: string; text: string; category: KnowledgeCategory; topics: string[]; files: string[] | null;
+      children: { title?: string; text: string; category: KnowledgeCategory; topics: string[]; files: KnowledgeFiles;
         scope?: KnowledgeScope; supports?: number[]; reason?: string }[];
       supports: number[];
       reason: string;
@@ -1024,7 +1024,7 @@ export class Store {
         // 62: existing sessions keep NULL; they are never re-attributed to a directory.
         const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
         if (!sessionColumns.some(r => r.name === "directory")) this.db.exec("ALTER TABLE sessions ADD COLUMN directory TEXT");
-        // 148: existing sessions keep NULL until the one-time backfill reads their hosts' native records.
+        // 148: the read root is separate from project assignment; 163 backfills it from stored Raw below.
         if (!sessionColumns.some(r => r.name === "start_directory")) this.db.exec("ALTER TABLE sessions ADD COLUMN start_directory TEXT");
         // 64b: lineage cursors replace the never-deployed session-wide foreground columns.
         if (sessionColumns.some(r => r.name === "current_branch")) this.db.exec("ALTER TABLE sessions DROP COLUMN current_branch");
@@ -1294,6 +1294,7 @@ export class Store {
       if (dataStep) { migrateDeploymentData144(this); this.db.exec("PRAGMA user_version = 2"); }
       migratePropagation154(this.db);
       migrateFactsFts160(this.db);
+      migrateStartDirectories163(this.db);
       const schemaChanged = Number(this.db.prepare("PRAGMA schema_version").get()!.schema_version) !== schemaBefore;
       if ((schemaChanged || dataStep) && this.db.prepare("PRAGMA foreign_key_check").all().length)
         throw new Error("Store migration: foreign key violations");
@@ -4096,8 +4097,9 @@ export class Store {
     if (!Object.hasOwn(op, "files") || !(validFiles(op.files) ||
         op.files === undefined && prior !== null && prior.files === undefined))
       return { ok: false, reason: "files: required list of paths or null (only an unmapped parent may be copied as undefined)" };
-    if (op.op === "split" && op.children.some(child => !Object.hasOwn(child, "files") || !validFiles(child.files)))
-      return { ok: false, reason: "files: every split child requires a list of paths or null" };
+    if (op.op === "split" && op.children.some(child => !Object.hasOwn(child, "files") ||
+        !(validFiles(child.files) || child.files === undefined && prior !== null && prior.files === undefined)))
+      return { ok: false, reason: "files: every split child requires a list of paths or null (only an unmapped parent may be copied as undefined)" };
     if (op.op === "merge") {
       // Ticket 144: merged items share one category and scope, whoever writes the merge.
       for (const field of ["scope", "category"] as const) {

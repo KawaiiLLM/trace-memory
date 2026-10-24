@@ -12,6 +12,20 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const tmp = () => { const dir = realpathSync(mkdtempSync(join(tmpdir(), "tm-144-roots-"))); dirs.push(dir); return dir; };
 
+test("missing paths and regular files do not count as readable repository roots", () => {
+  const directory = tmp(), file = join(directory, "not-a-directory");
+  writeFileSync(file, "x");
+  const store = new Store(":memory:");
+  try {
+    const project = store.createProject({ name: "unavailable", declaredBy: "mark" });
+    const target = session(store, project.id, "pi:missing", { startDirectory: join(directory, "gone") });
+    session(store, project.id, "cc:file", { directory: file });
+    expect(allowedRoots(store, target.id)).toEqual([]);
+    session(store, project.id, "pi:available", { startDirectory: directory });
+    expect(allowedRoots(store, target.id)).toEqual([directory]);
+  } finally { store.close(); }
+});
+
 test("a Grep or Glob call must name a directory inside a root; a Grep never searches the secret files and takes no glob of its own", () => {
   const root = tmp(), outside = tmp();
   mkdirSync(join(root, "src")); writeFileSync(join(root, "src", "a.ts"), "x");

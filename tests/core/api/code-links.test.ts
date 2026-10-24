@@ -29,12 +29,12 @@ test("Noter preserves an anchor while curate requires its symbol at HEAD, includ
     block("create", { title: "File facet", category: "constraint", scope: "project", topics: "", supports: `F${item.supports[0]}`, files: anchor, reason: "Grounded in this code" }, "Preserve the facet") } });
   expect(noter.problems).toEqual([]);
   const group = projectItems(f.store, f.path);
-  const decisions = decisionText(decisionsTemplate(group)).replace("files: None", `files: ${source}#missingSymbol`);
+  const decisions = decisionText(decisionsTemplate(group, true)).replace("files: None", `files: ${source}#missingSymbol`);
   expect(checkCurate(f.store, f.path, group, { name: "decisions.md", text: decisions }, { name: "changes.md", text: "## none\n" }).problems)
     .toEqual([expect.stringContaining("symbol missing at HEAD")]);
   const split = block(`split ${item.ref}`, { supports: `F${item.supports[0]}`, reason: "Separate facets" }, "Primary facet") +
     `\n### child\ntitle: Second facet\ncategory: constraint\nscope: project\ntopics:\nsupports: F${item.supports[0]}\nfiles: ${source}#missingSymbol\nreason: Independent condition\n\nSecond facet\n`;
-  expect(checkCurate(f.store, f.path, group, { name: "decisions.md", text: decisionText(decisionsTemplate(group), split) }, { name: "changes.md", text: split }).problems)
+  expect(checkCurate(f.store, f.path, group, { name: "decisions.md", text: decisionText(decisionsTemplate(group, true), split) }, { name: "changes.md", text: split }).problems)
     .toEqual(expect.arrayContaining([expect.stringContaining("symbol missing at HEAD")]));
 });
 
@@ -42,11 +42,11 @@ test("split children count toward the projected cap and merge removes consumed m
   const f = fixture(), a = f.item("Primary and child facets"), b = f.item("Other facet");
   const items = projectItems(f.store, f.path), split = block(`split ${a.ref}`, { supports: `F${a.supports[0]}`, reason: "Independent facets" }, "Primary facet") +
     `\n### child\ntitle: Child facet\ncategory: constraint\nscope: project\ntopics:\nsupports: F${a.supports[0]}\nfiles: ${source}\nreason: Independent facet\n\nChild facet\n`;
-  const decisions = decisionText(decisionsTemplate(items), split).replaceAll("files: None", `files: ${source}`);
+  const decisions = decisionText(decisionsTemplate(items, true), split).replaceAll("files: None", `files: ${source}`);
   expect(checkCurate(f.store, f.path, items, { name: "decisions.md", text: decisions }, { name: "changes.md", text: split }, 2).problems)
     .toEqual([expect.stringContaining("has 3 current items (whole-file limit 2)")]);
   const merge = block(`merge ${a.ref}`, { absorb: b.ref, reason: "Equivalent facets" }, "Combined facet");
-  const merged = decisionText(decisionsTemplate(items), merge).replaceAll("files: None", `files: ${source}`);
+  const merged = decisionText(decisionsTemplate(items, true), merge).replaceAll("files: None", `files: ${source}`);
   expect(checkCurate(f.store, f.path, items, { name: "decisions.md", text: merged }, { name: "changes.md", text: merge }, 1).problems).toEqual([]);
 });
 
@@ -56,7 +56,7 @@ test("a session-scoped split primary still counts its project-scoped child towar
   const items = projectItems(f.store, f.path);
   const split = block(`split ${a.ref}`, { scope: "session", supports: `F${a.supports[0]}`, reason: "Separate scopes" }, "Session facet") +
     `\n### child\ntitle: Project facet\ncategory: constraint\nscope: project\ntopics:\nsupports: F${a.supports[0]}\nfiles: ${source}\nreason: Project condition\n\nProject facet\n`;
-  const decisions = decisionText(decisionsTemplate(items), split).replaceAll("files: None", `files: ${source}`);
+  const decisions = decisionText(decisionsTemplate(items, true), split).replaceAll("files: None", `files: ${source}`);
   expect(checkCurate(f.store, f.path, items, { name: "decisions.md", text: decisions }, { name: "changes.md", text: split }, 1).problems)
     .toEqual([expect.stringContaining("has 2 current items (whole-file limit 1)")]);
 });

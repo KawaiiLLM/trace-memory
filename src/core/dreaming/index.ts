@@ -172,7 +172,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       if (!workspace.text("notes.md").trim()) problems.push("notes.md: write repository notes, or None when no repository applies");
       return { problems, text: [`Task: notes. File: ${workspace.path("notes.md")}. Input: ${workspace.path("background.md")}`,
         `Repositories you may read: ${roots.join(", ") || "none"}`, usage(responses, limits.notesSteps),
-        `Notes: ${count}/${limits.notesTokens} tokens. Explore the repositories once and write notes for all groups; do not change repository files.`, ...problems].join("\n") };
+        `Notes: ${count}/${limits.notesTokens} tokens. ${roots.length ? "Explore the repositories once and write notes for all groups; do not change repository files." : "No readable repository: write None."}`, ...problems].join("\n") };
     };
     const out = await conversation(workspace, "notes", `${frozen.knowledge}\n\n${readingGuide(sessionId, frozen.names)}\n\nCall ${frozen.names.check} first.`, report, () => undefined, () => "notes", responses);
     if (!out.ok) return out;
@@ -218,19 +218,19 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     let task: DreamingTask = "curate";
     const reviewed = new Map(group.items.map(item => [item.value.knowledge.id, store.knowledgeStaleReasons(item.value.revision.id)]));
     const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `group-${group.no}`).open({ "group.md": groupText(store, group.items, group.clusters, group.references),
-      "decisions.md": decisionsTemplate(group.items), "changes.md": "", "scores.md": "" });
+      "decisions.md": decisionsTemplate(group.items, roots.length > 0), "changes.md": "", "scores.md": "" });
     const responses = new Map<string, number | undefined>();
     const heads = new Map<string, string>();
     // Freeze repository HEAD before curate, never at commit or from model-authored data.
     for (const directory of roots) { const repo = repositoryHead(join(directory, "__head_snapshot__")); if (repo) heads.set(repo.root, repo.commit); }
-    for (const item of group.items) for (const file of item.value.revision.files ?? []) { const repo = repositoryHead(file); if (repo) heads.set(repo.root, repo.commit); }
+    if (roots.length) for (const item of group.items) for (const file of item.value.revision.files ?? []) { const repo = repositoryHead(file); if (repo) heads.set(repo.root, repo.commit); }
     let curated: Curated | undefined, targets: ScoreTarget[] = [], sealed = "", scoringReview = false;
     const readCurate = () => checkCurate(store, path, group.items, { name: "decisions.md", text: workspace.text("decisions.md") }, { name: "changes.md", text: workspace.text("changes.md") }, limits.wholeFileLimit);
     const report = () => {
       const checked = task === "curate" ? readCurate() : undefined;
       const problems = checked ? [...checked.problems] : checkScores(workspace.text("scores.md"), targets).problems;
       if (task === "scoring" && sealed !== workspace.text("decisions.md") + "\0" + workspace.text("changes.md")) problems.push("Curate files changed after passing; restore them before scoring");
-      if (checked) for (const op of checked.operations) for (const file of [...op.files ?? [], ...(op.op === "split" ? op.children.flatMap(child => child.files ?? []) : [])]) {
+      if (checked && roots.length) for (const op of checked.operations) for (const file of [...op.files ?? [], ...(op.op === "split" ? op.children.flatMap(child => child.files ?? []) : [])]) {
         const repo = repositoryHead(file);
         if (repo && !heads.has(repo.root)) problems.push(`files: no start-of-curate HEAD recorded for repository ${repo.root}`);
       }
@@ -239,6 +239,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         `Decisions: ${workspace.path("decisions.md")}. Changes: ${workspace.path("changes.md")}. Scores: ${workspace.path("scores.md")}.`,
         ...(task === "scoring" ? [`Scoring input: ${workspace.path("scoring.md")}. Items: ${targets.map(target => target.label).join(", ")}`] : []),
         `Repositories you may read: ${roots.join(", ") || "none"}`, usage(responses, task === "curate" ? limits.curateSteps : limits.scoringSteps, task === "curate" ? limits.curateContextTokens : limits.scoringContextTokens),
+        ...(!roots.length && task === "curate" ? ["No readable repository: omit files in decisions and changes, including split children; existing records carry over unchanged."] : []),
         ...checked?.lengths ?? [], problems.length ? `Problems:\n${problems.join("\n")}` : "Problems: none"].join("\n") };
     };
     const advance = () => {
@@ -300,7 +301,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
             const parent = op && op.op !== "create" ? op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId : r.knowledgeId;
             const decision = curated!.decisions.find(value => value.item.value.knowledge.id === parent);
             for (const flag of reviewed.get(parent) ?? []) store.clearKnowledgeStale(r.id, flag);
-            for (const file of r.files ?? []) {
+            if (roots.length) for (const file of r.files ?? []) {
               const repo = repositoryHead(file), commit = repo && heads.get(repo.root);
               // ponytail: an untracked, ignored or non-git file gets no baseline (its edits cannot be detected, as 「无 git 的文件先不做哈希」) and no
               // new flag: a flag the Dreamer can never clear would bring the item back as a candidate on every run.

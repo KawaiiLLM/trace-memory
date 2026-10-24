@@ -55,7 +55,7 @@ test("a merge carries a stale reason arriving on an absorbed item during scoring
 test("curate refuses a split without primary supports even when the child names its supports", async () => {
   const f = dreamerFixture(memories), item = f.item("Use pnpm and keep the lockfile");
   const split = block(`split ${item.ref}`, { reason: "Separate the package manager rules" }, "Use pnpm")
-    + `\n### child\ntitle: Lockfile rule\ncategory: constraint\nscope: project\ntopics:\nsupports: F${item.supports[0]}\nfiles: None\nreason: Separate condition\n\nKeep the lockfile\n`;
+    + `\n### child\ntitle: Lockfile rule\ncategory: constraint\nscope: project\ntopics:\nsupports: F${item.supports[0]}\nreason: Separate condition\n\nKeep the lockfile\n`;
   f.dreamer.script.curate!.group1 = [split, split.replace("reason:", `supports: F${item.supports[0]}\nreason:`)];
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.dreamer.messages[0]).toContain("split requires explicit supports for its primary part");
