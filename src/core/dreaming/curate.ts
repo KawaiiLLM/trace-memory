@@ -30,7 +30,7 @@ export function groupText(store: Store, items: readonly CurateItem[], clusters?:
   return `# Contents\n\n${contents}\n\n${bodies.join("\n\n")}\n${referenceText ? `\n# Reference only — not candidates\n\n${referenceText}\n` : ""}`;
 }
 export const decisionsTemplate = (items: readonly CurateItem[], hasRepository: boolean) => items.map(item => `## item ${item.address}\ntitle: ${item.value.revision.title ?? ""}\naccuracy: \ngrounds: \nnorms: \nevidence: \n${hasRepository ? "files: \n" : ""}decision: \nreason: \n`).join("\n");
-export interface Decision { item: CurateItem; title: string; files: string[] | null | undefined; preserveFiles: boolean; decision: string; reason: string; missingGrounds: boolean }
+export interface Decision { item: CurateItem; title: string; accuracy: string; files: string[] | null | undefined; preserveFiles: boolean; decision: string; reason: string; missingGrounds: boolean }
 export interface Curated { problems: string[]; decisions: Decision[]; operations: KnowledgeOperationInput[]; lengths: string[]; filesToCheck: (string[] | null | undefined)[] }
 /** The caller supplies membership: incremental selection and full-check clustering use this same boundary. */
 /** `roots` is the run's frozen authorization snapshot: a directory appearing mid-run cannot make a rootless run accept files.
@@ -70,7 +70,7 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
       const problem = evidence.startsWith("trace://") ? traceProblem(store, evidence) : repositoryEvidenceProblem(evidence, roots);
       if (problem) problems.push(`${label}: evidence ${evidence}: ${problem}`);
     }
-    decisions.push({ item, title: value("title"), files, preserveFiles, decision, reason: value("reason"), missingGrounds: /^(?:None|missing|unverified)(?:\b|$)/i.test(value("grounds")) });
+    decisions.push({ item, title: value("title"), accuracy: value("accuracy"), files, preserveFiles, decision, reason: value("reason"), missingGrounds: /^(?:None|missing|unverified)(?:\b|$)/i.test(value("grounds")) });
   }
   for (const address of wanted.keys()) if (!seen.has(address)) problems.push(`decisions.md: missing ${address}`);
   const byId = new Map(decisions.map(decision => [decision.item.value.knowledge.id, decision]));

@@ -61,7 +61,7 @@ test("a session-scoped split primary still counts its project-scoped child towar
     .toEqual([expect.stringContaining("has 2 current items (whole-file limit 1)")]);
 });
 
-test("parallel groups recheck the whole-file cap at publication and roll back the losing group's changes, scores and coverage", async () => {
+test("parallel groups recheck the whole-file cap at publication and roll back the losing group's changes and coverage", async () => {
   const f = fixture(); f.memory.config.dreaming.groupItems = 1; f.memory.config.dreaming.wholeFileLimit = 1;
   const a = f.item("First facet"), b = f.item("Second facet");
   let arrived = 0, release!: () => void;
@@ -73,12 +73,7 @@ test("parallel groups recheck the whole-file cap at publication and roll back th
     const file = join(input.workspace.dir, "decisions.md");
     writeFileSync(file, readFileSync(file, "utf8").replace("files: None", `files: ${source}`));
     writeFileSync(join(input.workspace.dir, "changes.md"), "## none\n");
-    const scoring = input.passEnd();
-    expect(scoring).toContain("Curate passes.");
-    const labels = /Items: ([^\n]*)/.exec(scoring!)![1]!.split(", ");
-    writeFileSync(join(input.workspace.dir, "scores.md"), labels.map(label => `${label} 61`).join("\n"));
-    expect(input.passEnd()).toBeDefined();
-    expect(input.passEnd()).toBeUndefined();
+    expect(input.passEnd()).toBeUndefined(); // 167: scoring is a later task.
     if (++arrived === 2) release();
     await barrier;
     return { outcome: "success", output: "Done", request: REQUEST };

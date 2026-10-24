@@ -21,11 +21,11 @@ test("groups commit independently and a retry runs only the uncommitted group wi
   f.dreamer.script.curate!.group2 = "## none\n";
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.filter(input => input.task === "notes")).toHaveLength(1);
-  const resumed = f.dreamer.inputs.at(-1)!;
+  const resumed = f.dreamer.inputs.findLast(input => input.task === "curate")!;
   expect(resumed.text).toContain("Group 2.");
   expect(resumed.text.split("\n\nGroup ")[0]).toBe(firstInputs[1]!.text.split("\n\nGroup ")[0]);
-  expect(f.store.getKnowledge(a.knowledgeId)?.score).toBe(50);
-  expect(f.store.getKnowledge(b.knowledgeId)?.score).toBe(50);
+  expect(f.store.getKnowledge(a.knowledgeId)?.score).toBe(51);
+  expect(f.store.getKnowledge(b.knowledgeId)?.score).toBe(51);
   expect(f.store.noterOperations(f.path)).toBe(1);
 });
 
@@ -59,7 +59,7 @@ test("multiple failed groups count once per execution, and a committed sibling c
   expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")!.count).toBe(1);
   f.dreamer.script.curate!.group1 = "## none\n";
   expect(await f.dream()).toMatchObject({ outcome: "failure" });
-  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(50);
+  expect(f.store.getKnowledge(a.knowledgeId)!.score).toBeNull(); // 167: groups commit before scoring.
   expect(f.store.getKnowledge(b.knowledgeId)!.score).toBeNull();
   expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")!.count).toBe(2);
   expect(await f.dream()).toMatchObject({ outcome: "failure", automaticOff: expect.any(String) });

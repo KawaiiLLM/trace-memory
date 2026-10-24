@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TraceMemory } from "../../source-fixture.ts";
-import { dreamerFixture, writeDecisions } from "../../support/dreamer.ts";
+import { dreamerFixture, scriptedDreamer, writeDecisions } from "../../support/dreamer.ts";
 import { REQUEST } from "../../support/noter.ts";
 import { block } from "../../support/workspace.ts";
 import { knowledgeBatch, session } from "../../support/seed.ts";
@@ -21,11 +21,7 @@ test("a keep may publish an immutable metadata version; missing grounds flag it 
     const decisions = join(input.workspace.dir, "decisions.md");
     writeFileSync(decisions, readFileSync(decisions, "utf8").replace("title: Old label", "title: Precise label").replace("grounds: Recorded facts", "grounds: missing original grounds"));
     writeFileSync(join(input.workspace.dir, "changes.md"), "## none\n");
-    const scoring = input.passEnd();
-    expect(scoring).toBeDefined();
-    writeFileSync(join(input.workspace.dir, "scores.md"), `K${item.knowledgeId} 76\n`);
-    expect(input.passEnd()).toBeDefined();
-    expect(input.passEnd()).toBeUndefined();
+    expect(input.passEnd()).toBeUndefined(); // 167: curate ends without scoring.
     return { outcome: "success", output: "Done", request: REQUEST };
   } };
   expect(await f.dream()).toMatchObject({ outcome: "success" });
@@ -34,17 +30,18 @@ test("a keep may publish an immutable metadata version; missing grounds flag it 
   expect(current).toMatchObject({ title: "Precise label", text: "The supported body remains unchanged", supports: item.supports, files: null });
   expect(f.store.getKnowledgeRevision(item.knowledgeId, item.commit)!.title).toBe("Old label");
   expect(f.store.knowledgeStaleReasons(current.id)).toEqual([{ reason: "missing_grounds", detail: "Preserve the supported understanding" }]);
-  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(76);
+  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(51);
 });
 
-test("a merge carries a stale reason arriving on an absorbed item during scoring to the survivor", async () => {
+test("a merge carries a stale reason arriving on an absorbed item during curate to the survivor", async () => {
   const f = dreamerFixture(memories), primary = f.item("Use pnpm"), absorbed = f.item("Keep the lockfile");
-  const late = { reason: "negated_fact" as const, detail: `F${absorbed.supports[0]} was negated during scoring` };
+  const late = { reason: "negated_fact" as const, detail: `F${absorbed.supports[0]} was negated during curate` };
   f.dreamer.script.curate!.group1 = block(`merge ${primary.ref}`, { absorb: absorbed.ref, reason: "Combine the package manager rules" }, "Use pnpm and keep the lockfile");
-  f.dreamer.script.scoring = (_group, labels) => {
+  f.dreamer.script.instead = { curate: async input => {
+    const result = await scriptedDreamer({ curate: f.dreamer.script.curate }).agent(input);
     f.store.setKnowledgeStale(absorbed.commit, late);
-    return labels.map(label => `${label} 74`).join("\n");
-  };
+    return result;
+  } };
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   const survivor = f.store.currentCommit(primary.knowledgeId, f.path)[0]!;
   expect(survivor).toMatchObject({ op: "merge", supports: [...primary.supports, ...absorbed.supports] });
@@ -82,9 +79,6 @@ test("a linked file absent from the captured commit gets no verified commit, and
       const decisions = join(input.workspace.dir, "decisions.md");
       writeFileSync(decisions, readFileSync(decisions, "utf8").replace("files: None", `files: ${file}`));
       writeFileSync(join(input.workspace.dir, "changes.md"), "## none\n");
-      expect(input.passEnd()).toContain("Curate passes.");
-      writeFileSync(join(input.workspace.dir, "scores.md"), `K${item.knowledgeId} 50\n`);
-      expect(input.passEnd()).toBeDefined();
       expect(input.passEnd()).toBeUndefined();
       return { outcome: "success", output: "Done", request: REQUEST };
     } };
@@ -107,5 +101,5 @@ test("oversized repository notes cannot publish a group; retry can replace the n
   f.dreamer.script.notes = "No additional repository notes.";
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.store.noterOperations(f.path)).toBe(0);
-  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(50);
+  expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(51);
 });

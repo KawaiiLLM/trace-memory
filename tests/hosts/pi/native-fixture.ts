@@ -58,7 +58,7 @@ export const dreamerTurn = (body: Body, tokens = usage(), changes = "## none\n")
   }
   const files = stage === "notes" ? [{ path: path("File"), content: "No repository-specific notes." }]
     : stage === "curate" ? [{ path: path("Decisions"), content: decisionText(readFileSync(path("Decisions"), "utf8"), changes) }, { path: path("Changes"), content: changes }]
-    : [{ path: path("Scores"), content: [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+(?:\.child\d+)?/g)].map(match => `${match[0]} 50`).join("\n") }];
+    : [{ path: path("Scores"), content: [...(report.match(/Items: ([^\n]*)/)?.[1] ?? "").matchAll(/K\d+/g)].map(match => `${match[0]} 4 4 4`).join("\n") }];
   const writes = files.filter(file => !written.includes(file.path));
   if (!writes.length) return say("Done.", tokens);
   return writes.length === 1 ? call(`write-${written.length + 1}`, "write", writes[0], tokens) : calls(`write-${written.length + 1}`, "write", writes, tokens);

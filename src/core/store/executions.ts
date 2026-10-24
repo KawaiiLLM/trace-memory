@@ -3,6 +3,7 @@ import type { TriggerOrigin } from "../model/index.ts";
 import type { Store, RunInput, Phase } from "./index.ts";
 import { ALL_POOLS } from "./processing.ts";
 import type { Cluster } from "../dreaming/clustering.ts";
+import type { ScoreVerdict, ScoreTarget, RatedTarget } from "../dreaming/classify.ts";
 
 /** A logical task: the target session, the phase and its backlog key. Noting's key is its oldest
  * pending entry (`head`). 126: the Dreamer's task is (session, Dreamer), stored under the fixed pool
@@ -104,6 +105,9 @@ export interface HandoffDetail {
   notes?: string;
   background?: string;
   boundary?: DreamerBoundary;
+  scoreVerdicts?: Record<string, ScoreVerdict>;
+  scoringTargets?: ScoreTarget[];
+  scoringResults?: RatedTarget[];
 }
 export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"]): Handoff | null {
   const row = store.db.prepare("SELECT * FROM task_handoffs WHERE session_id = ? AND phase = ?").get(sessionId, phase);
@@ -145,8 +149,8 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
       throw new Error("Terminal run must belong to the execution");
     // `conflict` is the retired Dreamer exception: only old rows carry it, and nothing settles a new run that way.
     if (outcome === "conflict") throw new Error("Conflict settlement is retired");
-    // 156: only the final atomic group commit writes `finished`, after both curate and scoring.
-    // Completion also requires that no saved group hand-off remains.
+    // Only final scoring publication establishes completion; committed curate groups survive scoring failure.
+    // Completion also requires that no saved run hand-off remains.
     const dreamerDone = () => !!JSON.parse(run!.response ?? "{}").finished && !store.handoff(Number(row.session_id), "dreaming");
     if (outcome === "success" && (run.outcome !== "success" || (row.phase === "dreaming" && !dreamerDone())))
       throw new Error("Execution success requires established business completion");

@@ -106,12 +106,7 @@ test.each(["primary", "split child"])("a newly linked nested repository freezes 
     expect(String(await check())).toContain("Problems: none");
     git.head = "head";
     expect(String(await check())).toContain("Problems: none");
-    const scoring = input.passEnd();
-    expect(scoring).toContain("Curate passes.");
-    const labels = /Items: ([^\n]*)/.exec(scoring!)![1]!.split(", ");
-    writeFileSync(join(input.workspace.dir, "scores.md"), labels.map(label => `${label} 70`).join("\n"));
-    expect(input.passEnd()).toBeDefined();
-    expect(input.passEnd()).toBeUndefined();
+    expect(input.passEnd()).toBeUndefined(); // 167: curate ends before separate scoring.
     return { outcome: "success", output: "Done", request: REQUEST };
   } };
   try {
@@ -149,10 +144,7 @@ test("parallel curate groups share the first captured nested repository HEAD", a
       firstChecked.resolve();
       await secondChecked.promise;
     } else secondChecked.resolve();
-    const scoring = input.passEnd()!;
-    const labels = /Items: ([^\n]*)/.exec(scoring)![1]!.split(", ");
-    writeFileSync(join(input.workspace.dir, "scores.md"), labels.map(label => `${label} 70`).join("\n"));
-    input.passEnd(); input.passEnd();
+    expect(input.passEnd()).toBeUndefined();
     return { outcome: "success", output: "Done", request: REQUEST };
   } };
   try {

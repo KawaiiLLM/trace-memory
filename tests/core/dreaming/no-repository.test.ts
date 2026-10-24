@@ -73,12 +73,7 @@ test.each((["keep", "update", "merge", "split", "archive"] as const).flatMap(ope
     const decisions = `${input.workspace.dir}/decisions.md`;
     writeFileSync(decisions, decisionText(readFileSync(decisions, "utf8"), changes || "## none\n").replaceAll("files: None", "files: unchanged"));
     writeFileSync(`${input.workspace.dir}/changes.md`, changes || "## none\n");
-    const scoring = input.passEnd();
-    expect(scoring).toContain("Curate passes.");
-    const labels = /Items: ([^\n]*)/.exec(scoring!)![1]!.split(", ").filter(Boolean);
-    writeFileSync(`${input.workspace.dir}/scores.md`, labels.map(label => `${label} 70`).join("\n"));
-    if (labels.length) expect(input.passEnd()).toBeDefined();
-    expect(input.passEnd()).toBeUndefined();
+    expect(input.passEnd()).toBeUndefined(); // 167: scoring is separate from curate.
     return { outcome: "success", output: "Done", request: REQUEST };
   } };
   const result = await f.memory.dream({ ...f.target, fullCheck: true });

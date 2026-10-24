@@ -55,7 +55,7 @@ test("Dreamer pre-request capacity failure names its own phase and retains its w
   } finally { measure.mockRestore(); await h.dispose(); }
 });
 
-test("156: Pi notes, grouped curate and in-conversation scoring use the frozen Dreamer model or foreground default", async () => {
+test("Pi notes, grouped curate and separate scoring use the frozen Dreamer model or foreground default", async () => {
   for (const [config, model, thinking] of [
     [{ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high" }, "fake/test-thinking", "high"],
     [{}, "fake/test", "off"],
@@ -68,7 +68,8 @@ test("156: Pi notes, grouped curate and in-conversation scoring use the frozen D
       const runs = dreamingRuns(store).filter(run => run.request !== null);
       expect(runs.every(run => run.model === model)).toBe(true);
       expect(runs.every(run => JSON.parse(run.response!).thinking.requested === thinking)).toBe(true);
-      expect(seen.some(text => text.includes("Task: scoring") && text.includes("Task: curate"))).toBe(true);
+      expect(seen.some(text => text.includes("Task: scoring"))).toBe(true);
+      expect(seen.some(text => text.includes("Task: scoring") && text.includes("Task: curate"))).toBe(false);
       expect(store.noterOperations(store.knowledgePath(1))).toBe(0);
     } finally { await h.dispose(); }
   }
@@ -173,7 +174,7 @@ test("32d native host: Noter and Dreamer occupy independent seats", async () => 
   } finally { release(); await h.dispose(); }
 });
 
-/** Interrupt scoring inside the curate conversation, after its files have passed. */
+/** Interrupt the separate scoring task after curate committed. */
 function curateThen(h: ReturnType<typeof host>, item: { heading: string }, after: (c: Parameters<Parameters<typeof h.provider>[0]>[0]) => Promise<Reply>) {
   h.provider(async c => {
     if (JSON.stringify(c.messages).includes("Task: scoring")) return after(c);
@@ -181,7 +182,7 @@ function curateThen(h: ReturnType<typeof host>, item: { heading: string }, after
   }, { autoStop: false });
 }
 
-test("64c native host: stop after a kept batch keeps it, applies nothing, is not a failure and resumes at the next task on the next trigger", async () => {
+test("stop during scoring keeps committed changes, counts no failure and resumes scoring on the next trigger", async () => {
   const { h, store, item } = await seeded();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -193,11 +194,11 @@ test("64c native host: stop after a kept batch keeps it, applies nothing, is not
     await h.commands.get("trace").handler("stop", h.ctx);
     await vi.waitFor(() => expect(dreamingRuns(store).at(-1)!.outcome).toBe("cancelled"));
     expect(store.getClaim(1, "dreaming")).toBeNull();
-    expect(dreamingRuns(store).flatMap(run => store.listCommitsByRun(run.id))).toEqual([]);
-    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint"]);
+    expect(dreamingRuns(store).flatMap(run => store.listCommitsByRun(run.id))).toHaveLength(1);
+    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint, tidied"]);
     expect(store.taskFailures(1).every(f => f.count === 0)).toBe(true);
     const runsAfterStop = dreamingRuns(store).length;
-    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "curate" });
+    expect(store.handoff(1, "dreaming")).toMatchObject({ nextTask: "scoring" });
     release();
     await h.drain();
     expect(dreamingRuns(store)).toHaveLength(runsAfterStop); // nothing retries by itself
@@ -207,15 +208,15 @@ test("64c native host: stop after a kept batch keeps it, applies nothing, is not
   } finally { release(); await h.dispose(); }
 });
 
-test("64c native host: provider overflow in the next task keeps the kept batch, fails the run and does not compact", async () => {
+test("provider overflow during scoring keeps committed groups, fails the run and does not compact", async () => {
   const { h, store, item } = await seeded({ compaction: { enabled: true }, retry: { enabled: false } });
   try {
     curateThen(h, item, async () => ({ ...reply(""), stopReason: "error", errorMessage: "maximum context length exceeded" }));
     await h.turn(); await h.drain();
     const runs = dreamingRuns(store);
     expect(runs.at(-1)!.outcome).toBe("failure");
-    expect(runs.flatMap(run => store.listCommitsByRun(run.id))).toEqual([]);
-    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint"]);
+    expect(runs.flatMap(run => store.listCommitsByRun(run.id))).toHaveLength(1);
+    expect(store.currentKnowledge(store.knowledgePath(1)).map(value => value.revision.text)).toEqual(["Keep the user constraint, tidied"]);
     const entries = readFileSync(JSON.parse(runs.at(-1)!.response!).nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(entries.some(e => e.type === "compaction")).toBe(false);
   } finally { await h.dispose(); }

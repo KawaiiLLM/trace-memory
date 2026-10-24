@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadPrompt } from "../prompts/load.ts";
 import { canonicalToolNames, validateToolNames, type ToolNames } from "../prompts/tool-names.ts";
@@ -13,10 +12,10 @@ import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { AgentControl, CallFence, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import type { NotingInput } from "../noting/index.ts";
 import type { HandoffDetail, DreamerBoundary } from "../store/executions.ts";
-import type { KnowledgePath, RunInput, Store, TaskClaim, CurateItem, WorkspaceOperationResult } from "../store/index.ts";
+import type { KnowledgePath, RunInput, Store, TaskClaim, CurateItem } from "../store/index.ts";
 import { TaskWorkspace, defaultWorkspaceRoot } from "../workspace/run.ts";
 import { checkCurate, wholeFileCapProblems, decisionsTemplate, groupText, type Curated } from "./curate.ts";
-import { classifyAnchors, scoreTargets, scoringText, checkScores, type ScoreTarget } from "./classify.ts";
+import { scoreTargets, scoringText, checkScores, SCORING_BATCH_ITEMS, type ScoreTarget, type ScoreVerdict, type RatedTarget } from "./classify.ts";
 import { incrementalCandidates, projectItems, trackedAt } from "./candidates.ts";
 import { repositoryHead } from "./code-links.ts";
 import { candidateGroups, checkGroups, clusteringBatches, clusteringInput, groupsTemplate, type Cluster } from "./clustering.ts";
@@ -51,6 +50,7 @@ export interface DreamingFrozen {
   prompt: string; promptHash: string; model: DreamingTaskConfig; knowledge: string;
   groups: FrozenGroup[]; candidates: number[]; boundary: DreamerBoundary; background: string; notes?: string;
   fullCheck: boolean; clusteringItems: CurateItem[]; groupsFile?: string; clusteringModel: string;
+  scoreVerdicts: Record<string, ScoreVerdict>; scoringTargets?: ScoreTarget[]; scoringResults: RatedTarget[];
 }
 /** Groups run in bounded waves; admission reserves enough lease for every wave and notes. */
 export const executionLimitMs = (remaining: number, timeoutMs: number) => remaining * timeoutMs + (remaining + 1) * TASK_GAP_MS;
@@ -75,6 +75,7 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
     if (!Number.isSafeInteger(model.capacity.inputTokens) || model.capacity.inputTokens < fixed) throw new Error("Dreaming capacity: knowledge prefix and tools exceed model input allowance");
   }
   return { sessionId: path.sessionId, branch: path.branch, path, claim, names, prompt, promptHash: createHash("sha256").update(prompt).digest("hex"), model, knowledge, groups,
+    scoreVerdicts: kept?.scoreVerdicts ?? {}, scoringTargets: kept?.scoringTargets, scoringResults: kept?.scoringResults ?? [],
     fullCheck, clusteringItems, groupsFile: kept?.groupsFile, clusteringModel: store.getSession(path.sessionId)!.host.startsWith("cc:") ? "haiku" : model.model,
     candidates, boundary: kept?.boundary ?? selected!.boundary, background: kept?.background ?? selected!.background, ...(kept?.notes === undefined ? {} : { notes: kept.notes }) };
 }
@@ -100,7 +101,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   let lastRunId = 0;
   const context = { kind: "dreaming" as const, sessionId, branch, headTurnId: path.headTurnId, range: { from: `S${sessionId}`, to: `S${sessionId}` } };
   const detail = (): HandoffDetail => ({ fullCheck: frozen.fullCheck, clusteringItems: frozen.clusteringItems.map(item => item.value.knowledge.id),
-    candidates: frozen.candidates, groupsFile: frozen.groupsFile,
+    candidates: frozen.candidates, groupsFile: frozen.groupsFile, scoreVerdicts: frozen.scoreVerdicts, scoringTargets: frozen.scoringTargets, scoringResults: frozen.scoringResults,
     groups: groups.map(group => ({ items: group.items.map(item => item.value.knowledge.id), clusters: group.clusters, references: group.references, ...(group.run ? { run: group.run } : {}) })),
     knowledge: frozen.knowledge, background: frozen.background, boundary: frozen.boundary, ...(frozen.notes === undefined ? {} : { notes: frozen.notes }) });
   const metadata: RunInput = { kind: "dreaming", sessionId, branch, createdAt: new Date().toISOString() };
@@ -109,20 +110,21 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     createdAt: new Date().toISOString(), rangeFrom: `S${sessionId}/${task}`, rangeTo: `S${sessionId}/${task}` });
   // Persist membership before the first model call, including when notes or the first group fails.
   const admitted = store.commitTaskPass({ run: { ...template("notes"), response: JSON.stringify({ task: "admission" }) }, path,
-    handoff: () => ({ nextTask: frozen.notes === undefined ? "notes" : frozen.groupsFile === undefined ? "clustering" : "curate", detail: detail() }) });
+    handoff: () => ({ nextTask: frozen.notes === undefined ? "notes" : frozen.groupsFile === undefined ? "clustering" : groups.every(group => group.run !== undefined) ? "scoring" : "curate", detail: detail() }) });
   lastRunId = admitted.runId;
 
-  const conversation = async (workspace: TaskWorkspace, initial: "notes" | "clustering" | "curate", text: string,
-    report: () => { problems: string[]; text: string }, advance: () => string | undefined,
-    current: () => DreamingTask, responses: Map<string, number | undefined>, instructions?: (task: DreamingTask) => string, batchNames: string[] = []): Promise<Outcome> => {
+  const conversation = async (workspace: TaskWorkspace, initial: DreamingTask, text: string,
+    report: () => { problems: string[]; text: string }, responses: Map<string, number | undefined>,
+    instructions?: () => string, batchNames: string[] = []): Promise<Outcome> => {
     options.registerFence(workspace);
-    const started = Date.now(), run = { ...template(initial), model: initial === "clustering" ? frozen.clusteringModel : frozen.model.model };
-    const delivered = new Set<DreamingTask>();
+    const started = Date.now(), scoring = initial === "scoring";
+    const prompt = scoring ? loadPrompt("classifying.md", frozen.names, config.writing) : frozen.prompt;
+    const run = { ...template(initial), promptHash: createHash("sha256").update(prompt).digest("hex"), model: initial === "clustering" ? frozen.clusteringModel : frozen.model.model };
+    let delivered = false;
     const deliver = (text: string) => {
-      const stage = current();
-      if (!instructions || delivered.has(stage)) return text;
-      delivered.add(stage);
-      return `${text}\n\n${instructions(stage)}`;
+      if (!instructions || delivered) return text;
+      delivered = true;
+      return `${text}\n\n${instructions()}`;
     };
     const binding = bind(context, run, { check: () => deliver(report().text) });
     binding.call.fence(workspace);
@@ -130,32 +132,30 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const checks: { task: DreamingTask; problems: string[] }[] = [];
     const passEnd = (): string | undefined => {
       if (workspace.closed || ended) return undefined;
-      const checked = report(); checks.push({ task: current(), problems: checked.problems });
+      const checked = report(); checks.push({ task: initial, problems: checked.problems });
       if (checked.problems.length) {
         if (!repaired) { repaired = true; return `Correct the following problems, call check, then stop.\n\n${deliver(checked.text)}`; }
         failed = true; ended = true; return undefined;
       }
-      repaired = false;
-      const next = advance();
-      if (next === undefined) ended = true;
-      return next === undefined ? undefined : deliver(next);
+      ended = true;
+      return undefined;
     };
     const input: DreamingAgentInput = { kind: "dreaming", task: initial, sessionId, branch, model: run.model!, thinking: frozen.model.thinking, mode: "subagent",
-      prompt: frozen.prompt, promptHash: frozen.promptHash, text, tools: binding.tools,
-      workspace: { dir: workspace.dir, read: ["items.md", "groups.md", "group.md", "background.md", "notes.md", "decisions.md", "changes.md", "scoring.md", "scores.md", ...batchNames].map(name => workspace.path(name)),
-        write: (initial === "notes" ? ["notes.md"] : initial === "clustering" ? ["groups.md"] : ["decisions.md", "changes.md", "scores.md"]).map(name => workspace.path(name)), roots },
+      prompt, promptHash: run.promptHash!, text, tools: scoring ? binding.tools.filter(tool => tool.name === frozen.names.check) : binding.tools,
+      workspace: { dir: workspace.dir, read: (scoring ? ["scoring.md", "scores.md"] : ["items.md", "groups.md", "group.md", "background.md", "notes.md", "decisions.md", "changes.md", ...batchNames]).map(name => workspace.path(name)),
+        write: (initial === "notes" ? ["notes.md"] : initial === "clustering" ? ["groups.md"] : scoring ? ["scores.md"] : ["decisions.md", "changes.md"]).map(name => workspace.path(name)), roots: scoring ? [] : roots },
       passEnd, reportResponse: (id, input) => responses.set(id, input), acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
-      deadline: started + (initial === "curate" ? 2 : 1) * limits.timeoutMs, call: binding.call };
+      deadline: started + limits.timeoutMs, call: binding.call };
     let result: RunAgentResult;
     try { result = await runAgent(input); } catch (error) { result = agentException(error); }
     binding.close();
-    if (store.closed) return { ok: false, task: current(), runId: 0, outcome: "cancelled", problems: ["store closed"], class: "cancelled" };
+    if (store.closed) return { ok: false, task: initial, runId: 0, outcome: "cancelled", problems: ["store closed"], class: "cancelled" };
     const outcome = result.outcome === "cancelled" || result.outcome === "success" && workspace.closed ? "cancelled" : result.outcome !== "success" || failed || !ended || requestMissing(result) ? "failure" : "success";
     const problems = outcome === "success" ? [] : failed ? report().problems : [String(result.output ?? (requestMissing(result) ? "runAgent must return the exact provider request" : "conversation did not finish"))];
     recordAttempt(run, result, { task: initial, stopChecks: checks, toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
     const runId = outcome === "success" ? 0 : store.recordRun({ ...run, outcome }).id;
     if (runId) lastRunId = runId;
-    return { ok: outcome === "success", task: current(), runId, run, outcome, problems, class: failed ? "check failed twice" : classifyFailure(result.output, result.failureClass).class };
+    return { ok: outcome === "success", task: initial, runId, run, outcome, problems, class: failed ? "check failed twice" : classifyFailure(result.output, result.failureClass).class };
   };
   const usage = (responses: Map<string, number | undefined>, steps: number, growth?: number) => {
     const inputs = [...responses.values()], first = inputs[0], last = inputs.at(-1);
@@ -174,7 +174,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         `Repositories you may read: ${roots.join(", ") || "none"}`, usage(responses, limits.notesSteps),
         `Notes: ${count}/${limits.notesTokens} tokens. ${roots.length ? "Explore the repositories once and write notes for all groups; do not change repository files." : "No readable repository: write None."}`, ...problems].join("\n") };
     };
-    const out = await conversation(workspace, "notes", `${frozen.knowledge}\n\n${readingGuide(sessionId, frozen.names)}\n\nCall ${frozen.names.check} first.`, report, () => undefined, () => "notes", responses);
+    const out = await conversation(workspace, "notes", `${frozen.knowledge}\n\n${readingGuide(sessionId, frozen.names)}\n\nCall ${frozen.names.check} first.`, report, responses);
     if (!out.ok) return out;
     frozen.notes = workspace.text("notes.md");
     const saved = store.commitTaskPass({ run: { ...out.run!, response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), task: "notes", notes: frozen.notes }) }, path,
@@ -197,7 +197,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         checked.problems.length ? `Problems:\n${checked.problems.join("\n")}` : "Problems: none"].join("\n") };
     };
     const out = await conversation(workspace, "clustering", `${frozen.knowledge}\n\n${readingGuide(sessionId, frozen.names)}\n\nCall ${frozen.names.check} first.`,
-      report, () => undefined, () => "clustering", responses, () => loadPrompt("tasks/clustering.md", frozen.names, config.writing), Object.keys(batches));
+      report, responses, () => loadPrompt("tasks/clustering.md", frozen.names, config.writing), Object.keys(batches));
     if (!out.ok) return out;
     frozen.groupsFile = workspace.text("groups.md");
     const items = new Map(frozen.clusteringItems.map(item => [item.value.knowledge.id, item]));
@@ -219,49 +219,32 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   for (const directory of roots) { const repo = repositoryHead(join(directory, "__head_snapshot__")); if (repo && !heads.has(repo.root)) heads.set(repo.root, repo.commit); }
   if (roots.length) for (const group of groups) for (const item of group.items) for (const file of item.value.revision.files ?? []) { const repo = repositoryHead(file); if (repo && !heads.has(repo.root)) heads.set(repo.root, repo.commit); }
   const runGroup = async (group: FrozenGroup): Promise<Outcome> => {
-    let task: DreamingTask = "curate";
+    const task = "curate";
     const reviewed = new Map(group.items.map(item => [item.value.knowledge.id, store.knowledgeStaleReasons(item.value.revision.id)]));
     const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `group-${group.no}`).open({ "group.md": groupText(store, group.items, group.clusters, group.references),
-      "decisions.md": decisionsTemplate(group.items, roots.length > 0), "changes.md": "", "scores.md": "" });
+      "decisions.md": decisionsTemplate(group.items, roots.length > 0), "changes.md": "" });
     const responses = new Map<string, number | undefined>();
-    let curated: Curated | undefined, targets: ScoreTarget[] = [], sealed = "", scoringReview = false;
+    let curated: Curated;
     const readCurate = () => checkCurate(store, path, group.items, { name: "decisions.md", text: workspace.text("decisions.md") }, { name: "changes.md", text: workspace.text("changes.md") }, limits.wholeFileLimit, roots, heads);
     const report = () => {
-      const checked = task === "curate" ? readCurate() : undefined;
-      const problems = checked ? [...checked.problems] : checkScores(workspace.text("scores.md"), targets).problems;
-      if (task === "scoring" && sealed !== workspace.text("decisions.md") + "\0" + workspace.text("changes.md")) problems.push("Curate files changed after passing; restore them before scoring");
-      return { problems, text: [`Task: ${task} (group ${group.no} of ${groups.length}).`,
+      const checked = readCurate(), problems = checked.problems;
+      return { problems, text: [`Task: curate (group ${group.no} of ${groups.length}).`,
         `Input: ${workspace.path("group.md")}.`,
-        `Decisions: ${workspace.path("decisions.md")}. Changes: ${workspace.path("changes.md")}. Scores: ${workspace.path("scores.md")}.`,
-        ...(task === "scoring" ? [`Scoring input: ${workspace.path("scoring.md")}. Items: ${targets.map(target => target.label).join(", ")}`] : []),
-        `Repositories you may read: ${roots.join(", ") || "none"}`, usage(responses, task === "curate" ? limits.curateSteps : limits.scoringSteps, task === "curate" ? limits.curateContextTokens : limits.scoringContextTokens),
-        ...(!roots.length && task === "curate" ? ["No readable repository: omit files in decisions and changes, including split children; existing records carry over unchanged."] : []),
+        `Decisions: ${workspace.path("decisions.md")}. Changes: ${workspace.path("changes.md")}.`,
+        `Repositories you may read: ${roots.join(", ") || "none"}`, usage(responses, limits.curateSteps, limits.curateContextTokens),
+        ...(!roots.length ? ["No readable repository: omit files in decisions and changes, including split children; existing records carry over unchanged."] : []),
         ...checked?.lengths ?? [], problems.length ? `Problems:\n${problems.join("\n")}` : "Problems: none"].join("\n") };
     };
-    const advance = () => {
-      if (task === "scoring") {
-        if (scoringReview || !targets.length) return undefined;
-        scoringReview = true;
-        return `Scoring draft passes. Self-check every score in this same conversation: if most items sit in one band, separate them again; correct any score that breaks the Scale floors. Edit scores.md if needed, call check, then stop; if nothing needs correcting, stop. Nothing is published yet.\n\n${report().text}`;
-      }
-      curated = readCurate();
-      targets = scoreTargets(group.items, curated.operations, frozen.fullCheck);
-      sealed = workspace.text("decisions.md") + "\0" + workspace.text("changes.md");
-      const scoring = scoringText(frozen.fullCheck ? [] : classifyAnchors(projectItems(store, path), new Set(targets.map(target => Number(/^K(\d+)/.exec(target.label)![1])))), targets);
-      writeFileSync(workspace.path("scoring.md"), scoring);
-      task = "scoring"; responses.clear();
-      return `Curate passes. Continue this same conversation with scoring.\n\n${report().text}\n\n<scoring_input>\n${scoring}</scoring_input>`;
-    };
-    const out = await conversation(workspace, "curate", `${prefix}\n\n${readingGuide(sessionId, frozen.names)}\n\nGroup ${group.no}. Call ${frozen.names.check} first.`, report, advance, () => task, responses,
-      stage => loadPrompt(stage === "curate" ? "tasks/curate.md" : "classifying.md", frozen.names, config.writing));
+    const out = await conversation(workspace, "curate", `${prefix}\n\n${readingGuide(sessionId, frozen.names)}\n\nGroup ${group.no}. Call ${frozen.names.check} first.`, report, responses,
+      () => loadPrompt("tasks/curate.md", frozen.names, config.writing));
     if (!out.ok) return out;
-    const scores = checkScores(workspace.text("scores.md"), targets).scores;
+    curated = readCurate();
     const run: RunInput = { ...out.run!,
-      response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), task: "group", group: group.no, decisions: workspace.text("decisions.md"), changes: workspace.text("changes.md"), scores: workspace.text("scores.md") }) };
+      response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), task: "group", group: group.no, decisions: workspace.text("decisions.md"), changes: workspace.text("changes.md") }) };
     const previousBoundary = { ...frozen.boundary.versions };
+    const previousVerdicts = { ...frozen.scoreVerdicts };
     const completed = new Set<number>();
     try {
-      const last = groups.every(other => other === group || other.run !== undefined);
       const done = store.commitTaskPass({ run, path, operations: curated!.operations,
         response: results => JSON.stringify({ ...JSON.parse(run.response ?? "{}"), results, ...(frozen.fullCheck ? { ...detail(), groups: groups.map(other => ({
           items: other.items.map(item => item.value.knowledge.id), clusters: other.clusters, run: other === group ? undefined : other.run })) } : {}) }),
@@ -309,23 +292,16 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
             for (const flag of parents.flatMap(id => lateFlags.get(id) ?? [])) store.setKnowledgeStale(r.id, flag);
             if (decision?.missingGrounds) store.setKnowledgeStale(r.id, { reason: "missing_grounds", detail: decision.reason });
             frozen.boundary.versions[r.knowledgeId] = r.id;
-          }
-          const set = store.db.prepare("UPDATE knowledge SET score=?,scored_commit=?,scored_run=? WHERE id=?");
-          for (const target of targets) {
-            const result: WorkspaceOperationResult | undefined = target.operation === undefined ? undefined : results[target.operation];
-            const committed = result?.ok ? result.committed[target.part ?? 0] : undefined;
-            const id = committed?.knowledgeId ?? target.knowledgeId, commit = committed?.commit ?? target.commit;
-            if (id !== undefined && current.get(id)?.id === commit) set.run(scores.get(target.label)!, commit!, runId, id);
+            if (decision) frozen.scoreVerdicts[r.id] = { decision: decision.decision, accuracy: decision.accuracy, reason: decision.reason };
           }
         },
         cover: ({ results }) => [...group.items.filter(item => completed.has(item.value.knowledge.id)).map(item => ({ id: item.value.revision.id, pool: item.pool })), ...results.flatMap(result => result.ok ? result.committed.map(item => ({ id: item.commit })) : [])],
-        handoff: ({ runId }) => { group.run = runId; return last ? null : { nextTask: "curate", detail: detail() }; },
-        ...(last ? { finish: { boundary: frozen.boundary } } : {}) });
+        handoff: ({ runId }) => { group.run = runId; return { nextTask: groups.every(other => other.run !== undefined) ? "scoring" : "curate", detail: detail() }; } });
       lastRunId = done.runId;
       workspace.remove();
       return { ...out, runId: done.runId };
     } catch (error) {
-      group.run = undefined; frozen.boundary.versions = previousBoundary;
+      group.run = undefined; frozen.boundary.versions = previousBoundary; frozen.scoreVerdicts = previousVerdicts;
       const runId = store.recordRun({ ...run, outcome: "failure", response: JSON.stringify({ ...JSON.parse(run.response ?? "{}"), error: String(error) }) }).id;
       lastRunId = runId;
       return { ok: false, task, outcome: "failure", runId, problems: [String(error)], class: classifyFailure(error).class };
@@ -348,6 +324,39 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       problems: failures.flatMap(failed => failed.out.problems), failure: { task: first.out.task, class: first.out.class,
         groups: failures.map(failed => ({ group: failed.group, task: failed.out.task, class: failed.out.class })) } };
   }
-  if (!groups.length) lastRunId = store.commitTaskPass({ run: template("curate"), path, handoff: () => null, finish: { boundary: frozen.boundary } }).runId;
+  if (frozen.scoringTargets === undefined) {
+    frozen.scoringTargets = scoreTargets(projectItems(store, path), frozen.scoreVerdicts, frozen.fullCheck);
+    lastRunId = store.commitTaskPass({ run: { ...template("scoring"), response: JSON.stringify({ task: "scoring-admission" }) }, path,
+      handoff: () => ({ nextTask: "scoring", detail: detail() }) }).runId;
+  }
+  while (frozen.scoringResults.length < frozen.scoringTargets.length) {
+    const targets = frozen.scoringTargets.slice(frozen.scoringResults.length, frozen.scoringResults.length + SCORING_BATCH_ITEMS);
+    const text = scoringText(targets), batch = Math.floor(frozen.scoringResults.length / SCORING_BATCH_ITEMS) + 1;
+    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `scoring-${batch}`).open({ "scoring.md": text, "scores.md": "" });
+    const responses = new Map<string, number | undefined>();
+    const report = () => {
+      const checked = checkScores(workspace.text("scores.md"), targets);
+      return { problems: checked.problems, text: [`Task: scoring (batch ${batch}). Scores: ${workspace.path("scores.md")}.`,
+        `Items: ${targets.map(target => target.label).join(", ")}`, usage(responses, limits.scoringSteps, limits.scoringContextTokens),
+        checked.problems.length ? `Problems:\n${checked.problems.join("\n")}` : "Problems: none"].join("\n") };
+    };
+    const out = await conversation(workspace, "scoring", `Rate every supplied target, then stop. Call ${frozen.names.check} first.\n\n<scoring_input>\n${text}</scoring_input>`,
+      report, responses);
+    if (!out.ok) return failure(out);
+    const ratings = checkScores(workspace.text("scores.md"), targets).scores;
+    const results = [...frozen.scoringResults, ...targets.map(target => ({ knowledgeId: target.knowledgeId, commit: target.commit, ...ratings.get(target.label)! }))];
+    const last = results.length === frozen.scoringTargets.length;
+    try {
+      lastRunId = store.commitTaskPass({ run: { ...out.run!, response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), task: "scoring", batch, ratings: results }) }, path,
+        ...(last ? { scores: results, finish: { boundary: frozen.boundary } } : {}),
+        handoff: () => last ? null : { nextTask: "scoring", detail: { ...detail(), scoringResults: results } } }).runId;
+      frozen.scoringResults = results;
+      workspace.remove();
+    } catch (error) {
+      const runId = store.recordRun({ ...out.run!, outcome: "failure", response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), error: String(error) }) }).id;
+      return failure({ ...out, ok: false, outcome: "failure", runId, problems: [String(error)], class: classifyFailure(error).class });
+    }
+  }
+  if (!frozen.scoringTargets.length) lastRunId = store.commitTaskPass({ run: template("scoring"), path, handoff: () => null, finish: { boundary: frozen.boundary } }).runId;
   return { outcome: "success", runId: lastRunId, problems: [] };
 }

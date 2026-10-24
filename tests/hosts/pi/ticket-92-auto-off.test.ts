@@ -28,7 +28,7 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     const rewrite = block(`update K${changed!.knowledgeId}@v1`, { reason: "maintenance" }, "Rule 1 maintained");
     const late = (conversation: { messages: unknown[] }): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "late", name: "write", arguments: {
       path: /Scores: (\S+?\.md)/.exec(JSON.stringify(conversation.messages))![1]!,
-      content: `K${changed!.knowledgeId} 88\n` } as never }] });
+      content: `K${changed!.knowledgeId} 4 4 4\n` } as never }] });
     f.provider(async (conversation, signal): Promise<Reply> => {
       if (conversation.systemPrompt?.startsWith("# Noting")) {
         await dreamReady; nCalls++;
@@ -48,7 +48,7 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
         expect(tools.find(tool => tool.name === "note")!.execute({})).toContain("Disabled");
         revisionsAtAbort = revisions();
         abortChecked = true;
-        // Deliberately return a late verify write after abort; native cancellation must not dispatch it.
+        // Return a late scoring write after abort; native cancellation must not dispatch it.
         resolve(late(conversation));
       }, { once: true }));
     }, { autoStop: false, ignoreAbort: true });
@@ -57,12 +57,12 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     await vi.waitFor(() => expect(store.getClaim(session.id, "dreaming")).toBeNull());
     expect(abortChecked).toBe(true);
     expect(nCalls).toBe(3);
-    // Curate's batch was kept as a proposal before the stop (nothing is applied before verify passes); the late verify write after the abort changes nothing.
+    // 167: curate is committed before scoring; a late scoring write after abort changes nothing.
     expect(revisions()).toBe(revisionsAtAbort);
-    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1");
+    expect(store.currentKnowledge(target).find(value => value.knowledge.id === changed!.knowledgeId)!.revision.text).toBe("Rule 1 maintained");
     expect(store.currentCommit(untouched!.knowledgeId, target)[0]!.id).toBe(untouched!.commit);
-    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`project:${session.projectId}`)!.n).toBe(0);
-    expect(store.currentCommit(changed!.knowledgeId, target)[0]!.id).toBe(changed!.commit);
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed WHERE pool=?").get(`project:${session.projectId}`)!.n).toBe(4);
+    expect(store.getKnowledge(changed!.knowledgeId)!.score).toBeNull();
     expect(f.memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id)).toEqual(entries);
     expect(store.taskFailures(session.id).filter(item => item.phase === "dreaming")).toEqual([]);
     expect(store.listRuns(session.id).filter(run => run.kind === "dreaming").at(-1)?.outcome).toBe("cancelled");

@@ -1,58 +1,30 @@
-import type { CurateItem, KnowledgeOperationInput, KnowledgeWithRevision } from "../store/index.ts";
-import type { KnowledgeCategory, KnowledgeScope } from "../model/index.ts";
-import { knowledgeStaleLabel } from "../render/index.ts";
+import type { CurateItem } from "../store/index.ts";
+import type { KnowledgeCategory, KnowledgeScope, ScoreRatings } from "../model/index.ts";
 
-export const CLASSIFY_ANCHORS = 30;
-/** Stratified old scored versions, including small pools; changed candidates do not anchor themselves. */
-/** 2026-10-24 (「参考的分布要有多样性」): anchors are drawn round-robin from every (score band, category) cell, highest band first, each cell
- * offering its median first and then the scores next to it, so the high bands and every category show even when the pool is mostly mid-scored
- * (the simulation's quantile anchors left Sonnet scoring rulings below their 61–80 band). */
-export function classifyAnchors(items: readonly CurateItem[], excluded: ReadonlySet<number> = new Set()): CurateItem[] {
-  const scored = items.filter(item => !excluded.has(item.value.knowledge.id) && item.score !== null && item.scoredCommit === item.value.revision.id)
-    .sort((a, b) => a.score! - b.score! || a.value.revision.id - b.value.revision.id);
-  if (scored.length <= CLASSIFY_ANCHORS) return scored;
-  const cells = new Map<string, CurateItem[]>();
-  for (const item of scored) {
-    const key = `${4 - Math.min(4, Math.floor((item.score! - 1) / 20))}:${item.value.revision.category}`; // band 81–100 sorts first
-    cells.set(key, [...(cells.get(key) ?? []), item]);
-  }
-  // Each cell offers its median first, then the scores next to it (「参照改为取各格中位数」): extremes are where known mis-scores sit.
-  const queues = [...cells].sort(([a], [b]) => a.localeCompare(b)).map(([, cell]) => {
-    const middle = Math.floor((cell.length - 1) / 2);
-    return cell.map((_, i) => cell[middle + (i % 2 ? (i + 1) / 2 : -i / 2)]!);
+export interface ScoreVerdict { decision: string; accuracy: string; reason: string }
+export interface ScoreTarget { label: string; title: string; text: string; category: KnowledgeCategory; scope: KnowledgeScope; knowledgeId: number; commit: number; verdict?: ScoreVerdict }
+export interface RatedTarget extends ScoreRatings { knowledgeId: number; commit: number }
+export const SCORING_BATCH_ITEMS = 100;
+export const ratingScore = ({ consequence, frequency, current }: ScoreRatings): number =>
+  Math.max(consequence === 5 ? 81 : 1, Math.round(consequence * frequency * current / 125 * 100));
+
+export function scoreTargets(items: readonly CurateItem[], verdicts: Readonly<Record<string, ScoreVerdict>>, all = false): ScoreTarget[] {
+  return items.filter(item => all || item.score === null || item.scoredCommit !== item.value.revision.id).map(item => {
+    const { knowledge, revision } = item.value;
+    return { label: `K${knowledge.id}`, knowledgeId: knowledge.id, commit: revision.id, title: revision.title ?? "(no title)",
+      text: revision.text, category: revision.category, scope: revision.scope, verdict: verdicts[revision.id] };
   });
-  const picked: CurateItem[] = [];
-  for (let round = 0; picked.length < CLASSIFY_ANCHORS; round++)
-    for (const queue of queues) if (round < queue.length && picked.length < CLASSIFY_ANCHORS) picked.push(queue[round]!);
-  return picked.sort((a, b) => a.score! - b.score! || a.value.revision.id - b.value.revision.id);
 }
-export interface ScoreTarget extends Pick<KnowledgeWithRevision, "staleReasons"> { label: string; title: string; text: string; category: KnowledgeCategory; scope: KnowledgeScope; operation?: number; part?: number; knowledgeId?: number; commit?: number }
-export interface CheckedScores { scores: Map<string, number>; problems: string[] }
-/** Split labels are workspace-local until the atomic group commit allocates their identities. */
-export function scoreTargets(items: readonly CurateItem[], operations: readonly KnowledgeOperationInput[], all = false): ScoreTarget[] {
-  const targets: ScoreTarget[] = [];
-  const current = new Map(items.map(item => [item.value.knowledge.id, item.value]));
-  operations.forEach((op, index) => {
-    if (op.op === "archive" || op.op === "create") return;
-    const id = op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId;
-    const base = current.get(id)!;
-    targets.push({ label: `K${id}`, title: op.title ?? base.revision.title ?? "(no title)", text: op.text ?? base.revision.text, category: op.category, scope: op.scope, staleReasons: base.staleReasons, operation: index, part: 0 });
-    if (op.op === "split") op.children.forEach((child, part) => targets.push({ label: `K${id}.child${part + 1}`, title: child.title ?? "(no title)", text: child.text, category: child.category, scope: child.scope ?? op.scope, staleReasons: base.staleReasons, operation: index, part: part + 1 }));
-  });
-  const consumed = new Set(operations.flatMap(op => op.op === "create" ? [] : op.op === "merge" ? [op.intoKnowledgeId, ...op.absorb.map(item => item.knowledgeId)] : [op.knowledgeId]));
-  for (const item of items) if ((all || item.score === null || item.scoredCommit !== item.value.revision.id) && !consumed.has(item.value.knowledge.id)) targets.push({ label: `K${item.value.knowledge.id}`, title: item.value.revision.title ?? "(no title)", text: item.value.revision.text, category: item.value.revision.category, scope: item.value.revision.scope, staleReasons: item.value.staleReasons, knowledgeId: item.value.knowledge.id, commit: item.value.revision.id });
-  return targets;
+export function scoringText(targets: readonly ScoreTarget[]): string {
+  return targets.map(target => `${target.label}\n${target.title}\n${target.category}; ${target.scope}\n${target.text}\nCurate verdict: ${target.verdict ? JSON.stringify(target.verdict) : "not provided"}`).join("\n\n") + "\n";
 }
-export function scoringText(anchors: readonly CurateItem[], targets: readonly ScoreTarget[]): string {
-  return `# Old scored anchors (scale only)\n\n${anchors.map(item => `K${item.value.knowledge.id} ${item.score}\n${item.value.revision.title ?? "(no title)"}${knowledgeStaleLabel(item.value)}\n${item.value.revision.category}; ${item.value.revision.scope}\n${item.value.revision.text}`).join("\n\n") || "None available"}\n\n# Items to score\n\n${targets.map(target => `${target.label}\n${target.title}${knowledgeStaleLabel(target)}\n${target.category}; ${target.scope}\n${target.text}`).join("\n\n") || "None"}\n`;
-}
-export function checkScores(text: string, targets: readonly ScoreTarget[]): CheckedScores {
-  const scores = new Map<string, number>(), problems: string[] = [], wanted = new Set(targets.map(target => target.label));
+export function checkScores(text: string, targets: readonly ScoreTarget[]): { scores: Map<string, ScoreRatings>; problems: string[] } {
+  const scores = new Map<string, ScoreRatings>(), problems: string[] = [], wanted = new Set(targets.map(target => target.label));
   for (const line of text.split(/\r?\n/).filter(line => line.trim())) {
-    const match = /^(K[1-9]\d*(?:\.child[1-9]\d*)?)\s+(\d+)$/.exec(line.trim());
-    if (!match || !wanted.has(match[1]!) || Number(match[2]) < 1 || Number(match[2]) > 100) { problems.push(`scores.md: expected one target label and an integer score 1–100: ${line}`); continue; }
+    const match = /^(K[1-9]\d*)\s+([1-5])\s+([1-5])\s+([1-5])$/.exec(line.trim());
+    if (!match || !wanted.has(match[1]!)) { problems.push(`scores.md: expected a target label and three integer ratings 1–5 (consequence frequency current): ${line}`); continue; }
     if (scores.has(match[1]!)) problems.push(`scores.md: duplicate ${match[1]}`);
-    scores.set(match[1]!, Number(match[2]));
+    scores.set(match[1]!, { consequence: Number(match[2]), frequency: Number(match[3]), current: Number(match[4]) });
   }
   for (const target of targets) if (!scores.has(target.label)) problems.push(`scores.md: missing ${target.label}`);
   return { scores, problems };

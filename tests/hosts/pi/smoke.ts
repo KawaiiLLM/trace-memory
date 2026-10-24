@@ -144,10 +144,10 @@ try {
     assert.ok(/^# (Dreamer|Classifying)/.test(conversation.systemPrompt ?? ""));
     assert.ok(!conversation.tools?.some(t => t.name === "note" || t.name === "memory"));
     for (const message of conversation.messages) {
-      if (message.role !== "user" || typeof message.content !== "string" || !message.content.startsWith("Curate passes.")) continue;
-      const file = /Scoring input: (.+)\. Items:/.exec(message.content)![1]!;
+      if (message.role !== "user" || typeof message.content !== "string" || !message.content.includes("<scoring_input>")) continue;
       const inline = message.content.split("<scoring_input>\n")[1]?.split("</scoring_input>")[0];
-      assert.equal(inline, readFileSync(file, "utf8"), "the native scoring message delivers every anchor and target");
+      assert.ok(inline?.includes("Remember the choice, tidied."), "the separate native scoring input contains the committed body");
+      assert.ok(!conversation.messages.some(m => m.role === "user" && typeof m.content === "string" && m.content.includes("Task: curate")), "scoring has fresh context");
       scoringDelivered = true;
     }
     return dreamerFiles(conversation, { curate: block(`update ${heading}`, { reason: "Smoke tidy" }, "Remember the choice, tidied.") }) ?? reply("Done");
@@ -163,6 +163,8 @@ try {
   assert.ok(runs.every(run => run.outcome === "success"));
   const group = runs.find(run => JSON.parse(run.response!).task === "group")!;
   assert.equal(group.mode, "subagent");
+  assert.deepEqual(store.getKnowledge(item.knowledgeId)!.ratings, { consequence: 4, frequency: 4, current: 4 });
+  assert.equal(store.getKnowledge(item.knowledgeId)!.score, 51);
   const archive = store.listCommitsByRun(group.id)[0]!;
   assert.equal(archive.actorRole, "dreaming");
   assert.deepEqual(store.listFactsByRun(runs[0]!.id), []);
@@ -182,7 +184,7 @@ try {
   await dreamer.commands.get("trace").handler("", dreamer.ctx);
   assert.ok(dreamer.notices.at(-1)!.includes("Compaction: bounded entry views"));
   assert.equal(dreamer.requests.length, requestsAfterRecovery, "reading the persisted recovery warning starts no worker");
-  console.log("Dreamer smoke passed: native notes then curate/scoring in one child, atomic update/scores/coverage, persisted custom carrier and read-only status.");
+  console.log("Dreamer smoke passed: native notes, curate commit, separate scoring child, persisted ratings, custom carrier and read-only status.");
 } finally { await dreamer.dispose(); }
 
 // 22b: the long-history regression, on the same entry the case above used — the installed one under

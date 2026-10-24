@@ -140,7 +140,6 @@ test("D admits a due Noter-written item on an entry without consuming pending Ra
     h.provider(async c => { curateInput ||= String(c.messages[0]!.content); return dreamerFiles(c) ?? reply("Done."); });
     await h.prompt("new main turn"); await h.answer("new completed entry"); await h.drain();
     expect(curateInput).toContain(`K${trigger.knowledgeId}`);
-    expect(h.memory.store.getKnowledge(trigger.knowledgeId)).toMatchObject({ score: 50 });
     expect(h.memory.store.noterOperations(path)).toBe(0);
     expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
   } finally { await h.dispose(); }

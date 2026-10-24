@@ -123,8 +123,8 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 ```
 
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
-- `dreaming.model` and `dreaming.thinking` use the existing Settings selectors and follow the foreground model/thinking until explicitly set. Admission freezes that choice for notes, curate and in-conversation scoring. The separate `dreaming.classifyModel` and `dreaming.classifyThinking` keys are removed and fail load by name.
-  `dreaming.timeoutMs` defaults to 1,800,000 ms per stage interval; a grouped curate/scoring conversation reserves two intervals. Expiry fences the workspace and releases its claim. Step/context budgets are soft and reported by each check; the notes file alone has a hard 10,000-token ceiling.
+- `dreaming.model` and `dreaming.thinking` use the existing Settings selectors and follow the foreground model/thinking until explicitly set. Admission freezes that choice for notes, curate and separate scoring. The separate `dreaming.classifyModel` and `dreaming.classifyThinking` keys are removed and fail load by name.
+  `dreaming.timeoutMs` defaults to 1,800,000 ms per conversation, including each separate scoring batch. Expiry fences the workspace and releases its claim. Step/context budgets are soft and reported by each check; scoring defaults to 10 steps/+60,000 context, and the notes file alone has a hard 10,000-token ceiling.
 - `notingModel` and `consolidationModel` accept `provider/model-id`, or `session`. Omission
   and `session` both resolve to the current session model's audited provider/id.
 - `notingThinking` and `consolidationThinking` (26d) accept `inherit` (the default) or one of Pi's
