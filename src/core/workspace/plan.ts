@@ -91,7 +91,7 @@ export function plan(store: Store, task: WorkspaceTask): Plan {
   const noting = task.kind === "noting-facts" || task.kind === "noting-knowledge";
   if (noting) for (const block of parsed.blocks) {
     const verdict = block.fields.get("verdict");
-    if (verdict ? !/^(?:ok|(?:edited|reverted) — \S.*)$/.test(verdict.value) : task.checked)
+    if (verdict ? !/^(?:ok|(?:edited|reverted) — \S.*)$/.test(verdict.value) : task.checked && block.op !== "none")
       out.problems.push(problem(file, verdict?.line ?? block.line, describeBlock(block), "expected `verdict: ok`, `verdict: edited — <why>` or `verdict: reverted — <why>` under the block"));
   }
   // `## none` stands alone: one bare line, nothing beside it and nothing under it that apply would drop silently.

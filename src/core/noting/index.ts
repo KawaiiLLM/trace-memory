@@ -319,7 +319,7 @@ export interface NotingRunOptions {
   registerFence?(workspace: { close(): void }): void;
 }
 
-/** Four independently resumed tasks; facts and knowledge publish once, after check-knowledge. */
+/** Four independently resumed stages; empty checks pass without a model call before terminal publication. */
 export async function runNoting(
   store: Store, frozen: ReturnType<typeof freezeNoting>, runAgent: RunAgent,
   config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput, noting?: { check(): string }) => ReturnType<typeof bindTools>,
@@ -353,18 +353,24 @@ export async function runNoting(
       promptHash: frozen.promptHash, model, entryAudit, createdAt: new Date().toISOString() };
     workspace.beginTask(task);
     const binding = tools({ kind: "noting", sessionId, branch, range, entryIds }, run, { check: () => workspace.checkTool() });
-    const agentInput: NotingAgentInput = { kind: "noting", task, entryIds, sessionId, branch, range,
-      model, prompt: frozen.prompt!, promptHash: frozen.promptHash!,
-      material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit),
-      tools: binding.tools, workspace: { dir: workspace.dir, ...workspace.paths,
-        read: [...Object.values(workspace.paths), workspace.path("related-facts.md"), workspace.path("related-knowledge.md")],
-        write: [task === "extract-facts" || task === "check-facts" ? workspace.paths.facts : workspace.paths.knowledge] },
-      passEnd: () => workspace.passEnd(), reportResponse: (id, inputTokens) => workspace.reportResponse(id, inputTokens),
-      acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
+    const noWork = workspace.noWork();
     try {
       let result: RunAgentResult;
-      try { result = await runAgent(agentInput); }
-      catch (error) { result = agentException(error); }
+      if (noWork) {
+        workspace.passEnd();
+        result = { outcome: "success", output: "Skipped empty check" };
+      } else {
+        const agentInput: NotingAgentInput = { kind: "noting", task, entryIds, sessionId, branch, range,
+          model, prompt: frozen.prompt!, promptHash: frozen.promptHash!,
+          material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit),
+          tools: binding.tools, workspace: { dir: workspace.dir, ...workspace.paths,
+            read: [...Object.values(workspace.paths), workspace.path("related-facts.md"), workspace.path("related-knowledge.md")],
+            write: [task === "extract-facts" || task === "check-facts" ? workspace.paths.facts : workspace.paths.knowledge] },
+          passEnd: () => workspace.passEnd(), reportResponse: (id, inputTokens) => workspace.reportResponse(id, inputTokens),
+          acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
+        try { result = await runAgent(agentInput); }
+        catch (error) { result = agentException(error); }
+      }
       // A direct facade close may dispose before the provider settles; never access that store.
       if (store.closed) return { outcome: "dropped" };
       if ((binding.cancelled || workspace.closed) && result.outcome === "success") result = { ...result, outcome: "cancelled", output: "Noter cancelled before terminal publication" };
@@ -372,10 +378,10 @@ export async function runNoting(
       const final = result.outcome === "success" ? workspace.check() : undefined;
       const unfinished = result.outcome === "success" ? workspace.unfinished() : undefined;
       const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)]
-        : requestMissing(result) ? ["runAgent must return the exact provider request"] : [...(unfinished ? [unfinished] : []), ...final!.problems];
+        : !noWork && requestMissing(result) ? ["runAgent must return the exact provider request"] : [...(unfinished ? [unfinished] : []), ...final!.problems];
       const { facts, knowledge } = workspace.read();
       recordAttempt(run, result, { task, ...(previousRunId === undefined ? {} : { previousRun: previousRunId }), files: { facts, knowledge },
-        ...workspace.record(), toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
+        ...(noWork ? { noWork: true } : {}), ...workspace.record(), toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
       if (problems.length || result.outcome !== "success") {
         const outcome = result.outcome !== "success" ? result.outcome : "failure";
         return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id };

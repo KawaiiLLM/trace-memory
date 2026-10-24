@@ -55,7 +55,6 @@ for (const cancel of [false, true]) {
         await vi.waitFor(() => expect(scheduler!.catchupStatus().state).toBe("completed"));
         const writes = tasks.filter(task => task.task === "extract-facts");
         expect(writes.length).toBeGreaterThan(1);
-        expect(tasks).toHaveLength(4 * writes.length);
         expect(writes.flatMap(task => task.entryIds)).toEqual(entries);
         for (const task of tasks) {
           expect(task.material.entries.map(entry => entry.id)).toEqual(task.entryIds);

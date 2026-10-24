@@ -6,7 +6,7 @@
 import { afterEach, expect, test } from "vitest";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { emptyNote, host, NOTER_BATCH_REQUESTS, notingFact, reply } from "./test-host.ts";
+import { emptyNote, host, EMPTY_NOTER_BATCH_REQUESTS, notingFact, reply } from "./test-host.ts";
 import { configuration, parseKnowledgeBudgetInput, parseLayer, preferences, thinkingChoices, writeGlobal } from "../../../src/hosts/pi/settings.ts";
 import { validateConfig } from "../../../src/core/api/index.ts";
 
@@ -226,7 +226,7 @@ test("closed-session scope is saved globally and changes subsequent queue admiss
   await edit(h, "Closed-session scope: off (Global)", "global");
   expect(globalFile(h)["trace-memory"].closedSessionScope).toBe("global");
   expect(h.requests).toEqual([]); // a settings change is not an extraction opportunity
-  await tick(); expect(h.requests).toHaveLength(NOTER_BATCH_REQUESTS); // one batch: both tasks
+  await tick(); expect(h.requests).toHaveLength(EMPTY_NOTER_BATCH_REQUESTS);
   expect(h.memory.store.listRuns(s.id).some(r => r.kind === "noting")).toBe(true);
 });
 

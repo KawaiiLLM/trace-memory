@@ -123,6 +123,6 @@ test("a batch's verify task runs on the worker its write task started on, whatev
     await runCcCommand(["cli", "--config", path, "--session", native, "setting", "noting.thinking", "medium"]);
     provider.calls[0]!.release();
     await tick(() => (coordinator as unknown as { scheduler: { running(): string[] } }).scheduler.running().length === 0);
-    expect(provider.runs).toEqual(["extract-facts", "check-facts", "write-knowledge", "check-knowledge"].map(task => ({ task, thinking: "high" })));
+    expect(provider.runs).toEqual(["extract-facts", "write-knowledge"].map(task => ({ task, thinking: "high" })));
   } finally { for (const call of provider.calls) call.release(); await coordinator.shutdown("test done"); }
 });

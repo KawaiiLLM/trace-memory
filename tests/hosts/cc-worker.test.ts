@@ -882,8 +882,9 @@ test("production worker reads a trace:// snapshot, runs search code and accounts
   expect(listed.find((value: { name: string }) => value.name === "search").inputSchema)
     .toEqual(toolDefinitions.find(value => value.name === "search")!.parameters);
   expect(rawInputs.some(input => typeof input.code === "string")).toBe(true);
-  expect(memory.spend(session.id)).toMatchObject({ input: 44, output: 28, cacheRead: 20, cacheWrite: 12, cost: 0.5 });
-  expect(memory.trace(`R${result.runId}`, { full: true })).toContain("cost $0.1250");
+  expect(memory.spend(session.id)).toMatchObject({ input: 22, output: 14, cacheRead: 10, cacheWrite: 6, cost: 0.25 });
+  const called = memory.store.listRuns(session.id).find(run => JSON.parse(run.response!).task === "extract-facts")!;
+  expect(memory.trace(`R${called.id}`, { full: true })).toContain("cost $0.1250");
   memory.close();
 });
 
@@ -965,7 +966,7 @@ test.each([false, true])("production MCP N: files that fail the stop check get o
   const result = await memory.noting({ sessionId: session.id, branch: "main", headTurnId: target.turn.id,
     triggerEntryId: target.entry.id, model: "claude-sonnet-4-5", toolNames: ccWorkerToolNames });
   if (result.outcome !== "success") throw new Error(JSON.stringify(result));
-  expect(tasks).toEqual(["extract-facts", "check-facts", "write-knowledge", "check-knowledge"]);
+  expect(tasks).toEqual(["extract-facts", "write-knowledge", "check-knowledge"]);
   expect(memory.store.currentKnowledge()).toHaveLength(1);
   expect(reviews).toHaveLength(invalidFirst ? 1 : 0);
   if (invalidFirst) { expect(reviews[0]).toContain("Your files do not pass the check"); expect(reviews[0]).toContain("supports"); }

@@ -1,4 +1,4 @@
-// One four-stage Noter batch, committed through real Pi child AgentSessions
+// One Noter batch with an empty knowledge check skipped, committed through real Pi child AgentSessions
 // built by hosts/pi/native.ts, with the provider stubbed at the wire (test-host.ts). Nothing here
 // touches a network or a credential.
 import assert from "node:assert/strict";
@@ -29,14 +29,17 @@ try {
   await h.emit("session_start");
   await h.turn();
   const runs = h.memory.store.listRuns(1);
-  // 155: four independent native children, one terminal publication.
+  // Four successful stage records, three native children and one terminal publication.
   assert.equal(runs.length, 4);
   assert.ok(runs.every(run => run.kind === "noting" && run.outcome === "success"));
   assert.deepEqual(runs.map(run => JSON.parse(run.response!).task), ["extract-facts", "check-facts", "write-knowledge", "check-knowledge"]);
   assert.deepEqual(JSON.parse(runs[0]!.request!), h.requests[2]); // check, write facts, stop
-  assert.deepEqual(JSON.parse(runs[3]!.request!), h.requests.at(-1));
+  assert.deepEqual(JSON.parse(runs[2]!.request!), h.requests.at(-1));
+  assert.equal(runs[3]!.request, null);
+  assert.equal(JSON.parse(runs[3]!.response!).noWork, true);
+  assert.equal(JSON.parse(runs[3]!.response!).budget.steps, 0);
   assert.deepEqual(h.conversations[0]!.tools!.map(t => t.name), ["search", "check", "read", "write", "edit", "bash"]);
-  for (const first of [3, 6, 9]) {
+  for (const first of [3, 6]) {
     assert.equal(JSON.stringify(h.conversations[first]!.messages[0]), JSON.stringify(h.conversations[0]!.messages[0]), "all stages open with the same text");
     assert.equal(h.conversations[first]!.systemPrompt, h.conversations[0]!.systemPrompt);
   }
@@ -114,7 +117,7 @@ try {
   await trace("enable");                     // retired: the usage, and no change
   assert.ok(h.notices.at(-1)!.includes("is not a command form") && h.notices.at(-1)!.includes("/trace on"), "a retired subcommand prints the usage");
   assert.ok(h.memory.status(1).includes("Enabled (explicit choice)"), "and changes nothing");
-  console.log(`Pi smoke passed on Node ${process.versions.node}: four native Noter stages, one fact committed, /trace on|off and the retained forms.`);
+  console.log(`Pi smoke passed on Node ${process.versions.node}: three native Noter stages, empty knowledge check skipped, one fact committed, /trace on|off and the retained forms.`);
 } finally {
   await h.dispose();
 }

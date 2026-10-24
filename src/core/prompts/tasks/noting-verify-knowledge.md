@@ -3,6 +3,7 @@
 The facts file passed the check and is now fixed. Do not change it.
 
 Read the new facts, knowledge changes and `related-knowledge.md`; check only knowledge.
+Read `related-knowledge.md` to the end, continuing past any truncated read, and compare every new knowledge block with the retrieved items one by one.
 
 1. Read the knowledge file. Go through the lists below item by item for each `create` and each `update`.
 2. Correct or rewrite a record when evidence shows it is wrong, or mark it reverted; put `verdict: ok`, `verdict: edited — <why>` or `verdict: reverted — <why>` under every block.

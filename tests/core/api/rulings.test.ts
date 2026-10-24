@@ -441,7 +441,7 @@ test("20a 2026-09-08: core owns the host-neutral domain text and still builds no
   for (const key of ["messages", "system", "conversation", "body", "subagentInput"]) expect(key in record).toBe(false);
   expect(Array.isArray(record.input)).toBe(false);
   // The recorded provider request is the host's own object; core never produced it.
-  expect(JSON.parse(memory.store.listRuns(s.id).at(-1)!.request!)).toEqual({ fake: true });
+  expect(JSON.parse(memory.store.listRuns(s.id).find(run => JSON.parse(run.response!).task === "extract-facts")!.request!)).toEqual({ fake: true });
 });
 
 // 92 §6 supersedes 25a's N exclusion: one seeded Knowledge body uses the same leading renderer
@@ -518,7 +518,7 @@ test("2026-09-07 / 92: one terminal publication per run, not one immediate tool 
   expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
   expect(memory.store.listSessionFacts(s.id)).toMatchObject([{ text: "Use pnpm, not npm" }]);
   expect(memory.store.sourcePath(s.id, "main", t.id).every(entry => memory.store.entryNoted(entry.id))).toBe(true);
-  const run = memory.store.listRuns(s.id).at(-1)!;
+  const run = memory.store.listRuns(s.id).find(run => JSON.parse(run.response!).task === "write-knowledge")!;
   expect(run.outcome).toBe("success");
   expect(JSON.parse(run.request!)).toEqual({ round: 2 });
   expect(JSON.parse(run.response!).toolCalls.map((c: { name: string }) => c.name)).toEqual(["check"]);
@@ -1892,7 +1892,7 @@ test("2026-10-22: a Noter run that does not finish normally is one failure, whic
   const { s, t } = session(); memory.close();
   const script = [
     { outcome: "failure" as const, output: "task 1 stopped", noteInput: [] },                                   // run 1: task 1 fails
-    { noteInput: [], verifyResult: { outcome: "failure" as const, output: "task 2 stopped" } },                  // run 2: task 1 passes, task 2 fails
+    { noteInput: [{ title: "Package manager", sources: `[T${t.id}#E1] Use pnpm` }], verifyResult: { outcome: "failure" as const, output: "task 2 stopped" } },
     { verifyResult: { outcome: "failure" as const, output: "resumed task 2 stopped" } },                         // run 3: the resumed task 2 fails
   ];
   memory = sourceSeededMemory(join(directory, "test.sqlite"), scriptedNoter(() => memory, script).agent);
@@ -1925,7 +1925,7 @@ test("2026-10-24: four independent Noter stages publish only after the final kno
   const { s, t } = session(); memory.close();
   const file = join(directory, "test.sqlite");
   const during: number[] = [];
-  const noter = scriptedNoter(() => memory, [{ noteInput: [noterFact(t.id)], verify: () => {
+  const noter = scriptedNoter(() => memory, [{ noteInput: [noterFact(t.id)], memoryInput: { files: null, op: "create", title: "Package manager", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "User ruling", text: "Use pnpm" }, verify: () => {
     const other = new Store(file);
     try { during.push(other.listSessionFacts(s.id).length); } finally { other.close(); }
   } }]);
@@ -1957,7 +1957,7 @@ test("2026-10-24: a check-facts failure resumes that stage without extracting ag
   expect(memory.store.listSessionFacts(s.id)).toEqual([]);
   expect(memory.store.handoff(s.id, "noting")).not.toBeNull();
   expect((await memory.noting(target)).outcome).toBe("success");
-  expect(noter.inputs.map(input => input.task)).toEqual(["extract-facts", "check-facts", "check-facts", "write-knowledge", "check-knowledge"]);
+  expect(noter.inputs.filter(input => input.task === "extract-facts" || input.task === "check-facts").map(input => input.task)).toEqual(["extract-facts", "check-facts", "check-facts"]);
   expect(memory.store.listSessionFacts(s.id).map(f => f.text)).toEqual(["用 pnpm，不要 npm"]);
   expect(memory.store.handoff(s.id, "noting")).toBeNull();
 });

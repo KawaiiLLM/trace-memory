@@ -37,7 +37,7 @@ Probes, native-host runs, benchmarks and acceptance reproductions written for on
 
 Tests build sessions, Raw, facts and knowledge through the shared builders in `tests/support/`, the one place that knows the public write shape. A legacy fact is seeded with its entry bindings, as production rows have them. A test calls `note` or `memory` directly only when that tool's contract is what it tests.
 
-A test that needs a Noter run scripts the model with `tests/support/noter.ts` (`scriptedNoter`, `submit`, `verifyUnchanged`, `submitEmpty`): it calls `check`, writes the two workspace files and meets the stop hook, as a host's model does, and the test states only WHAT is written (facts as `{title, sources}`, operations as `memory` inputs, or raw file text). `submit` writes one file per step and consumes the step-advance message; `probe` reads what `check` says about an invalid file without spending the step's repair. Each batch is two runs (write, then verify) and eight requests on a Pi wire (`NOTER_BATCH_REQUESTS`).
+A test that needs a Noter run scripts the model with `tests/support/noter.ts` (`scriptedNoter`, `submit`, `verifyUnchanged`, `submitEmpty`): it calls `check`, writes the owned workspace file and meets the stop hook, as a host's model does, and the test states only WHAT is written (facts as `{title, sources}`, operations as `memory` inputs, or raw file text). `submit` writes one file per stage; `probe` reads what `check` says about an invalid file without spending the stage's repair. Each batch writes facts and knowledge in separate runs and checks each nonempty file in its own run. Empty checks record successful no-work stages without calling the model.
 
 ## Running performance tests
 
