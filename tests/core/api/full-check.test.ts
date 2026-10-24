@@ -30,8 +30,10 @@ test("full check persists clusters, resumes only uncommitted groups and rescores
   const scoring: string[] = [];
   f.dreamer.script.instead = { curate: async input => {
     expect(readFileSync(`${input.workspace.dir}/group.md`, "utf8")).toContain("## Cluster Topic");
-    return scriptedDreamer({ curate: f.dreamer.script.curate, scoring: (_group, labels) => {
-      scoring.push(readFileSync(`${input.workspace.dir}/scoring.md`, "utf8"));
+    return scriptedDreamer({ curate: f.dreamer.script.curate, scoring: (_group, labels, message) => {
+      const text = readFileSync(`${input.workspace.dir}/scoring.md`, "utf8");
+      if (message.startsWith("Curate passes.")) expect(message.split("<scoring_input>\n")[1]?.split("</scoring_input>")[0]).toBe(text);
+      scoring.push(text);
       return labels.map(label => `${label} 61`).join("\n");
     } }).agent(input);
   } };

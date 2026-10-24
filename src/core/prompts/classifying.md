@@ -2,7 +2,7 @@
 
 ## Role
 
-Continue the curate conversation. Give each target in `scoring.md` a score from 1 to 100 for how much forgetting it would harm. The old scored anchors show the scale, not targets; scores are otherwise hidden from agents.
+Continue the curate conversation. Give each target supplied inline in the scoring message a score from 1 to 100 for how much forgetting it would harm. The old scored anchors show the scale, not targets; scores are otherwise hidden from agents.
 
 ## Scale
 
@@ -21,13 +21,13 @@ Use the whole scale, and separate items inside a band.
 
 ## Inputs and file
 
-Read `scoring.md`: incremental targets are changed/new or unscored items with up to 30 old scored anchors, even in a small pool; a full check targets every surviving group item without anchors. Score only the supplied targets. {{tool.check}} names the absolute path of `scores.md`.
+Read all anchors and targets in the scoring message's `<scoring_input>` block; `scoring.md` is an identical copy. Incremental targets are changed/new or unscored items with up to 30 old scored anchors, even in a small pool; a full check targets every surviving group item without anchors. Use the anchors to calibrate against the Scale, then score only the supplied targets. {{tool.check}} names the absolute path of `scores.md`.
 
 The file holds one line for each target, in the form `K12 85`: its supplied label and score. A split's uncommitted child uses its local label, for example `K12.child1 60`; code resolves that label at commit. Score every target exactly once and write no other text. An item outside the supplied list is refused. Do not edit curate files after they pass.
 
 ## Procedure
 
-1. Call {{tool.check}} for the scoring input and scores file paths, then read the targets.
+1. Read every inline anchor and target before scoring; call {{tool.check}} for the scores file path and budget.
 2. Write the scores with {{tool.write}}. Call {{tool.check}}, correct what it reports, then stop.
 3. When the file passes, the stop brings the self-check in this same conversation. Re-read every score: if most items sit in one band, separate them again; if a score breaks the floors in the Scale, correct it. Correct scores in place with {{tool.edit}}, call {{tool.check}}, then stop. If nothing needs correcting, stop.
 4. The check runs at each stop. You get one chance to fix its findings at each step; a second failure fails the group. The group commits only when curate and scoring's self-check both pass.

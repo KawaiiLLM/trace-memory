@@ -221,19 +221,15 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       "decisions.md": decisionsTemplate(group.items, roots.length > 0), "changes.md": "", "scores.md": "" });
     const responses = new Map<string, number | undefined>();
     const heads = new Map<string, string>();
-    // Freeze repository HEAD before curate, never at commit or from model-authored data.
-    for (const directory of roots) { const repo = repositoryHead(join(directory, "__head_snapshot__")); if (repo) heads.set(repo.root, repo.commit); }
-    if (roots.length) for (const item of group.items) for (const file of item.value.revision.files ?? []) { const repo = repositoryHead(file); if (repo) heads.set(repo.root, repo.commit); }
+    // Existing repositories freeze before curate; nested ones freeze on first checked path, never at publication.
+    for (const directory of roots) { const repo = repositoryHead(join(directory, "__head_snapshot__")); if (repo && !heads.has(repo.root)) heads.set(repo.root, repo.commit); }
+    if (roots.length) for (const item of group.items) for (const file of item.value.revision.files ?? []) { const repo = repositoryHead(file); if (repo && !heads.has(repo.root)) heads.set(repo.root, repo.commit); }
     let curated: Curated | undefined, targets: ScoreTarget[] = [], sealed = "", scoringReview = false;
-    const readCurate = () => checkCurate(store, path, group.items, { name: "decisions.md", text: workspace.text("decisions.md") }, { name: "changes.md", text: workspace.text("changes.md") }, limits.wholeFileLimit, roots);
+    const readCurate = () => checkCurate(store, path, group.items, { name: "decisions.md", text: workspace.text("decisions.md") }, { name: "changes.md", text: workspace.text("changes.md") }, limits.wholeFileLimit, roots, heads);
     const report = () => {
       const checked = task === "curate" ? readCurate() : undefined;
       const problems = checked ? [...checked.problems] : checkScores(workspace.text("scores.md"), targets).problems;
       if (task === "scoring" && sealed !== workspace.text("decisions.md") + "\0" + workspace.text("changes.md")) problems.push("Curate files changed after passing; restore them before scoring");
-      if (checked && roots.length) for (const op of checked.operations) for (const file of [...op.files ?? [], ...(op.op === "split" ? op.children.flatMap(child => child.files ?? []) : [])]) {
-        const repo = repositoryHead(file);
-        if (repo && !heads.has(repo.root)) problems.push(`files: no start-of-curate HEAD recorded for repository ${repo.root}`);
-      }
       return { problems, text: [`Task: ${task} (group ${group.no} of ${groups.length}).`,
         `Input: ${workspace.path("group.md")}.`,
         `Decisions: ${workspace.path("decisions.md")}. Changes: ${workspace.path("changes.md")}. Scores: ${workspace.path("scores.md")}.`,
@@ -251,9 +247,10 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       curated = readCurate();
       targets = scoreTargets(group.items, curated.operations, frozen.fullCheck);
       sealed = workspace.text("decisions.md") + "\0" + workspace.text("changes.md");
-      writeFileSync(workspace.path("scoring.md"), scoringText(frozen.fullCheck ? [] : classifyAnchors(projectItems(store, path), new Set(targets.map(target => Number(/^K(\d+)/.exec(target.label)![1])))), targets));
+      const scoring = scoringText(frozen.fullCheck ? [] : classifyAnchors(projectItems(store, path), new Set(targets.map(target => Number(/^K(\d+)/.exec(target.label)![1])))), targets);
+      writeFileSync(workspace.path("scoring.md"), scoring);
       task = "scoring"; responses.clear();
-      return `Curate passes. Continue this same conversation with scoring.\n\n${report().text}`;
+      return `Curate passes. Continue this same conversation with scoring.\n\n${report().text}\n\n<scoring_input>\n${scoring}</scoring_input>`;
     };
     const out = await conversation(workspace, "curate", `${prefix}\n\n${readingGuide(sessionId, frozen.names)}\n\nGroup ${group.no}. Call ${frozen.names.check} first.`, report, advance, () => task, responses,
       stage => loadPrompt(stage === "curate" ? "tasks/curate.md" : "classifying.md", frozen.names, config.writing));
@@ -269,7 +266,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         response: results => JSON.stringify({ ...JSON.parse(run.response ?? "{}"), results, ...(frozen.fullCheck ? { ...detail(), groups: groups.map(other => ({
           items: other.items.map(item => item.value.knowledge.id), clusters: other.clusters, run: other === group ? undefined : other.run })) } : {}) }),
         after: ({ runId, results }) => {
-          const capProblems = wholeFileCapProblems(store, path, limits.wholeFileLimit, curated!.operations, curated!.decisions.map(decision => decision.files), false, roots);
+          const capProblems = wholeFileCapProblems(store, path, limits.wholeFileLimit, curated!.operations, curated!.filesToCheck, false, roots);
           if (capProblems.length) throw new Error(capProblems.join("\n"));
           const refused = new Set(results.flatMap((result, i) => {
             if (result.ok) return [];

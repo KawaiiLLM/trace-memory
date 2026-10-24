@@ -30,17 +30,18 @@ export function groupText(store: Store, items: readonly CurateItem[], clusters?:
   return `# Contents\n\n${contents}\n\n${bodies.join("\n\n")}\n${referenceText ? `\n# Reference only — not candidates\n\n${referenceText}\n` : ""}`;
 }
 export const decisionsTemplate = (items: readonly CurateItem[], hasRepository: boolean) => items.map(item => `## item ${item.address}\ntitle: ${item.value.revision.title ?? ""}\naccuracy: \ngrounds: \nnorms: \nevidence: \n${hasRepository ? "files: \n" : ""}decision: \nreason: \n`).join("\n");
-export interface Decision { item: CurateItem; title: string; files: string[] | null | undefined; decision: string; reason: string; missingGrounds: boolean }
-export interface Curated { problems: string[]; decisions: Decision[]; operations: KnowledgeOperationInput[]; lengths: string[] }
+export interface Decision { item: CurateItem; title: string; files: string[] | null | undefined; preserveFiles: boolean; decision: string; reason: string; missingGrounds: boolean }
+export interface Curated { problems: string[]; decisions: Decision[]; operations: KnowledgeOperationInput[]; lengths: string[]; filesToCheck: (string[] | null | undefined)[] }
 /** The caller supplies membership: incremental selection and full-check clustering use this same boundary. */
-/** `roots` is the run's frozen repository snapshot (163 review): the checker never recomputes it, so a repository appearing mid-run cannot
- * turn a rootless run's refusal of `files` into acceptance of `None`. */
+/** `roots` is the run's frozen authorization snapshot: a directory appearing mid-run cannot make a rootless run accept files.
+ * `heads` retains start-of-curate commits and captures newly encountered nested repositories once. */
 export function checkCurate(store: Store, path: KnowledgePath, items: readonly CurateItem[], decisionsFile: WorkspaceFile, changesFile: WorkspaceFile, wholeFileLimit = 5,
-  roots: readonly string[] = allowedRoots(store, path.sessionId)): Curated {
+  roots: readonly string[] = allowedRoots(store, path.sessionId), heads?: Map<string, string>): Curated {
   const parsed = parseBlocks(decisionsFile), checked = plan(store, { kind: "curate", sessionId: path.sessionId, path, file: changesFile });
   const problems = [...parsed.problems, ...checked.problems];
   const wanted = new Map(items.map(item => [item.address, item])), seen = new Set<string>();
   const decisions: Decision[] = [];
+  const filesToCheck: (string[] | null | undefined)[] = [];
   for (const block of parsed.blocks) {
     const item = wanted.get(block.target), label = `decisions.md:${block.line}`;
     if (block.op !== "item" || !item) { problems.push(`${label}: expected an item of this group`); continue; }
@@ -54,11 +55,13 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
     const value = (key: string) => fields.get(key)?.value ?? "";
     if (!/^(?:ok|unverified|outdated:\s*\S.*|wrong:\s*\S.*)$/.test(value("accuracy"))) problems.push(`${label}: accuracy must be ok, unverified, outdated: <why> or wrong: <why>`);
     if (words(value("title")) > Math.ceil(store.writing.titleWords * 1.1)) problems.push(`${label}: title exceeds target ${store.writing.titleWords}`);
-    const files = !roots.length ? item.value.revision.files : value("files") === "None" ? null : list(value("files")).flatMap(file => {
-      const resolved = resolveCodeLink(file, roots);
+    const preserveFiles = !roots.length || value("files") === "unchanged";
+    const files = preserveFiles ? item.value.revision.files : value("files") === "None" ? null : list(value("files")).flatMap(file => {
+      const resolved = resolveCodeLink(file, roots, heads);
       if ("reason" in resolved) { problems.push(`${label}: files: ${resolved.reason}`); return []; }
       return [resolved.path];
     });
+    if (!preserveFiles) filesToCheck.push(files);
     if (files && new Set(files).size !== files.length) problems.push(`${label}: duplicate linked file`);
     const decision = value("decision");
     if (!/^(?:keep|update|archive|merge|split|merged into K[1-9]\d*)$/.test(decision)) problems.push(`${label}: unknown decision ${decision}`);
@@ -67,7 +70,7 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
       const problem = evidence.startsWith("trace://") ? traceProblem(store, evidence) : repositoryEvidenceProblem(evidence, roots);
       if (problem) problems.push(`${label}: evidence ${evidence}: ${problem}`);
     }
-    decisions.push({ item, title: value("title"), files, decision, reason: value("reason"), missingGrounds: /^(?:None|missing|unverified)(?:\b|$)/i.test(value("grounds")) });
+    decisions.push({ item, title: value("title"), files, preserveFiles, decision, reason: value("reason"), missingGrounds: /^(?:None|missing|unverified)(?:\b|$)/i.test(value("grounds")) });
   }
   for (const address of wanted.keys()) if (!seen.has(address)) problems.push(`decisions.md: missing ${address}`);
   const byId = new Map(decisions.map(decision => [decision.item.value.knowledge.id, decision]));
@@ -96,13 +99,14 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
     if (op.op === "split" && !entry.block.fields.has("supports")) problems.push(`changes.md: K${id} split requires explicit supports for its primary part`);
     if (op.op === "split") entry.block.children.forEach((child, index) => {
       const raw = child.fields.get("files")?.value;
-      if (!roots.length) op.children[index]!.files = decision.item.value.revision.files;
+      if (decision.preserveFiles && !raw) op.children[index]!.files = decision.item.value.revision.files;
       else if (!raw) problems.push(`changes.md: K${id} child ${index + 1} requires files`);
       else op.children[index]!.files = raw === "None" ? null : list(raw).flatMap(file => {
-        const resolved = resolveCodeLink(file, roots);
+        const resolved = resolveCodeLink(file, roots, heads);
         if ("reason" in resolved) { problems.push(`changes.md: child files: ${resolved.reason}`); return []; }
         return [resolved.path];
       });
+      if (raw && roots.length) filesToCheck.push(op.children[index]!.files);
       if (!child.fields.has("supports")) problems.push(`changes.md: K${id} child ${index + 1} requires explicit supports`);
     });
     operations.push(op);
@@ -118,13 +122,12 @@ export function checkCurate(store: Store, path: KnowledgePath, items: readonly C
       title: decision.title, text: r.text, category: r.category, scope: r.scope, topics: r.topics, supports: r.supports,
       files: decision.files, reason: decision.reason, createdAt: new Date().toISOString() });
   }
-  problems.push(...wholeFileCapProblems(store, path, wholeFileLimit, operations, decisions.map(decision => decision.files), true, roots));
-  return { problems, decisions, operations, lengths: checked.lengths.map(length => `${length.block}: ${length.field} ${length.count}/${length.target} (limit ${length.limit})`) };
+  problems.push(...wholeFileCapProblems(store, path, wholeFileLimit, operations, filesToCheck, true, roots));
+  return { problems, decisions, operations, filesToCheck, lengths: checked.lengths.map(length => `${length.block}: ${length.field} ${length.count}/${length.target} (limit ${length.limit})`) };
 }
 
-/** Counts project-wide projected survivors (other groups, absorbed parents, split children), but reports only the whole-file addresses this
- * group's own items end with: an over-cap address elsewhere is not this group's to fix and must not fail it (159 review). `project` false
- * counts the pool as it stands, for the recheck after publication. */
+/** Counts all projected survivors, but reports only explicitly checked mappings: unchanged records still count without forcing a repair.
+ * `project` false counts the pool as it stands, for the recheck after publication. */
 export function wholeFileCapProblems(store: Store, path: KnowledgePath, limit: number, operations: readonly KnowledgeOperationInput[],
   groupFiles: readonly (readonly string[] | null | undefined)[], project = true, roots: readonly string[] = allowedRoots(store, path.sessionId)): string[] {
   if (!roots.length) return [];
@@ -142,8 +145,7 @@ export function wholeFileCapProblems(store: Store, path: KnowledgePath, limit: n
   const wholeFiles = (files: readonly string[] | null | undefined) => new Set((files ?? []).filter(file => codeAddress(file).symbol === undefined)
     .map(file => { const resolved = resolveCodeLink(file, roots); return "reason" in resolved ? file : resolved.path; }));
   for (const files of [...current.values(), ...additions]) for (const address of wholeFiles(files)) counts.set(address, (counts.get(address) ?? 0) + 1);
-  const own = new Set([...groupFiles, ...operations.flatMap(op => op.op === "archive" || op.op === "create" ? [] : [op.files, ...(op.op === "split" ? op.children.map(child => child.files) : [])])]
-    .flatMap(files => [...wholeFiles(files)]));
+  const own = new Set(groupFiles.flatMap(files => [...wholeFiles(files)]));
   return [...counts].filter(([address, count]) => count > limit && own.has(address)).map(([address, count]) =>
     `files: ${address} has ${count} current items (whole-file limit ${limit}); use path#symbol function anchors; never drop a real link to pass the check`);
 }

@@ -190,11 +190,12 @@ export function symbolText(source: string | undefined, symbol: string): string |
   return found;
 }
 
-export function resolveCodeLink(address: string, roots: readonly string[]): { path: string } | { reason: string } {
+export function resolveCodeLink(address: string, roots: readonly string[], heads?: Map<string, string>): { path: string } | { reason: string } {
   const link = codeAddress(address), resolved = resolveRepositoryPath(link.path, roots);
   if ("reason" in resolved) return resolved;
+  const repo = link.symbol !== undefined || heads ? repositoryHead(resolved.path) : undefined;
+  if (repo && heads && !heads.has(repo.root)) heads.set(repo.root, repo.commit);
   if (link.symbol === undefined) return resolved;
-  const repo = repositoryHead(resolved.path);
   if (!repo || symbolText(committedText(repo.root, repo.commit, resolved.path), link.symbol) === undefined)
     return { reason: `${address}: symbol missing at HEAD (or ambiguous; use Class.method)` };
   return { path: `${resolved.path}#${link.symbol}` };

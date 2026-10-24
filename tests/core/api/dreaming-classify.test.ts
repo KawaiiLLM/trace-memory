@@ -94,6 +94,9 @@ test("unchanged scored candidates remain usable old anchors in a small increment
   let anchors: number[] = [], targets: string[] = [];
   f.dreamer.script.scoring = (_group, labels) => {
     const text = readFileSync(join(f.dreamer.inputs.at(-1)!.workspace.dir, "scoring.md"), "utf8");
+    const opening = f.dreamer.messages.findLast(message => message.startsWith("Curate passes."))!;
+    const inline = opening.split("<scoring_input>\n")[1]?.split("</scoring_input>")[0];
+    expect(inline).toBe(text);
     anchors = [...text.matchAll(/^K(\d+) \d+$/gm)].map(match => Number(match[1]));
     targets = labels;
     return labels.map(label => `${label} 75`).join("\n");

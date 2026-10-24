@@ -2,7 +2,7 @@
 // built by hosts/pi/native.ts, with the provider stubbed at the wire (test-host.ts). Nothing here
 // touches a network or a credential.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { host, notingFact, reply, dreamerFiles } from "./test-host.ts";
@@ -139,12 +139,21 @@ try {
   const item = created.committed[0]!;
   const pool = `project:${store.getSession(1)!.projectId}`;
   const heading = `K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, item.commit)}`;
+  let scoringDelivered = false;
   dreamer.provider(async conversation => {
     assert.ok(/^# (Dreamer|Classifying)/.test(conversation.systemPrompt ?? ""));
     assert.ok(!conversation.tools?.some(t => t.name === "note" || t.name === "memory"));
+    for (const message of conversation.messages) {
+      if (message.role !== "user" || typeof message.content !== "string" || !message.content.startsWith("Curate passes.")) continue;
+      const file = /Scoring input: (.+)\. Items:/.exec(message.content)![1]!;
+      const inline = message.content.split("<scoring_input>\n")[1]?.split("</scoring_input>")[0];
+      assert.equal(inline, readFileSync(file, "utf8"), "the native scoring message delivers every anchor and target");
+      scoringDelivered = true;
+    }
     return dreamerFiles(conversation, { curate: block(`update ${heading}`, { reason: "Smoke tidy" }, "Remember the choice, tidied.") }) ?? reply("Done");
   });
   await dreamer.turn(); await dreamer.drain();
+  assert.ok(scoringDelivered, "the native provider received the inline scoring input");
   const compacted = await dreamer.emit("session_before_compact", { preparation: { tokensBefore: 100000 } });
   assert.ok(compacted?.compaction?.details?.traceMemory, "compaction returns the exact custom carrier");
   const composition = compacted.compaction.details.traceMemory.composition;

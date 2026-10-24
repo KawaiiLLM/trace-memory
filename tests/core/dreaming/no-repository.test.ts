@@ -1,9 +1,12 @@
 import { afterEach, expect, test } from "vitest";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { TraceMemory } from "../../source-fixture.ts";
 import { decisionText, dreamerFixture } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
 import { checkCurate, decisionsTemplate } from "../../../src/core/dreaming/curate.ts";
 import { projectItems } from "../../../src/core/dreaming/candidates.ts";
+import { session } from "../../support/seed.ts";
+import { REQUEST } from "../../support/noter.ts";
 
 const memories: TraceMemory[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -40,10 +43,12 @@ test.each(["update", "split child"])("curate without a repository refuses files 
   expect(checked.problems).toContainEqual(expect.stringContaining("no readable repository"));
 });
 
-test.each(["keep", "update", "merge", "split", "archive"] as const)("a no-repository full check preserves mapped, None and unmapped records through %s", async operation => {
+test.each((["keep", "update", "merge", "split", "archive"] as const).flatMap(operation =>
+  [false, true].map(readable => ({ operation, readable }))))("curate preserves mapped, None and unmapped records through $operation (readable root: $readable)", async ({ operation, readable }) => {
   const f = dreamerFixture(memories, { notes: "None" });
+  if (readable) session(f.store, f.project.id, "pi:unchanged-files", { directory: process.cwd() });
   f.memory.config.dreaming.wholeFileLimit = 1;
-  const states = [undefined, null, ["/missing/old.ts"]] as const;
+  const states = [undefined, null, ["/missing/old.ts"], ["/missing/old.ts"]] as const;
   const items = states.map((files, i) => {
     const item = f.item(`Supported rule ${i}`);
     // Historical SQL NULL means not mapped; JSON null means explicitly no files.
@@ -62,6 +67,20 @@ test.each(["keep", "update", "merge", "split", "archive"] as const)("a no-reposi
       `\n### child\ntitle: Separate condition\ncategory: constraint\nscope: project\ntopics:\nsupports: F${item.supports[0]}\nreason: Independent condition\n\nSecondary supported condition\n`;
   }).filter(Boolean).join("\n");
   f.dreamer.script.curate!.group1 = changes || "## none\n";
+  if (readable) f.dreamer.script.instead = { curate: async input => {
+    input.reportRequest(REQUEST);
+    await input.tools.find(tool => tool.name === "check")!.execute({});
+    const decisions = `${input.workspace.dir}/decisions.md`;
+    writeFileSync(decisions, decisionText(readFileSync(decisions, "utf8"), changes || "## none\n").replaceAll("files: None", "files: unchanged"));
+    writeFileSync(`${input.workspace.dir}/changes.md`, changes || "## none\n");
+    const scoring = input.passEnd();
+    expect(scoring).toContain("Curate passes.");
+    const labels = /Items: ([^\n]*)/.exec(scoring!)![1]!.split(", ").filter(Boolean);
+    writeFileSync(`${input.workspace.dir}/scores.md`, labels.map(label => `${label} 70`).join("\n"));
+    if (labels.length) expect(input.passEnd()).toBeDefined();
+    expect(input.passEnd()).toBeUndefined();
+    return { outcome: "success", output: "Done", request: REQUEST };
+  } };
   const result = await f.memory.dream({ ...f.target, fullCheck: true });
   expect(result, JSON.stringify(result)).toMatchObject({ outcome: "success" });
   for (const [index, item] of items.entries()) {

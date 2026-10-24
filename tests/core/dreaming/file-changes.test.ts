@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type * as ChildProcess from "node:child_process";
 import { workspaceBatch, type WorkspaceBatch } from "../../support/workspace.ts";
@@ -13,7 +13,10 @@ vi.mock("node:child_process", async importOriginal => ({
   ...await importOriginal<typeof ChildProcess>(),
   execFileSync: (command: string, args: string[]) => {
     if (command !== "git") throw new Error(`Unexpected command ${command}`);
-    if (args.includes("--show-toplevel")) return git.root;
+    if (args.includes("--show-toplevel")) {
+      if (!args[1]!.startsWith(git.root)) throw new Error("Not a git repository");
+      return git.root;
+    }
     if (args.includes("rev-parse")) return git.head;
     if (args.includes("show")) return args.at(-1)!.startsWith("verified:") ? git.before : git.after;
     if (args.includes("diff")) return git.diff;
@@ -74,5 +77,46 @@ test("a symbol added during curate retains the captured file baseline and is fla
     expect(f.store.knowledgeFileVerifications(current.id)).toEqual([{ file: address, verifiedCommit: "verified", verifiedAt: expect.any(String) }]);
     scanChangedFiles(f.store, f.path);
     expect(f.store.knowledgeStaleReasons(current.id)).toEqual([{ reason: "file_changed", detail: `${address} since verified` }]);
+  } finally { for (const memory of memories) memory.close(); }
+});
+
+test.each(["primary", "split child", "repaired symbol"])("a newly linked nested repository freezes its first checked HEAD for the %s", async part => {
+  const memories: WorkspaceBatch["memory"][] = [], f = dreamerFixture(memories);
+  const root = mkdtempSync("/private/tmp/nested-head-"); directories.push(root);
+  const nested = join(root, "repository"); mkdirSync(nested);
+  const file = join(nested, "rule.ts"), address = `${file}#target`;
+  writeFileSync(file, "export function target() { return 1; }");
+  Object.assign(git, { root: nested, head: "verified", before: "export function target() { return 1; }", after: "export function target() { return 2; }", diff: "" });
+  if (part === "repaired symbol") git.before = "const other = 1;";
+  session(f.store, f.project.id, "pi:nested-repository", { directory: root });
+  const item = f.item("A newly grounded rule");
+  f.dreamer.script.instead = { curate: async input => {
+    input.reportRequest(REQUEST);
+    const check = () => input.tools.find(tool => tool.name === "check")!.execute({});
+    await check();
+    const changes = part !== "split child" ? "## none\n" :
+      `## split ${item.ref}\nsupports: F${item.supports[0]}\nreason: Separate conditions\n\nPrimary condition\n` +
+      `\n### child\ntitle: Linked condition\ncategory: constraint\nscope: project\ntopics:\nsupports: F${item.supports[0]}\nfiles: ${address}\nreason: Independent condition\n\nLinked condition\n`;
+    writeDecisions(input.workspace.dir, changes);
+    const decisions = join(input.workspace.dir, "decisions.md");
+    if (part !== "split child") writeFileSync(decisions, readFileSync(decisions, "utf8").replace("files: None", `files: ${address}`));
+    writeFileSync(join(input.workspace.dir, "changes.md"), changes);
+    expect(String(await check())).toContain(part === "repaired symbol" ? "symbol missing at HEAD" : "Problems: none");
+    git.head = "head";
+    expect(String(await check())).toContain("Problems: none");
+    const scoring = input.passEnd();
+    expect(scoring).toContain("Curate passes.");
+    const labels = /Items: ([^\n]*)/.exec(scoring!)![1]!.split(", ");
+    writeFileSync(join(input.workspace.dir, "scores.md"), labels.map(label => `${label} 70`).join("\n"));
+    expect(input.passEnd()).toBeDefined();
+    expect(input.passEnd()).toBeUndefined();
+    return { outcome: "success", output: "Done", request: REQUEST };
+  } };
+  try {
+    expect(await f.dream()).toMatchObject({ outcome: "success" });
+    const linked = f.store.curateItems(f.path).find(item => item.value.revision.files?.includes(address))!.value.revision;
+    expect(f.store.knowledgeFileVerifications(linked.id)).toEqual([{ file: address, verifiedCommit: "verified", verifiedAt: expect.any(String) }]);
+    scanChangedFiles(f.store, f.path);
+    expect(f.store.knowledgeStaleReasons(linked.id)).toEqual([{ reason: "file_changed", detail: `${address} since verified` }]);
   } finally { for (const memory of memories) memory.close(); }
 });
