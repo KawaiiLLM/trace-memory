@@ -34,7 +34,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/hosts/cc/index.ts
-var import_node_fs19 = require("node:fs");
+var import_node_fs20 = require("node:fs");
 var import_node_crypto19 = require("node:crypto");
 var import_node_path19 = require("node:path");
 var import_node_url = require("node:url");
@@ -13288,8 +13288,52 @@ async function recordSessionStart(config3, input, nativeCreatedAt2) {
 
 // src/hosts/cc/transcript.ts
 var import_node_crypto13 = require("node:crypto");
-var import_node_fs10 = require("node:fs");
+var import_node_fs11 = require("node:fs");
 var import_node_perf_hooks = require("node:perf_hooks");
+
+// src/hosts/cc/transcript-lines.ts
+var import_node_fs10 = require("node:fs");
+var CHUNK_BYTES = 1 << 20;
+function* transcriptChunks(descriptor, start, end = Infinity, strict = false) {
+  while (start < end) {
+    const chunk = Buffer.allocUnsafe(Math.min(CHUNK_BYTES, end - start));
+    let read = 0;
+    while (read < chunk.length) {
+      const amount = (0, import_node_fs10.readSync)(descriptor, chunk, read, chunk.length - read, start + read);
+      if (!amount) {
+        if (strict) throw new Error("native transcript changed while it was being read");
+        if (read) yield chunk.subarray(0, read);
+        return;
+      }
+      read += amount;
+    }
+    start += read;
+    yield chunk;
+  }
+}
+function* transcriptLines(chunks, includeIncomplete = false) {
+  let fragments = [], pendingBytes = 0;
+  for (const chunk of chunks) {
+    let start = 0, newline;
+    while ((newline = chunk.indexOf(10, start)) >= 0) {
+      const fragment = chunk.subarray(start, newline);
+      const bytes = pendingBytes + fragment.length;
+      const raw = fragments.length ? Buffer.concat([...fragments, fragment], bytes).toString("utf8") : fragment.toString("utf8");
+      fragments = [];
+      pendingBytes = 0;
+      yield { raw, bytes: bytes + 1 };
+      start = newline + 1;
+    }
+    if (start < chunk.length) {
+      const fragment = chunk.subarray(start);
+      fragments.push(fragment);
+      pendingBytes += fragment.length;
+    }
+  }
+  if (includeIncomplete && pendingBytes) yield { raw: Buffer.concat(fragments, pendingBytes).toString("utf8"), bytes: pendingBytes };
+}
+
+// src/hosts/cc/transcript.ts
 var ccResultText = (result) => {
   let envelope;
   try {
@@ -13761,13 +13805,13 @@ var CcTranscriptCursor = class {
     const readStart = import_node_perf_hooks.performance.now();
     let descriptor;
     try {
-      descriptor = (0, import_node_fs10.openSync)(path, "r");
+      descriptor = (0, import_node_fs11.openSync)(path, "r");
     } catch (error3) {
       if (error3.code === "ENOENT") return { done: snapshot(path, null) };
       throw error3;
     }
     try {
-      const before = (0, import_node_fs10.fstatSync)(descriptor);
+      const before = (0, import_node_fs11.fstatSync)(descriptor);
       const stamp = { size: before.size, modifiedMs: before.mtimeMs, changedMs: before.ctimeMs, device: before.dev, inode: before.ino };
       if (this.rejected && sameStamp(this.rejected.stamp, stamp)) return { done: this.rejected.snapshot };
       if (sameStamp(this.stamp, stamp)) return { done: { ...this.lastSnapshot, records: [], changed: false, reset: false } };
@@ -13775,21 +13819,20 @@ var CcTranscriptCursor = class {
       let reset = this.rebuild || !this.stamp || replacement || stamp.size < this.completeOffset || stamp.size === this.stamp.size;
       if (!reset && this.completeOffset > 0) {
         const marker = Buffer.allocUnsafe(1);
-        if ((0, import_node_fs10.readSync)(descriptor, marker, 0, 1, this.completeOffset - 1) !== 1 || marker[0] !== 10) reset = true;
+        if ((0, import_node_fs11.readSync)(descriptor, marker, 0, 1, this.completeOffset - 1) !== 1 || marker[0] !== 10) reset = true;
       }
       const start = reset ? 0 : this.completeOffset;
-      const bytes = Buffer.allocUnsafe(stamp.size - start);
-      let read = 0;
-      while (read < bytes.length) {
-        const amount = (0, import_node_fs10.readSync)(descriptor, bytes, read, bytes.length - read, start + read);
-        if (!amount) throw new Error("native transcript changed while it was being read");
-        read += amount;
+      const chunks = [];
+      let completeLength = 0, read = 0;
+      for (const chunk of transcriptChunks(descriptor, start, stamp.size, true)) {
+        chunks.push(chunk);
+        const newline = chunk.lastIndexOf(10);
+        if (newline >= 0) completeLength = read + newline + 1;
+        read += chunk.length;
       }
-      const after = (0, import_node_fs10.fstatSync)(descriptor);
+      const after = (0, import_node_fs11.fstatSync)(descriptor);
       if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || after.dev !== before.dev || after.ino !== before.ino)
         throw new Error("native transcript changed while it was being read");
-      const finalNewline = bytes.lastIndexOf(10);
-      const completeLength = finalNewline < 0 ? 0 : finalNewline + 1;
       const completeOffset = start + completeLength;
       onPhase?.("read", import_node_perf_hooks.performance.now() - readStart);
       const indexStart = import_node_perf_hooks.performance.now();
@@ -13833,20 +13876,26 @@ var CcTranscriptCursor = class {
       });
       let chunkIds, fell;
       const firstLine = lines;
-      const chunkUuids = () => new Set(bytes.subarray(0, completeLength).toString("utf8").split("\n").flatMap((line, index) => {
-        if (!line) return [];
-        const failed = (why) => new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${firstLine + index + 1}: ${why}`));
-        let parsed2;
-        try {
-          parsed2 = JSON.parse(line);
-        } catch (error3) {
-          throw failed(String(error3));
+      const chunkUuids = () => {
+        const ids = /* @__PURE__ */ new Set();
+        let lineNumber = firstLine;
+        for (const { raw } of transcriptLines(chunks)) {
+          lineNumber += 1;
+          if (!raw) continue;
+          const failed = (why) => new CcTranscriptScanFailure(scan, new Error(`invalid completed transcript record at line ${lineNumber}: ${why}`));
+          let parsed2;
+          try {
+            parsed2 = JSON.parse(raw);
+          } catch (error3) {
+            throw failed(String(error3));
+          }
+          const record3 = object3(parsed2);
+          if (!record3) throw failed("expected an object");
+          const found = nativeId(record3);
+          if (found) ids.add(found);
         }
-        const record3 = object3(parsed2);
-        if (!record3) throw failed("expected an object");
-        const found = nativeId(record3);
-        return found ? [found] : [];
-      }));
+        return ids;
+      };
       const file2 = {
         before: (id) => scanNodes.has(id),
         anywhere: (id) => scanNodes.has(id) || (chunkIds ??= chunkUuids()).has(id),
@@ -13862,10 +13911,8 @@ var CcTranscriptCursor = class {
         }
       };
       let beginning = 0;
-      while (beginning < completeLength) {
-        const ending = bytes.indexOf(10, beginning);
-        const raw = bytes.subarray(beginning, ending).toString("utf8");
-        beginning = ending + 1;
+      for (const { raw, bytes } of transcriptLines(chunks)) {
+        beginning += bytes;
         lines += 1;
         if (!raw) continue;
         let parsed2;
@@ -13981,7 +14028,7 @@ var CcTranscriptCursor = class {
       };
       return { scan, ordered, finish: finish2 };
     } finally {
-      (0, import_node_fs10.closeSync)(descriptor);
+      (0, import_node_fs11.closeSync)(descriptor);
     }
   }
   scan(path, visit2, collect = false) {
@@ -14065,14 +14112,14 @@ var CcTranscriptCursor = class {
 function readTranscriptMetadata(path) {
   let descriptor;
   try {
-    descriptor = (0, import_node_fs10.openSync)(path, "r");
-    const stats = (0, import_node_fs10.fstatSync)(descriptor);
+    descriptor = (0, import_node_fs11.openSync)(path, "r");
+    const stats = (0, import_node_fs11.fstatSync)(descriptor);
     return snapshot(path, { size: stats.size, modifiedMs: stats.mtimeMs, changedMs: stats.ctimeMs, device: stats.dev, inode: stats.ino });
   } catch (error3) {
     if (error3.code === "ENOENT") return snapshot(path, null);
     throw error3;
   } finally {
-    if (descriptor !== void 0) (0, import_node_fs10.closeSync)(descriptor);
+    if (descriptor !== void 0) (0, import_node_fs11.closeSync)(descriptor);
   }
 }
 function completeTranscript(path, accepted) {
@@ -14091,13 +14138,13 @@ function completeTranscript(path, accepted) {
   } catch (error3) {
     let size = null, modifiedMs = null;
     try {
-      const descriptor = (0, import_node_fs10.openSync)(path, "r");
+      const descriptor = (0, import_node_fs11.openSync)(path, "r");
       try {
-        const stats = (0, import_node_fs10.fstatSync)(descriptor);
+        const stats = (0, import_node_fs11.fstatSync)(descriptor);
         size = stats.size;
         modifiedMs = stats.mtimeMs;
       } finally {
-        (0, import_node_fs10.closeSync)(descriptor);
+        (0, import_node_fs11.closeSync)(descriptor);
       }
     } catch {
     }
@@ -14206,60 +14253,62 @@ function readTranscriptTail(path, offset) {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("transcript tail offset must be a nonnegative integer");
   let descriptor;
   try {
-    descriptor = (0, import_node_fs10.openSync)(path, "r");
+    descriptor = (0, import_node_fs11.openSync)(path, "r");
   } catch (error3) {
     if (error3.code === "ENOENT") return null;
     throw error3;
   }
   try {
-    const size = (0, import_node_fs10.fstatSync)(descriptor).size;
+    const size = (0, import_node_fs11.fstatSync)(descriptor).size;
     if (size < offset) return null;
-    const bytes = Buffer.allocUnsafe(size - offset);
-    let read = 0;
-    while (read < bytes.length) {
-      const amount = (0, import_node_fs10.readSync)(descriptor, bytes, read, bytes.length - read, offset + read);
-      if (!amount) break;
-      read += amount;
-    }
-    const complete = bytes.subarray(0, bytes.subarray(0, read).lastIndexOf(10) + 1).toString("utf8");
-    return complete.split("\n").filter(Boolean).map((line) => {
+    const records = [];
+    for (const { raw } of transcriptLines(transcriptChunks(descriptor, offset, size))) {
+      if (!raw) continue;
       let parsed2;
       try {
-        parsed2 = JSON.parse(line);
+        parsed2 = JSON.parse(raw);
       } catch (error3) {
         throw new Error(`invalid completed transcript record in the tail: ${String(error3)}`);
       }
       const record3 = object3(parsed2);
       if (!record3) throw new Error("invalid completed transcript record in the tail: expected an object");
-      return record3;
-    });
+      records.push(record3);
+    }
+    return records;
   } finally {
-    (0, import_node_fs10.closeSync)(descriptor);
+    (0, import_node_fs11.closeSync)(descriptor);
   }
 }
 function* linesBefore(path, offset) {
-  const descriptor = (0, import_node_fs10.openSync)(path, "r");
+  const descriptor = (0, import_node_fs11.openSync)(path, "r");
   try {
-    let end = offset, carry = Buffer.alloc(0);
+    let end = offset, fragments = [], pendingBytes = 0;
     while (end > 0) {
       const start = Math.max(0, end - (1 << 20)), chunk = Buffer.allocUnsafe(end - start);
       for (let read = 0; read < chunk.length; ) {
-        const amount = (0, import_node_fs10.readSync)(descriptor, chunk, read, chunk.length - read, start + read);
+        const amount = (0, import_node_fs11.readSync)(descriptor, chunk, read, chunk.length - read, start + read);
         if (!amount) throw new Error("native transcript changed while it was being read");
         read += amount;
       }
-      const data = Buffer.concat([chunk, carry]), first = start > 0 ? data.indexOf(10) : -1;
-      if (start > 0 && first < 0) {
-        carry = data;
-        end = start;
-        continue;
+      let ending = chunk.length, newline;
+      while ((newline = chunk.lastIndexOf(10, ending - 1)) >= 0) {
+        const fragment = chunk.subarray(newline + 1, ending);
+        const raw = fragments.length ? Buffer.concat([fragment, ...fragments.reverse()], fragment.length + pendingBytes).toString("utf8") : fragment.toString("utf8");
+        fragments = [];
+        pendingBytes = 0;
+        if (raw) yield raw;
+        ending = newline;
+        if (!ending) break;
       }
-      carry = start > 0 ? data.subarray(0, first) : Buffer.alloc(0);
-      yield* data.subarray(first + 1).toString("utf8").split("\n").reverse().filter(Boolean);
+      if (ending) {
+        fragments.push(chunk.subarray(0, ending));
+        pendingBytes += ending;
+      }
       end = start;
     }
+    if (pendingBytes) yield Buffer.concat(fragments.reverse(), pendingBytes).toString("utf8");
   } finally {
-    (0, import_node_fs10.closeSync)(descriptor);
+    (0, import_node_fs11.closeSync)(descriptor);
   }
 }
 function transcriptHead(path, offset) {
@@ -14311,41 +14360,31 @@ function tailNodes(records, head) {
 function readTranscriptCreatedAt(path) {
   let descriptor;
   try {
-    descriptor = (0, import_node_fs10.openSync)(path, "r");
+    descriptor = (0, import_node_fs11.openSync)(path, "r");
   } catch (error3) {
     if (error3.code === "ENOENT") return null;
     throw error3;
   }
   try {
-    let pending = "", position = 0;
-    const chunk = Buffer.allocUnsafe(64 * 1024);
-    for (; ; ) {
-      const amount = (0, import_node_fs10.readSync)(descriptor, chunk, 0, chunk.length, position);
-      if (!amount) return null;
-      position += amount;
-      pending += chunk.subarray(0, amount).toString("utf8");
-      let newline;
-      while ((newline = pending.indexOf("\n")) >= 0) {
-        const line = pending.slice(0, newline);
-        pending = pending.slice(newline + 1);
-        if (!line) continue;
-        let record3;
-        try {
-          record3 = JSON.parse(line);
-        } catch {
-          return null;
-        }
-        const created = nativeCreatedAt([record3]);
-        if (created) return created;
+    for (const { raw } of transcriptLines(transcriptChunks(descriptor, 0))) {
+      if (!raw) continue;
+      let record3;
+      try {
+        record3 = JSON.parse(raw);
+      } catch {
+        return null;
       }
+      const created = nativeCreatedAt([record3]);
+      if (created) return created;
     }
+    return null;
   } finally {
-    (0, import_node_fs10.closeSync)(descriptor);
+    (0, import_node_fs11.closeSync)(descriptor);
   }
 }
 
 // src/hosts/cc/files.ts
-var import_node_fs11 = require("node:fs");
+var import_node_fs12 = require("node:fs");
 var import_node_crypto14 = require("node:crypto");
 var import_node_path12 = require("node:path");
 
@@ -14362,16 +14401,16 @@ var ccPluginToolNames = exposed(`mcp__plugin_${CC_PLUGIN_NAME}_${CC_MCP_SERVER_N
 // src/hosts/cc/files.ts
 var usage = "fs read <path> | fs materialize <path>";
 function materializeCcRead(directory, content, virtualPath) {
-  (0, import_node_fs11.mkdirSync)(directory, { recursive: true, mode: 448 });
-  const target = virtualPath === void 0 ? (0, import_node_path12.join)((0, import_node_fs11.mkdtempSync)((0, import_node_path12.join)(directory, "read-")), "memory.txt") : (0, import_node_path12.join)(directory, ...virtualPath.slice(MEMORY_ROOT.length).split("/").filter(Boolean), "memory.txt");
+  (0, import_node_fs12.mkdirSync)(directory, { recursive: true, mode: 448 });
+  const target = virtualPath === void 0 ? (0, import_node_path12.join)((0, import_node_fs12.mkdtempSync)((0, import_node_path12.join)(directory, "read-")), "memory.txt") : (0, import_node_path12.join)(directory, ...virtualPath.slice(MEMORY_ROOT.length).split("/").filter(Boolean), "memory.txt");
   const parent = (0, import_node_path12.dirname)(target);
-  (0, import_node_fs11.mkdirSync)(parent, { recursive: true, mode: 448 });
+  (0, import_node_fs12.mkdirSync)(parent, { recursive: true, mode: 448 });
   const temporary = `${target}.${(0, import_node_crypto14.randomUUID)()}`;
   try {
-    (0, import_node_fs11.writeFileSync)(temporary, content, { flag: "wx", mode: 384 });
-    (0, import_node_fs11.renameSync)(temporary, target);
+    (0, import_node_fs12.writeFileSync)(temporary, content, { flag: "wx", mode: 384 });
+    (0, import_node_fs12.renameSync)(temporary, target);
   } catch (error3) {
-    (0, import_node_fs11.rmSync)(temporary, { force: true });
+    (0, import_node_fs12.rmSync)(temporary, { force: true });
     throw error3;
   }
   return target;
@@ -14414,11 +14453,11 @@ function runCcFiles(config3, nativeSessionId, [op, ...args]) {
 }
 
 // src/hosts/cc/lifecycle.ts
-var import_node_fs15 = require("node:fs");
+var import_node_fs16 = require("node:fs");
 var import_node_path16 = require("node:path");
 
 // src/hosts/cc/worker.ts
-var import_node_fs12 = require("node:fs");
+var import_node_fs13 = require("node:fs");
 var import_node_os5 = require("node:os");
 var import_node_path13 = require("node:path");
 
@@ -43605,22 +43644,30 @@ function ccNativeTranscriptPath(environment, cwd2, nativeSessionId) {
   return (0, import_node_path13.join)(configDir, "projects", ccProjectDirName(cwd2), `${nativeSessionId}.jsonl`);
 }
 function verifyNativeLog(path, nativeSessionId) {
-  let content;
+  let descriptor;
   try {
-    content = (0, import_node_fs12.readFileSync)(path, "utf8");
+    descriptor = (0, import_node_fs13.openSync)(path, "r");
   } catch {
     return `native session file is missing at ${path}`;
   }
-  const firstLine = content.split("\n").find((line) => line.trim().length > 0);
-  if (firstLine === void 0) return `native session file at ${path} is empty`;
-  let parsed2;
   try {
-    parsed2 = JSON.parse(firstLine);
+    for (const { raw } of transcriptLines(transcriptChunks(descriptor, 0), true)) {
+      if (!raw.trim()) continue;
+      let parsed2;
+      try {
+        parsed2 = JSON.parse(raw);
+      } catch {
+        return `native session file at ${path} has unparsable content`;
+      }
+      const found = parsed2?.sessionId;
+      return found === nativeSessionId ? void 0 : `native session file at ${path} holds session ${JSON.stringify(found)}, expected ${nativeSessionId}`;
+    }
+    return `native session file at ${path} is empty`;
   } catch {
-    return `native session file at ${path} has unparsable content`;
+    return `native session file is missing at ${path}`;
+  } finally {
+    (0, import_node_fs13.closeSync)(descriptor);
   }
-  const found = parsed2?.sessionId;
-  return found === nativeSessionId ? void 0 : `native session file at ${path} holds session ${JSON.stringify(found)}, expected ${nativeSessionId}`;
 }
 function verifiedNativeLog(nativeLog, nativeSessionId, rounds) {
   if (nativeLog === void 0 || nativeSessionId === null) return { verification: { rounds } };
@@ -43889,7 +43936,7 @@ function assertModelMetadata(models, execution) {
 function sandboxDirectory(path) {
   path = (0, import_node_path13.resolve)(path);
   try {
-    return (0, import_node_fs12.realpathSync)(path);
+    return (0, import_node_fs13.realpathSync)(path);
   } catch (error3) {
     if (error3.code !== "ENOENT") throw error3;
     const parent = (0, import_node_path13.dirname)(path);
@@ -43926,7 +43973,7 @@ var CcAgentWorker = class {
     if (!task.reader?.sessionId || !task.reader.branch || !task.reader.headTurnId || !task.reader.projectId)
       throw new Error("CC worker needs a frozen Core reader target");
     const workspace = task.workspace;
-    const cwd2 = workspace ? (0, import_node_fs12.realpathSync)(workspace.dir) : this.worker.cwd;
+    const cwd2 = workspace ? (0, import_node_fs13.realpathSync)(workspace.dir) : this.worker.cwd;
     const roots = task.kind === "dreaming" ? task.workspace?.roots ?? [] : [];
     const home = (0, import_node_path13.resolve)(this.environment.HOME ?? (0, import_node_os5.homedir)());
     const privateDirectories = [.../* @__PURE__ */ new Set([
@@ -43965,8 +44012,8 @@ var CcAgentWorker = class {
     });
     const results = [], assistantMessages = [];
     const frozenReader = { ...task.reader };
-    (0, import_node_fs12.mkdirSync)(renderedRoot, { recursive: true, mode: 448 });
-    const readDirectory = (0, import_node_fs12.mkdtempSync)((0, import_node_path13.join)(renderedRoot, "worker-"));
+    (0, import_node_fs13.mkdirSync)(renderedRoot, { recursive: true, mode: 448 });
+    const readDirectory = (0, import_node_fs13.mkdtempSync)((0, import_node_path13.join)(renderedRoot, "worker-"));
     const rendered = /* @__PURE__ */ new Map();
     task.setSpill?.((text) => {
       const path = saveCcWorkerOutput(readDirectory, text);
@@ -43988,8 +44035,8 @@ var CcAgentWorker = class {
       if (typeof file2 !== "string" || !(0, import_node_path13.isAbsolute)(file2) || file2 !== (0, import_node_path13.resolve)(file2) || !allowed.includes(file2))
         return { reason: `Trace Memory: this task may use only its ${task.kind === "noting" ? "two " : ""}workspace files` };
       try {
-        if ((0, import_node_fs12.realpathSync)((0, import_node_path13.dirname)(file2)) !== (0, import_node_fs12.realpathSync)(workspace.dir)) return { reason: "Trace Memory: a workspace file must sit directly in the run's workspace" };
-        if ((0, import_node_fs12.existsSync)(file2) && (0, import_node_fs12.lstatSync)(file2).isSymbolicLink()) return { reason: "Trace Memory: a workspace file may not be a symbolic link" };
+        if ((0, import_node_fs13.realpathSync)((0, import_node_path13.dirname)(file2)) !== (0, import_node_fs13.realpathSync)(workspace.dir)) return { reason: "Trace Memory: a workspace file must sit directly in the run's workspace" };
+        if ((0, import_node_fs13.existsSync)(file2) && (0, import_node_fs13.lstatSync)(file2).isSymbolicLink()) return { reason: "Trace Memory: a workspace file may not be a symbolic link" };
       } catch (error3) {
         return { reason: error3 instanceof Error ? error3.message : String(error3) };
       }
@@ -44040,8 +44087,8 @@ var CcAgentWorker = class {
           return "path" in resolved ? allow("repository file") : deny(resolved.reason);
         }
         if (!(0, import_node_path13.isAbsolute)(file2) || file2 !== (0, import_node_path13.resolve)(file2) || !rendered.has(file2)) return deny("CC worker Read is restricted to its own trace:// renderings");
-        const actual = (0, import_node_fs12.realpathSync)(file2);
-        if (!actual.startsWith((0, import_node_fs12.realpathSync)(readDirectory) + import_node_path13.sep) || !(0, import_node_fs12.lstatSync)(file2).isFile() || (0, import_node_fs12.lstatSync)(file2).isSymbolicLink())
+        const actual = (0, import_node_fs13.realpathSync)(file2);
+        if (!actual.startsWith((0, import_node_fs13.realpathSync)(readDirectory) + import_node_path13.sep) || !(0, import_node_fs13.lstatSync)(file2).isFile() || (0, import_node_fs13.lstatSync)(file2).isSymbolicLink())
           return deny("CC worker Read rendering is outside its own session");
         return { hookSpecificOutput: {
           hookEventName: "PreToolUse",
@@ -44242,7 +44289,7 @@ var CcAgentWorker = class {
           input?.close();
           origins.close();
           task.signal?.removeEventListener("abort", cancel);
-          (0, import_node_fs12.rmSync)(readDirectory, { recursive: true, force: true });
+          (0, import_node_fs13.rmSync)(readDirectory, { recursive: true, force: true });
         }
       }
     );
@@ -44884,7 +44931,7 @@ var CcImporter = class {
 };
 
 // src/hosts/cc/control.ts
-var import_node_fs13 = require("node:fs");
+var import_node_fs14 = require("node:fs");
 var import_node_net = require("node:net");
 var import_node_path14 = require("node:path");
 var import_node_crypto15 = require("node:crypto");
@@ -44936,7 +44983,7 @@ var closeServer = (server) => new Promise((resolve7) => {
 async function startControlServer(config3, binding, memory, bindingTimeoutMs, signal, handlers) {
   const token = (0, import_node_crypto15.randomUUID)(), path = socketPath(config3, token);
   const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
-  (0, import_node_fs13.mkdirSync)((0, import_node_path14.dirname)(path), { recursive: true });
+  (0, import_node_fs14.mkdirSync)((0, import_node_path14.dirname)(path), { recursive: true });
   const server = (0, import_node_net.createServer)((connection) => {
     let input = "", handled = false;
     const disconnected = new AbortController();
@@ -44989,7 +45036,7 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
           if (verb === "apply") {
             if (!handlers?.applyConfig || typeof request2.path !== "string" || !request2.path.startsWith("/") || typeof request2.expected !== "string")
               throw new Error("invalid CC settings apply request");
-            const current2 = (0, import_node_fs13.readFileSync)(request2.path, "utf8");
+            const current2 = (0, import_node_fs14.readFileSync)(request2.path, "utf8");
             if (current2 !== request2.expected) throw new Error("CC settings file changed before executor apply");
             const next = resolveCcHostConfig(JSON.parse(current2));
             if (next.dbPath !== config3.dbPath || next.stateDir !== config3.stateDir)
@@ -45070,7 +45117,7 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
       console.error(`Trace Memory CC: failed attach socket close: ${String(cleanup)}`);
     }
     try {
-      (0, import_node_fs13.rmSync)(path, { force: true });
+      (0, import_node_fs14.rmSync)(path, { force: true });
     } catch (cleanup) {
       console.error(`Trace Memory CC: failed attach socket removal: ${String(cleanup)}`);
     }
@@ -45086,7 +45133,7 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
       await closeServer(server);
     } finally {
       try {
-        (0, import_node_fs13.rmSync)(path, { force: true });
+        (0, import_node_fs14.rmSync)(path, { force: true });
       } finally {
         if (!preserveExecutor) await release();
       }
@@ -45696,7 +45743,7 @@ function dreamOutcome(result) {
 }
 
 // src/hosts/cc/status.ts
-var import_node_fs14 = require("node:fs");
+var import_node_fs15 = require("node:fs");
 var import_node_path15 = require("node:path");
 var import_node_crypto16 = require("node:crypto");
 function statusPath(stateDir, nativeSessionId) {
@@ -45704,28 +45751,28 @@ function statusPath(stateDir, nativeSessionId) {
 }
 function writeCcStatus(stateDir, status) {
   const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto16.randomUUID)()}.tmp`;
-  (0, import_node_fs14.mkdirSync)((0, import_node_path15.dirname)(target), { recursive: true });
+  (0, import_node_fs15.mkdirSync)((0, import_node_path15.dirname)(target), { recursive: true });
   let descriptor;
   try {
-    descriptor = (0, import_node_fs14.openSync)(temporary, "w", 384);
-    (0, import_node_fs14.writeFileSync)(descriptor, `${JSON.stringify(status)}
+    descriptor = (0, import_node_fs15.openSync)(temporary, "w", 384);
+    (0, import_node_fs15.writeFileSync)(descriptor, `${JSON.stringify(status)}
 `);
-    (0, import_node_fs14.fsyncSync)(descriptor);
-    (0, import_node_fs14.closeSync)(descriptor);
+    (0, import_node_fs15.fsyncSync)(descriptor);
+    (0, import_node_fs15.closeSync)(descriptor);
     descriptor = void 0;
-    (0, import_node_fs14.renameSync)(temporary, target);
+    (0, import_node_fs15.renameSync)(temporary, target);
   } catch (error3) {
-    if (descriptor !== void 0) (0, import_node_fs14.closeSync)(descriptor);
-    (0, import_node_fs14.rmSync)(temporary, { force: true });
+    if (descriptor !== void 0) (0, import_node_fs15.closeSync)(descriptor);
+    (0, import_node_fs15.rmSync)(temporary, { force: true });
     throw error3;
   }
 }
 function removeCcStatus(stateDir, nativeSessionId) {
-  (0, import_node_fs14.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
+  (0, import_node_fs15.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
 }
 function readCcStatus(stateDir, nativeSessionId) {
   try {
-    return JSON.parse((0, import_node_fs14.readFileSync)(statusPath(stateDir, nativeSessionId), "utf8"));
+    return JSON.parse((0, import_node_fs15.readFileSync)(statusPath(stateDir, nativeSessionId), "utf8"));
   } catch (error3) {
     if (error3.code === "ENOENT") return null;
     throw error3;
@@ -45746,7 +45793,7 @@ var processLiveness = (identity) => {
   }
 };
 function hasLiveSibling(config3, coreSessionId, excludeNativeSessionId) {
-  for (const file2 of (0, import_node_fs15.readdirSync)((0, import_node_path16.dirname)(bindingPath(config3, excludeNativeSessionId)))) {
+  for (const file2 of (0, import_node_fs16.readdirSync)((0, import_node_path16.dirname)(bindingPath(config3, excludeNativeSessionId)))) {
     if (!file2.endsWith(".json")) continue;
     const nativeSessionId = file2.slice(0, -".json".length);
     if (nativeSessionId === excludeNativeSessionId) continue;
@@ -45813,7 +45860,7 @@ async function recordCcSessionEnd(config3, input) {
       await withCcBindingLock(config3, nativeSessionId, (locked) => {
         const current = locked.read();
         if (current?.lastClose?.confirmed && current.nativeProcess?.pid === nativeProcess.pid && current.nativeProcess.startedAt === nativeProcess.startedAt)
-          (0, import_node_fs15.rmSync)((0, import_node_path16.join)(config3.stateDir, "rendered", nativeSessionId), { recursive: true, force: true });
+          (0, import_node_fs16.rmSync)((0, import_node_path16.join)(config3.stateDir, "rendered", nativeSessionId), { recursive: true, force: true });
       }, config3.finalSyncTimeoutMs);
     } catch (error3) {
       return { confirmed: true, reason, diagnostic: `rendered trace:// cleanup failed: ${error3 instanceof Error ? error3.message : String(error3)}` };
@@ -46105,9 +46152,9 @@ var CcCoordinator = class {
     }
   }
   watchTranscript(binding) {
-    if (this.transcriptWatcher || !(0, import_node_fs15.existsSync)((0, import_node_path16.dirname)(binding.transcriptPath))) return;
+    if (this.transcriptWatcher || !(0, import_node_fs16.existsSync)((0, import_node_path16.dirname)(binding.transcriptPath))) return;
     const transcriptName = (0, import_node_path16.basename)(binding.transcriptPath);
-    this.transcriptWatcher = (0, import_node_fs15.watch)((0, import_node_path16.dirname)(binding.transcriptPath), (_event, filename) => {
+    this.transcriptWatcher = (0, import_node_fs16.watch)((0, import_node_path16.dirname)(binding.transcriptPath), (_event, filename) => {
       if (String(filename) === transcriptName) void this.requestReconcile("transcript watch");
     });
     this.transcriptWatcher.on("error", (error3) => {
@@ -46119,9 +46166,9 @@ var CcCoordinator = class {
   /** The directory is watched, not the file: a save that writes a temporary file and renames it replaces
    * the inode, which a file watch would lose. Other files in the directory wake nothing. */
   watchConfig() {
-    if (!this.configPath || this.configWatcher || !(0, import_node_fs15.existsSync)((0, import_node_path16.dirname)(this.configPath))) return;
+    if (!this.configPath || this.configWatcher || !(0, import_node_fs16.existsSync)((0, import_node_path16.dirname)(this.configPath))) return;
     const name = (0, import_node_path16.basename)(this.configPath);
-    this.configWatcher = (0, import_node_fs15.watch)((0, import_node_path16.dirname)(this.configPath), (_event, filename) => {
+    this.configWatcher = (0, import_node_fs16.watch)((0, import_node_path16.dirname)(this.configPath), (_event, filename) => {
       if (filename === null || String(filename) === name) this.scheduleConfigReload();
     });
     this.configWatcher.on("error", (error3) => {
@@ -46144,7 +46191,7 @@ var CcCoordinator = class {
     if (!this.configPath || this.closed || this.closing || !this.importer || !this.scheduler) return;
     let next;
     try {
-      next = resolveCcHostConfig(JSON.parse((0, import_node_fs15.readFileSync)(this.configPath, "utf8")));
+      next = resolveCcHostConfig(JSON.parse((0, import_node_fs16.readFileSync)(this.configPath, "utf8")));
     } catch (error3) {
       if (!attempt) {
         this.scheduleConfigReload(1);
@@ -46174,8 +46221,8 @@ var CcCoordinator = class {
     if (this.poll || this.closed || this.closing) return;
     this.observe("startup-begin");
     const bindingDirectory = (0, import_node_path16.dirname)(bindingPath(this.config, this.nativeSessionId));
-    if ((0, import_node_fs15.existsSync)(bindingDirectory)) {
-      this.bindingWatcher = (0, import_node_fs15.watch)(bindingDirectory, (_event, filename) => {
+    if ((0, import_node_fs16.existsSync)(bindingDirectory)) {
+      this.bindingWatcher = (0, import_node_fs16.watch)(bindingDirectory, (_event, filename) => {
         if (String(filename) === (0, import_node_path16.basename)(bindingPath(this.config, this.nativeSessionId))) void this.requestReconcile("binding watch");
       });
       this.bindingWatcher.on("error", (error3) => {
@@ -46453,12 +46500,12 @@ var CcCoordinator = class {
 
 // src/hosts/cc/injection.ts
 var import_node_crypto17 = require("node:crypto");
-var import_node_fs16 = require("node:fs");
+var import_node_fs17 = require("node:fs");
 var BEGIN = CC_INJECTION_BEGIN;
 var END = "TRACE MEMORY KNOWLEDGE END";
 var digest = (text) => (0, import_node_crypto17.createHash)("sha256").update(text, "utf8").digest("hex");
 var databaseIdentity = (path) => {
-  const stat = (0, import_node_fs16.statSync)(path);
+  const stat = (0, import_node_fs17.statSync)(path);
   return `${stat.dev}:${stat.ino}`;
 };
 var positiveId = (value) => Number.isSafeInteger(value) && Number(value) > 0;
@@ -47195,7 +47242,7 @@ var TRACE_SETTINGS_FIXTURE_CC = {
 };
 
 // src/hosts/cc/menu-context.ts
-var import_node_fs17 = require("node:fs");
+var import_node_fs18 = require("node:fs");
 var import_node_path17 = require("node:path");
 
 // node_modules/@earendil-works/pi-tui/dist/terminal-image.js
@@ -47388,7 +47435,7 @@ function carrier(text, identity) {
   if (!header) throw new Error("memory preview failed identity verification");
   let full;
   try {
-    full = (0, import_node_fs17.readFileSync)(preview2[1], "utf8");
+    full = (0, import_node_fs18.readFileSync)(preview2[1], "utf8");
   } catch (error3) {
     if (error3.code !== "ENOENT") throw error3;
   }
@@ -47610,7 +47657,7 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
 }
 
 // src/hosts/cc/menu-config.ts
-var import_node_fs18 = require("node:fs");
+var import_node_fs19 = require("node:fs");
 var import_node_path18 = require("node:path");
 var import_node_crypto18 = require("node:crypto");
 
@@ -48987,25 +49034,25 @@ function editedCcConfig(text, id, value, capacity) {
 }
 function saveCcConfig(path, original, updated) {
   const next = resolveCcHostConfig(JSON.parse(updated));
-  if ((0, import_node_fs18.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
+  if ((0, import_node_fs19.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
   const temporary = `${path}.${process.pid}.${(0, import_node_crypto18.randomUUID)()}`;
   let fd;
   try {
-    fd = (0, import_node_fs18.openSync)(temporary, "wx", 384);
-    (0, import_node_fs18.writeFileSync)(fd, updated);
-    (0, import_node_fs18.fsyncSync)(fd);
-    (0, import_node_fs18.closeSync)(fd);
+    fd = (0, import_node_fs19.openSync)(temporary, "wx", 384);
+    (0, import_node_fs19.writeFileSync)(fd, updated);
+    (0, import_node_fs19.fsyncSync)(fd);
+    (0, import_node_fs19.closeSync)(fd);
     fd = void 0;
-    (0, import_node_fs18.renameSync)(temporary, path);
-    const dir = (0, import_node_fs18.openSync)((0, import_node_path18.dirname)(path), "r");
+    (0, import_node_fs19.renameSync)(temporary, path);
+    const dir = (0, import_node_fs19.openSync)((0, import_node_path18.dirname)(path), "r");
     try {
-      (0, import_node_fs18.fsyncSync)(dir);
+      (0, import_node_fs19.fsyncSync)(dir);
     } finally {
-      (0, import_node_fs18.closeSync)(dir);
+      (0, import_node_fs19.closeSync)(dir);
     }
   } catch (error3) {
-    if (fd !== void 0) (0, import_node_fs18.closeSync)(fd);
-    (0, import_node_fs18.rmSync)(temporary, { force: true });
+    if (fd !== void 0) (0, import_node_fs19.closeSync)(fd);
+    (0, import_node_fs19.rmSync)(temporary, { force: true });
     throw error3;
   }
   return next;
@@ -49037,12 +49084,12 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
   const config3 = "coreConfig" in configInput ? configInput : resolveCcHostConfig(configInput);
   const sessionId = validateNativeSessionId(nativeSessionId);
   const runtimeDirectory = (0, import_node_path19.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path19.join)(runtimeDirectory, `${sessionId}.jsonl`);
-  (0, import_node_fs19.mkdirSync)(runtimeDirectory, { recursive: true });
+  (0, import_node_fs20.mkdirSync)(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event, details = {}) => {
     const value = { event, at: Date.now(), pid: process.pid, ...details };
     console.error(`Trace Memory CC: lifecycle ${JSON.stringify(value)}`);
     try {
-      (0, import_node_fs19.appendFileSync)(runtimePath, `${JSON.stringify(value)}
+      (0, import_node_fs20.appendFileSync)(runtimePath, `${JSON.stringify(value)}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -49052,7 +49099,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
   const coordinator = new CcCoordinator(config3, sessionId, (message) => {
     console.error(`Trace Memory CC: ${message}`);
     try {
-      (0, import_node_fs19.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
+      (0, import_node_fs20.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -49163,7 +49210,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
 function readConfig(path) {
   if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
   upgradeSettingsFile(path, void 0, (values) => resolveCcHostConfig(values), (message) => console.warn(message));
-  return resolveCcHostConfig(JSON.parse((0, import_node_fs19.readFileSync)(path, "utf8")));
+  return resolveCcHostConfig(JSON.parse((0, import_node_fs20.readFileSync)(path, "utf8")));
 }
 async function readStdin() {
   let input = "";
@@ -49318,7 +49365,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     } finally {
       store.close();
     }
-    const original = (0, import_node_fs19.readFileSync)(configPath, "utf8");
+    const original = (0, import_node_fs20.readFileSync)(configPath, "utf8");
     const updated = editedCcConfig(original, id, value, capacity);
     const prepared = resolveCcHostConfig(JSON.parse(updated));
     if (prepared.dbPath !== config3.dbPath || prepared.stateDir !== config3.stateDir) throw new Error("setting cannot change database or state directory");
@@ -49338,7 +49385,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
     return;
   }
   if (verb === "full-check" && rest.length === 1 && rest[0] === "--dry-run") {
-    if (!(0, import_node_fs19.existsSync)(config3.dbPath)) throw new Error(`no database at ${config3.dbPath}`);
+    if (!(0, import_node_fs20.existsSync)(config3.dbPath)) throw new Error(`no database at ${config3.dbPath}`);
     const store = new Store(config3.dbPath);
     store.db.exec("PRAGMA query_only=1");
     try {
