@@ -990,7 +990,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     // Stage 4 §1.3: the effective deadline of a call never passes the backstop minus one gap, so the latest task deadline
     // always precedes the backstop and the backstop precedes lease expiry.
-    const backstopAt = admittedAt + executionLimit;
+    let backstopAt = admittedAt + executionLimit;
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
       const own = (raw as AgentControl).call, call = own ?? lastCall;
@@ -1027,7 +1027,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     let result: NotingResult | DreamingResult | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined, timedOut = false;
-    if (phase === "dreaming") timeout = setTimeout(() => {
+    const onTimeout = () => {
       // External cancellation owns its outcome even when the native worker ignores abort.
       if (controller.signal.aborted) return;
       timedOut = true;
@@ -1039,13 +1039,24 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // Resolve the terminal failure before abort listeners can synchronously return "cancelled".
       force({ outcome: "failure", failureClass: "timeout", output: `${reason.message}; provider completion and remaining usage unknown` });
       controller.abort(reason);
-    }, executionLimit);
+    };
+    const armTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(onTimeout, backstopAt - Date.now());
+    };
+    if (phase === "dreaming") armTimeout();
     try {
       result = phase === "noting"
         ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind,
           { workspaceRoot: input.workspaceRoot, executionId: executionId!, resumeRunId, registerFence: workspace => { fences.add(workspace); } })
         : await runDreaming(store, frozen as DreamingFrozen, agent, cfg, bind,
-          { workspaceRoot: input.workspaceRoot, executionId: executionId!, registerFence: workspace => { fences.add(workspace); } });
+          { workspaceRoot: input.workspaceRoot, executionId: executionId!, registerFence: workspace => { fences.add(workspace); },
+            extendExecution: remainingTasks => {
+              backstopAt = Math.max(backstopAt, Date.now() + executionLimitMs(remainingTasks, cfg.dreaming.timeoutMs));
+              executionLimit = backstopAt - admittedAt;
+              store.extendClaim(claim!, backstopAt - Date.now() + CLAIM_LEASE_MARGIN_MS);
+              armTimeout();
+            } });
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
       external?.removeEventListener("abort", onExternalAbort);

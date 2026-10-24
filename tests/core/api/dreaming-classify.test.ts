@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from "vitest";
-import { TraceMemory as openMemory, type TraceMemory } from "../../../src/core/api/index.ts";
+import { afterEach, expect, test, vi } from "vitest";
+import { TraceMemory as openMemory, type TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
 import { dreamerFixture, scriptedDreamer } from "../../support/dreamer.ts";
 import { block } from "../../support/workspace.ts";
 import { updateKnowledge } from "../../support/seed.ts";
@@ -85,6 +85,39 @@ test("sequential scoring batches retain passed ratings on failure and publish al
   expect(await f.dream()).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["scoring"]);
   expect(items.map(item => f.store.getKnowledge(item.knowledgeId)!.score)).toEqual([...Array(100).fill(22), 1]);
+});
+
+test.each([1, 200])("curate splitting into %i children reserves time and ownership for every scoring batch", async children => {
+  vi.useFakeTimers();
+  try {
+    const f = dreamerFixture(memories), item = f.item("Independent supported facets");
+    f.memory.config.dreaming.timeoutMs = 300_000;
+    const changes = block(`split ${item.ref}`, { supports: `F${item.supports[0]}`, reason: "independent facets" }, "Primary facet")
+      + Array.from({ length: children }, (_, i) => `\n### child\ntitle: Facet ${i + 1}\ncategory: reference\nscope: project\ntopics:\nsupports: F${item.supports[0]}\nreason: Independent facet\n\nSupported facet ${i + 1}\n`).join("");
+    const normal = scriptedDreamer({ curate: { group1: changes } });
+    let initialExpiry = 0;
+    const leases: { expiresAt: number; now: number }[] = [];
+    const slow = async (input: DreamingAgentInput) => {
+      initialExpiry ||= f.store.getClaim(f.session.id, "dreaming")!.expiresAt;
+      const delay = Promise.withResolvers<void>();
+      setTimeout(delay.resolve, 290_000);
+      await delay.promise;
+      if (input.task === "scoring") leases.push({ expiresAt: f.store.getClaim(f.session.id, "dreaming")!.expiresAt, now: Date.now() });
+      return normal.agent(input);
+    };
+    f.dreamer.script.instead = { notes: slow, clustering: slow, curate: slow, scoring: slow };
+    const running = f.dream();
+    await vi.runAllTimersAsync();
+    const result = await running;
+    expect(result, JSON.stringify(result)).toMatchObject({ outcome: "success" });
+    expect(f.store.liveKnowledge(f.path).map(revision => f.store.getKnowledge(revision.knowledgeId)!.score)).toEqual(Array(children + 1).fill(51));
+    expect(leases).toHaveLength(Math.ceil((children + 1) / 100));
+    for (const lease of leases) {
+      expect(lease.expiresAt).toBeGreaterThanOrEqual(initialExpiry);
+      expect(lease.expiresAt).toBeGreaterThan(lease.now);
+    }
+    if (children === 200) expect(Date.now()).toBeGreaterThan(initialExpiry);
+  } finally { vi.useRealTimers(); }
 });
 
 test("rating files reject duplicate, foreign, missing, fractional and out-of-range ratings", () => {
