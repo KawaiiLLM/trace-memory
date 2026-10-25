@@ -12,13 +12,14 @@ export function boundaryOf(store: Store, items: readonly CurateItem[]): DreamerB
     revision: Number(store.db.prepare("SELECT COALESCE(MAX(id),0) AS id FROM knowledge_revisions").get()!.id),
     versions: Object.fromEntries(items.map(item => [item.value.knowledge.id, item.value.revision.id])) };
 }
-export function lastBoundary(store: Store, path: KnowledgePath): DreamerBoundary {
+/** `beforeRunId` recovers the boundary an earlier admission saw (a hand-off written before 175 kept no baseline). */
+export function lastBoundary(store: Store, path: KnowledgePath, beforeRunId?: number): DreamerBoundary {
   const projectId = store.getSession(path.sessionId)!.projectId;
   const row = store.db.prepare(`SELECT r.id,r.created_at,b.response FROM runs r JOIN run_bodies b ON b.run_id=r.id
     JOIN sessions s ON s.id=r.session_id WHERE r.kind='dreaming' AND r.outcome='success' AND s.project_id=?
     AND (json_extract(b.response,'$.finished') IS NOT NULL OR EXISTS (
       SELECT 1 FROM execution_runs x JOIN task_executions e ON e.id=x.execution_id WHERE x.run_id=r.id AND e.outcome='success'))
-    ORDER BY r.id DESC LIMIT 1`).get(projectId);
+    AND r.id < ? ORDER BY r.id DESC LIMIT 1`).get(projectId, beforeRunId ?? Number.MAX_SAFE_INTEGER);
   if (!row) return { fact: 0, revision: 0, versions: {} };
   const saved = JSON.parse(String(row.response ?? "{}"))?.finished?.boundary;
   if (saved) return saved;

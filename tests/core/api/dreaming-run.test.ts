@@ -70,8 +70,9 @@ test("group material contains current bodies and fact titles, with one diff sinc
   expect(material).toContain(`[K${changed.knowledgeId}@v2..K${changed.knowledgeId}@v4]`);
   expect(material).toMatch(/^- Covered baseline。$/m);
   expect(material).toMatch(/^\+ Current replacement。$/m);
-  expect(material).toContain(`K${changed.knowledgeId}@${current.commit} update`);
-  expect(material).not.toContain(`K${changed.knowledgeId}@${baseline.commit} update`);
+  expect(material).toContain(`K${changed.knowledgeId}@v4 update`); // a readable trace:// version, not a commit id
+  expect(material).not.toContain(`K${changed.knowledgeId}@v2 update`);
+  expect(material).not.toContain(`K${changed.knowledgeId}@${current.commit} `);
   const [newSection, flaggedSection] = [added, flagged].map(item =>
     material.split(new RegExp(`^# K${item.knowledgeId}@v\\d+[^\\n]*\\n`, "m"))[1]!.split(/^# /m)[0]!);
   expect(newSection).toContain("New since the last successful Dreamer run.");
@@ -129,6 +130,8 @@ test("incremental groups freeze marks and references, share background, and resu
   expect(f.store.getKnowledge(ids[6]!)!.score).toBeNull(); // the marked item sits in the failed group 2
   const laterBoundary = boundaryOf(f.store, projectItems(f.store, f.path));
   f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: "main", createdAt: "later", outcome: "success", response: JSON.stringify({ finished: { boundary: laterBoundary } }) });
+  // A hand-off written before 175 has no baseline; resume must not pair its candidates with the later run.
+  f.store.db.prepare("UPDATE task_handoffs SET detail=json_remove(detail,'$.baselineVersions') WHERE session_id=? AND phase='dreaming'").run(f.session.id);
   let resumedMaterial = "";
   f.dreamer.script.instead = { curate: async input => {
     resumedMaterial = readFileSync(`${input.workspace.dir}/group.md`, "utf8");

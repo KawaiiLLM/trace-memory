@@ -62,7 +62,11 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
   const kept = saved?.boundary && saved.candidates && saved.clusteringItems && (!input.fullCheck || saved.fullCheck) ? saved : undefined;
   const fullCheck = kept?.fullCheck ?? input.fullCheck ?? false;
   const live = new Map(projectItems(store, path).map(item => [item.value.knowledge.id, item]));
-  const since = kept?.baselineVersions === undefined ? lastBoundary(store, path) : undefined;
+  // A pre-175 hand-off kept candidates but no baseline: use the boundary its admission saw, not a later run's.
+  const admitted = kept && store.handoff(path.sessionId, "dreaming")?.runId;
+  const firstRun = admitted ? Number(store.db.prepare(`SELECT MIN(run_id) AS id FROM execution_runs
+    WHERE execution_id=(SELECT execution_id FROM execution_runs WHERE run_id=?)`).get(admitted)?.id ?? admitted) : undefined;
+  const since = kept?.baselineVersions === undefined ? lastBoundary(store, path, firstRun) : undefined;
   const selected = kept ? undefined : incrementalCandidates(store, path, since);
   const clusteringItems = kept?.clusteringItems ? kept.clusteringItems.flatMap(id => live.get(id) ?? []) : [...live.values()];
   const candidates = kept?.candidates ?? (fullCheck ? clusteringItems : selected!.candidates).map(item => item.value.knowledge.id);

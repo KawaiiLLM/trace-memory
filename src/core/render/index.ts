@@ -591,8 +591,8 @@ export const withFactDates = (text: string, dates?: string): string => dates ? t
 export const factAddresses = (ids: number[], titles?: ReadonlyMap<number, string>): string => ids.map(id =>
   `F${id}${titles?.get(id) ? ` ${titles.get(id)}` : ""}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
-const commitLine = (r: KnowledgeRevision): string =>
-  `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${r.op === "archive" && r.archiveKind ? ` kind: ${r.archiveKind}` : ""} reason: ${r.reason}`;
+const commitLine = (r: KnowledgeRevision, address = `K${r.knowledgeId}@${r.id}`): string =>
+  `  ${address} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${r.op === "archive" && r.archiveKind ? ` kind: ${r.archiveKind}` : ""} reason: ${r.reason}`;
 const selectedCommitLine = (r: KnowledgeRevision, fields: ReadonlySet<string>, address = `K${r.knowledgeId}@${r.id}`): string => [
   `  ${address}`,
   ...(fields.has("status") ? [r.op, ...(r.op === "archive" && r.archiveKind ? [`kind: ${r.archiveKind}`] : []), r.createdAt] : []),
@@ -602,7 +602,7 @@ const selectedCommitLine = (r: KnowledgeRevision, fields: ReadonlySet<string>, a
 ].join(" ");
 export const renderCommitHistory = (revisions: KnowledgeRevision[], fields?: ReadonlySet<string>, address?: (revision: KnowledgeRevision) => string): string => {
   const title = address ? "History" : "Commits";
-  return revisions.length ? `${title}:\n${revisions.map(r => fields ? selectedCommitLine(r, fields, address?.(r)) : commitLine(r)).join("\n")}` : `${title}: none`;
+  return revisions.length ? `${title}:\n${revisions.map(r => fields ? selectedCommitLine(r, fields, address?.(r)) : commitLine(r, address?.(r))).join("\n")}` : `${title}: none`;
 };
 
 export function renderKnowledgePreview(value: KnowledgeWithRevision, status: string,
@@ -767,7 +767,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
     ...(a.scope === b.scope ? [] : [`  scope: ${a.scope} -> ${b.scope}`]),
     ...(a.reason === b.reason ? [] : [`  reason: ${a.reason} -> ${b.reason}`]),
     ...(JSON.stringify(a.topics) === JSON.stringify(b.topics) ? [] : [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`]),
-    renderCommitHistory(revisions)].join("\n");
+    renderCommitHistory(revisions, undefined, address)].join("\n");
   return renderSemantic(prefix, text, whole.slice(prefix.length + text.length), cap);
 }
 
