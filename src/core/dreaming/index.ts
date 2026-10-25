@@ -17,7 +17,7 @@ import type { KnowledgePath, RunInput, Store, TaskClaim, CurateItem } from "../s
 import { TaskWorkspace, defaultWorkspaceRoot } from "../workspace/run.ts";
 import { checkCurate, wholeFileCapProblems, decisionsTemplate, groupText, type Curated } from "./curate.ts";
 import { scoreTargets, scoringText, checkScores, type ScoreTarget } from "./classify.ts";
-import { incrementalCandidates, projectItems, trackedAt } from "./candidates.ts";
+import { incrementalCandidates, lastBoundary, projectItems, trackedAt } from "./candidates.ts";
 import { repositoryHead } from "./code-links.ts";
 import { candidateGroups, checkGroups, clusteringBatches, clusteringInput, groupsTemplate, type Cluster } from "./clustering.ts";
 import { allowedRoots } from "./roots.ts";
@@ -50,7 +50,7 @@ export interface FrozenGroup { no: number; items: CurateItem[]; clusters?: Clust
 export interface DreamingFrozen {
   sessionId: number; branch: string; path: KnowledgePath; claim: TaskClaim; names: ToolNames;
   prompt: string; promptHash: string; model: DreamingTaskConfig; knowledge: string;
-  groups: FrozenGroup[]; candidates: number[]; boundary: DreamerBoundary; background: string; notes?: string;
+  groups: FrozenGroup[]; candidates: number[]; boundary: DreamerBoundary; baselineVersions: DreamerBoundary["versions"]; background: string; notes?: string;
   fullCheck: boolean; clusteringItems: CurateItem[]; groupsFile?: string; clusteringModel: string;
 }
 /** Groups run in bounded waves; admission reserves enough lease for every wave and notes. */
@@ -62,7 +62,8 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
   const kept = saved?.boundary && saved.candidates && saved.clusteringItems && (!input.fullCheck || saved.fullCheck) ? saved : undefined;
   const fullCheck = kept?.fullCheck ?? input.fullCheck ?? false;
   const live = new Map(projectItems(store, path).map(item => [item.value.knowledge.id, item]));
-  const selected = kept ? undefined : incrementalCandidates(store, path);
+  const since = kept?.baselineVersions === undefined ? lastBoundary(store, path) : undefined;
+  const selected = kept ? undefined : incrementalCandidates(store, path, since);
   const clusteringItems = kept?.clusteringItems ? kept.clusteringItems.flatMap(id => live.get(id) ?? []) : [...live.values()];
   const candidates = kept?.candidates ?? (fullCheck ? clusteringItems : selected!.candidates).map(item => item.value.knowledge.id);
   const groups = kept?.groups?.map((group, i) => ({ no: i + 1, items: group.items.flatMap(id => live.get(id) ?? []), clusters: group.clusters, references: group.references, run: group.run })) ?? [];
@@ -77,7 +78,8 @@ export function prepareDreaming(store: Store, input: DreamingInput, config: Trac
   }
   return { sessionId: path.sessionId, branch: path.branch, path, claim, names, prompt, promptHash: createHash("sha256").update(prompt).digest("hex"), model, knowledge, groups,
     fullCheck, clusteringItems, groupsFile: kept?.groupsFile, clusteringModel: store.getSession(path.sessionId)!.host.startsWith("cc:") ? "haiku" : model.model,
-    candidates, boundary: kept?.boundary ?? selected!.boundary, background: kept?.background ?? selected!.background, ...(kept?.notes === undefined ? {} : { notes: kept.notes }) };
+    candidates, boundary: kept?.boundary ?? selected!.boundary, baselineVersions: kept?.baselineVersions ?? since!.versions,
+    background: kept?.background ?? selected!.background, ...(kept?.notes === undefined ? {} : { notes: kept.notes }) };
 }
 export interface DreamingRunOptions {
   workspaceRoot?: string; executionId: string; registerFence(workspace: { close(): void }): void;
@@ -103,7 +105,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   let lastRunId = 0;
   const context = { kind: "dreaming" as const, sessionId, branch, headTurnId: path.headTurnId, range: { from: `S${sessionId}`, to: `S${sessionId}` } };
   const detail = (): HandoffDetail => ({ fullCheck: frozen.fullCheck, clusteringItems: frozen.clusteringItems.map(item => item.value.knowledge.id),
-    candidates: frozen.candidates, groupsFile: frozen.groupsFile,
+    candidates: frozen.candidates, baselineVersions: frozen.baselineVersions, groupsFile: frozen.groupsFile,
     groups: groups.map(group => ({ items: group.items.map(item => item.value.knowledge.id), clusters: group.clusters, references: group.references, ...(group.run ? { run: group.run } : {}) })),
     knowledge: frozen.knowledge, background: frozen.background, boundary: frozen.boundary, ...(frozen.notes === undefined ? {} : { notes: frozen.notes }) });
   const metadata: RunInput = { kind: "dreaming", sessionId, branch, createdAt: new Date().toISOString() };
@@ -224,7 +226,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   const runGroup = async (group: FrozenGroup): Promise<Outcome> => {
     let task: DreamingStage = "curate";
     const reviewed = new Map(group.items.map(item => [item.value.knowledge.id, store.knowledgeStaleReasons(item.value.revision.id)]));
-    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `group-${group.no}`).open({ "group.md": groupText(store, group.items, group.clusters, group.references),
+    const workspace = new TaskWorkspace(root, "dreaming-", sessionId, options.executionId, `group-${group.no}`).open({ "group.md": groupText(store, group.items, frozen.baselineVersions, group.clusters, group.references),
       "decisions.md": decisionsTemplate(group.items, roots.length > 0), "changes.md": "", "scores.md": "" });
     const responses = new Map<string, number | undefined>();
     let curated: Curated | undefined, targets: ScoreTarget[] = [], sealed = "";

@@ -1,12 +1,14 @@
-import { words, renderKnowledge, knowledgeStaleLabel } from "../render/index.ts";
+import { words, renderKnowledge, renderKnowledgeDiff, knowledgeStaleLabel } from "../render/index.ts";
 import { parseBlocks, plan, list, traceProblem, type WorkspaceFile } from "../workspace/index.ts";
 import type { CurateItem, KnowledgePath, Store, KnowledgeOperationInput } from "../store/index.ts";
 import { allowedRoots, repositoryEvidenceProblem } from "./roots.ts";
 import { codeAddress, resolveCodeLink } from "./code-links.ts";
 import type { Cluster } from "./clustering.ts";
+import type { DreamerBoundary } from "../store/executions.ts";
 export type { CurateItem } from "../store/index.ts";
 
-export function groupText(store: Store, items: readonly CurateItem[], clusters?: readonly Cluster[], references: readonly { id: number; title: string }[] = []): string {
+export function groupText(store: Store, items: readonly CurateItem[], baselineVersions: Readonly<DreamerBoundary["versions"]>,
+  clusters?: readonly Cluster[], references: readonly { id: number; title: string }[] = []): string {
   const ids = new Set(items.map(item => item.value.knowledge.id));
   const titles = new Map(references.map(item => [item.id, item.title]));
   const contents = clusters ? clusters.map(cluster => `## Cluster ${cluster.label}\n\n` +
@@ -18,14 +20,33 @@ export function groupText(store: Store, items: readonly CurateItem[], clusters?:
     const others = cluster.items.filter(id => !ids.has(id) && titles.has(id));
     return others.length ? `## Cluster ${cluster.label}\n\n${others.map(id => `- K${id}: ${titles.get(id)}`).join("\n")}` : "";
   }).filter(Boolean).join("\n\n");
+  const factTitles = store.factTitles(items.flatMap(item => item.value.revision.supports));
   const bodies = items.map(item => {
     const current = item.value.revision;
-    const history = store.listKnowledgeRevisions(current.knowledgeId);
-    return `# ${item.address}${knowledgeStaleLabel({ staleReasons: store.knowledgeStaleReasons(current.id) })}\n\n` + history.map(r => {
-      const facts = r.supports.map(id => { const fact = store.getFact(id)!; return `- F${id}: ${fact.title ?? "(untitled)"}\n${fact.text}`; }).join("\n");
-      const files = r.files === undefined ? "(not mapped)" : r.files === null ? "None" : r.files.join(", ");
-      return `${renderKnowledge({ knowledge: item.value.knowledge, revision: r, staleReasons: store.knowledgeStaleReasons(r.id) }, `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`)}\nfiles: ${files}\nverification: ${JSON.stringify(store.knowledgeFileVerifications(r.id))}\nflags: ${JSON.stringify(store.knowledgeStaleReasons(r.id))}\nreason: ${r.reason}\n\nFacts:\n${facts || "None"}`;
-    }).join("\n\n");
+    const flags = store.knowledgeStaleReasons(current.id);
+    const facts = current.supports.map(id => `- F${id} ${factTitles.get(id) ?? "(untitled)"}`).join("\n");
+    const files = current.files === undefined ? "(not mapped)" : current.files === null ? "None" : current.files.join(", ");
+    const baselineId = baselineVersions[current.knowledgeId];
+    let change = baselineId === undefined ? "New since the last successful Dreamer run." : "Unchanged since the last successful Dreamer run.";
+    if (baselineId !== undefined && baselineId !== current.id) {
+      const baseline = store.knowledgeRevision(baselineId)!;
+      // Match trace's diff history: only commits on one endpoint's ancestry, never unrelated branches.
+      const ancestors = (tip: typeof current) => {
+        const ids = new Set<number>(), pending = [tip];
+        while (pending.length) {
+          const revision = pending.pop()!;
+          if (ids.has(revision.id)) continue;
+          ids.add(revision.id); pending.push(...store.commitParents(revision));
+        }
+        return ids;
+      };
+      const before = ancestors(baseline), after = ancestors(current);
+      const history = store.listKnowledgeRevisions(current.knowledgeId).filter(r => before.has(r.id) !== after.has(r.id));
+      change = renderKnowledgeDiff(baseline, current, history, Infinity, undefined,
+        r => `K${r.knowledgeId}@v${store.versionOrdinal(r.knowledgeId, r.id)}`);
+    }
+    return `# ${item.address}${knowledgeStaleLabel({ staleReasons: flags })}\n\n` +
+      `${renderKnowledge({ ...item.value, staleReasons: flags }, item.address)}\nfiles: ${files}\nverification: ${JSON.stringify(store.knowledgeFileVerifications(current.id))}\nflags: ${JSON.stringify(flags)}\nreason: ${current.reason}\n\nFacts:\n${facts || "None"}\n\nChange since the last successful Dreamer run:\n${change}`;
   });
   return `# Contents\n\n${contents}\n\n${bodies.join("\n\n")}\n${referenceText ? `\n# Reference only — not candidates\n\n${referenceText}\n` : ""}`;
 }

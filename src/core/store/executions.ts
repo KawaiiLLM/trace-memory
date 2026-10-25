@@ -104,6 +104,8 @@ export interface HandoffDetail {
   notes?: string;
   background?: string;
   boundary?: DreamerBoundary;
+  /** Last successful run's covered versions, distinct from this run's publication boundary. */
+  baselineVersions?: DreamerBoundary["versions"];
 }
 export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"]): Handoff | null {
   const row = store.db.prepare("SELECT * FROM task_handoffs WHERE session_id = ? AND phase = ?").get(sessionId, phase);

@@ -139,7 +139,9 @@ Successful pre-156 runs have no explicit watermark: their first recorded task ti
 
 A newly visible current item, or a different current version, is a candidate even when its revision id is older than the saved watermark. New project Noter facts appear as `F<id> title — objects` lines; linked-file diffs follow. These are shared background material, not retrieval queries; fact bodies remain address-readable.
 
-**Source flags.** Noter publication flags currently directly supported knowledge when it negates a fact, flags newly linked unverified files, and retains the actual unresolved-check reason. Incremental scanning flags changed linked files. Agent-facing knowledge headings show `可能过时` and stored reasons, including injection, retrieval, reads and group histories. Legacy unmapped knowledge is not stale merely because it has no file record.
+**Group material (175).** `group.md` keeps the contents and title-only cluster references. Each candidate carries only its current version, current supporting fact ids and titles (never fact bodies), files, verification, flags and reason. A changed candidate gets one sentence-first `renderKnowledgeDiff` from the version in the last successful run's boundary to current, including metadata/support changes and intervening commit lines; other historical bodies are not pasted. An item absent from that boundary is marked new, and a same-version flagged candidate is marked unchanged. The baseline version map persists in the hand-off separately from the boundary this run publishes, so a retry does not move the comparison to a newer successful run. Older versions and fact bodies remain readable at `trace://K<id>@v<n>` and `trace://F<id>`.
+
+**Source flags.** Noter publication flags currently directly supported knowledge when it negates a fact, flags newly linked unverified files, and retains the actual unresolved-check reason. Incremental scanning flags changed linked files. Agent-facing knowledge headings show `可能过时` and stored reasons, including injection, retrieval, reads and group material. Legacy unmapped knowledge is not stale merely because it has no file record.
 
 ### Current revisions and write bases
 

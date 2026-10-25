@@ -38,7 +38,7 @@ test("whole knowledge views keep authored titles and mark untitled headers witho
     injection: memory.inject(session.id),
     compaction: compacted(memory.compact(session.id, "main", path.headTurnId)),
     knowledge: memoryFiles(memory, path).read(`trace://knowledge/S${session.id}`).content,
-    dreamer: groupText(memory.store, memory.store.curateItems(path)),
+    dreamer: groupText(memory.store, memory.store.curateItems(path), {}),
   };
   for (const [name, view] of Object.entries(views)) {
     const [head, body] = header(view, withTitle.knowledgeId);

@@ -6,6 +6,7 @@ import { block } from "../../support/workspace.ts";
 import type { DreamingAgentInput } from "../../../src/core/dreaming/index.ts";
 import { boundaryOf, incrementalCandidates, projectItems } from "../../../src/core/dreaming/candidates.ts";
 import { checkCurate, decisionsTemplate } from "../../../src/core/dreaming/curate.ts";
+import { updateKnowledge } from "../../support/seed.ts";
 
 const memories: TraceMemory[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -44,6 +45,41 @@ test("a failure is counted once per execution and the persisted groups retry wit
   expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")?.count).toBe(0);
 });
 
+test("group material contains current bodies and fact titles, with one diff since the last successful run", async () => {
+  const f = dreamerFixture(memories), changed = f.item("Obsolete body before the covered version");
+  const baseline = updateKnowledge(f.store, f.path, changed.knowledgeId, changed.commit, "Covered baseline。Stable context。", changed.supports);
+  const flagged = f.item("Flagged current body");
+  const boundary = boundaryOf(f.store, projectItems(f.store, f.path));
+  f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: "main", createdAt: "now", outcome: "success", response: JSON.stringify({ finished: { boundary } }) });
+  const middle = updateKnowledge(f.store, f.path, changed.knowledgeId, baseline.commit, "Intermediate body not in the final diff", changed.supports);
+  const current = updateKnowledge(f.store, f.path, changed.knowledgeId, middle.commit, "Current replacement。Stable context。", changed.supports);
+  const added = f.item("New current body");
+  f.store.setKnowledgeStale(flagged.commit, { reason: "unresolved_check", detail: "Recheck recorded grounds" });
+  let material = "";
+  f.dreamer.script.instead = { curate: async input => {
+    material = readFileSync(`${input.workspace.dir}/group.md`, "utf8");
+    return scriptedDreamer().agent(input);
+  } };
+  expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "success" });
+  expect(material).toContain(`[K${changed.knowledgeId}@v4]`);
+  expect(material).toContain("Current replacement。Stable context。");
+  expect(material).toContain(`- F${changed.supports[0]} Support for Obsolete body before the covered version`);
+  expect(material).not.toContain(f.store.getFact(changed.supports[0]!)!.text);
+  expect(material).not.toContain("Intermediate body not in the final diff");
+  expect(material).not.toMatch(new RegExp(`^\\[K${changed.knowledgeId}@v[123]\\]`, "m"));
+  expect(material).toContain(`[K${changed.knowledgeId}@v2..K${changed.knowledgeId}@v4]`);
+  expect(material).toMatch(/^- Covered baseline。$/m);
+  expect(material).toMatch(/^\+ Current replacement。$/m);
+  expect(material).toContain(`K${changed.knowledgeId}@${current.commit} update`);
+  expect(material).not.toContain(`K${changed.knowledgeId}@${baseline.commit} update`);
+  const [newSection, flaggedSection] = [added, flagged].map(item =>
+    material.split(new RegExp(`^# K${item.knowledgeId}@v\\d+[^\\n]*\\n`, "m"))[1]!.split(/^# /m)[0]!);
+  expect(newSection).toContain("New since the last successful Dreamer run.");
+  expect(newSection).not.toContain("  text:");
+  expect(flaggedSection).toContain("Unchanged since the last successful Dreamer run.");
+  expect(flaggedSection).toContain("Recheck recorded grounds");
+});
+
 test("a late Noter version stays pending when its frozen predecessor is processed", async () => {
   const f = dreamerFixture(memories), original = f.item("Original rule"), scripted = scriptedDreamer();
   f.dreamer.script.instead = { curate: async input => {
@@ -70,6 +106,7 @@ test("incremental groups freeze marks and references, share background, and resu
   const items = Array.from({ length: 8 }, (_, i) => f.item(`Supported body ${i + 1}`, { title: `Rule ${i + 1}` }));
   const boundary = boundaryOf(f.store, projectItems(f.store, f.path));
   f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: "main", createdAt: "now", outcome: "success", response: JSON.stringify({ finished: { boundary } }) });
+  updateKnowledge(f.store, f.path, items[3]!.knowledgeId, items[3]!.commit, "Changed body after coverage", items[3]!.supports);
   for (const item of [items[0]!, items[1]!, items[3]!, items[4]!]) f.store.setKnowledgeStale(item.commit, { reason: "unresolved_check", detail: "Review this ruling" });
   const ids = items.map(item => item.knowledgeId);
   f.dreamer.script.clustering = `# Group 1\n## Cluster First\n- K${ids[0]}\n- K${ids[1]}\n- K${ids[2]}\n# Group 2\n## Cluster Second\n- K${ids[3]}\n- K${ids[4]}\n- K${ids[5]}\n# Group 3\n## Cluster Extra\n- K${ids[6]} ! duplicate: Check overlapping rule\n- K${ids[7]}\n`;
@@ -90,11 +127,19 @@ test("incremental groups freeze marks and references, share background, and resu
   expect(inputs[0]!.decisions).not.toContain(`K${ids[2]}@`);
   expect(f.store.getKnowledge(ids[0]!)!.score).toBe(75);
   expect(f.store.getKnowledge(ids[6]!)!.score).toBeNull(); // the marked item sits in the failed group 2
-  f.dreamer.script.instead = undefined;
+  const laterBoundary = boundaryOf(f.store, projectItems(f.store, f.path));
+  f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: "main", createdAt: "later", outcome: "success", response: JSON.stringify({ finished: { boundary: laterBoundary } }) });
+  let resumedMaterial = "";
+  f.dreamer.script.instead = { curate: async input => {
+    resumedMaterial = readFileSync(`${input.workspace.dir}/group.md`, "utf8");
+    return scriptedDreamer().agent(input);
+  } };
   f.dreamer.script.clustering = "invalid if called again";
   const before = f.dreamer.inputs.length;
   expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "success" });
   expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate"]);
+  expect(resumedMaterial).toBe(inputs[1]!.group);
+  expect(resumedMaterial).toContain(`[K${ids[3]}@v1..K${ids[3]}@v2]`);
   expect(f.store.getKnowledge(ids[6]!)!.score).toBe(75);
   expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE revision_id=? AND pool=?").get(items[6]!.commit, `project:${f.project.id}`)).toEqual({ revision_id: items[6]!.commit });
   expect(f.store.getKnowledge(ids[2]!)!.score).toBeNull(); // A title-only reference is not this group's target (169).
