@@ -12749,6 +12749,14 @@ function upgradeSettingsFile(path, section2, validate, report) {
   return removed;
 }
 
+// src/hosts/cc/write-gate.ts
+var DEFAULT_WRITE_RESPONSE_TIMEOUT_MS = 8e3;
+function writeResponseTimeout(value = DEFAULT_WRITE_RESPONSE_TIMEOUT_MS) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 9e3)
+    throw new Error("Invalid CC writeResponseTimeoutMs: expected an integer from 1 to 9000");
+  return value;
+}
+
 // src/hosts/cc/config.ts
 var CC_AGENT_SDK_VERSION = "0.1.77";
 var CC_CONTEXT_HEADROOM = 1e4;
@@ -12864,6 +12872,7 @@ function resolveCcHostConfig(input) {
     finalSyncTimeoutMs: positive2("finalSyncTimeoutMs", input.finalSyncTimeoutMs ?? 5e3),
     finalSyncStablePolls: positive2("finalSyncStablePolls", input.finalSyncStablePolls ?? 2),
     writeSourceTimeoutMs: positive2("writeSourceTimeoutMs", input.writeSourceTimeoutMs ?? 5e3),
+    writeResponseTimeoutMs: writeResponseTimeout(input.writeResponseTimeoutMs),
     closedSessionScope,
     coreConfig,
     ...worker ? { worker } : {}
