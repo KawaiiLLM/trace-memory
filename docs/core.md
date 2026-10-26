@@ -573,8 +573,8 @@ branch carry and in a Noter subagent history block; only the enclosing title dif
 its fifth consumer, the `<noted>` foreground receipt, with automatic delivery itself.)
 Groups use the owning Turn's start time in ascending chronological order, with Turn id as a tie-break;
 within a group, facts use ascending F ids. Unknown Turn times remain explicit and sort last by id.
-A group heading looks like `[T42] 2026-09-09T10:30:00Z (selected facts)`: it identifies a selected
-subset, never claims the entire Turn was supplied or processed.
+A group heading looks like `[T42] 09-09 10:30`, in UTC. The section explanation states once that
+these are selected facts, not complete Turns, and names the session harness as context rather than claim attribution.
 
 Selection and display are separate. Historical facts are selected newest-first by source time and id
 before grouping; this also corrects the Consolidator history query that previously returned oldest
@@ -634,9 +634,9 @@ Noter now assembles through `compact()` with its own frozen batch and endpoint; 
 `budgetMaterial` API does not select that batch's history. Its Raw and full-fact bases remain
 independent, with the two temporary pools described above. At default policy the
 main-agent envelope is 60,000 estimated tokens: Knowledge 20,000, full facts 10,000, Raw 10,000
-and body/pointer pools of 10,000 each. Live running tasks and the
-fixed reading guide are additional measured text. System instructions, tools, inherited context
-and later model-loop messages remain subject to the host's independent real-input capacity check.
+and body/pointer pools of 10,000 each. Live running tasks and the reading guide are additional
+measured text. When there is no Knowledge block, its ordering guide is also standalone framing.
+System instructions, tools, inherited context and later model-loop messages remain subject to the host's independent real-input capacity check.
 
 Selected evidence is never dropped to fit: the reducible unit is the task itself
 (`freezeNoting`/`freezeConsolidation` take a smaller oldest-first prefix), and a current block over
@@ -808,25 +808,30 @@ add fresh facts before repeat runs; committed Knowledge participates in later du
 
 Knowledge marks and the mark API are retired. Trace, search and injection expose no mark field or annotation.
 
-`inject(sessionId, branch = "main")` returns attribute-free `<knowledge>` XML,
-with nonempty category groups in glossary order, each opened by a `## <category> (<n>)` line. Within each category, current
-revision time ascends, with knowledge-id ties. XML text is never escaped; shared lines stay byte-identical trace lines and remain the display grammar. Budgets measure
-shared lines, including framing and receipts. Every category obeys the hard cap;
-whole items retain category/time display order, while budget selection omits the oldest optional items first.
-Pass `null` explicitly for legacy null branches.
+`inject(sessionId, branch = "main")` returns attribute-free `<knowledge>` XML. Nonempty categories
+follow glossary order under `## <category> (<n>)`, then scopes under `### <scope> (<n>)` in global,
+project, session order (178). Within each scope, full bodies come first in ascending last-change
+order; later full claims about the same object take precedence. Position does not compare across
+categories or scopes. The remaining titles follow one titles-only notice per subgroup: `[K<id>] <title>`,
+without version tags or per-line markers. Untitled tails retain `(opening only)`. Titles carry no claim.
+CC segments repeat category/scope headings with local counts and repeat the tail notice when needed.
+Injected bodies omit category/scope tags and topics, retain supports, and are not XML-escaped.
+Single-item reads and search retain their metadata. Selection priorities, budgets and coverage are unchanged;
+all emitted Knowledge headings, notices and receipts remain charged to their owning window.
 
 92 replaces 34c's evidence suppression: `injection(target, visible?)` subtracts actually delivered exact
 versions from the current visible graph. Facts and Raw do not replace missing Knowledge bodies.
-The host reconstructs delivery from its latest retained compact and subsequent actual carriers, never
-from a historical visibility query. Core reuses 88's reader projection; SQLite transactional reads use
-their own graph input. Source coverage still governs compact selection.
+The host reads actual per-node delivery records along the selected path, never a historical
+visibility query. Core reuses 88's reader projection; SQLite transactional reads use their own graph
+input. Source coverage still governs compact selection.
 
 Every retained carrier occurrence is charged first against
 the Knowledge base (20,000 under the default policy), and each temporary pool is reduced by its own accumulated charge. Missing state transitions then fit as complete items in
 their stable prefix order, followed by complete candidate bodies in oldest-first revision order. An
 unfit next transition is not skipped for a body; a fitting transition prefix remains publishable. Exact
-fit is accepted; zero or negative remainder and a single unfit item emit nothing, and omission receipts
-alone never create a message. Archive/supersede/merge/split notices have
+fit is accepted; zero or negative remainder and a single unfit item emit no Knowledge or state
+transition, and omission receipts alone never create a message. Missing guides ride the next
+material-bearing injection, never a guide-only message (178). Archive/supersede/merge/split notices have
 stable carrier identities separate from exact body visibility, so persisting a notice never grants a
 replacement body. Fact, Raw, command-generation state and processed/unprocessed status are absent from
 foreground publication. New carriers retain their complete Knowledge-window cost, including notices,
@@ -835,6 +840,20 @@ that field are measured individually; ambiguous unescaped delimiters produce a d
 conservative whole-content charge, not an error or a zero. Repeated bodies and inapplicable old bodies
 still consume context. CC checks the sum of final segment Knowledge costs against the remaining
 allowance after packing; repeated domain framing counts, but host JSON and Fact/Raw do not.
+
+**Context guides (178).** Core hashes the exact reading-guide and ordering-paragraph text with SHA-256
+and subtracts versions already delivered on this path. Both hosts record those versions beside
+Knowledge in the same per-node delivery state. Compaction always includes both guides and records
+them at its node; the following prompt does not repeat them. Native compaction and `/clear` reset the
+baseline. The first material-bearing injection after either reset carries the pending guides.
+Changed text waits for the next such injection and is delivered once again; missing tracking may
+re-send a guide, never suppress one the injection needs. Empty injections record no guide versions.
+N/D materials retain unconditional guides. CC carries guide hashes in optional receipt field `g`,
+bound to the body digest, and transcript import restores authenticated guide deliveries after rollback.
+Old receipts without `g` record no guides. Receipt id lists `i`, `k`, `f`, `e` now use comma-separated
+ascending runs such as `"13723,14035-14036,14039"`; decoding also accepts legacy arrays.
+The same ordering paragraph covers whole blocks and the logical `p[0]` order of 24-segment sets.
+
 Fresh Noter material uses the same Knowledge capacity and renderer; the Dreamer's curate prefix has its own 50,000-token cap. The historical Consolidator-era
 synthetic method and 250/1,000-candidate measurements remain in [perf-34c.md](perf-34c.md);
 they are not performance evidence for the current N/D implementation.
@@ -877,6 +896,9 @@ Omitted user entries have an address receipt and omitted titles join the existin
 bare-id fact receipt. `supplied` claims ordinary Raw views and complete facts only, never
 500-token user excerpts or title-only facts. `trace://compact` has the same stored material;
 running tasks are live host state supplied only at actual compaction.
+Compaction's Raw window omits lines consisting only of an assistant `[thinking omitted]` placeholder;
+other Raw views and the entry identities used for coverage remain unchanged (178).
+
 
 **Raw-first span, then facts.** Walk the selected path newest-first and take one contiguous Raw span:
 a pending entry may use the Raw base and then the temporary allowance; an already-noted entry

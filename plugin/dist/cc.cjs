@@ -35,7 +35,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // src/hosts/cc/index.ts
 var import_node_fs20 = require("node:fs");
-var import_node_crypto19 = require("node:crypto");
+var import_node_crypto20 = require("node:crypto");
 var import_node_path19 = require("node:path");
 var import_node_url = require("node:url");
 
@@ -193,7 +193,7 @@ function preciseSources(entry) {
   ] : []];
 }
 var legacySources = (entry) => [
-  ...entry.text ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : [],
+  ...entry.text && entry.role !== "observation" ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : [],
   ...entry.calls.map((call) => `T${entry.turnId}#t${call.ordinal}`)
 ];
 var sourceAddresses = (entry) => [...legacySources(entry), ...preciseSources(entry)];
@@ -916,6 +916,7 @@ function migrateStage4Schema144(db) {
   add("knowledge_deliveries", "titles", "TEXT NOT NULL DEFAULT '[]'");
   add("knowledge_deliveries", "temporary_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK (temporary_tokens >= 0)");
   add("knowledge_deliveries", "pointer_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK (pointer_tokens >= 0)");
+  add("knowledge_deliveries", "guides", "TEXT NOT NULL DEFAULT '[]'");
   if (!tableExists(db, "knowledge_base_policy")) {
     db.exec("CREATE TABLE knowledge_base_policy (id INTEGER PRIMARY KEY CHECK(id = 1), base_tokens INTEGER NOT NULL CHECK(base_tokens BETWEEN 0 AND 9007199254740991))");
     db.exec("INSERT INTO knowledge_base_policy SELECT 1, global_tokens + project_tokens + session_tokens FROM knowledge_budget_policy WHERE id = 1");
@@ -1441,13 +1442,15 @@ CREATE TABLE IF NOT EXISTS delivery_nodes (
 );
 `;
 var STATE_KEY = /^[1-9]\d*>[1-9]\d*(?:,[1-9]\d*)*$/;
-var noDelivery = () => ({ knowledgeCommitIds: /* @__PURE__ */ new Set(), knowledgeTitleCommitIds: /* @__PURE__ */ new Set(), knowledgeStates: /* @__PURE__ */ new Set(), knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
+var GUIDE_VERSION = /^[0-9a-f]{64}$/;
+var noDelivery = () => ({ knowledgeCommitIds: /* @__PURE__ */ new Set(), knowledgeTitleCommitIds: /* @__PURE__ */ new Set(), knowledgeStates: /* @__PURE__ */ new Set(), guideVersions: /* @__PURE__ */ new Set(), knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
 function withRows(state, rows) {
   if (!rows?.length) return state;
   const next = {
     knowledgeCommitIds: new Set(state.knowledgeCommitIds),
     knowledgeTitleCommitIds: new Set(state.knowledgeTitleCommitIds),
     knowledgeStates: new Set(state.knowledgeStates),
+    guideVersions: new Set(state.guideVersions),
     knowledgeTokens: state.knowledgeTokens,
     temporaryTokens: state.temporaryTokens,
     pointerTokens: state.pointerTokens
@@ -1456,6 +1459,7 @@ function withRows(state, rows) {
     for (const id of row.commits) next.knowledgeCommitIds.add(id);
     for (const id of row.titles) next.knowledgeTitleCommitIds.add(id);
     for (const key of row.states) next.knowledgeStates.add(key);
+    for (const version4 of row.guides) next.guideVersions.add(version4);
     next.knowledgeTokens += row.tokens;
     next.temporaryTokens += row.temporaryTokens;
     next.pointerTokens += row.pointerTokens;
@@ -1673,10 +1677,12 @@ CREATE TABLE IF NOT EXISTS raw_search_entries (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   turn_id INTEGER NOT NULL REFERENCES turns(id),
   tool_call_id INTEGER REFERENCES tool_calls(id),
+  source_entry_id INTEGER REFERENCES source_entries(id),
   field TEXT NOT NULL CHECK (field IN ('user_prompt','assistant_text','tool_name','tool_input','tool_result'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_search_turn_field ON raw_search_entries(turn_id, field) WHERE tool_call_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_search_turn_field ON raw_search_entries(turn_id, field) WHERE tool_call_id IS NULL AND source_entry_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_search_tool_call_field ON raw_search_entries(tool_call_id, field) WHERE tool_call_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_search_source_entry ON raw_search_entries(turn_id, source_entry_id) WHERE source_entry_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS facts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2115,6 +2121,10 @@ var Store = class {
       if (policyTable) {
         const row = this.db.prepare("SELECT global_tokens,project_tokens,session_tokens FROM knowledge_budget_policy WHERE id=1").get();
         if (row) priorBudgetPolicy = { global: Number(row.global_tokens), project: Number(row.project_tokens), session: Number(row.session_tokens) };
+      }
+      if (hadRawFts && !this.db.prepare("PRAGMA table_info(raw_search_entries)").all().some((row) => row.name === "source_entry_id")) {
+        this.db.exec(`ALTER TABLE raw_search_entries ADD COLUMN source_entry_id INTEGER REFERENCES source_entries(id);
+          DROP INDEX idx_raw_search_turn_field;`);
       }
       this.db.exec(SCHEMA_SQL);
       migrateDreaming(this.db, true);
@@ -2884,7 +2894,7 @@ var Store = class {
    * than delete+insert and leaves raw_search_entries, and the rowid pairing, untouched. A transition to
    * NULL removes the row instead -- a NULL column matches nothing under LIKE either. */
   reindexRawField(field, sessionId, turnId, toolCallId, text) {
-    const existing = toolCallId === null ? this.db.prepare("SELECT id FROM raw_search_entries WHERE turn_id = ? AND field = ? AND tool_call_id IS NULL").get(turnId, field) : this.db.prepare("SELECT id FROM raw_search_entries WHERE tool_call_id = ? AND field = ?").get(toolCallId, field);
+    const existing = toolCallId === null ? this.db.prepare("SELECT id FROM raw_search_entries WHERE turn_id = ? AND field = ? AND tool_call_id IS NULL AND source_entry_id IS NULL").get(turnId, field) : this.db.prepare("SELECT id FROM raw_search_entries WHERE tool_call_id = ? AND field = ?").get(toolCallId, field);
     if (!existing) {
       this.indexRawField(field, sessionId, turnId, toolCallId, text);
       return;
@@ -3214,7 +3224,7 @@ var Store = class {
             if (resolveFactSource([entry], address2).length !== 1) throw new Error(`inadmissible source ${address2}`);
             citedEntries.push(entry.id);
             if (entry.role === "user") return { role: "user" };
-            if (entry.role === "toolResult") return { role: "observation" };
+            if (entry.role === "toolResult" || entry.role === "observation") return { role: "observation" };
             if (entry.role !== "assistant") throw new Error(`invalid source entry role ${entry.role}`);
             const harness = this.getSession(sessionId).host;
             if (!harness.startsWith("pi:") && !harness.startsWith("cc:")) throw new Error(`unknown source harness ${harness}`);
@@ -3540,6 +3550,7 @@ var Store = class {
       knowledgeCommitIds: new Set(state.knowledgeCommitIds),
       knowledgeTitleCommitIds: new Set(state.knowledgeTitleCommitIds),
       knowledgeStates: new Set(state.knowledgeStates),
+      guideVersions: new Set(state.guideVersions),
       knowledgeTokens: state.knowledgeTokens,
       temporaryTokens: state.temporaryTokens,
       pointerTokens: state.pointerTokens
@@ -3557,9 +3568,9 @@ var Store = class {
     if (target.follows != null && (target.nodeKey == null || typeof target.follows !== "string" || !target.follows))
       throw new Error("a pending compaction's delivery needs its key and the record it follows");
     for (const part of parts) {
-      if (!part.knowledgeCommitIds.every((id) => Number.isSafeInteger(id) && id > 0) || !part.knowledgeStates.every((key) => STATE_KEY.test(key)) || !Number.isSafeInteger(part.knowledgeTokens) || part.knowledgeTokens < 0 || !(part.knowledgeTitleCommitIds ?? []).every((id) => Number.isSafeInteger(id) && id > 0) || !Number.isSafeInteger(part.temporaryTokens ?? 0) || (part.temporaryTokens ?? 0) < 0 || !Number.isSafeInteger(part.pointerTokens ?? 0) || (part.pointerTokens ?? 0) < 0) throw new Error("invalid delivery part");
+      if (!part.knowledgeCommitIds.every((id) => Number.isSafeInteger(id) && id > 0) || !part.knowledgeStates.every((key) => STATE_KEY.test(key)) || !Number.isSafeInteger(part.knowledgeTokens) || part.knowledgeTokens < 0 || !(part.knowledgeTitleCommitIds ?? []).every((id) => Number.isSafeInteger(id) && id > 0) || !(part.guideVersions ?? []).every((version4) => GUIDE_VERSION.test(version4)) || !Number.isSafeInteger(part.temporaryTokens ?? 0) || (part.temporaryTokens ?? 0) < 0 || !Number.isSafeInteger(part.pointerTokens ?? 0) || (part.pointerTokens ?? 0) < 0) throw new Error("invalid delivery part");
     }
-    const rows = parts.filter((part) => part.knowledgeCommitIds.length || part.knowledgeStates.length || part.knowledgeTokens || part.knowledgeTitleCommitIds?.length || part.temporaryTokens || part.pointerTokens);
+    const rows = parts.filter((part) => part.knowledgeCommitIds.length || part.knowledgeStates.length || part.knowledgeTokens || part.knowledgeTitleCommitIds?.length || part.guideVersions?.length || part.temporaryTokens || part.pointerTokens);
     if (!rows.length) return [];
     return this.transaction(() => {
       if (target.turnId != null) {
@@ -3569,8 +3580,8 @@ var Store = class {
       const commits = [...new Set(rows.flatMap((part) => [...part.knowledgeCommitIds, ...part.knowledgeTitleCommitIds ?? []]))];
       const known = Number(this.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions WHERE id IN (SELECT value FROM json_each(?))").get(JSON.stringify(commits)).count);
       if (known !== commits.length) throw new Error("delivery names an unknown knowledge version");
-      const insert = this.db.prepare(`INSERT INTO knowledge_deliveries(owner, turn_id, node_key, follows, commits, states, knowledge_tokens, titles, temporary_tokens, pointer_tokens, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const insert = this.db.prepare(`INSERT INTO knowledge_deliveries(owner, turn_id, node_key, follows, commits, states, knowledge_tokens, titles, temporary_tokens, pointer_tokens, guides, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       return rows.map((part) => Number(insert.run(
         target.owner,
         target.turnId ?? null,
@@ -3582,6 +3593,7 @@ var Store = class {
         JSON.stringify(part.knowledgeTitleCommitIds ?? []),
         part.temporaryTokens ?? 0,
         part.pointerTokens ?? 0,
+        JSON.stringify(part.guideVersions ?? []),
         createdAt
       ).lastInsertRowid));
     });
@@ -4012,7 +4024,7 @@ var Store = class {
     return { row: Number(water.row), node: Number(water.node), owners: /* @__PURE__ */ new Map(), nodes: /* @__PURE__ */ new Map() };
   }
   readDeliveryRows(where, ...values) {
-    return this.db.prepare(`SELECT id, owner, turn_id, node_key, commits, titles, states, knowledge_tokens, temporary_tokens, pointer_tokens FROM knowledge_deliveries
+    return this.db.prepare(`SELECT id, owner, turn_id, node_key, commits, titles, states, guides, knowledge_tokens, temporary_tokens, pointer_tokens FROM knowledge_deliveries
       WHERE ${where} ORDER BY id`).all(...values).map((row) => ({
       id: Number(row.id),
       owner: row.owner,
@@ -4021,6 +4033,7 @@ var Store = class {
       commits: JSON.parse(row.commits),
       titles: JSON.parse(row.titles),
       states: JSON.parse(row.states),
+      guides: JSON.parse(row.guides),
       tokens: Number(row.knowledge_tokens),
       temporaryTokens: Number(row.temporary_tokens),
       pointerTokens: Number(row.pointer_tokens)
@@ -5301,14 +5314,16 @@ ${annotation}`;
     return this.searchTermBatches(patterns, (batch, remaining) => {
       const matches = batch.map(() => `(t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
         (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
-        (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\')))`).join(" AND ");
+        (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\')) OR EXISTS
+        (SELECT 1 FROM raw_search_entries x JOIN source_entry_raw r ON r.entry_id = x.source_entry_id
+         WHERE x.turn_id = t.id AND x.source_entry_id IS NOT NULL AND json_extract(r.content, '$.text') LIKE ? ESCAPE '\\'))`).join(" AND ");
       return this.db.prepare(`SELECT t.id FROM turns t WHERE
           ${remaining === void 0 ? "" : "t.id IN (SELECT value FROM json_each(?)) AND"}
           (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND ${matches} ORDER BY t.id`).all(
         ...remaining === void 0 ? [] : [remaining],
         Number(restricted),
         owners2,
-        ...batch.flatMap((pattern) => [pattern, pattern, pattern, pattern, pattern])
+        ...batch.flatMap((pattern) => [pattern, pattern, pattern, pattern, pattern, pattern])
       );
     }, candidates).map((r) => `T${r.id}`);
   }
@@ -5340,7 +5355,7 @@ ${annotation}`;
     const candidates = JSON.stringify(turnIds);
     for (const row of this.db.prepare("SELECT id, session_id, started_at FROM turns WHERE id IN (SELECT value FROM json_each(?))").all(candidates))
       ranks.set(Number(row.id), { score: 0, fields: /* @__PURE__ */ new Map(), sessionId: Number(row.session_id), startedAt: String(row.started_at) });
-    const rows = this.db.prepare(`SELECT e.turn_id, e.field, c.ordinal, bm25(raw_fts) AS score
+    const rows = this.db.prepare(`SELECT e.turn_id, e.field, e.source_entry_id, c.ordinal, bm25(raw_fts) AS score
       FROM raw_fts JOIN raw_search_entries e ON e.id = raw_fts.rowid
       LEFT JOIN tool_calls c ON c.id = e.tool_call_id
       WHERE raw_fts MATCH ? AND e.turn_id IN (SELECT value FROM json_each(?))`).all(indexed.map(ftsPhraseQuery).join(" AND "), candidates);
@@ -5348,7 +5363,7 @@ ${annotation}`;
       const id = Number(row.turn_id), score = Number(row.score);
       const rank = ranks.get(id);
       rank.score = Math.min(rank.score, score);
-      rank.fields.set(`${row.ordinal ?? 0}:${row.field}`, score);
+      rank.fields.set(`${row.source_entry_id === null ? row.ordinal ?? 0 : `E${row.source_entry_id}`}:${row.field}`, score);
     }
     return ranks;
   }
@@ -5518,9 +5533,9 @@ ${annotation}`;
   appendSourceEntry(input, known = void 0) {
     return this.transaction(() => {
       this.requireEnabled(input.sessionId);
-      if (typeof input.nativeLineage !== "string" || typeof input.nativeId !== "string" || typeof input.text !== "string" || typeof input.raw !== "string" || !Array.isArray(input.calls) || input.calls.some((c) => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || typeof c.name !== "string" || !c.name || typeof c.callId !== "string" || !c.callId || /[\uD800-\uDFFF]/u.test(c.callId) || typeof c.status !== "string" || !c.status || c.input !== void 0 && typeof c.input !== "string" || c.result !== void 0 && typeof c.result !== "string") || new Set(input.calls.map((c) => c.callId)).size !== input.calls.length || new Set(input.calls.map((c) => c.ordinal)).size !== input.calls.length || input.role === "user" && input.calls.length || input.role === "toolResult" && input.text) throw new Error("invalid source entry content");
+      if (typeof input.nativeLineage !== "string" || typeof input.nativeId !== "string" || typeof input.text !== "string" || typeof input.raw !== "string" || !Array.isArray(input.calls) || input.calls.some((c) => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || typeof c.name !== "string" || !c.name || typeof c.callId !== "string" || !c.callId || /[\uD800-\uDFFF]/u.test(c.callId) || typeof c.status !== "string" || !c.status || c.input !== void 0 && typeof c.input !== "string" || c.result !== void 0 && typeof c.result !== "string") || new Set(input.calls.map((c) => c.callId)).size !== input.calls.length || new Set(input.calls.map((c) => c.ordinal)).size !== input.calls.length || (input.role === "user" || input.role === "observation") && input.calls.length || input.role === "toolResult" && input.text) throw new Error("invalid source entry content");
       const turn = this.getTurn(input.turnId);
-      if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult"].includes(input.role) || turn?.sessionId !== input.sessionId || turn?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
+      if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult", "observation"].includes(input.role) || turn?.sessionId !== input.sessionId || turn?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
       if (known === void 0) known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
       if (known) {
         const { id: _, entryOrdinal: _ordinal, blocks: _blocks, ...original } = known;
@@ -5541,6 +5556,11 @@ ${annotation}`;
         sourceDigest(input.raw)
       );
       this.db.prepare("INSERT INTO source_entry_raw (entry_id, content, blocks) VALUES (?, ?, ?)").run(result.lastInsertRowid, JSON.stringify(input), blocks2 ? JSON.stringify(blocks2) : this.normalizeSource ? "null" : null);
+      if ((input.role === "user" || input.role === "observation") && input.text && input.text !== turn.userPrompt) {
+        const indexed = this.db.prepare(`INSERT INTO raw_search_entries (session_id, turn_id, source_entry_id, field)
+          VALUES (?, ?, ?, 'user_prompt')`).run(input.sessionId, input.turnId, result.lastInsertRowid);
+        this.db.prepare("INSERT INTO raw_fts (rowid, text) VALUES (?, ?)").run(indexed.lastInsertRowid, input.text);
+      }
       if (input.calls.length) {
         const insertCall = this.db.prepare("INSERT INTO source_entry_calls (entry_id, turn_id, call_id, ordinal, name) VALUES (?, ?, ?, ?, ?)");
         for (const call of input.calls) insertCall.run(result.lastInsertRowid, input.turnId, call.callId, call.ordinal, call.name);
@@ -6282,7 +6302,7 @@ function resultPart(label, result) {
 }
 var speaks = (entry) => Boolean(entry.text) || entry.role === "user";
 var displayedAddresses = (entry) => [
-  ...speaks(entry) ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : [],
+  ...speaks(entry) && entry.role !== "observation" ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : [],
   ...entry.calls.map((call) => `T${entry.turnId}#t${call.ordinal}`)
 ];
 function sourceParts(entry, resultText, choose, selector2, includeThinking = false) {
@@ -6298,11 +6318,11 @@ function sourceParts(entry, resultText, choose, selector2, includeThinking = fal
     if (selector2?.kind === "thinking" && block2.kind !== "thinking") continue;
     if (selector2?.kind === "call" && (!tool || block2.call.callId !== selector2.id)) continue;
     if (selector2?.kind === "text" && block2.kind !== "text" && block2.kind !== "result") continue;
-    const legacy = `T${entry.turnId}#${tool ? `t${block2.call.ordinal}` : entry.role === "user" ? "user" : "assistant"}`;
+    const legacy = `T${entry.turnId}#${tool ? `t${block2.call.ordinal}` : entry.role}`;
     const choice = choose(legacy);
     if (choice === "drop") continue;
     const address2 = `${entryAddress(entry)}@${entry.role === "toolResult" ? "observation" : entry.role}`;
-    const role = ` ${entry.role}`;
+    const role = ` ${entry.role === "observation" ? entry.label ?? "observation" : entry.role}`;
     if ("text" in block2) {
       const label = `[${address2}]${role}`, body = block2.text;
       sources.push({
@@ -6549,14 +6569,14 @@ function knowledgeTitle(r, titleWords) {
   return r.title ?? `(no title) ${knowledgeOpening(r.text, titleWords)}\u2026`;
 }
 var knowledgeStaleLabel = (value) => value.staleReasons?.length ? ` [\u53EF\u80FD\u8FC7\u65F6: ${value.staleReasons.map((reason) => `${reason.reason}: ${reason.detail}`).join("; ")}]` : "";
-function renderKnowledge(value, address2 = `K${value.knowledge.id}@${value.revision.id}`, showSize = false, limits = DEFAULT_WRITING_LIMITS) {
+function renderKnowledge(value, address2 = `K${value.knowledge.id}@${value.revision.id}`, showSize = false, limits = DEFAULT_WRITING_LIMITS, grouped = false) {
   const { knowledge, revision: r } = value;
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
   const size = showSize ? ` (${words(r.text)}/${limits.bodyWords} units, limit ${wordLimit(limits.bodyWords)})` : "";
-  const tags = `[${address2}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size}`;
+  const tags = `[${address2}]${grouped ? "" : ` [${knowledgeCategoryGroup(r.category)}/${r.scope}]`}${size}`;
   return `${tags} ${r.title ?? "(no title)"}${knowledgeStaleLabel(value)}
 ${r.text}
-  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${grouped ? "" : topicList(r.topics)}`;
 }
 var factAddresses = (ids, titles) => ids.map((id) => `F${id}${titles?.get(id) ? ` ${titles.get(id)}` : ""}`).join(", ") || "none";
 var commitLine = (r, address2 = `K${r.knowledgeId}@${r.id}`) => `  ${address2} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${r.op === "archive" && r.archiveKind ? ` kind: ${r.archiveKind}` : ""} reason: ${r.reason}`;
@@ -6747,21 +6767,22 @@ ${"  ".repeat(depth + 1)}no later strong negation recorded` : ""))).join("");
 var charge = (parts) => parts.reduce((total, part) => total + tokens(part) + 1, 0);
 var EXPAND_LIMIT = 8;
 var expandList = (addresses) => addresses.length <= EXPAND_LIMIT ? addresses.join(", ") : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
-var KNOWLEDGE_RECENCY_NOTICE = "Items are grouped by category. Within a category they are ordered by last change, oldest to newest; position does not compare items across categories. For claims about the same object within a category, the later item takes precedence until maintenance merges them.";
-var sessionKnowledgeNotice = (sessionId, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) => `${recencyNotice}
-Session S${sessionId}.`;
+var KNOWLEDGE_RECENCY_NOTICE = "Items are grouped by category, then scope. Within a scope group, full items are ordered by last change, oldest to newest; for claims about the same object, the later full item takes precedence until maintenance merges them. Position does not compare items across categories or scopes. Title-only lines carry no claim. When a rendered set is split into 24 segments, read by the header's p[0] segment number, then position within that segment; a scope group may continue into the next segment. Arrival order is not recency.";
+var sessionKnowledgeNotice = (sessionId, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) => `${recencyNotice ? recencyNotice + "\n" : ""}Session S${sessionId}.`;
 var renderKnowledgeOmissions = (omitted) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
   const members = omitted.filter((value) => knowledgeCategoryGroup(value.revision.category) === category);
   return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map((value) => `trace://K${value.knowledge.id}`))}`] : [];
 });
-var orderedKnowledge = (knowledge, line) => [...knowledge].sort((a, b) => a.revision.id - b.revision.id).map((value) => {
+var orderedKnowledge = (knowledge, line, titles) => [...knowledge].sort((a, b) => a.revision.id - b.revision.id).map((value) => {
   const text = line(value);
   return {
     category: knowledgeCategoryGroup(value.revision.category),
+    scope: value.revision.scope,
+    form: titles?.has(value.revision.id) ? "title" : "body",
     text,
     id: value.knowledge.id,
     commit: value.revision.id,
-    size: tokens(text) + 1
+    size: tokens(text + "\n")
   };
 });
 var categoryHeader = (category, count) => `## ${category} (${count})`;
@@ -6769,15 +6790,30 @@ var byCategory = (items2) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
   const members = items2.filter((item) => item.category === category);
   return members.length ? [{ category, members }] : [];
 });
-var knowledgeGroups = (items2) => byCategory(items2).map(({ category, members }) => ({ category, text: [categoryHeader(category, members.length), ...members.map((item) => item.text)].join("\n") }));
-var groupedCost = (items2) => items2.reduce((sum, item) => sum + item.size, 0) + byCategory(items2).reduce((sum, { category, members }) => sum + tokens(categoryHeader(category, members.length)) + 1, 0);
+var KNOWLEDGE_SCOPE_ORDER = ["global", "project", "session"];
+var byScope = (items2) => KNOWLEDGE_SCOPE_ORDER.flatMap((scope) => {
+  const members = items2.filter((item) => item.scope === scope);
+  return members.length ? [{ scope, members: [...members.filter((item) => item.form !== "title"), ...members.filter((item) => item.form === "title")] }] : [];
+});
+var scopeHeader = (scope, count) => `### ${scope} (${count})`;
+var KNOWLEDGE_TITLES_NOTICE = "Titles only (read trace://K<id> for the body):";
+var knowledgeGroups = (items2) => byCategory(items2).map(({ category, members }) => ({ category, text: [
+  categoryHeader(category, members.length),
+  ...byScope(members).flatMap(({ scope, members: members2 }) => [
+    scopeHeader(scope, members2.length),
+    ...members2.filter((item) => item.form !== "title").map((item) => item.text),
+    ...members2.some((item) => item.form === "title") ? [KNOWLEDGE_TITLES_NOTICE] : [],
+    ...members2.filter((item) => item.form === "title").map((item) => item.text)
+  ])
+].join("\n") }));
+var groupedCost = (items2) => items2.reduce((sum, item) => sum + item.size, 0) + byCategory(items2).reduce((sum, { category, members }) => sum + tokens(categoryHeader(category, members.length) + "\n") + byScope(members).reduce((cost, { scope, members: members2 }) => cost + tokens(scopeHeader(scope, members2.length) + "\n") + (members2.some((item) => item.form === "title") ? tokens(KNOWLEDGE_TITLES_NOTICE + "\n") : 0), 0), 0);
 var knowledgeBody = (items2, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) => ({
   groups: knowledgeGroups(items2),
   cost: items2.length ? tokens(xmlBlock("knowledge", recencyNotice)) + groupedCost(items2) : 0,
-  commits: byCategory(items2).flatMap(({ members }) => members.map((item) => item.commit))
+  commits: byCategory(items2).flatMap(({ members }) => byScope(members).flatMap(({ members: members2 }) => members2.map((item) => item.commit)))
 });
-function budgetKnowledge(knowledge, cap, line = (value) => renderKnowledge(value), budget = "Knowledge capacity", required3, priority, recencyNotice = KNOWLEDGE_RECENCY_NOTICE, alsoOmitted = []) {
-  const ordered = orderedKnowledge(knowledge, line);
+function budgetKnowledge(knowledge, cap, line = (value) => renderKnowledge(value, void 0, false, void 0, true), budget = "Knowledge capacity", required3, priority, recencyNotice = KNOWLEDGE_RECENCY_NOTICE, alsoOmitted = [], titles) {
+  const ordered = orderedKnowledge(knowledge, line, titles);
   const byCommit = new Map(knowledge.map((value) => [value.revision.id, value]));
   const optional3 = ordered.filter((item) => !required3?.has(item.commit)).sort((a, b) => priority ? priority(byCommit.get(a.commit), byCommit.get(b.commit)) : b.commit - a.commit);
   const ranks = new Map(optional3.map((item, index) => [item.commit, index]));
@@ -6797,9 +6833,9 @@ function budgetKnowledge(knowledge, cap, line = (value) => renderKnowledge(value
   const body = knowledgeBody(selected(kept), recencyNotice);
   return { ...body, receipts: emittedReceipts(kept), cost: cost(kept) };
 }
-function renderKnowledgeTitle(value, address2 = `K${value.knowledge.id}@${value.revision.id}`, limits = DEFAULT_WRITING_LIMITS) {
-  const { knowledge, revision: r } = value;
-  return `[${address2}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.title == null ? `(opening only) ${knowledgeOpening(r.text, limits.titleWords)}\u2026` : `(title only) ${r.title}`}${knowledgeStaleLabel(value)}`;
+function renderKnowledgeTitle(value, address2 = `K${value.knowledge.id}`, limits = DEFAULT_WRITING_LIMITS) {
+  const r = value.revision;
+  return `[${address2}] ${r.title == null ? `(opening only) ${knowledgeOpening(r.text, limits.titleWords)}\u2026` : r.title}${knowledgeStaleLabel(value)}`;
 }
 function selectKnowledge(candidates, options) {
   const { baseCap, temporaryCap, pointerCap, line, titleLine, budget = "Knowledge base plus temporary pools", recencyNotice = KNOWLEDGE_RECENCY_NOTICE } = options;
@@ -6819,7 +6855,7 @@ function selectKnowledge(candidates, options) {
     })();
     const baseSet = new Set(base);
     const baseValues = scored.filter((value) => baseSet.has(value.revision.id));
-    const whole = (values, shownLine) => ({ ...knowledgeBody(orderedKnowledge(values, shownLine), recencyNotice), receipts: [] });
+    const whole = (values, shownLine, titles2) => ({ ...knowledgeBody(orderedKnowledge(values, shownLine, titles2), recencyNotice), receipts: [] });
     const baseWindow = whole(baseValues, line);
     const baseCharge = baseValues.length ? baseWindow.cost : 0;
     const ceiling = baseCharge + temporaryCap;
@@ -6839,7 +6875,9 @@ function selectKnowledge(candidates, options) {
       budget,
       wholeSet,
       (a, b) => (score(b) ?? 0) - (score(a) ?? 0) || b.revision.id - a.revision.id,
-      recencyNotice
+      recencyNotice,
+      [],
+      missedSet
     ).commits.filter((commit) => !wholeSet.has(commit));
     const titleSet = new Set(titles);
     const items2 = candidates.filter((value) => wholeSet.has(value.revision.id) || titleSet.has(value.revision.id));
@@ -6847,7 +6885,7 @@ function selectKnowledge(candidates, options) {
     let receipts = renderKnowledgeOmissions(omitted);
     const receiptCost = () => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
     const mixed = (value) => titleSet.has(value.revision.id) ? titleLine(value) : line(value);
-    const window = whole(items2, mixed);
+    const window = whole(items2, mixed, titleSet);
     const receiptsToBase = receipts.length > 0 && baseCharge + receiptCost() <= baseCap;
     if (!receiptsToBase && window.cost + receiptCost() - bodyWindow.cost > pointerCap) receipts = [];
     const receiptPrice = receiptCost();
@@ -6888,11 +6926,8 @@ var factTurnTime = (turnId, turns) => {
   if (value === void 0) throw new Error(`missing Turn T${turnId} for fact rendering`);
   return typeof value === "string" ? value : value.time;
 };
-var factGroupHeader = (turnId, turns) => {
-  const value = turns.get(turnId);
-  const harness = typeof value === "object" ? value.harness : void 0;
-  return `[T${turnId}] ${factTurnTime(turnId, turns)} (selected facts)${harness ? ` \xB7 session harness: ${harness} (context, not claim attribution)` : ""}`;
-};
+var shortTurnTime = (time5) => Number.isFinite(Date.parse(time5)) ? new Date(time5).toISOString().slice(5, 16).replace("T", " ") : time5;
+var factGroupHeader = (turnId, turns) => `[T${turnId}] ${shortTurnTime(factTurnTime(turnId, turns))}`;
 function factGroupLayout(facts, turns) {
   const groups = /* @__PURE__ */ new Map();
   for (const fact of facts) {
@@ -6902,7 +6937,12 @@ function factGroupLayout(facts, turns) {
   }
   const ordered = [...groups].map(([id, group]) => ({ id, group, header: factGroupHeader(id, turns), time: Date.parse(factTurnTime(id, turns)) }));
   ordered.sort((a, b) => (Number.isFinite(a.time) ? a.time : Infinity) - (Number.isFinite(b.time) ? b.time : Infinity) || a.id - b.id);
-  return ordered.flatMap(({ group, header }) => group.sort((a, b) => a.id - b.id).map((fact, index) => ({ fact, header: index === 0 ? `${header}
+  const harnesses = [...new Set([...groups.keys()].flatMap((id) => {
+    const value = turns.get(id);
+    return typeof value === "object" && value.harness ? [value.harness] : [];
+  }))];
+  const notice = `Selected facts; turn times are UTC.${harnesses.length ? ` session harness: ${harnesses.join(", ")} (context, not claim attribution).` : ""}`;
+  return ordered.flatMap(({ group, header }, groupIndex) => group.sort((a, b) => a.id - b.id).map((fact, index) => ({ fact, header: index === 0 ? `${groupIndex === 0 ? notice + "\n" : ""}${header}
 ` : "" })));
 }
 function renderFactGroups(facts, line, turns, preview2 = false) {
@@ -7590,7 +7630,7 @@ function searchFacade(store) {
               const fields = ranks.get(turnId)?.fields;
               const source = entry();
               const ownText = source.text.toLocaleLowerCase(), textMatches = needles?.some((term) => ownText.includes(term)) ?? false;
-              let score = textMatches ? fields?.get(`0:${source.role === "user" ? "user_prompt" : source.role === "assistant" ? "assistant_text" : ""}`) ?? 0 : 0;
+              let score = textMatches ? fields?.get(`E${source.id}:user_prompt`) ?? fields?.get(`0:${source.role === "user" || source.role === "observation" ? "user_prompt" : source.role === "assistant" ? "assistant_text" : ""}`) ?? 0 : 0;
               for (const call of source.calls) {
                 score = Math.min(
                   score,
@@ -8010,9 +8050,10 @@ var withRetrievalPolicy = (instructions, names) => `${instructions}
 ${retrievalPolicy(names)}`;
 
 // src/core/api/read.ts
-var import_node_crypto5 = require("node:crypto");
+var import_node_crypto6 = require("node:crypto");
 
 // src/core/render/reading-guide.ts
+var import_node_crypto4 = require("node:crypto");
 function readingGuide(sessionId, names) {
   const session = sessionId === void 0 ? "<n>" : String(sessionId);
   return `Memory is read at trace:// addresses with ${names.read}${names.grep === void 0 ? "" : ` or ${names.grep}`}, never a shell command. trace:// lists every address.
@@ -8022,10 +8063,13 @@ raw only: #E<k> gives one full entry and @role keeps one role, e.g. citation T12
 trace://K<id>, trace://F<id>: one knowledge item or fact.
 Give a subagent trace://knowledge/S${session} for background or trace://compact/S${session} to continue, and tell it to use ${names.read}.`;
 }
+function contextGuides(sessionId, names, delivered = /* @__PURE__ */ new Set()) {
+  return [{ purpose: "reading", text: readingGuide(sessionId, names) }, { purpose: "ordering", text: KNOWLEDGE_RECENCY_NOTICE }].map((guide) => ({ ...guide, kind: "guide", version: (0, import_node_crypto4.createHash)("sha256").update(guide.text).digest("hex") })).filter((guide) => !delivered.has(guide.version));
+}
 
 // src/core/render/material.ts
-var import_node_crypto4 = require("node:crypto");
-var memoryBodyHash = (text) => (0, import_node_crypto4.createHash)("sha256").update(text).digest("hex");
+var import_node_crypto5 = require("node:crypto");
+var memoryBodyHash = (text) => (0, import_node_crypto5.createHash)("sha256").update(text).digest("hex");
 function measuredMemory(text, material) {
   return { text, composition: {
     bodyHash: memoryBodyHash(text),
@@ -8034,7 +8078,7 @@ function measuredMemory(text, material) {
     raw: tokens([
       ...(material.earlierUsers ?? []).map((entry) => entry.view),
       ...(material.entries ?? []).map((entry) => entry.view)
-    ].join("\n\n"))
+    ].filter(Boolean).join("\n\n"))
   } };
 }
 function measureRetainedMemoryText(rendered, original, offset, length) {
@@ -8081,6 +8125,8 @@ ${section2.title}
 }
 function transportItemText(item, recencyNotice = KNOWLEDGE_RECENCY_NOTICE) {
   switch (item.kind) {
+    case "guide":
+      return item.text;
     case "knowledge":
       return renderKnowledgeBlock(knowledgeGroups([item]), recencyNotice);
     case "state":
@@ -8104,12 +8150,12 @@ ${item.text}`;
   }
 }
 var FACTS_TITLE = "Recent facts (by Turn):";
-var FACT_TITLES_TITLE = "Earlier facts (titles only; read trace://F<id> for the body):";
+var FACT_TITLES_TITLE = "Earlier facts (titles only; turn times UTC; read trace://F<id> for the body):";
 var RAW_TITLE = "Raw:";
 var EARLIER_USERS_TITLE = "Earlier user messages:";
 var KNOWLEDGE_STATUS_TITLE = "Inherited knowledge status (these commits are not current authority):";
 var BLOCK = "\n\n";
-var rawWindowTokens = (views, receipts) => (views.length ? charge([xmlBlock("episodic", ""), RAW_TITLE]) + charge(views) : 0) + (receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0);
+var rawWindowTokens = (views, receipts) => (views.some(Boolean) ? charge([xmlBlock("episodic", ""), RAW_TITLE]) + charge(views.filter(Boolean)) : 0) + (receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0);
 var rangeLine = (range) => `Range: ${range.from}..${range.to}`;
 var block = (parts) => parts.join(BLOCK);
 var knowledgeBlock = (material) => renderKnowledgeBlock(material.knowledge ?? [], material.knowledgeNotice);
@@ -8121,7 +8167,7 @@ var statusBlock = (notes) => notes.length ? [`${KNOWLEDGE_STATUS_TITLE}
 ${notes.join("\n")}`] : [];
 var injectionText = (material, knowledgeNotes = []) => finish({ content: block([...leading(material), ...statusBlock(knowledgeNotes)]), receipts: material.receipts });
 var compactText = (material, rawTitle = RAW_TITLE, knowledgeNotes = []) => {
-  const facts = material.facts ?? [], raw = (material.entries ?? []).map((entry) => entry.view);
+  const facts = material.facts ?? [], raw = (material.entries ?? []).map((entry) => entry.view).filter(Boolean);
   const episodic = [
     ...material.factTitles?.length ? [FACT_TITLES_TITLE, material.factTitles.join("\n")] : [],
     ...facts.length ? [FACTS_TITLE, facts.join("\n")] : [],
@@ -8149,6 +8195,7 @@ var deliveredView = (state) => ({
   knowledgeCommitIds: new Set(state.knowledgeCommitIds),
   knowledgeTitleCommitIds: new Set(state.knowledgeTitleCommitIds),
   knowledgeStates: new Set(state.knowledgeStates),
+  guideVersions: new Set(state.guideVersions),
   knowledgeTokens: state.knowledgeTokens,
   temporaryTokens: state.temporaryTokens,
   pointerTokens: state.pointerTokens ?? 0
@@ -8287,7 +8334,7 @@ function readFacade(store, config3, prepare = () => {
     const maxChars = namesMaxChars ? options.maxChars : saved?.maxChars;
     if (saved && namesMaxChars && maxChars !== saved.maxChars)
       throw new Error("cursor maxChars is frozen; omit it or use the original ceiling");
-    const cursor = (0, import_node_crypto5.randomUUID)();
+    const cursor = (0, import_node_crypto6.randomUUID)();
     const fragmentNote = "Hit continues on next page; concatenate without a newline.";
     const output = (lines2, more2, fragment2 = false) => finish({
       content: lines2.join("\n"),
@@ -8381,7 +8428,8 @@ function readFacade(store, config3, prepare = () => {
     { ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
     `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`,
     false,
-    store.writing
+    store.writing,
+    true
   );
   const applicable = (projectId, sessionId = 0, headTurnId, branch) => store.listVisibleKnowledge(sessionId, projectId, headTurnId, branch);
   const injection = (target, visible = noVisibility(), transport = false, toolNames = canonicalToolNames) => {
@@ -8402,10 +8450,17 @@ function readFacade(store, config3, prepare = () => {
     }));
     const current = values(graph.current.filter((revision) => revision.op !== "archive"));
     const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? void 0 : projectId, graph, true);
-    const notice = id === void 0 ? void 0 : sessionKnowledgeNotice(id);
+    if (!current.length && !allStates.length) return empty();
+    const guides = contextGuides(id, toolNames, visible.guideVersions);
+    const guideVersions = guides.map((guide2) => guide2.version);
+    const guide = guides.map((guide2) => guide2.text).join("\n\n");
+    const reading = guides.find((guide2) => guide2.purpose === "reading")?.text ?? "";
+    const ordering = guides.find((guide2) => guide2.purpose === "ordering")?.text ?? "";
+    const notice = id === void 0 ? ordering : sessionKnowledgeNotice(id, ordering);
+    const noMaterial = () => ({ text: "", knowledgeCommitIds: [], knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
     const states = allStates.filter((state) => !(visible.knowledgeStates ?? /* @__PURE__ */ new Set()).has(knowledgeStateKey(state.receipt)));
-    if (!delta.length && !states.length) return empty();
+    if (!delta.length && !states.length) return noMaterial();
     const line = knowledgeLine;
     const unaccountedCost = () => {
       const bodies = values(graph.revisions.filter((revision) => revision.op !== "archive" && visible.knowledgeCommitIds.has(revision.id)));
@@ -8413,13 +8468,12 @@ function readFacade(store, config3, prepare = () => {
       const acknowledged = visible.knowledgeStates ?? /* @__PURE__ */ new Set();
       const sources = [...acknowledged].map((key) => Number(key.split(">")[0]));
       const notes = knowledgeStateNotes(store, current, sources, path, path ? void 0 : projectId, graph, true).filter((state) => acknowledged.has(knowledgeStateKey(state.receipt))).map((state) => state.text);
-      return tokens(injectionText({ knowledge: groups, receipts: [] }, notes));
+      return tokens(injectionText({ knowledge: groups, knowledgeNotice: notice, receipts: [] }, notes));
     };
     const baseLeft = Math.max(0, baseCap - (visible.knowledgeTokens ?? unaccountedCost()));
     const temporaryLeft = Math.max(0, temporaryCap - (visible.temporaryTokens ?? 0));
     const pointerLeft = Math.max(0, pointerCap - (visible.pointerTokens ?? 0));
-    if (baseLeft <= 0 && temporaryLeft <= 0 && pointerLeft <= 0) return empty();
-    const guide = readingGuide(id, toolNames);
+    if (baseLeft <= 0 && temporaryLeft <= 0 && pointerLeft <= 0) return noMaterial();
     const buildStates = (count, includeGuide = true) => injectionText({ knowledge: [], receipts: [], ...includeGuide ? { readingGuide: guide } : {} }, states.slice(0, count).map((state) => state.text));
     const longest = (high, fits) => {
       let low = 0;
@@ -8441,24 +8495,25 @@ function readFacade(store, config3, prepare = () => {
     };
     const stateCount = longest(states.length, (count) => tokens(buildStates(count, false)) <= baseLeft);
     if (stateCount < states.length) {
-      if (!stateCount) return empty();
+      if (!stateCount) return noMaterial();
       const material = { knowledge: [], receipts: [], readingGuide: guide };
       const rendered = measuredMemory(buildStates(stateCount), material);
       return {
         ...rendered,
+        guideVersions,
         knowledgeTokens: tokens(buildStates(stateCount, false)),
         knowledgeAllowance: baseLeft,
         temporaryAllowance: temporaryLeft,
         pointerAllowance: pointerLeft,
         knowledgeCommitIds: [],
         knowledgeStates: states.slice(0, stateCount).map((state) => state.receipt),
-        ...transport ? { transportItems: states.slice(0, stateCount).map(transportState) } : {}
+        ...transport ? { transportItems: [...guides, ...states.slice(0, stateCount).map(transportState)] } : {}
       };
     }
     const selectedStates = states.slice(0, stateCount);
     const titleLine = (value) => renderKnowledgeTitle(
       { ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
-      `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`,
+      `K${value.knowledge.id}`,
       store.writing
     );
     const statesText = selectedStates.map((state) => state.text);
@@ -8471,10 +8526,15 @@ function readFacade(store, config3, prepare = () => {
         pointerCap: Math.max(0, pointerLeft - slackPointer),
         line,
         titleLine,
-        recencyNotice: void 0,
+        recencyNotice: notice,
         titled: visible.knowledgeTitleCommitIds
       });
-      const material = { knowledge: selection.groups, receipts: selection.receipts, knowledgeNotice: notice, readingGuide: guide };
+      const material = {
+        knowledge: selection.groups,
+        receipts: selection.receipts,
+        knowledgeNotice: notice,
+        readingGuide: selection.groups.length ? reading : guide
+      };
       const text = injectionText(material, statesText);
       const windowText = injectionText({ ...material, readingGuide: "" }, statesText);
       const total = tokens(windowText), baseUsed = selection.baseGroups.length || selectedStates.length || selection.baseReceipts.length ? tokens(injectionText({ knowledge: selection.baseGroups, receipts: selection.baseReceipts, knowledgeNotice: notice }, statesText)) : 0;
@@ -8492,10 +8552,11 @@ function readFacade(store, config3, prepare = () => {
         slackPointer += pointerUsed - pointerLeft;
         continue;
       }
-      if (!selection.ranked.length && !selectedStates.length) return empty();
+      if (!selection.ranked.length && !selectedStates.length) return noMaterial();
       const rendered = measuredMemory(text, material);
       return {
         ...rendered,
+        guideVersions,
         knowledgeTokens: baseUsed,
         temporaryTokens: bodyUsed,
         pointerTokens: pointerUsed,
@@ -8505,10 +8566,12 @@ function readFacade(store, config3, prepare = () => {
         knowledgeCommitIds: selection.bodyCommits,
         ...selection.titleCommits.length ? { knowledgeTitleCommitIds: selection.titleCommits } : {},
         ...transport ? { transportItems: [
+          ...guides,
           ...selection.ranked.map(({ value, form, allowance, rank }) => ({
             kind: "knowledge",
             text: form === "title" ? titleLine(value) : knowledgeLine(value),
             category: knowledgeCategoryGroup(value.revision.category),
+            scope: value.revision.scope,
             commitId: value.revision.id,
             address: `K${value.knowledge.id}@v${store.versionOrdinal(value.knowledge.id, value.revision.id)}`,
             form,
@@ -8791,7 +8854,9 @@ function readFacade(store, config3, prepare = () => {
       const opener = (title) => charge([xmlBlock("episodic", ""), title]);
       const receiptCharge = (receipts) => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
       const view = (entry) => renderEntry(entry, config3.render, resultText);
-      const guide = options.readingGuide === false ? "" : readingGuide(sessionId, options.toolNames ?? canonicalToolNames);
+      const guides = options.readingGuide === false ? [] : contextGuides(sessionId, options.toolNames ?? canonicalToolNames);
+      const guide = guides.map((guide2) => guide2.text).join("\n\n");
+      const reading = guides.find((guide2) => guide2.purpose === "reading")?.text ?? "";
       const knowledgeEnvelope = caps.knowledge;
       const allNotes = options.knowledge === false ? [] : knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, void 0, void 0, true).sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit);
       const noteReceipt = (omitted) => omitted ? [`omitted ${omitted} older inherited knowledge status lines; knowledge base is full`] : [];
@@ -8807,11 +8872,12 @@ function readFacade(store, config3, prepare = () => {
         { ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
         `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`,
         true,
-        store.writing
+        store.writing,
+        true
       ) : knowledgeLine;
       const titleLine = (value) => renderKnowledgeTitle(
         { ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
-        `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`,
+        `K${value.knowledge.id}`,
         store.writing
       );
       const candidates = sourced.filter((e) => pendingIds.has(e.id) || options.processedRawRefill !== false && !retained.has(e.nativeId));
@@ -8827,7 +8893,9 @@ function readFacade(store, config3, prepare = () => {
             if (/capacity/.test(String(error3))) break;
             throw error3;
           }
-          const cost = tokens(rendered.content) + 1;
+          if (/^\[T\d+#E\d+\] assistant: \[thinking omitted\]$/.test(rendered.content))
+            rendered = { ...rendered, content: "" };
+          const cost = rendered.content ? tokens(rendered.content) + 1 : 0;
           const availableBase = Math.max(0, caps.raw - rawBaseUsed);
           if (pendingIds.has(entry.id)) {
             const availableAllowance = Math.max(0, temporaryCap - allowanceUsed);
@@ -8907,7 +8975,7 @@ function readFacade(store, config3, prepare = () => {
       const titleLines = () => factGroupLayout(selectedTitles, factTurns).map(({ fact, header }) => {
         const value = factTurns.get(fact.turnId);
         const time5 = typeof value === "string" ? value : value.time;
-        return `${header ? `[T${fact.turnId}] ${time5}
+        return `${header ? `[T${fact.turnId}] ${shortTurnTime(time5)}
 ` : ""}[F${fact.id}] ${fact.title}`;
       });
       const titleCost = () => selectedTitles.length ? (rawKept || factsKept || earlierUsers.length ? charge([FACT_TITLES_TITLE]) : opener(FACT_TITLES_TITLE)) + charge(titleLines()) : 0;
@@ -8948,7 +9016,7 @@ function readFacade(store, config3, prepare = () => {
         entries: suppliedRaw.map((s) => ({ id: s.entry.id, view: s.content })),
         receipts: [...suppliedRaw.flatMap((s) => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...finalUserReceipts, ...active.receipts, ...noteOmittedReceipt],
         knowledgeNotice: notice,
-        readingGuide: guide
+        readingGuide: active.groups.length ? reading : guide
       };
       return {
         ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
@@ -8958,10 +9026,12 @@ function readFacade(store, config3, prepare = () => {
         temporaryAllowance: temporaryCap,
         pointerAllowance: pointerCap,
         ...transport ? { transportItems: [
+          ...guides,
           ...active.ranked.map(({ value, form, allowance, rank }) => ({
             kind: "knowledge",
             text: form === "title" ? titleLine(value) : line(value),
             category: knowledgeCategoryGroup(value.revision.category),
+            scope: value.revision.scope,
             commitId: value.revision.id,
             address: `K${value.knowledge.id}@v${store.versionOrdinal(value.knowledge.id, value.revision.id)}`,
             form,
@@ -9002,6 +9072,7 @@ function readFacade(store, config3, prepare = () => {
           entries: suppliedRaw.map((s) => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" })),
           factIds: finalFacts.map((f) => f.id),
           knowledgeCommitIds: active.bodyCommits,
+          guideVersions: guides.map((guide2) => guide2.version),
           ...active.titleCommits.length ? { knowledgeTitleCommitIds: active.titleCommits } : {},
           // Each pool records its own charge for later foreground admissions.
           knowledgeTokens: active.baseGroups.length || notes.length || active.baseReceipts.length || noteOmittedReceipt.length ? tokens(injectionText({ knowledge: active.baseGroups, receipts: [...active.baseReceipts, ...noteOmittedReceipt], knowledgeNotice: notice }, notes)) : 0,
@@ -9408,7 +9479,7 @@ ${full(`F${id}`)}`, unbounded: false };
 }
 
 // src/core/api/index.ts
-var import_node_crypto9 = require("node:crypto");
+var import_node_crypto10 = require("node:crypto");
 
 // src/core/prompts/limits.ts
 function renderLimits(text, limits) {
@@ -9424,7 +9495,7 @@ function loadPrompt(file2, names = canonicalToolNames, limits = DEFAULT_WRITING_
 }
 
 // src/core/noting/index.ts
-var import_node_crypto7 = require("node:crypto");
+var import_node_crypto8 = require("node:crypto");
 
 // src/core/workspace/plan.ts
 var import_node_fs2 = require("node:fs");
@@ -10308,7 +10379,7 @@ function checkWorkspace(store, task) {
 }
 
 // src/core/noting/workspace.ts
-var import_node_crypto6 = require("node:crypto");
+var import_node_crypto7 = require("node:crypto");
 var import_node_fs4 = require("node:fs");
 
 // src/core/workspace/run.ts
@@ -10573,7 +10644,7 @@ ${this.report(result)}`;
     return {
       steps: [{ step: 1, stopChecks: this.checks }],
       budget: this.budget(),
-      taskPrompts: this.announced ? [{ step: 1, hash: (0, import_node_crypto6.createHash)("sha256").update(this.prompts[this.task]).digest("hex") }] : []
+      taskPrompts: this.announced ? [{ step: 1, hash: (0, import_node_crypto7.createHash)("sha256").update(this.prompts[this.task]).digest("hex") }] : []
     };
   }
 };
@@ -10745,7 +10816,7 @@ function freezeNoting(store, input, config3, resultText = rawResultText, pending
     const priced = instructions + tools + tokens(prepared.text);
     lastPrice = priced;
     const fits = !capacity || priced <= capacity.inputTokens;
-    if (fits) return { ...frozen, prepared, prompt, taskPrompts, promptHash: (0, import_node_crypto7.createHash)("sha256").update(prompt).digest("hex"), names };
+    if (fits) return { ...frozen, prepared, prompt, taskPrompts, promptHash: (0, import_node_crypto8.createHash)("sha256").update(prompt).digest("hex"), names };
     if (capacity && pointers && assembled.charged.pointer) {
       pointers = Math.max(0, Math.min(pointers - 1, assembled.charged.pointer - Math.max(1, priced - capacity.inputTokens)));
       continue;
@@ -10775,7 +10846,7 @@ function freezeNoting(store, input, config3, resultText = rawResultText, pending
     names,
     prompt,
     taskPrompts,
-    promptHash: (0, import_node_crypto7.createHash)("sha256").update(prompt).digest("hex")
+    promptHash: (0, import_node_crypto8.createHash)("sha256").update(prompt).digest("hex")
   };
 }
 function notingMaterial(frozen, view, assembled, selected, names) {
@@ -11004,7 +11075,7 @@ function directoryAllocation(store, cwd2, own, options) {
 }
 
 // src/core/dreaming/index.ts
-var import_node_crypto8 = require("node:crypto");
+var import_node_crypto9 = require("node:crypto");
 var import_node_fs6 = require("node:fs");
 var import_node_path8 = require("node:path");
 
@@ -11458,7 +11529,7 @@ function prepareDreaming(store, input, config3, claim, path) {
     claim,
     names,
     prompt,
-    promptHash: (0, import_node_crypto8.createHash)("sha256").update(prompt).digest("hex"),
+    promptHash: (0, import_node_crypto9.createHash)("sha256").update(prompt).digest("hex"),
     model,
     knowledge,
     groups,
@@ -12045,7 +12116,7 @@ function selectByOrdinal(entries, selection, turnId) {
 function TraceMemory(dbPath, runAgent, config3 = {}, resultText = rawResultText, normalizeSource, humanUser) {
   const cfg = validateConfig(config3);
   const store = new Store(dbPath, normalizeSource, () => cfg.writing);
-  const executorId = (0, import_node_crypto9.randomUUID)();
+  const executorId = (0, import_node_crypto10.randomUUID)();
   let stopping = false;
   const tasks = /* @__PURE__ */ new Set();
   const forceDreaming = (task) => {
@@ -12740,7 +12811,7 @@ var PHASE_SETTING_KEYS = {
 
 // src/hosts/retired-settings.ts
 var import_node_fs7 = require("node:fs");
-var import_node_crypto10 = require("node:crypto");
+var import_node_crypto11 = require("node:crypto");
 var RETIRED_CONSOLIDATION_KEYS = [
   "consolidationModel",
   "consolidationThinking",
@@ -12765,7 +12836,7 @@ function upgradeSettingsFile(path, section2, validate, report) {
   if (!removed.length) return [];
   validate(values);
   const next = section2 === void 0 ? values : { ...document, [section2]: values };
-  const temporary = `${path}.${(0, import_node_crypto10.randomUUID)()}`;
+  const temporary = `${path}.${(0, import_node_crypto11.randomUUID)()}`;
   try {
     (0, import_node_fs7.writeFileSync)(temporary, `${JSON.stringify(next, null, 2)}
 `, { flag: "wx", mode: 384 });
@@ -12911,13 +12982,13 @@ function resolveCcHostConfig(input) {
 // src/hosts/cc/binding.ts
 var import_node_fs9 = require("node:fs");
 var import_node_path11 = require("node:path");
-var import_node_crypto12 = require("node:crypto");
+var import_node_crypto13 = require("node:crypto");
 var import_node_sqlite2 = require("node:sqlite");
 
 // src/hosts/cc/native-session.ts
 var import_node_fs8 = require("node:fs");
 var import_node_child_process5 = require("node:child_process");
-var import_node_crypto11 = require("node:crypto");
+var import_node_crypto12 = require("node:crypto");
 var import_node_path10 = require("node:path");
 function nativeSessionDirectory(config3) {
   return (0, import_node_path10.join)(config3.stateDir, "native-sessions");
@@ -12947,7 +13018,7 @@ function processAncestors(depth = 5, parentOf = (pid) => {
   return ancestors;
 }
 function writeAtomically(target, content) {
-  const temporary = `${target}.${process.pid}.${(0, import_node_crypto11.randomUUID)()}`;
+  const temporary = `${target}.${process.pid}.${(0, import_node_crypto12.randomUUID)()}`;
   let descriptor;
   try {
     descriptor = (0, import_node_fs8.openSync)(temporary, "wx", 384);
@@ -13181,7 +13252,7 @@ function assertOperatorBinding(config3, binding, store) {
     throw new Error("bound Claude Code core session or project disagrees with the database");
 }
 function writeBinding(config3, binding, published) {
-  const target = bindingPath(config3, binding.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto12.randomUUID)()}`;
+  const target = bindingPath(config3, binding.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto13.randomUUID)()}`;
   const directory = (0, import_node_path11.dirname)(target);
   (0, import_node_fs9.mkdirSync)(directory, { recursive: true });
   let descriptor;
@@ -13325,7 +13396,7 @@ async function recordSessionStart(config3, input, nativeCreatedAt2) {
 }
 
 // src/hosts/cc/transcript.ts
-var import_node_crypto13 = require("node:crypto");
+var import_node_crypto14 = require("node:crypto");
 var import_node_fs11 = require("node:fs");
 var import_node_perf_hooks = require("node:perf_hooks");
 
@@ -13443,6 +13514,15 @@ var ccCarrierStart = (text) => text.startsWith(CARRIER_START) ? 0 : text.startsW
 var CC_AUTO_CONTINUE_SUFFIX = `
 Continue the conversation from where it left off without asking the user any further questions. Resume directly \u2014 do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.`;
 var ccStripAutoContinue = (text) => text.endsWith(CC_AUTO_CONTINUE_SUFFIX) ? text.slice(0, -CC_AUTO_CONTINUE_SUFFIX.length) : text;
+function ccReceiptCarriers(record3) {
+  const attachment = object3(record3.attachment);
+  const content = record3.type === "attachment" && attachment?.type === "hook_additional_context" ? attachment.content : record3.type === "user" ? record3.message?.content : void 0;
+  const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.flatMap((value) => typeof value === "string" ? [value] : object3(value)?.type === "text" && typeof object3(value)?.text === "string" ? [String(object3(value).text)] : []) : [];
+  return texts.flatMap((value) => {
+    const text = ccStripAutoContinue(value), start = ccCarrierStart(text);
+    return start < 0 ? [] : [start === 0 ? text : text.endsWith(COMPACTION_SUMMARY_SUFFIX) ? text.slice(start, -COMPACTION_SUMMARY_SUFFIX.length) : ""].filter(Boolean);
+  });
+}
 var CcNativeLineageError = class extends Error {
 };
 var lastMessageBefore = (file2, fail) => {
@@ -13497,11 +13577,36 @@ var snapshot = (path, stamp, values = {}) => ({
   reset: false,
   ...values
 });
+var promptRole = (record3, envelope = record3) => {
+  const origin = object3(envelope.origin ?? record3.origin);
+  if (record3.isMeta === true) return "observation";
+  if (origin) return origin.kind === "human" ? "user" : "observation";
+  return ["typed", "queued", "sdk"].includes(String(envelope.promptSource ?? record3.promptSource)) ? "user" : "observation";
+};
+var promptLabel = (envelope, record3 = envelope) => {
+  const kind = object3(envelope.origin ?? record3.origin)?.kind;
+  return typeof kind === "string" && kind !== "human" ? kind : void 0;
+};
 function classifySourceRecord(record3) {
   const id = nativeId(record3);
   if (!id || !mainRecord(record3)) return null;
   if (record3.type === "system" && record3.subtype === "compact_boundary" && record3.isMeta !== true)
     return { kind: "compaction", record: record3, nativeId: id, timestamp: timestamp(record3) };
+  const attachment = object3(record3.attachment);
+  if (record3.type === "attachment" && attachment?.type === "queued_command") {
+    const content2 = attachment.prompt;
+    if (!(typeof content2 === "string" || Array.isArray(content2))) return null;
+    return {
+      kind: "queued",
+      record: record3,
+      nativeId: id,
+      timestamp: timestamp(record3),
+      text: textBlocks(content2).join("\n"),
+      role: promptRole(record3, attachment),
+      label: promptLabel(attachment, record3),
+      calls: []
+    };
+  }
   if (record3.type !== "user" && record3.type !== "assistant") return null;
   if (record3.type === "user" && record3.interruptedMessageId !== void 0) return null;
   const message = object3(record3.message);
@@ -13523,7 +13628,7 @@ function classifySourceRecord(record3) {
     const text2 = textBlocks(content).join("\n");
     const hasThinking = blocks(content).some((block2) => block2.type === "thinking" || block2.type === "redacted_thinking");
     if (!text2 && !calls.length && !hasThinking) return null;
-    return { kind: "assistant", record: record3, nativeId: id, timestamp: timestamp(record3), text: text2, calls };
+    return { kind: "assistant", role: "assistant", record: record3, nativeId: id, timestamp: timestamp(record3), text: text2, calls };
   }
   const contentBlocks = blocks(content), toolResults = contentBlocks.filter((block2) => block2.type === "tool_result");
   if (toolResults.length) {
@@ -13539,7 +13644,7 @@ function classifySourceRecord(record3) {
       });
     }
     if (calls.length !== toolResults.length) return null;
-    return { kind: "toolResult", record: record3, nativeId: id, timestamp: timestamp(record3), text: "", calls };
+    return { kind: "toolResult", role: "toolResult", record: record3, nativeId: id, timestamp: timestamp(record3), text: "", calls };
   }
   if (!(typeof content === "string" || Array.isArray(content))) return null;
   if (ccCarrierStart(textBlocks(content)[0] ?? "") >= 0) return null;
@@ -13547,12 +13652,21 @@ function classifySourceRecord(record3) {
   const humanPrompt = record3.isMeta !== true && record3.origin?.kind === "human";
   if (!nativePrompt && !humanPrompt) return null;
   const text = !nativePrompt && typeof content === "string" ? humanCommandPrompt(content) ?? content : textBlocks(content).join("\n");
-  return { kind: "user", record: record3, nativeId: id, timestamp: timestamp(record3), text, calls: [] };
+  return {
+    kind: "user",
+    record: record3,
+    nativeId: id,
+    timestamp: timestamp(record3),
+    text,
+    calls: [],
+    role: promptRole(record3),
+    label: promptLabel(record3)
+  };
 }
 var messageKey = (source) => {
   const message = source?.record.message;
   const identity = source?.kind === "toolResult" ? [message.content] : source?.kind === "assistant" && typeof message?.id === "string" ? [message.id, message.content] : void 0;
-  return identity && (0, import_node_crypto13.hash)("sha256", JSON.stringify(identity), "base64");
+  return identity && (0, import_node_crypto14.hash)("sha256", JSON.stringify(identity), "base64");
 };
 var apiMessageId = (source) => source?.kind === "assistant" && typeof source.record.message?.id === "string" ? source.record.message.id : void 0;
 var nodeOf = (record3, file2) => {
@@ -14243,12 +14357,8 @@ function ccHumanUser(entry) {
   if (!record3 || record3.isMeta !== void 0 && typeof record3.isMeta !== "boolean" || record3.promptSource !== void 0 && typeof record3.promptSource !== "string") return void 0;
   const origin = record3.origin === void 0 ? void 0 : object3(record3.origin);
   if (origin === null || origin?.kind !== void 0 && typeof origin.kind !== "string") return void 0;
-  if (record3.type !== "user") return void 0;
-  if (record3.isMeta === true) return false;
-  if (origin?.kind === "human") return true;
-  if (typeof record3.promptSource === "string") return record3.promptSource === "typed" || record3.promptSource === "queued";
-  if (origin?.kind !== void 0) return false;
-  return void 0;
+  if (record3.type !== "user" && !(record3.type === "attachment" && object3(record3.attachment)?.type === "queued_command")) return void 0;
+  return promptRole(record3, record3.type === "attachment" ? object3(record3.attachment) : record3) === "user";
 }
 var ccSourceBlocks = (entry) => {
   let record3;
@@ -14258,7 +14368,7 @@ var ccSourceBlocks = (entry) => {
     return void 0;
   }
   const source = classifySourceRecord(record3);
-  if (!source || source.kind === "compaction" || source.kind !== entry.role) return void 0;
+  if (!source || source.kind === "compaction" || source.role !== entry.role) return void 0;
   const mapped = new Map(entry.calls.map((call) => [call.callId, call]));
   const result = [];
   if (source.kind === "assistant") {
@@ -14283,8 +14393,9 @@ var ccSourceBlocks = (entry) => {
     }
     return result;
   }
-  if (typeof record3.message?.content === "string") return [{ kind: "text", text: source.text }];
-  for (const block2 of blocks(record3.message?.content)) result.push(block2.type === "text" && typeof block2.text === "string" ? { kind: "text", text: block2.text } : { kind: "marker", text: `[${typeof block2.type === "string" ? block2.type : "non-text content"} omitted]` });
+  const content = source.kind === "queued" ? record3.attachment?.prompt : record3.message?.content;
+  if (typeof content === "string") return [{ kind: "text", text: source.text }];
+  for (const block2 of blocks(content)) result.push(block2.type === "text" && typeof block2.text === "string" ? { kind: "text", text: block2.text } : { kind: "marker", text: `[${typeof block2.type === "string" ? block2.type : "non-text content"} omitted]` });
   return result;
 };
 function readTranscriptTail(path, offset) {
@@ -14423,7 +14534,7 @@ function readTranscriptCreatedAt(path) {
 
 // src/hosts/cc/files.ts
 var import_node_fs12 = require("node:fs");
-var import_node_crypto14 = require("node:crypto");
+var import_node_crypto15 = require("node:crypto");
 var import_node_path12 = require("node:path");
 
 // src/hosts/cc/tool-names.ts
@@ -14443,7 +14554,7 @@ function materializeCcRead(directory, content, virtualPath) {
   const target = virtualPath === void 0 ? (0, import_node_path12.join)((0, import_node_fs12.mkdtempSync)((0, import_node_path12.join)(directory, "read-")), "memory.txt") : (0, import_node_path12.join)(directory, ...virtualPath.slice(MEMORY_ROOT.length).split("/").filter(Boolean), "memory.txt");
   const parent = (0, import_node_path12.dirname)(target);
   (0, import_node_fs12.mkdirSync)(parent, { recursive: true, mode: 448 });
-  const temporary = `${target}.${(0, import_node_crypto14.randomUUID)()}`;
+  const temporary = `${target}.${(0, import_node_crypto15.randomUUID)()}`;
   try {
     (0, import_node_fs12.writeFileSync)(temporary, content, { flag: "wx", mode: 384 });
     (0, import_node_fs12.renameSync)(temporary, target);
@@ -14491,7 +14602,7 @@ function runCcFiles(config3, nativeSessionId, [op, ...args]) {
 }
 
 // src/hosts/cc/lifecycle.ts
-var import_node_fs16 = require("node:fs");
+var import_node_fs17 = require("node:fs");
 var import_node_path16 = require("node:path");
 
 // src/hosts/cc/worker.ts
@@ -44348,6 +44459,780 @@ function createCcRunAgent(config3, dependencies = {}, maxToolRounds = () => 0) {
   };
 }
 
+// src/hosts/cc/injection.ts
+var import_node_crypto17 = require("node:crypto");
+var import_node_fs15 = require("node:fs");
+
+// src/hosts/cc/control.ts
+var import_node_fs14 = require("node:fs");
+var import_node_net = require("node:net");
+var import_node_path14 = require("node:path");
+var import_node_crypto16 = require("node:crypto");
+var socketPath = (config3, token) => {
+  const value = (0, import_node_path14.join)(config3.stateDir, "control", `${token.replaceAll("-", "").slice(0, 12)}.sock`);
+  if (Buffer.byteLength(value) > 100) throw new Error("CC control socket path exceeds the supported Unix-domain path length; configure a shorter stateDir");
+  return value;
+};
+var executorLiveness = (executor) => {
+  try {
+    process.kill(executor.pid, 0);
+    return "alive";
+  } catch (error3) {
+    if (error3.code === "ESRCH") return "dead";
+    return "unknown";
+  }
+};
+async function disableEnrollment(config3, nativeSessionId, store, expectedToken) {
+  let result = { state: "disabled", changed: false };
+  await updateBindingInStoreTransaction(config3, nativeSessionId, store, (current) => {
+    if (!current) throw new Error("CC binding disappeared during off");
+    assertOperatorBinding(config3, current, store);
+    if (expectedToken === null && current.executor) {
+      const liveness = executorLiveness(current.executor);
+      if (liveness !== "dead") {
+        result = { state: liveness === "alive" ? "live-executor" : "unknown-executor", executor: current.executor };
+        return current;
+      }
+    } else if (expectedToken !== null && current.executor?.token !== expectedToken) {
+      throw new Error("CC executor binding changed during off");
+    }
+    if (current.coreSessionId !== null) {
+      store.setEnrollment(current.coreSessionId, false);
+      result = { state: "disabled", changed: current.enrollment.choice !== false };
+      return { ...current, enrollment: store.enrollment(current.coreSessionId) };
+    }
+    result = { state: "disabled", changed: current.enrollment.choice !== false };
+    return current.enrollment.choice === false ? current : { ...current, enrollment: { ...current.enrollment, choice: false } };
+  });
+  return result;
+}
+var closeServer = (server) => new Promise((resolve7) => {
+  if (!server.listening) {
+    resolve7();
+    return;
+  }
+  server.close(() => resolve7());
+});
+async function startControlServer(config3, binding, memory, bindingTimeoutMs, signal, handlers) {
+  const token = (0, import_node_crypto16.randomUUID)(), path = socketPath(config3, token);
+  const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  (0, import_node_fs14.mkdirSync)((0, import_node_path14.dirname)(path), { recursive: true });
+  const server = (0, import_node_net.createServer)((connection) => {
+    let input = "", handled = false;
+    const disconnected = new AbortController();
+    connection.on("close", () => disconnected.abort());
+    connection.setEncoding("utf8");
+    connection.on("error", (error3) => console.error(`Trace Memory CC: control connection failed: ${String(error3)}`));
+    connection.on("data", (chunk) => {
+      if (handled) return;
+      input += chunk;
+      if (Buffer.byteLength(input) > 16384) {
+        handled = true;
+        connection.destroy(new Error("CC control request is too large"));
+        return;
+      }
+      const newline = input.indexOf("\n");
+      if (newline < 0) return;
+      handled = true;
+      void (async () => {
+        try {
+          const request2 = JSON.parse(input.slice(0, newline));
+          if (request2.token !== token || typeof request2.verb !== "string" || request2.verb !== "stop" && request2.verb !== "off" && request2.verb !== "catchup" && request2.verb !== "dream" && request2.verb !== "full-check" && request2.verb !== "settings" && request2.verb !== "apply" && request2.verb !== "turn-end")
+            throw new Error("invalid CC control request");
+          const current = readBinding(config3, binding.nativeSessionId);
+          if (!current) throw new Error("CC binding disappeared before control");
+          assertOperatorBinding(config3, current, memory.store);
+          if (binding.coreSessionId !== null && current.coreSessionId !== binding.coreSessionId || current.executor?.token !== token)
+            throw new Error("CC core or executor identity changed before control");
+          const verb = request2.verb;
+          if (verb === "turn-end") {
+            if (!handlers?.turnEnd || typeof request2.turnId !== "string" || !request2.turnId || typeof request2.reason !== "string")
+              throw new Error("invalid CC turn-end request");
+            if (!activeFunctionHook(current)) throw new Error("CC function hook registration is not current");
+            await handlers.turnEnd(request2.turnId, request2.reason, disconnected.signal);
+            connection.end(`${JSON.stringify({ ok: true, verb })}
+`);
+            return;
+          }
+          if (verb === "settings") {
+            if (!handlers?.effectiveConfig) throw new Error("effective settings are unavailable on this executor");
+            connection.end(`${JSON.stringify({
+              ok: true,
+              verb,
+              config: handlers.effectiveConfig(),
+              catchup: handlers.catchupSnapshot?.() ?? null,
+              dream: handlers.dreamSnapshot?.() ?? null
+            })}
+`);
+            return;
+          }
+          if (verb === "apply") {
+            if (!handlers?.applyConfig || typeof request2.path !== "string" || !request2.path.startsWith("/") || typeof request2.expected !== "string")
+              throw new Error("invalid CC settings apply request");
+            const current2 = (0, import_node_fs14.readFileSync)(request2.path, "utf8");
+            if (current2 !== request2.expected) throw new Error("CC settings file changed before executor apply");
+            const next = resolveCcHostConfig(JSON.parse(current2));
+            if (next.dbPath !== config3.dbPath || next.stateDir !== config3.stateDir)
+              throw new Error("CC settings apply cannot change executor database or state directory");
+            handlers.applyConfig(next);
+            connection.end(`${JSON.stringify({ ok: true, verb })}
+`);
+            return;
+          }
+          if (verb === "catchup") {
+            if (!handlers) throw new Error("catchup is unavailable on this executor");
+            const reply2 = { ok: true, verb, catchup: await handlers.catchup(), abortRequested: [] };
+            connection.end(`${JSON.stringify(reply2)}
+`);
+            return;
+          }
+          if (verb === "dream" || verb === "full-check") {
+            if (!handlers?.dream) throw new Error(`${verb} is unavailable on this executor`);
+            const reply2 = { ok: true, verb, dream: await handlers.dream(verb === "full-check"), abortRequested: [] };
+            connection.end(`${JSON.stringify(reply2)}
+`);
+            return;
+          }
+          if (verb !== "stop" && verb !== "off") throw new Error("invalid CC cancellation verb");
+          handlers?.beforeCancel();
+          const aborted3 = memory.cancelTasks(false);
+          if (verb === "off") {
+            const releaseImportHold = handlers?.holdImport();
+            try {
+              await disableEnrollment(config3, binding.nativeSessionId, memory.store, token);
+              handlers?.beforeCancel();
+              for (const task of memory.cancelTasks(false))
+                if (!aborted3.some((previous) => previous.executionId === task.executionId)) aborted3.push(task);
+            } finally {
+              releaseImportHold?.();
+            }
+          }
+          const reply = { ok: true, verb, abortRequested: aborted3, termination: "pending-observation" };
+          connection.end(`${JSON.stringify(reply)}
+`);
+        } catch (error3) {
+          connection.end(`${JSON.stringify({ ok: false, error: error3 instanceof Error ? error3.message : String(error3) })}
+`);
+        }
+      })();
+    });
+  });
+  try {
+    await new Promise((resolve7, reject) => {
+      server.once("error", reject);
+      server.listen(path, resolve7);
+    });
+    await updateBinding(config3, binding.nativeSessionId, (current) => {
+      if (!current) throw new Error("CC binding disappeared before executor attach");
+      if (current.transcriptPath !== binding.transcriptPath) throw new Error("CC binding changed before executor attach");
+      if (current.executor) {
+        const liveness = executorLiveness(current.executor);
+        if (liveness === "alive") throw new Error(`CC session already has a live executor process ${current.executor.pid}`);
+        if (liveness === "unknown") throw new Error(`cannot establish liveness of CC executor process ${current.executor.pid}`);
+      }
+      if (current.lastClose && !current.lastClose.confirmed && current.nativeProcess?.startedAt) {
+        try {
+          const ancestors = processAncestors();
+          const assigned = assignedNativeSession(config3, ancestors);
+          const owner = ancestors.find((ancestor) => ancestor.pid === assigned?.pid);
+          if (owner?.startedAt && assigned?.startedAt === owner.startedAt && owner.pid === current.nativeProcess.pid && owner.startedAt === current.nativeProcess.startedAt && assigned.nativeSessionId === current.nativeSessionId && assigned.transcriptPath === current.transcriptPath)
+            return { ...current, executor, lastClose: null };
+        } catch (error3) {
+          console.error(`Trace Memory CC: native session identity unreadable during executor attach: ${error3 instanceof Error ? error3.message : String(error3)}`);
+        }
+      }
+      return { ...current, executor };
+    }, bindingTimeoutMs, signal);
+  } catch (error3) {
+    try {
+      await closeServer(server);
+    } catch (cleanup) {
+      console.error(`Trace Memory CC: failed attach socket close: ${String(cleanup)}`);
+    }
+    try {
+      (0, import_node_fs14.rmSync)(path, { force: true });
+    } catch (cleanup) {
+      console.error(`Trace Memory CC: failed attach socket removal: ${String(cleanup)}`);
+    }
+    throw error3;
+  }
+  const release = () => updateBinding(
+    config3,
+    binding.nativeSessionId,
+    (current) => !current || current.executor?.token !== token ? current : { ...current, executor: null }
+  );
+  return { executor, close: async (preserveExecutor = false) => {
+    try {
+      await closeServer(server);
+    } finally {
+      try {
+        (0, import_node_fs14.rmSync)(path, { force: true });
+      } finally {
+        if (!preserveExecutor) await release();
+      }
+    }
+  } };
+}
+function request(executor, verb, timeoutMs, detail = {}) {
+  return new Promise((resolve7, reject) => {
+    const connection = (0, import_node_net.createConnection)(executor.socketPath);
+    let output = "", settled = false;
+    const finish2 = (error3) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      connection.destroy();
+      error3 ? reject(error3) : void 0;
+    };
+    const timer = timeoutMs === void 0 ? void 0 : setTimeout(() => finish2(new Error(`CC executor did not acknowledge ${verb} within ${timeoutMs} ms`)), timeoutMs);
+    connection.setEncoding("utf8");
+    connection.on("connect", () => connection.write(`${JSON.stringify({ verb, token: executor.token, ...detail })}
+`));
+    connection.on("data", (chunk) => output += chunk);
+    connection.on("end", () => {
+      try {
+        const reply = JSON.parse(output);
+        if (!reply.ok) throw new Error(reply.error ?? "CC executor rejected control request");
+        settled = true;
+        clearTimeout(timer);
+        resolve7(reply);
+      } catch (error3) {
+        finish2(error3 instanceof Error ? error3 : new Error(String(error3)));
+      }
+    });
+    connection.on("error", (error3) => finish2(error3));
+  });
+}
+async function signalCcTurnEnd(config3, nativeSessionId, turnId, reason) {
+  const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
+  if (!binding?.executor || !activeFunctionHook(binding))
+    throw new Error("CC turn-end has no matching live function hook and executor binding");
+  functionHookNativeProcess(config3, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
+  const reply = await request(binding.executor, "turn-end", void 0, { turnId, reason });
+  if (reply.verb !== "turn-end") throw new Error("invalid CC turn-end response");
+}
+async function executorSnapshot(config3, nativeSessionId) {
+  const reply = await executorSettingsRequest(config3, nativeSessionId, "settings");
+  if (reply.verb !== "settings") throw new Error("invalid CC effective settings reply");
+  if (reply.config.dbPath !== config3.dbPath || reply.config.stateDir !== config3.stateDir)
+    throw new Error("CC executor returned a different database or state directory");
+  return { config: reply.config, catchup: reply.catchup, dream: reply.dream };
+}
+async function executorSettingsRequest(config3, nativeSessionId, verb, apply) {
+  const binding = readBinding(config3, nativeSessionId);
+  if (!binding || binding.dbPath !== config3.dbPath)
+    throw new Error("current CC session has no valid executor binding");
+  const executor = binding.executor;
+  if (!executor || executorLiveness(executor) !== "alive") throw new Error("running CC executor is unavailable");
+  return request(executor, verb, 2e3, apply ?? {});
+}
+async function executorSettings(config3, nativeSessionId, apply) {
+  if (!apply) return (await executorSnapshot(config3, nativeSessionId)).config;
+  const reply = await executorSettingsRequest(config3, nativeSessionId, "apply", apply);
+  if (reply.verb !== "apply") throw new Error("invalid CC settings apply reply");
+  return true;
+}
+function validatedOperatorBinding(config3, nativeSessionId) {
+  const store = new Store(config3.dbPath);
+  try {
+    const current = readBinding(config3, nativeSessionId);
+    if (!current) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+    assertOperatorBinding(config3, current, store);
+    return current;
+  } finally {
+    store.close();
+  }
+}
+async function controlSession(config3, nativeSessionId, verb, timeoutMs = 2e3) {
+  const binding = await validatedOperatorBinding(config3, nativeSessionId);
+  let executor = binding.executor;
+  if (!executor || executorLiveness(executor) === "dead") {
+    if (verb === "stop") return { state: "not-running", enrollmentChanged: false };
+    if (verb === "catchup" || verb === "dream" || verb === "full-check") return { state: "unavailable", diagnostic: `CC ${verb} requires the session's live executor` };
+    const store = new Store(config3.dbPath);
+    try {
+      const disabled = await disableEnrollment(config3, nativeSessionId, store, null);
+      if (disabled.state === "disabled") return { state: "not-running", enrollmentChanged: disabled.changed };
+      if (disabled.state === "unknown-executor")
+        return { state: "unknown", diagnostic: `cannot establish executor liveness for process ${disabled.executor.pid}` };
+      executor = disabled.executor;
+    } finally {
+      store.close();
+    }
+  }
+  const liveness = executorLiveness(executor);
+  if (liveness === "unknown") return { state: "unknown", diagnostic: `cannot establish executor liveness for process ${executor.pid}` };
+  if (liveness === "dead") {
+    if (verb === "stop") return { state: "not-running", enrollmentChanged: false };
+    if (verb === "catchup" || verb === "dream" || verb === "full-check") return { state: "unavailable", diagnostic: `CC ${verb} requires the session's live executor` };
+    const store = new Store(config3.dbPath);
+    try {
+      const disabled = await disableEnrollment(config3, nativeSessionId, store, null);
+      return disabled.state === "disabled" ? { state: "not-running", enrollmentChanged: disabled.changed } : { state: "unknown", diagnostic: "CC executor ownership changed repeatedly during off" };
+    } finally {
+      store.close();
+    }
+  }
+  const finalBinding = await validatedOperatorBinding(config3, nativeSessionId);
+  if (finalBinding.executor?.token !== executor.token)
+    throw new Error(`CC executor binding changed before ${verb}`);
+  try {
+    return { state: "acknowledged", reply: await request(executor, verb, timeoutMs) };
+  } catch (error3) {
+    return { state: "unknown", diagnostic: `executor is live but ${verb} communication failed: ${String(error3)}` };
+  }
+}
+
+// src/hosts/cc/injection.ts
+var BEGIN = CC_INJECTION_BEGIN;
+var END = "TRACE MEMORY KNOWLEDGE END";
+var digest = (text) => (0, import_node_crypto17.createHash)("sha256").update(text, "utf8").digest("hex");
+var databaseIdentity = (path) => {
+  const stat = (0, import_node_fs15.statSync)(path);
+  return `${stat.dev}:${stat.ino}`;
+};
+var positiveId = (value) => Number.isSafeInteger(value) && Number(value) > 0;
+var object6 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+var identityCount = (injection) => injection.knowledgeCommitIds.length + (injection.knowledgeTitleCommitIds?.length ?? 0) + (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0) + (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
+var bodyDigest = (knowledgeTokens, temporaryTokens, titles, body, pointerTokens, guides = []) => {
+  const hash3 = digest(pointerTokens ? JSON.stringify([knowledgeTokens ?? null, temporaryTokens || null, titles, body, pointerTokens]) : !temporaryTokens && !titles.length ? knowledgeTokens === void 0 ? body : JSON.stringify([knowledgeTokens, body]) : JSON.stringify([knowledgeTokens ?? null, temporaryTokens || null, titles, body]));
+  return guides.length ? digest(JSON.stringify([hash3, guides])) : hash3;
+};
+function encodeIds(ids) {
+  const runs = [];
+  for (let i = 0; i < ids.length; i++) {
+    const first = ids[i];
+    let last = first;
+    while (i + 1 < ids.length && ids[i + 1] === last + 1) last = ids[++i];
+    runs.push(first === last ? `${first}` : `${first}-${last}`);
+  }
+  return runs.join(",");
+}
+function decodeIds(value) {
+  if (Array.isArray(value)) return value.every(positiveId) && new Set(value).size === value.length ? value : null;
+  if (typeof value !== "string") return null;
+  if (value === "") return [];
+  const ids = [], seen = /* @__PURE__ */ new Set();
+  for (const run of value.split(",")) {
+    if (!/^[1-9]\d*(?:-[1-9]\d*)?$/.test(run)) return null;
+    const [first, end] = run.split("-").map(Number), last = end ?? first;
+    if (!positiveId(first) || !positiveId(last) || last < first || ids.length + last - first + 1 > 1e6) return null;
+    for (let id = first; id <= last; id++) {
+      if (seen.has(id)) return null;
+      ids.push(id);
+      seen.add(id);
+    }
+  }
+  return ids;
+}
+function injectionFrame(binding, injection, hash3) {
+  if (injection.knowledgeTokens !== void 0 && (!Number.isSafeInteger(injection.knowledgeTokens) || injection.knowledgeTokens < 0))
+    throw new Error("invalid Knowledge accounting metadata");
+  if (injection.temporaryTokens !== void 0 && (!Number.isSafeInteger(injection.temporaryTokens) || injection.temporaryTokens < 0))
+    throw new Error("invalid temporary allowance accounting metadata");
+  if (injection.pointerTokens !== void 0 && (!Number.isSafeInteger(injection.pointerTokens) || injection.pointerTokens < 0))
+    throw new Error("invalid pointer allowance accounting metadata");
+  const header = {
+    d: binding.db,
+    n: binding.nativeSession,
+    s: binding.coreSession,
+    ...injection.guideVersions?.length ? { g: injection.guideVersions } : {},
+    ...injection.knowledgeTokens === void 0 ? {} : { t: injection.knowledgeTokens },
+    ...injection.temporaryTokens ? { u: injection.temporaryTokens } : {},
+    ...injection.pointerTokens ? { v: injection.pointerTokens } : {},
+    ...injection.knowledgeTitleCommitIds?.length ? { i: encodeIds(injection.knowledgeTitleCommitIds) } : {},
+    k: encodeIds(injection.knowledgeCommitIds),
+    r: (injection.knowledgeStates ?? []).map(knowledgeStateKey),
+    h: hash3,
+    ...injection.factIds === void 0 ? {} : { f: encodeIds(injection.factIds) },
+    ...injection.entryIds === void 0 ? {} : { e: encodeIds(injection.entryIds) },
+    ...injection.slice === void 0 ? {} : { p: injection.slice }
+  };
+  const framing = `${BEGIN}
+${CC_INJECTION_HEADER}${JSON.stringify(header)}
+
+${END}`;
+  const bound = 316 + (injection.knowledgeTokens === void 0 ? 0 : 22) + (injection.temporaryTokens ? 22 : 0) + (injection.pointerTokens ? 22 : 0) + (injection.slice ? 16 : 0) + 17 * identityCount(injection) + (injection.guideVersions?.length ? 6 + 67 * injection.guideVersions.length : 0);
+  if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
+  return framing;
+}
+function ccInjectionLength(binding, injection, textLength) {
+  return injectionFrame(binding, injection, "0".repeat(64)).length + textLength;
+}
+function encodeCcInjection(binding, injection) {
+  const frame = injectionFrame(binding, injection, bodyDigest(injection.knowledgeTokens, injection.temporaryTokens, injection.knowledgeTitleCommitIds ?? [], injection.text, injection.pointerTokens, injection.guideVersions));
+  const boundary = frame.length - END.length - 1;
+  return frame.slice(0, boundary) + injection.text + frame.slice(boundary);
+}
+function decodeCcInjectionHeader(content, binding) {
+  if (typeof content !== "string") return null;
+  const prefix = `${BEGIN}
+${CC_INJECTION_HEADER}`;
+  if (!content.startsWith(prefix)) return null;
+  const headerEnd = content.indexOf("\n", prefix.length);
+  if (headerEnd < 0) return null;
+  let parsed2;
+  try {
+    parsed2 = JSON.parse(content.slice(prefix.length, headerEnd));
+  } catch {
+    return null;
+  }
+  const keys = object6(parsed2) ? Object.keys(parsed2).filter((key) => key !== "t" && key !== "u" && key !== "v" && key !== "i" && key !== "g").sort().join(",") : "";
+  const commits = object6(parsed2) ? decodeIds(parsed2.k) : null;
+  const titles = object6(parsed2) && Object.hasOwn(parsed2, "i") ? decodeIds(parsed2.i) : [];
+  const facts = object6(parsed2) && Object.hasOwn(parsed2, "f") ? decodeIds(parsed2.f) : [];
+  const entries = object6(parsed2) && Object.hasOwn(parsed2, "e") ? decodeIds(parsed2.e) : [];
+  if (!object6(parsed2) || keys !== "d,h,k,n,r,s" && keys !== "d,e,f,h,k,n,r,s" && keys !== "d,e,f,h,k,n,p,r,s" || Object.hasOwn(parsed2, "t") && (!Number.isSafeInteger(parsed2.t) || Number(parsed2.t) < 0) || Object.hasOwn(parsed2, "u") && (!Number.isSafeInteger(parsed2.u) || Number(parsed2.u) < 0) || Object.hasOwn(parsed2, "v") && (!Number.isSafeInteger(parsed2.v) || Number(parsed2.v) < 0) || Object.hasOwn(parsed2, "g") && (!Array.isArray(parsed2.g) || !parsed2.g.every((version4) => typeof version4 === "string" && /^[0-9a-f]{64}$/.test(version4)) || new Set(parsed2.g).size !== parsed2.g.length) || titles === null || typeof parsed2.d !== "string" || typeof parsed2.n !== "string" || !(parsed2.s === null || positiveId(parsed2.s)) || typeof parsed2.h !== "string" || !/^[0-9a-f]{64}$/.test(parsed2.h) || commits === null || facts === null || entries === null || keys === "d,e,f,h,k,n,p,r,s" && (!Array.isArray(parsed2.p) || parsed2.p.length !== 2 || !Number.isSafeInteger(parsed2.p[0]) || parsed2.p[0] < 0 || parsed2.p[0] >= parsed2.p[1] || parsed2.p[1] !== 24) || !Array.isArray(parsed2.r) || !parsed2.r.every((value) => typeof value === "string" && /^[1-9]\d*>[1-9]\d*(?:,[1-9]\d*)*$/.test(value))) return null;
+  const states = parsed2.r.map((value) => {
+    const [from, to] = value.split(">");
+    return { fromCommit: Number(from), toCommits: to.split(",").map(Number) };
+  });
+  if (!states.every((state) => positiveId(state.fromCommit) && state.toCommits.every(positiveId))) return null;
+  if (parsed2.d !== binding.db || parsed2.n !== binding.nativeSession) return null;
+  if (!(parsed2.s === binding.coreSession || parsed2.s === null && binding.coreSession !== null)) return null;
+  return {
+    db: parsed2.d,
+    native: parsed2.n,
+    core: parsed2.s,
+    commits,
+    states,
+    ...Object.hasOwn(parsed2, "t") ? { knowledgeTokens: parsed2.t } : {},
+    ...Object.hasOwn(parsed2, "u") ? { temporaryTokens: parsed2.u } : {},
+    ...Object.hasOwn(parsed2, "v") ? { pointerTokens: parsed2.v } : {},
+    titles,
+    guideVersions: parsed2.g ?? [],
+    factIds: facts,
+    entryIds: entries,
+    slice: keys === "d,e,f,h,k,n,p,r,s" ? parsed2.p : null,
+    sha256: parsed2.h
+  };
+}
+function decodeCcInjection(content, binding) {
+  const header = decodeCcInjectionHeader(content, binding), suffix = `
+${END}`;
+  if (!header || typeof content !== "string" || !content.endsWith(suffix)) return null;
+  const headerEnd = content.indexOf("\n", `${BEGIN}
+${CC_INJECTION_HEADER}`.length);
+  const body = content.slice(headerEnd + 1, -suffix.length);
+  return bodyDigest(header.knowledgeTokens, header.temporaryTokens, header.titles, body, header.pointerTokens, header.guideVersions) === header.sha256 ? header : null;
+}
+var enabled = (binding, memory) => sessionEnabled(binding, memory.store);
+async function lockedInjectionBinding(config3, nativeSessionId, transcriptPath, memory) {
+  return updateBinding(config3, nativeSessionId, (current) => {
+    if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== transcriptPath)
+      throw new Error("CC binding changed while preparing injection");
+    current = dropLostCoreSession(current, memory.store);
+    if (!enabled(current, memory)) return current;
+    if (current.coreSessionId !== null) {
+      const session = memory.store.getSession(current.coreSessionId);
+      if (!session || session.host !== coreHostOf(current) || session.projectId !== current.projectId)
+        throw new Error("bound Claude Code core session or project disagrees with the database");
+      return current;
+    }
+    if (current.projectId !== null) {
+      if (!memory.store.getProject(current.projectId)) throw new Error("bound Claude Code project is unavailable");
+      return current;
+    }
+    const project = implicitCcProject(memory.store, current.nativeSessionId);
+    return { ...current, projectId: project.id };
+  });
+}
+async function injectionBinding(config3, initial, memory) {
+  const settled = dropLostCoreSession(initial, memory.store) === initial && (!enabled(initial, memory) || initial.coreSessionId !== null || initial.projectId !== null && !!memory.store.getProject(initial.projectId));
+  return settled ? initial : lockedInjectionBinding(config3, initial.nativeSessionId, initial.transcriptPath, memory);
+}
+function ccDeliveryHead(binding, memory) {
+  const owner = coreHostOf(binding), core = binding.coreSessionId, store = memory.store;
+  const unanchored = () => {
+    throw new Error("a compaction with no source record before it holds no delivery");
+  };
+  const head = (headTurnId2, tail2, leaf, target) => {
+    const pending = tail2.nodes.map((node) => "prompt" in node ? { key: node.prompt } : { key: node.follows === null ? null : store.compactionDeliveryKey(owner, node.follows), compaction: true });
+    const last = tail2.nodes.at(-1);
+    return {
+      owner,
+      node: { owner, sessionId: core, ...core === null ? {} : { branch: binding.branch }, headTurnId: headTurnId2, pending },
+      at: () => !last ? headTurnId2 === null ? {} : { turnId: headTurnId2 } : "prompt" in last ? { nodeKey: last.prompt } : { nodeKey: pending.at(-1).key ?? (0, import_node_crypto17.randomUUID)(), follows: last.follows ?? unanchored() },
+      following: () => ({ nodeKey: (0, import_node_crypto17.randomUUID)(), follows: leaf ?? unanchored() }),
+      target
+    };
+  };
+  if (core === null) {
+    if (binding.projectId === null) throw new Error("provisional Claude Code project is unavailable");
+    const tail2 = tailNodes(readTranscriptTail(binding.transcriptPath, 0) ?? []);
+    return head(null, tail2, tail2.leaf, { projectId: binding.projectId });
+  }
+  const session = store.getSession(core);
+  if (!session || session.host !== owner || session.projectId !== binding.projectId)
+    throw new Error("bound Claude Code core session or project disagrees with the database");
+  const turnOf = (uuid5) => store.findSourceEntry(core, binding.nativeSessionId, uuid5)?.turnId ?? store.findNativeTurn(core, binding.nativeSessionId, uuid5)?.turnId;
+  const root2 = binding.clearedFrom?.compactionTurnId ?? null;
+  let headTurnId = root2;
+  if (binding.selectedLeafUuid !== null) {
+    headTurnId = binding.selectedHeadTurnId ?? turnOf(binding.selectedLeafUuid) ?? null;
+    if (headTurnId === null) throw new Error("native selected source has no persisted core Turn");
+  }
+  let tail = { nodes: [], exit: null, leaf: null };
+  const offset = binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset;
+  if (offset !== void 0) {
+    tail = tailNodes(readTranscriptTail(binding.transcriptPath, offset) ?? [], transcriptHead(binding.transcriptPath, offset));
+    if (tail.leaf !== null && tail.exit !== binding.selectedLeafUuid) {
+      const rebased = tail.exit === null ? root2 : turnOf(tail.exit) ?? null;
+      if (tail.exit === null || rebased !== null) headTurnId = rebased;
+      else console.error(`Trace Memory: unimported native branch point ${tail.exit}; using the stored head`);
+    }
+  }
+  return head(
+    headTurnId,
+    tail,
+    tail.leaf ?? binding.selectedLeafUuid,
+    headTurnId === null ? { projectId: session.projectId } : { sessionId: core, branch: binding.branch, headTurnId }
+  );
+}
+var partOf = (output, visible) => {
+  const context = output?.hookSpecificOutput.additionalContext;
+  if (!context) return [];
+  const header = decodeCcInjection(context, visible);
+  if (!header) throw new Error("emitted Claude Code carrier failed its own decoding");
+  return [{
+    knowledgeCommitIds: header.commits,
+    knowledgeStates: header.states.map(knowledgeStateKey),
+    knowledgeTokens: header.knowledgeTokens ?? 0,
+    knowledgeTitleCommitIds: header.titles,
+    guideVersions: header.guideVersions,
+    temporaryTokens: header.temporaryTokens ?? 0,
+    pointerTokens: header.pointerTokens ?? 0
+  }];
+};
+async function deliver(config3, input, event, emit, options = {}) {
+  const initial = readBinding(config3, input.session_id);
+  if (!initial || initial.dbPath !== config3.dbPath || input.transcript_path !== void 0 && initial.transcriptPath !== input.transcript_path)
+    throw new Error("CC native session or transcript binding is unavailable");
+  const memory = TraceMemory(
+    config3.dbPath,
+    async () => {
+      throw new Error("CC injection Hook cannot run model work");
+    },
+    config3.coreConfig,
+    ccResultText,
+    (entry) => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : void 0,
+    ccHumanUser
+  );
+  try {
+    const binding = options.prepared ? initial : await injectionBinding(config3, initial, memory);
+    if (!enabled(binding, memory)) return null;
+    const visible = { db: databaseIdentity(config3.dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
+    const selected = memory.store.readSnapshot(() => {
+      options.onSnapshot?.(memory.store.db, binding);
+      const head2 = ccDeliveryHead(binding, memory);
+      const at2 = event.kind === "prompt" ? { nodeKey: event.promptId } : event.kind === "compact" ? head2.following() : head2.at();
+      const delivered = event.kind === "compact" ? { ...noVisibility(), knowledgeTokens: 0 } : deliveredView(memory.store.deliveredKnowledge(event.kind === "prompt" ? { ...head2.node, pending: [...head2.node.pending ?? [], { key: event.promptId }] } : head2.node));
+      return { head: head2, at: at2, injection: memory.injection(head2.target, delivered, true, ccPluginToolNames), watermark: memory.store.deliveryWatermark(head2.owner) };
+    });
+    const { head, at, injection } = selected;
+    const output = injection.text ? {
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext: encodeCcInjection(visible, injection)
+      },
+      transportItems: injection.transportItems,
+      transportKnowledgeAllowance: injection.knowledgeAllowance,
+      transportTemporaryAllowance: injection.temporaryAllowance,
+      transportPointerAllowance: injection.pointerAllowance
+    } : null;
+    const { outputs, result } = emit(output, visible);
+    const parts = outputs.flatMap((value) => partOf(value, visible));
+    if (parts.length) memory.store.transaction(() => {
+      if (memory.store.deliveryWatermark(head.owner) !== selected.watermark)
+        throw new Error("another Knowledge publication for this context landed while this one was rendered");
+      memory.store.recordKnowledgeDelivery({ owner: head.owner, ...at }, parts);
+    });
+    return result;
+  } finally {
+    memory.store.close();
+  }
+}
+async function ccPrepareSessionStartInjection(config3, input) {
+  const initial = readBinding(config3, input.session_id);
+  if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
+  const memory = TraceMemory(config3.dbPath, async () => {
+    throw new Error("CC injection Hook cannot run model work");
+  }, config3.coreConfig, ccResultText, void 0, ccHumanUser);
+  try {
+    await injectionBinding(config3, initial, memory);
+  } finally {
+    memory.store.close();
+  }
+}
+var sessionStartSource = (input) => {
+  if (!input.source || !["startup", "resume", "clear", "compact"].includes(input.source))
+    throw new Error("SessionStart source must be startup, resume, clear or compact");
+};
+async function ccSessionStartInjection(config3, input) {
+  sessionStartSource(input);
+  const output = input.source === "compact" ? null : await deliver(config3, input, { kind: "session-start" }, (output2) => ({ outputs: [output2], result: output2 }));
+  await updateBinding(config3, input.session_id, (current) => {
+    if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
+      throw new Error("CC binding changed while completing SessionStart");
+    return current.lastCompactionNotice == null ? current : { ...current, lastCompactionNotice: null };
+  });
+  return output ?? null;
+}
+async function ccPreparedSessionStartInjection(config3, input, slice) {
+  sessionStartSource(input);
+  if (input.source === "compact") return { output: null, slices: slice(null, { db: "", nativeSession: input.session_id, coreSession: null }), snapshot: null };
+  let snapshot2;
+  const delivered = await deliver(config3, input, { kind: "session-start" }, (output, visible) => {
+    const slices = slice(output, visible);
+    return { outputs: slices, result: { output, slices } };
+  }, { prepared: true, onSnapshot: (db, binding) => {
+    const watermarks = db.prepare(`SELECT
+      (SELECT IFNULL(MAX(id),0) FROM facts) f,
+      (SELECT IFNULL(MAX(rowid),0) FROM consolidated_facts) cf,
+      (SELECT IFNULL(MAX(rowid),0) FROM noted_entries) ne,
+      (SELECT IFNULL(MAX(id),0) FROM knowledge_revisions) kr,
+      (SELECT IFNULL(MAX(rowid),0) FROM knowledge_processed) kp,
+      (SELECT IFNULL(MAX(scored_run),0) FROM knowledge) sr,
+      (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) pa,
+      (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) pm,
+      (SELECT base_tokens FROM knowledge_base_policy WHERE id=1) bp,
+      (SELECT IFNULL(MAX(version),0) FROM session_lineage_cursors) cv,
+      (SELECT IFNULL(MAX(version),0) FROM source_paths) sv`).get();
+    const owner = binding.coreSessionId ? db.prepare(`SELECT project_id, enrollment_default, enrollment_choice
+      FROM sessions WHERE id=?`).get(binding.coreSessionId) : null;
+    const header = binding.coreSessionId && binding.branch ? db.prepare(`SELECT length, tail_entry_id, version, hwm_entry_id
+      FROM source_paths WHERE session_id=? AND branch=?`).get(binding.coreSessionId, binding.branch) : null;
+    const cursor = binding.coreSessionId ? db.prepare(`SELECT branch, head_turn_id, version FROM session_lineage_cursors
+      WHERE session_id=? AND lineage=?`).get(binding.coreSessionId, input.session_id) : null;
+    const own = {
+      coreSessionId: binding.coreSessionId,
+      projectId: binding.projectId,
+      enrollment: binding.enrollment,
+      branch: binding.branch,
+      selectedLeafUuid: binding.selectedLeafUuid,
+      nativeProcess: binding.nativeProcess,
+      lastClose: binding.lastClose,
+      clearedFrom: binding.clearedFrom && {
+        nativeSessionId: binding.clearedFrom.nativeSessionId,
+        compactionTurnId: binding.clearedFrom.compactionTurnId,
+        at: binding.clearedFrom.at,
+        inheritedLength: binding.clearedFrom.inheritedEntryIds.length,
+        inheritedTail: binding.clearedFrom.inheritedEntryIds.at(-1) ?? null
+      },
+      transcriptPath: binding.transcriptPath,
+      dbPath: binding.dbPath,
+      cwd: binding.cwd
+    };
+    snapshot2 = { watermarks, owner, header, cursor, own };
+  } });
+  if (!delivered) return { output: null, slices: slice(null, { db: "", nativeSession: input.session_id, coreSession: null }), snapshot: null };
+  if (!snapshot2) throw new Error("prepared SessionStart did not capture its input snapshot");
+  return { ...delivered, snapshot: snapshot2 };
+}
+function ccTruncationWarning(omitted) {
+  const facts = omitted?.facts;
+  return facts ? `Trace Memory: compaction omitted ${facts.count} ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens).` : void 0;
+}
+var importedToEnd = (binding) => {
+  if (binding.coreSessionId === null || binding.selectedLeafUuid === null || binding.transcriptOffset === void 0) return false;
+  const tail = readTranscriptTail(binding.transcriptPath, binding.transcriptOffset);
+  return tail !== null && tailNodes(tail).leaf === null;
+};
+var written = (binding, uuid5, store) => binding.coreSessionId !== null && !!(store.findKnownSourceEntry(binding.coreSessionId, binding.nativeSessionId, uuid5) ?? store.findNativeTurn(binding.coreSessionId, binding.nativeSessionId, uuid5)) || !!readTranscriptTail(binding.transcriptPath, binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset ?? 0)?.some((record3) => record3.uuid === uuid5);
+var TRIGGER_WAIT_MS = 1e4;
+async function ccCompaction(config3, input) {
+  const initial = readBinding(config3, input.session_id);
+  if (!initial) return null;
+  if (initial.dbPath !== config3.dbPath) throw new Error("CC binding uses another database");
+  const lineage = initial.nativeSessionId;
+  const memory = TraceMemory(
+    config3.dbPath,
+    async () => {
+      throw new Error("CC compaction cannot run model work");
+    },
+    config3.coreConfig,
+    ccResultText,
+    (entry) => entry.nativeLineage === lineage ? ccSourceBlocks(entry) : void 0,
+    ccHumanUser
+  );
+  try {
+    const disabled = (binding2) => (binding2.coreSessionId !== null || binding2.nativeCreatedAt !== null) && !enabled(binding2, memory);
+    const importing = (binding2) => binding2.executor !== null && executorLiveness(binding2.executor) !== "dead";
+    let binding = initial;
+    for (const deadline = Date.now() + TRIGGER_WAIT_MS; ; ) {
+      if (disabled(binding)) return null;
+      const present = written(binding, input.trigger, memory.store);
+      if (present && (importedToEnd(binding) || !importing(binding))) break;
+      if (Date.now() >= deadline) {
+        if (!present) throw new Error(`the compaction's trigger ${input.trigger} was not written to the transcript`);
+        break;
+      }
+      await new Promise((wake) => setTimeout(wake, 20));
+      const current = readBinding(config3, input.session_id);
+      if (current?.dbPath !== config3.dbPath || current.transcriptPath !== initial.transcriptPath) throw new Error("CC binding changed during compaction");
+      binding = current;
+    }
+    if (!importedToEnd(binding)) {
+      const projection = new CcProjection(config3, binding, memory);
+      const imported = await projection.synchronize();
+      if (imported.state === "disabled") return null;
+      if (imported.state !== "ready") throw new Error(imported.problems.join("; ") || `the transcript import is ${imported.state}`);
+      binding = projection.currentBinding();
+      if (!importedToEnd(binding)) throw new Error("the transcript grew while it was imported");
+    }
+    const offset = binding.transcriptOffset;
+    const core = binding.coreSessionId, leaf = binding.selectedLeafUuid, branch = binding.branch, owner = coreHostOf(binding);
+    const headTurnId = memory.store.findSourceEntry(core, lineage, leaf)?.turnId ?? memory.store.findNativeTurn(core, lineage, leaf)?.turnId;
+    if (headTurnId === void 0) throw new Error("the selected native source has no persisted core Turn");
+    const { compacted, watermark } = memory.store.readSnapshot(() => ({
+      compacted: memory.compact(core, branch, headTurnId, [], false, {
+        toolNames: ccPluginToolNames,
+        runningTasks: input.runningTasks
+      }),
+      watermark: memory.store.deliveryWatermark(owner)
+    }));
+    if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
+    if (compacted.truncated?.raw) return null;
+    const text = COMPACTION_SUMMARY_PREFIX + encodeCcInjection({ db: databaseIdentity(config3.dbPath), nativeSession: lineage, coreSession: core }, {
+      text: compacted.text,
+      knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
+      knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
+      knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds,
+      temporaryTokens: compacted.supplied.temporaryTokens ?? 0,
+      guideVersions: compacted.supplied.guideVersions,
+      pointerTokens: compacted.supplied.pointerTokens ?? 0,
+      knowledgeStates: compacted.supplied.knowledgeStates,
+      factIds: compacted.supplied.factIds,
+      entryIds: compacted.supplied.entries.map((entry) => entry.id)
+    }) + COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
+    memory.store.transaction(() => {
+      const current = readBinding(config3, input.session_id);
+      if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch || current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
+        throw new Error("the session or its selected path changed while the compaction was built");
+      memory.store.recordKnowledgeDelivery({ owner, nodeKey: (0, import_node_crypto17.randomUUID)(), follows: leaf }, [{
+        knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
+        knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
+        knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
+        knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds ?? [],
+        guideVersions: compacted.supplied.guideVersions,
+        temporaryTokens: compacted.supplied.temporaryTokens ?? 0,
+        pointerTokens: compacted.supplied.pointerTokens ?? 0
+      }]);
+    });
+    const warning = ccTruncationWarning(compacted.truncated);
+    return { text, ...warning ? { warning } : {} };
+  } finally {
+    memory.store.close();
+  }
+}
+async function ccDeltaInjection(config3, input, event, slice) {
+  const slices = await deliver(config3, input, event, (output, visible) => {
+    const slices2 = slice(output, visible);
+    return { outputs: slices2, result: slices2 };
+  });
+  return slices ?? slice(null, { db: "", nativeSession: input.session_id, coreSession: null });
+}
+
 // src/hosts/cc/importer.ts
 var unavailableRunner = async () => ({
   outcome: "failure",
@@ -44692,7 +45577,8 @@ var CcProjection = class {
           nativeLineage: lineage,
           nativeId: source.nativeId,
           turnId,
-          role: source.kind,
+          role: source.role,
+          ...source.label ? { label: source.label } : {},
           text: source.text,
           raw,
           calls: fragments
@@ -44705,7 +45591,23 @@ var CcProjection = class {
       });
     };
     const visit2 = (record3, source, raw, currentScan) => {
-      if (!source) return;
+      if (!source) {
+        const carriers = ccReceiptCarriers(record3);
+        if (!carriers.length) return;
+        const turnId = nearestTurn(record3, currentScan);
+        if (turnId === null) return;
+        for (const text of carriers) {
+          const receipt = decodeCcInjection(text, { db: databaseIdentity(this.config.dbPath), nativeSession: lineage, coreSession: sessionId });
+          if (!receipt?.guideVersions.length) continue;
+          const delivered = this.memory.store.deliveredKnowledge({ owner: coreHostOf(this.binding), sessionId, headTurnId: turnId });
+          const missing = receipt.guideVersions.filter((version4) => !delivered.guideVersions.has(version4));
+          if (missing.length) this.memory.store.recordKnowledgeDelivery(
+            { owner: coreHostOf(this.binding), turnId },
+            [{ knowledgeCommitIds: [], knowledgeStates: [], knowledgeTokens: 0, guideVersions: missing }]
+          );
+        }
+        return;
+      }
       try {
         const committed = ingest(record3, source, raw, currentScan);
         currentScan.associate(source.nativeId, committed.association);
@@ -44967,326 +45869,6 @@ var CcImporter = class {
     this.memory.close();
   }
 };
-
-// src/hosts/cc/control.ts
-var import_node_fs14 = require("node:fs");
-var import_node_net = require("node:net");
-var import_node_path14 = require("node:path");
-var import_node_crypto15 = require("node:crypto");
-var socketPath = (config3, token) => {
-  const value = (0, import_node_path14.join)(config3.stateDir, "control", `${token.replaceAll("-", "").slice(0, 12)}.sock`);
-  if (Buffer.byteLength(value) > 100) throw new Error("CC control socket path exceeds the supported Unix-domain path length; configure a shorter stateDir");
-  return value;
-};
-var executorLiveness = (executor) => {
-  try {
-    process.kill(executor.pid, 0);
-    return "alive";
-  } catch (error3) {
-    if (error3.code === "ESRCH") return "dead";
-    return "unknown";
-  }
-};
-async function disableEnrollment(config3, nativeSessionId, store, expectedToken) {
-  let result = { state: "disabled", changed: false };
-  await updateBindingInStoreTransaction(config3, nativeSessionId, store, (current) => {
-    if (!current) throw new Error("CC binding disappeared during off");
-    assertOperatorBinding(config3, current, store);
-    if (expectedToken === null && current.executor) {
-      const liveness = executorLiveness(current.executor);
-      if (liveness !== "dead") {
-        result = { state: liveness === "alive" ? "live-executor" : "unknown-executor", executor: current.executor };
-        return current;
-      }
-    } else if (expectedToken !== null && current.executor?.token !== expectedToken) {
-      throw new Error("CC executor binding changed during off");
-    }
-    if (current.coreSessionId !== null) {
-      store.setEnrollment(current.coreSessionId, false);
-      result = { state: "disabled", changed: current.enrollment.choice !== false };
-      return { ...current, enrollment: store.enrollment(current.coreSessionId) };
-    }
-    result = { state: "disabled", changed: current.enrollment.choice !== false };
-    return current.enrollment.choice === false ? current : { ...current, enrollment: { ...current.enrollment, choice: false } };
-  });
-  return result;
-}
-var closeServer = (server) => new Promise((resolve7) => {
-  if (!server.listening) {
-    resolve7();
-    return;
-  }
-  server.close(() => resolve7());
-});
-async function startControlServer(config3, binding, memory, bindingTimeoutMs, signal, handlers) {
-  const token = (0, import_node_crypto15.randomUUID)(), path = socketPath(config3, token);
-  const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
-  (0, import_node_fs14.mkdirSync)((0, import_node_path14.dirname)(path), { recursive: true });
-  const server = (0, import_node_net.createServer)((connection) => {
-    let input = "", handled = false;
-    const disconnected = new AbortController();
-    connection.on("close", () => disconnected.abort());
-    connection.setEncoding("utf8");
-    connection.on("error", (error3) => console.error(`Trace Memory CC: control connection failed: ${String(error3)}`));
-    connection.on("data", (chunk) => {
-      if (handled) return;
-      input += chunk;
-      if (Buffer.byteLength(input) > 16384) {
-        handled = true;
-        connection.destroy(new Error("CC control request is too large"));
-        return;
-      }
-      const newline = input.indexOf("\n");
-      if (newline < 0) return;
-      handled = true;
-      void (async () => {
-        try {
-          const request2 = JSON.parse(input.slice(0, newline));
-          if (request2.token !== token || typeof request2.verb !== "string" || request2.verb !== "stop" && request2.verb !== "off" && request2.verb !== "catchup" && request2.verb !== "dream" && request2.verb !== "full-check" && request2.verb !== "settings" && request2.verb !== "apply" && request2.verb !== "turn-end")
-            throw new Error("invalid CC control request");
-          const current = readBinding(config3, binding.nativeSessionId);
-          if (!current) throw new Error("CC binding disappeared before control");
-          assertOperatorBinding(config3, current, memory.store);
-          if (binding.coreSessionId !== null && current.coreSessionId !== binding.coreSessionId || current.executor?.token !== token)
-            throw new Error("CC core or executor identity changed before control");
-          const verb = request2.verb;
-          if (verb === "turn-end") {
-            if (!handlers?.turnEnd || typeof request2.turnId !== "string" || !request2.turnId || typeof request2.reason !== "string")
-              throw new Error("invalid CC turn-end request");
-            if (!activeFunctionHook(current)) throw new Error("CC function hook registration is not current");
-            await handlers.turnEnd(request2.turnId, request2.reason, disconnected.signal);
-            connection.end(`${JSON.stringify({ ok: true, verb })}
-`);
-            return;
-          }
-          if (verb === "settings") {
-            if (!handlers?.effectiveConfig) throw new Error("effective settings are unavailable on this executor");
-            connection.end(`${JSON.stringify({
-              ok: true,
-              verb,
-              config: handlers.effectiveConfig(),
-              catchup: handlers.catchupSnapshot?.() ?? null,
-              dream: handlers.dreamSnapshot?.() ?? null
-            })}
-`);
-            return;
-          }
-          if (verb === "apply") {
-            if (!handlers?.applyConfig || typeof request2.path !== "string" || !request2.path.startsWith("/") || typeof request2.expected !== "string")
-              throw new Error("invalid CC settings apply request");
-            const current2 = (0, import_node_fs14.readFileSync)(request2.path, "utf8");
-            if (current2 !== request2.expected) throw new Error("CC settings file changed before executor apply");
-            const next = resolveCcHostConfig(JSON.parse(current2));
-            if (next.dbPath !== config3.dbPath || next.stateDir !== config3.stateDir)
-              throw new Error("CC settings apply cannot change executor database or state directory");
-            handlers.applyConfig(next);
-            connection.end(`${JSON.stringify({ ok: true, verb })}
-`);
-            return;
-          }
-          if (verb === "catchup") {
-            if (!handlers) throw new Error("catchup is unavailable on this executor");
-            const reply2 = { ok: true, verb, catchup: await handlers.catchup(), abortRequested: [] };
-            connection.end(`${JSON.stringify(reply2)}
-`);
-            return;
-          }
-          if (verb === "dream" || verb === "full-check") {
-            if (!handlers?.dream) throw new Error(`${verb} is unavailable on this executor`);
-            const reply2 = { ok: true, verb, dream: await handlers.dream(verb === "full-check"), abortRequested: [] };
-            connection.end(`${JSON.stringify(reply2)}
-`);
-            return;
-          }
-          if (verb !== "stop" && verb !== "off") throw new Error("invalid CC cancellation verb");
-          handlers?.beforeCancel();
-          const aborted3 = memory.cancelTasks(false);
-          if (verb === "off") {
-            const releaseImportHold = handlers?.holdImport();
-            try {
-              await disableEnrollment(config3, binding.nativeSessionId, memory.store, token);
-              handlers?.beforeCancel();
-              for (const task of memory.cancelTasks(false))
-                if (!aborted3.some((previous) => previous.executionId === task.executionId)) aborted3.push(task);
-            } finally {
-              releaseImportHold?.();
-            }
-          }
-          const reply = { ok: true, verb, abortRequested: aborted3, termination: "pending-observation" };
-          connection.end(`${JSON.stringify(reply)}
-`);
-        } catch (error3) {
-          connection.end(`${JSON.stringify({ ok: false, error: error3 instanceof Error ? error3.message : String(error3) })}
-`);
-        }
-      })();
-    });
-  });
-  try {
-    await new Promise((resolve7, reject) => {
-      server.once("error", reject);
-      server.listen(path, resolve7);
-    });
-    await updateBinding(config3, binding.nativeSessionId, (current) => {
-      if (!current) throw new Error("CC binding disappeared before executor attach");
-      if (current.transcriptPath !== binding.transcriptPath) throw new Error("CC binding changed before executor attach");
-      if (current.executor) {
-        const liveness = executorLiveness(current.executor);
-        if (liveness === "alive") throw new Error(`CC session already has a live executor process ${current.executor.pid}`);
-        if (liveness === "unknown") throw new Error(`cannot establish liveness of CC executor process ${current.executor.pid}`);
-      }
-      if (current.lastClose && !current.lastClose.confirmed && current.nativeProcess?.startedAt) {
-        try {
-          const ancestors = processAncestors();
-          const assigned = assignedNativeSession(config3, ancestors);
-          const owner = ancestors.find((ancestor) => ancestor.pid === assigned?.pid);
-          if (owner?.startedAt && assigned?.startedAt === owner.startedAt && owner.pid === current.nativeProcess.pid && owner.startedAt === current.nativeProcess.startedAt && assigned.nativeSessionId === current.nativeSessionId && assigned.transcriptPath === current.transcriptPath)
-            return { ...current, executor, lastClose: null };
-        } catch (error3) {
-          console.error(`Trace Memory CC: native session identity unreadable during executor attach: ${error3 instanceof Error ? error3.message : String(error3)}`);
-        }
-      }
-      return { ...current, executor };
-    }, bindingTimeoutMs, signal);
-  } catch (error3) {
-    try {
-      await closeServer(server);
-    } catch (cleanup) {
-      console.error(`Trace Memory CC: failed attach socket close: ${String(cleanup)}`);
-    }
-    try {
-      (0, import_node_fs14.rmSync)(path, { force: true });
-    } catch (cleanup) {
-      console.error(`Trace Memory CC: failed attach socket removal: ${String(cleanup)}`);
-    }
-    throw error3;
-  }
-  const release = () => updateBinding(
-    config3,
-    binding.nativeSessionId,
-    (current) => !current || current.executor?.token !== token ? current : { ...current, executor: null }
-  );
-  return { executor, close: async (preserveExecutor = false) => {
-    try {
-      await closeServer(server);
-    } finally {
-      try {
-        (0, import_node_fs14.rmSync)(path, { force: true });
-      } finally {
-        if (!preserveExecutor) await release();
-      }
-    }
-  } };
-}
-function request(executor, verb, timeoutMs, detail = {}) {
-  return new Promise((resolve7, reject) => {
-    const connection = (0, import_node_net.createConnection)(executor.socketPath);
-    let output = "", settled = false;
-    const finish2 = (error3) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      connection.destroy();
-      error3 ? reject(error3) : void 0;
-    };
-    const timer = timeoutMs === void 0 ? void 0 : setTimeout(() => finish2(new Error(`CC executor did not acknowledge ${verb} within ${timeoutMs} ms`)), timeoutMs);
-    connection.setEncoding("utf8");
-    connection.on("connect", () => connection.write(`${JSON.stringify({ verb, token: executor.token, ...detail })}
-`));
-    connection.on("data", (chunk) => output += chunk);
-    connection.on("end", () => {
-      try {
-        const reply = JSON.parse(output);
-        if (!reply.ok) throw new Error(reply.error ?? "CC executor rejected control request");
-        settled = true;
-        clearTimeout(timer);
-        resolve7(reply);
-      } catch (error3) {
-        finish2(error3 instanceof Error ? error3 : new Error(String(error3)));
-      }
-    });
-    connection.on("error", (error3) => finish2(error3));
-  });
-}
-async function signalCcTurnEnd(config3, nativeSessionId, turnId, reason) {
-  const binding = readBinding(config3, validateNativeSessionId(nativeSessionId));
-  if (!binding?.executor || !activeFunctionHook(binding))
-    throw new Error("CC turn-end has no matching live function hook and executor binding");
-  functionHookNativeProcess(config3, nativeSessionId, binding.transcriptPath, binding.nativeProcess);
-  const reply = await request(binding.executor, "turn-end", void 0, { turnId, reason });
-  if (reply.verb !== "turn-end") throw new Error("invalid CC turn-end response");
-}
-async function executorSnapshot(config3, nativeSessionId) {
-  const reply = await executorSettingsRequest(config3, nativeSessionId, "settings");
-  if (reply.verb !== "settings") throw new Error("invalid CC effective settings reply");
-  if (reply.config.dbPath !== config3.dbPath || reply.config.stateDir !== config3.stateDir)
-    throw new Error("CC executor returned a different database or state directory");
-  return { config: reply.config, catchup: reply.catchup, dream: reply.dream };
-}
-async function executorSettingsRequest(config3, nativeSessionId, verb, apply) {
-  const binding = readBinding(config3, nativeSessionId);
-  if (!binding || binding.dbPath !== config3.dbPath)
-    throw new Error("current CC session has no valid executor binding");
-  const executor = binding.executor;
-  if (!executor || executorLiveness(executor) !== "alive") throw new Error("running CC executor is unavailable");
-  return request(executor, verb, 2e3, apply ?? {});
-}
-async function executorSettings(config3, nativeSessionId, apply) {
-  if (!apply) return (await executorSnapshot(config3, nativeSessionId)).config;
-  const reply = await executorSettingsRequest(config3, nativeSessionId, "apply", apply);
-  if (reply.verb !== "apply") throw new Error("invalid CC settings apply reply");
-  return true;
-}
-function validatedOperatorBinding(config3, nativeSessionId) {
-  const store = new Store(config3.dbPath);
-  try {
-    const current = readBinding(config3, nativeSessionId);
-    if (!current) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
-    assertOperatorBinding(config3, current, store);
-    return current;
-  } finally {
-    store.close();
-  }
-}
-async function controlSession(config3, nativeSessionId, verb, timeoutMs = 2e3) {
-  const binding = await validatedOperatorBinding(config3, nativeSessionId);
-  let executor = binding.executor;
-  if (!executor || executorLiveness(executor) === "dead") {
-    if (verb === "stop") return { state: "not-running", enrollmentChanged: false };
-    if (verb === "catchup" || verb === "dream" || verb === "full-check") return { state: "unavailable", diagnostic: `CC ${verb} requires the session's live executor` };
-    const store = new Store(config3.dbPath);
-    try {
-      const disabled = await disableEnrollment(config3, nativeSessionId, store, null);
-      if (disabled.state === "disabled") return { state: "not-running", enrollmentChanged: disabled.changed };
-      if (disabled.state === "unknown-executor")
-        return { state: "unknown", diagnostic: `cannot establish executor liveness for process ${disabled.executor.pid}` };
-      executor = disabled.executor;
-    } finally {
-      store.close();
-    }
-  }
-  const liveness = executorLiveness(executor);
-  if (liveness === "unknown") return { state: "unknown", diagnostic: `cannot establish executor liveness for process ${executor.pid}` };
-  if (liveness === "dead") {
-    if (verb === "stop") return { state: "not-running", enrollmentChanged: false };
-    if (verb === "catchup" || verb === "dream" || verb === "full-check") return { state: "unavailable", diagnostic: `CC ${verb} requires the session's live executor` };
-    const store = new Store(config3.dbPath);
-    try {
-      const disabled = await disableEnrollment(config3, nativeSessionId, store, null);
-      return disabled.state === "disabled" ? { state: "not-running", enrollmentChanged: disabled.changed } : { state: "unknown", diagnostic: "CC executor ownership changed repeatedly during off" };
-    } finally {
-      store.close();
-    }
-  }
-  const finalBinding = await validatedOperatorBinding(config3, nativeSessionId);
-  if (finalBinding.executor?.token !== executor.token)
-    throw new Error(`CC executor binding changed before ${verb}`);
-  try {
-    return { state: "acknowledged", reply: await request(executor, verb, timeoutMs) };
-  } catch (error3) {
-    return { state: "unknown", diagnostic: `executor is live but ${verb} communication failed: ${String(error3)}` };
-  }
-}
 
 // src/hosts/cc/read-tool.ts
 var CC_NATIVE_READ_TOOL_TOKENS = 402;
@@ -45781,36 +46363,36 @@ function dreamOutcome(result) {
 }
 
 // src/hosts/cc/status.ts
-var import_node_fs15 = require("node:fs");
+var import_node_fs16 = require("node:fs");
 var import_node_path15 = require("node:path");
-var import_node_crypto16 = require("node:crypto");
+var import_node_crypto18 = require("node:crypto");
 function statusPath(stateDir, nativeSessionId) {
   return (0, import_node_path15.join)(stateDir, "status", `${nativeSessionId}.json`);
 }
 function writeCcStatus(stateDir, status) {
-  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto16.randomUUID)()}.tmp`;
-  (0, import_node_fs15.mkdirSync)((0, import_node_path15.dirname)(target), { recursive: true });
+  const target = statusPath(stateDir, status.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto18.randomUUID)()}.tmp`;
+  (0, import_node_fs16.mkdirSync)((0, import_node_path15.dirname)(target), { recursive: true });
   let descriptor;
   try {
-    descriptor = (0, import_node_fs15.openSync)(temporary, "w", 384);
-    (0, import_node_fs15.writeFileSync)(descriptor, `${JSON.stringify(status)}
+    descriptor = (0, import_node_fs16.openSync)(temporary, "w", 384);
+    (0, import_node_fs16.writeFileSync)(descriptor, `${JSON.stringify(status)}
 `);
-    (0, import_node_fs15.fsyncSync)(descriptor);
-    (0, import_node_fs15.closeSync)(descriptor);
+    (0, import_node_fs16.fsyncSync)(descriptor);
+    (0, import_node_fs16.closeSync)(descriptor);
     descriptor = void 0;
-    (0, import_node_fs15.renameSync)(temporary, target);
+    (0, import_node_fs16.renameSync)(temporary, target);
   } catch (error3) {
-    if (descriptor !== void 0) (0, import_node_fs15.closeSync)(descriptor);
-    (0, import_node_fs15.rmSync)(temporary, { force: true });
+    if (descriptor !== void 0) (0, import_node_fs16.closeSync)(descriptor);
+    (0, import_node_fs16.rmSync)(temporary, { force: true });
     throw error3;
   }
 }
 function removeCcStatus(stateDir, nativeSessionId) {
-  (0, import_node_fs15.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
+  (0, import_node_fs16.rmSync)(statusPath(stateDir, nativeSessionId), { force: true });
 }
 function readCcStatus(stateDir, nativeSessionId) {
   try {
-    return JSON.parse((0, import_node_fs15.readFileSync)(statusPath(stateDir, nativeSessionId), "utf8"));
+    return JSON.parse((0, import_node_fs16.readFileSync)(statusPath(stateDir, nativeSessionId), "utf8"));
   } catch (error3) {
     if (error3.code === "ENOENT") return null;
     throw error3;
@@ -45831,7 +46413,7 @@ var processLiveness = (identity) => {
   }
 };
 function hasLiveSibling(config3, coreSessionId, excludeNativeSessionId) {
-  for (const file2 of (0, import_node_fs16.readdirSync)((0, import_node_path16.dirname)(bindingPath(config3, excludeNativeSessionId)))) {
+  for (const file2 of (0, import_node_fs17.readdirSync)((0, import_node_path16.dirname)(bindingPath(config3, excludeNativeSessionId)))) {
     if (!file2.endsWith(".json")) continue;
     const nativeSessionId = file2.slice(0, -".json".length);
     if (nativeSessionId === excludeNativeSessionId) continue;
@@ -45898,7 +46480,7 @@ async function recordCcSessionEnd(config3, input) {
       await withCcBindingLock(config3, nativeSessionId, (locked) => {
         const current = locked.read();
         if (current?.lastClose?.confirmed && current.nativeProcess?.pid === nativeProcess.pid && current.nativeProcess.startedAt === nativeProcess.startedAt)
-          (0, import_node_fs16.rmSync)((0, import_node_path16.join)(config3.stateDir, "rendered", nativeSessionId), { recursive: true, force: true });
+          (0, import_node_fs17.rmSync)((0, import_node_path16.join)(config3.stateDir, "rendered", nativeSessionId), { recursive: true, force: true });
       }, config3.finalSyncTimeoutMs);
     } catch (error3) {
       return { confirmed: true, reason, diagnostic: `rendered trace:// cleanup failed: ${error3 instanceof Error ? error3.message : String(error3)}` };
@@ -46190,9 +46772,9 @@ var CcCoordinator = class {
     }
   }
   watchTranscript(binding) {
-    if (this.transcriptWatcher || !(0, import_node_fs16.existsSync)((0, import_node_path16.dirname)(binding.transcriptPath))) return;
+    if (this.transcriptWatcher || !(0, import_node_fs17.existsSync)((0, import_node_path16.dirname)(binding.transcriptPath))) return;
     const transcriptName = (0, import_node_path16.basename)(binding.transcriptPath);
-    this.transcriptWatcher = (0, import_node_fs16.watch)((0, import_node_path16.dirname)(binding.transcriptPath), (_event, filename) => {
+    this.transcriptWatcher = (0, import_node_fs17.watch)((0, import_node_path16.dirname)(binding.transcriptPath), (_event, filename) => {
       if (String(filename) === transcriptName) void this.requestReconcile("transcript watch");
     });
     this.transcriptWatcher.on("error", (error3) => {
@@ -46204,9 +46786,9 @@ var CcCoordinator = class {
   /** The directory is watched, not the file: a save that writes a temporary file and renames it replaces
    * the inode, which a file watch would lose. Other files in the directory wake nothing. */
   watchConfig() {
-    if (!this.configPath || this.configWatcher || !(0, import_node_fs16.existsSync)((0, import_node_path16.dirname)(this.configPath))) return;
+    if (!this.configPath || this.configWatcher || !(0, import_node_fs17.existsSync)((0, import_node_path16.dirname)(this.configPath))) return;
     const name = (0, import_node_path16.basename)(this.configPath);
-    this.configWatcher = (0, import_node_fs16.watch)((0, import_node_path16.dirname)(this.configPath), (_event, filename) => {
+    this.configWatcher = (0, import_node_fs17.watch)((0, import_node_path16.dirname)(this.configPath), (_event, filename) => {
       if (filename === null || String(filename) === name) this.scheduleConfigReload();
     });
     this.configWatcher.on("error", (error3) => {
@@ -46229,7 +46811,7 @@ var CcCoordinator = class {
     if (!this.configPath || this.closed || this.closing || !this.importer || !this.scheduler) return;
     let next;
     try {
-      next = resolveCcHostConfig(JSON.parse((0, import_node_fs16.readFileSync)(this.configPath, "utf8")));
+      next = resolveCcHostConfig(JSON.parse((0, import_node_fs17.readFileSync)(this.configPath, "utf8")));
     } catch (error3) {
       if (!attempt) {
         this.scheduleConfigReload(1);
@@ -46259,8 +46841,8 @@ var CcCoordinator = class {
     if (this.poll || this.closed || this.closing) return;
     this.observe("startup-begin");
     const bindingDirectory = (0, import_node_path16.dirname)(bindingPath(this.config, this.nativeSessionId));
-    if ((0, import_node_fs16.existsSync)(bindingDirectory)) {
-      this.bindingWatcher = (0, import_node_fs16.watch)(bindingDirectory, (_event, filename) => {
+    if ((0, import_node_fs17.existsSync)(bindingDirectory)) {
+      this.bindingWatcher = (0, import_node_fs17.watch)(bindingDirectory, (_event, filename) => {
         if (String(filename) === (0, import_node_path16.basename)(bindingPath(this.config, this.nativeSessionId))) void this.requestReconcile("binding watch");
       });
       this.bindingWatcher.on("error", (error3) => {
@@ -46536,425 +47118,11 @@ var CcCoordinator = class {
   }
 };
 
-// src/hosts/cc/injection.ts
-var import_node_crypto17 = require("node:crypto");
-var import_node_fs17 = require("node:fs");
-var BEGIN = CC_INJECTION_BEGIN;
-var END = "TRACE MEMORY KNOWLEDGE END";
-var digest = (text) => (0, import_node_crypto17.createHash)("sha256").update(text, "utf8").digest("hex");
-var databaseIdentity = (path) => {
-  const stat = (0, import_node_fs17.statSync)(path);
-  return `${stat.dev}:${stat.ino}`;
-};
-var positiveId = (value) => Number.isSafeInteger(value) && Number(value) > 0;
-var object6 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
-var identityCount = (injection) => injection.knowledgeCommitIds.length + (injection.knowledgeTitleCommitIds?.length ?? 0) + (injection.knowledgeStates ?? []).reduce((count, state) => count + 1 + state.toCommits.length, 0) + (injection.factIds?.length ?? 0) + (injection.entryIds?.length ?? 0);
-var bodyDigest = (knowledgeTokens, temporaryTokens, titles, body, pointerTokens) => digest(pointerTokens ? JSON.stringify([knowledgeTokens ?? null, temporaryTokens || null, titles, body, pointerTokens]) : !temporaryTokens && !titles.length ? knowledgeTokens === void 0 ? body : JSON.stringify([knowledgeTokens, body]) : JSON.stringify([knowledgeTokens ?? null, temporaryTokens || null, titles, body]));
-function injectionFrame(binding, injection, hash3) {
-  if (injection.knowledgeTokens !== void 0 && (!Number.isSafeInteger(injection.knowledgeTokens) || injection.knowledgeTokens < 0))
-    throw new Error("invalid Knowledge accounting metadata");
-  if (injection.temporaryTokens !== void 0 && (!Number.isSafeInteger(injection.temporaryTokens) || injection.temporaryTokens < 0))
-    throw new Error("invalid temporary allowance accounting metadata");
-  if (injection.pointerTokens !== void 0 && (!Number.isSafeInteger(injection.pointerTokens) || injection.pointerTokens < 0))
-    throw new Error("invalid pointer allowance accounting metadata");
-  const header = {
-    d: binding.db,
-    n: binding.nativeSession,
-    s: binding.coreSession,
-    ...injection.knowledgeTokens === void 0 ? {} : { t: injection.knowledgeTokens },
-    ...injection.temporaryTokens ? { u: injection.temporaryTokens } : {},
-    ...injection.pointerTokens ? { v: injection.pointerTokens } : {},
-    ...injection.knowledgeTitleCommitIds?.length ? { i: injection.knowledgeTitleCommitIds } : {},
-    k: injection.knowledgeCommitIds,
-    r: (injection.knowledgeStates ?? []).map(knowledgeStateKey),
-    h: hash3,
-    ...injection.factIds === void 0 ? {} : { f: injection.factIds },
-    ...injection.entryIds === void 0 ? {} : { e: injection.entryIds },
-    ...injection.slice === void 0 ? {} : { p: injection.slice }
-  };
-  const framing = `${BEGIN}
-${CC_INJECTION_HEADER}${JSON.stringify(header)}
-
-${END}`;
-  const bound = 300 + (injection.knowledgeTokens === void 0 ? 0 : 22) + (injection.temporaryTokens ? 22 : 0) + (injection.pointerTokens ? 22 : 0) + (injection.slice ? 16 : 0) + 12 * identityCount(injection);
-  if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
-  return framing;
-}
-function ccInjectionLength(binding, injection, textLength) {
-  return injectionFrame(binding, injection, "0".repeat(64)).length + textLength;
-}
-function encodeCcInjection(binding, injection) {
-  const frame = injectionFrame(binding, injection, bodyDigest(injection.knowledgeTokens, injection.temporaryTokens, injection.knowledgeTitleCommitIds ?? [], injection.text, injection.pointerTokens));
-  const boundary = frame.length - END.length - 1;
-  return frame.slice(0, boundary) + injection.text + frame.slice(boundary);
-}
-function decodeCcInjectionHeader(content, binding) {
-  if (typeof content !== "string") return null;
-  const prefix = `${BEGIN}
-${CC_INJECTION_HEADER}`;
-  if (!content.startsWith(prefix)) return null;
-  const headerEnd = content.indexOf("\n", prefix.length);
-  if (headerEnd < 0) return null;
-  let parsed2;
-  try {
-    parsed2 = JSON.parse(content.slice(prefix.length, headerEnd));
-  } catch {
-    return null;
-  }
-  const keys = object6(parsed2) ? Object.keys(parsed2).filter((key) => key !== "t" && key !== "u" && key !== "v" && key !== "i").sort().join(",") : "";
-  if (!object6(parsed2) || keys !== "d,h,k,n,r,s" && keys !== "d,e,f,h,k,n,r,s" && keys !== "d,e,f,h,k,n,p,r,s" || Object.hasOwn(parsed2, "t") && (!Number.isSafeInteger(parsed2.t) || Number(parsed2.t) < 0) || Object.hasOwn(parsed2, "u") && (!Number.isSafeInteger(parsed2.u) || Number(parsed2.u) < 0) || Object.hasOwn(parsed2, "v") && (!Number.isSafeInteger(parsed2.v) || Number(parsed2.v) < 0) || Object.hasOwn(parsed2, "i") && (!Array.isArray(parsed2.i) || !parsed2.i.every(positiveId) || new Set(parsed2.i).size !== parsed2.i.length) || typeof parsed2.d !== "string" || typeof parsed2.n !== "string" || !(parsed2.s === null || positiveId(parsed2.s)) || typeof parsed2.h !== "string" || !/^[0-9a-f]{64}$/.test(parsed2.h) || !Array.isArray(parsed2.k) || !parsed2.k.every(positiveId) || new Set(parsed2.k).size !== parsed2.k.length || keys !== "d,h,k,n,r,s" && (!Array.isArray(parsed2.f) || !parsed2.f.every(positiveId) || new Set(parsed2.f).size !== parsed2.f.length || !Array.isArray(parsed2.e) || !parsed2.e.every(positiveId) || new Set(parsed2.e).size !== parsed2.e.length) || keys === "d,e,f,h,k,n,p,r,s" && (!Array.isArray(parsed2.p) || parsed2.p.length !== 2 || !Number.isSafeInteger(parsed2.p[0]) || parsed2.p[0] < 0 || parsed2.p[0] >= parsed2.p[1] || parsed2.p[1] !== 24) || !Array.isArray(parsed2.r) || !parsed2.r.every((value) => typeof value === "string" && /^[1-9]\d*>[1-9]\d*(?:,[1-9]\d*)*$/.test(value))) return null;
-  const states = parsed2.r.map((value) => {
-    const [from, to] = value.split(">");
-    return { fromCommit: Number(from), toCommits: to.split(",").map(Number) };
-  });
-  if (!states.every((state) => positiveId(state.fromCommit) && state.toCommits.every(positiveId))) return null;
-  if (parsed2.d !== binding.db || parsed2.n !== binding.nativeSession) return null;
-  if (!(parsed2.s === binding.coreSession || parsed2.s === null && binding.coreSession !== null)) return null;
-  return {
-    db: parsed2.d,
-    native: parsed2.n,
-    core: parsed2.s,
-    commits: parsed2.k,
-    states,
-    ...Object.hasOwn(parsed2, "t") ? { knowledgeTokens: parsed2.t } : {},
-    ...Object.hasOwn(parsed2, "u") ? { temporaryTokens: parsed2.u } : {},
-    ...Object.hasOwn(parsed2, "v") ? { pointerTokens: parsed2.v } : {},
-    titles: Object.hasOwn(parsed2, "i") ? parsed2.i : [],
-    factIds: keys !== "d,h,k,n,r,s" ? parsed2.f : [],
-    entryIds: keys !== "d,h,k,n,r,s" ? parsed2.e : [],
-    slice: keys === "d,e,f,h,k,n,p,r,s" ? parsed2.p : null,
-    sha256: parsed2.h
-  };
-}
-function decodeCcInjection(content, binding) {
-  const header = decodeCcInjectionHeader(content, binding), suffix = `
-${END}`;
-  if (!header || typeof content !== "string" || !content.endsWith(suffix)) return null;
-  const headerEnd = content.indexOf("\n", `${BEGIN}
-${CC_INJECTION_HEADER}`.length);
-  const body = content.slice(headerEnd + 1, -suffix.length);
-  return bodyDigest(header.knowledgeTokens, header.temporaryTokens, header.titles, body, header.pointerTokens) === header.sha256 ? header : null;
-}
-var enabled = (binding, memory) => sessionEnabled(binding, memory.store);
-async function lockedInjectionBinding(config3, nativeSessionId, transcriptPath, memory) {
-  return updateBinding(config3, nativeSessionId, (current) => {
-    if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== transcriptPath)
-      throw new Error("CC binding changed while preparing injection");
-    current = dropLostCoreSession(current, memory.store);
-    if (!enabled(current, memory)) return current;
-    if (current.coreSessionId !== null) {
-      const session = memory.store.getSession(current.coreSessionId);
-      if (!session || session.host !== coreHostOf(current) || session.projectId !== current.projectId)
-        throw new Error("bound Claude Code core session or project disagrees with the database");
-      return current;
-    }
-    if (current.projectId !== null) {
-      if (!memory.store.getProject(current.projectId)) throw new Error("bound Claude Code project is unavailable");
-      return current;
-    }
-    const project = implicitCcProject(memory.store, current.nativeSessionId);
-    return { ...current, projectId: project.id };
-  });
-}
-async function injectionBinding(config3, initial, memory) {
-  const settled = dropLostCoreSession(initial, memory.store) === initial && (!enabled(initial, memory) || initial.coreSessionId !== null || initial.projectId !== null && !!memory.store.getProject(initial.projectId));
-  return settled ? initial : lockedInjectionBinding(config3, initial.nativeSessionId, initial.transcriptPath, memory);
-}
-function ccDeliveryHead(binding, memory) {
-  const owner = coreHostOf(binding), core = binding.coreSessionId, store = memory.store;
-  const unanchored = () => {
-    throw new Error("a compaction with no source record before it holds no delivery");
-  };
-  const head = (headTurnId2, tail2, leaf, target) => {
-    const pending = tail2.nodes.map((node) => "prompt" in node ? { key: node.prompt } : { key: node.follows === null ? null : store.compactionDeliveryKey(owner, node.follows), compaction: true });
-    const last = tail2.nodes.at(-1);
-    return {
-      owner,
-      node: { owner, sessionId: core, ...core === null ? {} : { branch: binding.branch }, headTurnId: headTurnId2, pending },
-      at: () => !last ? headTurnId2 === null ? {} : { turnId: headTurnId2 } : "prompt" in last ? { nodeKey: last.prompt } : { nodeKey: pending.at(-1).key ?? (0, import_node_crypto17.randomUUID)(), follows: last.follows ?? unanchored() },
-      following: () => ({ nodeKey: (0, import_node_crypto17.randomUUID)(), follows: leaf ?? unanchored() }),
-      target
-    };
-  };
-  if (core === null) {
-    if (binding.projectId === null) throw new Error("provisional Claude Code project is unavailable");
-    const tail2 = tailNodes(readTranscriptTail(binding.transcriptPath, 0) ?? []);
-    return head(null, tail2, tail2.leaf, { projectId: binding.projectId });
-  }
-  const session = store.getSession(core);
-  if (!session || session.host !== owner || session.projectId !== binding.projectId)
-    throw new Error("bound Claude Code core session or project disagrees with the database");
-  const turnOf = (uuid5) => store.findSourceEntry(core, binding.nativeSessionId, uuid5)?.turnId ?? store.findNativeTurn(core, binding.nativeSessionId, uuid5)?.turnId;
-  const root2 = binding.clearedFrom?.compactionTurnId ?? null;
-  let headTurnId = root2;
-  if (binding.selectedLeafUuid !== null) {
-    headTurnId = binding.selectedHeadTurnId ?? turnOf(binding.selectedLeafUuid) ?? null;
-    if (headTurnId === null) throw new Error("native selected source has no persisted core Turn");
-  }
-  let tail = { nodes: [], exit: null, leaf: null };
-  const offset = binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset;
-  if (offset !== void 0) {
-    tail = tailNodes(readTranscriptTail(binding.transcriptPath, offset) ?? [], transcriptHead(binding.transcriptPath, offset));
-    if (tail.leaf !== null && tail.exit !== binding.selectedLeafUuid) {
-      const rebased = tail.exit === null ? root2 : turnOf(tail.exit) ?? null;
-      if (tail.exit === null || rebased !== null) headTurnId = rebased;
-      else console.error(`Trace Memory: unimported native branch point ${tail.exit}; using the stored head`);
-    }
-  }
-  return head(
-    headTurnId,
-    tail,
-    tail.leaf ?? binding.selectedLeafUuid,
-    headTurnId === null ? { projectId: session.projectId } : { sessionId: core, branch: binding.branch, headTurnId }
-  );
-}
-var partOf = (output, visible) => {
-  const context = output?.hookSpecificOutput.additionalContext;
-  if (!context) return [];
-  const header = decodeCcInjection(context, visible);
-  if (!header) throw new Error("emitted Claude Code carrier failed its own decoding");
-  return [{
-    knowledgeCommitIds: header.commits,
-    knowledgeStates: header.states.map(knowledgeStateKey),
-    knowledgeTokens: header.knowledgeTokens ?? 0,
-    knowledgeTitleCommitIds: header.titles,
-    temporaryTokens: header.temporaryTokens ?? 0,
-    pointerTokens: header.pointerTokens ?? 0
-  }];
-};
-async function deliver(config3, input, event, emit, options = {}) {
-  const initial = readBinding(config3, input.session_id);
-  if (!initial || initial.dbPath !== config3.dbPath || input.transcript_path !== void 0 && initial.transcriptPath !== input.transcript_path)
-    throw new Error("CC native session or transcript binding is unavailable");
-  const memory = TraceMemory(
-    config3.dbPath,
-    async () => {
-      throw new Error("CC injection Hook cannot run model work");
-    },
-    config3.coreConfig,
-    ccResultText,
-    (entry) => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : void 0,
-    ccHumanUser
-  );
-  try {
-    const binding = options.prepared ? initial : await injectionBinding(config3, initial, memory);
-    if (!enabled(binding, memory)) return null;
-    const visible = { db: databaseIdentity(config3.dbPath), nativeSession: binding.nativeSessionId, coreSession: binding.coreSessionId };
-    const selected = memory.store.readSnapshot(() => {
-      options.onSnapshot?.(memory.store.db, binding);
-      const head2 = ccDeliveryHead(binding, memory);
-      const at2 = event.kind === "prompt" ? { nodeKey: event.promptId } : event.kind === "compact" ? head2.following() : head2.at();
-      const delivered = event.kind === "compact" ? { ...noVisibility(), knowledgeTokens: 0 } : deliveredView(memory.store.deliveredKnowledge(event.kind === "prompt" ? { ...head2.node, pending: [...head2.node.pending ?? [], { key: event.promptId }] } : head2.node));
-      return { head: head2, at: at2, injection: memory.injection(head2.target, delivered, true, ccPluginToolNames), watermark: memory.store.deliveryWatermark(head2.owner) };
-    });
-    const { head, at, injection } = selected;
-    const output = injection.text ? {
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-        additionalContext: encodeCcInjection(visible, injection)
-      },
-      transportItems: injection.transportItems,
-      transportKnowledgeAllowance: injection.knowledgeAllowance,
-      transportTemporaryAllowance: injection.temporaryAllowance,
-      transportPointerAllowance: injection.pointerAllowance
-    } : null;
-    const { outputs, result } = emit(output, visible);
-    const parts = outputs.flatMap((value) => partOf(value, visible));
-    if (parts.length) memory.store.transaction(() => {
-      if (memory.store.deliveryWatermark(head.owner) !== selected.watermark)
-        throw new Error("another Knowledge publication for this context landed while this one was rendered");
-      memory.store.recordKnowledgeDelivery({ owner: head.owner, ...at }, parts);
-    });
-    return result;
-  } finally {
-    memory.store.close();
-  }
-}
-async function ccPrepareSessionStartInjection(config3, input) {
-  const initial = readBinding(config3, input.session_id);
-  if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
-  const memory = TraceMemory(config3.dbPath, async () => {
-    throw new Error("CC injection Hook cannot run model work");
-  }, config3.coreConfig, ccResultText, void 0, ccHumanUser);
-  try {
-    await injectionBinding(config3, initial, memory);
-  } finally {
-    memory.store.close();
-  }
-}
-var sessionStartSource = (input) => {
-  if (!input.source || !["startup", "resume", "clear", "compact"].includes(input.source))
-    throw new Error("SessionStart source must be startup, resume, clear or compact");
-};
-async function ccSessionStartInjection(config3, input) {
-  sessionStartSource(input);
-  const output = input.source === "compact" ? null : await deliver(config3, input, { kind: "session-start" }, (output2) => ({ outputs: [output2], result: output2 }));
-  await updateBinding(config3, input.session_id, (current) => {
-    if (!current || current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
-      throw new Error("CC binding changed while completing SessionStart");
-    return current.lastCompactionNotice == null ? current : { ...current, lastCompactionNotice: null };
-  });
-  return output ?? null;
-}
-async function ccPreparedSessionStartInjection(config3, input, slice) {
-  sessionStartSource(input);
-  if (input.source === "compact") return { output: null, slices: slice(null, { db: "", nativeSession: input.session_id, coreSession: null }), snapshot: null };
-  let snapshot2;
-  const delivered = await deliver(config3, input, { kind: "session-start" }, (output, visible) => {
-    const slices = slice(output, visible);
-    return { outputs: slices, result: { output, slices } };
-  }, { prepared: true, onSnapshot: (db, binding) => {
-    const watermarks = db.prepare(`SELECT
-      (SELECT IFNULL(MAX(id),0) FROM facts) f,
-      (SELECT IFNULL(MAX(rowid),0) FROM consolidated_facts) cf,
-      (SELECT IFNULL(MAX(rowid),0) FROM noted_entries) ne,
-      (SELECT IFNULL(MAX(id),0) FROM knowledge_revisions) kr,
-      (SELECT IFNULL(MAX(rowid),0) FROM knowledge_processed) kp,
-      (SELECT IFNULL(MAX(scored_run),0) FROM knowledge) sr,
-      (SELECT group_concat(project_id, ',') FROM (SELECT project_id FROM sessions ORDER BY id)) pa,
-      (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) pm,
-      (SELECT base_tokens FROM knowledge_base_policy WHERE id=1) bp,
-      (SELECT IFNULL(MAX(version),0) FROM session_lineage_cursors) cv,
-      (SELECT IFNULL(MAX(version),0) FROM source_paths) sv`).get();
-    const owner = binding.coreSessionId ? db.prepare(`SELECT project_id, enrollment_default, enrollment_choice
-      FROM sessions WHERE id=?`).get(binding.coreSessionId) : null;
-    const header = binding.coreSessionId && binding.branch ? db.prepare(`SELECT length, tail_entry_id, version, hwm_entry_id
-      FROM source_paths WHERE session_id=? AND branch=?`).get(binding.coreSessionId, binding.branch) : null;
-    const cursor = binding.coreSessionId ? db.prepare(`SELECT branch, head_turn_id, version FROM session_lineage_cursors
-      WHERE session_id=? AND lineage=?`).get(binding.coreSessionId, input.session_id) : null;
-    const own = {
-      coreSessionId: binding.coreSessionId,
-      projectId: binding.projectId,
-      enrollment: binding.enrollment,
-      branch: binding.branch,
-      selectedLeafUuid: binding.selectedLeafUuid,
-      nativeProcess: binding.nativeProcess,
-      lastClose: binding.lastClose,
-      clearedFrom: binding.clearedFrom && {
-        nativeSessionId: binding.clearedFrom.nativeSessionId,
-        compactionTurnId: binding.clearedFrom.compactionTurnId,
-        at: binding.clearedFrom.at,
-        inheritedLength: binding.clearedFrom.inheritedEntryIds.length,
-        inheritedTail: binding.clearedFrom.inheritedEntryIds.at(-1) ?? null
-      },
-      transcriptPath: binding.transcriptPath,
-      dbPath: binding.dbPath,
-      cwd: binding.cwd
-    };
-    snapshot2 = { watermarks, owner, header, cursor, own };
-  } });
-  if (!delivered) return { output: null, slices: slice(null, { db: "", nativeSession: input.session_id, coreSession: null }), snapshot: null };
-  if (!snapshot2) throw new Error("prepared SessionStart did not capture its input snapshot");
-  return { ...delivered, snapshot: snapshot2 };
-}
-function ccTruncationWarning(omitted) {
-  const facts = omitted?.facts;
-  return facts ? `Trace Memory: compaction omitted ${facts.count} ${facts.count === 1 ? "fact" : "facts"} (${facts.tokens} tokens).` : void 0;
-}
-var importedToEnd = (binding) => {
-  if (binding.coreSessionId === null || binding.selectedLeafUuid === null || binding.transcriptOffset === void 0) return false;
-  const tail = readTranscriptTail(binding.transcriptPath, binding.transcriptOffset);
-  return tail !== null && tailNodes(tail).leaf === null;
-};
-var written = (binding, uuid5, store) => binding.coreSessionId !== null && !!(store.findKnownSourceEntry(binding.coreSessionId, binding.nativeSessionId, uuid5) ?? store.findNativeTurn(binding.coreSessionId, binding.nativeSessionId, uuid5)) || !!readTranscriptTail(binding.transcriptPath, binding.selectedLeafUuid === null ? 0 : binding.transcriptOffset ?? 0)?.some((record3) => record3.uuid === uuid5);
-var TRIGGER_WAIT_MS = 1e4;
-async function ccCompaction(config3, input) {
-  const initial = readBinding(config3, input.session_id);
-  if (!initial) return null;
-  if (initial.dbPath !== config3.dbPath) throw new Error("CC binding uses another database");
-  const lineage = initial.nativeSessionId;
-  const memory = TraceMemory(
-    config3.dbPath,
-    async () => {
-      throw new Error("CC compaction cannot run model work");
-    },
-    config3.coreConfig,
-    ccResultText,
-    (entry) => entry.nativeLineage === lineage ? ccSourceBlocks(entry) : void 0,
-    ccHumanUser
-  );
-  try {
-    const disabled = (binding2) => (binding2.coreSessionId !== null || binding2.nativeCreatedAt !== null) && !enabled(binding2, memory);
-    const importing = (binding2) => binding2.executor !== null && executorLiveness(binding2.executor) !== "dead";
-    let binding = initial;
-    for (const deadline = Date.now() + TRIGGER_WAIT_MS; ; ) {
-      if (disabled(binding)) return null;
-      const present = written(binding, input.trigger, memory.store);
-      if (present && (importedToEnd(binding) || !importing(binding))) break;
-      if (Date.now() >= deadline) {
-        if (!present) throw new Error(`the compaction's trigger ${input.trigger} was not written to the transcript`);
-        break;
-      }
-      await new Promise((wake) => setTimeout(wake, 20));
-      const current = readBinding(config3, input.session_id);
-      if (current?.dbPath !== config3.dbPath || current.transcriptPath !== initial.transcriptPath) throw new Error("CC binding changed during compaction");
-      binding = current;
-    }
-    if (!importedToEnd(binding)) {
-      const projection = new CcProjection(config3, binding, memory);
-      const imported = await projection.synchronize();
-      if (imported.state === "disabled") return null;
-      if (imported.state !== "ready") throw new Error(imported.problems.join("; ") || `the transcript import is ${imported.state}`);
-      binding = projection.currentBinding();
-      if (!importedToEnd(binding)) throw new Error("the transcript grew while it was imported");
-    }
-    const offset = binding.transcriptOffset;
-    const core = binding.coreSessionId, leaf = binding.selectedLeafUuid, branch = binding.branch, owner = coreHostOf(binding);
-    const headTurnId = memory.store.findSourceEntry(core, lineage, leaf)?.turnId ?? memory.store.findNativeTurn(core, lineage, leaf)?.turnId;
-    if (headTurnId === void 0) throw new Error("the selected native source has no persisted core Turn");
-    const { compacted, watermark } = memory.store.readSnapshot(() => ({
-      compacted: memory.compact(core, branch, headTurnId, [], false, {
-        toolNames: ccPluginToolNames,
-        runningTasks: input.runningTasks
-      }),
-      watermark: memory.store.deliveryWatermark(owner)
-    }));
-    if ("native" in compacted) throw new Error(`Trace Memory compact returned a native delegation: ${compacted.reason}`);
-    if (compacted.truncated?.raw) return null;
-    const text = COMPACTION_SUMMARY_PREFIX + encodeCcInjection({ db: databaseIdentity(config3.dbPath), nativeSession: lineage, coreSession: core }, {
-      text: compacted.text,
-      knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
-      knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
-      knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds,
-      temporaryTokens: compacted.supplied.temporaryTokens ?? 0,
-      pointerTokens: compacted.supplied.pointerTokens ?? 0,
-      knowledgeStates: compacted.supplied.knowledgeStates,
-      factIds: compacted.supplied.factIds,
-      entryIds: compacted.supplied.entries.map((entry) => entry.id)
-    }) + COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
-    memory.store.transaction(() => {
-      const current = readBinding(config3, input.session_id);
-      if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch || current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
-        throw new Error("the session or its selected path changed while the compaction was built");
-      memory.store.recordKnowledgeDelivery({ owner, nodeKey: (0, import_node_crypto17.randomUUID)(), follows: leaf }, [{
-        knowledgeCommitIds: compacted.supplied.knowledgeCommitIds,
-        knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
-        knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
-        knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds ?? [],
-        temporaryTokens: compacted.supplied.temporaryTokens ?? 0,
-        pointerTokens: compacted.supplied.pointerTokens ?? 0
-      }]);
-    });
-    const warning = ccTruncationWarning(compacted.truncated);
-    return { text, ...warning ? { warning } : {} };
-  } finally {
-    memory.store.close();
-  }
-}
-async function ccDeltaInjection(config3, input, event, slice) {
-  const slices = await deliver(config3, input, event, (output, visible) => {
-    const slices2 = slice(output, visible);
-    return { outputs: slices2, result: slices2 };
-  });
-  return slices ?? slice(null, { db: "", nativeSession: input.session_id, coreSession: null });
-}
-
 // src/hosts/cc/slices.ts
 var CC_SLICE_COUNT = 24;
 var CC_SLICE_LIMIT = 1e4;
-var CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segments, read knowledge by the header's p[0] segment number, then by position within that segment. Items are grouped by category and a category may continue into the next segment; within a category they are ordered by last change, so higher segments and later items are newer. Position does not compare items across categories. Arrival order is not recency. For claims about the same object within a category, the newer item takes precedence until maintenance merges them.";
-var ccKnowledgeHeader = (binding) => binding.coreSession === null ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
-var knowledgeOrder = (a, b) => KNOWLEDGE_CATEGORIES.indexOf(a.category) - KNOWLEDGE_CATEGORIES.indexOf(b.category) || a.commitId - b.commitId;
+var ccKnowledgeHeader = (binding) => binding.coreSession === null ? "" : sessionKnowledgeNotice(binding.coreSession, "");
+var knowledgeOrder = (a, b) => KNOWLEDGE_CATEGORIES.indexOf(a.category) - KNOWLEDGE_CATEGORIES.indexOf(b.category) || KNOWLEDGE_SCOPE_ORDER.indexOf(a.scope) - KNOWLEDGE_SCOPE_ORDER.indexOf(b.scope) || Number(a.form === "title") - Number(b.form === "title") || a.commitId - b.commitId;
 var address = (item, sessionId) => item.kind === "knowledge" || item.kind === "state" ? `trace://${item.address}` : item.kind === "fact" ? `trace://F${item.factId}` : item.kind === "raw" ? `trace://raw/S${sessionId}/${item.address}` : "";
 var knowledgeRank = (item) => item.rank ?? -item.commitId;
 var temporaryKnowledge = (item) => item.kind === "knowledge" && (item.allowance === "temporary" || item.allowance === "pointer");
@@ -46983,6 +47151,7 @@ function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinit
   const rank = (item) => item.kind === "state" ? 0 : item.kind === "knowledge" ? 1 : item.kind === "raw" ? 2 : item.kind === "fact" ? 3 : 4;
   const ordered = [...items2].sort((a, b) => rank(a) - rank(b) || (a.kind === "knowledge" && b.kind === "knowledge" ? knowledgeRank(a) - knowledgeRank(b) : 0));
   const membership = (members, index) => ({
+    guideVersions: members.flatMap((item) => item.kind === "guide" ? [item.version] : []),
     knowledgeCommitIds: members.flatMap((item) => item.kind === "knowledge" && item.form !== "title" ? [item.commitId] : []),
     knowledgeTitleCommitIds: members.flatMap((item) => item.kind === "knowledge" && item.form === "title" ? [item.commitId] : []),
     knowledgeStates: members.flatMap((item) => item.kind === "state" ? [item.receipt] : []),
@@ -46991,19 +47160,22 @@ function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinit
     slice: [index, CC_SLICE_COUNT]
   });
   const header = ccKnowledgeHeader(binding);
-  const guide = readingGuide(binding.coreSession ?? void 0, ccPluginToolNames);
   const itemText = (item) => transportItemText(item, header);
+  const knowledgeHeader = (members) => {
+    const ordering = members.find((item) => item.kind === "guide" && item.purpose === "ordering")?.text ?? "";
+    return binding.coreSession === null ? ordering : sessionKnowledgeNotice(binding.coreSession, ordering);
+  };
   const assemble = (items3, index) => {
     const members = [...items3].sort((a, b) => rank(a) - rank(b) || (a.kind === "knowledge" && b.kind === "knowledge" ? knowledgeOrder(a, b) : 0));
-    const knowledge = knowledgeBlockParts(knowledgeGroups(members.filter((item) => item.kind === "knowledge")), header);
+    const knowledge = knowledgeBlockParts(knowledgeGroups(members.filter((item) => item.kind === "knowledge")), knowledgeHeader(members));
     const sections = [
-      ...index === 0 ? [[guide]] : [],
+      ...members.filter((item) => item.kind === "guide" && (item.purpose === "reading" || !knowledge.length)).map((item) => [item.text]),
       ...members.filter((item) => item.kind === "state").map((item) => [itemText(item)]),
       ...knowledge.length ? [knowledge] : [],
-      ...members.filter((item) => item.kind !== "state" && item.kind !== "knowledge").map((item) => [itemText(item)])
+      ...members.filter((item) => item.kind !== "guide" && item.kind !== "state" && item.kind !== "knowledge").map((item) => [itemText(item)])
     ];
     const knowledgeTokens = (members2) => {
-      const block2 = knowledgeBlockParts(knowledgeGroups(members2.filter((item) => item.kind === "knowledge")), header);
+      const block2 = knowledgeBlockParts(knowledgeGroups(members2.filter((item) => item.kind === "knowledge")), knowledgeHeader(members2));
       const sections2 = [
         ...members2.filter((item) => item.kind === "state").map(itemText),
         ...block2.length ? [block2.join("")] : [],
@@ -47041,6 +47213,10 @@ function sliceCcInjection(binding, items2, warning, knowledgeAllowance = Infinit
     }
     return false;
   };
+  for (const item of ordered.filter((item2) => item2.kind === "guide")) {
+    if (size([...slots[0].items, item], 0) > CC_SLICE_LIMIT) throw new Error("CC context guides exceed inline capacity");
+    slots[0].items.push(item);
+  }
   for (const item of ordered.filter((item2) => item2.kind === "receipt")) {
     if (tryPlace(item)) continue;
     const count = item.text.match(/omitted (\d+)/)?.[1];
@@ -47697,7 +47873,7 @@ function readCcMenu(config3, nativeSessionId, effective, runLimit = 10, catchup 
 // src/hosts/cc/menu-config.ts
 var import_node_fs19 = require("node:fs");
 var import_node_path18 = require("node:path");
-var import_node_crypto18 = require("node:crypto");
+var import_node_crypto19 = require("node:crypto");
 
 // node_modules/jsonc-parser/lib/esm/impl/scanner.js
 function createScanner(text, ignoreTrivia = false) {
@@ -49073,7 +49249,7 @@ function editedCcConfig(text, id, value, capacity) {
 function saveCcConfig(path, original, updated) {
   const next = resolveCcHostConfig(JSON.parse(updated));
   if ((0, import_node_fs19.readFileSync)(path, "utf8") !== original) throw new Error("CC configuration changed before save; reopen Settings");
-  const temporary = `${path}.${process.pid}.${(0, import_node_crypto18.randomUUID)()}`;
+  const temporary = `${path}.${process.pid}.${(0, import_node_crypto19.randomUUID)()}`;
   let fd;
   try {
     fd = (0, import_node_fs19.openSync)(temporary, "wx", 384);
@@ -49337,7 +49513,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
         return { ...current, lastCompactionNotice: null };
       });
     }
-    const selection = (0, import_node_crypto19.createHash)("sha256").update(JSON.stringify({
+    const selection = (0, import_node_crypto20.createHash)("sha256").update(JSON.stringify({
       material: output?.transportItems ?? [],
       warning: output?.systemMessage ?? null,
       knowledgeAllowance: output?.transportKnowledgeAllowance ?? null,

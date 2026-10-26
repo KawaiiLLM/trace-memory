@@ -13,6 +13,7 @@ import { runWorker, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
 import { workspaceFileTools } from "./workspace-files.ts";
 import { TraceMemory, fullCheckDryRun, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, isThinkingOnly, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, defaultWorkspaceRoot, sweepStaleWorkspaces, retrievalPolicy, toolRejected, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
+import type { SourceInput } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -254,11 +255,13 @@ export default function (pi: ExtensionAPI) {
   const delivered = (target?: TaskTarget | { sessionId: number; branch: string; headTurnId: number | null }): VisibleView =>
     deliveredView(memory.store.deliveredKnowledge(target
       ? { owner: owner(), sessionId: target.sessionId, branch: target.branch, headTurnId: target.headTurnId }
-      : { owner: owner(), sessionId: null, headTurnId: null, pending: ctx.sessionManager.getBranch().flatMap(entry =>
-        entry.type === "custom_message" && entry.customType === tag ? [deliveryKey(entry)].filter(key => key !== undefined).map(key => ({ key })) : []) }));
+      : { owner: owner(), sessionId: null, headTurnId: null, pending: ctx.sessionManager.getBranch().flatMap<{ key: string | null; compaction?: boolean }>(entry =>
+        entry.type === "compaction" ? [{ key: deliveryKey(entry) ?? null, compaction: true }]
+          : entry.type === "custom_message" && entry.customType === tag ? [deliveryKey(entry)].filter(key => key !== undefined).map(key => ({ key })) : []) }));
   const deliveryPart = (block: { knowledgeCommitIds: number[]; knowledgeTitleCommitIds?: number[]; knowledgeStates?: { fromCommit: number; toCommits: number[] }[];
-    knowledgeTokens?: number; temporaryTokens?: number; pointerTokens?: number; text: string }) =>
+    knowledgeTokens?: number; temporaryTokens?: number; pointerTokens?: number; guideVersions?: string[]; text: string }) =>
     ({ knowledgeCommitIds: block.knowledgeCommitIds, knowledgeTitleCommitIds: block.knowledgeTitleCommitIds ?? [], knowledgeStates: (block.knowledgeStates ?? []).map(knowledgeStateKey),
+      guideVersions: block.guideVersions,
       knowledgeTokens: block.knowledgeTokens ?? tokens(block.text), temporaryTokens: block.temporaryTokens ?? 0, pointerTokens: block.pointerTokens ?? 0 });
   const modelNameOf = (key: string) => {
     const configured = flat[key];
@@ -583,7 +586,7 @@ export default function (pi: ExtensionAPI) {
       // goes on, still deciding `offer` by the persisted role as before; only that entry pays a full read.
       const known = memory.store.findKnownSourceEntry(state.sessionId, lineage, entry.id);
       if (known) {
-        let role = message.role;
+        let role: SourceInput["role"] = message.role;
         if (known.digest !== sourceDigest(JSON.stringify(message))) {
           missing(`entry ${entry.id} changed after persistence`);
           role = memory.store.getSourceEntry(known.id)!.role;
@@ -747,6 +750,7 @@ export default function (pi: ExtensionAPI) {
     if (!enabled() || !sameBinding || !sameTarget || !sameProject) return;
     const supplied: SuppliedMaterial = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
       ...(block.knowledgeTitleCommitIds?.length ? { knowledgeTitleCommitIds: block.knowledgeTitleCommitIds } : {}),
+      guideVersions: block.guideVersions,
       knowledgeTokens: block.knowledgeTokens, ...(block.temporaryTokens ? { temporaryTokens: block.temporaryTokens } : {}),
       ...(block.pointerTokens ? { pointerTokens: block.pointerTokens } : {}),
       ...(block.knowledgeStates?.length ? { knowledgeStates: block.knowledgeStates } : {}) };
@@ -1136,6 +1140,7 @@ export default function (pi: ExtensionAPI) {
         const block = memory.injection({ projectId: state.projectId });
         return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
           ...(block.knowledgeTitleCommitIds?.length ? { knowledgeTitleCommitIds: block.knowledgeTitleCommitIds } : {}),
+          guideVersions: block.guideVersions,
           knowledgeTokens: block.knowledgeTokens, ...(block.temporaryTokens ? { temporaryTokens: block.temporaryTokens } : {}), pointerTokens: block.pointerTokens, knowledgeStates: block.knowledgeStates } };
       } catch (error) { return { native: true, reason: String(error) }; } // 133 R2: store and live-task lookup errors delegate.
     };

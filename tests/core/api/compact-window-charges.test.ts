@@ -5,7 +5,7 @@ import { expect, test } from "vitest";
 import { hydrate, sourceSeededMemory } from "../../source-fixture.ts";
 import { legacyFacts } from "../../support/seed.ts";
 import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
-import { tokens } from "../../../src/core/render/index.ts";
+import { tokens, KNOWLEDGE_RECENCY_NOTICE } from "../../../src/core/render/index.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
@@ -35,7 +35,7 @@ test("133/73: Raw overflow and its receipt are charged once, and facts cannot sp
     expect(result.truncated?.raw?.entries).toBeGreaterThan(0);
     const guide = readingGuide(session.id, canonicalToolNames);
     expect(result.text.startsWith(`${guide}\n\n`)).toBe(true);
-    const windowText = result.text.slice(guide.length + 2);
+    const windowText = result.text.slice(guide.length + 2).replace(KNOWLEDGE_RECENCY_NOTICE + "\n\n", "");
     expect(windowText).toContain("earlier entries omitted from the Raw window");
     const charged = result.charged!;
     const total = charged.knowledge + charged.facts + charged.raw + charged.temporary + charged.pointer;
@@ -67,7 +67,8 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
     Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 1, pointerTokens: 1 }); // 165
     const result = memory.compact(session.id, "main", turn.id, visible);
     if ("native" in result) throw new Error("native");
-    expect(result.text).toBe(readingGuide(session.id, canonicalToolNames)); // fixed framing, no window titles, tags or receipts
+    expect(result.text).toBe(`${readingGuide(session.id, canonicalToolNames)}\n\n${KNOWLEDGE_RECENCY_NOTICE}`);
+    expect(result.supplied.guideVersions).toHaveLength(2); // Both context guides remain outside empty material windows.
     expect(result.charged).toMatchObject({ knowledge: 0, facts: 0, raw: 0 });
     expect(result.hasMaterialCandidates).toBe(true); // capacity omission is not genuine emptiness
     expect(result.truncated?.facts).toBeUndefined(); // no retired-C pending-fact warning is revived

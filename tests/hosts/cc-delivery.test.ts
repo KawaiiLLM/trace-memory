@@ -169,7 +169,7 @@ test("97 a compaction's supplement belongs to the compaction's own node: version
     expect(f.decode(await f.prompt("p5"))).toEqual([]);
     await f.restartExecutor();
     const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
-    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set([kept, added]), knowledgeStates: new Set(), knowledgeTokens: cost, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
+    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set([kept, added]), knowledgeStates: new Set(), guideVersions: new Set(supplement.flatMap(header => header.guideVersions)), knowledgeTokens: cost, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
     expect(f.delivered(f.turnOf("u4"))).toEqual(before);
     expect(f.decode(await f.prompt("p5"))).toEqual([]);
     // A branch from before the compaction, rewinding to that node, still misses what came later.
@@ -327,7 +327,7 @@ test("102 a Trace Memory compaction's node holds exactly what its block emitted;
     expect(built!.warning).toBeUndefined();
     await f.append(...installedBlock("cb", "u3", built!.text, "p3"), assistant("a3", "cb-block"));
     const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
-    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set(header.commits), knowledgeStates: new Set(), knowledgeTokens: header.knowledgeTokens, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
+    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set(header.commits), knowledgeStates: new Set(), guideVersions: new Set(header.guideVersions), knowledgeTokens: header.knowledgeTokens, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
     expect(f.delivered(f.turnOf("u3")).knowledgeStates).toEqual(new Set([`${first}>${archived.committed[0]!.commit}`]));
     // SessionStart(compact) never injects; the next prompt and a resume find nothing missing.
     expect(await f.sessionStart("compact")).toBeNull();
@@ -533,3 +533,21 @@ test.each([["overflow", 1, true], ["fits", 10_000, false]] as const)(
     } finally { f.close(); }
   });
 
+
+test("authenticated transcript receipts recover guide versions after delivery rows roll back", async () => {
+  const f = await fixture();
+  try {
+    const first = await f.prompt("p2");
+    const versions = f.decode(first).flatMap(header => header.guideVersions);
+    expect(versions).toHaveLength(2);
+    f.store.db.exec("DELETE FROM knowledge_deliveries");
+    await f.append(user("u2", "a1", "p2"),
+      ...first.flatMap((output, index) => output ? [attachment(`h2-${index}`, "u2", output.hookSpecificOutput.additionalContext)] : []),
+      assistant("a2", "u2"));
+    expect(f.delivered(f.turnOf("u2")).guideVersions).toEqual(new Set(versions));
+    await f.restartExecutor();
+    const next = f.decode(await f.prompt("p3"));
+    expect(next.flatMap(header => header.guideVersions)).toEqual([]);
+    expect(next.flatMap(header => header.commits)).toEqual(f.versions.map(value => value.commit));
+  } finally { f.close(); }
+});

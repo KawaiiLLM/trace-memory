@@ -38,6 +38,8 @@ Every session view names its session. Omitting T selects that session's current 
 
 An explicit T prefers the branch used by omitted T when that branch contains it; otherwise it selects a containing source path by greatest `hwm_entry_id`, then greatest path id. One exact E is independent of branch selection. E numbers are Turn-local and therefore require T. Only raw accepts E and role suffixes. Old session-first content paths, event ranges, comma lists and arbitrary trace-address fallback are removed.
 
+Claude Code also imports queued messages absorbed mid-turn, without opening a Turn. Human prompts are `@user`; peer, task-notification, automatic-continuation and meta prompts are `@observation`, labeled with their native origin. Origin-less non-meta `typed`, `queued` and `sdk` prompts remain user input. These roles govern exact reads, Turn views, search and earlier-user compaction material. Historical backfills append the next free E ordinal without changing any existing address; conversation order follows the selected native path, not numeric E order.
+
 Recursive Grep searches facts and full Raw entries, not duplicate compressed overviews or knowledge/compact injection views. Knowledge-all still searches every immutable version. A fact backlink names each identity once when its current version is visible, including historical citing versions; invisible current identities do not fall back to older bodies. Knowledge views and search show support titles; injection retains support IDs only.
 
 ## Host limits and teaching
@@ -50,7 +52,7 @@ The same guide, at most 200 Core-estimated tokens, appears once per injection, c
 
 ## Source authority and accounting
 
-Legacy bodies, sources and metadata are not rewritten. Display resolves historical selectors internally to whole-entry citations. Missing entry bindings or inconsistent stored segments fail as data corruption. Host-normalized blocks, transactionally assigned E ordinals and persisted branch selection remain authoritative; navigation never renumbers entries. Reading thinking does not admit it as fact evidence. New facts reject thinking-only entries, and injected summaries are never Raw sources.
+Legacy bodies, sources and metadata are normally not rewritten. The hand-run [CC queued-message cutover](../plugin/README.md#queued-message-cutover-176) is the exception for system-derived prompt roles and fact-source role suffixes; it preserves fact bodies and entry bindings. Display resolves historical selectors internally to whole-entry citations. Missing entry bindings or inconsistent stored segments fail as data corruption. Host-normalized blocks, transactionally assigned E ordinals and persisted branch selection remain authoritative; navigation never renumbers entries. Reading thinking does not admit it as fact evidence. New facts reject thinking-only entries, and injected summaries are never Raw sources.
 
 A tag identifies an immutable knowledge version, not proof of reading or permission to write. Current-base, scope, evidence and claim checks independently guard mutation. Native pagination must deliver a complete body before a model judges it; previews and state notices have no tag. Complete Changed material and committed update/merge/split receipts supply their current or newly authored versions' tags without an extra read.
 

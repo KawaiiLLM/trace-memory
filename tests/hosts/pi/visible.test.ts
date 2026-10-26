@@ -7,6 +7,8 @@ import { entry, knowledge, legacyFacts, scoreAll } from "../../support/seed.ts";
 import { visibility } from "../../../src/hosts/pi/index.ts";
 import { tokens } from "../../../src/core/render/tokens.ts";
 import { tag } from "../../../src/hosts/pi/settings.ts";
+import { contextGuides } from "../../../src/core/render/reading-guide.ts";
+import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
 import { visibleView, type Carrier, type ContextEntry, type VisibleBinding } from "../../../src/hosts/pi/visible.ts";
 
 // Ticket 29a — the host half: the production host writes the two carriers, and the view is read back
@@ -50,12 +52,15 @@ test("29a case 3 (injection identity): the injected message carries exactly the 
     expect(carrierOf(result.message).supplied.knowledgeCommitIds).toEqual([commit]);
     const entry = customMessages(h)[0]!;
     expect(carrierOf(entry).db).toBe(h.dbPath);
-    expect(carrierOf(entry).supplied).toEqual({ entries: [], factIds: [], knowledgeCommitIds: [commit], knowledgeTokens: tokens(result.message.content.split("\n\n").slice(1).join("\n\n")) });
+    expect(carrierOf(entry).supplied).toEqual({ entries: [], factIds: [], knowledgeCommitIds: [commit],
+      guideVersions: carrierOf(result.message).supplied.guideVersions, knowledgeTokens: tokens(result.message.content.split("\n\n").slice(1).join("\n\n")) });
     expect(view(h).raw.get(entry.id)).toBeUndefined(); // our own injection is not a source entry
-    // The injection happens once: the next prompt returns no message and therefore no second carrier.
+    // Allocation changes guide text, but guides wait for the next material-bearing injection.
     await h.answer(); await h.emit("agent_settled"); await h.drain();
     expect(await h.prompt("second")).toBeUndefined();
     expect(customMessages(h)).toHaveLength(1);
+    await h.answer(); await h.emit("agent_settled"); await h.drain();
+    expect(await h.prompt("third")).toBeUndefined();
   } finally { await h.dispose(); }
 });
 
@@ -80,6 +85,31 @@ test("29a case 4 (allocation identity): the first prompt's injection is bound to
       .knowledgeCommitIds]).toEqual([commit]); // the prompt's Turn owns it once allocated
     // Another context's records satisfy nothing.
     expect(store.deliveredKnowledge({ owner: "pi:other-pi", sessionId: null, headTurnId: null }).knowledgeCommitIds.size).toBe(0);
+  } finally { await h.dispose(); }
+});
+
+test("native compaction before session allocation resets guide delivery on the next material-bearing injection", async () => {
+  const h = host(quiet);
+  try {
+    seedKnowledge(h);
+    const first = (await h.prompt("first cancelled prompt")).message;
+    expect(carrierOf(first).session).toBeNull();
+    const guides = contextGuides(undefined, canonicalToolNames);
+    expect(carrierOf(first).supplied.guideVersions).toEqual(guides.map(guide => guide.version));
+    const oldCarrier = customMessages(h)[0]!;
+    // Neither prompt produces assistant content, so no memory session is allocated.
+    expect(await h.prompt("second cancelled prompt")).toBeUndefined();
+    h.compaction("native summary");
+    await h.emit("session_compact");
+    expect(h.ctx.sessionManager.getBranch().some(entry => entry.id === oldCarrier.id)).toBe(true);
+    expect(h.ctx.sessionManager.buildContextEntries().some(entry => entry.id === oldCarrier.id)).toBe(false);
+    const added = seedKnowledge(h, "New material after native compaction.");
+    const next = (await h.prompt("recover after native compaction")).message;
+    expect(carrierOf(next).session).toBeNull();
+    expect(carrierOf(next).supplied.knowledgeCommitIds).toContain(added);
+    expect(carrierOf(next).supplied.guideVersions).toEqual(guides.map(guide => guide.version));
+    for (const guide of guides) expect(next.content).toContain(guide.text);
+    expect(await h.prompt("already delivered")).toBeUndefined();
   } finally { await h.dispose(); }
 });
 
@@ -220,7 +250,7 @@ test("144 title-only injection: carried, recorded once, not re-sent, and a later
     const commit = seedKnowledge(h, "big rule " + "word ".repeat(1_500));
     h.memory.setKnowledgeBase(0); // the base holds nothing: a title
     const first = await h.prompt("first");
-    expect(first.message.content).toContain("(title only)");
+    expect(first.message.content).not.toMatch(/\[K\d+#/); // Titles carry no exact body version.
     const supplied = carrierOf(first.message).supplied;
     expect(supplied.knowledgeCommitIds).toEqual([]);
     expect(supplied.knowledgeTitleCommitIds).toEqual([commit]);
@@ -235,6 +265,7 @@ test("144 title-only injection: carried, recorded once, not re-sent, and a later
     h.memory.setKnowledgeBase(20_000); // base room appears
     const third = await h.prompt("third");
     expect(carrierOf(third.message).supplied.knowledgeCommitIds).toEqual([commit]);
+    expect(carrierOf(third.message).supplied.guideVersions).toHaveLength(1); // The changed reading guide rides the body upgrade.
   } finally { await h.dispose(); }
 });
 

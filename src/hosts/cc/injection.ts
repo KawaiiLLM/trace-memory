@@ -36,11 +36,12 @@ interface EnvelopeHeader {
   knowledgeTokens?: number;
   /** 144 §7.4: versions carried as a title only, and the temporary allowance the slice charged (§7.3). */
   titles: number[];
+  guideVersions: string[];
   temporaryTokens?: number;
   pointerTokens?: number;
 }
-interface WireHeader { d: string; n: string; s: number | null; k: number[]; r: string[]; h: string; t?: number; f?: number[]; e?: number[]; p?: [number, number];
-  i?: number[]; u?: number; v?: number }
+interface WireHeader { d: string; n: string; s: number | null; k: string; r: string[]; h: string; t?: number; f?: string; e?: string; p?: [number, number];
+  i?: string; u?: number; v?: number; g?: readonly string[] }
 export interface CcInjectionPayload extends Injection { factIds?: number[]; entryIds?: number[]; slice?: [number, number] }
 export interface CcHookOutput { hookSpecificOutput: { hookEventName: "SessionStart"; additionalContext: string };
   /** Internal structured material for the 66 inline-slice transport; never pass to native Hook JSON. */
@@ -61,11 +62,44 @@ const identityCount = (injection: InjectionMembership): number => injection.know
 
 /** What the header's digest covers: the body, and the accounting that governs later caps. A header with neither
  * `u` nor `i` keeps the earlier digest, so older carriers still decode. */
-const bodyDigest = (knowledgeTokens: number | undefined, temporaryTokens: number | undefined, titles: readonly number[], body: string, pointerTokens?: number): string =>
-  digest(pointerTokens ? JSON.stringify([knowledgeTokens ?? null, temporaryTokens || null, titles, body, pointerTokens])
+const bodyDigest = (knowledgeTokens: number | undefined, temporaryTokens: number | undefined, titles: readonly number[], body: string,
+  pointerTokens?: number, guides: readonly string[] = []): string => {
+  const hash = digest(pointerTokens ? JSON.stringify([knowledgeTokens ?? null, temporaryTokens || null, titles, body, pointerTokens])
     : !temporaryTokens && !titles.length
       ? knowledgeTokens === undefined ? body : JSON.stringify([knowledgeTokens, body])
       : JSON.stringify([knowledgeTokens ?? null, temporaryTokens || null, titles, body]));
+  return guides.length ? digest(JSON.stringify([hash, guides])) : hash;
+};
+
+/** Preserve membership order, compressing only consecutive ascending runs. */
+function encodeIds(ids: readonly number[]): string {
+  const runs: string[] = [];
+  for (let i = 0; i < ids.length; i++) {
+    const first = ids[i]!;
+    let last = first;
+    while (i + 1 < ids.length && ids[i + 1] === last + 1) last = ids[++i]!;
+    runs.push(first === last ? `${first}` : `${first}-${last}`);
+  }
+  return runs.join(",");
+}
+
+function decodeIds(value: unknown): number[] | null {
+  if (Array.isArray(value)) return value.every(positiveId) && new Set(value).size === value.length ? value : null;
+  if (typeof value !== "string") return null;
+  if (value === "") return [];
+  const ids: number[] = [], seen = new Set<number>();
+  for (const run of value.split(",")) {
+    if (!/^[1-9]\d*(?:-[1-9]\d*)?$/.test(run)) return null;
+    const [first, end] = run.split("-").map(Number), last = end ?? first!;
+    // A malformed carrier must not expand an unbounded range into memory.
+    if (!positiveId(first) || !positiveId(last) || last < first || ids.length + last - first + 1 > 1_000_000) return null;
+    for (let id = first; id <= last; id++) {
+      if (seen.has(id)) return null;
+      ids.push(id); seen.add(id);
+    }
+  }
+  return ids;
+}
 
 /** Shared framing for actual encoding and exact UTF-16 capacity measurement. */
 function injectionFrame(binding: CcVisibleBinding, injection: InjectionMembership, hash: string): string {
@@ -76,16 +110,17 @@ function injectionFrame(binding: CcVisibleBinding, injection: InjectionMembershi
   if (injection.pointerTokens !== undefined && (!Number.isSafeInteger(injection.pointerTokens) || injection.pointerTokens < 0))
     throw new Error("invalid pointer allowance accounting metadata");
   const header: WireHeader = { d: binding.db, n: binding.nativeSession, s: binding.coreSession,
+    ...(injection.guideVersions?.length ? { g: injection.guideVersions } : {}),
     ...(injection.knowledgeTokens === undefined ? {} : { t: injection.knowledgeTokens }),
     ...(injection.temporaryTokens ? { u: injection.temporaryTokens } : {}),
     ...(injection.pointerTokens ? { v: injection.pointerTokens } : {}),
-    ...(injection.knowledgeTitleCommitIds?.length ? { i: injection.knowledgeTitleCommitIds } : {}),
-    k: injection.knowledgeCommitIds, r: (injection.knowledgeStates ?? []).map(knowledgeStateKey), h: hash,
-    ...(injection.factIds === undefined ? {} : { f: injection.factIds }),
-    ...(injection.entryIds === undefined ? {} : { e: injection.entryIds }),
+    ...(injection.knowledgeTitleCommitIds?.length ? { i: encodeIds(injection.knowledgeTitleCommitIds) } : {}),
+    k: encodeIds(injection.knowledgeCommitIds), r: (injection.knowledgeStates ?? []).map(knowledgeStateKey), h: hash,
+    ...(injection.factIds === undefined ? {} : { f: encodeIds(injection.factIds) }),
+    ...(injection.entryIds === undefined ? {} : { e: encodeIds(injection.entryIds) }),
     ...(injection.slice === undefined ? {} : { p: injection.slice }) };
   const framing = `${BEGIN}\n${CC_INJECTION_HEADER}${JSON.stringify(header)}\n\n${END}`;
-  const bound = 300 + (injection.knowledgeTokens === undefined ? 0 : 22) + (injection.temporaryTokens ? 22 : 0) + (injection.pointerTokens ? 22 : 0) + (injection.slice ? 16 : 0) + 12 * identityCount(injection);
+  const bound = 316 + (injection.knowledgeTokens === undefined ? 0 : 22) + (injection.temporaryTokens ? 22 : 0) + (injection.pointerTokens ? 22 : 0) + (injection.slice ? 16 : 0) + 17 * identityCount(injection) + (injection.guideVersions?.length ? 6 + 67 * injection.guideVersions.length : 0);
   if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
   return framing;
 }
@@ -97,7 +132,7 @@ export function ccInjectionLength(binding: CcVisibleBinding, injection: Injectio
 
 /** Encode exactly one core block. The host envelope is outside core's allowance but has its own bound. */
 export function encodeCcInjection(binding: CcVisibleBinding, injection: CcInjectionPayload): string {
-  const frame = injectionFrame(binding, injection, bodyDigest(injection.knowledgeTokens, injection.temporaryTokens, injection.knowledgeTitleCommitIds ?? [], injection.text, injection.pointerTokens));
+  const frame = injectionFrame(binding, injection, bodyDigest(injection.knowledgeTokens, injection.temporaryTokens, injection.knowledgeTitleCommitIds ?? [], injection.text, injection.pointerTokens, injection.guideVersions));
   const boundary = frame.length - END.length - 1;
   return frame.slice(0, boundary) + injection.text + frame.slice(boundary);
 }
@@ -112,17 +147,20 @@ export function decodeCcInjectionHeader(content: unknown, binding: CcVisibleBind
   if (headerEnd < 0) return null;
   let parsed: unknown;
   try { parsed = JSON.parse(content.slice(prefix.length, headerEnd)); } catch { return null; }
-  const keys = object(parsed) ? Object.keys(parsed).filter(key => key !== "t" && key !== "u" && key !== "v" && key !== "i").sort().join(",") : "";
+  const keys = object(parsed) ? Object.keys(parsed).filter(key => key !== "t" && key !== "u" && key !== "v" && key !== "i" && key !== "g").sort().join(",") : "";
+  const commits = object(parsed) ? decodeIds(parsed.k) : null;
+  const titles = object(parsed) && Object.hasOwn(parsed, "i") ? decodeIds(parsed.i) : [];
+  const facts = object(parsed) && Object.hasOwn(parsed, "f") ? decodeIds(parsed.f) : [];
+  const entries = object(parsed) && Object.hasOwn(parsed, "e") ? decodeIds(parsed.e) : [];
   if (!object(parsed) || (keys !== "d,h,k,n,r,s" && keys !== "d,e,f,h,k,n,r,s" && keys !== "d,e,f,h,k,n,p,r,s") ||
       (Object.hasOwn(parsed, "t") && (!Number.isSafeInteger(parsed.t) || Number(parsed.t) < 0)) ||
       (Object.hasOwn(parsed, "u") && (!Number.isSafeInteger(parsed.u) || Number(parsed.u) < 0)) ||
       (Object.hasOwn(parsed, "v") && (!Number.isSafeInteger(parsed.v) || Number(parsed.v) < 0)) ||
-      (Object.hasOwn(parsed, "i") && (!Array.isArray(parsed.i) || !parsed.i.every(positiveId) || new Set(parsed.i).size !== parsed.i.length)) ||
+      (Object.hasOwn(parsed, "g") && (!Array.isArray(parsed.g) || !parsed.g.every(version => typeof version === "string" && /^[0-9a-f]{64}$/.test(version)) || new Set(parsed.g).size !== parsed.g.length)) ||
+      titles === null ||
       typeof parsed.d !== "string" || typeof parsed.n !== "string" ||
       !(parsed.s === null || positiveId(parsed.s)) || typeof parsed.h !== "string" || !/^[0-9a-f]{64}$/.test(parsed.h) ||
-      !Array.isArray(parsed.k) || !parsed.k.every(positiveId) || new Set(parsed.k).size !== parsed.k.length ||
-      (keys !== "d,h,k,n,r,s" && (!Array.isArray(parsed.f) || !parsed.f.every(positiveId) || new Set(parsed.f).size !== parsed.f.length ||
-        !Array.isArray(parsed.e) || !parsed.e.every(positiveId) || new Set(parsed.e).size !== parsed.e.length)) ||
+      commits === null || facts === null || entries === null ||
       (keys === "d,e,f,h,k,n,p,r,s" && (!Array.isArray(parsed.p) || parsed.p.length !== 2 ||
         !Number.isSafeInteger(parsed.p[0]) || parsed.p[0] < 0 || parsed.p[0] >= parsed.p[1] || parsed.p[1] !== 24)) ||
       !Array.isArray(parsed.r) || !parsed.r.every(value => typeof value === "string" && /^[1-9]\d*>[1-9]\d*(?:,[1-9]\d*)*$/.test(value))) return null;
@@ -131,13 +169,14 @@ export function decodeCcInjectionHeader(content: unknown, binding: CcVisibleBind
   if (!states.every(state => positiveId(state.fromCommit) && state.toCommits.every(positiveId))) return null;
   if (parsed.d !== binding.db || parsed.n !== binding.nativeSession) return null;
   if (!(parsed.s === binding.coreSession || parsed.s === null && binding.coreSession !== null)) return null;
-  return { db: parsed.d, native: parsed.n, core: parsed.s, commits: parsed.k as number[], states,
+  return { db: parsed.d, native: parsed.n, core: parsed.s, commits, states,
     ...(Object.hasOwn(parsed, "t") ? { knowledgeTokens: parsed.t as number } : {}),
     ...(Object.hasOwn(parsed, "u") ? { temporaryTokens: parsed.u as number } : {}),
     ...(Object.hasOwn(parsed, "v") ? { pointerTokens: parsed.v as number } : {}),
-    titles: Object.hasOwn(parsed, "i") ? parsed.i as number[] : [],
-    factIds: keys !== "d,h,k,n,r,s" ? parsed.f as number[] : [],
-    entryIds: keys !== "d,h,k,n,r,s" ? parsed.e as number[] : [],
+    titles,
+    guideVersions: (parsed.g ?? []) as string[],
+    factIds: facts,
+    entryIds: entries,
     slice: keys === "d,e,f,h,k,n,p,r,s" ? parsed.p as [number, number] : null, sha256: parsed.h };
 }
 
@@ -146,7 +185,7 @@ export function decodeCcInjection(content: unknown, binding: CcVisibleBinding): 
   if (!header || typeof content !== "string" || !content.endsWith(suffix)) return null;
   const headerEnd = content.indexOf("\n", `${BEGIN}\n${CC_INJECTION_HEADER}`.length);
   const body = content.slice(headerEnd + 1, -suffix.length);
-  return bodyDigest(header.knowledgeTokens, header.temporaryTokens, header.titles, body, header.pointerTokens) === header.sha256 ? header : null;
+  return bodyDigest(header.knowledgeTokens, header.temporaryTokens, header.titles, body, header.pointerTokens, header.guideVersions) === header.sha256 ? header : null;
 }
 
 type Memory = ReturnType<typeof TraceMemory>;
@@ -249,7 +288,7 @@ const partOf = (output: CcHookOutput | null, visible: CcVisibleBinding): Deliver
   const header = decodeCcInjection(context, visible);
   if (!header) throw new Error("emitted Claude Code carrier failed its own decoding");
   return [{ knowledgeCommitIds: header.commits, knowledgeStates: header.states.map(knowledgeStateKey),
-    knowledgeTokens: header.knowledgeTokens ?? 0, knowledgeTitleCommitIds: header.titles, temporaryTokens: header.temporaryTokens ?? 0, pointerTokens: header.pointerTokens ?? 0 }];
+    knowledgeTokens: header.knowledgeTokens ?? 0, knowledgeTitleCommitIds: header.titles, guideVersions: header.guideVersions, temporaryTokens: header.temporaryTokens ?? 0, pointerTokens: header.pointerTokens ?? 0 }];
 };
 
 /** 97 "Record at emission": whatever parts `emit` returns are recorded at their node before the
@@ -455,6 +494,7 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
     const text = COMPACTION_SUMMARY_PREFIX + encodeCcInjection({ db: databaseIdentity(config.dbPath), nativeSession: lineage, coreSession: core }, {
       text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
       knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds, temporaryTokens: compacted.supplied.temporaryTokens ?? 0,
+      guideVersions: compacted.supplied.guideVersions,
       pointerTokens: compacted.supplied.pointerTokens ?? 0,
       knowledgeStates: compacted.supplied.knowledgeStates, factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id) }) +
       COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
@@ -466,6 +506,7 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
       memory.store.recordKnowledgeDelivery({ owner, nodeKey: randomUUID(), follows: leaf }, [{
         knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
         knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0, knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds ?? [],
+        guideVersions: compacted.supplied.guideVersions,
         temporaryTokens: compacted.supplied.temporaryTokens ?? 0, pointerTokens: compacted.supplied.pointerTokens ?? 0 }]);
     });
     const warning = ccTruncationWarning(compacted.truncated);

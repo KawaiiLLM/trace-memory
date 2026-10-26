@@ -1,0 +1,20 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`injection and compaction match Chinese fixture goldens without a model call > knowledge injection 1`] = `
+"Memory is read at trace:// addresses with read or grep, never a shell command. trace:// lists every address.
+Address: trace://<layer>/S<n>/T<t>. Without /T<t>: the session's current head.
+Layers: knowledge (what a fresh context there receives), compact (what compaction there injects), facts (the Turn's facts), raw (its Raw overview).
+raw only: #E<k> gives one full entry and @role keeps one role, e.g. citation T12#E3@assistant of S7 is trace://raw/S7/T12#E3@assistant.
+trace://K<id>, trace://F<id>: one knowledge item or fact.
+Give a subagent trace://knowledge/S1 for background or trace://compact/S1 to continue, and tell it to use read.
+
+<knowledge>
+Items are grouped by category, then scope. Within a scope group, full items are ordered by last change, oldest to newest; for claims about the same object, the later full item takes precedence until maintenance merges them. Position does not compare items across categories or scopes. Title-only lines carry no claim. When a rendered set is split into 24 segments, read by the header's p[0] segment number, then position within that segment; a scope group may continue into the next segment. Arrival order is not recency.
+Session S1.
+## constraint (1)
+### project (1)
+[K1#cqor] 地形层和高度层一起读。
+地形层和高度层一起读。
+  change supports: F1
+</knowledge>"
+`;

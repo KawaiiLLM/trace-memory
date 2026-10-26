@@ -1,6 +1,6 @@
 import { diffArrays } from "diff";
 import { KNOWLEDGE_CATEGORIES, knowledgeCategoryGroup, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
-import type { KnowledgeCategory, KnowledgeRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
+import type { KnowledgeCategory, KnowledgeScope, KnowledgeRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
 import { entryAddress, fragmentAddress, sourceBlocks, blockText } from "../model/source.ts";
 import type { Selector } from "../model/address.ts";
@@ -250,7 +250,7 @@ const speaks = (entry: SourceEntry) => Boolean(entry.text) || entry.role === "us
  * user message remains readable with a placeholder at #user but is not evidence. Thinking-only entries
  * have no legacy text projection; explicit @thinking reads use persisted blocks instead. */
 export const displayedAddresses = (entry: SourceEntry): string[] => [
-  ...(speaks(entry) ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
+  ...(speaks(entry) && entry.role !== "observation" ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
   ...entry.calls.map((call) => `T${entry.turnId}#t${call.ordinal}`),
 ];
 
@@ -284,11 +284,11 @@ function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (a
     if (selector?.kind === "thinking" && block.kind !== "thinking") continue;
     if (selector?.kind === "call" && (!tool || block.call.callId !== selector.id)) continue;
     if (selector?.kind === "text" && block.kind !== "text" && block.kind !== "result") continue;
-    const legacy = `T${entry.turnId}#${tool ? `t${block.call.ordinal}` : entry.role === "user" ? "user" : "assistant"}`;
+    const legacy = `T${entry.turnId}#${tool ? `t${block.call.ordinal}` : entry.role}`;
     const choice = choose(legacy);
     if (choice === "drop") continue;
     const address = `${entryAddress(entry)}@${entry.role === "toolResult" ? "observation" : entry.role}`;
-    const role = ` ${entry.role}`;
+    const role = ` ${entry.role === "observation" ? entry.label ?? "observation" : entry.role}`;
     if ("text" in block) {
       const label = `[${address}]${role}`, body = block.text;
       sources.push({ ordinal: null, choice, whole: () => bodyLine(label, body),
@@ -571,12 +571,12 @@ export const knowledgeStaleLabel = (value: Pick<KnowledgeWithRevision, "staleRea
   ? ` [可能过时: ${value.staleReasons.map(reason => `${reason.reason}: ${reason.detail}`).join("; ")}]` : "";
 
 export function renderKnowledge(value: KnowledgeWithRevision, address = `K${value.knowledge.id}@${value.revision.id}`, showSize = false,
-  limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
+  limits: WritingLimits = DEFAULT_WRITING_LIMITS, grouped = false): string {
   const { knowledge, revision: r } = value;
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
   const size = showSize ? ` (${words(r.text)}/${limits.bodyWords} units, limit ${wordLimit(limits.bodyWords)})` : "";
-  const tags = `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}]${size}`;
-  return `${tags} ${r.title ?? "(no title)"}${knowledgeStaleLabel(value)}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  const tags = `[${address}]${grouped ? "" : ` [${knowledgeCategoryGroup(r.category)}/${r.scope}]`}${size}`;
+  return `${tags} ${r.title ?? "(no title)"}${knowledgeStaleLabel(value)}\n${r.text}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${grouped ? "" : topicList(r.topics)}`;
 }
 
 /** Canonical headings contain an address and category/scope; price without re-rendering metadata. */
@@ -789,10 +789,10 @@ const EXPAND_LIMIT = 8;
 export const expandList = (addresses: string[]): string => addresses.length <= EXPAND_LIMIT ? addresses.join(", ")
   : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 
-export const KNOWLEDGE_RECENCY_NOTICE = "Items are grouped by category. Within a category they are ordered by last change, oldest to newest; position does not compare items across categories. For claims about the same object within a category, the later item takes precedence until maintenance merges them.";
+export const KNOWLEDGE_RECENCY_NOTICE = "Items are grouped by category, then scope. Within a scope group, full items are ordered by last change, oldest to newest; for claims about the same object, the later full item takes precedence until maintenance merges them. Position does not compare items across categories or scopes. Title-only lines carry no claim. When a rendered set is split into 24 segments, read by the header's p[0] segment number, then position within that segment; a scope group may continue into the next segment. Arrival order is not recency.";
 /** Identity/recency framing only; the reading guide belongs to the complete injection once. */
 export const sessionKnowledgeNotice = (sessionId: number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string =>
-  `${recencyNotice}\nSession S${sessionId}.`;
+  `${recencyNotice ? recencyNotice + "\n" : ""}Session S${sessionId}.`;
 
 export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision[]): string[] =>
   KNOWLEDGE_CATEGORIES.flatMap(category => {
@@ -800,7 +800,8 @@ export const renderKnowledgeOmissions = (omitted: readonly KnowledgeWithRevision
     return members.length ? [`omitted ${members.length} ${category} knowledge; expand: ${expandList(members.map(value => `trace://K${value.knowledge.id}`))}`] : [];
   });
 
-interface RenderedKnowledgeItem { category: KnowledgeCategory; text: string; id: number; commit: number; size: number }
+interface KnowledgeLayoutItem { category: string; scope: KnowledgeScope; text: string; form?: "body" | "title" }
+interface RenderedKnowledgeItem extends KnowledgeLayoutItem { id: number; commit: number; size: number }
 export interface BudgetedKnowledge {
   groups: { category: string; text: string }[];
   receipts: string[];
@@ -808,35 +809,50 @@ export interface BudgetedKnowledge {
   commits: number[];
 }
 
-const orderedKnowledge = (knowledge: KnowledgeWithRevision[], line: (knowledge: KnowledgeWithRevision) => string): RenderedKnowledgeItem[] =>
+const orderedKnowledge = (knowledge: KnowledgeWithRevision[], line: (knowledge: KnowledgeWithRevision) => string,
+  titles?: ReadonlySet<number>): RenderedKnowledgeItem[] =>
   [...knowledge].sort((a, b) => a.revision.id - b.revision.id)
     .map(value => { const text = line(value); return {
-      category: knowledgeCategoryGroup(value.revision.category), text, id: value.knowledge.id, commit: value.revision.id, size: tokens(text) + 1,
+      category: knowledgeCategoryGroup(value.revision.category), scope: value.revision.scope, form: titles?.has(value.revision.id) ? "title" : "body",
+      text, id: value.knowledge.id, commit: value.revision.id, size: tokens(text + "\n"),
     }; });
 
-/** Ticket 132: the one grouped layout of every knowledge block. `items` arrive oldest first; each
- * category present gets a `## <category> (<n>)` line, then its items, in glossary category order. */
+/** One layout for core blocks and independently framed CC segments. */
 const categoryHeader = (category: string, count: number): string => `## ${category} (${count})`;
 const byCategory = <T extends { category: string }>(items: readonly T[]): { category: string; members: T[] }[] =>
   KNOWLEDGE_CATEGORIES.flatMap(category => {
     const members = items.filter(item => item.category === category);
     return members.length ? [{ category, members }] : [];
   });
-export const knowledgeGroups = (items: readonly { category: string; text: string }[]): { category: string; text: string }[] =>
-  byCategory(items).map(({ category, members }) => ({ category, text: [categoryHeader(category, members.length), ...members.map(item => item.text)].join("\n") }));
+export const KNOWLEDGE_SCOPE_ORDER: readonly KnowledgeScope[] = ["global", "project", "session"];
+const byScope = <T extends KnowledgeLayoutItem>(items: readonly T[]): { scope: KnowledgeScope; members: T[] }[] =>
+  KNOWLEDGE_SCOPE_ORDER.flatMap(scope => {
+    const members = items.filter(item => item.scope === scope);
+    return members.length ? [{ scope, members: [...members.filter(item => item.form !== "title"), ...members.filter(item => item.form === "title")] }] : [];
+  });
+const scopeHeader = (scope: string, count: number): string => `### ${scope} (${count})`;
+export const KNOWLEDGE_TITLES_NOTICE = "Titles only (read trace://K<id> for the body):";
+export const knowledgeGroups = (items: readonly KnowledgeLayoutItem[]): { category: string; text: string }[] =>
+  byCategory(items).map(({ category, members }) => ({ category, text: [categoryHeader(category, members.length),
+    ...byScope(members).flatMap(({ scope, members }) => [scopeHeader(scope, members.length),
+      ...members.filter(item => item.form !== "title").map(item => item.text),
+      ...(members.some(item => item.form === "title") ? [KNOWLEDGE_TITLES_NOTICE] : []),
+      ...members.filter(item => item.form === "title").map(item => item.text)])].join("\n") }));
 const groupedCost = (items: RenderedKnowledgeItem[]): number =>
-  items.reduce((sum, item) => sum + item.size, 0) + byCategory(items).reduce((sum, { category, members }) => sum + tokens(categoryHeader(category, members.length)) + 1, 0);
+  items.reduce((sum, item) => sum + item.size, 0) + byCategory(items).reduce((sum, { category, members }) =>
+    sum + tokens(categoryHeader(category, members.length) + "\n") + byScope(members).reduce((cost, { scope, members }) =>
+      cost + tokens(scopeHeader(scope, members.length) + "\n") + (members.some(item => item.form === "title") ? tokens(KNOWLEDGE_TITLES_NOTICE + "\n") : 0), 0), 0);
 
 const knowledgeBody = (items: RenderedKnowledgeItem[], recencyNotice = KNOWLEDGE_RECENCY_NOTICE): Omit<BudgetedKnowledge, "receipts"> => ({
   groups: knowledgeGroups(items),
   cost: items.length ? tokens(xmlBlock("knowledge", recencyNotice)) + groupedCost(items) : 0,
-  commits: byCategory(items).flatMap(({ members }) => members.map(item => item.commit)),
+  commits: byCategory(items).flatMap(({ members }) => byScope(members).flatMap(({ members }) => members.map(item => item.commit))),
 });
 
 /** Linear rendering and conservative measurement of one complete, stably ordered knowledge pool.
  * Callers use this before the bounded prefix selector so a pool that already fits is never subjected
  * to repeated prefix scans. The cost is the same estimator `budgetKnowledge` applies to its body. */
-export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowledge: KnowledgeWithRevision) => string = value => renderKnowledge(value)): BudgetedKnowledge {
+export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowledge: KnowledgeWithRevision) => string = value => renderKnowledge(value, undefined, false, undefined, true)): BudgetedKnowledge {
   return { ...knowledgeBody(orderedKnowledge(knowledge, line)), receipts: [] };
 }
 
@@ -844,13 +860,13 @@ export function wholeKnowledge(knowledge: KnowledgeWithRevision[], line: (knowle
  * Required exact versions cannot be omitted. Optional items keep newest commits first by default;
  * compaction may omit their receipts too rather than spend required overflow on optional framing.
  * No item is rewritten to fit, and omitted items remain stored and traceable. */
-export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = value => renderKnowledge(value),
+export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = value => renderKnowledge(value, undefined, false, undefined, true),
   budget = "Knowledge capacity", required?: ReadonlySet<number>,
   priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number, recencyNotice = KNOWLEDGE_RECENCY_NOTICE,
   /** Items omitted by the caller's other selections: their receipts are reserved in this cap too. */
-  alsoOmitted: readonly KnowledgeWithRevision[] = []): BudgetedKnowledge {
+  alsoOmitted: readonly KnowledgeWithRevision[] = [], titles?: ReadonlySet<number>): BudgetedKnowledge {
   // Selection remains newest-first; presentation is grouped by category, oldest first inside a group.
-  const ordered = orderedKnowledge(knowledge, line);
+  const ordered = orderedKnowledge(knowledge, line, titles);
   const byCommit = new Map(knowledge.map(value => [value.revision.id, value]));
   const optional = ordered.filter(item => !required?.has(item.commit)).sort((a, b) =>
     priority ? priority(byCommit.get(a.commit)!, byCommit.get(b.commit)!) : b.commit - a.commit);
@@ -880,10 +896,10 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
 }
 
 /** One title-only line (144 §7.4); an untitled item's bounded opening is explicitly marked (153). */
-export function renderKnowledgeTitle(value: KnowledgeWithRevision, address = `K${value.knowledge.id}@${value.revision.id}`,
+export function renderKnowledgeTitle(value: KnowledgeWithRevision, address = `K${value.knowledge.id}`,
   limits: WritingLimits = DEFAULT_WRITING_LIMITS): string {
-  const { knowledge, revision: r } = value;
-  return `[${address}] [${knowledgeCategoryGroup(r.category)}/${r.scope}] ${r.title == null ? `(opening only) ${knowledgeOpening(r.text, limits.titleWords)}…` : `(title only) ${r.title}`}${knowledgeStaleLabel(value)}`;
+  const r = value.revision;
+  return `[${address}] ${r.title == null ? `(opening only) ${knowledgeOpening(r.text, limits.titleWords)}…` : r.title}${knowledgeStaleLabel(value)}`;
 }
 
 export interface SelectedKnowledge extends BudgetedKnowledge {
@@ -925,8 +941,8 @@ export function selectKnowledge(candidates: KnowledgeWithRevision[], options: { 
     })();
     const baseSet = new Set(base);
     const baseValues = scored.filter(value => baseSet.has(value.revision.id));
-    const whole = (values: KnowledgeWithRevision[], shownLine: (value: KnowledgeWithRevision) => string) =>
-      ({ ...knowledgeBody(orderedKnowledge(values, shownLine), recencyNotice), receipts: [] as string[] });
+    const whole = (values: KnowledgeWithRevision[], shownLine: (value: KnowledgeWithRevision) => string, titles?: ReadonlySet<number>) =>
+      ({ ...knowledgeBody(orderedKnowledge(values, shownLine, titles), recencyNotice), receipts: [] as string[] });
     const baseWindow = whole(baseValues, line);
     const baseCharge = baseValues.length ? baseWindow.cost : 0;
     const ceiling = baseCharge + temporaryCap;
@@ -942,7 +958,7 @@ export function selectKnowledge(candidates: KnowledgeWithRevision[], options: { 
     const shown = (value: KnowledgeWithRevision) => missedSet.has(value.revision.id) ? titleLine(value) : line(value);
     const holding = [...candidates.filter(value => wholeSet.has(value.revision.id)), ...missed];
     const titles = budgetKnowledge(holding, bodyWindow.cost + pointerCap, shown, budget, wholeSet,
-      (a, b) => (score(b) ?? 0) - (score(a) ?? 0) || b.revision.id - a.revision.id, recencyNotice).commits.filter(commit => !wholeSet.has(commit));
+      (a, b) => (score(b) ?? 0) - (score(a) ?? 0) || b.revision.id - a.revision.id, recencyNotice, [], missedSet).commits.filter(commit => !wholeSet.has(commit));
     const titleSet = new Set(titles);
     const items = candidates.filter(value => wholeSet.has(value.revision.id) || titleSet.has(value.revision.id));
     const omitted = candidates.filter(value => !wholeSet.has(value.revision.id) && !titleSet.has(value.revision.id)
@@ -950,7 +966,7 @@ export function selectKnowledge(candidates: KnowledgeWithRevision[], options: { 
     let receipts = renderKnowledgeOmissions(omitted);
     const receiptCost = () => receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0;
     const mixed = (value: KnowledgeWithRevision) => titleSet.has(value.revision.id) ? titleLine(value) : line(value);
-    const window = whole(items, mixed);
+    const window = whole(items, mixed, titleSet);
     // Optional receipts never displace titles; spare base capacity pays first.
     const receiptsToBase = receipts.length > 0 && baseCharge + receiptCost() <= baseCap;
     if (!receiptsToBase && window.cost + receiptCost() - bodyWindow.cost > pointerCap) receipts = [];
@@ -982,11 +998,10 @@ const factTurnTime = (turnId: number, turns: FactTurns): string => {
   if (value === undefined) throw new Error(`missing Turn T${turnId} for fact rendering`);
   return typeof value === "string" ? value : value.time;
 };
-const factGroupHeader = (turnId: number, turns: FactTurns): string => {
-  const value = turns.get(turnId);
-  const harness = typeof value === "object" ? value.harness : undefined;
-  return `[T${turnId}] ${factTurnTime(turnId, turns)} (selected facts)${harness ? ` · session harness: ${harness} (context, not claim attribution)` : ""}`;
-};
+export const shortTurnTime = (time: string): string => Number.isFinite(Date.parse(time))
+  ? new Date(time).toISOString().slice(5, 16).replace("T", " ") : time;
+const factGroupHeader = (turnId: number, turns: FactTurns): string =>
+  `[T${turnId}] ${shortTurnTime(factTurnTime(turnId, turns))}`;
 
 /** One representation for injected facts: chronological Turn groups, then ascending fact ids.
  * Group by the owning Turn, not each citation: a multi-Turn fact appears once with all sources.
@@ -1001,8 +1016,13 @@ export function factGroupLayout<T extends Pick<Fact, "id" | "turnId">>(facts: re
   const ordered = [...groups].map(([id, group]) => ({ id, group, header: factGroupHeader(id, turns), time: Date.parse(factTurnTime(id, turns)) }));
   // Native times are ISO timestamps; legacy/unknown times stay explicit and sort last, by Turn id.
   ordered.sort((a, b) => (Number.isFinite(a.time) ? a.time : Infinity) - (Number.isFinite(b.time) ? b.time : Infinity) || a.id - b.id);
-  return ordered.flatMap(({ group, header }) => group.sort((a, b) => a.id - b.id)
-    .map((fact, index) => ({ fact, header: index === 0 ? `${header}\n` : "" })));
+  const harnesses = [...new Set([...groups.keys()].flatMap(id => {
+    const value = turns.get(id);
+    return typeof value === "object" && value.harness ? [value.harness] : [];
+  }))];
+  const notice = `Selected facts; turn times are UTC.${harnesses.length ? ` session harness: ${harnesses.join(", ")} (context, not claim attribution).` : ""}`;
+  return ordered.flatMap(({ group, header }, groupIndex) => group.sort((a, b) => a.id - b.id)
+    .map((fact, index) => ({ fact, header: index === 0 ? `${groupIndex === 0 ? notice + "\n" : ""}${header}\n` : "" })));
 }
 export function renderFactGroups(facts: readonly Fact[], line: (fact: Fact, frame: (text: string) => string) => string, turns: FactTurns, preview = false): string[] {
   return factGroupLayout(facts, turns).map(({ fact, header }, index) => preview

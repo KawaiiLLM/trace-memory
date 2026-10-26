@@ -14,12 +14,11 @@ test("fact groups use owning Turn time then F id, retain multi-Turn citations, a
   const multi = { ...fact(2, 20), source: ["T20#user", "T10#assistant"], quote: "verbatim" };
   const facts = [fact(7, 10), fact(8, 20), fact(3, 10), multi];
   const before = structuredClone(facts);
-  expect(renderFactGroups(facts, line, times)).toEqual([
-    `[T20] ${early} (selected facts)\n${line(multi)}`,
-    line(facts[1]!),
-    `[T10] ${late} (selected facts)\n${line(facts[2]!)}`,
-    line(facts[0]!),
-  ]);
+  const groups = renderFactGroups(facts, line, times);
+  expect(groups.map(group => Number(/\[F(\d+)\]/.exec(group)![1]))).toEqual([2, 8, 3, 7]);
+  expect([...groups.join("\n").matchAll(/^\[T\d+\].*$/gm)].map(match => match[0]))
+    .toEqual(["[T20] 01-01 00:00", "[T10] 01-02 00:00"]);
+  expect(groups[0]).toContain(line(multi));
   expect(facts).toEqual(before);
   const text = renderFactGroups(facts, line, times).join("\n");
   expect(text.match(/\[F2\]/g)).toHaveLength(1);
@@ -34,7 +33,8 @@ test("fact groups compare timestamp instants, break ties by Turn id, and keep un
     [3, "2025-12-31T23:00:00Z"], [4, "unknown"]]);
   const text = renderFactGroups([fact(1, 4), fact(2, 2), fact(3, 3), fact(4, 1)], line, turns).join("\n");
   expect([...text.matchAll(/^\[T(\d+)\]/gm)].map(m => Number(m[1]))).toEqual([1, 3, 2, 4]);
-  expect(text).toContain("[T4] unknown (selected facts)");
+  expect([...text.matchAll(/^\[T\d+\].*$/gm)].map(match => match[0]))
+    .toEqual(["[T1] 12-31 23:00", "[T3] 12-31 23:00", "[T2] 01-01 00:00", "[T4] unknown"]);
 });
 
 test("history selection keeps its priority prefix, charges a heading once, then sorts the selected facts", () => {
@@ -45,7 +45,7 @@ test("history selection keeps its priority prefix, charges a heading once, then 
   const result = budgetFacts(candidates, line, cap, times);
   expect(result.recent).toEqual(grouped); // F3 then F8, although F8 had selection priority
   expect(result.receipts).toEqual(["omitted 1 older facts; expand: trace://F2"]);
-  expect(result.recent.join("\n").match(/selected facts/g)).toHaveLength(1);
+  expect(result.recent.join("\n").match(/selected facts/gi)).toHaveLength(1);
   expect(budgetFacts([recent], line, charge([line(recent)]), times).recent).toEqual([]); // header is not free
   const one = charge(renderFactGroups([recent], line, times));
   expect(budgetFacts(candidates, line, one, times).recent).toEqual(renderFactGroups([recent], line, times));

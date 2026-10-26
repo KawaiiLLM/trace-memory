@@ -73,7 +73,10 @@ test("34c: a knowledge cap that cannot hold a complete foreground item emits not
     f.m.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
     f.note("Evidence");
     expect(f.knowledge("A complete rule " + "word ".repeat(6_000))).toContain("committed");
-    expect(f.m.inject(f.s.id)).toBe("");
+    const offered = f.m.injection(f.s.id);
+    expect(offered).toMatchObject({ knowledgeCommitIds: [], knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
+    expect(offered.text).toBe("");
+    expect(offered.guideVersions ?? []).toEqual([]);
   } finally { f.m.close(); }
 });
 

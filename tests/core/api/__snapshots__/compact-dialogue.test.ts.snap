@@ -13,208 +13,209 @@ trace://K<id>, trace://F<id>: one knowledge item or fact.
 Give a subagent trace://knowledge/S1 for background or trace://compact/S1 to continue, and tell it to use read.
 
 <episodic>
-Earlier facts (titles only; read trace://F<id> for the body):
+Earlier facts (titles only; turn times UTC; read trace://F<id> for the body):
 
-[T4] 2026-10-09T00:00:00Z
+[T4] 10-09 00:00
 [F4] Episode 3
-[T5] 2026-10-09T00:00:00Z
+[T5] 10-09 00:00
 [F5] Episode 4
-[T7] 2026-10-09T00:00:00Z
+[T7] 10-09 00:00
 [F7] Episode 6
-[T8] 2026-10-09T00:00:00Z
+[T8] 10-09 00:00
 [F8] Episode 7
-[T9] 2026-10-09T00:00:00Z
+[T9] 10-09 00:00
 [F9] Episode 8
-[T10] 2026-10-09T00:00:00Z
+[T10] 10-09 00:00
 [F10] Episode 9
-[T11] 2026-10-09T00:00:00Z
+[T11] 10-09 00:00
 [F11] Episode 10
-[T12] 2026-10-09T00:00:00Z
+[T12] 10-09 00:00
 [F12] Episode 11
-[T13] 2026-10-09T00:00:00Z
+[T13] 10-09 00:00
 [F13] Episode 12
-[T14] 2026-10-09T00:00:00Z
+[T14] 10-09 00:00
 [F14] Episode 13
-[T15] 2026-10-09T00:00:00Z
+[T15] 10-09 00:00
 [F15] Episode 14
-[T16] 2026-10-09T00:00:00Z
+[T16] 10-09 00:00
 [F16] Episode 15
-[T17] 2026-10-09T00:00:00Z
+[T17] 10-09 00:00
 [F17] Episode 16
-[T18] 2026-10-09T00:00:00Z
+[T18] 10-09 00:00
 [F18] Episode 17
-[T19] 2026-10-09T00:00:00Z
+[T19] 10-09 00:00
 [F19] Episode 18
-[T20] 2026-10-09T00:00:00Z
+[T20] 10-09 00:00
 [F20] Episode 19
-[T21] 2026-10-09T00:00:00Z
+[T21] 10-09 00:00
 [F21] Episode 20
-[T22] 2026-10-09T00:00:00Z
+[T22] 10-09 00:00
 [F22] Episode 21
-[T23] 2026-10-09T00:00:00Z
+[T23] 10-09 00:00
 [F23] Episode 22
-[T24] 2026-10-09T00:00:00Z
+[T24] 10-09 00:00
 [F24] Episode 23
-[T25] 2026-10-09T00:00:00Z
+[T25] 10-09 00:00
 [F25] Episode 24
-[T26] 2026-10-09T00:00:00Z
+[T26] 10-09 00:00
 [F26] Episode 25
-[T27] 2026-10-09T00:00:00Z
+[T27] 10-09 00:00
 [F27] Episode 26
-[T28] 2026-10-09T00:00:00Z
+[T28] 10-09 00:00
 [F28] Episode 27
-[T29] 2026-10-09T00:00:00Z
+[T29] 10-09 00:00
 [F29] Episode 28
-[T30] 2026-10-09T00:00:00Z
+[T30] 10-09 00:00
 [F30] Episode 29
-[T31] 2026-10-09T00:00:00Z
+[T31] 10-09 00:00
 [F31] Episode 30
-[T32] 2026-10-09T00:00:00Z
+[T32] 10-09 00:00
 [F32] Episode 31
-[T33] 2026-10-09T00:00:00Z
+[T33] 10-09 00:00
 [F33] Episode 32
-[T34] 2026-10-09T00:00:00Z
+[T34] 10-09 00:00
 [F34] Episode 33
-[T35] 2026-10-09T00:00:00Z
+[T35] 10-09 00:00
 [F35] Episode 34
-[T36] 2026-10-09T00:00:00Z
+[T36] 10-09 00:00
 [F36] Episode 35
-[T37] 2026-10-09T00:00:00Z
+[T37] 10-09 00:00
 [F37] Episode 36
-[T38] 2026-10-09T00:00:00Z
+[T38] 10-09 00:00
 [F38] Episode 37
-[T39] 2026-10-09T00:00:00Z
+[T39] 10-09 00:00
 [F39] Episode 38
-[T40] 2026-10-09T00:00:00Z
+[T40] 10-09 00:00
 [F40] Episode 39
-[T41] 2026-10-09T00:00:00Z
+[T41] 10-09 00:00
 [F41] Episode 40
-[T42] 2026-10-09T00:00:00Z
+[T42] 10-09 00:00
 [F42] Episode 41
-[T43] 2026-10-09T00:00:00Z
+[T43] 10-09 00:00
 [F43] Episode 42
-[T44] 2026-10-09T00:00:00Z
+[T44] 10-09 00:00
 [F44] Episode 43
-[T45] 2026-10-09T00:00:00Z
+[T45] 10-09 00:00
 [F45] Episode 44
-[T46] 2026-10-09T00:00:00Z
+[T46] 10-09 00:00
 [F46] Episode 45
-[T47] 2026-10-09T00:00:00Z
+[T47] 10-09 00:00
 [F47] Episode 46
-[T48] 2026-10-09T00:00:00Z
+[T48] 10-09 00:00
 [F48] Episode 47
-[T49] 2026-10-09T00:00:00Z
+[T49] 10-09 00:00
 [F49] Episode 48
-[T50] 2026-10-09T00:00:00Z
+[T50] 10-09 00:00
 [F50] Episode 49
-[T51] 2026-10-09T00:00:00Z
+[T51] 10-09 00:00
 [F51] Episode 50
-[T52] 2026-10-09T00:00:00Z
+[T52] 10-09 00:00
 [F52] Episode 51
-[T53] 2026-10-09T00:00:00Z
+[T53] 10-09 00:00
 [F53] Episode 52
-[T54] 2026-10-09T00:00:00Z
+[T54] 10-09 00:00
 [F54] Episode 53
-[T55] 2026-10-09T00:00:00Z
+[T55] 10-09 00:00
 [F55] Episode 54
-[T56] 2026-10-09T00:00:00Z
+[T56] 10-09 00:00
 [F56] Episode 55
-[T57] 2026-10-09T00:00:00Z
+[T57] 10-09 00:00
 [F57] Episode 56
-[T58] 2026-10-09T00:00:00Z
+[T58] 10-09 00:00
 [F58] Episode 57
-[T59] 2026-10-09T00:00:00Z
+[T59] 10-09 00:00
 [F59] Episode 58
-[T60] 2026-10-09T00:00:00Z
+[T60] 10-09 00:00
 [F60] Episode 59
-[T61] 2026-10-09T00:00:00Z
+[T61] 10-09 00:00
 [F61] Episode 60
-[T62] 2026-10-09T00:00:00Z
+[T62] 10-09 00:00
 [F62] Episode 61
-[T63] 2026-10-09T00:00:00Z
+[T63] 10-09 00:00
 [F63] Episode 62
-[T64] 2026-10-09T00:00:00Z
+[T64] 10-09 00:00
 [F64] Episode 63
-[T65] 2026-10-09T00:00:00Z
+[T65] 10-09 00:00
 [F65] Episode 64
-[T66] 2026-10-09T00:00:00Z
+[T66] 10-09 00:00
 [F66] Episode 65
-[T67] 2026-10-09T00:00:00Z
+[T67] 10-09 00:00
 [F67] Episode 66
-[T68] 2026-10-09T00:00:00Z
+[T68] 10-09 00:00
 [F68] Episode 67
-[T69] 2026-10-09T00:00:00Z
+[T69] 10-09 00:00
 [F69] Episode 68
-[T70] 2026-10-09T00:00:00Z
+[T70] 10-09 00:00
 [F70] Episode 69
-[T71] 2026-10-09T00:00:00Z
+[T71] 10-09 00:00
 [F71] Episode 70
-[T72] 2026-10-09T00:00:00Z
+[T72] 10-09 00:00
 [F72] Episode 71
-[T73] 2026-10-09T00:00:00Z
+[T73] 10-09 00:00
 [F73] Episode 72
-[T74] 2026-10-09T00:00:00Z
+[T74] 10-09 00:00
 [F74] Episode 73
-[T75] 2026-10-09T00:00:00Z
+[T75] 10-09 00:00
 [F75] Episode 74
-[T76] 2026-10-09T00:00:00Z
+[T76] 10-09 00:00
 [F76] Episode 75
-[T77] 2026-10-09T00:00:00Z
+[T77] 10-09 00:00
 [F77] Episode 76
-[T78] 2026-10-09T00:00:00Z
+[T78] 10-09 00:00
 [F78] Episode 77
-[T79] 2026-10-09T00:00:00Z
+[T79] 10-09 00:00
 [F79] Episode 78
-[T80] 2026-10-09T00:00:00Z
+[T80] 10-09 00:00
 [F80] Episode 79
-[T81] 2026-10-09T00:00:00Z
+[T81] 10-09 00:00
 [F81] Episode 80
-[T82] 2026-10-09T00:00:00Z
+[T82] 10-09 00:00
 [F82] Episode 81
-[T83] 2026-10-09T00:00:00Z
+[T83] 10-09 00:00
 [F83] Episode 82
-[T84] 2026-10-09T00:00:00Z
+[T84] 10-09 00:00
 [F84] Episode 83
-[T85] 2026-10-09T00:00:00Z
+[T85] 10-09 00:00
 [F85] Episode 84
-[T86] 2026-10-09T00:00:00Z
+[T86] 10-09 00:00
 [F86] Episode 85
-[T87] 2026-10-09T00:00:00Z
+[T87] 10-09 00:00
 [F87] Episode 86
-[T88] 2026-10-09T00:00:00Z
+[T88] 10-09 00:00
 [F88] Episode 87
-[T89] 2026-10-09T00:00:00Z
+[T89] 10-09 00:00
 [F89] Episode 88
-[T90] 2026-10-09T00:00:00Z
+[T90] 10-09 00:00
 [F90] Episode 89
-[T91] 2026-10-09T00:00:00Z
+[T91] 10-09 00:00
 [F91] Episode 90
-[T92] 2026-10-09T00:00:00Z
+[T92] 10-09 00:00
 [F92] Episode 91
-[T93] 2026-10-09T00:00:00Z
+[T93] 10-09 00:00
 [F93] Episode 92
-[T94] 2026-10-09T00:00:00Z
+[T94] 10-09 00:00
 [F94] Episode 93
-[T95] 2026-10-09T00:00:00Z
+[T95] 10-09 00:00
 [F95] Episode 94
-[T96] 2026-10-09T00:00:00Z
+[T96] 10-09 00:00
 [F96] Episode 95
-[T97] 2026-10-09T00:00:00Z
+[T97] 10-09 00:00
 [F97] Episode 96
-[T98] 2026-10-09T00:00:00Z
+[T98] 10-09 00:00
 [F98] Episode 97
-[T99] 2026-10-09T00:00:00Z
+[T99] 10-09 00:00
 [F99] Episode 98
-[T100] 2026-10-09T00:00:00Z
+[T100] 10-09 00:00
 [F100] Episode 99
 
 Recent facts (by Turn):
 
-[T101] 2026-10-09T00:00:00Z (selected facts)
+Selected facts; turn times are UTC.
+[T101] 10-09 00:00
 [F101] Episode 100
 [T101#E1@user] evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100
 
-[T102] 2026-10-09T00:00:00Z (selected facts)
+[T102] 10-09 00:00
 [F102] Episode 101
 [T102#E1@user] evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101
 
@@ -438,211 +439,214 @@ raw only: #E<k> gives one full entry and @role keeps one role, e.g. citation T12
 trace://K<id>, trace://F<id>: one knowledge item or fact.
 Give a subagent trace://knowledge/S1 for background or trace://compact/S1 to continue, and tell it to use read.
 
-<episodic>
-Earlier facts (titles only; read trace://F<id> for the body):
+Items are grouped by category, then scope. Within a scope group, full items are ordered by last change, oldest to newest; for claims about the same object, the later full item takes precedence until maintenance merges them. Position does not compare items across categories or scopes. Title-only lines carry no claim. When a rendered set is split into 24 segments, read by the header's p[0] segment number, then position within that segment; a scope group may continue into the next segment. Arrival order is not recency.
 
-[T3] 2026-10-09T00:00:00Z
+<episodic>
+Earlier facts (titles only; turn times UTC; read trace://F<id> for the body):
+
+[T3] 10-09 00:00
 [F3] Episode 2
-[T4] 2026-10-09T00:00:00Z
+[T4] 10-09 00:00
 [F4] Episode 3
-[T5] 2026-10-09T00:00:00Z
+[T5] 10-09 00:00
 [F5] Episode 4
-[T7] 2026-10-09T00:00:00Z
+[T7] 10-09 00:00
 [F7] Episode 6
-[T8] 2026-10-09T00:00:00Z
+[T8] 10-09 00:00
 [F8] Episode 7
-[T9] 2026-10-09T00:00:00Z
+[T9] 10-09 00:00
 [F9] Episode 8
-[T10] 2026-10-09T00:00:00Z
+[T10] 10-09 00:00
 [F10] Episode 9
-[T11] 2026-10-09T00:00:00Z
+[T11] 10-09 00:00
 [F11] Episode 10
-[T12] 2026-10-09T00:00:00Z
+[T12] 10-09 00:00
 [F12] Episode 11
-[T13] 2026-10-09T00:00:00Z
+[T13] 10-09 00:00
 [F13] Episode 12
-[T14] 2026-10-09T00:00:00Z
+[T14] 10-09 00:00
 [F14] Episode 13
-[T15] 2026-10-09T00:00:00Z
+[T15] 10-09 00:00
 [F15] Episode 14
-[T16] 2026-10-09T00:00:00Z
+[T16] 10-09 00:00
 [F16] Episode 15
-[T17] 2026-10-09T00:00:00Z
+[T17] 10-09 00:00
 [F17] Episode 16
-[T18] 2026-10-09T00:00:00Z
+[T18] 10-09 00:00
 [F18] Episode 17
-[T19] 2026-10-09T00:00:00Z
+[T19] 10-09 00:00
 [F19] Episode 18
-[T20] 2026-10-09T00:00:00Z
+[T20] 10-09 00:00
 [F20] Episode 19
-[T21] 2026-10-09T00:00:00Z
+[T21] 10-09 00:00
 [F21] Episode 20
-[T22] 2026-10-09T00:00:00Z
+[T22] 10-09 00:00
 [F22] Episode 21
-[T23] 2026-10-09T00:00:00Z
+[T23] 10-09 00:00
 [F23] Episode 22
-[T24] 2026-10-09T00:00:00Z
+[T24] 10-09 00:00
 [F24] Episode 23
-[T25] 2026-10-09T00:00:00Z
+[T25] 10-09 00:00
 [F25] Episode 24
-[T26] 2026-10-09T00:00:00Z
+[T26] 10-09 00:00
 [F26] Episode 25
-[T27] 2026-10-09T00:00:00Z
+[T27] 10-09 00:00
 [F27] Episode 26
-[T28] 2026-10-09T00:00:00Z
+[T28] 10-09 00:00
 [F28] Episode 27
-[T29] 2026-10-09T00:00:00Z
+[T29] 10-09 00:00
 [F29] Episode 28
-[T30] 2026-10-09T00:00:00Z
+[T30] 10-09 00:00
 [F30] Episode 29
-[T31] 2026-10-09T00:00:00Z
+[T31] 10-09 00:00
 [F31] Episode 30
-[T32] 2026-10-09T00:00:00Z
+[T32] 10-09 00:00
 [F32] Episode 31
-[T33] 2026-10-09T00:00:00Z
+[T33] 10-09 00:00
 [F33] Episode 32
-[T34] 2026-10-09T00:00:00Z
+[T34] 10-09 00:00
 [F34] Episode 33
-[T35] 2026-10-09T00:00:00Z
+[T35] 10-09 00:00
 [F35] Episode 34
-[T36] 2026-10-09T00:00:00Z
+[T36] 10-09 00:00
 [F36] Episode 35
-[T37] 2026-10-09T00:00:00Z
+[T37] 10-09 00:00
 [F37] Episode 36
-[T38] 2026-10-09T00:00:00Z
+[T38] 10-09 00:00
 [F38] Episode 37
-[T39] 2026-10-09T00:00:00Z
+[T39] 10-09 00:00
 [F39] Episode 38
-[T40] 2026-10-09T00:00:00Z
+[T40] 10-09 00:00
 [F40] Episode 39
-[T41] 2026-10-09T00:00:00Z
+[T41] 10-09 00:00
 [F41] Episode 40
-[T42] 2026-10-09T00:00:00Z
+[T42] 10-09 00:00
 [F42] Episode 41
-[T43] 2026-10-09T00:00:00Z
+[T43] 10-09 00:00
 [F43] Episode 42
-[T44] 2026-10-09T00:00:00Z
+[T44] 10-09 00:00
 [F44] Episode 43
-[T45] 2026-10-09T00:00:00Z
+[T45] 10-09 00:00
 [F45] Episode 44
-[T46] 2026-10-09T00:00:00Z
+[T46] 10-09 00:00
 [F46] Episode 45
-[T47] 2026-10-09T00:00:00Z
+[T47] 10-09 00:00
 [F47] Episode 46
-[T48] 2026-10-09T00:00:00Z
+[T48] 10-09 00:00
 [F48] Episode 47
-[T49] 2026-10-09T00:00:00Z
+[T49] 10-09 00:00
 [F49] Episode 48
-[T50] 2026-10-09T00:00:00Z
+[T50] 10-09 00:00
 [F50] Episode 49
-[T51] 2026-10-09T00:00:00Z
+[T51] 10-09 00:00
 [F51] Episode 50
-[T52] 2026-10-09T00:00:00Z
+[T52] 10-09 00:00
 [F52] Episode 51
-[T53] 2026-10-09T00:00:00Z
+[T53] 10-09 00:00
 [F53] Episode 52
-[T54] 2026-10-09T00:00:00Z
+[T54] 10-09 00:00
 [F54] Episode 53
-[T55] 2026-10-09T00:00:00Z
+[T55] 10-09 00:00
 [F55] Episode 54
-[T56] 2026-10-09T00:00:00Z
+[T56] 10-09 00:00
 [F56] Episode 55
-[T57] 2026-10-09T00:00:00Z
+[T57] 10-09 00:00
 [F57] Episode 56
-[T58] 2026-10-09T00:00:00Z
+[T58] 10-09 00:00
 [F58] Episode 57
-[T59] 2026-10-09T00:00:00Z
+[T59] 10-09 00:00
 [F59] Episode 58
-[T60] 2026-10-09T00:00:00Z
+[T60] 10-09 00:00
 [F60] Episode 59
-[T61] 2026-10-09T00:00:00Z
+[T61] 10-09 00:00
 [F61] Episode 60
-[T62] 2026-10-09T00:00:00Z
+[T62] 10-09 00:00
 [F62] Episode 61
-[T63] 2026-10-09T00:00:00Z
+[T63] 10-09 00:00
 [F63] Episode 62
-[T64] 2026-10-09T00:00:00Z
+[T64] 10-09 00:00
 [F64] Episode 63
-[T65] 2026-10-09T00:00:00Z
+[T65] 10-09 00:00
 [F65] Episode 64
-[T66] 2026-10-09T00:00:00Z
+[T66] 10-09 00:00
 [F66] Episode 65
-[T67] 2026-10-09T00:00:00Z
+[T67] 10-09 00:00
 [F67] Episode 66
-[T68] 2026-10-09T00:00:00Z
+[T68] 10-09 00:00
 [F68] Episode 67
-[T69] 2026-10-09T00:00:00Z
+[T69] 10-09 00:00
 [F69] Episode 68
-[T70] 2026-10-09T00:00:00Z
+[T70] 10-09 00:00
 [F70] Episode 69
-[T71] 2026-10-09T00:00:00Z
+[T71] 10-09 00:00
 [F71] Episode 70
-[T72] 2026-10-09T00:00:00Z
+[T72] 10-09 00:00
 [F72] Episode 71
-[T73] 2026-10-09T00:00:00Z
+[T73] 10-09 00:00
 [F73] Episode 72
-[T74] 2026-10-09T00:00:00Z
+[T74] 10-09 00:00
 [F74] Episode 73
-[T75] 2026-10-09T00:00:00Z
+[T75] 10-09 00:00
 [F75] Episode 74
-[T76] 2026-10-09T00:00:00Z
+[T76] 10-09 00:00
 [F76] Episode 75
-[T77] 2026-10-09T00:00:00Z
+[T77] 10-09 00:00
 [F77] Episode 76
-[T78] 2026-10-09T00:00:00Z
+[T78] 10-09 00:00
 [F78] Episode 77
-[T79] 2026-10-09T00:00:00Z
+[T79] 10-09 00:00
 [F79] Episode 78
-[T80] 2026-10-09T00:00:00Z
+[T80] 10-09 00:00
 [F80] Episode 79
-[T81] 2026-10-09T00:00:00Z
+[T81] 10-09 00:00
 [F81] Episode 80
-[T82] 2026-10-09T00:00:00Z
+[T82] 10-09 00:00
 [F82] Episode 81
-[T83] 2026-10-09T00:00:00Z
+[T83] 10-09 00:00
 [F83] Episode 82
-[T84] 2026-10-09T00:00:00Z
+[T84] 10-09 00:00
 [F84] Episode 83
-[T85] 2026-10-09T00:00:00Z
+[T85] 10-09 00:00
 [F85] Episode 84
-[T86] 2026-10-09T00:00:00Z
+[T86] 10-09 00:00
 [F86] Episode 85
-[T87] 2026-10-09T00:00:00Z
+[T87] 10-09 00:00
 [F87] Episode 86
-[T88] 2026-10-09T00:00:00Z
+[T88] 10-09 00:00
 [F88] Episode 87
-[T89] 2026-10-09T00:00:00Z
+[T89] 10-09 00:00
 [F89] Episode 88
-[T90] 2026-10-09T00:00:00Z
+[T90] 10-09 00:00
 [F90] Episode 89
-[T91] 2026-10-09T00:00:00Z
+[T91] 10-09 00:00
 [F91] Episode 90
-[T92] 2026-10-09T00:00:00Z
+[T92] 10-09 00:00
 [F92] Episode 91
-[T93] 2026-10-09T00:00:00Z
+[T93] 10-09 00:00
 [F93] Episode 92
-[T94] 2026-10-09T00:00:00Z
+[T94] 10-09 00:00
 [F94] Episode 93
-[T95] 2026-10-09T00:00:00Z
+[T95] 10-09 00:00
 [F95] Episode 94
-[T96] 2026-10-09T00:00:00Z
+[T96] 10-09 00:00
 [F96] Episode 95
-[T97] 2026-10-09T00:00:00Z
+[T97] 10-09 00:00
 [F97] Episode 96
-[T98] 2026-10-09T00:00:00Z
+[T98] 10-09 00:00
 [F98] Episode 97
-[T99] 2026-10-09T00:00:00Z
+[T99] 10-09 00:00
 [F99] Episode 98
-[T100] 2026-10-09T00:00:00Z
+[T100] 10-09 00:00
 [F100] Episode 99
 
 Recent facts (by Turn):
 
-[T101] 2026-10-09T00:00:00Z (selected facts)
+Selected facts; turn times are UTC.
+[T101] 10-09 00:00
 [F101] Episode 100
 [T101#E1@user] evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100 evidence-100
 
-[T102] 2026-10-09T00:00:00Z (selected facts)
+[T102] 10-09 00:00
 [F102] Episode 101
 [T102#E1@user] evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101 evidence-101
 
