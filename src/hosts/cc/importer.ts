@@ -399,7 +399,8 @@ export class CcProjection {
           for (const call of fragments) this.memory.store.completeToolCall(turnId, call.ordinal, call.result ?? "", call.status);
         }
         const stored = this.memory.appendEntry({ sessionId, nativeLineage: lineage, nativeId: source.nativeId, turnId,
-          role: source.kind, text: source.text, raw, calls: fragments }, null);
+          role: source.role, ...(source.label ? { label: source.label } : {}),
+          text: source.text, raw, calls: fragments }, null);
         if (source.kind === "assistant") {
           const turn = ownerTurn!;
           this.memory.store.updateTurn(turnId, { assistantText: [turn.assistantText, source.text].filter(Boolean).join("\n"), endedAt: source.timestamp });

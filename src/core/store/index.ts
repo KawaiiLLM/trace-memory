@@ -147,10 +147,12 @@ CREATE TABLE IF NOT EXISTS raw_search_entries (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   turn_id INTEGER NOT NULL REFERENCES turns(id),
   tool_call_id INTEGER REFERENCES tool_calls(id),
+  source_entry_id INTEGER REFERENCES source_entries(id),
   field TEXT NOT NULL CHECK (field IN ('user_prompt','assistant_text','tool_name','tool_input','tool_result'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_search_turn_field ON raw_search_entries(turn_id, field) WHERE tool_call_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_search_turn_field ON raw_search_entries(turn_id, field) WHERE tool_call_id IS NULL AND source_entry_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_search_tool_call_field ON raw_search_entries(tool_call_id, field) WHERE tool_call_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_search_source_entry ON raw_search_entries(turn_id, source_entry_id) WHERE source_entry_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS facts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -378,7 +380,9 @@ export interface SourceInput {
   nativeLineage: string;
   nativeId: string;
   turnId: number;
-  role: "user" | "assistant" | "toolResult";
+  role: "user" | "assistant" | "toolResult" | "observation";
+  /** Host-native speaker label for non-human prompt observations. */
+  label?: string;
   text: string;
   raw: string;
   calls: { ordinal: number; name: string; callId: string; input?: string; result?: string; status: string }[];
@@ -1022,6 +1026,11 @@ export class Store {
       if (policyTable) {
         const row = this.db.prepare("SELECT global_tokens,project_tokens,session_tokens FROM knowledge_budget_policy WHERE id=1").get();
         if (row) priorBudgetPolicy = { global: Number(row.global_tokens), project: Number(row.project_tokens), session: Number(row.session_tokens) };
+      }
+      // 176: mid-turn prompts have no Turn column. Their text shares Raw's index and ranking corpus.
+      if (hadRawFts && !this.db.prepare("PRAGMA table_info(raw_search_entries)").all().some(row => row.name === "source_entry_id")) {
+        this.db.exec(`ALTER TABLE raw_search_entries ADD COLUMN source_entry_id INTEGER REFERENCES source_entries(id);
+          DROP INDEX idx_raw_search_turn_field;`);
       }
       this.db.exec(SCHEMA_SQL);
       migrateDreaming(this.db, true);
@@ -1974,7 +1983,7 @@ export class Store {
     // Two statements, one per partial unique index: `tool_call_id IS ?` matches neither index's
     // WHERE clause, so the planner scanned the whole table on every reply or result update.
     const existing = (toolCallId === null
-      ? this.db.prepare("SELECT id FROM raw_search_entries WHERE turn_id = ? AND field = ? AND tool_call_id IS NULL").get(turnId, field)
+      ? this.db.prepare("SELECT id FROM raw_search_entries WHERE turn_id = ? AND field = ? AND tool_call_id IS NULL AND source_entry_id IS NULL").get(turnId, field)
       : this.db.prepare("SELECT id FROM raw_search_entries WHERE tool_call_id = ? AND field = ?").get(toolCallId, field)) as { id: number } | undefined;
     if (!existing) { this.indexRawField(field, sessionId, turnId, toolCallId, text); return; }
     if (text === null) {
@@ -2353,7 +2362,7 @@ export class Store {
               if (resolveFactSource([entry], address).length !== 1) throw new Error(`inadmissible source ${address}`);
               citedEntries.push(entry.id);
               if (entry.role === "user") return { role: "user" as const };
-              if (entry.role === "toolResult") return { role: "observation" as const };
+              if (entry.role === "toolResult" || entry.role === "observation") return { role: "observation" as const };
               if (entry.role !== "assistant") throw new Error(`invalid source entry role ${entry.role}`);
               const harness = this.getSession(sessionId)!.host;
               if (!harness.startsWith("pi:") && !harness.startsWith("cc:")) throw new Error(`unknown source harness ${harness}`);
@@ -4481,12 +4490,14 @@ export class Store {
     return this.searchTermBatches(patterns, (batch, remaining) => {
       const matches = batch.map(() => `(t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
         (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
-        (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\')))` ).join(" AND ");
+        (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\')) OR EXISTS
+        (SELECT 1 FROM raw_search_entries x JOIN source_entry_raw r ON r.entry_id = x.source_entry_id
+         WHERE x.turn_id = t.id AND x.source_entry_id IS NOT NULL AND json_extract(r.content, '$.text') LIKE ? ESCAPE '\\'))`).join(" AND ");
       return this.db.prepare(`SELECT t.id FROM turns t WHERE
           ${remaining === undefined ? "" : "t.id IN (SELECT value FROM json_each(?)) AND"}
           (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND ${matches} ORDER BY t.id`)
         .all(...(remaining === undefined ? [] : [remaining]), Number(restricted), owners,
-          ...batch.flatMap(pattern => [pattern, pattern, pattern, pattern, pattern])) as { id: number }[];
+          ...batch.flatMap(pattern => [pattern, pattern, pattern, pattern, pattern, pattern])) as { id: number }[];
     }, candidates).map(r => `T${r.id}`);
   }
 
@@ -4523,7 +4534,7 @@ export class Store {
     const candidates = JSON.stringify(turnIds);
     for (const row of this.db.prepare("SELECT id, session_id, started_at FROM turns WHERE id IN (SELECT value FROM json_each(?))").all(candidates))
       ranks.set(Number(row.id), { score: 0, fields: new Map(), sessionId: Number(row.session_id), startedAt: String(row.started_at) });
-    const rows = this.db.prepare(`SELECT e.turn_id, e.field, c.ordinal, bm25(raw_fts) AS score
+    const rows = this.db.prepare(`SELECT e.turn_id, e.field, e.source_entry_id, c.ordinal, bm25(raw_fts) AS score
       FROM raw_fts JOIN raw_search_entries e ON e.id = raw_fts.rowid
       LEFT JOIN tool_calls c ON c.id = e.tool_call_id
       WHERE raw_fts MATCH ? AND e.turn_id IN (SELECT value FROM json_each(?))`)
@@ -4532,7 +4543,7 @@ export class Store {
       const id = Number(row.turn_id), score = Number(row.score);
       const rank = ranks.get(id)!;
       rank.score = Math.min(rank.score, score);
-      rank.fields.set(`${row.ordinal ?? 0}:${row.field}`, score);
+      rank.fields.set(`${row.source_entry_id === null ? row.ordinal ?? 0 : `E${row.source_entry_id}`}:${row.field}`, score);
     }
     return ranks;
   }
@@ -4725,9 +4736,9 @@ export class Store {
       if (typeof input.nativeLineage !== "string" || typeof input.nativeId !== "string" || typeof input.text !== "string" || typeof input.raw !== "string" ||
           !Array.isArray(input.calls) || input.calls.some(c => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || typeof c.name !== "string" || !c.name || typeof c.callId !== "string" || !c.callId || /[\uD800-\uDFFF]/u.test(c.callId) || typeof c.status !== "string" || !c.status ||
             (c.input !== undefined && typeof c.input !== "string") || (c.result !== undefined && typeof c.result !== "string")) ||
-          new Set(input.calls.map(c => c.callId)).size !== input.calls.length || new Set(input.calls.map(c => c.ordinal)).size !== input.calls.length || (input.role === "user" && input.calls.length) || (input.role === "toolResult" && input.text)) throw new Error("invalid source entry content");
+          new Set(input.calls.map(c => c.callId)).size !== input.calls.length || new Set(input.calls.map(c => c.ordinal)).size !== input.calls.length || ((input.role === "user" || input.role === "observation") && input.calls.length) || (input.role === "toolResult" && input.text)) throw new Error("invalid source entry content");
       const turn = this.getTurn(input.turnId);
-      if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult"].includes(input.role) ||
+      if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult", "observation"].includes(input.role) ||
           turn?.sessionId !== input.sessionId || turn?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
       if (known === undefined) known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
       if (known) {
@@ -4747,6 +4758,11 @@ export class Store {
       // since both inserts share this method's enclosing `this.transaction`).
       this.db.prepare("INSERT INTO source_entry_raw (entry_id, content, blocks) VALUES (?, ?, ?)")
         .run(result.lastInsertRowid, JSON.stringify(input), blocks ? JSON.stringify(blocks) : this.normalizeSource ? "null" : null);
+      if ((input.role === "user" || input.role === "observation") && input.text && input.text !== turn.userPrompt) {
+        const indexed = this.db.prepare(`INSERT INTO raw_search_entries (session_id, turn_id, source_entry_id, field)
+          VALUES (?, ?, ?, 'user_prompt')`).run(input.sessionId, input.turnId, result.lastInsertRowid);
+        this.db.prepare("INSERT INTO raw_fts (rowid, text) VALUES (?, ?)").run(indexed.lastInsertRowid, input.text);
+      }
       // 74: mirror call identities into the compact side table in the same write, so a later known-
       // entry rebuild never needs this row's `content` to answer them.
       if (input.calls.length) {

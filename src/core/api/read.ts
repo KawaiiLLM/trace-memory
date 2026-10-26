@@ -839,6 +839,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const userTurns = new Set(ancestry.slice(0, config.compaction.userTurns));
       const titleTurns = new Set(ancestry.slice(0, config.compaction.titleTurns));
       const displayed = new Set(suppliedRaw.map(step => step.entry.id));
+      // Compatibility for Pi and pre-migration data without a native human-input detector.
+      // CC's corrected roles and ccHumanUser decide modern prompt provenance, not these prefixes.
       const prefixes = /^(?:<task-notification|<system-reminder|<command-|Caveat|\[Request interrupted|Another Claude session|<local-command)/u;
       const piUserPrefix = store.getSession(sessionId)!.host.startsWith("pi:") ? /^(?:<skill|This session is being continued)/u : undefined;
       const userCandidates = sourced.filter(meta => userTurns.has(meta.turnId) && !displayed.has(meta.id)

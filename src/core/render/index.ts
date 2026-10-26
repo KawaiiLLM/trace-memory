@@ -250,7 +250,7 @@ const speaks = (entry: SourceEntry) => Boolean(entry.text) || entry.role === "us
  * user message remains readable with a placeholder at #user but is not evidence. Thinking-only entries
  * have no legacy text projection; explicit @thinking reads use persisted blocks instead. */
 export const displayedAddresses = (entry: SourceEntry): string[] => [
-  ...(speaks(entry) ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
+  ...(speaks(entry) && entry.role !== "observation" ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
   ...entry.calls.map((call) => `T${entry.turnId}#t${call.ordinal}`),
 ];
 
@@ -284,11 +284,11 @@ function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (a
     if (selector?.kind === "thinking" && block.kind !== "thinking") continue;
     if (selector?.kind === "call" && (!tool || block.call.callId !== selector.id)) continue;
     if (selector?.kind === "text" && block.kind !== "text" && block.kind !== "result") continue;
-    const legacy = `T${entry.turnId}#${tool ? `t${block.call.ordinal}` : entry.role === "user" ? "user" : "assistant"}`;
+    const legacy = `T${entry.turnId}#${tool ? `t${block.call.ordinal}` : entry.role}`;
     const choice = choose(legacy);
     if (choice === "drop") continue;
     const address = `${entryAddress(entry)}@${entry.role === "toolResult" ? "observation" : entry.role}`;
-    const role = ` ${entry.role}`;
+    const role = ` ${entry.role === "observation" ? entry.label ?? "observation" : entry.role}`;
     if ("text" in block) {
       const label = `[${address}]${role}`, body = block.text;
       sources.push({ ordinal: null, choice, whole: () => bodyLine(label, body),

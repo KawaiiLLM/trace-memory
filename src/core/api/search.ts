@@ -184,7 +184,8 @@ export function searchFacade(store: Store) {
               // The index scores a Turn's whole prompt or reply; an entry takes that score only if its own text holds a term, so a
               // tool-only entry is scored by its own calls (161 review).
               const ownText = source.text.toLocaleLowerCase(), textMatches = needles?.some(term => ownText.includes(term)) ?? false;
-              let score = textMatches ? fields?.get(`0:${source.role === "user" ? "user_prompt" : source.role === "assistant" ? "assistant_text" : ""}`) ?? 0 : 0;
+              let score = textMatches ? fields?.get(`E${source.id}:user_prompt`)
+                ?? fields?.get(`0:${source.role === "user" || source.role === "observation" ? "user_prompt" : source.role === "assistant" ? "assistant_text" : ""}`) ?? 0 : 0;
               for (const call of source.calls) {
                 score = Math.min(score, fields?.get(`${call.ordinal}:tool_name`) ?? 0,
                   fields?.get(`${call.ordinal}:${source.role === "toolResult" ? "tool_result" : "tool_input"}`) ?? 0);

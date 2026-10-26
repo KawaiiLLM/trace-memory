@@ -56,6 +56,7 @@ export type CcNativeRecord = Record<string, unknown> & {
   promptSource?: string;
   userType?: string;
   origin?: Record<string, unknown>;
+  attachment?: Record<string, unknown>;
   message?: Record<string, unknown>;
 };
 
@@ -77,8 +78,8 @@ export interface CcTranscriptSnapshot {
 }
 
 export type CcSourceRecord =
-  | { kind: "user" | "assistant" | "toolResult"; record: CcNativeRecord; nativeId: string; timestamp: string | null; text: string;
-      calls: SourceInput["calls"] }
+  | { kind: "user" | "queued" | "assistant" | "toolResult"; record: CcNativeRecord; nativeId: string; timestamp: string | null; text: string;
+      role: SourceInput["role"]; label?: string; calls: SourceInput["calls"] }
   | { kind: "compaction"; record: CcNativeRecord; nativeId: string; timestamp: string | null };
 
 export interface CcNativeNode {
@@ -265,11 +266,30 @@ const snapshot = (path: string, stamp: FileStamp | null, values: Partial<CcTrans
   completeBytes: 0, recordCount: 0, records: [], incompleteBytes: 0, changed: false, reset: false, ...values,
 });
 
+/** Prompt provenance is independent of turn segmentation. Attachments never open a Turn. */
+const promptRole = (record: CcNativeRecord, envelope: Record<string, unknown> = record): "user" | "observation" => {
+  const origin = object(envelope.origin ?? record.origin);
+  if (record.isMeta === true) return "observation";
+  if (origin) return origin.kind === "human" ? "user" : "observation";
+  return ["typed", "queued", "sdk"].includes(String(envelope.promptSource ?? record.promptSource)) ? "user" : "observation";
+};
+const promptLabel = (envelope: Record<string, unknown>, record = envelope): string | undefined => {
+  const kind = object(envelope.origin ?? record.origin)?.kind;
+  return typeof kind === "string" && kind !== "human" ? kind : undefined;
+};
+
 export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | null {
   const id = nativeId(record);
   if (!id || !mainRecord(record)) return null;
   if (record.type === "system" && record.subtype === "compact_boundary" && record.isMeta !== true)
     return { kind: "compaction", record, nativeId: id, timestamp: timestamp(record) };
+  const attachment = object(record.attachment);
+  if (record.type === "attachment" && attachment?.type === "queued_command") {
+    const content = attachment.prompt;
+    if (!(typeof content === "string" || Array.isArray(content))) return null;
+    return { kind: "queued", record, nativeId: id, timestamp: timestamp(record), text: textBlocks(content).join("\n"),
+      role: promptRole(record, attachment), label: promptLabel(attachment, record), calls: [] };
+  }
   if (record.type !== "user" && record.type !== "assistant") return null;
   if (record.type === "user" && record.interruptedMessageId !== undefined) return null;
   const message = object(record.message);
@@ -286,7 +306,7 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
     const text = textBlocks(content).join("\n");
     const hasThinking = blocks(content).some(block => block.type === "thinking" || block.type === "redacted_thinking");
     if (!text && !calls.length && !hasThinking) return null;
-    return { kind: "assistant", record, nativeId: id, timestamp: timestamp(record), text, calls };
+    return { kind: "assistant", role: "assistant", record, nativeId: id, timestamp: timestamp(record), text, calls };
   }
   const contentBlocks = blocks(content), toolResults = contentBlocks.filter(block => block.type === "tool_result");
   if (toolResults.length) {
@@ -297,7 +317,7 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
         result: JSON.stringify({ content: block.content, toolUseResult: record.toolUseResult }), status: block.is_error === true ? "failure" : "success" });
     }
     if (calls.length !== toolResults.length) return null;
-    return { kind: "toolResult", record, nativeId: id, timestamp: timestamp(record), text: "", calls };
+    return { kind: "toolResult", role: "toolResult", record, nativeId: id, timestamp: timestamp(record), text: "", calls };
   }
   if (!(typeof content === "string" || Array.isArray(content))) return null;
   if (ccCarrierStart(textBlocks(content)[0] ?? "") >= 0) return null;
@@ -305,7 +325,8 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
   const humanPrompt = record.isMeta !== true && record.origin?.kind === "human";
   if (!nativePrompt && !humanPrompt) return null;
   const text = !nativePrompt && typeof content === "string" ? humanCommandPrompt(content) ?? content : textBlocks(content).join("\n");
-  return { kind: "user", record, nativeId: id, timestamp: timestamp(record), text, calls: [] };
+  return { kind: "user", record, nativeId: id, timestamp: timestamp(record), text, calls: [],
+    role: promptRole(record), label: promptLabel(record) };
 }
 
 /** Claude Code 2.1.280 splits one API message into rows sharing its id, one per content block, so
@@ -939,19 +960,15 @@ export function ccHumanUser(entry: SourceInput): boolean | undefined {
       (record.promptSource !== undefined && typeof record.promptSource !== "string")) return undefined;
   const origin = record.origin === undefined ? undefined : object(record.origin);
   if (origin === null || (origin?.kind !== undefined && typeof origin.kind !== "string")) return undefined;
-  if (record.type !== "user") return undefined;
-  if (record.isMeta === true) return false;
-  if (origin?.kind === "human") return true;
-  if (typeof record.promptSource === "string") return record.promptSource === "typed" || record.promptSource === "queued";
-  if (origin?.kind !== undefined) return false;
-  return undefined;
+  if (record.type !== "user" && !(record.type === "attachment" && object(record.attachment)?.type === "queued_command")) return undefined;
+  return promptRole(record, record.type === "attachment" ? object(record.attachment)! : record) === "user";
 }
 
 export const ccSourceBlocks: SourceNormalizer = entry => {
   let record: CcNativeRecord;
   try { record = JSON.parse(entry.raw); } catch { return undefined; }
   const source = classifySourceRecord(record);
-  if (!source || source.kind === "compaction" || source.kind !== entry.role) return undefined;
+  if (!source || source.kind === "compaction" || source.role !== entry.role) return undefined;
   const mapped = new Map(entry.calls.map(call => [call.callId, call]));
   const result: SourceBlock[] = [];
   if (source.kind === "assistant") {
@@ -976,8 +993,9 @@ export const ccSourceBlocks: SourceNormalizer = entry => {
     }
     return result;
   }
-  if (typeof record.message?.content === "string") return [{ kind: "text", text: source.text }];
-  for (const block of blocks(record.message?.content)) result.push(block.type === "text" && typeof block.text === "string"
+  const content = source.kind === "queued" ? record.attachment?.prompt : record.message?.content;
+  if (typeof content === "string") return [{ kind: "text", text: source.text }];
+  for (const block of blocks(content)) result.push(block.type === "text" && typeof block.text === "string"
     ? { kind: "text", text: block.text } : { kind: "marker", text: `[${typeof block.type === "string" ? block.type : "non-text content"} omitted]` });
   return result;
 };

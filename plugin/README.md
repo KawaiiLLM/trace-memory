@@ -103,6 +103,8 @@ The executor observes transcript writes with or without function hooks; no per-e
 
 Native transcript reads decode one JSONL record at a time from bounded byte chunks, including full scans, compaction-parent lookups, tail reads and worker-log verification. Transcripts larger than V8's single-string limit are supported; a single record may span chunks. Imports still commit only newline-completed records and preserve byte offsets. Full scans retain their byte snapshot until the file-stability check passes, and parsed records and lineage indexes still consume memory proportional to the transcript.
 
+Queued commands absorbed between tool calls are Raw entries at their native tree position in the running Turn; they never open another Turn. Prompt roles follow native origin: human input is `user`; peer reports, task notifications, automatic continuations and meta prompts are `observation`. Without an origin, non-meta `typed`, `queued` and `sdk` prompts retain the user role. Observation labels name the origin and preserve the native text. Ordinary user records keep their existing Turn boundaries even when their role changes.
+
 The Noter always runs as a fresh worker (ruling 2026-10-22): a fork's prefix is the main conversation, not the compaction memory the Noter starts from. `noting.forkModeDefault` and `noting.branchModeDefault` are removed settings; a `cc.config.json` that still carries one fails to load with `Removed setting noting.forkModeDefault: the Noter runs fresh only; remove this key`.
 
 Thinking-only entries remain in the processing batch and are marked processed on publication. The plugin stores no Raw/carrier association. The plugin denies `note` and `memory` to subagents, so only the main session writes manually, and subagent transcripts are not imported as foreground Raw. Stop cancels work and checks already received by the executor; it does not disable later checkpoints.
@@ -201,6 +203,21 @@ Stop older Pi and CC executors before opening the shared database with this upgr
 The old-default budget policy (4k/10k/1k) becomes 4k/15k/1k; custom policies are kept and reported. Legacy processing records are translated only for current visible versions into their current pools. This translation does not mark every version handled or change knowledge validity. Validate the upgrade on a consistent database copy before deployment. Store sets and verifies WAL on file-database open before its schema transaction; new databases therefore use WAL automatically. For this existing shared production database, stop all executors, take and validate a consistent backup, then convert manually and verify the mode before any updated worker starts. The deployment order controls that first conversion; it does not disable Store's normal WAL initialization. Code installation and production cutover are separate operations.
 
 Ticket 86 also clears old Dreamer failure counters once in the normal-open upgrade transaction. They used reservation IDs instead of stable pending-revision IDs. The reset and SQLite application-version marker commit together; later opens retain new counters. N/C counters, all execution/run audit and on/off state are preserved. No counter reset runs on every open.
+
+### Queued-message cutover (176)
+
+Stop Pi and CC executors and take a consistent backup before this hand-run step. First validate it on a database copy. From the source checkout, run without `--apply` to preview the data changes, then apply to the backed-up deployment database before restarting executors:
+
+```sh
+node --max-old-space-size=8192 scripts/migrate-cc-queued-messages.ts \
+  --db "$TRACE_DB" --bindings "$CC_STATE_DIR/bindings" --apply
+```
+
+The step corrects stored non-human CC prompts and their derived fact-source roles, then uses the ordinary importer to backfill absorbed messages. Existing Turn identities, entry ordinals, native identities, fact bodies and entry bindings do not move. New entries take the next free E ordinal in their Turn while the selected path retains native tree order; non-append membership changes bump the existing path version.
+
+Only queued entries inserted by this step are marked already extracted, in the same transaction, using an audited manual run with no facts or worker dispatch. Other newly discovered entries remain pending. On restart, a full transcript rescan finds the queued entries already stored and processed; later absorbed messages follow normal Noting admission.
+
+Each JSON report names the session and native lineage, corrected entries, inserted entries by origin (`none` means no native origin), rewritten fact sources and processing marks. Missing transcripts are reported and left unchanged. Missing or stale bindings can be recovered from persisted placement and the CC projects directory; `--transcripts-root` overrides its default `~/.claude/projects`. `--sessions 140,173` limits a copy-only measurement; omit it for deployment. Each session commits atomically; a failed session rolls back, exits nonzero and can be retried without changing completed sessions. The step never edits installed bindings or transcripts. A preview rolls back data changes but still performs Store's normal schema upgrade on open.
 
 ## Direct CLI
 
