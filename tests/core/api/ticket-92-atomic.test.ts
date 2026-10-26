@@ -39,25 +39,6 @@ const fact = (text = "User set the rule", source = "T1#E1") => ({ title: "Rule e
 const knowledge = (supports = ["$1"]) => ({ files: null, op: "create", title: "Fixture title", text: "Use the stated rule", category: "constraint", scope: "session", supports, reason: "new rule", topics: [] });
 const noted = (f: ReturnType<typeof fixture>) => f.entries.some(entry => f.memory.store.entryNoted(entry.id));
 
-test("04: the batch stays private until task 2 passes, and task 2's corrections are what is published", async () => {
-  const f = fixture(() => ({ noteInput: [fact(), fact("ninth, misattributed", "T1#E2")], memoryInput: knowledge(["$1", "$2"]),
-    verify: files => {
-      // Between the tasks and during task 2 nothing of the batch is in the database.
-      const other = new Store(f.file);
-      try {
-        expect(other.listSessionFacts(f.session.id)).toEqual([]);
-        expect(other.currentKnowledge(f.path)).toEqual([]);
-        expect(f.entries.some(entry => other.entryNoted(entry.id))).toBe(false);
-      } finally { other.close(); }
-      return { facts: files.facts.replace("ninth, misattributed", "corrected ninth") };
-    } }));
-  expect(await f.run()).toMatchObject({ outcome: "success" });
-  const facts = f.memory.store.listSessionFacts(f.session.id).sort((a, b) => a.id - b.id);
-  expect(facts.map(item => item.text)).toEqual(["User set the rule", "corrected ninth"]);
-  expect(f.memory.store.currentKnowledge(f.path)[0]!.revision.supports).toEqual([1, 2]);
-  expect(f.entries.every(entry => f.memory.store.entryNoted(entry.id))).toBe(true);
-});
-
 test.each([false, true])("92: a block-source fact fails the stop check; the one correction to a whole entry recovers (%s)", async recover => {
   const f = fixture(() => ({ noteInput: [fact("selected block", "T1#E2@text")], memoryInput: {},
     ...(recover ? { fix: () => ({ facts: "## fact f1\ntitle: Rule evidence\n\n[T1#E2] Pi agent corrected it\n" }) } : {}) }));
@@ -96,7 +77,7 @@ test("04: labels map to actual ids, a literal $3 in a body stays text, and a rel
 });
 
 for (const failure of ["bad source", "bad supports", "no files", "provider", "cancel", "verify provider"])
-  test(`04: ${failure} never publishes accepted siblings or processing`, async () => {
+  test(`04/179: ${failure} refuses its lane without publishing invalid siblings`, async () => {
     const f = fixture(() => failure === "bad source" ? { noteInput: [fact(), fact("bad", "T1#E99")], memoryInput: {} }
       : failure === "bad supports" ? { noteInput: [fact()], memoryInput: knowledge(["$99"]) }
       : failure === "no files" ? { files: { facts: "", knowledge: "" } }
@@ -104,26 +85,25 @@ for (const failure of ["bad source", "bad supports", "no files", "provider", "ca
       : failure === "cancel" ? { noteInput: [fact()], outcome: "cancelled", output: "cancelled" }
       : { noteInput: [fact()], verifyResult: { outcome: "failure", output: "late stream error" } });
     expect((await f.run()).outcome).not.toBe("success");
-    expect(f.memory.store.listSessionFacts(f.session.id)).toEqual([]);
+    expect(f.memory.store.listSessionFacts(f.session.id).map(item => item.text)).toEqual(failure === "bad supports" ? ["User set the rule"] : []);
     expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
-    expect(noted(f)).toBe(false);
+    expect(noted(f)).toBe(failure === "bad supports");
+    expect(f.memory.progress(f.session.id, "main", f.turn.id).entries).toBe(f.entries.length);
   });
 
 for (const table of ["facts", "knowledge_revisions", "noted_entries"])
-  test(`04: rollback after ${table} insertion leaves both layers and progress absent`, async () => {
+  test(`04/179: rollback after ${table} insertion preserves earlier lane commits and no partial lane writes`, async () => {
     const f = fixture(() => {
       f.memory.store.db.exec(`CREATE TEMP TRIGGER fail_atomic AFTER INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'injected ${table}'); END`);
       return { noteInput: [fact()], memoryInput: knowledge() };
     });
     const result = await f.run();
     expect(result).toMatchObject({ outcome: "failure", problems: [expect.stringContaining(`injected ${table}`)] });
-    expect(f.memory.store.listSessionFacts(f.session.id)).toEqual([]);
+    expect(f.memory.store.listSessionFacts(f.session.id).map(item => item.text)).toEqual(table === "knowledge_revisions" ? ["User set the rule"] : []);
     expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
-    expect(f.memory.pendingEntries(f.session.id, "main", f.turn.id)).toHaveLength(f.entries.length);
-    // Three stage snapshots survived; none owns facts or processed entries.
-    expect(f.memory.store.db.prepare("SELECT count(*) n FROM runs WHERE outcome='success'").get()).toMatchObject({ n: 3 });
-    expect(f.memory.store.db.prepare("SELECT count(*) n FROM facts").get()).toMatchObject({ n: 0 });
-    expect(f.memory.store.handoff(f.session.id, "noting")).not.toBeNull();
+    expect(f.memory.pendingEntries(f.session.id, "main", f.turn.id)).toHaveLength(table === "knowledge_revisions" ? 0 : f.entries.length);
+    expect(f.memory.progress(f.session.id, "main", f.turn.id).entries).toBe(f.entries.length);
+    expect(f.memory.store.handoff(f.session.id, "noting", table === "knowledge_revisions" ? "knowledge" : "facts")).not.toBeNull();
   });
 
 test("116: manual writes commit one item at a time without N slots or local supports", () => {
@@ -232,7 +212,7 @@ test.each([
   const result = await f.run();
   expect(result.outcome).toBe("failure");
   expect(JSON.stringify((result as { problems?: string[] }).problems)).toContain(problem(seed));
-  expect(noted(f)).toBe(false);
+  expect(f.memory.progress(f.session.id, "main", f.turn.id).entries).toBe(f.entries.length);
   expect(f.memory.store.currentKnowledge(f.path).map(item => item.revision.text)).toEqual(["Old rule"]);
 });
 
@@ -257,7 +237,7 @@ test("04: a converted new identity is reconciled by ordinary D merge without a s
   expect(f.memory.store.currentKnowledge(f.path)[0]!.revision.text).toBe("Resolved rule");
 });
 
-test("04: failure after execution-success update rolls back warmed views and every business write", async () => {
+test("04/179: failed execution-success update rolls back knowledge and warmed views, preserving the fact commit", async () => {
   const f = fixture(() => {
     // Warm both read-side paths before entering the outer business transaction.
     expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
@@ -271,8 +251,9 @@ test("04: failure after execution-success update rolls back warmed views and eve
   const other = new Store(f.file);
   try { for (const store of [f.memory.store, other]) {
     expect(store.currentKnowledge(f.path)).toEqual([]);
-    expect(store.listSessionFacts(f.session.id)).toEqual([]);
-    expect(store.pendingEntries(f.session.id, "main", f.turn.id)).toHaveLength(f.entries.length);
+    expect(store.listSessionFacts(f.session.id).map(item => item.text)).toEqual(["User set the rule"]);
+    expect(store.pendingEntries(f.session.id, "main", f.turn.id)).toEqual([]);
+    expect(store.incompleteEntryIds(f.session.id, "main", f.turn.id)).toEqual(f.entries.map(entry => entry.id));
     expect(store.db.prepare("SELECT count(*) n FROM task_executions WHERE outcome='success'").get()).toMatchObject({ n: 0 });
     expect(store.db.prepare("SELECT count(*) n FROM task_executions WHERE outcome='failure'").get()).toMatchObject({ n: 1 });
     expect(store.db.prepare("SELECT count(*) n FROM knowledge_version_tags").get()).toMatchObject({ n: 0 });
@@ -318,7 +299,7 @@ test("04: a globally selected successor outside reader scope is not a conversion
   expect(refused).toContain("K");
   expect(refused).not.toMatch(/K\d+@\d+(?!\d*v)/); // never a raw history address
   expect(refused).not.toContain("Foreign session-only rule");
-  expect(f.memory.store.listSessionFacts(f.session.id)).toHaveLength(1); // only the seed fact
+  expect(f.memory.store.listSessionFacts(f.session.id)).toHaveLength(2); // The seed and newly checked fact survive the refused knowledge update.
 });
 
 for (const kind of ["path", "project", "off", "cancel"] as const)

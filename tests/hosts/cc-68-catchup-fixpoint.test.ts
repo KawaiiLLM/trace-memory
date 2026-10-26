@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
+import type { TraceMemory } from "../../src/core/api/index.ts";
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-68.db", stateDir: "/tmp/unused-68",
@@ -16,14 +17,26 @@ type Result = { outcome: string; problems?: string[]; automaticOff?: string };
 function fixture() {
   const entries: number[] = [], starts: string[] = [];
   let dDue = 0;
+  const knowledgePending: number[][] = [];
   const memory = { executorId: "ours", config: { closedSessionScope: "project" }, cancelTasks: vi.fn(),
     pendingEntries: vi.fn(() => { throw new Error("catchup progress hydrated Raw"); }),
-    store: { enabled: () => true, pendingEntryIds: () => [...entries], getClaim: () => null, closedTasks: () => [],
+    store: { enabled: () => true, pendingEntryIds: () => [...entries], incompleteEntryIds: () => [...entries, ...knowledgePending.flat()],
+      handoff: (_session: number, _phase: string, lane?: string) => lane === "knowledge" && knowledgePending.length ? { entryIds: knowledgePending[0], branch: "main" } : null,
+      getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "dreaming" ? dDue > 0 : entries.length > 0 })),
     noting: vi.fn(async (): Promise<Result> => { starts.push("N"); entries.shift(); return { outcome: "success" }; }),
     dream: vi.fn(async (): Promise<Result> => { starts.push("D"); dDue--; return { outcome: "success" }; }) };
-  const scheduler = new CcTaskScheduler(memory as any, worker, () => {});
+  const facade = { ...memory, noting: async (input: { lane?: string }) => {
+    if (input.lane === "knowledge") { knowledgePending.shift(); return { outcome: "success" }; }
+    const before = [...entries], result = await memory.noting();
+    const committed = before.filter(id => !entries.includes(id));
+    if (result.outcome === "success" && committed.length) knowledgePending.push(committed);
+    return result;
+  } };
+  // This fixture models admission and completion; provider and Store behavior are covered separately.
+  const schedulerMemory = facade as unknown as TraceMemory;
+  const scheduler = new CcTaskScheduler(schedulerMemory, worker, () => {});
   return { scheduler, memory, starts, entries, d: (count: number) => { dDue = count; } };
 }
 async function settle(f: ReturnType<typeof fixture>) {

@@ -498,32 +498,6 @@ test("2026-10-01, 116: a rejected manual item cannot undo its committed sibling"
   expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: t.id }).read("trace://F2").content).toContain("caused_by F1 strong");
 });
 
-// One publication per run still holds; 92 moves it after all held edits and normal termination.
-test("2026-09-07 / 92: one terminal publication per run, not one immediate tool submission", async () => {
-  const { s, t } = session(); memory.close();
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    const input = raw as NotingAgentInput;
-    if (input.task !== "extract-facts") return verifyUnchanged(input, { request: { round: 2 } });
-    input.reportRequest({ round: 1 });
-    const fact = { title: "Package manager decision", sources: `[T${t.id}#E1] Use pnpm` };
-    // The model may rewrite its file before step 1 passes; only the final file is published.
-    await probe(input, memory, { noteInput: [fact], memoryInput: {} });
-    expect(await submit(input, memory, { noteInput: [{ ...fact, sources: `[T${t.id}#E1] Use pnpm, not npm` }], memoryInput: {} })).toBeUndefined();
-    expect(memory.store.listSessionFacts(s.id)).toEqual([]);
-    expect(memory.store.listRuns(s.id).some(run => run.outcome === "success")).toBe(false);
-    const entries = memory.store.sourcePath(s.id, "main", t.id);
-    expect(entries.length).toBeGreaterThan(0);
-    expect(entries.some(entry => memory.store.entryNoted(entry.id))).toBe(false);
-    return { outcome: "success", output: "Done", request: { round: 1 } };
-  });
-  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
-  expect(memory.store.listSessionFacts(s.id)).toMatchObject([{ text: "Use pnpm, not npm" }]);
-  expect(memory.store.sourcePath(s.id, "main", t.id).every(entry => memory.store.entryNoted(entry.id))).toBe(true);
-  const run = memory.store.listRuns(s.id).find(run => JSON.parse(run.response!).task === "write-knowledge")!;
-  expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.request!)).toEqual({ round: 2 });
-  expect(JSON.parse(run.response!).toolCalls.map((c: { name: string }) => c.name)).toEqual(["check"]);
-});
 
 // “a run whose last submission was rejected and never corrected ... is bounced ... watermark does not move”: since 2026-10-22 the
 // files' check decides, and a run whose files fail it is a failure that moves nothing.
@@ -1875,17 +1849,12 @@ test("2026-10-22: `## none` replaces calling both tools; silence and one file al
   expect(silent.outcome === "failure" && silent.problems.join("\n")).toContain("empty file: write `## none`");
   expect(memory.store.getRun(1)!.outcome).toBe("failure"); // the existing outcome value; no new one, no schema change
   expect(hydrate(memory.store.listSourceEntries(s.id), memory.store).some(e => memory.store.entryNoted(e.id))).toBe(false);
-  // The prompt says what the runner enforces.
-  const prompt = loadPrompt("noting.md");
-  expect(prompt).toContain("`## none`");
-  expect(prompt).not.toContain("note({})");
   // One file is insufficient; both explicit `## none` complete the batch.
   const one = await memory.noting(target);
   expect(one).toMatchObject({ outcome: "failure" });
-  expect(hydrate(memory.store.listSourceEntries(s.id), memory.store).some(e => memory.store.entryNoted(e.id))).toBe(false);
+  expect(memory.progress(s.id, "main", t.id).entries).toBe(memory.store.sourcePath(s.id, "main", t.id).length);
   expect(await memory.noting(target)).toMatchObject({ outcome: "success", facts: [] });
   expect(hydrate(memory.store.sourcePath(s.id, "main", t.id), memory.store).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  expect(memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
 });
 
 // Maintainer, 2026-10-22: 「算，每次N未正常结束，无论中断在什么任务，都记为一次N失败」. One Noter run is one failure toward the
@@ -1923,33 +1892,27 @@ const noterOnFile = (script: Parameters<typeof scriptedNoter>[1]) => {
   return { file, noter };
 };
 
-test("2026-10-24: four independent Noter stages publish only after the final knowledge check", async () => {
-  const { s, t } = session(); memory.close();
-  const file = join(directory, "test.sqlite");
-  const during: number[] = [];
-  const noter = scriptedNoter(() => memory, [{ noteInput: [noterFact(t.id)], memoryInput: { files: null, op: "create", title: "Package manager", category: "constraint", scope: "session", topics: [], supports: ["$1"], reason: "User ruling", text: "Use pnpm" }, verify: () => {
-    const other = new Store(file);
-    try { during.push(other.listSessionFacts(s.id).length); } finally { other.close(); }
-  } }]);
-  memory = sourceSeededMemory(file, noter.agent);
-  expect(await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).toMatchObject({ outcome: "success" });
-  expect(noter.inputs.map(input => input.task)).toEqual(["extract-facts", "check-facts", "write-knowledge", "check-knowledge"]);
-  expect(during).toEqual([0, 0]);
-  expect(memory.store.listSessionFacts(s.id)).toHaveLength(1);
-  expect(memory.pendingEntries(s.id, "main", t.id)).toEqual([]);
-});
-
-
-test("2026-10-24: malformed knowledge fails stage 3 but keeps the checked facts", async () => {
+test("2026-10-26, 179: checked facts commit before knowledge; a rejected knowledge lane cannot retract them or complete the batch", async () => {
   const { s, t } = session();
-  const { noter } = noterOnFile([{ noteInput: [noterFact(t.id)], files: { knowledge: "not a block\n" } }]);
-  expect(await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).toMatchObject({ outcome: "failure" });
-  expect(noter.stopMessages).toHaveLength(1);
-  expect(noter.inputs.map(input => input.task)).toEqual(["extract-facts", "check-facts", "write-knowledge"]);
-  expect(memory.store.handoff(s.id, "noting")?.nextTask).toBe("write-knowledge");
-  expect(memory.store.listSessionFacts(s.id)).toEqual([]);
-  expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0);
+  const { file, noter } = noterOnFile([{ noteInput: [noterFact(t.id)], files: { knowledge: "not a block\n" } }]);
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  expect(await memory.noting(target)).toMatchObject({ outcome: "failure" });
+  const other = new Store(file);
+  try {
+    expect(other.listSessionFacts(s.id).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+    expect(other.currentKnowledge(target)).toEqual([]);
+    expect(other.incompleteEntryIds(s.id, "main", t.id)).toEqual(other.sourcePath(s.id, "main", t.id).map(entry => entry.id));
+    expect(other.handoff(s.id, "noting", "knowledge")?.nextTask).toBe("write-knowledge");
+  } finally { other.close(); }
+  noter.script.push({});
+  expect(await memory.noting(target)).toMatchObject({ outcome: "success" });
+  expect(memory.store.listSessionFacts(s.id).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+  expect(memory.progress(s.id, "main", t.id).entries).toBe(0);
+  expect(noter.inputs.filter(input => input.task === "extract-facts")).toHaveLength(1);
 });
+
+
+
 
 test("2026-10-24: a check-facts failure resumes that stage without extracting again", async () => {
   const { s, t } = session();

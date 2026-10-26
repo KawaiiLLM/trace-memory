@@ -90,12 +90,13 @@ CREATE TABLE IF NOT EXISTS session_lineage_cursors (
 CREATE TABLE IF NOT EXISTS task_claims (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   phase TEXT NOT NULL CHECK (phase IN ('noting','consolidation','dreaming')),
+  lane TEXT NOT NULL DEFAULT 'facts' CHECK(lane IN ('facts','knowledge') AND (phase = 'noting' OR lane = 'facts')),
   executor_id TEXT NOT NULL,
   token TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
   borrowed INTEGER NOT NULL CHECK (borrowed IN (0,1)),
   reserved INTEGER NOT NULL CHECK (reserved IN (0,1)),
-  PRIMARY KEY (session_id, phase)
+  PRIMARY KEY (session_id, phase, lane)
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -458,6 +459,7 @@ export interface ProjectDeclarationContext {
 export interface TaskTarget { sessionId: number; branch: string; headTurnId: number; triggerEntryId?: number }
 export interface TaskClaim {
   sessionId: number; phase: Phase; executorId: string; token: string; expiresAt: number;
+  lane?: "facts" | "knowledge";
   borrowed: boolean; reserved: boolean;
 }
 
@@ -518,6 +520,9 @@ export interface CommitNotingRunInput {
   facts: FactCommitInput[] | (() => FactCommitInput[]);
   responseForFacts?: (ids: number[]) => string;
   entryIds?: number[];
+  /** Lane publication and its durable hand-off share the business transaction. */
+  after?: (done: { runId: number; facts: Fact[] }) => void;
+  intermediate?: boolean;
   /** N's private draft is revalidated and published inside this transaction, never a second run. */
   held?: {
     path: KnowledgePath;
@@ -1024,6 +1029,8 @@ export class Store {
         if (row) priorBudgetPolicy = { global: Number(row.global_tokens), project: Number(row.project_tokens), session: Number(row.session_tokens) };
       }
       this.db.exec(SCHEMA_SQL);
+      if (!this.db.prepare("PRAGMA table_info(task_claims)").all().some(row => row.name === "lane"))
+        this.rebuildTable("task_claims", [], [], SCHEMA_SQL.match(/CREATE TABLE IF NOT EXISTS task_claims \([\s\S]*?\n\);/)![0]);
       migrateDreaming(this.db, true);
       this.db.exec("DROP TABLE IF EXISTS knowledge_pool_state");
       this.transaction(() => {
@@ -1230,6 +1237,8 @@ export class Store {
       migrateTaskPool104(this, (table, createSql) =>
         this.rebuildTable(table, [], table === "task_executions" ? ["idx_execution_task"] : [], createSql));
       this.db.exec(EXECUTIONS_SQL);
+      if (!this.db.prepare("PRAGMA table_info(task_handoffs)").all().some(row => row.name === "lane"))
+        this.rebuildTable("task_handoffs", [], [], EXECUTIONS_SQL.match(/CREATE TABLE IF NOT EXISTS task_handoffs \([\s\S]*?\n\);/)![0]);
       this.db.exec(DELIVERIES_SQL);
       // 86, option A: legacy Dreamer streaks used a range ID, not the oldest pending revision.
       // SQLite's application version was previously unused. Version 1 marks this data-only reset,
@@ -1764,7 +1773,21 @@ export class Store {
     });
   }
   beginExecution(task: LogicalTask): string { return this.transaction(() => beginExecution(this, task)); }
-  handoff(sessionId: number, phase: Handoff["phase"]): Handoff | null { return readHandoff(this, sessionId, phase); }
+  handoff(sessionId: number, phase: Handoff["phase"], lane: "facts" | "knowledge" = "facts"): Handoff | null { return readHandoff(this, sessionId, phase, lane); }
+  writeNotingHandoff(handoff: Omit<Handoff, "createdAt" | "phase">): void { writeHandoff(this, { ...handoff, phase: "noting" }); }
+  /** Entries whose facts are visible but whose batch has not completed its knowledge lane. */
+  knowledgePendingEntryIds(sessionId: number, branch: string, headTurnId: number): number[] {
+    const rows = this.db.prepare("SELECT entry_ids FROM task_handoffs WHERE session_id=? AND phase='noting' AND lane='knowledge'").all(sessionId);
+    if (!rows.length) return [];
+    const path = this.pathSnapshot({ sessionId, branch, headTurnId });
+    const turn = this.db.prepare("SELECT turn_id FROM source_entries WHERE id=? AND session_id=?");
+    return rows.flatMap(row => (JSON.parse(String(row.entry_ids)) as number[]).filter(id =>
+      path.entries ? path.entries.ids.has(id) : path.turns.has(Number(turn.get(id, sessionId)?.turn_id))));
+  }
+  /** Display progress advances only after both lanes; admission still uses pendingEntryIds. */
+  incompleteEntryIds(sessionId: number, branch: string, headTurnId: number): number[] {
+    return [...new Set([...this.pendingEntryIds(sessionId, branch, headTurnId), ...this.knowledgePendingEntryIds(sessionId, branch, headTurnId)])].sort((a, b) => a - b);
+  }
   taskFailures(sessionId: number) {
     return this.db.prepare("SELECT * FROM task_failures WHERE session_id = ? ORDER BY phase, head, pool").all(sessionId).map(row => ({
       phase: row.phase as HistoricalPhase, head: row.head === null ? null : Number(row.head), pool: row.pool === null ? null : String(row.pool),
@@ -1813,30 +1836,31 @@ export class Store {
     this.transaction(() => {
       this.db.prepare("UPDATE sessions SET closed_at = NULL WHERE id = ?").run(sessionId);
       // Reserve the new tokens for this executor without launching either phase.
-      for (const phase of ["noting", "dreaming"] as const) {
-        const previous = this.getClaim(sessionId, phase);
+      for (const [phase, lane] of [["noting", "facts"], ["noting", "knowledge"], ["dreaming", "facts"]] as const) {
+        const previous = this.getClaim(sessionId, phase, lane);
         if (!previous || previous.executorId === executorId) continue;
         const now = Date.now(), seatUnavailable = phase === "dreaming" && this.otherSessionOwnsDreamerSeat(sessionId, now);
-        this.db.prepare("UPDATE task_claims SET executor_id = ?, token = ?, expires_at = ?, borrowed = 0, reserved = 1 WHERE session_id = ? AND phase = ?")
-          .run(executorId, randomUUID(), seatUnavailable ? Math.min(previous.expiresAt, now) : now + 30 * 60_000, sessionId, phase);
+        this.db.prepare("UPDATE task_claims SET executor_id = ?, token = ?, expires_at = ?, borrowed = 0, reserved = 1 WHERE session_id = ? AND phase = ? AND lane = ?")
+          .run(executorId, randomUUID(), seatUnavailable ? Math.min(previous.expiresAt, now) : now + 30 * 60_000, sessionId, phase, lane);
       }
     });
   }
 
-  getClaim(sessionId: number, phase: Phase): TaskClaim | null {
-    const row = this.db.prepare("SELECT * FROM task_claims WHERE session_id = ? AND phase = ?").get(sessionId, phase);
-    return row ? { sessionId, phase, executorId: String(row.executor_id), token: String(row.token),
+  getClaim(sessionId: number, phase: Phase, lane: "facts" | "knowledge" = "facts"): TaskClaim | null {
+    const row = this.db.prepare("SELECT * FROM task_claims WHERE session_id = ? AND phase = ? AND lane = ?").get(sessionId, phase, lane);
+    return row ? { sessionId, phase, lane, executorId: String(row.executor_id), token: String(row.token),
       expiresAt: Number(row.expires_at), borrowed: !!row.borrowed, reserved: !!row.reserved } : null;
   }
 
   /** A Dreamer admission is due by `dreamingDue` (144 stage 4 §8.2): a due hand-off with no threshold work still gets the claim.
    * `leaseMs` lets it outlive its execution backstop (§1.3). `manual` (146 §18) passes the pending test only. */
   acquireClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed = false, eligible: () => boolean = () => true,
-    triggerOperations = DEFAULT_DREAMING_TRIGGER_OPERATIONS, leaseMs?: number, manual = false): TaskClaim | null {
+    triggerOperations = DEFAULT_DREAMING_TRIGGER_OPERATIONS, leaseMs?: number, manual = false, lane: "facts" | "knowledge" = "facts"): TaskClaim | null {
     if (phase !== "noting" && phase !== "dreaming") throw new Error(`Unsupported live phase: ${phase}`);
+    if (phase !== "noting" && lane !== "facts") throw new Error("Only Noting has a knowledge lane");
     return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => phase === "noting"
-      ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId).length > 0
-      : manual || this.dreamingDue(target, triggerOperations), eligible, leaseMs));
+      ? lane === "knowledge" ? !!this.handoff(target.sessionId, "noting", lane) : this.pendingEntries(target.sessionId, target.branch, target.headTurnId).length > 0
+      : manual || this.dreamingDue(target, triggerOperations), eligible, leaseMs, lane));
   }
 
   /** Called only by atomic Store operations. Pending discovery is private and synchronous, so
@@ -1845,28 +1869,28 @@ export class Store {
    * claim outlives the configured wall-clock bound (104 F1: otherwise a timeout's own claim can lapse
    * before terminal settlement reads it, misfiling the run as cancelled instead of a failure). */
   private acquireAvailableClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed: boolean,
-    hasPending: () => boolean, eligible: () => boolean, leaseMs = 30 * 60_000): TaskClaim | null {
+    hasPending: () => boolean, eligible: () => boolean, leaseMs = 30 * 60_000, lane: "facts" | "knowledge" = "facts"): TaskClaim | null {
     if (!executorId || !this.enabled(target.sessionId)) return null;
     if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
     const pending = hasPending();
     const now = Date.now();
     if (!pending || !eligible()) return null;
-    const current = this.getClaim(target.sessionId, phase);
+    const current = this.getClaim(target.sessionId, phase, lane);
     const takeover = current?.reserved && current.expiresAt > now && current.executorId === executorId && !borrowed;
     if (current && current.expiresAt > now && !takeover) return null;
     if (phase === "dreaming" && this.otherSessionOwnsDreamerSeat(target.sessionId, now)) return null;
-    const claim: TaskClaim = { sessionId: target.sessionId, phase, executorId,
+    const claim: TaskClaim = { sessionId: target.sessionId, phase, lane, executorId,
       token: takeover ? current.token : randomUUID(), expiresAt: now + leaseMs, borrowed, reserved: false };
-    this.db.prepare(`INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, ?, ?, ?, ?, ?, 0)
-      ON CONFLICT (session_id, phase) DO UPDATE SET executor_id = excluded.executor_id, token = excluded.token,
+    this.db.prepare(`INSERT INTO task_claims (session_id, phase, lane, executor_id, token, expires_at, borrowed, reserved) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+      ON CONFLICT (session_id, phase, lane) DO UPDATE SET executor_id = excluded.executor_id, token = excluded.token,
       expires_at = excluded.expires_at, borrowed = excluded.borrowed, reserved = 0`)
-      .run(claim.sessionId, phase, executorId, claim.token, claim.expiresAt, Number(borrowed));
+      .run(claim.sessionId, phase, lane, executorId, claim.token, claim.expiresAt, Number(borrowed));
     return claim;
   }
 
   releaseClaim(claim: TaskClaim): boolean {
-    return !!this.db.prepare("DELETE FROM task_claims WHERE session_id = ? AND phase = ? AND token = ? AND executor_id = ?")
-      .run(claim.sessionId, claim.phase, claim.token, claim.executorId).changes;
+    return !!this.db.prepare("DELETE FROM task_claims WHERE session_id = ? AND phase = ? AND lane = ? AND token = ? AND executor_id = ?")
+      .run(claim.sessionId, claim.phase, claim.lane ?? "facts", claim.token, claim.executorId).changes;
   }
 
   /** Expires every claim of the executor (144 stage 4 §1.5: no terminal transaction needs a live token any more). */
@@ -1875,9 +1899,9 @@ export class Store {
   }
 
   releaseExecutor(executorId: string): void {
-    const rows = this.db.prepare("SELECT session_id, phase FROM task_claims WHERE executor_id = ?").all(executorId);
+    const rows = this.db.prepare("SELECT session_id, phase, lane FROM task_claims WHERE executor_id = ?").all(executorId);
     for (const row of rows) {
-      const claim = this.getClaim(Number(row.session_id), row.phase as Phase);
+      const claim = this.getClaim(Number(row.session_id), row.phase as Phase, row.lane as "facts" | "knowledge");
       if (claim?.executorId === executorId) this.releaseClaim(claim);
     }
   }
@@ -1887,7 +1911,7 @@ export class Store {
     // Off fences new model work and knowledge writes, not completion of an already admitted run.
     // Terminal processing still requires the exact live token and all ownership/range fences.
     if (!terminalProcessing && run.executorSessionId !== undefined) this.requireEnabled(run.executorSessionId);
-    const claim = run.claim, current = this.getClaim(claim.sessionId, claim.phase);
+    const claim = run.claim, current = this.getClaim(claim.sessionId, claim.phase, claim.lane);
     if (claim.sessionId !== run.sessionId || claim.phase !== run.kind || !current || current.reserved ||
         current.token !== claim.token || current.executorId !== claim.executorId || current.expiresAt <= Date.now())
       throw new Error("task claim is no longer current and unexpired");
@@ -1926,7 +1950,7 @@ export class Store {
     return !cursors.length || cursors.some(cursor => cursor.branch === target.branch && cursor.headTurnId === target.headTurnId);
   }
 
-  closedTasks(phase: "noting", executorSessionId: number, scope: ClosedSessionScope = "project"): TaskTarget[] {
+  closedTasks(phase: "noting", executorSessionId: number, scope: ClosedSessionScope = "project", lane: "facts" | "knowledge" = "facts"): TaskTarget[] {
     if (phase !== "noting") throw new Error(`Unsupported borrowed phase: ${phase}`);
     const executor = this.getSession(executorSessionId);
     if (scope === "off" || !executor || executor.closedAt !== null || !this.enabled(executorSessionId)) return [];
@@ -1935,7 +1959,7 @@ export class Store {
       .all(scope, executor.projectId, executorSessionId);
     for (const row of sessions) {
       const sessionId = Number(row.id);
-      const claimed = (this.getClaim(sessionId, phase)?.expiresAt ?? 0) > Date.now();
+      const claimed = (this.getClaim(sessionId, phase, lane)?.expiresAt ?? 0) > Date.now();
       const cursors = this.borrowedCursorTargets(sessionId);
       if (claimed) continue;
       const paths = cursors.length ? cursors
@@ -1944,9 +1968,8 @@ export class Store {
           .map(({ branch }) => ({ branch, headTurnId: this.knowledgePath(sessionId, branch).headTurnId }));
       for (const { branch, headTurnId } of paths) {
         if (!headTurnId) continue;
-        const pending = this.pendingEntries(sessionId, branch, headTurnId);
-        if (pending.length) targets.push({ sessionId, branch, headTurnId,
-          oldest: Math.min(...pending.map(value => value.id)) });
+        const pending = lane === "facts" ? this.pendingEntryIds(sessionId, branch, headTurnId) : this.knowledgePendingEntryIds(sessionId, branch, headTurnId);
+        if (pending.length) targets.push({ sessionId, branch, headTurnId, oldest: Math.min(...pending) });
       }
     }
     // Global source/fact allocation order is durable pending arrival order; branches never coalesce.
@@ -2453,7 +2476,8 @@ export class Store {
           this.db.prepare("INSERT INTO noted_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
         }
         dropHandoffCovering(this, sessionId, "noting", input.entryIds ?? []);
-        this.completeExecution(runId);
+        input.after?.({ runId, facts: batchIds.map(id => this.getFact(id)!) });
+        if (!input.intermediate) this.completeExecution(runId);
         return { runId, facts: batchIds.map((id) => this.getFact(id)!) };
       });
       return { ok: true, runId: result.runId, facts: result.facts };

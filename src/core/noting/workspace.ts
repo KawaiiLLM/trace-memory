@@ -1,4 +1,4 @@
-// Four independent conversations hand off files; only the final stage publishes business data.
+// Four independent conversations hand off files; each checked lane publishes atomically.
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { loadPrompt } from "../prompts/load.ts";
@@ -52,8 +52,8 @@ export class NotingWorkspace extends TaskWorkspace {
   private readonly config: TraceMemoryConfig["noting"];
 
   constructor(store: Store, scope: NotingScope, root: string, sessionId: number,
-    executionId: string, prompts: StagePrompts, config: TraceMemoryConfig["noting"]) {
-    super(root, "noting-", sessionId, executionId);
+    executionId: string, prompts: StagePrompts, config: TraceMemoryConfig["noting"], lane?: "facts" | "knowledge") {
+    super(root, "noting-", sessionId, executionId, lane);
     this.store = store; this.scope = scope; this.prompts = prompts; this.config = config;
     this.paths = { facts: this.path("facts.md"), knowledge: this.path("knowledge.md") };
   }

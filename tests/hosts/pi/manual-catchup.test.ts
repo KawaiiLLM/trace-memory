@@ -313,8 +313,9 @@ test("18b 2026-09-08: stop prevents the next batch from being scheduled even whe
       await settle(h);
     } finally { spy.mockRestore(); }
     expect(stoppedOnce).toBe(true);
-    expect(h.requests).toHaveLength(EMPTY_NOTER_BATCH_REQUESTS); // stop forbids a second batch
-    expect(h.memory.store.listRuns(1).filter(run => run.kind === "noting")).toHaveLength(4);
+    const handoff = h.memory.store.handoff(1, "noting", "knowledge")!;
+    expect(handoff).not.toBeNull();
+    expect(h.memory.store.sourcePath(1, "main", head).filter(entry => h.memory.store.entryNoted(entry.id)).map(entry => entry.id)).toEqual(handoff.entryIds);
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");

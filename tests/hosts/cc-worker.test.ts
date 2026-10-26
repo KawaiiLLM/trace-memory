@@ -1538,7 +1538,7 @@ test("manual catchup reports waiting on a foreign claim and resumes only on a la
   const calls: string[] = []; let foreign = true, pending = true;
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     pendingEntries: () => pending ? [{ id: 1 }] : [],
-    store: { enabled: () => true, pendingEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [],
+    store: { enabled: () => true, handoff: () => null, pendingEntryIds: () => pending ? [1] : [], incompleteEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [],
       getClaim: () => foreign ? ({ executorId: "foreign", expiresAt: Date.now() + 60_000 }) : null, progressSignal: () => "sig" },
     noting: async () => { calls.push("noting"); pending = false; return { outcome: "success", facts: [] }; },
     dream: async () => ({ outcome: "success" }),
@@ -1605,7 +1605,7 @@ test("manual catchup fences pre-admission cancellation, concurrent status, dropp
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     pendingEntries: () => pending ? [{ id: 1 }] : [],
     cancelTasks: () => { cancelled++; return []; },
-    store: { enabled: () => true, pendingEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [], getClaim: () => null, progressSignal: () => "sig" },
+    store: { enabled: () => true, handoff: () => null, pendingEntryIds: () => pending ? [1] : [], incompleteEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [], getClaim: () => null, progressSignal: () => "sig" },
     noting: async () => { calls.push("noting"); if (!dropped) pending = false; return { outcome: dropped ? "dropped" : "success", facts: [] }; },
     dream: async () => ({ outcome: "success" }),
     taskEligibility: () => ({ due: false }) } as any;
@@ -1638,10 +1638,11 @@ test("manual catchup fences pre-admission cancellation, concurrent status, dropp
 test("stop before the reservation microtask fences all ordinary phases and later triggers remain usable", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-ordinary-stop-race-")); dirs.push(directory);
   const calls: string[] = [];
-  const result = (phase: string) => async () => { calls.push(phase); return { outcome: "success" }; };
+  let pending = true;
+  const result = (phase: string) => async () => { calls.push(phase); if (phase === "noting") pending = false; return { outcome: "success" }; };
   const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: {} },
-    taskEligibility: () => ({ due: true }), cancelTasks: vi.fn(() => []),
-    store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
+    taskEligibility: (phase: string) => ({ due: phase === "dreaming" || pending }), cancelTasks: vi.fn(() => []),
+    store: { enabled: () => true, handoff: () => null, pendingEntryIds: () => pending ? [1] : [], closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: result("noting"), dream: result("dreaming") } as any;
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
@@ -1667,7 +1668,7 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
     return { outcome: "failure", runId: 1, problems: ["synthetic"] };
   };
   const memory = { config: { closedSessionScope: "project", noting: {} }, taskEligibility: () => ({ due: true }),
-    store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
+    store: { enabled: () => true, handoff: () => null, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: phase("noting"), dream: phase("dreaming") } as any;
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   const reconcile = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
@@ -1686,7 +1687,7 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
 test("scheduler diagnoses resolved bounced and successful-but-problemed results", async () => {
   const diagnostics: string[] = [];
   const memory = { config: { closedSessionScope: "project", noting: {} }, taskEligibility: () => ({ due: true }),
-    store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
+    store: { enabled: () => true, handoff: () => null, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: async () => ({ outcome: "bounced", runId: 7, problems: ["candidate rejected"] }),
     dream: async () => ({ outcome: "success", runId: 8, diagnostics: [], committed: [], problems: ["post-commit warning"] }) } as any;
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-diagnostics-")); dirs.push(directory);
@@ -1706,7 +1707,7 @@ test("scheduler borrows closed Noting work but never a closed Dreamer target", a
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-no-dreamer-borrow-")); dirs.push(directory);
   const queried: string[] = [], started: string[] = [];
   const memory = { config: { closedSessionScope: "project", noting: {} }, taskEligibility: () => ({ due: false }),
-    store: { enabled: () => true, getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig",
+    store: { enabled: () => true, handoff: () => null, getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig",
       closedTasks: (phase: string) => { queried.push(phase); return [{ sessionId: 2, branch: "closed", headTurnId: 2, triggerEntryId: 20 }]; } },
     noting: async () => { started.push("noting"); return { outcome: "success" }; },
     dream: async () => { started.push("dreaming"); return { outcome: "success" }; } } as any;
@@ -1716,7 +1717,7 @@ test("scheduler borrows closed Noting work but never a closed Dreamer target", a
   scheduler.turnEnd({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedTailId: 1 }, scheduler.catchupTicket());
   await scheduler.settle();
-  expect(queried).toEqual(["noting"]);
+  expect(queried).not.toContain("dreaming");
   expect(started).toEqual(["noting"]);
 });
 

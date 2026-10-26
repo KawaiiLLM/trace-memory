@@ -108,7 +108,7 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
   expect(h.memory.store.currentKnowledge().map(item => item.revision.text)).toEqual(["Use pnpm"]);
 });
 
-test("busy entries queue nothing; the next entry after publication admits the next batch", async () => {
+test("fact publication rechecks a busy entry backlog without a turn end; a later below-trigger tail waits", async () => {
   const h = host({ "noting.triggerTokens": 30, "dreaming.triggerOperations": 1e9 });
   let release!: (value: Reply) => void;
   let first = true;
@@ -120,14 +120,15 @@ test("busy entries queue nothing; the next entry after publication admits the ne
   expect(h.requests).toHaveLength(1);
   release(notingFact(initial)); await h.drain();
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "noting");
-  expect(runs).toHaveLength(4);
-  expect(runs.map(r => r.outcome)).toEqual(Array(4).fill("success"));
-  expect(h.memory.store.listFactsByRun(runs[3]!.id)).toHaveLength(1);
-  expect(h.memory.store.pendingEntryIds(1, "main", 2).length).toBeGreaterThan(0);
+  for (const run of runs) expect(run.outcome).toBe("success");
+  const facts = h.memory.store.listSessionFacts(1).map(fact => fact.id).sort();
+  expect(facts).toHaveLength(2);
+  expect(h.memory.store.pendingEntryIds(1, "main", 2)).toEqual([]);
   await h.emit("agent_settled"); await h.drain(); // duplicate terminal signal is not a new turn
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(4);
+  expect(h.memory.store.listSessionFacts(1).map(fact => fact.id).sort()).toEqual(facts);
   h.persist(reply("next entry in the same turn")); await h.emit("tool_execution_start"); await h.drain();
-  expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(8);
+  expect(h.memory.store.listSessionFacts(1).map(fact => fact.id).sort()).toEqual(facts);
+  expect(h.memory.store.pendingEntryIds(1, "main", 2)).toEqual([h.memory.store.listSourceEntries(1).at(-1)!.id]);
 });
 
 test("failed Noting retries at later entry ends and disables memory after three failures", async () => {
@@ -168,6 +169,7 @@ test("stop after an empty borrowed candidate fences the next borrowed launch", a
   const original = Store.prototype.closedTasks;
   const closedTasks = vi.spyOn(Store.prototype, "closedTasks").mockImplementation(function (this: Store, ...args) {
     const candidates = original.apply(this, args);
+    if (args[3] === "knowledge") return candidates;
     const first = targets[0]!;
     expect(store.commitNotingRun({ run: { kind: "noting", sessionId: first.owner.id, branch: "main", createdAt: "2026-09-29" },
       facts: [], entryIds: [first.source.id] }).ok).toBe(true);

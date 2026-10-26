@@ -59,12 +59,12 @@ test("payload-free acknowledgement preserves explicit native request-audit unava
   expect(JSON.parse(run.response!)).toMatchObject({ usage: null, audit: { available: false }, problems: [] });
 });
 
-test("N publishes its batch only after stage 4 passes", async () => {
+test("N knowledge publishes only after stage 4 passes", async () => {
   setup(async input => {
     input.reportRequest({ first: true });
     await submit(input, memory, { noteInput: [], memoryInput: batch });
     expect(memory.store.getKnowledge(1)).toBeNull();
-    expect(memory.pendingEntries(1, "main", 1)).toHaveLength(2);
+    expect(memory.progress(1, "main", 1).entries).toBe(2);
     return success();
   }, { request: { last: true } });
   const result = await integrate();
@@ -303,8 +303,8 @@ test("N post-success claim-release failure reports cleanup without undoing termi
     const result = await integrate();
     expect(result.outcome).toBe("success");
     if (result.outcome !== "success") throw new Error("expected durable success");
-    expect(result.problems).toEqual(["claim release failed: Error: cleanup unavailable"]);
-    expect(release).toHaveBeenCalledOnce();
+    expect(result.problems).toHaveLength(2); // Both lane releases failed; neither failure is hidden.
+    expect(result.problems!.every(problem => problem.includes("cleanup unavailable"))).toBe(true);
     expect(memory.store.listSessionFacts(1)).toHaveLength(2);
     expect(memory.store.currentCommit(1)[0]!.supports).toEqual([2]);
     expect(memory.pendingEntries(1, "main", 1)).toEqual([]);

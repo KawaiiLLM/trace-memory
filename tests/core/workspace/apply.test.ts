@@ -9,8 +9,13 @@ const batch = () => { const b = workspaceBatch(); opened.push(b); return b; };
 afterEach(() => { for (const b of opened.splice(0)) b.memory.close(); });
 
 const file = (text: string, name = "file.md") => ({ name, text });
-const noting = (b: WorkspaceBatch, facts: string, knowledge: string) =>
-  applyWorkspace(b.store, { kind: "noting", scope: b.scope, facts: file(withVerdicts(facts), "facts.md"), knowledge: file(withVerdicts(knowledge), "knowledge.md") });
+const noting = (b: WorkspaceBatch, facts: string, knowledge: string): ApplyResult => {
+  const checkedFacts = file(withVerdicts(facts), "facts.md");
+  const committed = applyWorkspace(b.store, { kind: "noting", lane: "facts", scope: b.scope, facts: checkedFacts, knowledge: file("## none\n", "knowledge.md") });
+  if (!committed.ok) return committed;
+  return applyWorkspace(b.store, { kind: "noting", lane: "knowledge", factIds: committed.factIds,
+    scope: b.scope, facts: checkedFacts, knowledge: file(withVerdicts(knowledge), "knowledge.md") });
+};
 const dreaming = (b: WorkspaceBatch, operation: string, text: string) =>
   applyWorkspace(b.store, { kind: "curate", sessionId: b.session.id, path: b.path, file: file(text, `curate-${operation}.md`) });
 const ok = (result: ApplyResult) => { if (!result.ok) throw new Error(result.problems.join("\n")); return result; };
@@ -29,7 +34,7 @@ const factFile = (b: WorkspaceBatch, label = "f1") => block(`fact ${label}`, { t
 const create = { title: "Use pnpm", category: "constraint", scope: "project", topics: "tooling", supports: "f1", files: "None", reason: "User choice" };
 
 describe("the Noter's two files", () => {
-  test("facts are published and the knowledge file's labels resolve to the new fact ids in the same transaction", () => {
+  test("facts publish first and their durable labels resolve to the same ids in the knowledge lane", () => {
     const b = batch();
     const existing = b.item("Use npm for the build", { title: "Build tool" });
     const result = ok(noting(b, `${factFile(b)}\n${block("fact f2", { title: "lockfile condition" }, b.source(2, "User added the lockfile condition"))}`,
@@ -63,14 +68,14 @@ describe("the Noter's two files", () => {
     expect(result.blocks[1]).toMatchObject({ status: "applied" });
   });
 
-  test("a file with problems publishes nothing", () => {
+  test("a knowledge file with problems preserves committed facts and their processed entries", () => {
     const b = batch();
     const before = b.store.listSessionFacts(b.session.id).length;
     const result = noting(b, factFile(b), block("create", { ...create, supports: "f9" }, "Use pnpm."));
     expect(result).toMatchObject({ ok: false });
     expect(result.ok === false && result.problems.join("\n")).toContain("supports `f9` is neither an F<id> nor a fact label");
-    expect(b.store.listSessionFacts(b.session.id)).toHaveLength(before);
-    expect(b.entries.some(entry => b.store.entryNoted(entry.id))).toBe(false);
+    expect(b.store.listSessionFacts(b.session.id)).toHaveLength(before + 1);
+    expect(b.entries.every(entry => b.store.entryNoted(entry.id))).toBe(true);
   });
 
   test("an empty batch publishes zero facts and zero knowledge", () => {

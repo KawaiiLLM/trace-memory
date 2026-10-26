@@ -40,13 +40,14 @@ for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fenc
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
-  let dreams = 0;
+  let dreams = 0, firstNoterInput: string | undefined;
   try {
     backlog(h); await h.emit("session_start");
     h.provider(async c => {
       if (!dreaming(c)) {
-        const completed = h.memory.store.listSessionFacts(1).length;
-        return extract(c, completed === 0 ? "global" : "session");
+        const input = String(c.messages[0]!.content);
+        firstNoterInput ??= input;
+        return extract(c, input === firstNoterInput ? "global" : "session");
       }
       if (!curating(c)) return retain(c);
       dreams++; await held; return retain(c);
@@ -74,7 +75,7 @@ for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fenc
   } finally { release(); await h.dispose(); }
 }, 30000);
 
-test("92: catchup waits for ordinary N; its successful joint publication checkpoints D", async () => {
+test("92: catchup waits for ordinary N; its successful knowledge publication checkpoints D", async () => {
   const h = host({ "noting.triggerTokens": 1000, "dreaming.triggerOperations": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -351,3 +352,39 @@ test("146 Q18 (d): the old path's D fails late after a path switch: the new path
     releaseN(); await settle(h);
   } finally { releaseD(); releaseN(); await h.dispose(); }
 }, 30000);
+
+test("Pi advances fact batches without a main turn end while knowledge stays FIFO and partial batches stay pending", async () => {
+  const h = host({ "noting.triggerTokens": 1, "noting.batchTokens": 300, "dreaming.triggerOperations": 1 });
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const knowledgeSources: string[] = [];
+  try {
+    h.provider(async c => {
+      if (dreaming(c)) return retain(c);
+      const input = String(c.messages[0]!.content);
+      const raw = input.split("\nRaw:\n")[1]?.split("\n</episodic>")[0] ?? "";
+      const source = /\b(T\d+#E\d+)\b/.exec(raw)?.[1];
+      if (!source) throw new Error("worker has no frozen source");
+      const reports = c.messages.filter(message => message.role === "toolResult").map(message => JSON.stringify(message));
+      const knowledge = reports.find(report => report.includes("Task: write-knowledge"));
+      if (knowledge) {
+        if (!knowledgeSources.includes(source)) knowledgeSources.push(source);
+        if (knowledgeSources.length === 1) { entered.resolve(); await release.promise; }
+      }
+      return notingFact(c, `## create\ntitle: Rule ${source}\ncategory: constraint\nscope: global\ntopics: \nsupports: f1\nfiles: None\nreason: User ruling\n\nRule for ${source}\n`);
+    });
+    h.persist({ role: "user", content: "Use pnpm" + " filler".repeat(200), timestamp: 1 });
+    h.persist(reply("Commit lockfiles" + " filler".repeat(200)));
+    await h.emit("session_start");
+    await entered.promise;
+    await vi.waitFor(() => expect(h.memory.store.listSessionFacts(1)).toHaveLength(2));
+    expect(knowledgeSources).toEqual(["T1#E1"]);
+    expect(h.memory.store.currentKnowledge()).toEqual([]);
+    expect(h.memory.progress(1, "main", 1).entries).toBe(2);
+    release.resolve();
+    await vi.waitFor(() => expect(h.memory.progress(1, "main", 1).entries).toBe(0));
+    expect(knowledgeSources).toEqual(["T1#E1", "T1#E2"]);
+    expect(h.memory.store.currentKnowledge().map(value => value.revision.text).sort()).toEqual(["Rule for T1#E1", "Rule for T1#E2"]);
+    expect(h.memory.store.listRuns(1).filter(run => run.kind === "dreaming")).toEqual([]);
+    expect(h.memory.store.dreamingDue({ sessionId: 1, branch: "main", headTurnId: 1 }, 1)).toBe(true);
+  } finally { release.resolve(); await h.dispose(); }
+}, 20_000);

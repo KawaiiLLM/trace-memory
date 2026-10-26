@@ -637,7 +637,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     let snapshot: PathSnapshot | undefined;
     const prepare = () => snapshot ??= store.pathSnapshot(path);
     const entries = path.headTurnId == null ? 0 : store.pendingEntryState(sessionId, branch, path.headTurnId,
-      reusable ? undefined : prepare).length;
+      reusable ? undefined : prepare).length + store.knowledgePendingEntryIds(sessionId, branch, path.headTurnId).length;
     if (reusable) {
       cached.headTurnId = path.headTurnId!;
       return { entries, facts: cached.facts,

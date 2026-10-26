@@ -425,7 +425,8 @@ test("failed own capacity admission leaves its N slot free for a smaller closed 
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);
-    await tick(h);
+    await h.drain();
+    await h.emit("agent_settled"); await h.drain();
     expect(h.requests, h.notices.join("\n")).toHaveLength(EMPTY_NOTER_BATCH_REQUESTS);
     expect(h.conversations[0]!.messages[0]!.content).toContain(`S${t.sessionId}/T${t.headTurnId}`);
     expect(h.notices.join(" ")).toContain("Noting capacity: selected evidence cannot fit the model context");

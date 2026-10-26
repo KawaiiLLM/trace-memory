@@ -25,7 +25,7 @@ const cancelled = async (h: Host) => {
 };
 const head = (h: Host) => h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)[0]!.id;
 
-test("155: a knowledge writer that stops without its file publishes nothing or Raw progress", async () => {
+test("179: a knowledge writer that stops without its file retains facts but not batch progress", async () => {
   const h = host(config);
   try {
     let requests = 0;
@@ -41,9 +41,9 @@ test("155: a knowledge writer that stops without its file publishes nothing or R
     const run = notingRuns(h).at(-1)!;
     expect(run.outcome).toBe("failure");
     expect(JSON.parse(run.response!).problems.join("\n")).toContain("knowledge.md");
-    expect(h.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["User prefers pnpm"]);
     expect(h.memory.store.currentKnowledge()).toEqual([]);
-    expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
+    expect(h.memory.progress(1, "main", 1).entries).toBe(2);
   } finally { await h.dispose(); }
 });
 
@@ -166,7 +166,7 @@ test("32c replaces 26a: real native children disable on the third incomplete exe
     await command(f.h, "on");
     f.script(body => !worker(body) ? say("好的。") : noterTurn(body, {}));
     await f.turn("enabled opportunity " + "word ".repeat(400));
-    await vi.waitFor(() => expect(notingRuns(f.h).filter(r => r.outcome === "success")).toHaveLength(4), { timeout: 5000 });
+    await vi.waitFor(() => expect(f.h.memory.progress(1, "main", f.h.memory.store.listTurns(1).at(-1)!.id).entries).toBe(0), { timeout: 5000 });
   } finally { await f.dispose(); }
 }, 40000);
 

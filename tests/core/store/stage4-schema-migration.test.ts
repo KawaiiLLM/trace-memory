@@ -96,3 +96,39 @@ test("rating migration preserves legacy scores and provenance, accepts only inte
     } finally { upgraded.close(); }
   }
 });
+
+test("lane-key migration preserves existing claims and stage hand-offs and is idempotent", () => {
+  const f = database();
+  const target = { sessionId: f.session.id, branch: "main", headTurnId: 1 };
+  const claim = f.store.acquireClaim(target, "noting", "existing-executor")!;
+  expect(claim).not.toBeNull();
+  const beforeClaims = rows(f.store, "task_claims", ["lane"]);
+  const beforeHandoffs = rows(f.store, "task_handoffs", ["lane", "batch"]);
+  const facts = rows(f.store, "facts"), revisions = rows(f.store, "knowledge_revisions");
+  f.store.db.exec(`CREATE TABLE legacy_claims (
+    session_id INTEGER NOT NULL REFERENCES sessions(id), phase TEXT NOT NULL,
+    executor_id TEXT NOT NULL, token TEXT NOT NULL, expires_at INTEGER NOT NULL,
+    borrowed INTEGER NOT NULL, reserved INTEGER NOT NULL, PRIMARY KEY(session_id,phase));
+    INSERT INTO legacy_claims SELECT session_id,phase,executor_id,token,expires_at,borrowed,reserved FROM task_claims;
+    DROP TABLE task_claims; ALTER TABLE legacy_claims RENAME TO task_claims;
+    CREATE TABLE legacy_handoffs (
+    session_id INTEGER NOT NULL REFERENCES sessions(id), phase TEXT NOT NULL,
+    next_task TEXT NOT NULL, run_id INTEGER NOT NULL REFERENCES runs(id), branch TEXT, entry_ids TEXT,
+    created_at TEXT NOT NULL, detail TEXT, PRIMARY KEY(session_id,phase));
+    INSERT INTO legacy_handoffs SELECT session_id,phase,next_task,run_id,branch,entry_ids,created_at,detail FROM task_handoffs;
+    DROP TABLE task_handoffs; ALTER TABLE legacy_handoffs RENAME TO task_handoffs;`);
+  f.store.close();
+  for (let opens = 0; opens < 2; opens++) {
+    const upgraded = new Store(f.file);
+    try {
+      expect(rows(upgraded, "task_claims", ["lane"])).toEqual(beforeClaims);
+      expect(rows(upgraded, "task_handoffs", ["lane", "batch"])).toEqual(beforeHandoffs);
+      expect(upgraded.getClaim(f.session.id, "noting")!.token).toBe(claim.token);
+      expect(upgraded.getClaim(f.session.id, "noting", "knowledge")).toBeNull();
+      expect(upgraded.handoff(f.session.id, "dreaming")!.nextTask).toBe("curate");
+      expect(rows(upgraded, "facts")).toEqual(facts);
+      expect(rows(upgraded, "knowledge_revisions")).toEqual(revisions);
+      expect(upgraded.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { upgraded.close(); }
+  }
+});

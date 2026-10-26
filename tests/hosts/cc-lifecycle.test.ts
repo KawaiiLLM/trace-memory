@@ -91,11 +91,12 @@ const childExit = (child: ChildProcess, timeoutMs = 3_000): Promise<void> => {
 
 test("public turn-end admission reports an N eligibility failure and still checks D", async () => {
   const phases: string[] = [], errors: string[] = [];
-  const memory = { taskEligibility: (phase: string) => {
+  // Minimal facade keeps the failing eligibility boundary independent of provider setup.
+  const memory = { config: { closedSessionScope: "off" }, taskEligibility: (phase: string) => {
     phases.push(phase);
     if (phase === "noting") throw new Error("source store unavailable");
     return { due: false };
-  }, store: { progressSignal: () => "sig" } } as unknown as TraceMemory;
+  }, store: { enabled: () => true, handoff: () => null, closedTasks: () => [], progressSignal: () => "sig" } } as unknown as TraceMemory;
   const scheduler = new CcTaskScheduler(memory, undefined, error => errors.push(error));
   scheduler.turnEnd({ state: "ready", coreSessionId: 1, headTurnId: 1, selectedTailId: 1, branch: "main" }, scheduler.catchupTicket());
   expect(phases).toEqual(["noting", "dreaming"]);
@@ -288,7 +289,7 @@ test("live function-hook turns check once across both import orders and do not r
   try {
     await coordinator.start();
     const memory = (coordinator as any).importer.memory;
-    const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+    const noting = vi.fn(async () => ({ outcome: "dropped", reason: "Admission recorder does not publish a batch" }));
     const dreaming = vi.fn(async () => ({ outcome: "success", revisions: [] }));
     memory.noting = noting; memory.dream = dreaming;
     memory.taskEligibility = (phase: string) => ({ due: phase === "noting" });
@@ -333,7 +334,7 @@ test("live function-hook turns check once across both import orders and do not r
   } finally { await coordinator.shutdown("test"); }
 });
 
-test.each(["hook", "transcript"] as const)("entry ingestion admits mid-turn and preserves frozen Raw without overlapping runs (%s)", async mode => {
+test.each(["hook", "transcript"] as const)("entry ingestion admits mid-turn and preserves frozen Raw without overlapping fact batches (%s)", async mode => {
   const f = fixture(`entries-${mode}`); enableSyntheticWorker(f);
   f.config.stateDir = mkdtempSync(join(tmpdir(), "tmcc-entries-")); dirs.push(f.config.stateDir);
   f.config.coreConfig.noting.triggerTokens = 1;
@@ -376,19 +377,20 @@ test.each(["hook", "transcript"] as const)("entry ingestion admits mid-turn and 
     const tail = memory.store.selectedSourceEntryIds(1, "main")!.at(-1)!;
     expect(batches[0]).not.toContain(tail);
     release(); await internal.scheduler.settle();
-    expect(batches).toHaveLength(1);
-    expect(memory.store.entryNoted(tail)).toBe(false);
+    expect(batches).toHaveLength(2);
+    expect(batches[1]).toEqual([tail]);
+    expect(memory.store.entryNoted(tail)).toBe(true);
     const run = memory.store.listRuns(1)[0]!;
     expect(run.mode).toBe("subagent");
     await coordinator.requestReconcile("duplicate observation");
-    expect(batches).toHaveLength(1);
-    await append(3); await internal.scheduler.settle();
     expect(batches).toHaveLength(2);
+    await append(3); await internal.scheduler.settle();
+    expect(batches).toHaveLength(3);
     expect(memory.store.entryNoted(tail)).toBe(true);
     if (mode === "hook") await signalCcTurnEnd(f.config, f.nativeSessionId, "same-entry", "answer");
     await coordinator.requestReconcile("duplicate final observation");
     await internal.scheduler.settle();
-    expect(batches).toHaveLength(2);
+    expect(batches).toHaveLength(3);
   } finally { release?.(); await coordinator.shutdown("test"); }
 });
 
@@ -402,7 +404,7 @@ test("without function hooks, entry checks do not depend on native terminal reas
     await coordinator.start();
     const memory = (coordinator as any).importer?.memory;
     expect(memory, diagnostic.join("; ")).toBeDefined();
-    const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+    const noting = vi.fn(async () => ({ outcome: "dropped", reason: "Admission recorder does not publish a batch" }));
     memory.noting = noting;
     memory.taskEligibility = (phase: string) => ({ due: phase === "noting" });
     expect(noting).not.toHaveBeenCalled();
@@ -447,7 +449,7 @@ test("no-hook native interruption after previously imported tool Raw checks once
     await coordinator.start();
     expect((coordinator as any).importer, diagnostics.join("; ")).not.toBeNull();
     const memory = (coordinator as any).importer.memory;
-    const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+    const noting = vi.fn(async () => ({ outcome: "dropped", reason: "Admission recorder does not publish a batch" }));
     memory.noting = noting;
     memory.taskEligibility = (phase: string) => ({ due: phase === "noting" });
     const raw = memory.store.selectedSourceEntryIds(readBinding(f.config, f.nativeSessionId)!.coreSessionId!, "main") ?? [];
@@ -651,7 +653,7 @@ test("a disconnected turn-end control cannot admit after a slow import; a connec
     const internal = coordinator as unknown as { importer: CcImporter; scheduler: CcTaskScheduler };
     const importer = internal.importer;
     const noting = vi.spyOn(importer.memory, "noting").mockResolvedValue({
-      outcome: "success", runId: 1, facts: [], diagnostics: [],
+      outcome: "dropped", reason: "Admission recorder does not publish a batch",
     });
     vi.spyOn(importer.memory, "taskEligibility").mockImplementation(phase => ({ due: phase === "noting" }));
     await markCcFunctionHook(f.config, f.nativeSessionId);
@@ -867,7 +869,7 @@ test("stop also fences the first attach opportunity while initial import is in f
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
   try {
     const starting = coordinator.start(); await imported;
-    const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+    const noting = vi.fn(async () => ({ outcome: "dropped", reason: "Admission recorder does not publish a batch" }));
     ((coordinator as any).importer.memory as any).noting = noting;
     ((coordinator as any).importer.memory as any).taskEligibility = (phase: string) => ({ due: phase === "noting" });
     expect(await directControl(readBinding(f.config, f.nativeSessionId)!.executor!, "stop")).toMatchObject({ ok: true, verb: "stop" });
@@ -886,7 +888,7 @@ test("stop during import does not create an automatic checkpoint; a later turn e
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
   await coordinator.start();
   const internal = coordinator as any, importer = internal.importer as CcImporter;
-  const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+  const noting = vi.fn(async () => ({ outcome: "dropped", reason: "Admission recorder does not publish a batch" }));
   (importer.memory as any).noting = noting;
   (importer.memory as any).taskEligibility = (phase: string) => ({ due: phase === "noting" });
   const original = importer.reconcile.bind(importer);

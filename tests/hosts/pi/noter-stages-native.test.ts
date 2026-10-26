@@ -33,7 +33,10 @@ for (const variant of ["published", "corrected-at-stop", "unfixed"] as const) te
       return (steps[assistant] ?? (() => say("done")))();
     });
     await f.turn();
-    await vi.waitFor(() => expect(f.h.memory.store.getClaim(1, "noting")).toBeNull(), { timeout: 8000 });
+    await vi.waitFor(() => {
+      if (variant === "unfixed") expect(f.h.memory.store.getClaim(1, "noting")).toBeNull();
+      else expect(f.h.memory.progress(1, "main", 1).entries).toBe(0);
+    }, { timeout: 8000 });
     const runs = f.h.memory.store.listRuns(1).filter(run => run.kind === "noting");
     expect(existsSync(outside)).toBe(false);
     expect(runs.map(run => JSON.parse(run.response!).task)).toEqual(variant === "unfixed" ? ["extract-facts"] : ["extract-facts", "check-facts", "write-knowledge", "check-knowledge"]);

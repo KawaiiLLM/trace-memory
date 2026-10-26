@@ -87,10 +87,10 @@ const planned = new Map<string, Partial<Files>>();
 export async function submit(input: NotingAgentInput, memory: TraceMemory, output: NoterOutput = {}, seen?: string[]): Promise<string | undefined> {
   await input.tools.find(tool => tool.name === "check")!.execute({});
   const files = { facts: factsFile(output.noteInput), knowledge: knowledgeFile(memory, output.memoryInput), ...output.files };
-  if (input.task === "extract-facts") planned.set(input.workspace.dir, files);
+  if (input.task === "extract-facts") planned.set(input.executionId ?? input.workspace.dir, files);
   const which = input.task === "extract-facts" || input.task === "check-facts" ? "facts" : "knowledge";
   if (input.task === "extract-facts") put(input, { facts: files.facts });
-  else if (input.task === "write-knowledge") put(input, { knowledge: output.files?.knowledge ?? (output.memoryInput === undefined ? planned.get(input.workspace.dir)?.knowledge ?? files.knowledge : files.knowledge) });
+  else if (input.task === "write-knowledge") put(input, { knowledge: output.files?.knowledge ?? (output.memoryInput === undefined ? planned.get(input.executionId ?? input.workspace.dir)?.knowledge ?? files.knowledge : files.knowledge) });
   else {
     const change = await output.verify?.(filesOf(input), input);
     put(input, { [which]: withVerdicts(change?.[which] ?? filesOf(input)[which]) });
@@ -121,7 +121,7 @@ export async function verifyUnchanged(raw: unknown, reply: Partial<RunAgentResul
   if (result.request !== undefined) input.reportRequest(result.request); else input.acknowledgeRequest();
   await input.tools.find(tool => tool.name === "check")!.execute({});
   const which = input.task === "check-facts" ? "facts" : "knowledge";
-  put(input, { [which]: input.task === "write-knowledge" ? planned.get(input.workspace.dir)?.knowledge ?? "## none\n" : withVerdicts(filesOf(input)[which]) });
+  put(input, { [which]: input.task === "write-knowledge" ? planned.get(input.executionId ?? input.workspace.dir)?.knowledge ?? "## none\n" : withVerdicts(filesOf(input)[which]) });
   while (input.passEnd() !== undefined);
   return result;
 }
@@ -139,7 +139,7 @@ export function scriptedNoter(memory: () => TraceMemory, script: Script[] = [], 
     return typeof item === "function" ? item(input) : item;
   };
   const agent = async (raw: unknown): Promise<RunAgentResult> => {
-    const input = raw as NotingAgentInput, dir = input.workspace.dir;
+    const input = raw as NotingAgentInput, dir = input.executionId ?? input.workspace.dir;
     inputs.push(input);
     if (input.task === "extract-facts") options.calls?.push(input);
     const output = input.task === "extract-facts" || !written.has(dir) ? await next(input) : written.get(dir)!;

@@ -229,9 +229,9 @@ export default function (pi: ExtensionAPI) {
   /** The executor's one slot per phase, and what occupies it: one task of a kind at a time. The entry
    * carries the task's target and its frozen boundary beside the promise; `done` is assigned in the
    * same tick the slot is taken. */
-  type Slot = { target: TaskTarget; boundary?: TaskBoundary; result?: Promise<NotingResult | { outcome: string } | undefined>; done?: Promise<unknown> };
+  type Slot = { target: TaskTarget; lane?: "facts" | "knowledge"; boundary?: TaskBoundary; result?: Promise<NotingResult | { outcome: string } | undefined>; done?: Promise<unknown> };
   type WorkerPhase = "noting" | "dreaming";
-  const slots = new Map<WorkerPhase, Slot>();
+  const slots = new Map<string, Slot>();
   /** Ticket 29a "Carriers": the `details.traceMemory` written on the two entries that put memory
    * material into this conversation — the injected `custom_message` and a custom compaction — beside
    * what the renderer actually supplied. The database identity is the resolved `dbPath`, the same
@@ -329,7 +329,7 @@ export default function (pi: ExtensionAPI) {
   // One admission path for ordinary (own/borrowed) and manual-catchup work (18b): only the target
   // and admission flags differ. `boundary` is absent for ordinary automatic work.
   const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
-      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; manual?: boolean; fullCheck?: boolean },
+      options: { borrowed: boolean; automatic: boolean; lane?: "facts" | "knowledge"; boundary?: TaskBoundary; manual?: boolean; fullCheck?: boolean },
       ): Promise<NotingResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
@@ -374,7 +374,7 @@ export default function (pi: ExtensionAPI) {
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity, toolNames: canonicalToolNames,
       nativeReadToolTokens, nativeWriteToolTokens, workspaceRoot: defaultWorkspaceRoot(),
       ...(options.boundary ? { boundary: options.boundary } : {}) };
-    return (kind === "dreaming" ? memory.dream({ ...common, ...(options.manual ? { manual: true } : {}), ...(options.fullCheck ? { fullCheck: true } : {}) }) : memory.noting(common))
+    return (kind === "dreaming" ? memory.dream({ ...common, ...(options.manual ? { manual: true } : {}), ...(options.fullCheck ? { fullCheck: true } : {}) }) : memory.noting({ ...common, lane: options.lane ?? "facts" }))
       .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); endCatchupOnDreamingFailure(kind, target, result); return result; });
   };
   /** 146 Q18: a Dreaming failure retries at the next entry-end check (ruling 10), so it ends an active drain for the same session and
@@ -805,7 +805,9 @@ export default function (pi: ExtensionAPI) {
    * promise. Shutdown waits for cleanup; only an explicit catchup may chain on release. */
   const trackSlot = <T,>(kind: WorkerPhase, slot: Slot, work: Promise<T>, context: ExtensionContext, released: () => void): Promise<T> => {
     const settled = work.finally(() => {
-      slots.delete(kind); pending.delete(settled); activity.running.delete(kind);
+      slots.delete(`${slot.target.sessionId}:${slot.lane === "knowledge" ? "knowledge" : kind}`);
+      pending.delete(settled);
+      activity.running.set(kind, [...slots.keys()].filter(key => kind === "dreaming" ? key.endsWith(":dreaming") : !key.endsWith(":dreaming")).length);
       released();
     });
     slot.done = settled;
@@ -814,20 +816,48 @@ export default function (pi: ExtensionAPI) {
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
     return settled;
   };
-  /** Only an explicit catchup may chain on an ordinary worker's release (and `/trace dream` is one). */
-  const releaseOrdinary = (context: ExtensionContext, outcome: string | undefined) => {
-    showSpend(context);
-    if (catchup && outcome !== "failure" && outcome !== "cancelled") driveCatchup(outcome === "success");
+  const startKnowledge = (context: ExtensionContext, target: TaskTarget, borrowed = false) => {
+    const key = `${target.sessionId}:knowledge`;
+    if (closed || !enabled() || slots.has(key)) return;
+    const handoff = memory.store.handoff(target.sessionId, "noting", "knowledge");
+    if (!handoff) return;
+    const generation = memory.cancellation;
+    const slot: Slot = { target, lane: "knowledge" };
+    slots.set(key, slot);
+    activity.running.set("noting", 1); showSpend(context);
+    let result: NotingResult | DreamingResult | { outcome: "dropped"; permanent?: string } | undefined;
+    const work = attemptPhase(context, "noting", target, { borrowed, automatic: false, lane: "knowledge" })
+      .then(value => { result = value; reportProblems(value, context); }, error => context.ui.notify(String(error), "error"));
+    trackSlot("noting", slot, work, context, () => {
+      if (result && "automaticOff" in result && result.automaticOff && catchup?.sessionId === target.sessionId) catchup.outcome = "stopped";
+      if (generation !== memory.cancellation || closed) return;
+      if (result?.outcome === "success") startKnowledge(context, target, borrowed);
+      if (result?.outcome === "failure" && catchup?.sessionId === target.sessionId && !catchup.outcome) driveCatchup(false);
+      else releaseOrdinary(context, result?.outcome);
+    });
   };
-  const checkQueues = (opportunity?: TaskTarget, includeBorrowed = false) => {
+  /** Only an explicit catchup may chain on an ordinary worker's release (and `/trace dream` is one). */
+  const releaseOrdinary = (context: ExtensionContext, outcome: string | undefined, checkpoint = true) => {
+    showSpend(context);
+    if (catchup && outcome !== "failure" && outcome !== "cancelled") driveCatchup(checkpoint && outcome === "success");
+  };
+  const checkQueues = (opportunity?: TaskTarget, includeBorrowed = false, notingOnly = false, borrowedOwn = false) => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
     const own = opportunity ?? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
+    startKnowledge(context, own, borrowedOwn);
+    if (includeBorrowed) {
+      try {
+        const target = memory.store.closedTasks("noting", state.sessionId, memory.config.closedSessionScope, "knowledge")[0];
+        if (target) startKnowledge(context, target, true);
+      } catch (error) { context.ui.notify(`knowledge closed-session scan failed: ${String(error)}`, "error"); }
+    }
+    const selected = { sessionId: state.sessionId, branch: state.branch, head: state.head };
     const signal = memory.store.progressSignal(own.sessionId);
     if (signal !== lastArmSignal) { lastArmSignal = signal; armDreaming(); }
     const generation = memory.cancellation;
-    for (const kind of ["noting", "dreaming"] as const) {
-      if (slots.has(kind)) continue;
+    for (const kind of notingOnly ? ["noting"] as const : ["noting", "dreaming"] as const) {
+      if (slots.has(`${own.sessionId}:${kind}`)) continue;
       let due = false;
       if (opportunity && (kind === "noting" || dreamingArmed)) {
         try {
@@ -835,7 +865,7 @@ export default function (pi: ExtensionAPI) {
           if (kind === "dreaming") dreamingArmed = due;
         } catch (error) { context.ui.notify(String(error), "error"); }
       }
-      const candidates: ({ borrowed: boolean } & TaskTarget)[] = due ? [{ ...own, borrowed: false }] : [];
+      const candidates: ({ borrowed: boolean } & TaskTarget)[] = due ? [{ ...own, borrowed: borrowedOwn }] : [];
       if (kind !== "dreaming" && includeBorrowed) {
         try { candidates.push(...memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope)
           .map(target => ({ ...target, borrowed: true }))); }
@@ -843,14 +873,15 @@ export default function (pi: ExtensionAPI) {
       }
       if (!candidates.length) continue;
       const slot: Slot = { target: own }; // ordinary automatic work: the whole pending set, no frozen boundary
-      slots.set(kind, slot); // Reserve before any asynchronous admission or model work.
+      slots.set(`${own.sessionId}:${kind}`, slot); // Reserve before any asynchronous admission or model work.
+      let completedTarget = own, completedBorrowed = borrowedOwn;
       const work = async () => {
         for (const { borrowed, ...target } of candidates) {
-          if (closed || !enabled() || memory.cancellation !== generation || state.sessionId !== own.sessionId
-              || state.branch !== own.branch || state.head !== own.headTurnId) return;
+          if (closed || !enabled() || memory.cancellation !== generation || state.sessionId !== selected.sessionId
+              || state.branch !== selected.branch || state.head !== selected.head) return;
           try {
             const result = await attemptPhase(context, kind, target, { borrowed, automatic: true });
-            if (result.outcome !== "dropped" && result.outcome !== "empty") return result;
+            if (result.outcome !== "dropped" && result.outcome !== "empty") { completedTarget = target; completedBorrowed = borrowed; return result; }
           } catch (error) {
             context.ui.notify(String(error), "error");
             if (!(error instanceof Error && error.cause === "task admission")) return;
@@ -863,7 +894,16 @@ export default function (pi: ExtensionAPI) {
       let settled: Awaited<ReturnType<typeof work>>;
       trackSlot(kind, slot, promise.then(result => { settled = result; reportProblems(result, context); }, error => {
         context.ui.notify(String(error), "error");
-      }), context, () => releaseOrdinary(context, settled?.outcome));
+      }), context, () => {
+        if (kind === "noting" && settled?.outcome === "success" && generation === memory.cancellation && !closed) {
+          startKnowledge(context, completedTarget, completedBorrowed);
+          if (!catchup || catchup.outcome) {
+            const target = completedBorrowed ? completedTarget : { sessionId: state.sessionId!, branch: state.branch, headTurnId: state.head!, triggerEntryId: state.sourceHead };
+            checkQueues(target, false, true, completedBorrowed);
+          }
+        }
+        releaseOrdinary(context, settled?.outcome, kind !== "noting");
+      });
     }
     if (catchup) driveCatchup(false); // A manual drain retains its independent checkpoint.
   };
@@ -872,7 +912,7 @@ export default function (pi: ExtensionAPI) {
   const pendingCatchupEntryIds = (c: Catchup) => c.maxEntryId === undefined ? [] :
     memory.store.pendingEntryIds(c.sessionId, c.branch, c.headTurnId).filter(id => id <= c.maxEntryId!);
   const catchupProgress = (c: Catchup) => {
-    const remainingEntries = pendingCatchupEntryIds(c).length;
+    const remainingEntries = c.maxEntryId === undefined ? 0 : memory.store.incompleteEntryIds(c.sessionId, c.branch, c.headTurnId).filter(id => id <= c.maxEntryId!).length;
     return { entriesDone: c.entryTotal - remainingEntries, remainingEntries };
   };
   const catchupLine = (): string | undefined => {
@@ -905,6 +945,7 @@ export default function (pi: ExtensionAPI) {
     if (!c || c.stopped || c.outcome || closed || !enabled()) return;
     const context = ctx;
     const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId, triggerEntryId: c.triggerEntryId };
+    startKnowledge(context, own);
     const remainingEntries = pendingCatchupEntryIds(c);
     if (!checkAll && !retryPhase && !remainingEntries.length && c.waitingPhase && c.waitingPhase !== "noting") {
       finishCatchup(c); // Ordinary release may have cleared all due work; settle only, never replay its busy check.
@@ -917,7 +958,7 @@ export default function (pi: ExtensionAPI) {
       let due = retryPhase === phase || phase === "noting" && remainingEntries.length > 0;
       try { if (phase !== "noting" && !retryPhase) due = memory.taskEligibility(phase, own).due; }
       catch (error) { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); return; }
-      if (!due || slots.has(phase)) { if (phase === "noting" && due) blockedNoting = true; continue; }
+      if (!due || slots.has(`${own.sessionId}:${phase}`)) { if (phase === "noting" && due) blockedNoting = true; continue; }
       if (phase === "noting") {
         const foreign = memory.store.getClaim(own.sessionId, phase);
         if (foreign && foreign.expiresAt > Date.now() && foreign.executorId !== memory.executorId) {
@@ -927,7 +968,7 @@ export default function (pi: ExtensionAPI) {
       launched = true;
       const boundary = phase === "noting" ? { maxEntryId: c.maxEntryId } : undefined;
       const slot: Slot = { target: own, ...(boundary ? { boundary } : {}) };
-      slots.set(phase, slot); c.active.add(phase); activity.running.set(phase, 1); showSpend(context);
+      slots.set(`${own.sessionId}:${phase}`, slot); c.active.add(phase); activity.running.set(phase, 1); showSpend(context);
       const promise = attemptPhase(context, phase, own,
         { borrowed: false, automatic: phase !== "noting", ...(boundary ? { boundary } : {}) });
       slot.result = promise.catch(() => undefined);
@@ -960,7 +1001,7 @@ export default function (pi: ExtensionAPI) {
         c.active.delete(phase); showSpend(context);
         if (catchup !== c) return; // A late completion owns no checkpoint in a replacement drain.
         if (retry) driveCatchup(false, phase); // Slot released; retry only the failed phase under the frozen boundary.
-        else if (checkpoint) driveCatchup();
+        else if (checkpoint) driveCatchup(phase !== "noting");
         else finishCatchup(c); // empty/dropped settle this opportunity but never re-arm it.
       });
     }
@@ -981,7 +1022,7 @@ export default function (pi: ExtensionAPI) {
     reconcile(false);
     showSpend(ctx);
     const { sessionId, branch } = state, headTurnId = state.head;
-    const pendingNow = memory.store.pendingEntryIds(sessionId, branch, headTurnId);
+    const pendingNow = memory.store.incompleteEntryIds(sessionId, branch, headTurnId);
     const maxEntryId = pendingNow.length ? Math.max(...pendingNow) : undefined;
     catchup = { sessionId, branch, headTurnId, triggerEntryId: state.sourceHead, maxEntryId, entryTotal: pendingNow.length,
       stopped: false, active: new Set() };
@@ -1005,11 +1046,11 @@ export default function (pi: ExtensionAPI) {
     if (dream?.state === "running") { ctx.ui.notify(dreamLine()!, "info"); return; }
     if (!state.sessionId || !state.head) { ctx.ui.notify("Trace Memory: no assistant reply yet; nothing to dream.", "info"); return; }
     const refuse = (diagnostic: string) => { dream = { state: "failed", diagnostic }; ctx.ui.notify(dreamLine()!, "warning"); };
-    if (slots.has("dreaming")) { refuse("a Dreamer is already running in this session"); return; }
+    if (slots.has(`${state.sessionId}:dreaming`)) { refuse("a Dreamer is already running in this session"); return; }
     reconcile(false);
     const context = ctx, own = { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
     const slot: Slot = { target: own };
-    slots.set("dreaming", slot); activity.running.set("dreaming", 1); showSpend(context);
+    slots.set(`${own.sessionId}:dreaming`, slot); activity.running.set("dreaming", 1); showSpend(context);
     dream = { state: "running" };
     const promise = attemptPhase(context, "dreaming", own, { borrowed: false, automatic: false, manual: true, fullCheck });
     slot.result = promise.catch(() => undefined);
