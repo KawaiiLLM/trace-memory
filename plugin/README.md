@@ -40,7 +40,7 @@ Core phase bounds use optional top-level keys in the same file:
 | `writing.titleWords` | 20 | Title target of a fact or knowledge item in units (each CJK character, and each run of letters and digits, counts 1), for every writer; a check refuses only above target + 10%, rounded up (22) |
 | `writing.bodyWords` | 200 | Body target of a fact (its segments summed) or knowledge item in units, for every writer; refused only above 220 |
 
-Both temporary pools are configured independently of the Noter and Dreamer triggers.
+The one temporary pool is configured independently of the Noter trigger; the Dreamer's size trigger is a share of it (`dreaming.triggerUnscoredRatio`).
 Noter publishes facts after check-facts, then knowledge after check-knowledge; the next fact batch may run while the FIFO knowledge lane works. Each session has separate exclusive fact and knowledge claims/slots. Knowledge failure keeps facts and resumes its failed stage without extraction; displayed progress counts only fully completed batches. If knowledge starts within `noting.knowledgePrefixReuseMs` (default 240000 ms) of fact commit, its stages reuse the exact fact-stage prefix; later starts use frozen Knowledge plus only that batch's new facts, without Raw or historical facts. Facts have no later processing queue. Database pool
 budgets size injection and compaction only: they trigger no Dreamer run and decide none's success. The Dreamer
 curates the knowledge (merge, split, archive, rewrite), verifies its own changes against facts and the repositories,

@@ -298,8 +298,8 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   **removed** (ticket 30). `B` was one budget for a call and its result, split in half, so its value
   is not `C` or `R` and is never reinterpreted as either; the tier-2 pair went with the second tier
   itself. A layer that still supplies one fails the load naming the key and the new ones.
-- Worker completion starts nothing. A fresh eligible entry completion provides
-  the next opportunity; no polling or draining is added. Each runtime reserves one
+- Worker completion starts nothing, except that fact publication rechecks N and the batch's knowledge
+  lane follows its facts (179). A fresh eligible entry completion provides the next opportunity; no polling or draining is added. Each runtime reserves one
   slot per phase before asynchronous admission. Quit/reload cancels its workers
   under one five-second cleanup deadline and starts no flush.
 - Pi custom entries persist session/turn/branch references, using Pi's own
@@ -351,7 +351,7 @@ Each enabled active Pi runtime has one local slot per phase. Noting and Consolid
 and may borrow a normally closed target under `closedSessionScope`; they prefer the executor's own
 eligible work. Dreaming never borrows a closed-session task. All Pi and CC executors and all
 projects sharing this database compete for one database-wide Dreamer seat, represented by the
-live Dreaming claim. Worker completion only releases capacity; it starts no next batch.
+live Dreaming claim. Worker completion only releases capacity; only fact publication rechecks N (179).
 
 Pi passes the exact persisted source-entry head at admission. Core freezes the target, path and
 phase boundary before later entries or navigation can move them. A SQLite claim records executor,
@@ -1000,7 +1000,7 @@ the first fact in Consolidation order; since 126 the Dreamer's key is its sessio
 a growing tail, another executor or partial Dreamer edits do not reset it. Cancellation is not a
 business failure. A failed Dreamer task keeps its hand-off and is retried by the rule above; a Dreamer failure counts
 toward dormancy like the Noter's (146). Ordinary worker
-completion starts no next task beyond the Dreamer check after a successful run; later eligible entries supply new opportunities (compaction no
+completion starts no next task beyond the N recheck at fact publication and the knowledge continuation (179); later eligible entries supply new opportunities (compaction no
 longer runs recovery tasks: 73). Manual catchup alone rechecks all phases after its own successful
 completions.
 
