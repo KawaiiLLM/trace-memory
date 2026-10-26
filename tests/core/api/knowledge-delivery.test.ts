@@ -189,9 +189,13 @@ test("34c remaining rendered allowance counts retained historical bodies and exa
   setKnowledgeCapacity(f.memory, exact);
   expect(f.memory.injection(f.target, visible).knowledgeCommitIds).toEqual([newer.commit]);
   setKnowledgeCapacity(f.memory, exact - 1);
-  expect(f.memory.injection(f.target, visible).knowledgeCommitIds).toEqual([]); // Guides may re-send when their delivery metadata is absent.
+  const unfit = f.memory.injection(f.target, visible);
+  expect(unfit.text).toBe(""); // no clipped body, guide-only or omission-only message
+  expect(unfit.knowledgeCommitIds).toEqual([]);
   setKnowledgeCapacity(f.memory, oldCost);
-  expect(f.memory.injection(f.target, visible).knowledgeCommitIds).toEqual([]); // zero body remainder
+  const exhausted = f.memory.injection(f.target, visible);
+  expect(exhausted.text).toBe(""); // zero remainder
+  expect(exhausted.knowledgeCommitIds).toEqual([]);
 });
 
 test("64c an oversized old body cannot displace a fitting newer body, and omission is receipted", () => {
@@ -223,9 +227,13 @@ test("34c a visible applicable Knowledge view at or above the configured 20,000 
   f.memory.store.db.prepare("UPDATE knowledge_revisions SET text = ? WHERE id = ?").run(body, old.commit);
   f.create("pending body", [f.facts[1]!.id]);
   setKnowledgeCapacity(f.memory, 20_000);
-  expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).knowledgeCommitIds).toEqual([]);
+  const exact = f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) }));
+  expect(exact.text).toBe("");
+  expect(exact.knowledgeCommitIds).toEqual([]);
   f.memory.store.db.prepare("UPDATE knowledge_revisions SET text = ? WHERE id = ?").run(body + " x", old.commit);
-  expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).knowledgeCommitIds).toEqual([]);
+  const over = f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) }));
+  expect(over.text).toBe("");
+  expect(over.knowledgeCommitIds).toEqual([]);
 });
 
 test("92 archive notices remain eligible even with complete current-change evidence", () => {
@@ -255,7 +263,9 @@ test("34c a retained state-only receipt consumes allowance without granting body
   const candidate = f.memory.injection(f.target);
   setKnowledgeCapacity(f.memory, windowCost(f.session.id, candidate));
   const state = { fromCommit: parent.commit, toCommits: [archive.committed[0]!.commit] };
-  expect(f.memory.injection(f.target, view({ knowledgeStates: new Set([knowledgeStateKey(state)]) })).knowledgeCommitIds).toEqual([]);
+  const exhausted = f.memory.injection(f.target, view({ knowledgeStates: new Set([knowledgeStateKey(state)]) }));
+  expect(exhausted.text).toBe("");
+  expect(exhausted.knowledgeCommitIds).toEqual([]);
 });
 
 test("34c state transitions are whole deterministic prefix items and only selected receipts persist", () => {
@@ -299,6 +309,7 @@ test("34c state transitions are whole deterministic prefix items and only select
 
   setKnowledgeCapacity(f.memory, visibleCost + firstCost - 1);
   const unfit = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents }));
+  expect(unfit.text).toBe("");
   expect(unfit.knowledgeCommitIds).toEqual([]);
   expect(unfit.knowledgeStates).toBeUndefined();
 });
@@ -420,6 +431,9 @@ test("34c delivery check keeps graph/source work bounded as candidate count grow
 
 test("guides follow context delivery: custom compact retains them, clear/native compact resets them, changed text returns once", () => {
   const f = fixture();
+  const empty = f.memory.injection(f.target);
+  expect(empty.text).toBe("");
+  expect(empty.guideVersions ?? []).toEqual([]);
   f.create("Context guide delivery rule.", [f.facts[0]!.id]);
   const owner = f.session.host, store = f.memory.store;
   const compact = f.memory.compact(f.session.id, "main", f.turn.id);
@@ -434,13 +448,29 @@ test("guides follow context delivery: custom compact retains them, clear/native 
 
   const cleared = store.appendTurn({ sessionId: f.session.id, parentTurnId: boundary.id, kind: "compaction", startedAt: time });
   const target = { ...f.target, headTurnId: cleared.id };
+  setKnowledgeCapacity(f.memory, 0);
+  const blocked = f.memory.injection(target, at(cleared.id), true);
+  expect(blocked.text).toBe("");
+  expect(blocked.guideVersions ?? []).toEqual([]);
+  expect(blocked.transportItems ?? []).toEqual([]);
+  record(cleared.id, blocked);
+  expect(at(cleared.id).guideVersions).toEqual(new Set());
+  setKnowledgeCapacity(f.memory, 20_000);
   const first = f.memory.injection(target, at(cleared.id));
   expect(first.guideVersions).toEqual(compact.supplied.guideVersions);
+  expect(first.text).toContain(readingGuide(f.session.id, canonicalToolNames));
+  expect(first.text).toContain(KNOWLEDGE_RECENCY_NOTICE);
   record(cleared.id, first);
   expect(f.memory.injection(target, at(cleared.id)).text).toBe("");
 
   const changedNames = { ...canonicalToolNames, read: "read_v2" };
+  const waiting = f.memory.injection(target, at(cleared.id), false, changedNames);
+  expect(waiting.text).toBe("");
+  expect(waiting.guideVersions ?? []).toEqual([]);
+  record(cleared.id, waiting);
+  const added = f.create("New material carries the changed guide.", [f.facts[1]!.id]);
   const changed = f.memory.injection(target, at(cleared.id), false, changedNames);
+  expect(changed.knowledgeCommitIds).toEqual([added.commit]);
   expect(changed.guideVersions).toHaveLength(1); // Only reading text changed, not ordering.
   expect(changed.text).toContain("read_v2");
   record(cleared.id, changed);

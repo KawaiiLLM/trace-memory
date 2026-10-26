@@ -149,7 +149,7 @@ test("64c category display and commit recency retain whole newer items; lines ar
   setKnowledgeCapacity(memory, 5_000);
   memory.config.compaction.temporaryTokens = 0; // with a temporary allowance the misfit would show as a title
   memory.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
-  expect(memory.inject(s.id)).not.toMatch(/<knowledge>|Receipts:/);
+  expect(memory.inject(s.id)).toBe("");
   // A binding cap drops the oldest commits regardless of category; receipts grant no body visibility.
   const guidePrefix = `${readingGuide(s.id, canonicalToolNames)}\n\n`;
   expect(all.startsWith(guidePrefix)).toBe(true);

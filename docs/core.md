@@ -827,8 +827,8 @@ the Knowledge base (20,000 under the default policy), and each temporary pool is
 their stable prefix order, followed by complete candidate bodies in oldest-first revision order. An
 unfit next transition is not skipped for a body; a fitting transition prefix remains publishable. Exact
 fit is accepted; zero or negative remainder and a single unfit item emit no Knowledge or state
-transition, and omission receipts alone never create a message. Missing guides can still be delivered,
-with zero Knowledge/pool charges (178). Archive/supersede/merge/split notices have
+transition, and omission receipts alone never create a message. Missing guides ride the next
+material-bearing injection, never a guide-only message (178). Archive/supersede/merge/split notices have
 stable carrier identities separate from exact body visibility, so persisting a notice never grants a
 replacement body. Fact, Raw, command-generation state and processed/unprocessed status are absent from
 foreground publication. New carriers retain their complete Knowledge-window cost, including notices,
@@ -842,7 +842,9 @@ allowance after packing; repeated domain framing counts, but host JSON and Fact/
 and subtracts versions already delivered on this path. Both hosts record those versions beside
 Knowledge in the same per-node delivery state. Compaction always includes both guides and records
 them at its node; the following prompt does not repeat them. Native compaction and `/clear` reset the
-baseline. Changed text is delivered once again; missing tracking may re-send, never suppress an absent guide.
+baseline. The first material-bearing injection after either reset carries the pending guides.
+Changed text waits for the next such injection and is delivered once again; missing tracking may
+re-send a guide, never suppress one the injection needs. Empty injections record no guide versions.
 N/D materials retain unconditional guides. CC carries guide hashes in optional receipt field `g`,
 bound to the body digest, and transcript import restores authenticated guide deliveries after rollback.
 Old receipts without `g` record no guides. Receipt id lists `i`, `k`, `f`, `e` now use comma-separated

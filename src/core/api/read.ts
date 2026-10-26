@@ -365,13 +365,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const reading = guides.find(guide => guide.purpose === "reading")?.text ?? "";
     const ordering = guides.find(guide => guide.purpose === "ordering")?.text ?? "";
     const notice = id === undefined ? ordering : sessionKnowledgeNotice(id, ordering);
-    const guidesOnly = (): Injection => ({ ...measuredMemory(guide, { receipts: [] }), knowledgeCommitIds: [], guideVersions,
-      knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0,
-      ...(transport ? { transportItems: guides } : {}) });
+    // Guides ride real material; an empty offer must not acknowledge pending guide versions.
+    const noMaterial = (): Injection => ({ text: "", knowledgeCommitIds: [], knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
 
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
     const states = allStates.filter(state => !(visible.knowledgeStates ?? new Set()).has(knowledgeStateKey(state.receipt)));
-    if (!delta.length && !states.length) return guidesOnly();
+    if (!delta.length && !states.length) return noMaterial();
 
     const line = knowledgeLine;
     // Hosts pass the recorded cost of every delivery on the path, including inapplicable bodies.
@@ -392,7 +391,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // or session start, and that includes knowledge the Noter has just written.
     const temporaryLeft = Math.max(0, temporaryCap - (visible.temporaryTokens ?? 0));
     const pointerLeft = Math.max(0, pointerCap - (visible.pointerTokens ?? 0));
-    if (baseLeft <= 0 && temporaryLeft <= 0 && pointerLeft <= 0) return guidesOnly();
+    if (baseLeft <= 0 && temporaryLeft <= 0 && pointerLeft <= 0) return noMaterial();
 
     // State transitions retain priority over optional bodies. Then the shared selector preserves
     // the newest commits and receipts omitted older items, without publishing a receipt alone.
@@ -412,7 +411,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     };
     const stateCount = longest(states.length, count => tokens(buildStates(count, false)) <= baseLeft);
     if (stateCount < states.length) {
-      if (!stateCount) return guidesOnly();
+      if (!stateCount) return noMaterial();
       const material = { knowledge: [], receipts: [], readingGuide: guide };
       const rendered = measuredMemory(buildStates(stateCount), material);
       return { ...rendered, guideVersions, knowledgeTokens: tokens(buildStates(stateCount, false)), knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft, pointerAllowance: pointerLeft, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
@@ -442,7 +441,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (baseUsed > baseLeft && selection.ranked.some(item => item.allowance === "base")) { slackBase += baseUsed - baseLeft; continue; }
       if (bodyUsed > temporaryLeft && selection.ranked.some(item => item.allowance === "temporary")) { slackTemporary += bodyUsed - temporaryLeft; continue; }
       if (pointerUsed > pointerLeft && selection.ranked.some(item => item.allowance === "pointer")) { slackPointer += pointerUsed - pointerLeft; continue; }
-      if (!selection.ranked.length && !selectedStates.length) return guidesOnly();
+      if (!selection.ranked.length && !selectedStates.length) return noMaterial();
       const rendered = measuredMemory(text, material);
       return { ...rendered, guideVersions, knowledgeTokens: baseUsed, temporaryTokens: bodyUsed, pointerTokens: pointerUsed, knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft, pointerAllowance: pointerLeft,
         knowledgeCommitIds: selection.bodyCommits, ...(selection.titleCommits.length ? { knowledgeTitleCommitIds: selection.titleCommits } : {}),

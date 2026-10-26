@@ -67,7 +67,7 @@ test("73: windows with no room even for a bare receipt emit nothing — no title
     Object.assign(memory.config.compaction, { rawTokens: 1, factsTokens: 1, temporaryTokens: 1, pointerTokens: 1 }); // 165
     const result = memory.compact(session.id, "main", turn.id, visible);
     if ("native" in result) throw new Error("native");
-    expect(result.text).not.toMatch(/<knowledge>|<episodic>|Receipts:/);
+    expect(result.text).toBe(`${readingGuide(session.id, canonicalToolNames)}\n\n${KNOWLEDGE_RECENCY_NOTICE}`);
     expect(result.supplied.guideVersions).toHaveLength(2); // Both context guides remain outside empty material windows.
     expect(result.charged).toMatchObject({ knowledge: 0, facts: 0, raw: 0 });
     expect(result.hasMaterialCandidates).toBe(true); // capacity omission is not genuine emptiness

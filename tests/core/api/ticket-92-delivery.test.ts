@@ -99,9 +99,9 @@ test("92 actual retained costs, including obsolete bodies and repeated carriers,
     expect(f.memory.injection(f.target, retained).knowledgeCommitIds).toEqual([next.commit]);
     expect(tag.mock.calls.some(([id]) => id === old.knowledgeId)).toBe(false); // retained text is not rendered again
   } finally { tag.mockRestore(); }
-  expect(f.memory.injection(f.target, { ...retained, knowledgeTokens: retained.knowledgeTokens + 1 })).toMatchObject({ knowledgeCommitIds: [], knowledgeTokens: 0 });
+  expect(f.memory.injection(f.target, { ...retained, knowledgeTokens: retained.knowledgeTokens + 1 })).toMatchObject({ text: "", knowledgeCommitIds: [], knowledgeTokens: 0 });
   // IDs grant membership, not a refund for text which remains in context.
-  expect(f.memory.injection(f.target, { ...retained, knowledgeTokens: 5000 })).toMatchObject({ knowledgeCommitIds: [], knowledgeTokens: 0 });
+  expect(f.memory.injection(f.target, { ...retained, knowledgeTokens: 5000 })).toMatchObject({ text: "", knowledgeCommitIds: [], knowledgeTokens: 0 });
   expect(f.memory.injection(f.target, { ...retained, guideVersions: new Set(offered.guideVersions), knowledgeCommitIds: new Set([old.commit, next.commit]) }).text).toBe("");
 });
 

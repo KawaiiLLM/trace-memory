@@ -2786,7 +2786,7 @@ test("2026-10-24: ordinary deliveries spend each pool independently and compacti
   setKnowledgeBase(f.memory, 0);
   const item = f.create("UNSCORED", 100, null);
   const spent: VisibleView = { ...noVisibility(), knowledgeTokens: 0, temporaryTokens: 10_000, pointerTokens: 10_000 };
-  expect(f.memory.injection(f.target, spent)).toMatchObject({ knowledgeCommitIds: [], knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
+  expect(f.memory.injection(f.target, spent)).toMatchObject({ text: "", knowledgeCommitIds: [], knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
   expect(f.memory.injection(f.target, { ...spent, pointerTokens: 0 }).knowledgeTitleCommitIds).toEqual([item.commit]);
   expect(f.memory.injection(f.target, { ...spent, temporaryTokens: 0 }).knowledgeCommitIds).toEqual([item.commit]);
   const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId, spent);

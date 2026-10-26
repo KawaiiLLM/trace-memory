@@ -522,6 +522,7 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   expect(stale.text).toContain("Inherited knowledge status");
   expect(stale.knowledgeCommitIds).toEqual([current]);
   const unchanged = delivery([current]);
+  expect(unchanged.text).toBe("");
   expect(unchanged.knowledgeCommitIds).toEqual([]);
   files.read(`trace://${tag(1, current)}`);
   await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag(1, current),

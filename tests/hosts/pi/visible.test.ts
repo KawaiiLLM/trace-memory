@@ -53,11 +53,10 @@ test("29a case 3 (injection identity): the injected message carries exactly the 
     expect(carrierOf(entry).supplied).toEqual({ entries: [], factIds: [], knowledgeCommitIds: [commit],
       guideVersions: carrierOf(result.message).supplied.guideVersions, knowledgeTokens: tokens(result.message.content.split("\n\n").slice(1).join("\n\n")) });
     expect(view(h).raw.get(entry.id)).toBeUndefined(); // our own injection is not a source entry
-    // Allocation changes the reading guide's exact session text, not knowledge membership.
+    // Allocation changes guide text, but guides wait for the next material-bearing injection.
     await h.answer(); await h.emit("agent_settled"); await h.drain();
-    const allocated = await h.prompt("second");
-    expect(carrierOf(allocated.message).supplied.knowledgeCommitIds).toEqual([]);
-    expect(carrierOf(allocated.message).supplied.guideVersions).toHaveLength(1);
+    expect(await h.prompt("second")).toBeUndefined();
+    expect(customMessages(h)).toHaveLength(1);
     await h.answer(); await h.emit("agent_settled"); await h.drain();
     expect(await h.prompt("third")).toBeUndefined();
   } finally { await h.dispose(); }
@@ -234,13 +233,12 @@ test("144 title-only injection: carried, recorded once, not re-sent, and a later
     expect([...delivered.knowledgeTitleCommitIds]).toEqual([commit]);
     expect(delivered.pointerTokens).toBe(supplied.pointerTokens);
     await h.answer(); await h.emit("agent_settled"); await h.drain();
-    const allocated = await h.prompt("second");
-    expect(carrierOf(allocated.message).supplied.knowledgeTitleCommitIds ?? []).toEqual([]);
-    expect(carrierOf(allocated.message).supplied.guideVersions).toHaveLength(1); // Changed session text is delivered despite the exhausted base.
+    expect(await h.prompt("second")).toBeUndefined(); // a title is never re-sent for the same version
     await h.answer(); await h.emit("agent_settled"); await h.drain();
     h.memory.setKnowledgeBase(20_000); // base room appears
     const third = await h.prompt("third");
     expect(carrierOf(third.message).supplied.knowledgeCommitIds).toEqual([commit]);
+    expect(carrierOf(third.message).supplied.guideVersions).toHaveLength(1); // The changed reading guide rides the body upgrade.
   } finally { await h.dispose(); }
 });
 

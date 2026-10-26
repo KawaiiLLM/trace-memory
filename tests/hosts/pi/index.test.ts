@@ -271,7 +271,7 @@ test("29d: the knowledge block is offered until the selected context carries it,
   expect(h.entries.some(e => e.data?.injected !== undefined)).toBe(false);
   expect((await h.prompt("again"))?.message).toBeUndefined();
   await h.answer(); await h.emit("agent_settled"); await h.drain();
-  expect((await h.prompt("third"))?.message?.content).not.toContain("<knowledge>"); // Allocating the session changes only the reading guide text.
+  expect((await h.prompt("third"))?.message).toBeUndefined();
   // A worker committing mid-turn changes none of it: no receipt on the next prompt, no queue behind it.
   const release = holdFirstRequest(h);
   await h.prompt("one"); await h.answer(); await h.emit("agent_settled"); await h.drain(); // noting A in flight

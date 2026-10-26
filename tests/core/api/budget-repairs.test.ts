@@ -65,7 +65,7 @@ test("review 2026-09-08: the oldest Noting entry dispatches despite exceeding it
   } finally { f.m.close(); }
 });
 
-test("34c/178: an unfit Knowledge item emits no Knowledge or receipt-only block, but still delivers missing guides", () => {
+test("34c: a knowledge cap that cannot hold a complete foreground item emits nothing", () => {
   const f = seeded();
   try {
     setKnowledgeCapacity(f.m, 5_000);
@@ -75,8 +75,8 @@ test("34c/178: an unfit Knowledge item emits no Knowledge or receipt-only block,
     expect(f.knowledge("A complete rule " + "word ".repeat(6_000))).toContain("committed");
     const offered = f.m.injection(f.s.id);
     expect(offered).toMatchObject({ knowledgeCommitIds: [], knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
-    expect(offered.text).not.toMatch(/<knowledge>|Receipts:/);
-    expect(offered.guideVersions).toHaveLength(2);
+    expect(offered.text).toBe("");
+    expect(offered.guideVersions ?? []).toEqual([]);
   } finally { f.m.close(); }
 });
 
@@ -133,7 +133,7 @@ test("review 2026-09-08: the Receipts heading is charged to the budgets it is em
     f.note("Evidence");
     expect(f.knowledge("word ".repeat(6_000))).toContain("committed");
     // 34c foreground publication emits no omission-only block when no complete item fits.
-    expect(f.m.inject(f.s.id)).not.toMatch(/<knowledge>|Receipts:/);
+    expect(f.m.inject(f.s.id)).toBe("");
   } finally { f.m.close(); }
   // At the default caps, no padding of the current material leaves the rendered text over the
   // episodic budget with `over.episodic` still zero.
