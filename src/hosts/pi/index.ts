@@ -13,6 +13,7 @@ import { runWorker, type WorkerModel } from "./worker.ts";
 import { memoryReadTool } from "./memory-files.ts";
 import { workspaceFileTools } from "./workspace-files.ts";
 import { TraceMemory, fullCheckDryRun, memoryFiles, memoryPath, MEMORY_READ_ONLY, type MemoryGrepMode, deliveredView, directoryAllocation, enrollmentDefault, knowledgeStateKey, sourceDigest, isThinkingOnly, tokens, validateConfig, validateSearchInput, formatCost, toolDefinitions, renderToolDefinitions, canonicalToolNames, defaultWorkspaceRoot, sweepStaleWorkspaces, retrievalPolicy, toolRejected, type NotingAgentInput, type NotingResult, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleView, type TruncationReceipt, type RunningTask } from "../../core/api/index.ts";
+import type { SourceInput } from "../../core/api/index.ts";
 import { visibleView, extendVisibleView, type ContextEntry, type VisibleBinding } from "./visible.ts";
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
@@ -583,7 +584,7 @@ export default function (pi: ExtensionAPI) {
       // goes on, still deciding `offer` by the persisted role as before; only that entry pays a full read.
       const known = memory.store.findKnownSourceEntry(state.sessionId, lineage, entry.id);
       if (known) {
-        let role = message.role;
+        let role: SourceInput["role"] = message.role;
         if (known.digest !== sourceDigest(JSON.stringify(message))) {
           missing(`entry ${entry.id} changed after persistence`);
           role = memory.store.getSourceEntry(known.id)!.role;

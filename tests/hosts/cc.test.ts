@@ -3,9 +3,9 @@ import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { TraceMemory } from "../../src/core/api/index.ts";
-import { hydrate } from "../source-fixture.ts";
-import { Store } from "../../src/core/store/index.ts";
+import { TraceMemory, memoryFiles } from "../../src/core/api/index.ts";
+import { compacted, hydrate } from "../source-fixture.ts";
+import { Store, sourceAddresses } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { piSourceBlocks } from "../../src/hosts/pi/source.ts";
 import { recordSessionStart, readBinding } from "../../src/hosts/cc/binding.ts";
@@ -15,6 +15,8 @@ import { ccResultText, ccSourceBlocks, classifySourceRecord, readCompleteTranscr
 import { copyThenTypedRecords, copyTypedPrompt, modelThenTypedRecords, modelTypedPrompt, toSpecPrompt, toSpecRecords }
   from "../fixtures/cc-ticket-52.ts";
 
+import { fact } from "../support/seed.ts";
+import { migrateCcSession, migrationBinding } from "../../scripts/migrate-cc-queued-messages.ts";
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const at = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, "0")}.000Z`;
@@ -99,11 +101,6 @@ test("source classification uses native provenance rather than user-controlled p
     expect(classifySourceRecord(typed)).toMatchObject({ kind: "user", text: payload });
     expect(classifySourceRecord(sdk)).toMatchObject({ kind: "user", text: payload });
     expect(classifySourceRecord(generated)).toBeNull();
-  }
-  for (const [index, promptSource] of ["typed", "queued", "sdk", "system"].entries()) {
-    const nativePrompt = { uuid: `prompt-${promptSource}`, parentUuid: null, type: "user", timestamp: at(index + 1), isMeta: true,
-      promptSource, message: { role: "user", content: `native ${promptSource} prompt` } };
-    expect(classifySourceRecord(nativePrompt)).toMatchObject({ kind: "user", text: `native ${promptSource} prompt` });
   }
   const typed = { uuid: "typed", parentUuid: null, type: "user", timestamp: at(1), promptId: "typed-prompt",
     promptSource: "typed", userType: "external", origin: { kind: "human" }, message: { role: "user", content: "evidence" } };
@@ -636,4 +633,161 @@ test("disabled provisional sessions do not allocate and mixed-host legacy Raw st
       WHERE e.native_id = 'pi-entry'`).get()!.blocks)))
     .toEqual([{ kind: "text", text: "foreign" }]); db.close();
   expect(readBinding(f.config, f.nativeSessionId)!.enrollment).toEqual({ defaultEnabled: false, choice: null });
+});
+
+test("queued prompts keep their tree position and origin role without opening a Turn", async () => {
+  const f = fixture();
+  const queued = (uuid: string, parentUuid: string, kind: string, prompt: unknown) => ({
+    uuid, parentUuid, type: "attachment", timestamp: at(4),
+    attachment: { type: "queued_command", origin: { kind }, prompt },
+  });
+  const human = queued("queued-human", "r1", "human", [{ type: "text", text: "midturn human" }, { type: "image" }]);
+  const peer = queued("queued-peer", "queued-human", "peer", "Another Claude session sent a message: peer evidence");
+  const task = queued("queued-task", "queued-peer", "task-notification", "<task-notification>task evidence</task-notification>");
+  const reply = { uuid: "next-assistant", parentUuid: "queued-task", type: "assistant", timestamp: at(5),
+    message: { role: "assistant", content: [{ type: "text", text: "continued" }] } };
+  const between = { uuid: "between-peer", parentUuid: "next-assistant", type: "user", timestamp: at(6),
+    promptSource: "system", origin: { kind: "peer" }, message: { role: "user", content: "between-turn peer" } };
+  const imported = await importerForRecords([...f.records.slice(0, 3), human, peer, task, reply, between], "queued-origins");
+  try {
+    const result = await imported.importer.reconcile(), memory = imported.importer.memory, store = memory.store;
+    expect(result).toMatchObject({ state: "ready", problems: [] });
+    const entries = store.hydrateSourceEntries(result.selectedEntryIds);
+    expect(entries.map(e => [e.nativeId, e.role, e.turnId])).toEqual([
+      ["u1", "user", 1], ["a1", "assistant", 1], ["r1", "toolResult", 1],
+      ["queued-human", "user", 1], ["queued-peer", "observation", 1], ["queued-task", "observation", 1],
+      ["next-assistant", "assistant", 1], ["between-peer", "observation", 2],
+    ]);
+    expect(store.listTurns(result.coreSessionId!).map(t => [t.id, t.parentTurnId])).toEqual([[1, null], [2, 1]]);
+    expect(memory.trace("T1#E4@user", { full: true })).toContain("[T1#E4@user] user: midturn human\n[T1#E4@user] user: [image omitted]");
+    expect(memory.trace("T1#E5@observation", { full: true })).toContain("[T1#E5@observation] peer: Another Claude session sent a message: peer evidence");
+    expect(memory.trace("T1#E6@observation", { full: true })).toContain("[T1#E6@observation] task-notification: <task-notification>task evidence</task-notification>");
+    expect(() => memory.trace("T1#E5@user", { full: true })).toThrow("entry role does not match");
+    expect(memory.trace("T1@user", { full: true })).not.toContain("peer evidence");
+    expect(memory.trace("T1@assistant", { full: true })).not.toContain("peer evidence");
+    expect(memory.search("midturn human", "raw")).toContain("T1#E4@user");
+    expect(memory.search("peer evidence", "raw")).toContain("T1#E5@observation");
+    expect(memory.notingBatch({ sessionId: result.coreSessionId!, branch: result.branch, headTurnId: result.headTurnId! })
+      .map(e => e.nativeId)).toContain("queued-human");
+    const marked = store.commitNotingRun({ run: { kind: "manual", sessionId: result.coreSessionId!, branch: result.branch, createdAt: at(9) },
+      facts: [], entryIds: result.selectedEntryIds });
+    expect(marked.ok).toBe(true);
+    memory.config.compaction.rawTokens = 1;
+    const compact = compacted(memory.compact(result.coreSessionId!, result.branch, result.headTurnId!));
+    expect(compact).toContain("midturn human");
+    expect(compact).not.toContain("peer evidence");
+    expect(compact).not.toContain("task evidence");
+    expect(compact).not.toContain("between-turn peer");
+    const ordinals = entries.map(e => [e.id, e.turnId, e.entryOrdinal]);
+    expect((await imported.importer.reconcile()).appendedEntryIds).toEqual([]);
+    expect(store.hydrateSourceEntries(result.selectedEntryIds).map(e => [e.id, e.turnId, e.entryOrdinal])).toEqual(ordinals);
+  } finally { imported.importer.close(); }
+});
+
+test("CC deployment backfills processed entries without moving addresses, and leaves later absorbed input pending", async () => {
+  const f = fixture();
+  const queued = (uuid: string, parentUuid: string, kind: string) => ({ uuid, parentUuid, type: "attachment", timestamp: at(4),
+    attachment: { type: "queued_command", origin: { kind }, prompt: `absorbed ${kind}` } });
+  const attachments = [queued("old-human", "r1", "human"), queued("old-peer", "old-human", "peer"),
+    queued("old-task", "old-peer", "task-notification")];
+  const reply = { uuid: "reply", parentUuid: "old-task", type: "assistant", timestamp: at(5),
+    message: { role: "assistant", content: [{ type: "text", text: "continued" }] } };
+  const peer = { uuid: "peer-prompt", parentUuid: "reply", type: "user", timestamp: at(6),
+    promptSource: "system", origin: { kind: "peer" }, message: { role: "user", content: "peer report" } };
+  const records = [...f.records.slice(0, 3), ...attachments, reply, peer];
+  // Before 176 these attachments were ignored. Historical stored prompts had role=user even with a peer origin.
+  const imported = await importerForRecords(records.map(r => r.type === "attachment"
+    ? { ...r, attachment: { ...(r as typeof attachments[number]).attachment, type: "hook_context" } } : r), "queued-deployment");
+  let restarted: CcImporter | undefined;
+  try {
+    const initial = await imported.importer.reconcile(), memory = imported.importer.memory, store = memory.store;
+    const oldPeer = store.findSourceEntry(initial.coreSessionId!, imported.nativeSessionId, "peer-prompt")!;
+    const { id, entryOrdinal, blocks, label: _label, ...content } = oldPeer;
+    const oldInput = { ...content, role: "user" as const };
+    store.db.prepare("UPDATE source_entry_raw SET content=? WHERE entry_id=?").run(JSON.stringify(oldInput), id);
+    store.db.prepare("UPDATE source_entries SET addresses=? WHERE id=?")
+      .run(JSON.stringify(sourceAddresses({ ...oldInput, id, entryOrdinal, blocks })), id);
+    const path = { sessionId: initial.coreSessionId!, branch: initial.branch, headTurnId: initial.headTurnId! };
+    const savedFact = fact(memory, path, "Peer report", [{ entry: store.getSourceEntry(id)!, text: "peer report" }]);
+    store.db.prepare("UPDATE facts SET source=? WHERE id=?")
+      .run(JSON.stringify([`T${oldPeer.turnId}#E${entryOrdinal}@user`]), savedFact.id);
+    expect(store.getFact(savedFact.id)!.source).toEqual([`T${oldPeer.turnId}#E${entryOrdinal}@user`]);
+    const before = store.listSourceEntries(initial.coreSessionId!).map(e => [e.id, e.turnId, e.entryOrdinal, e.nativeId]);
+    const version = store.sourcePathState(path.sessionId, path.branch)!.version;
+    writeFileSync(imported.transcriptPath, [...records, queued("broken", "missing-parent", "human")].map(line).join(""));
+    await expect(migrateCcSession(memory, imported.importer.currentBinding())).rejects.toThrow("missing");
+    expect(store.listSourceEntries(path.sessionId).map(e => [e.id, e.turnId, e.entryOrdinal, e.nativeId])).toEqual(before);
+    expect(store.getSourceEntry(id)!.role).toBe("user");
+    expect(store.getFact(savedFact.id)!.source).toEqual(["T2#E1@user"]);
+    writeFileSync(imported.transcriptPath, records.map(line).join(""));
+    const projects = join(imported.dir, "projects"), project = join(projects, "project");
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, `${imported.nativeSessionId}.jsonl`), records.map(line).join(""));
+    const recovered = migrationBinding(memory, path.sessionId, imported.nativeSessionId, imported.config.dbPath, projects)!;
+    expect(await migrateCcSession(memory, recovered, false)).toMatchObject({ marked: 3, reroled: 1 });
+    expect(store.listSourceEntries(path.sessionId).map(e => [e.id, e.turnId, e.entryOrdinal, e.nativeId])).toEqual(before);
+    expect(store.getSourceEntry(id)!.role).toBe("user");
+    expect(store.getFact(savedFact.id)!.source).toEqual(["T2#E1@user"]);
+    store.setEnrollment(path.sessionId, false);
+    const report = await migrateCcSession(memory, imported.importer.currentBinding());
+    expect(report).toMatchObject({ state: "migrated", reroled: 1, inserted: { human: 1, peer: 1, "task-notification": 1 },
+      factsRewritten: 1, factRolesRewritten: 1, marked: 3, existingAddressesChanged: 0 });
+    expect(store.enabled(path.sessionId)).toBe(false);
+    store.setEnrollment(path.sessionId, true);
+    const backfilled = store.hydrateSourceEntries(store.selectedSourceEntryIds(path.sessionId, path.branch)!);
+    expect(backfilled.map(e => [e.nativeId, e.turnId, e.entryOrdinal])).toEqual([
+      ["u1", 1, 1], ["a1", 1, 2], ["r1", 1, 3], ["old-human", 1, 5], ["old-peer", 1, 6],
+      ["old-task", 1, 7], ["reply", 1, 4], ["peer-prompt", 2, 1],
+    ]);
+    const raw = memoryFiles(memory, path).read(`trace://raw/S${path.sessionId}/T1`).content;
+    expect([...new Set([...raw.matchAll(/\[T1#E(\d+)(?:@[^\]]+)?\]/gu)].map(match => Number(match[1])))])
+      .toEqual([1, 2, 3, 5, 6, 7, 4]);
+    expect(store.sourcePathState(path.sessionId, path.branch)!.version).toBeGreaterThan(version);
+    expect(store.getFact(savedFact.id)).toMatchObject({ source: ["T2#E1@observation"], roles: [{ role: "observation" }], text: "peer report" });
+    expect(memory.notingBatch(path).map(e => e.nativeId)).toEqual(["u1", "a1", "r1", "reply", "peer-prompt"]);
+    const second = await migrateCcSession(memory, imported.importer.currentBinding());
+    expect(second).toMatchObject({ reroled: 0, inserted: {}, marked: 0, factsRewritten: 0 });
+    expect(store.listSourceEntries(path.sessionId).filter(e => before.some(([id]) => id === e.id))
+      .map(e => [e.id, e.turnId, e.entryOrdinal, e.nativeId])).toEqual(before);
+    restarted = new CcImporter(imported.config, readBinding(imported.config, imported.nativeSessionId)!);
+    expect(await restarted.reconcile()).toMatchObject({ state: "ready", problems: [], appendedEntryIds: [] });
+    appendFileSync(imported.transcriptPath, line(queued("live-human", "peer-prompt", "human")));
+    const live = await restarted.reconcile();
+    expect(live).toMatchObject({ state: "ready", problems: [] });
+    expect(restarted.memory.notingBatch({ ...path, branch: live.branch, headTurnId: live.headTurnId! })
+      .map(e => e.nativeId)).toContain("live-human");
+    expect(restarted.memory.notingBatch({ ...path, branch: live.branch, headTurnId: live.headTurnId! })
+      .map(e => e.nativeId)).not.toContain("old-human");
+  } finally { restarted?.close(); imported.importer.close(); }
+});
+
+test("CC prompt origins override promptSource while legacy sdk input remains human and meta input never is", async () => {
+  const cases = [
+    { kind: "human", promptSource: "system", role: "user" },
+    { kind: "peer", promptSource: "typed", role: "observation" },
+    { kind: "task-notification", promptSource: "system", role: "observation" },
+    { kind: "auto-continuation", promptSource: "system", role: "observation" },
+    { kind: undefined, promptSource: "sdk", role: "user" },
+    { kind: undefined, promptSource: "queued", role: "user" },
+    { kind: undefined, promptSource: "system", role: "observation" },
+    { kind: undefined, promptSource: "typed", isMeta: true, role: "observation" },
+    { kind: "human", promptSource: "typed", isMeta: true, role: "observation" },
+  ];
+  const records: CcNativeRecord[] = [
+    { uuid: "root", parentUuid: null, type: "user", timestamp: at(1), ...sdkPrompt("root"),
+      message: { role: "user", content: "root" } },
+    { uuid: "reply", parentUuid: "root", type: "assistant", timestamp: at(2),
+      message: { role: "assistant", content: [{ type: "text", text: "reply" }] } },
+    ...cases.map((item, i) => ({ uuid: `prompt-${i}`, parentUuid: i ? `prompt-${i - 1}` : "reply", type: "user",
+      timestamp: at(i + 3), promptSource: item.promptSource, isMeta: item.isMeta,
+      ...(item.kind ? { origin: { kind: item.kind } } : {}), message: { role: "user", content: `native prompt ${i}` } })),
+  ];
+  const f = await importerForRecords(records, "origin-precedence");
+  try {
+    const result = await f.importer.reconcile(), store = f.importer.memory.store;
+    expect(result).toMatchObject({ state: "ready", problems: [] });
+    expect(store.hydrateSourceEntries(result.selectedEntryIds).slice(2).map(e => [e.role, e.label, e.turnId]))
+      .toEqual(cases.map((item, i) => [item.role, item.kind && item.kind !== "human" ? item.kind : undefined, i + 2]));
+    expect(store.listTurns(result.coreSessionId!).map(t => t.parentTurnId)).toEqual([null, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  } finally { f.importer.close(); }
 });

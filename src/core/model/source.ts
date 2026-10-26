@@ -38,7 +38,7 @@ export function preciseSources(entry: SourceEntry): string[] {
 }
 /** Narrow read adapter: historic role/tool-ordinal citations retain their original meaning. */
 export const legacySources = (entry: Pick<SourceEntry, "turnId" | "role" | "text" | "calls">): string[] => [
-  ...(entry.text ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
+  ...(entry.text && entry.role !== "observation" ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
   ...entry.calls.map(call => `T${entry.turnId}#t${call.ordinal}`),
 ];
 /** Preserve historical thinking membership for applicability/coverage, independently of new writes. */

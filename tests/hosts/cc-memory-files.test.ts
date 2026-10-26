@@ -185,7 +185,7 @@ test("cc.cjs fs reads for the bound native session and leaves the database uncha
   expect(digest()).toBe(before);
 });
 
-test("133: foreground and worker trace://compact reads use native human origins, not just text prefixes", async () => {
+test("foreground and worker compact reads use native origin roles and preserve legacy SDK user input", async () => {
   const dir = mkdtempSync(join(tmpdir(), "tm133-cc-human-read-")); dirs.push(dir);
   const config = resolveCcHostConfig({ dbPath: join(dir, "memory.sqlite"), stateDir: join(dir, "state"), baseline: "2025-01-01T00:00:00.000Z" });
   const native = "human-reader", transcriptPath = join(dir, "native.jsonl");
@@ -221,7 +221,7 @@ test("133: foreground and worker trace://compact reads use native human origins,
   for (const text of [foreground, worker]) {
     expect(text).toContain("Earlier user messages:");
     expect(text).toContain(human);
-    expect(text).not.toContain(sdk);
+    expect(text).toContain(sdk); // 176: origin-less, non-meta SDK prompts retain the user role.
     expect(text).toContain(queued);
     expect(text).toContain(originHuman);
     expect(text).not.toContain(meta);
