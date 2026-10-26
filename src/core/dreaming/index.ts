@@ -34,7 +34,7 @@ export type DreamingResult = { dormant?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
   | { outcome: "success" | "failure" | "cancelled"; runId: number; problems: string[];
-      failure?: { task: DreamingStage; class: string; groups: { group: number; task: DreamingStage; class: string }[]; noProgress?: true } });
+      failure?: { task: DreamingStage; class: string; groups: { group: number; task: DreamingStage; class: string }[] } });
 export interface DreamingAgentInput extends AgentControl {
   kind: "dreaming"; task: DreamingTask; sessionId: number; branch: string; model: string; thinking?: string; mode: "subagent";
   prompt: string; promptHash: string; text: string;
@@ -371,6 +371,6 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   // A run that published but left its candidates as unscored as it found them (a refused publication drops their scores) is a failure that
   // counts in the streak; otherwise the unscored size trigger would start the same run again as a "success", without end.
   if (stalled) return { outcome: "failure", runId: lastRunId, problems: [`no frozen candidate was scored: ${unscoredBefore} unscored tokens before the run, ${unscoredAfter} after`],
-    failure: { task: "curate", class: "no progress", groups: [], noProgress: true } };
+    failure: { task: "curate", class: "no progress", groups: [] } };
   return { outcome: "success", runId: lastRunId, problems: [] };
 }

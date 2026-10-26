@@ -136,8 +136,7 @@ export function linkExecutionRun(store: Store, runId: number, input: RunInput): 
 export const FAILURE_LIMIT = 3;
 
 /** The stage at which an execution failed. */
-/** `noProgress`: the Dreamer's run published (wrote `finished`) but left its frozen candidates as unscored as it found them; unlike a failure after `finished`, it counts (181). */
-export interface TaskFailure { task: string; noProgress?: boolean }
+export interface TaskFailure { task: string }
 
 /** Caller owns the terminal decision.
  * Dreamer calls it alongside completeDreaming in the final-check transaction, not at a write. */
@@ -164,8 +163,11 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
     if (outcome === "cancelled") return {};
     // 144 stage 5 §3.2: a Dreamer run whose final commit wrote `finished` is complete. A failure after it is recorded above and
     // nothing more: no hand-off is recreated and the retry counter stays as the commit reset it (Q14: not counted).
-    if (outcome === "failure" && row.phase === "dreaming" && !failure?.noProgress && store.db.prepare(`SELECT 1 FROM execution_runs er JOIN run_bodies b ON b.run_id = er.run_id
-      WHERE er.execution_id = ? AND json_extract(b.response, '$.finished') IS NOT NULL`).get(id)) {
+    // 181: unless that commit recorded no progress; then the failure counts, whichever error path reported it, and leaves no hand-off.
+    const finished = outcome === "failure" && row.phase === "dreaming" ? store.db.prepare(`SELECT json_extract(b.response, '$.finished.noProgress') AS stalled
+      FROM execution_runs er JOIN run_bodies b ON b.run_id = er.run_id WHERE er.execution_id = ? AND json_extract(b.response, '$.finished') IS NOT NULL`)
+      .get(id) as { stalled: number | null } | undefined : undefined;
+    if (finished && !finished.stalled) {
       store.db.prepare("UPDATE task_executions SET reason = ? WHERE id = ?").run(`${reason}, run already finished`, id);
       return {};
     }
@@ -177,8 +179,8 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
     if (!counted.changes) store.db.prepare(`INSERT INTO task_failures(session_id,phase,head,pool,count,last_reason,last_run_id,updated_at)
       VALUES (?,?,?,?,?,?,?,?)`).run(...key, outcome === "success" ? 0 : 1, reason, runId, now);
     // A no-progress run is complete: there is nothing to resume, and the triggers fire again while the candidates stay unscored.
-    if (row.phase === "dreaming" && outcome === "failure" && !failure?.noProgress) keepDreamerRetry(store, Number(row.session_id), runId, failure);
-    // 183 (maintainer, 2026-10-26; 146's streak): the third consecutive failure of either task makes the session dormant, not off. The counters
+    if (row.phase === "dreaming" && outcome === "failure" && !finished) keepDreamerRetry(store, Number(row.session_id), runId, failure);
+    // 183 (user, 2026-10-26; 146's streak): the third consecutive failure of either task makes the session dormant, not off. The counters
     // are the state (`Store.dormant`); only the claims are expired here, so a run in flight loses its token as it did on the old switch-off.
     const count = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${task}`).get(...key)!.count);
     if (count !== FAILURE_LIMIT || !store.enabled(Number(row.session_id))) return {};

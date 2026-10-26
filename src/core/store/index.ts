@@ -4042,10 +4042,11 @@ export class Store {
       else {
         this.db.prepare("DELETE FROM task_handoffs WHERE session_id = ? AND phase = 'dreaming'").run(sessionId);
         // 146 Q16: only a finished run resets the failure streak, as the Noter's does at its success; a kept batch or an applied group does not, nor does a run that scored none of its candidates (181).
-        if (input.finish?.progressed?.() !== false) this.db.prepare("UPDATE task_failures SET count = 0 WHERE session_id = ? AND phase = 'dreaming' AND pool = ?").run(sessionId, ALL_POOLS);
+        const progressed = input.finish?.progressed?.() !== false;
+        if (progressed) this.db.prepare("UPDATE task_failures SET count = 0 WHERE session_id = ? AND phase = 'dreaming' AND pool = ?").run(sessionId, ALL_POOLS);
         if (input.finish) {
           const body = JSON.parse(String(this.db.prepare("SELECT response FROM run_bodies WHERE run_id = ?").get(done.runId)?.response ?? "{}"));
-          this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify({ ...body, finished: input.finish }), done.runId);
+          this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify({ ...body, finished: { boundary: input.finish.boundary, ...(progressed ? {} : { noProgress: true }) } }), done.runId);
         }
       }
       return done;
