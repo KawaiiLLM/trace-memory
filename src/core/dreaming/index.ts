@@ -34,7 +34,7 @@ export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
   | { outcome: "success" | "failure" | "cancelled"; runId: number; problems: string[];
-      failure?: { task: DreamingStage; class: string; groups: { group: number; task: DreamingStage; class: string }[] } });
+      failure?: { task: DreamingStage; class: string; groups: { group: number; task: DreamingStage; class: string }[]; noProgress?: true } });
 export interface DreamingAgentInput extends AgentControl {
   kind: "dreaming"; task: DreamingTask; sessionId: number; branch: string; model: string; thinking?: string; mode: "subagent";
   prompt: string; promptHash: string; text: string;
@@ -106,6 +106,11 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
   options: DreamingRunOptions): Promise<DreamingResult> {
   const { sessionId, branch, path, groups } = frozen, roots = allowedRoots(store, sessionId), limits = config.dreaming;
   const root = options.workspaceRoot ?? defaultWorkspaceRoot();
+  // 181: the run answers for its frozen candidates only (items the Noter adds meanwhile are not its scope); the size is the trigger's measure.
+  const frozenCandidates = new Set(frozen.candidates), unscoredBefore = store.unscoredTokens(path, Infinity, undefined, frozenCandidates);
+  let unscoredAfter = 0, stalled = false;
+  /** Asked inside the finishing commit, after the last scores are written: a stalled run does not reset the failure streak. */
+  const progressed = () => !(stalled = unscoredBefore > 0 && (unscoredAfter = store.unscoredTokens(path, Infinity, undefined, frozenCandidates)) >= unscoredBefore);
   let lastRunId = 0;
   const context = { kind: "dreaming" as const, sessionId, branch, headTurnId: path.headTurnId, range: { from: `S${sessionId}`, to: `S${sessionId}` } };
   const detail = (): HandoffDetail => ({ fullCheck: frozen.fullCheck, clusteringItems: frozen.clusteringItems.map(item => item.value.knowledge.id),
@@ -267,7 +272,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
     const origins = Object.fromEntries(group.items.map(item => {
       const id = item.value.knowledge.id, mark = group.clusters?.find(cluster => cluster.items.includes(id))?.marks?.[id];
       const own = [...(item.value.revision.id !== frozen.baselineVersions[id] ? ["changed"] : []), ...(item.value.staleReasons?.length ? ["stale"] : []),
-        ...(item.score === null ? ["unscored"] : []), ...(mark ? [`mark:${mark.level}`] : [])];
+        ...(item.score === null ? ["unscored"] : []), ...(mark ? [mark.level ? `mark:${mark.level}` : "mark"] : [])]; // a hand-off from before 181 carries marks without a level
       return [`K${id}`, own.length ? own : frozen.candidates.includes(id) ? ["full check"] : ["partner"]];
     }));
     const run: RunInput = { ...out.run!,
@@ -334,7 +339,7 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         },
         cover: ({ results }) => [...group.items.filter(item => completed.has(item.value.knowledge.id)).map(item => ({ id: item.value.revision.id, pool: item.pool })), ...results.flatMap(result => result.ok ? result.committed.map(item => ({ id: item.commit })) : [])],
         handoff: ({ runId }) => { group.run = runId; return last ? null : { nextTask: "curate", detail: detail() }; },
-        ...(last ? { finish: { boundary: frozen.boundary } } : {}) });
+        ...(last ? { finish: { boundary: frozen.boundary, progressed } } : {}) });
       lastRunId = done.runId;
       workspace.remove();
       return { ...out, runId: done.runId };
@@ -363,5 +368,9 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
         groups: failures.map(failed => ({ group: failed.group, task: failed.out.task, class: failed.out.class })) } };
   }
   if (!groups.length) lastRunId = store.commitTaskPass({ run: template("curate"), path, handoff: () => null, finish: { boundary: frozen.boundary } }).runId;
+  // A run that published but left its candidates as unscored as it found them (a refused publication drops their scores) is a failure that
+  // counts in the streak; otherwise the unscored size trigger would start the same run again as a "success", without end.
+  if (stalled) return { outcome: "failure", runId: lastRunId, problems: [`no frozen candidate was scored: ${unscoredBefore} unscored tokens before the run, ${unscoredAfter} after`],
+    failure: { task: "curate", class: "no progress", groups: [], noProgress: true } };
   return { outcome: "success", runId: lastRunId, problems: [] };
 }

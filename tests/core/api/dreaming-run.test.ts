@@ -150,6 +150,32 @@ test("incremental groups freeze marks and references, share background, and resu
   expect(f.store.getKnowledge(ids[2]!)!.score).toBe(60); // A title-only reference is not this group's target (169).
 });
 
+test("a hand-off written before 181 resumes with its level-less marks recorded as a plain mark, not as a level", async () => {
+  const f = dreamerFixture(memories);
+  f.memory.config.dreaming.groupItems = 3;
+  f.memory.config.dreaming.parallelGroups = 1;
+  const items = Array.from({ length: 5 }, (_, i) => f.item(`Supported body ${i + 1}`, { title: `Rule ${i + 1}` }));
+  scoreAll(f.store, 60);
+  const boundary = boundaryOf(f.store, projectItems(f.store, f.path));
+  f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: "main", createdAt: "now", outcome: "success", response: JSON.stringify({ finished: { boundary } }) });
+  for (const item of items.slice(0, 4)) f.store.setKnowledgeStale(item.commit, { reason: "unresolved_check", detail: "Review this ruling" });
+  const ids = items.map(item => item.knowledgeId);
+  // Group 1 holds the first three candidates; the fourth and the marked fifth form group 2, which fails and stays in the hand-off.
+  f.dreamer.script.clustering = `# Group 1\n## Cluster First\n- K${ids[0]}\n- K${ids[1]}\n- K${ids[2]}\n# Group 2\n## Cluster Second\n- K${ids[3]}\n- K${ids[4]} ! duplicate high K${ids[3]}: Same rule\n`;
+  f.dreamer.script.curate = { group2: "## bogus\n" };
+  expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "failure" });
+  const saved = f.store.handoff(f.session.id, "dreaming")!.detail!;
+  expect(saved.groups![1]!.items).toEqual([ids[3], ids[4]]);
+  for (const mark of Object.values(saved.groups![1]!.clusters![0]!.marks!)) { delete (mark as Partial<typeof mark>).level; delete (mark as Partial<typeof mark>).partners; } // the old `! duplicate: reason`
+  f.store.db.prepare("UPDATE task_handoffs SET detail=? WHERE session_id=? AND phase='dreaming'").run(JSON.stringify(saved), f.session.id);
+  f.dreamer.script.curate = {};
+  f.dreamer.script.clustering = "invalid if called again";
+  expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "success" });
+  const origins = f.store.db.prepare("SELECT b.response FROM runs r JOIN run_bodies b ON b.run_id = r.id WHERE r.kind = 'dreaming'").all()
+    .map(row => JSON.parse(String(row.response))).filter(record => record.task === "group" && record.group === 2).map(record => record.origins);
+  expect(origins).toEqual([{ [`K${ids[3]}`]: ["stale"], [`K${ids[4]}`]: ["mark"] }]);
+});
+
 test("curate refuses a reference item as a decision, mutation target or absorbed merge parent", () => {
   const f = dreamerFixture(memories), candidate = f.item("Candidate body"), reference = f.item("Reference body");
   const items = projectItems(f.store, f.path), selected = items.filter(item => item.value.knowledge.id === candidate.knowledgeId);

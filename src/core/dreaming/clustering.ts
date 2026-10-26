@@ -58,8 +58,9 @@ export function checkGroups(text: string, items: readonly CurateItem[], size = 5
 /** 181: groups come from the candidates alone (at most `size` per group; more are split by clustering group, parts merged in order
  * while they fit); marks never create or split a group. Each group's spare capacity is then filled with marked non-candidates,
  * level high to low, and within a level the same small cluster as one of the group's candidates, then the same clustering group,
- * then elsewhere (ties keep clustering order). A marked item joins with its partners that are in no group yet, as one unit; a unit
- * that does not fit is skipped, a later smaller one may still fill. Items that fit nowhere are dropped for this run. */
+ * then elsewhere (ties keep clustering order). A marked item joins with its partners that are in no group yet, and with theirs in turn
+ * (the closure over the partner lists of every marked item it pulls in), as one unit; a unit that does not fit is skipped, a later
+ * smaller one may still fill. Items that fit nowhere are dropped for this run. */
 export function candidateGroups(clustering: readonly ClusteredGroup[], candidates: ReadonlySet<number>, size = 50): ClusteredGroup[] {
   const groups: Set<number>[] = [], placed = new Set<number>();
   for (const group of clustering) {
@@ -72,14 +73,18 @@ export function candidateGroups(clustering: readonly ClusteredGroup[], candidate
   const clusters = clustering.flatMap(group => group.clusters), order = new Map<number, number>(), clusterOf = new Map<number, Cluster>(), bigOf = new Map<number, ClusteredGroup>();
   for (const big of clustering) for (const cluster of big.clusters) for (const id of cluster.items) { order.set(id, order.size); clusterOf.set(id, cluster); bigOf.set(id, big); }
   const marked = clusters.flatMap(cluster => cluster.items.filter(id => cluster.marks?.[id] && !candidates.has(id)).map(id => ({ id, mark: cluster.marks![id]! })));
+  const markOf = new Map(marked.map(({ id, mark }) => [id, mark]));
   for (const members of groups) {
     const near = new Set([...members].map(id => clusterOf.get(id))), wide = new Set([...members].map(id => bigOf.get(id)));
     const locality = (id: number) => near.has(clusterOf.get(id)) ? 0 : wide.has(bigOf.get(id)) ? 1 : 2;
     const ranked = [...marked].sort((a, b) => SUSPICION_LEVELS.indexOf(a.mark.level) - SUSPICION_LEVELS.indexOf(b.mark.level)
       || locality(a.id) - locality(b.id) || order.get(a.id)! - order.get(b.id)!);
-    for (const { id, mark } of ranked) {
+    for (const { id } of ranked) {
       if (placed.has(id)) continue;
-      const unit = new Set([id, ...mark.partners.filter(partner => !placed.has(partner))]);
+      // The unit is the closure over the partner lists of every marked item it pulls in: each pulled-in item brings its own partners.
+      const unit = new Set<number>(), pending = [id];
+      for (let next = pending.pop(); next !== undefined; next = pending.pop())
+        if (!unit.has(next) && !placed.has(next)) { unit.add(next); pending.push(...markOf.get(next)?.partners ?? []); }
       if (members.size + unit.size > size) continue;
       for (const joined of unit) { members.add(joined); placed.add(joined); }
     }

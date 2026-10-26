@@ -843,6 +843,20 @@ const groupedCost = (items: RenderedKnowledgeItem[]): number =>
     sum + tokens(categoryHeader(category, members.length) + "\n") + byScope(members).reduce((cost, { scope, members }) =>
       cost + tokens(scopeHeader(scope, members.length) + "\n") + (members.some(item => item.form === "title") ? tokens(KNOWLEDGE_TITLES_NOTICE + "\n") : 0), 0), 0);
 
+/** 181: what `selectKnowledge` charges the temporary pool for `knowledge` as a grouped body of its own: each line and the category and
+ * scope headers of its groups, but not the knowledge envelope (the scored base pays that). Stops once the lines alone reach `stopAt`
+ * (the headers can only add), so a caller that compares against a cap renders no more items than it needs. */
+export function groupedKnowledgeCost(knowledge: readonly KnowledgeWithRevision[], line: (value: KnowledgeWithRevision) => string, stopAt = Infinity): number {
+  const items: RenderedKnowledgeItem[] = [];
+  let lines = 0;
+  for (const value of knowledge) {
+    const [item] = orderedKnowledge([value], line);
+    items.push(item!);
+    if ((lines += item!.size) >= stopAt) break;
+  }
+  return groupedCost(items);
+}
+
 const knowledgeBody = (items: RenderedKnowledgeItem[], recencyNotice = KNOWLEDGE_RECENCY_NOTICE): Omit<BudgetedKnowledge, "receipts"> => ({
   groups: knowledgeGroups(items),
   cost: items.length ? tokens(xmlBlock("knowledge", recencyNotice)) + groupedCost(items) : 0,

@@ -108,7 +108,7 @@ Full facts do not borrow, and none of the bases lends to another.
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
 from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a named load error.
 `dreaming.triggerKnowledge` is configurable: its default is 40, compared with the number of knowledge items the Noter created or
-updated since the last covered Dreamer pass (181; an item counts once). `dreaming.triggerUnscoredRatio` (default 0.8) is the second
+updated since the last covered Dreamer pass (181; an item counts once). `dreaming.triggerUnscoredRatio` (default 0.4) is the second
 trigger: unscored knowledge reaching that share of `compaction.temporaryTokens`. `dreaming.triggerTokens` and `dreaming.triggerOperations`
 are removed: a settings file that still carries one fails to load by name. Foreground publication may use the Knowledge base and what the context's
 body and pointer pools have left, independently. Database budget edits accept exact

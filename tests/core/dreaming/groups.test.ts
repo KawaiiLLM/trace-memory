@@ -55,11 +55,17 @@ test("181: a marked item joins with its partners that are in no group, or not at
   mark(roomy, 30, "medium", [31]);
   mark(roomy, 40, "low", [1]);
   expect(candidateGroups(roomy, candidates, 6).map(value => value.items)).toEqual([[1, 2, 3, 30, 31, 40]]);
-  // A marked item whose partner is itself marked and still free takes it along; the partner then does not join again.
-  const chained = [group(1, 50)];
-  mark(chained, 30, "high", [31]);
-  mark(chained, 31, "low", [32]);
-  expect(candidateGroups(chained, candidates, 6).map(value => value.items)).toEqual([[1, 2, 3, 30, 31]]);
+  // A partner that is itself marked brings its own partners: the unit is the closure, and it fits whole or not at all (K2 -> K3 -> K4).
+  const chained = () => { const value = [group(1, 50)]; mark(value, 2, "high", [3]); mark(value, 3, "low", [4]); return value; };
+  expect(candidateGroups(chained(), new Set([1]), 4).map(value => value.items)).toEqual([[1, 2, 3, 4]]);
+  // Two spare places do not take the closure {2,3,4}, so K2 does not join half-complete; K3 and its own partner K4 still fit as a unit of their own.
+  expect(candidateGroups(chained(), new Set([1]), 3).map(value => value.items)).toEqual([[1, 3, 4]]);
+  // Partners that point at each other join once.
+  const mutual = [group(1, 50)];
+  mark(mutual, 2, "high", [3]);
+  mark(mutual, 3, "high", [2]);
+  expect(candidateGroups(mutual, new Set([1]), 3).map(value => value.items)).toEqual([[1, 2, 3]]);
+  expect(candidateGroups(mutual, new Set([1]), 2).map(value => value.items)).toEqual([[1]]); // the pair does not fit one place: neither joins
 });
 
 test("181: an item joins at most one group, and groups fill in group order", () => {

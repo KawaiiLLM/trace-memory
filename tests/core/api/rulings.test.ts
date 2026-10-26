@@ -56,7 +56,7 @@ import { rawWindowTokens } from "../../../src/core/render/material.ts";
 import { factsFile, probe, scriptedNoter, submit, submitEmpty, verifyUnchanged, largestTaskPromptTokens } from "../../support/noter.ts";
 import { checkCurate, decisionsTemplate } from "../../../src/core/dreaming/curate.ts";
 import { boundaryOf, projectItems } from "../../../src/core/dreaming/candidates.ts";
-import { coverKnowledge, decisionText } from "../../support/dreamer.ts";
+import { coverKnowledge, decisionText, versionRef } from "../../support/dreamer.ts";
 
 // 62 excludes temporary directories, where every fixture lives. As in directory-projects.test.ts, the
 // hosts' `directoryAllocation` receives the exclusions a test sets; unset, it keeps the defaults.
@@ -2649,8 +2649,8 @@ test("2026-10-26, 181 — Dreaming is due at the 40th changed item, not the 40th
 });
 
 // 「或则加一个触发项，即新增知识长度达到 10k 预算的 80% ？」 then 「A」 (maintainer, 2026-10-26)
-test("2026-10-26, 181 — unscored knowledge reaching 0.8 of the temporary pool makes Dreaming due; either trigger alone fires a run", () => {
-  expect(DEFAULT_CONFIG.dreaming.triggerUnscoredRatio).toBe(0.8);
+test("2026-10-26, 181 — unscored knowledge reaching 0.4 of the temporary pool makes Dreaming due; either trigger alone fires a run", () => {
+  expect(DEFAULT_CONFIG.dreaming.triggerUnscoredRatio).toBe(0.4);
   for (const invalid of [0, -0.5, Infinity, NaN]) expect(() => api.validateConfig({ dreaming: { triggerUnscoredRatio: invalid } }), String(invalid)).toThrow("Invalid dreaming.triggerUnscoredRatio");
   expect(api.validateConfig({ dreaming: { triggerUnscoredRatio: 0.5 } }).dreaming.triggerUnscoredRatio).toBe(0.5);
   const f = dreamerFixture();
@@ -2674,6 +2674,25 @@ test("2026-10-26, 181 — unscored knowledge reaching 0.8 of the temporary pool 
   scoreAll(f.store);
   expect(f.store.unscoredTokens(f.path)).toBe(0);
   expect(due()).toBe(true); // the item trigger alone
+});
+
+// Same ruling: "measured as the injection renderer charges it to the temporary pool" (181 review: the line-only sum read 7,949 where injection charged 8,082).
+test("2026-10-26, 181 — the size trigger reads what memory.injection charges the temporary pool for the unscored items: group headers and canonical addresses included", () => {
+  const f = dreamerFixture();
+  f.item("The scored base item", { title: "Base", category: "goal" });
+  scoreAll(f.store); // a scored base pays the knowledge envelope; the unscored items sit in groups of their own
+  [f.item("Rule one body, long enough to cost some tokens", { title: "One", category: "constraint" }),
+    f.item("Rule two body, long enough to cost some tokens", { title: "Two", category: "constraint" }),
+    f.item("A global reference body, long enough to cost some tokens", { title: "Three", category: "reference", scope: "global" }),
+    f.item("A project understanding body, long enough to cost some tokens", { title: "Four", category: "understanding" })];
+  const charged = f.memory.injection(f.path).temporaryTokens!;
+  expect(f.store.unscoredTokens(f.path)).toBe(charged);
+  f.memory.config.dreaming.triggerKnowledge = 1e9;
+  f.memory.config.dreaming.triggerUnscoredRatio = 1;
+  f.memory.config.compaction.temporaryTokens = charged;
+  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true); // the pool is exactly full
+  f.memory.config.compaction.temporaryTokens = charged + 1;
+  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(false);
 });
 
 // Same ruling (option A): unscored items are candidates, so one run scores them and the size trigger cannot fire again on them.
@@ -2720,6 +2739,31 @@ test("2026-10-22, 146 supersedes the 2026-10-21 failure-handling ruling — the 
 });
 
 
+
+// P1 of the 181 review, decided 2026-10-26: a run that publishes but leaves its frozen candidates as unscored as it found them is a failure.
+test("2026-10-26, 181 — a Dreamer run whose frozen candidates are no less unscored at completion fails the streak although it published; a persistent refusal reaches the third failure", async () => {
+  const f = dreamerFixture();
+  let current = f.item("Rule body, written by hand", { title: "Rule" });
+  const results = [];
+  for (let run = 1; run <= 3; run++) {
+    const ref = versionRef(f.store, current.knowledgeId, current.commit);
+    // The Dreamer updates the item; by publication the item has moved, so the update is refused and the item's score target dropped.
+    f.dreamer.script.instead = { curate: async input => {
+      const result = await scriptedDreamer({ curate: { group1: workspaceBlock(`update ${ref}`, { reason: "Tidy" }, "Rule body, tidied") } }).agent(input);
+      current = { ...current, commit: updateKnowledge(f.store, f.path, current.knowledgeId, current.commit, `Rule body, edited by hand meanwhile, run ${run}, and longer than before`, current.supports).commit };
+      return result;
+    } };
+    results.push(await f.dream());
+    expect(f.store.getKnowledge(current.knowledgeId)!.score, `after run ${run}`).toBeNull();
+    expect(f.store.enabled(f.session.id), `after run ${run}`).toBe(run < 3);
+  }
+  expect(results.map(result => result.outcome)).toEqual(["failure", "failure", "failure"]);
+  expect(results.slice(0, 2).every(result => !("automaticOff" in result))).toBe(true);
+  expect(results[2]).toMatchObject({ automaticOff: expect.stringMatching(/dreaming off after three failures/) });
+  expect(executionReasons(f)).toEqual(["curate: no progress", "curate: no progress", "curate: no progress"]);
+  expect(f.store.taskFailures(f.session.id).map(row => [row.phase, row.count])).toEqual([["dreaming", 3]]);
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull(); // each run was complete: nothing to resume
+});
 
 test("2026-10-21, 144: '归档这个机制会取消' — a run whose pools are far over the old pool budgets completes, and nothing is archived for budget", async () => {
   const f = dreamerFixture();

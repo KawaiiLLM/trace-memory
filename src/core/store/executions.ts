@@ -133,7 +133,8 @@ export function linkExecutionRun(store: Store, runId: number, input: RunInput): 
 }
 
 /** The stage at which an execution failed. */
-export interface TaskFailure { task: string }
+/** `noProgress`: the Dreamer's run published (wrote `finished`) but left its frozen candidates as unscored as it found them; unlike a failure after `finished`, it counts (181). */
+export interface TaskFailure { task: string; noProgress?: boolean }
 
 /** Caller owns the terminal decision.
  * Dreamer calls it alongside completeDreaming in the final-check transaction, not at a write. */
@@ -160,7 +161,7 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
     if (outcome === "cancelled") return {};
     // 144 stage 5 §3.2: a Dreamer run whose final commit wrote `finished` is complete. A failure after it is recorded above and
     // nothing more: no hand-off is recreated and the retry counter stays as the commit reset it (Q14: not counted).
-    if (outcome === "failure" && row.phase === "dreaming" && store.db.prepare(`SELECT 1 FROM execution_runs er JOIN run_bodies b ON b.run_id = er.run_id
+    if (outcome === "failure" && row.phase === "dreaming" && !failure?.noProgress && store.db.prepare(`SELECT 1 FROM execution_runs er JOIN run_bodies b ON b.run_id = er.run_id
       WHERE er.execution_id = ? AND json_extract(b.response, '$.finished') IS NOT NULL`).get(id)) {
       store.db.prepare("UPDATE task_executions SET reason = ? WHERE id = ?").run(`${reason}, run already finished`, id);
       return {};
@@ -172,7 +173,8 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
       last_reason = ?, last_run_id = ?, updated_at = ? WHERE ${task}`).run(Number(outcome === "success"), reason, runId, now, ...key);
     if (!counted.changes) store.db.prepare(`INSERT INTO task_failures(session_id,phase,head,pool,count,last_reason,last_run_id,updated_at)
       VALUES (?,?,?,?,?,?,?,?)`).run(...key, outcome === "success" ? 0 : 1, reason, runId, now);
-    if (row.phase === "dreaming" && outcome === "failure") keepDreamerRetry(store, Number(row.session_id), runId, failure);
+    // A no-progress run is complete: there is nothing to resume, and the triggers fire again while the candidates stay unscored.
+    if (row.phase === "dreaming" && outcome === "failure" && !failure?.noProgress) keepDreamerRetry(store, Number(row.session_id), runId, failure);
     // 146 (maintainer, 2026-10-22): the Dreamer's streak works like the Noter's; the third consecutive failure switches memory off.
     const count = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${task}`).get(...key)!.count);
     if (count !== 3 || !store.enabled(Number(row.session_id))) return {};

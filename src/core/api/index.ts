@@ -144,7 +144,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     checkKnowledgeSteps: 8,
     checkKnowledgeContextTokens: 15_000,
   },
-  dreaming: { triggerKnowledge: DEFAULT_DREAMING_TRIGGER_KNOWLEDGE, triggerUnscoredRatio: 0.8, timeoutMs: 1_800_000,
+  dreaming: { triggerKnowledge: DEFAULT_DREAMING_TRIGGER_KNOWLEDGE, triggerUnscoredRatio: 0.4, timeoutMs: 1_800_000,
     groupItems: 50, parallelGroups: 5, notesSteps: 10, notesTokens: 10_000, wholeFileLimit: 5,
     clusteringSteps: 30, clusteringContextTokens: 150_000,
     // Dispatcher proposals from the 37-item Sonnet experiment, not maintainer-set limits.

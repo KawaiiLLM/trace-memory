@@ -329,8 +329,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const factLine = (id: number, relations: readonly FactRelation[] = store.listFactRelations(id)) => renderFact(store.getFact(id)!, [...relations]);
   const factGroups = (facts: Fact[], relations = store.listFactRelationsOf(facts.map(fact => fact.id))) =>
     renderFactGroups(facts, f => factLine(f.id, relations.get(f.id) ?? []), store.factTurnTimes(facts));
-  const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge({ ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
-    `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, false, store.writing, true);
+  const knowledgeLine = (value: KnowledgeWithRevision) => store.knowledgeLine(value);
   // The knowledge part of the shared material contract (20a): the applicable commits at one node,
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
   const applicable = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) =>

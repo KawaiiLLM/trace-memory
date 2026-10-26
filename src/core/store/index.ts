@@ -15,7 +15,7 @@ import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecuti
 import { DELIVERIES_SQL, STATE_KEY, GUIDE_VERSION, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_KNOWLEDGE, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
-import { tokens, renderKnowledge } from "../render/index.ts";
+import { renderKnowledge, groupedKnowledgeCost } from "../render/index.ts";
 import { factObjects, isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import { ratingScore, type RatedTarget } from "../dreaming/classify.ts";
 import { WordSimilarity } from "./word-similarity.ts";
@@ -3999,7 +3999,8 @@ export class Store {
     handoff: (done: { runId: number; results: WorkspaceOperationResult[] }) => { nextTask: string; detail: NonNullable<Handoff["detail"]> } | null;
     /** Additional group status and verification, inside this transaction. */
     after?: (done: { runId: number; results: WorkspaceOperationResult[] }) => void;
-    finish?: { boundary: DreamerBoundary } }): { runId: number; results: WorkspaceOperationResult[] } {
+    /** `progressed` is asked once the pass is written: a finished run that made no progress does not reset the failure streak (181). */
+    finish?: { boundary: DreamerBoundary; progressed?: () => boolean } }): { runId: number; results: WorkspaceOperationResult[] } {
     return this.transaction(() => {
       const done = this.commitWorkspaceRun({ run: input.run, path: input.path, operations: input.operations ?? [], response: input.response });
       const sessionId = input.run.sessionId!;
@@ -4027,8 +4028,8 @@ export class Store {
         branch: null, entryIds: [], detail: handoff.detail });
       else {
         this.db.prepare("DELETE FROM task_handoffs WHERE session_id = ? AND phase = 'dreaming'").run(sessionId);
-        // 146 Q16: only a finished run resets the failure streak, as the Noter's does at its success; a kept batch or an applied group does not.
-        this.db.prepare("UPDATE task_failures SET count = 0 WHERE session_id = ? AND phase = 'dreaming' AND pool = ?").run(sessionId, ALL_POOLS);
+        // 146 Q16: only a finished run resets the failure streak, as the Noter's does at its success; a kept batch or an applied group does not, nor does a run that scored none of its candidates (181).
+        if (input.finish?.progressed?.() !== false) this.db.prepare("UPDATE task_failures SET count = 0 WHERE session_id = ? AND phase = 'dreaming' AND pool = ?").run(sessionId, ALL_POOLS);
         if (input.finish) {
           const body = JSON.parse(String(this.db.prepare("SELECT response FROM run_bodies WHERE run_id = ?").get(done.runId)?.response ?? "{}"));
           this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(JSON.stringify({ ...body, finished: input.finish }), done.runId);
@@ -4301,21 +4302,24 @@ export class Store {
     return counted.size;
   }
 
-  /** 181: the tokens the injection renderer charges to the temporary pool for the path's unscored live project/global items
-   * (the Dreamer's candidates): each item's rendered line, as `orderedKnowledge` sizes it, summed without rendering the scored
-   * set or the category headers the base shares. Stops once `stopAt` is reached. */
-  unscoredTokens(path: KnowledgePath, stopAt = Infinity, input = this.commitGraphInput(undefined, path.sessionId)): number {
-    const live = this.poolLive(path, input).map(item => item.revision).filter(revision => revision.scope !== "session");
+  /** The line an automatic injection renders for a live item: grouped form, canonical tagged address, stale labels. */
+  knowledgeLine(value: KnowledgeWithRevision): string {
+    return renderKnowledge({ ...value, staleReasons: this.knowledgeStaleReasons(value.revision.id) },
+      `K${value.knowledge.id}#${this.versionTag(value.knowledge.id, value.revision.id)}`, false, this.writing, true);
+  }
+
+  /** 181: the tokens the injection renderer charges to the temporary pool for the path's unscored live project/global items (the
+   * Dreamer's candidates): `groupedKnowledgeCost` over those items alone, with the injection's own lines, so the scored set is never
+   * rendered. Stops once `stopAt` is reached. `items` restricts the measure to those knowledge ids (a run's frozen candidates).
+   * ponytail: the knowledge envelope and notice are charged to the temporary pool only when no scored base item pays them, and are
+   * left out; headers of groups that scored base items already occupy are counted again (a few tokens each, so the trigger fires
+   * slightly early, never late). Exact marginal accounting would need the base selection, which renders the whole scored pool. */
+  unscoredTokens(path: KnowledgePath, stopAt = Infinity, input = this.commitGraphInput(undefined, path.sessionId), items?: ReadonlySet<number>): number {
+    const live = this.poolLive(path, input).map(item => item.revision).filter(revision => revision.scope !== "session" && (!items || items.has(revision.knowledgeId)));
     const unscored = new Map(this.db.prepare("SELECT * FROM knowledge WHERE score IS NULL AND id IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify([...new Set(live.map(revision => revision.knowledgeId))])).map(row => [Number(row.id), toKnowledge(row)]));
-    let total = 0;
-    for (const revision of live) {
-      const knowledge = unscored.get(revision.knowledgeId);
-      if (!knowledge) continue;
-      total += tokens(renderKnowledge({ knowledge, revision, staleReasons: this.knowledgeStaleReasons(revision.id) }, undefined, false, this.writing, true) + "\n");
-      if (total >= stopAt) break;
-    }
-    return total;
+    return groupedKnowledgeCost(live.flatMap(revision => unscored.has(revision.knowledgeId) ? [{ knowledge: unscored.get(revision.knowledgeId)!, revision }] : []),
+      value => this.knowledgeLine(value), stopAt);
   }
 
   /** 146 §1.1, 181: a Dreamer run is due when a hand-off row asks for a retry or resume, when the Noter-changed items reach the

@@ -8,6 +8,7 @@
   "dreaming.thinking": "xhigh",
   "noting.triggerTokens": 10000,
   "dreaming.triggerKnowledge": 40,
+  "dreaming.triggerUnscoredRatio": 0.4,
   "dreaming.timeoutMs": 1800000,
   "retry": { "maxRetries": 10 },
   "worker": {
