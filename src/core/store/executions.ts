@@ -101,8 +101,9 @@ export interface HandoffDetail {
   noting?: { frozen: string; factIds: Record<string, number>; committedAt: number; executionId: string; startedAt?: number;
     /** The highest fact id below this batch's own: facts above it were committed with or after the batch. */
     factsAfter: number;
-    /** How the fact lane was admitted (ticket 179, user ruling): the same executor's knowledge lane for this batch keeps it, so the
-     * borrowing scope in force then, not now, governs both lanes, and the frozen path is not checked for activity again. */
+    /** How the fact lane was admitted (ticket 179, user ruling): the knowledge lane's first admission, by that same executor, keeps it, so
+     * the borrowing scope in force then, not now, governs both lanes and the frozen path is not checked again. That admission consumes
+     * the field; a hand-off without it (retry, takeover, another executor, older data) is admitted afresh. */
     admission?: { borrowed: boolean; executorSessionId?: number; scope: ClosedSessionScope } };
   fullCheck?: boolean;
   clusteringItems?: number[];

@@ -503,7 +503,7 @@ test("a knowledge claim taken over after its lease expired runs in its own execu
 });
 
 /** Batch 1's fact commits; batch 2's fact "Use npm" then negates it while batch 1's knowledge lane has not yet run. */
-async function laterBatchNegates(knowledgeOps: (prior: number) => Record<string, unknown>[]) {
+async function laterBatchNegates(knowledgeOps: (prior: number) => Record<string, unknown>[], beforeNegation?: (f: ReturnType<typeof fixture>, head: number) => void) {
   let pnpm = 0;
   const inputs: NotingAgentInput[] = [];
   const f = fixture(async input => {
@@ -521,6 +521,7 @@ async function laterBatchNegates(knowledgeOps: (prior: number) => Record<string,
   pnpm = f.memory.store.listSessionFacts(1).find(value => value.text === "Use pnpm")!.id;
   const second = f.memory.store.appendTurn({ sessionId: 1, parentTurnId: 1, kind: "turn", userPrompt: "Use npm", assistantText: "Agreed", startedAt: "later" });
   const path = { ...f.path, headTurnId: second.id };
+  beforeNegation?.(f, second.id);
   expect(await f.memory.noting({ ...path, lane: "facts" })).toMatchObject({ outcome: "success" });
   return { f, path, inputs, prior, pnpm, npm: f.memory.store.listSessionFacts(1).find(value => value.text === "Use npm")!.id };
 }
@@ -546,4 +547,28 @@ test("a delayed knowledge prefix shows its facts with the relations they had whe
     expect(shown).toContain(`F${s.prior.id}`); // its own relation, made at publication
     expect(shown).not.toContain(`F${s.npm}`); // the later batch's negation of it
   } finally { clock.mockRestore(); }
+});
+
+test.each([
+  { negation: "left", knowledge: "right", flagged: true },
+  { negation: "right", knowledge: "left", flagged: false },
+  { negation: "left", knowledge: "left", flagged: true },
+  { negation: "right", knowledge: "right", flagged: false },
+] as const)("a negation published with the foreground on the $negation applies to knowledge published with it on the $knowledge: flagged $flagged, as sequential publication", async ({ negation, knowledge: later, flagged }) => {
+  // Left: the main path of both batches, which holds the cited fact. Right: a branch of its own with none of their evidence.
+  let right = 0, main = 0;
+  const go = (f: ReturnType<typeof fixture>, side: "left" | "right") =>
+    side === "left" ? f.memory.store.setCurrentPath(1, "main", main, "fg") : f.memory.store.setCurrentPath(1, "elsewhere", right, "fg");
+  const s = await laterBatchNegates(() => [{ ...create, supports: ["$1"] }], (f, head) => {
+    const turn = f.memory.store.appendTurn({ sessionId: 1, kind: "turn", userPrompt: "elsewhere", assistantText: "unrelated", startedAt: "later" });
+    f.memory.selectEntries(1, "elsewhere", f.memory.store.listSourceEntries(1, turn.id).map(entry => entry.id));
+    right = turn.id; main = head;
+    f.memory.selectEntries(1, "main", f.memory.store.listSourceEntries(1).filter(entry => entry.turnId !== turn.id).map(entry => entry.id));
+    go(f, negation);
+  });
+  go(s.f, later);
+  expect(await s.f.memory.noting({ ...s.path, lane: "knowledge" })).toMatchObject({ outcome: "success" });
+  expect(await s.f.memory.noting({ ...s.path, lane: "knowledge" })).toMatchObject({ outcome: "success" });
+  const revision = Number(s.f.memory.store.db.prepare("SELECT MAX(id) AS id FROM knowledge_revisions WHERE text = 'Use pnpm'").get()!.id);
+  expect(s.f.memory.store.knowledgeStaleReasons(revision).map(value => value.reason)).toEqual(flagged ? ["negated_fact"] : []);
 });

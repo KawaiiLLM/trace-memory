@@ -911,11 +911,16 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         // The continuation runs on the batch's own frozen path; the caller's target authorizes and redirects nothing.
         const frozen = restoreNoting(handoff.detail!.noting!.frozen);
         Object.assign(target, { branch: frozen.branch, headTurnId: frozen.headTurnId, triggerEntryId: frozen.headEntryId });
-        // The executor that admitted the fact lane keeps that admission for the batch's knowledge: the scope then in force governs it,
-        // and the path is not checked for activity again. Any other borrower is a fresh admission and passes the full check.
-        const admitted = handoff.detail!.noting!.admission;
-        if (input.borrowed && admitted?.borrowed && admitted.executorSessionId === input.executorSessionId) closedSessionScope = admitted.scope;
-        else if (input.borrowed && (!store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope) || !store.borrowedTargetActive(target))) return null;
+        // Ruling A: the lane's first admission, by the executor that admitted the fact lane, inherits that admission: the scope then in
+        // force replaces the current one and the frozen path is not re-validated. The executor must still be open, enabled and eligible
+        // for the target. Any later attempt (the hand-off no longer carries the admission), another executor, or a hand-off without
+        // one is a fresh admission under the current scope, and its frozen path must still lie within a retained cursor's path.
+        const detail = handoff.detail!.noting!;
+        const inherited = detail.admission?.borrowed && detail.admission.executorSessionId === input.executorSessionId ? detail.admission : undefined;
+        if (input.borrowed) {
+          if (inherited) closedSessionScope = inherited.scope;
+          if (!store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope) || !inherited && !store.borrowedPathRetained(target)) return null;
+        }
         claim = store.acquireClaim(target, phase, executorId, input.borrowed,
           () => input.executorSessionId === undefined || store.enabled(input.executorSessionId),
           undefined, undefined, false, "knowledge");
@@ -924,7 +929,6 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         resumeRunId = handoff.runId;
         projectId = store.getSession(input.sessionId)!.projectId;
         origin = store.triggerOrigin(target, target.triggerEntryId);
-        const detail = handoff.detail!.noting!;
         const previous = store.db.prepare("SELECT outcome FROM task_executions WHERE id=?").get(detail.executionId);
         // Only the first claim of the lane continues the fact lane's open execution. A takeover is an attempt of its own: a
         // predecessor returning after its lease must settle and clean up only what it was given, never the replacement's.
@@ -932,6 +936,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           : store.beginExecution({ sessionId: target.sessionId, phase, head: handoff.entryIds[0], origin });
         if (detail.startedAt === undefined) {
           detail.startedAt = Date.now();
+          delete detail.admission; // consumed: the lane's first admission is the only one that continues the fact lane's
           if (detail.startedAt - detail.committedAt > cfg.noting.knowledgePrefixReuseMs) {
             const prepared = frozen.prepared!;
             const ids = Object.values(detail.factIds), published = Math.max(...ids);
