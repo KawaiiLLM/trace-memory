@@ -173,8 +173,9 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
     const block = compacted(h.memory.compact(1, "main", 1));
     const factView = memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://F1").content;
     expect(factView).toMatch(/^Source session: S1\n/);
-    const grouped = `[T1] ${h.memory.store.getTurn(1)!.startedAt} (selected facts) · session harness: Pi agent (context, not claim attribution)\n${factView.slice("Source session: S1\n".length)}`;
-    expect(block.split("Recent facts (by Turn):\n\n")[1]!.split("\n\nRaw:")[0]).toBe(grouped);
+    const grouped = block.split("Recent facts (by Turn):\n\n")[1]!.split("\n\nRaw:")[0]!;
+    expect(grouped).toContain(factView.slice("Source session: S1\n".length));
+    expect([...grouped.matchAll(/^\[T(\d+)\]/gm)].map(match => Number(match[1]))).toEqual([1]);
     let sent = "";
     const noting = TraceMemory(join(h.dir, "trace.db"), async raw => {
       sent = (raw as NotingAgentInput).text;

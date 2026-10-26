@@ -23,6 +23,8 @@ export interface SuppliedMaterial {
   knowledgeStates?: KnowledgeStateReceipt[];
   /** Versions supplied as a title only (144 §7.4). A title is not body visibility. */
   knowledgeTitleCommitIds?: number[];
+  /** Exact-text guide versions carried in this context. */
+  guideVersions?: string[];
   /** Base-only Knowledge rendering, including notices/framing but excluding the reading guide and both pools. */
   knowledgeTokens?: number;
   /** Independent temporary body and pointer charges (165). */
@@ -42,6 +44,7 @@ export interface VisibleView {
   knowledgeCommitIds: Set<number>;
   /** Canonical identities of complete state notices already shown, kept separate from exact body visibility. */
   knowledgeStates?: Set<string>;
+  guideVersions?: Set<string>;
   /** 97: the delivered publications' summed render-time Knowledge cost. Only unaccounted API views omit it. */
   knowledgeTokens?: number;
   /** Versions already delivered as titles; body and pointer charges remain independent. */
@@ -64,6 +67,6 @@ export const knowledgeStateKey = (state: KnowledgeStateReceipt): string =>
 
 /** 97: a node's recorded delivered state, in the shape the foreground selector subtracts. */
 export const deliveredView = (state: { knowledgeCommitIds: Set<number>; knowledgeTitleCommitIds: Set<number>; knowledgeStates: Set<string>;
-  knowledgeTokens: number; temporaryTokens: number; pointerTokens?: number }): VisibleView =>
+  knowledgeTokens: number; temporaryTokens: number; pointerTokens?: number; guideVersions?: Set<string> }): VisibleView =>
   ({ ...noVisibility(), knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeTitleCommitIds: new Set(state.knowledgeTitleCommitIds),
-    knowledgeStates: new Set(state.knowledgeStates), knowledgeTokens: state.knowledgeTokens, temporaryTokens: state.temporaryTokens, pointerTokens: state.pointerTokens ?? 0 });
+    knowledgeStates: new Set(state.knowledgeStates), guideVersions: new Set(state.guideVersions), knowledgeTokens: state.knowledgeTokens, temporaryTokens: state.temporaryTokens, pointerTokens: state.pointerTokens ?? 0 });

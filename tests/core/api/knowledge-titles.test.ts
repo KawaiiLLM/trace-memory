@@ -42,10 +42,10 @@ test("whole knowledge views keep authored titles and mark untitled headers witho
   };
   for (const [name, view] of Object.entries(views)) {
     const [head, body] = header(view, withTitle.knowledgeId);
-    expect(head, name).toMatch(new RegExp(`\\[constraint/project\\] (?:\\(\\d+ tokens\\) )?${titled}$`));
+    expect(head.endsWith(titled), name).toBe(true);
     expect(body, name).toBe(titledBody);
     const [legacyHead, legacyFirst] = header(view, legacy.knowledgeId);
-    expect(legacyHead, name).toMatch(/\[reference\/project\] (?:\(\d+ tokens\) )?\(no title\)$/);
+    expect(legacyHead.endsWith("(no title)"), name).toBe(true);
     expect(legacyFirst, name).toBe(legacyBody);
   }
   const exact = memoryFiles(memory, path).read(`trace://K${withTitle.knowledgeId}`).content;

@@ -197,6 +197,20 @@ export const CC_AUTO_CONTINUE_SUFFIX = "\nContinue the conversation from where i
 export const ccStripAutoContinue = (text: string): string =>
   text.endsWith(CC_AUTO_CONTINUE_SUFFIX) ? text.slice(0, -CC_AUTO_CONTINUE_SUFFIX.length) : text;
 
+/** Only native carrier positions, never arbitrary prose or tool outputs. Partial previews are not proof. */
+export function ccReceiptCarriers(record: CcNativeRecord): string[] {
+  const attachment = object(record.attachment);
+  const content = record.type === "attachment" && attachment?.type === "hook_additional_context"
+    ? attachment.content : record.type === "user" ? record.message?.content : undefined;
+  const texts = typeof content === "string" ? [content] : Array.isArray(content)
+    ? content.flatMap(value => typeof value === "string" ? [value] : object(value)?.type === "text" && typeof object(value)?.text === "string" ? [String(object(value)!.text)] : []) : [];
+  return texts.flatMap(value => {
+    const text = ccStripAutoContinue(value), start = ccCarrierStart(text);
+    return start < 0 ? [] : [start === 0 ? text : text.endsWith(COMPACTION_SUMMARY_SUFFIX)
+      ? text.slice(start, -COMPACTION_SUMMARY_SUFFIX.length) : ""].filter(Boolean);
+  });
+}
+
 export class CcNativeLineageError extends Error {}
 
 /** What `nativeParentId` may ask of the transcript around a record. Each reader (the scan, the whole-file

@@ -17,7 +17,7 @@
 // change, and foreground and worker instructions differ. Actual retained carriers, not receipts or
 // offered material, establish delivery; the frozen selection remains the processing target.
 import { createHash } from "node:crypto";
-import type { Fact } from "../model/index.ts";
+import type { Fact, KnowledgeScope } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
 import { budgetFacts, budgetKnowledge, charge, finish, knowledgeGroups, renderKnowledgeBlock, KNOWLEDGE_RECENCY_NOTICE, tokens, wholeKnowledge, xmlBlock,
   type BudgetedKnowledge, type FactTurns } from "./index.ts";
@@ -36,7 +36,7 @@ export function measuredMemory(text: string, material: SharedMaterial): { text: 
     knowledge: tokens((material.knowledge ?? []).map(group => group.text).join("\n")),
     facts: tokens([...(material.factTitles ?? []), ...(material.facts ?? [])].join("\n")),
     raw: tokens([...(material.earlierUsers ?? []).map(entry => entry.view),
-      ...(material.entries ?? []).map(entry => entry.view)].join("\n\n")) } };
+      ...(material.entries ?? []).map(entry => entry.view)].filter(Boolean).join("\n\n")) } };
 }
 
 /** Measure only the bytes of a renderer-produced block actually retained by a host. `offset`
@@ -95,7 +95,7 @@ export function measureRetainedMemoryText(rendered: string, original: string, of
  * sharing this type never adds a block to a consumer's order. Ordinary injection stays Knowledge-only;
  * Noter material includes Knowledge (92). */
 export interface SharedMaterial {
-  /** Ticket 118: one reading guide for the complete material, never one per knowledge block. */
+  /** Unconditional worker reading guide, or the foreground context-guide preamble selected by core. */
   readingGuide?: string;
   /** Active Knowledge within its budget, in category order. */
   knowledge?: KnowledgeGroup[];
@@ -126,9 +126,10 @@ export interface NotingMaterial extends SharedMaterial {
 }
 
 export type TransportItem =
+  | { kind: "guide"; purpose: "reading" | "ordering"; text: string; version: string }
   /** `form`: a title-only item's text is its header line (144 §7.4). `allowance` and `rank` are core's selection:
    * the Knowledge base's items come first, then the temporary allowance's, each in delivery order (§7.5). */
-  | { kind: "knowledge"; text: string; category: string; commitId: number; address: string; form?: "body" | "title"; allowance?: "base" | "temporary" | "pointer"; rank?: number }
+  | { kind: "knowledge"; text: string; category: string; scope: KnowledgeScope; commitId: number; address: string; form?: "body" | "title"; allowance?: "base" | "temporary" | "pointer"; rank?: number }
   | { kind: "state"; text: string; address: string; receipt: { fromCommit: number; toCommits: number[] } }
   | { kind: "fact"; text: string; factId: number; pending: boolean; allowance?: "temporary"; charge?: number }
   | { kind: "raw"; text: string; entryId: number; address: string; pending: boolean; allowance?: "temporary"; charge?: number }
@@ -139,6 +140,7 @@ export type TransportItem =
  * unordered carriers. The host only decides which complete framed items fit each carrier. */
 export function transportItemText(item: TransportItem, recencyNotice = KNOWLEDGE_RECENCY_NOTICE): string {
   switch (item.kind) {
+    case "guide": return item.text;
     case "knowledge": return renderKnowledgeBlock(knowledgeGroups([item]), recencyNotice);
     case "state": return `${KNOWLEDGE_STATUS_TITLE}\n${item.text}`;
     case "fact": return `<episodic>\n${FACTS_TITLE}\n\n${item.text}\n</episodic>`;
@@ -148,7 +150,7 @@ export function transportItemText(item: TransportItem, recencyNotice = KNOWLEDGE
 }
 
 export const FACTS_TITLE = "Recent facts (by Turn):";
-export const FACT_TITLES_TITLE = "Earlier facts (titles only; read trace://F<id> for the body):";
+export const FACT_TITLES_TITLE = "Earlier facts (titles only; turn times UTC; read trace://F<id> for the body):";
 export const RAW_TITLE = "Raw:";
 export const EARLIER_USERS_TITLE = "Earlier user messages:";
 /** Title for retained versions that are no longer current authority. */
@@ -158,7 +160,7 @@ export const BLOCK = "\n\n";
 
 /** Complete Raw-window charge shared by oldest-batch admission and compact assembly. */
 export const rawWindowTokens = (views: string[], receipts: string[]): number =>
-  (views.length ? charge([xmlBlock("episodic", ""), RAW_TITLE]) + charge(views) : 0)
+  (views.some(Boolean) ? charge([xmlBlock("episodic", ""), RAW_TITLE]) + charge(views.filter(Boolean)) : 0)
   + (receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0);
 
 const rangeLine = (range: TaskRange): string => `Range: ${range.from}..${range.to}`;
@@ -314,7 +316,7 @@ export const injectionText = (material: SharedMaterial, knowledgeNotes: readonly
 /** Main-agent compact, also reused by Noter with its exact selected batch. */
 export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TITLE, knowledgeNotes: readonly string[] = []): string => {
   // 73: a window that kept nothing emits nothing — no title, and no `<episodic>` tag when both are empty.
-  const facts = material.facts ?? [], raw = (material.entries ?? []).map(entry => entry.view);
+  const facts = material.facts ?? [], raw = (material.entries ?? []).map(entry => entry.view).filter(Boolean);
   const episodic = [...(material.factTitles?.length ? [FACT_TITLES_TITLE, material.factTitles.join("\n")] : []),
     ...(facts.length ? [FACTS_TITLE, facts.join("\n")] : []),
     ...(material.earlierUsers?.length ? [EARLIER_USERS_TITLE, material.earlierUsers.map(entry => entry.view).join(BLOCK)] : []),

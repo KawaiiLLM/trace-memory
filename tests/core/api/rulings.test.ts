@@ -413,8 +413,6 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
 });
 
 /** Knowledge to lead the block with: one manually written fact, consolidated by hand into K1. */
-/** Fresh N alone shows each body's token count after the category tag; everything else in the block is the shared layout. */
-const withSize = (block: string) => block.replace("[constraint/project] Fixture title", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} units, limit ${wordLimit(memory.config.writing.bodyWords)}) Fixture title`);
 function seededKnowledge(sessionId: number, turnId: number) {
   const tools = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId });
   const entry = hydrate(memory.store.listSourceEntries(sessionId, turnId), memory.store).find(value => value.role === "user")!;
@@ -434,7 +432,7 @@ test("20a 2026-09-08: core owns the host-neutral domain text and still builds no
   // Domain text, from core, in core's own order — instructions stay their own field, not a system message.
   expect(input.text).toContain(input.material.entries[0]!.view);
   expect(input.text).toContain("The project uses pnpm"); // 92 §6: a seeded, visible knowledge body is actually supplied
-  expect(input.text).toContain(withSize(memory.inject(s.id)).split("\n\nReceipts:")[0]!);
+  expect(input.supplied.knowledgeCommitIds).toEqual(memory.injection(s.id).knowledgeCommitIds);
   expect(input.prompt).toContain("Noting (facts and knowledge)");
   expect(input.text).not.toContain(input.prompt);
   // What core still does not build: a message sequence, a system slot, a provider body.
@@ -454,7 +452,7 @@ test("20a/92: fresh N shares the leading Knowledge block without copying task fr
   expect(block).toContain("The project uses pnpm");
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const input = calls[0]!;
-  expect(input.text).toContain(withSize(block));
+  expect(input.supplied.knowledgeCommitIds).toEqual(memory.injection(s.id).knowledgeCommitIds);
   expect(input.text).toContain(`Range: ${input.range.from}..${input.range.to}`);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(`${block}\n\n<episodic>`)).toBe(true);
   expect(block).not.toContain("Range: ");
@@ -1599,7 +1597,6 @@ test("64c: the knowledge cap remains hard and recency, not category, selects who
   const cap = 5_000;
   setKnowledgeCapacity(memory, cap);
   const injected = memory.inject(s.id);
-  expect(injected).toContain("[constraint/project]"); // newer constraints fit beside the latest reference
   expect(injected).toContain("reference tail");
   expect(tokens(injected)).toBeLessThanOrEqual(cap); // the exemption is gone: no category bypasses it
   expect(injected).toContain("Receipts:");
@@ -1856,10 +1853,20 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   expect(archiveFile({ reason: "r" })).toContain("missing required field `kind`");
   expect(archiveFile({ kind: "invalid", reason: "r", topics: "packaging" })).toContain("field `topics` is not allowed here");
   const injected = memory.inject(s.id);
-  expect(injected).toContain('· topics: ["packaging"]');
-  expect(injected.match(/topics:/g)).toHaveLength(1); // the label rides its own knowledge line, nothing more
   expect(injected).not.toContain("<topics>");
   expect(calls).toEqual([]); // storing a label calls no model
+});
+
+test("178: injected topics disappear without changing exact-read metadata or supporting evidence", () => {
+  const { create, write, s } = memoryWriter();
+  const result = write([{ ...create, topics: ["packaging"] }]);
+  const id = result.committed[0]!.knowledgeId;
+  for (const text of [memory.inject(s.id), compacted(memory.compact(s.id, "main", 1))]) {
+    expect(text).not.toContain("topics:");
+    expect(text).not.toContain("packaging");
+    expect(text).toContain("supports: F1");
+  }
+  expect(memoryFiles(memory, { sessionId: s.id, branch: "main", headTurnId: 1 }).read(`trace://K${id}`).content).toContain('"packaging"');
 });
 
 // 26a's “both tools must be called” signal is superseded on 2026-10-22 (proposal noting-in-two-tasks): an explicit `## none` in
@@ -2691,9 +2698,9 @@ test("2026-10-24, 153: title-only delivery distinguishes authored titles from un
   scoreAll(f.memory.store, 80);
   setKnowledgeBase(f.memory, 0);
   const check = (text: string) => {
-    expect(text).toContain(`[constraint/project] (title only) Authored title\n`);
-    expect(text).toContain(`[reference/project] (opening only) Opening words describe the body, not a title.…\n`);
-    expect(text).not.toContain("(title only) Opening words");
+    expect(text).toContain(`[K${titled.knowledgeId}] Authored title\n`);
+    expect(text).toContain(`[K${untitled.knowledgeId}] (opening only) Opening words describe the body, not a title.…\n`);
+    expect(text).not.toMatch(/\[K\d+#/);
   };
   const delivery = f.memory.injection(f.target);
   expect(delivery.knowledgeCommitIds).toEqual([]);
@@ -2736,13 +2743,12 @@ test("2026-10-22, 144: the base fills in score order, ties newest first; the fir
   const low = f.create("LOW", 800, 20), first = f.create("TOP", 800, 90), tieOld = f.create("TIEOLD", 800, 70), tieNew = f.create("TIENEW", 800, 70);
   setKnowledgeBase(f.memory, 2_000); // room for two 800-word bodies
   const delivery = f.memory.injection(f.target);
-  const shown = (label: string) => delivery.text.includes(`${label} word`), titled = (label: string) => new RegExp(`\\(title only\\) ${label}`).test(delivery.text);
+  const shown = (label: string) => delivery.text.includes(`${label} word`);
   expect(delivery.knowledgeCommitIds.sort()).toEqual([first.commit, tieNew.commit].sort());
   expect(shown("TOP") && shown("TIENEW")).toBe(true);
   expect(shown("TIEOLD") || shown("LOW")).toBe(false);
   // The misfits become titles in score order, one by one from the temporary allowance.
   expect(delivery.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([tieOld.commit, low.commit]));
-  expect(titled("TIEOLD") && titled("LOW")).toBe(true);
   expect(delivery.knowledgeTokens! + delivery.temporaryTokens! + delivery.pointerTokens!).toBe(tokens(delivery.text.split("\n\n").slice(1).join("\n\n")));
   expect(delivery.knowledgeTokens!).toBeLessThanOrEqual(2_000);
 });
@@ -2780,7 +2786,7 @@ test("2026-10-24: ordinary deliveries spend each pool independently and compacti
   setKnowledgeBase(f.memory, 0);
   const item = f.create("UNSCORED", 100, null);
   const spent: VisibleView = { ...noVisibility(), knowledgeTokens: 0, temporaryTokens: 10_000, pointerTokens: 10_000 };
-  expect(f.memory.injection(f.target, spent).text).toBe("");
+  expect(f.memory.injection(f.target, spent)).toMatchObject({ text: "", knowledgeCommitIds: [], knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
   expect(f.memory.injection(f.target, { ...spent, pointerTokens: 0 }).knowledgeTitleCommitIds).toEqual([item.commit]);
   expect(f.memory.injection(f.target, { ...spent, temporaryTokens: 0 }).knowledgeCommitIds).toEqual([item.commit]);
   const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId, spent);

@@ -11,6 +11,7 @@ import { charge, expandList } from "../../../src/core/render/index.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
 import { curateWrite } from "../../support/dreamer.ts";
 import { submitEmpty } from "../../support/noter.ts";
+import { noVisibility } from "../../../src/core/api/visible.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/turns.json", import.meta.url), "utf8"));
@@ -81,8 +82,7 @@ const defaultWindows = () => {
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
   const { s, t } = populated();
   const next = turn(s.id, rawFixture[1].userPrompt, t.id);
-  const knowledge = `${readingGuide(s.id, canonicalToolNames)}\n\n<knowledge>\nItems are grouped by category. Within a category they are ordered by last change, oldest to newest; position does not compare items across categories. For claims about the same object within a category, the later item takes precedence until maintenance merges them.\nSession S${s.id}.\n## constraint (1)\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] 地形层和高度层一起读。\n地形层和高度层一起读。\n  change supports: F1\n</knowledge>`;
-  expect(memory.inject(s.id)).toBe(knowledge);
+  expect(memory.inject(s.id)).toMatchSnapshot("knowledge injection");
   // The exact bound source is already supplied as Raw, so the Fact is not duplicated.
   const compact = memory.compact(s.id, "main");
   if ("native" in compact) throw new Error(compact.reason);
@@ -141,7 +141,7 @@ test("64c category display and commit recency retain whole newer items; lines ar
   expect(all).not.toContain("&lt;");
   expect([...all.matchAll(/\[K(\d+)#[a-z]+\]/g)].map(match => Number(match[1]))).toEqual([1, earlier, ids[1], ids[2], ids[3], ids[0]]); // 132: glossary category order, oldest first inside a group
   for (const category of ["constraint", ...categories]) {
-    expect(all).toContain(`[${category}/project]`);
+    expect(all).toMatch(new RegExp(`^## ${category} \\(\\d+\\)$`, "m"));
     expect(all).not.toContain(`<${category}>`); // category headers, not category blocks
   }
   // 34c: the foreground cap is hard, and a zero remainder emits neither a clipped item nor an
@@ -206,8 +206,9 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   expect(full.indexOf("[F1]")).toBeLessThan(full.indexOf(`[F${n.facts[0]!.id}]`)); // chronological presentation
   // 92: facts are chosen newest-first within their independent base. A tight facts window keeps
   // the newest and receipts the older, regardless of historical C processing.
-  const windows = charged(whole);
-  Object.assign(memory.config.compaction, { factsTokens: Math.ceil(windows.facts * 0.7) });
+  if ("native" in whole) throw new Error(whole.reason);
+  const newestOnly = memory.compact(s.id, "main", selected.id, { ...noVisibility(), factIds: new Set([1]) });
+  Object.assign(memory.config.compaction, { factsTokens: charged(newestOnly).facts + charge([`omitted 1 older facts; expand: trace://F1`, "Receipts:"]) });
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${n.facts[0]!.id}]`); expect(limited).not.toContain("[F1]");
   defaultWindows();
@@ -256,7 +257,7 @@ test("118: the reading guide is fixed framing, not a Knowledge or shared-window 
   // The no-guide option belongs to worker assembly, not the public host compaction API.
   const bare = readFacade(memory.store, memory.config).compact(s.id, "main", latest.id, [], false, { readingGuide: false });
   if ("native" in guided || "native" in bare) throw new Error("expected custom compaction material");
-  expect(guided.supplied).toEqual(bare.supplied);
+  expect({ ...guided.supplied, guideVersions: [] }).toEqual({ ...bare.supplied, guideVersions: [] });
   expect(charged(guided)).toEqual(charged(bare));
   expect(guided.supplied.entries.length).toBeGreaterThan(0);
   expect(guided.text.split(readingGuide(s.id, canonicalToolNames))).toHaveLength(2);

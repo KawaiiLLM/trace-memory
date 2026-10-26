@@ -52,7 +52,7 @@ test("92/03: model lists and compact carriers use chronological tags; exact read
     expect(slices.flatMap(slice => slice ? decodeCcInjection(slice.hookSpecificOutput.additionalContext, binding)!.commits : []).sort((a, b) => a - b))
       .toEqual([second.commit, latest.commit]);
     const omitted = sliceCcInjection(binding, [
-      { kind: "knowledge", category: "constraint", commitId: latest.commit, address: `K${first.knowledgeId}@v2`, text: `[${firstTag}] ${"x".repeat(20_000)}` },
+      { kind: "knowledge", category: "constraint", scope: "project", commitId: latest.commit, address: `K${first.knowledgeId}@v2`, text: `[${firstTag}] ${"x".repeat(20_000)}` },
       { kind: "state", address: `K${first.knowledgeId}@v1`, receipt: { fromCommit: first.commit, toCommits: [latest.commit] }, text: "state ".repeat(4_000) },
     ]);
     const omissions = omitted.filter(Boolean).map(slice => slice!.hookSpecificOutput.additionalContext).join("\n");

@@ -364,7 +364,7 @@ test("64c: no knowledge category bypasses the cap, newer commits are kept, and o
     op: "create", title: "Fixture title", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const,
     text: `${memories.knowledge} ${"word ".repeat(600)}`, supports: [1], createdAt: time,
   })) }).ok).toBe(true);
-  const item = (id: number) => renderKnowledge(memory.store.currentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!, `K${id}#${memory.store.versionTag(id, id)}`);
+  const item = (id: number) => renderKnowledge(memory.store.currentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!, `K${id}#${memory.store.versionTag(id, id)}`, false, memory.store.writing, true);
   // With five admitted categories instead of seven, a 3k window still forces
   // whole-item omission. Use the real capacity policy rather than empty knowledge.
   memory.close(); open();

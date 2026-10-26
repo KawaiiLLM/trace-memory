@@ -1,23 +1,23 @@
 import { ccInjectionLength, encodeCcInjection, type CcHookOutput, type CcVisibleBinding } from "./injection.ts";
-import { expandList, knowledgeBlockParts, knowledgeGroups, sessionKnowledgeNotice } from "../../core/render/index.ts";
+import { expandList, knowledgeBlockParts, knowledgeGroups, sessionKnowledgeNotice, KNOWLEDGE_SCOPE_ORDER, KNOWLEDGE_RECENCY_NOTICE } from "../../core/render/index.ts";
 import { transportItemText, type TransportItem } from "../../core/render/material.ts";
 import { tokens } from "../../core/render/tokens.ts";
-import { ccPluginToolNames } from "./tool-names.ts";
 import { KNOWLEDGE_CATEGORIES } from "../../core/model/index.ts";
-import { readingGuide } from "../../core/render/reading-guide.ts";
 
 export const CC_SLICE_COUNT = 24;
 export const CC_SLICE_LIMIT = 10_000;
-export const CC_KNOWLEDGE_RECENCY_NOTICE = "Within one rendered set of 24 segments, read knowledge by the header's p[0] segment number, then by position within that segment. Items are grouped by category and a category may continue into the next segment; within a category they are ordered by last change, so higher segments and later items are newer. Position does not compare items across categories. Arrival order is not recency. For claims about the same object within a category, the newer item takes precedence until maintenance merges them.";
+export const CC_KNOWLEDGE_RECENCY_NOTICE = KNOWLEDGE_RECENCY_NOTICE;
 
 /** 101 (ruled): a bound session's knowledge header also names it and the path a subagent inherits
  * its knowledge from. */
 export const ccKnowledgeHeader = (binding: CcVisibleBinding): string => binding.coreSession === null
-  ? CC_KNOWLEDGE_RECENCY_NOTICE : sessionKnowledgeNotice(binding.coreSession, CC_KNOWLEDGE_RECENCY_NOTICE);
+  ? "" : sessionKnowledgeNotice(binding.coreSession, "");
 
-/** Ticket 132: knowledge is presented by category (glossary order), then oldest commit first. */
+/** Category, scope, full bodies before titles, then last change. */
 const knowledgeOrder = (a: Extract<TransportItem, { kind: "knowledge" }>, b: Extract<TransportItem, { kind: "knowledge" }>): number =>
-  KNOWLEDGE_CATEGORIES.indexOf(a.category as never) - KNOWLEDGE_CATEGORIES.indexOf(b.category as never) || a.commitId - b.commitId;
+  KNOWLEDGE_CATEGORIES.indexOf(a.category as never) - KNOWLEDGE_CATEGORIES.indexOf(b.category as never)
+  || KNOWLEDGE_SCOPE_ORDER.indexOf(a.scope) - KNOWLEDGE_SCOPE_ORDER.indexOf(b.scope)
+  || Number(a.form === "title") - Number(b.form === "title") || a.commitId - b.commitId;
 
 const address = (item: TransportItem, sessionId: number | null): string => item.kind === "knowledge" || item.kind === "state" ? `trace://${item.address}`
   : item.kind === "fact" ? `trace://F${item.factId}` : item.kind === "raw" ? `trace://raw/S${sessionId}/${item.address}` : "";
@@ -56,6 +56,7 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
   const ordered = [...items].sort((a, b) => rank(a) - rank(b) ||
     (a.kind === "knowledge" && b.kind === "knowledge" ? knowledgeRank(a) - knowledgeRank(b) : 0));
   const membership = (members: TransportItem[], index: number) => ({
+    guideVersions: members.flatMap(item => item.kind === "guide" ? [item.version] : []),
     knowledgeCommitIds: members.flatMap(item => item.kind === "knowledge" && item.form !== "title" ? [item.commitId] : []),
     knowledgeTitleCommitIds: members.flatMap(item => item.kind === "knowledge" && item.form === "title" ? [item.commitId] : []),
     knowledgeStates: members.flatMap(item => item.kind === "state" ? [item.receipt] : []),
@@ -64,25 +65,28 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     slice: [index, CC_SLICE_COUNT] as [number, number],
   });
   const header = ccKnowledgeHeader(binding);
-  const guide = readingGuide(binding.coreSession ?? undefined, ccPluginToolNames);
   const itemText = (item: TransportItem) => transportItemText(item, header);
+  const knowledgeHeader = (members: readonly TransportItem[]) => {
+    const ordering = members.find(item => item.kind === "guide" && item.purpose === "ordering")?.text ?? "";
+    return binding.coreSession === null ? ordering : sessionKnowledgeNotice(binding.coreSession, ordering);
+  };
   // One exact assembly for trial character size, Knowledge cost and emitted bytes. Trials do not
   // compute digests; each final carrier has one knowledge list with its own domain framing.
   const assemble = (items: TransportItem[], index: number) => {
     const members = [...items].sort((a, b) => rank(a) - rank(b) ||
       (a.kind === "knowledge" && b.kind === "knowledge" ? knowledgeOrder(a, b) : 0));
-    const knowledge = knowledgeBlockParts(knowledgeGroups(members.filter(item => item.kind === "knowledge")), header);
+    const knowledge = knowledgeBlockParts(knowledgeGroups(members.filter(item => item.kind === "knowledge")), knowledgeHeader(members));
     const sections = [
-      ...(index === 0 ? [[guide]] : []),
+      ...members.filter(item => item.kind === "guide" && (item.purpose === "reading" || !knowledge.length)).map(item => [item.text]),
       ...members.filter(item => item.kind === "state").map(item => [itemText(item)]),
       ...(knowledge.length ? [knowledge] : []),
-      ...members.filter(item => item.kind !== "state" && item.kind !== "knowledge").map(item => [itemText(item)]),
+      ...members.filter(item => item.kind !== "guide" && item.kind !== "state" && item.kind !== "knowledge").map(item => [itemText(item)]),
     ];
     // 144 §7.5: framing is charged by who needs it. The base pays for the window its own items and state notices
     // make; the temporary allowance pays for everything else the slice's Knowledge adds (its items, the framing only
     // they bring, and receipts core charged to it) and for the temporary Raw it carries.
     const knowledgeTokens = (members: TransportItem[]) => {
-      const block = knowledgeBlockParts(knowledgeGroups(members.filter(item => item.kind === "knowledge")), header);
+      const block = knowledgeBlockParts(knowledgeGroups(members.filter(item => item.kind === "knowledge")), knowledgeHeader(members));
       const sections = [
         ...members.filter(item => item.kind === "state").map(itemText),
         ...(block.length ? [block.join("")] : []),
@@ -117,6 +121,11 @@ export function sliceCcInjection(binding: CcVisibleBinding, items: readonly Tran
     }
     return false;
   };
+  // Guides are selected by core, never reconstructed by a host. Keep them once in slot zero.
+  for (const item of ordered.filter(item => item.kind === "guide")) {
+    if (size([...slots[0]!.items, item], 0) > CC_SLICE_LIMIT) throw new Error("CC context guides exceed inline capacity");
+    slots[0]!.items.push(item);
+  }
   // Core's receipts are mandatory material. A legacy unbounded receipt must still name the
   // actual omission rather than displace it with an unrelated transport-capacity failure.
   for (const item of ordered.filter(item => item.kind === "receipt")) {

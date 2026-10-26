@@ -8,7 +8,7 @@ import type { TransportItem } from "../../src/core/render/material.ts";
 const binding: CcVisibleBinding = { db: "unit-db", nativeSession: "native-144", coreSession: 1 };
 type K = Extract<TransportItem, { kind: "knowledge" }>;
 const knowledge = (commitId: number, rank: number, allowance: "base" | "temporary" | "pointer", size = 200, over: Partial<K> = {}): K => ({ kind: "knowledge", commitId,
-  text: `[K${commitId}@${commitId}] [constraint/project] ${"word ".repeat(Math.ceil(size / 5))}`, category: "constraint", address: `K${commitId}@${commitId}`, form: "body", allowance, rank, ...over });
+  text: `[K${commitId}@${commitId}] ${"word ".repeat(Math.ceil(size / 5))}`, category: "constraint", scope: "project", address: `K${commitId}@${commitId}`, form: "body", allowance, rank, ...over });
 const decoded = (slices: ReturnType<typeof sliceCcInjection>) => slices.flatMap(slice => {
   const text = slice?.hookSpecificOutput.additionalContext;
   return text ? [decodeCcInjection(text, binding)!] : [];

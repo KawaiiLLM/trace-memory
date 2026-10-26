@@ -67,7 +67,7 @@ test("unscored bodies fill newest first while scored and unscored misfits retain
   expect(delivery.knowledgeTitleCommitIds).toEqual([scoredBig.commit]);
   expect(delivery.knowledgeTokens).toBe(0);
   expect(delivery.temporaryTokens!).toBeLessThanOrEqual(1_200);
-  f.memory.config.compaction.temporaryTokens = 450; // room for only the newest unscored body
+  f.memory.config.compaction.temporaryTokens = 500; // Includes the scope subgroup and the longer ordering guide.
   const tight = f.memory.injection(f.target);
   expect(tight.knowledgeCommitIds).toEqual([unscoredNew.commit]);
   expect(tight.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([scoredBig.commit, unscoredOld.commit]));
@@ -77,19 +77,19 @@ test("base full, temporary left: temporary items arrive with their own framing a
   const f = fixture();
   const base = f.create("BASEFULL", 1_500, 80);
   const unscored = f.create("UNSCORED", 300, null);
-  setKnowledgeInjection(f.memory, 1_600);
+  setKnowledgeInjection(f.memory, 1_800);
   f.memory.config.compaction.temporaryTokens = 1_000;
   const first = f.memory.injection(f.target);
   expect(first.knowledgeCommitIds.sort()).toEqual([base.commit, unscored.commit].sort());
-  expect(first.knowledgeTokens!).toBeLessThanOrEqual(1_600);
+  expect(first.knowledgeTokens!).toBeLessThanOrEqual(1_800);
   expect(first.temporaryTokens!).toBeGreaterThan(0);
   expect(first.temporaryTokens!).toBeLessThanOrEqual(1_000);
   // A context whose base is already spent still receives a new unscored item from what its temporary allowance has left.
-  const spent: VisibleView = { ...noVisibility(), knowledgeCommitIds: new Set([base.commit]), knowledgeTokens: 1_600, temporaryTokens: 0 };
+  const spent: VisibleView = { ...noVisibility(), guideVersions: new Set(first.guideVersions), knowledgeCommitIds: new Set([base.commit]), knowledgeTokens: 1_800, temporaryTokens: 0 };
   const next = f.memory.injection(f.target, spent);
   expect(next.knowledgeCommitIds).toEqual([unscored.commit]);
   expect(next.knowledgeTokens).toBe(0);
-  expect(next.temporaryTokens!).toBe(tokens(next.text.split("\n\n").slice(1).join("\n\n")));
+  expect(next.temporaryTokens!).toBe(tokens(next.text)); // The already-delivered guides are absent from this carrier.
   expect(next.temporaryTokens!).toBeLessThanOrEqual(1_000);
 });
 
@@ -101,6 +101,7 @@ test("a title is delivered once, is not re-sent, and a later body upgrades it", 
   expect(first.knowledgeCommitIds).toEqual([]);
   expect(first.knowledgeTitleCommitIds).toEqual([big.commit]);
   const after = { ...noVisibility(), knowledgeCommitIds: new Set(first.knowledgeCommitIds), knowledgeTitleCommitIds: new Set(first.knowledgeTitleCommitIds),
+    guideVersions: new Set(first.guideVersions),
     knowledgeTokens: first.knowledgeTokens!, temporaryTokens: first.temporaryTokens!, pointerTokens: first.pointerTokens! };
   expect(f.memory.injection(f.target, after).text).toBe(""); // not re-sent while it is still a title
   // Base room appears: the body is delivered although a title for the same version is visible.
@@ -118,6 +119,7 @@ test("delivery rows carry the titles and the temporary charge; a title does not 
   const first = f.memory.injection(f.target);
   const owner = "test";
   f.memory.store.recordKnowledgeDelivery({ owner, turnId: f.target.headTurnId }, [{ knowledgeCommitIds: first.knowledgeCommitIds, knowledgeTitleCommitIds: first.knowledgeTitleCommitIds,
+    guideVersions: first.guideVersions,
     knowledgeStates: [], knowledgeTokens: first.knowledgeTokens!, temporaryTokens: first.temporaryTokens!, pointerTokens: first.pointerTokens! }]);
   const view = deliveredView(f.memory.store.deliveredKnowledge({ owner, sessionId: f.session.id, branch: "main", headTurnId: f.target.headTurnId }));
   expect(view.knowledgeCommitIds.has(big.commit)).toBe(false);

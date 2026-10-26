@@ -215,6 +215,11 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   offer; a later prompt recomputes. Persistence, not an offered hook return, establishes visibility.
   Reopen, rewind and sibling navigation therefore derive solely from the selected native ancestry.
 
+  Before the first assistant reply allocates a memory session, provisional delivery follows the
+  selected branch chronologically, including compaction boundaries. Native compaction resets
+  Knowledge and guide delivery; custom compaction starts from its own recorded delivery key, if any.
+  The next material-bearing injection carries any missing reading and ordering guides.
+
 - Source identity is `(Trace Memory session, native session lineage, Pi entry id)`. Pi publishes one
   persisted lineage cursor for its selected foreground on reconcile and Turn end. Each lineage moves
   independently; closing retains its cursor and reopening adopts the same key. Fact liveness requires

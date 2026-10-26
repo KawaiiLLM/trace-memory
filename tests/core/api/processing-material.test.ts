@@ -94,7 +94,7 @@ test("N material shows each knowledge body's cap-check units count; injection do
     scoreAll(f.memory.store);
     setKnowledgeCapacity(f.memory, 20_000);
     const material = f.freeze().prepared!.text;
-    expect(material).toContain(`[constraint/project] (${words(body)}/${f.memory.config.writing.bodyWords} units, limit ${wordLimit(f.memory.config.writing.bodyWords)}) Fixture title\n${body}`);
+    expect(material).toContain(`(${words(body)}/${f.memory.config.writing.bodyWords} units, limit ${wordLimit(f.memory.config.writing.bodyWords)}) Fixture title\n${body}`);
     expect(material).not.toMatch(/\(\d+ tokens\)/); // 134: the Dreamer's pool-cost form never joins it for the same item
     const injection = f.memory.injection(f.target).text;
     expect(injection).toContain(body); // the body is delivered whole, without the length mark

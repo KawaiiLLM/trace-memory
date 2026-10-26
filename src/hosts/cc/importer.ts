@@ -3,9 +3,10 @@ import { StaleSourcePathError, type SourceEntry, type SourcePathState, type Stor
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
 import { coreHostOf, dropLostCoreSession, implicitCcProject, readBinding, withCcBindingLock, type CcBindingLock, type CcSessionBinding } from "./binding.ts";
+import { databaseIdentity, decodeCcInjection } from "./injection.ts";
 import { CcTranscriptCursor, CcTranscriptScan, CcTranscriptScanFailure, ccResultText, ccSourceBlocks, ccHumanUser, classifySourceRecord,
   nativeParentId, readTranscriptBootstrap, readTranscriptMetadata, type CcNativeNode, type CcNativeRecord, type CcSourceRecord,
-  type CcTranscriptSnapshot } from "./transcript.ts";
+  ccReceiptCarriers, type CcTranscriptSnapshot } from "./transcript.ts";
 
 /** Measurement and test-only hooks; every field is optional. `onIngestGap` reports each cooperative
  * pause point of the ingest loop (its length before the pause and once more at the end for the
@@ -410,7 +411,21 @@ export class CcProjection {
     };
 
     const visit = (record: CcNativeRecord, source: CcSourceRecord | null, raw: string, currentScan: CcTranscriptScan): void => {
-      if (!source) return;
+      if (!source) {
+        const carriers = ccReceiptCarriers(record);
+        if (!carriers.length) return;
+        const turnId = nearestTurn(record, currentScan);
+        if (turnId === null) return; // Unanchored evidence can only cause a conservative re-send.
+        for (const text of carriers) {
+          const receipt = decodeCcInjection(text, { db: databaseIdentity(this.config.dbPath), nativeSession: lineage, coreSession: sessionId });
+          if (!receipt?.guideVersions.length) continue;
+          const delivered = this.memory.store.deliveredKnowledge({ owner: coreHostOf(this.binding), sessionId, headTurnId: turnId });
+          const missing = receipt.guideVersions.filter(version => !delivered.guideVersions.has(version));
+          if (missing.length) this.memory.store.recordKnowledgeDelivery({ owner: coreHostOf(this.binding), turnId },
+            [{ knowledgeCommitIds: [], knowledgeStates: [], knowledgeTokens: 0, guideVersions: missing }]);
+        }
+        return;
+      }
       try {
         const committed = ingest(record, source, raw, currentScan);
         currentScan.associate(source.nativeId, committed.association);

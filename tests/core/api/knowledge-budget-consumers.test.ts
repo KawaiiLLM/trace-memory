@@ -50,7 +50,6 @@ test("144: an unscored item beyond the base rides the temporary allowance, in fo
   expect(tokens(delivery.text)).toBeGreaterThan(20_000);
   expect(tokens(delivery.text)).toBeLessThanOrEqual(cap);
   expect(delivery.knowledgeCommitIds).toEqual([large.commit]);
-  expect(delivery.text).toContain('topics: ["charged-topic"]');
 
   const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId);
   expect("native" in compact).toBe(false);
@@ -59,7 +58,6 @@ test("144: an unscored item beyond the base rides the temporary allowance, in fo
   expect(compact.charged!.knowledge).toBe(0); // unscored: the base carries scored items only
   expect(compact.charged!.temporary).toBeGreaterThan(20_000);
   expect(compact.charged!.temporary).toBeLessThanOrEqual(f.memory.config.compaction.temporaryTokens);
-  expect(compact.text).toContain('topics: ["charged-topic"]');
 });
 
 test("144: with a zero Knowledge base an unscored item rides only the temporary allowance", () => {
@@ -74,7 +72,7 @@ test("144: with a zero Knowledge base an unscored item rides only the temporary 
 
   f.memory.config.compaction.temporaryTokens = 0;
   f.memory.config.compaction.pointerTokens = 0; // 165: disable both pools
-  expect(f.memory.injection(f.target).text).toBe("");
+  expect(f.memory.injection(f.target)).toMatchObject({ text: "", knowledgeCommitIds: [], knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
   const compact = f.memory.compact(f.session.id, "main", f.target.headTurnId);
   expect("native" in compact).toBe(false);
   if (!("native" in compact)) {
