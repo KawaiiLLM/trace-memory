@@ -254,8 +254,9 @@ export default function (pi: ExtensionAPI) {
   const delivered = (target?: TaskTarget | { sessionId: number; branch: string; headTurnId: number | null }): VisibleView =>
     deliveredView(memory.store.deliveredKnowledge(target
       ? { owner: owner(), sessionId: target.sessionId, branch: target.branch, headTurnId: target.headTurnId }
-      : { owner: owner(), sessionId: null, headTurnId: null, pending: ctx.sessionManager.getBranch().flatMap(entry =>
-        entry.type === "custom_message" && entry.customType === tag ? [deliveryKey(entry)].filter(key => key !== undefined).map(key => ({ key })) : []) }));
+      : { owner: owner(), sessionId: null, headTurnId: null, pending: ctx.sessionManager.getBranch().flatMap<{ key: string | null; compaction?: boolean }>(entry =>
+        entry.type === "compaction" ? [{ key: deliveryKey(entry) ?? null, compaction: true }]
+          : entry.type === "custom_message" && entry.customType === tag ? [deliveryKey(entry)].filter(key => key !== undefined).map(key => ({ key })) : []) }));
   const deliveryPart = (block: { knowledgeCommitIds: number[]; knowledgeTitleCommitIds?: number[]; knowledgeStates?: { fromCommit: number; toCommits: number[] }[];
     knowledgeTokens?: number; temporaryTokens?: number; pointerTokens?: number; guideVersions?: string[]; text: string }) =>
     ({ knowledgeCommitIds: block.knowledgeCommitIds, knowledgeTitleCommitIds: block.knowledgeTitleCommitIds ?? [], knowledgeStates: (block.knowledgeStates ?? []).map(knowledgeStateKey),
