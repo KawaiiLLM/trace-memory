@@ -6,6 +6,7 @@ import { setKnowledgeInjection as setKnowledgeBase } from "../../knowledge-budge
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { TaskWorkspace } from "../../../src/core/workspace/run.ts";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { DEFAULT_WRITING_LIMITS, renderLimits } from "../../../src/core/prompts/limits.ts";
@@ -2761,6 +2762,26 @@ test("2026-10-26, 181 — a Dreamer run whose frozen candidates are no less unsc
   expect(executionReasons(f)).toEqual(["curate: no progress", "curate: no progress", "curate: no progress"]);
   expect(f.store.taskFailures(f.session.id).map(row => [row.phase, row.count])).toEqual([["dreaming", 3]]);
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull(); // each run was complete: nothing to resume
+});
+
+test("2026-10-26, 181 — a run that finished without progress counts even when a later error path reports it", async () => {
+  const f = dreamerFixture();
+  const current = f.item("Rule body, written by hand", { title: "Rule" });
+  const ref = versionRef(f.store, current.knowledgeId, current.commit);
+  f.dreamer.script.instead = { curate: async input => {
+    const result = await scriptedDreamer({ curate: { group1: workspaceBlock(`update ${ref}`, { reason: "Tidy" }, "Rule body, tidied") } }).agent(input);
+    updateKnowledge(f.store, f.path, current.knowledgeId, current.commit, "Rule body, edited by hand meanwhile, and longer than before", current.supports);
+    return result;
+  } };
+  // Cleanup fails only once the finishing commit is written, so the run reports the cleanup error, not its lack of progress.
+  const original = TaskWorkspace.prototype.remove;
+  const remove = vi.spyOn(TaskWorkspace.prototype, "remove").mockImplementation(function (this: TaskWorkspace) {
+    if (f.store.db.prepare("SELECT 1 FROM run_bodies WHERE json_extract(response, '$.finished') IS NOT NULL").get()) throw new Error("cleanup failed");
+    original.call(this);
+  });
+  try { expect(await f.dream()).toMatchObject({ outcome: "failure" }); } finally { remove.mockRestore(); }
+  expect(f.store.taskFailures(f.session.id).map(row => [row.phase, row.count])).toEqual([["dreaming", 1]]);
+  expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
 });
 
 test("2026-10-21, 144: '归档这个机制会取消' — a run whose pools are far over the old pool budgets completes, and nothing is archived for budget", async () => {
