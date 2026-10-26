@@ -11,6 +11,7 @@ var MEMORY_PHASES = ["noting", "dreaming"];
 var INDICATOR_ROLE = { noting: "accent", dreaming: "customMessageLabel" };
 function memoryStatusLine(input) {
   if (!input.enabled) return [{ role: "dim", text: "\u25CB off" }];
+  if (input.dormant) return [{ role: "warning", text: "\u25D0 dormant" }];
   const runningPhase = MEMORY_PHASES.find((phase) => input.running[phase]);
   const role = runningPhase ? INDICATOR_ROLE[runningPhase] : "dim";
   const glyph = runningPhase ? "\u25CF" : "\u25CB";
@@ -39,7 +40,7 @@ function readCcStatus(stateDir, nativeSessionId) {
 var CC_VERIFIED_VERSION = "2.1.293";
 
 // src/hosts/cc/status-entry.ts
-var ANSI = { accent: "\x1B[36m", success: "\x1B[32m", customMessageLabel: "\x1B[35m", dim: "\x1B[2m" };
+var ANSI = { accent: "\x1B[36m", success: "\x1B[32m", customMessageLabel: "\x1B[35m", warning: "\x1B[33m", dim: "\x1B[2m" };
 var RESET = "\x1B[0m";
 var paint = (role, text) => `${ANSI[role]}${text}${RESET}`;
 function executorAlive(pid) {
@@ -85,6 +86,7 @@ async function runCcStatusCommand(io = {}) {
     const alive = owned && executorAlive(status.pid);
     const segments = memoryStatusLine({
       enabled: status.enabled,
+      dormant: status.dormant,
       running: alive ? status.running : { noting: false, dreaming: false },
       counts: alive ? status.counts : void 0,
       cost: alive ? status.cost : void 0,

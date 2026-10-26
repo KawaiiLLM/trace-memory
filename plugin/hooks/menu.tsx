@@ -72,9 +72,9 @@ function buildContextSection(input) {
 var pendingRow = (label, value) => {
   if (value.tokens === null || value.trigger === null) return { label, tokens: null, trigger: null, ratio: null, percent: "?", amount: "?" };
   const ratio = value.trigger === 0 ? value.tokens === 0 ? 0 : 1 : Math.min(1, value.tokens / value.trigger);
-  const operations = value.unit === "operations";
-  const trigger = operations ? String(value.trigger) : formatCompactTokens(value.trigger);
-  const amount = operations ? `${value.atLeast ? "\u2265" : ""}${value.tokens} / ${trigger} Noter ops` : value.atLeast ? `\u2265${trigger} / ${trigger} (${(value.entries ?? 0).toLocaleString("en-US")} ${value.entries === 1 ? "entry" : "entries"})` : `${formatCompactTokens(value.tokens)} / ${trigger}`;
+  const items = value.unit === "items";
+  const trigger = items ? String(value.trigger) : formatCompactTokens(value.trigger);
+  const amount = items ? `${value.atLeast ? "\u2265" : ""}${value.tokens} / ${trigger} items` : value.atLeast ? `\u2265${trigger} / ${trigger} (${(value.entries ?? 0).toLocaleString("en-US")} ${value.entries === 1 ? "entry" : "entries"})` : `${formatCompactTokens(value.tokens)} / ${trigger}`;
   return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio), amount };
 };
 function buildPendingSection(input) {
@@ -128,7 +128,7 @@ function buildTraceMenu(input) {
 function buildSettingsBudgets(input) {
   return {
     rows: [{ label: "Knowledge base", value: formatTokens(input.base) }],
-    derivedLine: `\u2192 knowledge base ${formatTokens(input.base)} + body pool ${formatTokens(input.temporaryTokens)} + pointer pool ${formatTokens(input.pointerTokens)} = ${formatTokens(input.base + input.temporaryTokens + input.pointerTokens)} max input`
+    derivedLine: `\u2192 knowledge base ${formatTokens(input.base)} + temporary pool ${formatTokens(input.temporaryTokens)} = ${formatTokens(input.base + input.temporaryTokens)} max input`
   };
 }
 function buildSettingsWorkers(input) {
@@ -175,7 +175,7 @@ var TRACE_MENU_FIXTURE = {
   },
   pending: {
     noting: { tokens: 3200, trigger: 1e4 },
-    dreaming: { pending: { tokens: 12, trigger: 30, unit: "operations" } }
+    dreaming: { pending: { tokens: 12, trigger: 30, unit: "items" } }
   },
   spend: {
     session: 1.23,
@@ -193,7 +193,7 @@ var TRACE_MENU_FIXTURE_WITH_NOTICE = {
 };
 var TRACE_SETTINGS_FIXTURE = {
   database: "~/.trace-memory/trace.db",
-  budgets: { base: 2e4, temporaryTokens: 1e4, pointerTokens: 1e4 },
+  budgets: { base: 2e4, temporaryTokens: 1e4 },
   workers: [
     { phase: "Noter", model: "follow foreground", thinking: "inherit" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" }
