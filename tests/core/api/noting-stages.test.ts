@@ -1,4 +1,4 @@
-// Ticket 155 supersedes the two tasks/two steps contract with four independently resumed stages.
+// Four independently resumed stages; ticket 179 publishes facts after their check, knowledge after its own.
 import { afterEach, expect, test, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,7 +36,7 @@ for (const failed of NOTING_TASKS) test(`failure in ${failed} resumes only that 
   const f = fixture(async input => {
     calls.push(input);
     if (fail && input.task === failed) { input.reportRequest(REQUEST); return { ...OK, outcome: "failure", output: "provider failed" }; }
-    expect(f.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(f.memory.store.listSessionFacts(1).map(value => value.text)).toEqual(input.task.endsWith("knowledge") ? ["Use pnpm"] : []);
     expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
     await submit(input, f.memory, { noteInput: [fact], memoryInput: create });
     return OK;
@@ -44,10 +44,10 @@ for (const failed of NOTING_TASKS) test(`failure in ${failed} resumes only that 
   expect(await f.run()).toMatchObject({ outcome: "failure", problems: ["provider failed"] });
   const stage = NOTING_TASKS.indexOf(failed);
   expect(calls.map(input => input.task)).toEqual(NOTING_TASKS.slice(0, stage + 1));
-  expect(f.memory.store.listSessionFacts(1)).toEqual([]);
-  expect(f.memory.store.pendingEntries(1, "main", 1)).toHaveLength(2);
+  expect(f.memory.store.listSessionFacts(1).map(value => value.text)).toEqual(stage >= 2 ? ["Use pnpm"] : []);
+  expect(f.memory.progress(1, "main", 1).entries).toBe(2);
   expect(f.memory.store.taskFailures(1).find(row => row.phase === "noting")?.count).toBe(1);
-  const kept = f.memory.store.handoff(1, "noting");
+  const kept = f.memory.store.handoff(1, "noting", stage >= 2 ? "knowledge" : "facts");
   expect(kept?.nextTask).toBe(stage ? failed : undefined);
   calls.length = 0; fail = false; f.restart();
   expect(await f.run()).toMatchObject({ outcome: "success" });
@@ -121,8 +121,8 @@ for (const passed of ["extract-facts", "write-knowledge"] as const) test(`resume
   });
   await expect(f.run()).rejects.toThrow("interrupted after durable handoff");
   interruption.mockRestore();
-  expect(f.memory.store.handoff(1, "noting")?.nextTask).toBe(passed === "extract-facts" ? "check-facts" : "check-knowledge");
-  expect(f.memory.store.pendingEntries(1, "main", 1)).toHaveLength(2);
+  expect(f.memory.store.handoff(1, "noting", passed === "write-knowledge" ? "knowledge" : "facts")?.nextTask).toBe(passed === "extract-facts" ? "check-facts" : "check-knowledge");
+  expect(f.memory.progress(1, "main", 1).entries).toBe(2);
   calls.length = 0;
   f.restart();
   expect(await f.run()).toMatchObject({ outcome: "success", facts: [] });
@@ -141,7 +141,7 @@ test("a skipped facts check hands off to knowledge writing and a later failure c
   const f = fixture(async input => {
     calls.push(input.task);
     if (input.task === "write-knowledge") {
-      expect(f.memory.store.handoff(1, "noting")?.nextTask).toBe("write-knowledge");
+      expect(f.memory.store.handoff(1, "noting", "knowledge")?.nextTask).toBe("write-knowledge");
       if (fail) { input.reportRequest(REQUEST); return { ...OK, outcome: "failure", output: "provider failed" }; }
     }
     await submit(input, f.memory);
@@ -150,7 +150,7 @@ test("a skipped facts check hands off to knowledge writing and a later failure c
   expect(await f.run()).toMatchObject({ outcome: "failure", problems: ["provider failed"] });
   expect(calls).toEqual(["extract-facts", "write-knowledge"]);
   expect(f.memory.store.taskFailures(1).find(row => row.phase === "noting")?.count).toBe(1);
-  expect(f.memory.store.pendingEntries(1, "main", 1)).toHaveLength(2);
+  expect(f.memory.progress(1, "main", 1).entries).toBe(2);
   fail = false; calls.length = 0; f.restart();
   expect(await f.run()).toMatchObject({ outcome: "success", facts: [] });
   expect(calls).toEqual(["write-knowledge"]);
@@ -171,8 +171,8 @@ for (const task of ["check-facts", "check-knowledge"] as const) test(`${task} re
     return OK;
   });
   expect(await f.run()).toMatchObject({ outcome: "failure", problems: expect.arrayContaining([`check failed twice: ${task}`]) });
-  expect(f.memory.store.listSessionFacts(1)).toEqual([]);
-  expect(f.memory.store.handoff(1, "noting")?.nextTask).toBe(task);
+  expect(f.memory.store.listSessionFacts(1).map(value => value.text)).toEqual(task === "check-knowledge" ? ["Use pnpm"] : []);
+  expect(f.memory.store.handoff(1, "noting", task === "check-knowledge" ? "knowledge" : "facts")?.nextTask).toBe(task);
 });
 
 for (const task of ["write-knowledge", "check-knowledge"] as const) test(`${task} cannot alter checked facts, including after passing its stop`, async () => {
@@ -182,7 +182,7 @@ for (const task of ["write-knowledge", "check-knowledge"] as const) test(`${task
     return OK;
   });
   expect(await f.run()).toMatchObject({ outcome: "failure", problems: expect.arrayContaining(["facts.md: changed after check facts passed; restore it as it was"]) });
-  expect(f.memory.store.listSessionFacts(1)).toEqual([]);
+  expect(f.memory.store.listSessionFacts(1).map(value => value.text)).toEqual(["Use pnpm"]);
 });
 
 test("reverted blocks never publish and a surviving local fact label still resolves", async () => {
@@ -260,7 +260,7 @@ test("a Noter negation on a held branch flags its supporting knowledge when the 
   expect(result).toMatchObject({ outcome: "success" });
   if (result.outcome !== "success") throw new Error("Noter did not publish");
   expect(result.facts).toEqual([expect.objectContaining({ turnId: held.id })]);
-  expect(store.knowledgeStaleReasons(item.commit)).toEqual([{ reason: "negated_fact", detail: `F${oldFact} negated by Noter run R${result.runId}` }]);
+  expect(store.knowledgeStaleReasons(item.commit).map(value => value.reason)).toEqual(["negated_fact"]);
 });
 
 test("budgets count responses rather than tool calls and report growth without stopping at the budget", async () => {
@@ -295,7 +295,7 @@ for (const missing of ["field", "path"]) test(`knowledge rejects a missing files
   });
   const result = await f.run();
   expect(result).toMatchObject({ outcome: "failure", problems: expect.arrayContaining([expect.stringContaining(missing === "field" ? "missing required field `files`" : "path does not exist")]) });
-  expect(f.memory.store.listSessionFacts(1)).toEqual([]);
+  expect(f.memory.store.listSessionFacts(1).map(value => value.text)).toEqual(["Use pnpm"]);
   expect(f.memory.store.currentKnowledge(f.path)).toEqual([]);
 });
 
@@ -381,4 +381,184 @@ test("knowledge retrieval uses new knowledge, not new facts, and finds rephrased
   expect(relatedKnowledge(f.memory.store, scope, factOnly, 20)).not.toContain(`## K${cjk.knowledgeId}@v1`);
   const similar = { facts: seed("no-match"), knowledge: { name: "knowledge.md", text: knowledgeFile(f.memory, { ...create, title: "整理分批的推进方式", supports: [`F${raw!.id}`] }) } };
   expect(relatedKnowledge(f.memory.store, scope, similar, 20)).toContain(`## K${cjk.knowledgeId}@v1`);
+});
+
+test("fact and knowledge lanes overlap, each excludes duplicates, and knowledge publishes FIFO without advancing partial-batch progress", async () => {
+  const factEntered = Promise.withResolvers<void>(), releaseFacts = Promise.withResolvers<void>();
+  const knowledgeEntered = Promise.withResolvers<void>(), releaseKnowledge = Promise.withResolvers<void>();
+  const starts: { task: string; batch: number }[] = [];
+  const f = fixture(async input => {
+    const batch = input.entryIds[0]!;
+    starts.push({ task: input.task, batch });
+    if (batch === 1 && input.task === "extract-facts") { factEntered.resolve(); await releaseFacts.promise; }
+    if (batch === 1 && input.task === "write-knowledge") { knowledgeEntered.resolve(); await releaseKnowledge.promise; }
+    const entry = f.memory.store.getSourceEntry(batch)!;
+    await submit(input, f.memory, { noteInput: [{ title: `Batch ${batch}`, sources: `[T${entry.turnId}#E${entry.entryOrdinal}] ${entry.text}` }],
+      memoryInput: { ...create, title: `Rule ${batch}`, text: entry.text } });
+    return OK;
+  });
+  const other = sourceSeededMemory(join(f.dir, "memory.sqlite"), async () => { throw new Error("duplicate executor must not call the model"); });
+  cleanup.push(() => other.close());
+  const sibling = { ...f.path, branch: "sibling" };
+  other.store.selectSourcePath(1, sibling.branch, other.store.sourcePath(1, "main", 1).map(entry => entry.id));
+  const firstFacts = f.memory.noting({ ...f.path, lane: "facts" });
+  await factEntered.promise;
+  expect(await f.memory.noting({ ...f.path, lane: "facts" })).toMatchObject({ outcome: "dropped" });
+  expect(await other.noting({ ...sibling, lane: "facts" })).toMatchObject({ outcome: "dropped" });
+  expect(f.memory.store.listSessionFacts(1)).toEqual([]);
+  releaseFacts.resolve();
+  expect(await firstFacts).toMatchObject({ outcome: "success" });
+  expect(f.memory.store.listSessionFacts(1).map(value => value.text)).toEqual(["Use pnpm"]);
+  expect(f.memory.progress(1, "main", 1).entries).toBe(2);
+  const firstKnowledge = f.memory.noting({ ...f.path, lane: "knowledge" });
+  await knowledgeEntered.promise;
+  const second = f.memory.store.appendTurn({ sessionId: 1, parentTurnId: 1, kind: "turn", userPrompt: "Use yarn", assistantText: "Agreed", startedAt: "later" });
+  const path = { ...f.path, headTurnId: second.id };
+  expect(await f.memory.noting({ ...path, lane: "facts" })).toMatchObject({ outcome: "success" });
+  expect(await f.memory.noting({ ...path, lane: "knowledge" })).toMatchObject({ outcome: "dropped" });
+  expect(await other.noting({ ...sibling, lane: "knowledge" })).toMatchObject({ outcome: "dropped" });
+  expect(f.memory.store.listSessionFacts(1).map(value => value.text).sort()).toEqual(["Use pnpm", "Use yarn"]);
+  expect(f.memory.store.currentKnowledge(path)).toEqual([]);
+  expect(f.memory.progress(1, "main", second.id).entries).toBe(4);
+  expect(starts.filter(value => value.task === "write-knowledge")).toEqual([{ task: "write-knowledge", batch: 1 }]);
+  releaseKnowledge.resolve();
+  expect(await firstKnowledge).toMatchObject({ outcome: "success" });
+  expect(f.memory.progress(1, "main", second.id).entries).toBe(2);
+  expect(await f.memory.noting({ ...path, lane: "knowledge" })).toMatchObject({ outcome: "success" });
+  expect(f.memory.store.currentKnowledge(path).map(value => value.revision.text)).toEqual(["Use pnpm", "Use yarn"]);
+  expect(f.memory.progress(1, "main", second.id).entries).toBe(0);
+});
+
+test.each([{ wait: 5_000, reuse: true }, { wait: 5_001, reuse: false }])("knowledge prefix at configured boundary +$wait ms (reuse=$reuse) survives a failed lane and restart", async ({ wait, reuse }) => {
+  const inputs: NotingAgentInput[] = [];
+  let fail = true;
+  const f = fixture(async input => {
+    inputs.push(input);
+    if (input.task === "write-knowledge" && fail) { input.reportRequest(REQUEST); return { ...OK, outcome: "failure", output: "knowledge transport failed" }; }
+    await submit(input, f.memory, { noteInput: [fact], memoryInput: create });
+    return OK;
+  });
+  f.memory.config.noting.knowledgePrefixReuseMs = 5_000;
+  const entry = f.memory.store.getSourceEntry(1)!;
+  const prior = facts(f.memory, f.path, [{ title: "Earlier evidence", sources: [{ entry, text: "Earlier evidence body" }] }])[0]!;
+  knowledge(f.memory.store, f.path, "session", "constraint", [prior.id], "Keep existing knowledge");
+  expect(await f.memory.noting({ ...f.path, lane: "facts" })).toMatchObject({ outcome: "success" });
+  const committed = f.memory.store.handoff(1, "noting", "knowledge")!.detail!.noting!.committedAt;
+  const clock = vi.spyOn(Date, "now").mockReturnValue(committed + wait);
+  try {
+    expect(await f.memory.noting({ ...f.path, lane: "knowledge" })).toMatchObject({ outcome: "failure", problems: ["knowledge transport failed"] });
+    const first = inputs.find(value => value.task === "extract-facts")!, lane = inputs.find(value => value.task === "write-knowledge")!;
+    expect(lane.material.knowledge).toEqual(first.material.knowledge);
+    if (reuse) expect(lane.text).toBe(first.text);
+    else {
+      expect(lane.material.entries).toEqual([]);
+      expect(lane.material.factTitles).toBeUndefined();
+      expect(lane.material.earlierUsers).toBeUndefined();
+      expect(lane.material.receipts).toEqual([]);
+      expect(lane.supplied.entries).toEqual([]);
+      expect(lane.supplied.factIds).toEqual([prior.id + 1]);
+      expect(lane.material.facts!.join("\n")).toContain(`[F${prior.id + 1}]`);
+      expect(lane.text).not.toContain("Earlier evidence body");
+    }
+    const prefix = lane.text;
+    clock.mockReturnValue(committed + wait + 60 * 60_000);
+    fail = false; f.restart();
+    expect(await f.run()).toMatchObject({ outcome: "success" });
+    expect(inputs.filter(value => value.task === "write-knowledge").at(-1)!.text).toBe(prefix);
+    expect(f.memory.store.listSessionFacts(1).map(value => value.text).sort()).toEqual(["Earlier evidence body", "Use pnpm"]);
+    expect(f.memory.store.handoff(1, "noting", "knowledge")).toBeNull();
+  } finally { clock.mockRestore(); }
+});
+
+test("a knowledge claim taken over after its lease expired runs in its own execution and workspace; the predecessor returning late disturbs neither", async () => {
+  const entered = Promise.withResolvers<void>(), releaseStale = Promise.withResolvers<void>();
+  const replacementEntered = Promise.withResolvers<void>(), releaseReplacement = Promise.withResolvers<void>();
+  const writers: NotingAgentInput[] = [];
+  const f = fixture(async input => {
+    if (input.task === "write-knowledge") {
+      writers.push(input);
+      if (writers.length === 1) { entered.resolve(); await releaseStale.promise; }
+      else { replacementEntered.resolve(); await releaseReplacement.promise; }
+    }
+    await submit(input, f.memory, { noteInput: [fact], memoryInput: create });
+    return OK;
+  });
+  expect(await f.memory.noting({ ...f.path, lane: "facts" })).toMatchObject({ outcome: "success" });
+  const stale = f.memory.noting({ ...f.path, lane: "knowledge" });
+  await entered.promise;
+  f.memory.store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE session_id = ? AND phase = 'noting' AND lane = 'knowledge'").run(f.session.id);
+  const replacement = f.memory.noting({ ...f.path, lane: "knowledge" });
+  await replacementEntered.promise;
+  const [first, second] = writers as [NotingAgentInput, NotingAgentInput];
+  expect(second.workspace.dir).not.toBe(first.workspace.dir);
+  expect(second.executionId).not.toBe(first.executionId);
+  releaseStale.resolve();
+  expect(await stale).toMatchObject({ outcome: "failure" });
+  expect(existsSync(second.workspace.dir)).toBe(true); // the late predecessor's cleanup removed only its own directory
+  releaseReplacement.resolve();
+  expect(await replacement).toMatchObject({ outcome: "success" });
+  expect(f.memory.store.currentKnowledge(f.path).map(item => item.revision.text)).toEqual(["Use pnpm"]);
+  expect(f.memory.store.handoff(1, "noting", "knowledge")).toBeNull();
+  expect(f.memory.progress(1, "main", 1).entries).toBe(0);
+});
+
+/** Batch 1's fact commits; batch 2's fact "Use npm" then negates it while batch 1's knowledge lane has not yet run. */
+async function laterBatchNegates(knowledgeOps: (prior: number) => Record<string, unknown>[], beforeNegation?: (f: ReturnType<typeof fixture>, head: number) => void) {
+  let pnpm = 0;
+  const inputs: NotingAgentInput[] = [];
+  const f = fixture(async input => {
+    inputs.push(input);
+    const batch = input.entryIds[0]!, entry = f.memory.store.getSourceEntry(batch)!;
+    const sources = `[T${entry.turnId}#E${entry.entryOrdinal}] ${entry.text}`;
+    await submit(input, f.memory, batch === 1
+      ? { noteInput: [{ title: "Use pnpm", sources, caused_by: [[`F${prior.id}`, "strong"]] }], memoryInput: knowledgeOps(prior.id) }
+      : { noteInput: [{ title: "Use npm", sources, negate: [[`F${pnpm}`, "strong"]] }] });
+    return OK;
+  });
+  const entry = f.memory.store.getSourceEntry(1)!;
+  const prior = facts(f.memory, f.path, [{ title: "Earlier evidence", sources: [{ entry, text: "Earlier evidence body" }] }])[0]!;
+  expect(await f.memory.noting({ ...f.path, lane: "facts" })).toMatchObject({ outcome: "success" });
+  pnpm = f.memory.store.listSessionFacts(1).find(value => value.text === "Use pnpm")!.id;
+  const second = f.memory.store.appendTurn({ sessionId: 1, parentTurnId: 1, kind: "turn", userPrompt: "Use npm", assistantText: "Agreed", startedAt: "later" });
+  const path = { ...f.path, headTurnId: second.id };
+  beforeNegation?.(f, second.id);
+  expect(await f.memory.noting({ ...path, lane: "facts" })).toMatchObject({ outcome: "success" });
+  return { f, path, inputs, prior, pnpm, npm: f.memory.store.listSessionFacts(1).find(value => value.text === "Use npm")!.id };
+}
+
+test("knowledge published after a later batch negated a fact it cites is flagged, as sequential publication would; a revision that does not cite it is not", async () => {
+  const s = await laterBatchNegates(prior => [{ ...create, supports: ["$1"] }, { ...create, title: "Earlier evidence", text: "Earlier evidence", supports: [`F${prior}`] }]);
+  expect(await s.f.memory.noting({ ...s.path, lane: "knowledge" })).toMatchObject({ outcome: "success" });
+  expect(await s.f.memory.noting({ ...s.path, lane: "knowledge" })).toMatchObject({ outcome: "success" });
+  const stale = (text: string) => s.f.memory.store.knowledgeStaleReasons(s.f.memory.store.currentKnowledge(s.path).find(item => item.revision.text === text)!.revision.id);
+  expect(stale("Use pnpm")).toEqual([{ reason: "negated_fact", detail: expect.stringContaining(`F${s.pnpm} negated`) }]);
+  expect(stale("Earlier evidence")).toEqual([]);
+});
+
+test("a delayed knowledge prefix shows its facts with the relations they had when published, not those of later batches", async () => {
+  const s = await laterBatchNegates(() => [{ ...create, supports: ["$1"] }]);
+  s.f.memory.config.noting.knowledgePrefixReuseMs = 5_000;
+  const committed = s.f.memory.store.handoff(1, "noting", "knowledge")!.detail!.noting!.committedAt;
+  const clock = vi.spyOn(Date, "now").mockReturnValue(committed + 5_001);
+  try {
+    expect(await s.f.memory.noting({ ...s.path, lane: "knowledge" })).toMatchObject({ outcome: "success" });
+    const writer = s.inputs.find(input => input.task === "write-knowledge")!, shown = writer.material.facts!.join("\n");
+    expect(writer.supplied.factIds).toEqual([s.pnpm]);
+    expect(shown).toContain(`F${s.prior.id}`); // its own relation, made at publication
+    expect(shown).not.toContain(`F${s.npm}`); // the later batch's negation of it
+  } finally { clock.mockRestore(); }
+});
+
+test("delayed knowledge is flagged for a later negation whatever branch the foreground was on (user: A)", async () => {
+  // The foreground sits on a branch of its own, with none of the batches' evidence, for both the negation and the knowledge.
+  const s = await laterBatchNegates(() => [{ ...create, supports: ["$1"] }], (f) => {
+    const turn = f.memory.store.appendTurn({ sessionId: 1, kind: "turn", userPrompt: "elsewhere", assistantText: "unrelated", startedAt: "later" });
+    f.memory.selectEntries(1, "elsewhere", f.memory.store.listSourceEntries(1, turn.id).map(entry => entry.id));
+    f.memory.selectEntries(1, "main", f.memory.store.listSourceEntries(1).filter(entry => entry.turnId !== turn.id).map(entry => entry.id));
+    f.memory.store.setCurrentPath(1, "elsewhere", turn.id, "fg");
+  });
+  expect(await s.f.memory.noting({ ...s.path, lane: "knowledge" })).toMatchObject({ outcome: "success" });
+  expect(await s.f.memory.noting({ ...s.path, lane: "knowledge" })).toMatchObject({ outcome: "success" });
+  const revision = Number(s.f.memory.store.db.prepare("SELECT MAX(id) AS id FROM knowledge_revisions WHERE text = 'Use pnpm'").get()!.id);
+  expect(s.f.memory.store.knowledgeStaleReasons(revision).map(value => value.reason)).toEqual(["negated_fact"]);
 });

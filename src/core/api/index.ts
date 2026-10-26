@@ -24,7 +24,7 @@ export type { KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleVie
 import { randomUUID } from "node:crypto";
 import { DEFAULT_DREAMING_TRIGGER_KNOWLEDGE } from "../store/processing.ts";
 
-import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
+import { freezeNoting, restoreNoting, saveNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type FrozenNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, tokensJoined, JoinedTokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
 export { tokens, tokensJoined, JoinedTokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, formatCost, ENTRY_VIEW_VERSION } from "../render/index.ts";
@@ -33,7 +33,9 @@ export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.
 // out knowledge, facts or Raw itself.
 export { notingText, injectionText, compactText, knowledgeBlock, memoryBodyHash } from "../render/material.ts";
 export type { SharedMaterial, KnowledgeGroup, TaskRange, MemoryComposition, RunningTask } from "../render/material.ts";
+import { notingText } from "../render/material.ts";
 import type { RunningTask } from "../render/material.ts";
+import type { Handoff } from "../store/executions.ts";
 export { enrollmentDefault, sourceDigest } from "../store/index.ts";
 export { directoryAllocation } from "../project/directory.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
@@ -68,6 +70,8 @@ export interface TraceMemoryConfig {
   noting: {
     batchTokens: number;
     triggerTokens: number;
+    /** Maximum wait after fact publication for reusing the exact shared worker prefix. */
+    knowledgePrefixReuseMs: number;
     /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
     maxToolRounds: number;
     /** Dispatcher proposal, default 20 per list; awaiting maintainer confirmation (155). */
@@ -131,6 +135,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
   noting: {
     batchTokens: 10_000,
     triggerTokens: 10_000,
+    knowledgePrefixReuseMs: 4 * 60_000,
     maxToolRounds: 0,
     relatedFacts: 20,
     relatedKnowledge: 20,
@@ -861,18 +866,19 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       : { outcome: "dropped" };
     const target = { sessionId: input.sessionId, branch: input.branch, triggerEntryId: input.triggerEntryId,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
-    const closedSessionScope = cfg.closedSessionScope;
+    let closedSessionScope = cfg.closedSessionScope;
     let claim: TaskClaim | null = null;
     let empty = false, projectId: number, refusal: string | undefined;
     let executionId: string;
     let resumeRunId: number | undefined;
+    let notingHandoff: Handoff | undefined;
     let origin: import("../model/index.ts").TriggerOrigin | null = null;
-    let frozen: ReturnType<typeof freezeNoting> | DreamingFrozen | null;
+    let frozen: FrozenNoting | DreamingFrozen | null;
     let executionLimit = 0;
     try { frozen = store.transaction(() => {
       // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
       // with claim acquisition, before loading a closed target's evidence or constructing material.
-      if (input.borrowed && (!store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope) ||
+      if (input.borrowed && input.lane !== "knowledge" && (!store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope) ||
           !store.borrowedTargetActive(target))) return null;
       if (phase === "dreaming") {
         // 144 stage 4: one admission is one claim and one execution for the tasks left, whatever the budget of any pool.
@@ -903,6 +909,60 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         executionId = store.beginExecution({ sessionId: target.sessionId, phase, origin });
         return frozen;
       }
+      if (input.lane === "knowledge") {
+        const handoff = store.handoff(target.sessionId, "noting", "knowledge");
+        empty = !handoff;
+        if (!handoff ||
+            input.boundary?.maxEntryId !== undefined && handoff.entryIds.some(id => id > input.boundary!.maxEntryId!)) return null;
+        // The continuation runs on the batch's own frozen path; the caller's target authorizes and redirects nothing.
+        const frozen = restoreNoting(handoff.detail!.noting!.frozen);
+        Object.assign(target, { branch: frozen.branch, headTurnId: frozen.headTurnId, triggerEntryId: frozen.headEntryId });
+        // Ruling A: the lane's first admission, by the executor that admitted the fact lane, inherits that admission: the scope then in
+        // force replaces the current one and the frozen path is not re-validated. The executor must still be open, enabled and eligible
+        // for the target. Any later attempt (the hand-off no longer carries the admission), another executor, or a hand-off without
+        // one is a fresh admission under the current scope, and its frozen path must still lie within a retained cursor's path.
+        const detail = handoff.detail!.noting!;
+        const inherited = detail.admission?.borrowed && detail.admission.executorSessionId === input.executorSessionId ? detail.admission : undefined;
+        if (input.borrowed) {
+          if (inherited) closedSessionScope = inherited.scope;
+          if (!store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope) || !inherited && !store.borrowedPathRetained(target)) return null;
+        }
+        claim = store.acquireClaim(target, phase, executorId, input.borrowed,
+          () => input.executorSessionId === undefined || store.enabled(input.executorSessionId),
+          undefined, undefined, false, undefined, "knowledge");
+        if (!claim) return null;
+        notingHandoff = handoff;
+        resumeRunId = handoff.runId;
+        projectId = store.getSession(input.sessionId)!.projectId;
+        origin = store.triggerOrigin(target, target.triggerEntryId);
+        const previous = store.db.prepare("SELECT outcome FROM task_executions WHERE id=?").get(detail.executionId);
+        // Only the first claim of the lane continues the fact lane's open execution. A takeover is an attempt of its own: a
+        // predecessor returning after its lease must settle and clean up only what it was given, never the replacement's.
+        executionId = detail.startedAt === undefined && previous?.outcome === null ? detail.executionId
+          : store.beginExecution({ sessionId: target.sessionId, phase, head: handoff.entryIds[0], origin });
+        if (detail.startedAt === undefined) {
+          detail.startedAt = Date.now();
+          delete detail.admission; // consumed: the lane's first admission is the only one that continues the fact lane's
+          if (detail.startedAt - detail.committedAt > cfg.noting.knowledgePrefixReuseMs) {
+            const prepared = frozen.prepared!;
+            const ids = Object.values(detail.factIds), published = Math.max(...ids);
+            // Relations as they stood when the facts published: on the frozen path, made by a fact no later than the batch's last.
+            const relations = store.listFactRelationsOnPathOf(ids, target);
+            prepared.material = { knowledge: prepared.material.knowledge, knowledgeNotice: prepared.material.knowledgeNotice,
+              facts: ids.map(id => renderFact(store.getFact(id)!, relations.get(id)!.filter(relation => relation.fromFact <= published))), receipts: [], entries: [] };
+            prepared.text = `${notingText(prepared.material, prepared.range)}\n\nCall ${frozen.names.check} first: it names your stage and your files.`;
+            prepared.supplied = { ...prepared.supplied, entries: [], factIds: ids };
+          }
+          detail.frozen = saveNoting(frozen);
+          detail.executionId = executionId;
+          store.writeNotingHandoff(handoff);
+        }
+        if (detail.executionId !== executionId) {
+          detail.executionId = executionId;
+          store.writeNotingHandoff(handoff);
+        }
+        return frozen;
+      }
       const pendingNow = store.pendingEntries(target.sessionId, target.branch, target.headTurnId);
       const boundary = input.boundary;
       // A frozen manual target (18b) counts only entries/facts inside its snapshot; later arrivals
@@ -928,6 +988,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         ? notingPending(store, { ...target, boundary }, pendingNow).pending.map(e => e.id) : [];
       const resuming = handoff && handoff.entryIds.length > 0 && handoff.entryIds.every(id => admitted.includes(id)) ? handoff : undefined;
       resumeRunId = resuming?.runId;
+      notingHandoff = resuming;
       const selected = { ...input, ...target, ...(resuming ? { boundary: { exactEntryIds: resuming.entryIds } } : {}) };
       const admittedOrigin = store.triggerOrigin(target, target.triggerEntryId);
       // 70: `pendingNow` above already read this exact session/branch/head's full pending set inside
@@ -995,6 +1056,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     // Stage 4 §1.3: the effective deadline of a call never passes the backstop minus one gap, so the latest task deadline
     // always precedes the backstop and the backstop precedes lease expiry.
     const backstopAt = admittedAt + executionLimit;
+    const admission = phase === "noting" ? frozen as FrozenNoting : input;
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
       const own = (raw as AgentControl).call, call = own ?? lastCall;
@@ -1022,8 +1084,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       }, deadline - Date.now());
       const running = runAgent({ ...raw as object, executionId: executionId!,
         reader: { sessionId: target.sessionId, branch: target.branch, headTurnId: target.headTurnId, projectId, toolNames: { ...frozen!.names } },
-        signal, thinkingLevel: input.thinkingLevel,
-        subagentThinkingLevel: (raw as { thinking?: string }).thinking ?? input.subagentThinkingLevel,
+        signal, thinkingLevel: admission.thinkingLevel,
+        subagentThinkingLevel: (raw as { thinking?: string }).thinking ?? admission.subagentThinkingLevel,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); },
         setSpill: (save: (text: string) => string) => { if (call) call.spill = save; } });
       running.catch(() => undefined); // a runner that rejects after the race ended is not unhandled
@@ -1051,8 +1113,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (phase === "dreaming") armTimeout();
     try {
       result = phase === "noting"
-        ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind,
-          { workspaceRoot: input.workspaceRoot, executionId: executionId!, resumeRunId, registerFence: workspace => { fences.add(workspace); } })
+        ? await runNoting(store, frozen as FrozenNoting, agent, cfg, bind,
+          { workspaceRoot: input.workspaceRoot, executionId: executionId!, resumeRunId, lane: input.lane ?? "facts", handoff: notingHandoff,
+            admission: { borrowed: !!input.borrowed, executorSessionId: input.executorSessionId, scope: closedSessionScope }, registerFence: workspace => { fences.add(workspace); } })
         : await runDreaming(store, frozen as DreamingFrozen, agent, cfg, bind,
           { workspaceRoot: input.workspaceRoot, executionId: executionId!, registerFence: workspace => { fences.add(workspace); } });
     } finally {
@@ -1061,12 +1124,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       task.close(); tasks.delete(task);
       const originalClaim = claim as TaskClaim; // assigned by the successful admission transaction
       const owned = () => {
-        const current = store.getClaim(originalClaim.sessionId, originalClaim.phase);
+        const current = store.getClaim(originalClaim.sessionId, originalClaim.phase, originalClaim.lane);
         return current && current.token === originalClaim.token && current.executorId === originalClaim.executorId
           && !current.reserved && current.expiresAt > Date.now();
       };
       try {
-        if (!store.closed && result && result.outcome !== "empty" && result.outcome !== "dropped") {
+        if (!store.closed && result && result.outcome !== "empty" && result.outcome !== "dropped" &&
+            !(phase === "noting" && input.lane === "facts" && result.outcome === "success")) {
           const terminal = result;
           // §3.4, in this order. Only user stop, memory off and executor exit are not failures; a lost claim is one, for both phases (146: and it counts toward the streak of both).
           const lost = !owned();
@@ -1129,7 +1193,17 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
     notingBatch: (target, boundary) => notingBatch(store, notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
     tools: (context) => bindTools(store, read, context).tools,
-    noting: input => execute("noting", input) as Promise<NotingResult>,
+    noting: async input => {
+      if (input.lane) return execute("noting", input) as Promise<NotingResult>;
+      if (store.handoff(input.sessionId, "noting", "knowledge"))
+        return execute("noting", { ...input, lane: "knowledge" }) as Promise<NotingResult>;
+      const facts = await execute("noting", { ...input, lane: "facts" }) as NotingResult;
+      if (facts.outcome !== "success") return facts;
+      const knowledge = await execute("noting", { ...input, lane: "knowledge" }) as NotingResult;
+      if (facts.problems?.length && knowledge.outcome !== "empty" && knowledge.outcome !== "dropped")
+        knowledge.problems = [...facts.problems, ...(knowledge.problems ?? [])];
+      return knowledge;
+    },
     dream: input => execute("dreaming", input) as Promise<DreamingResult>,
     ...read,
     declareProject: (sessionId, name, source = "mark", path) => {

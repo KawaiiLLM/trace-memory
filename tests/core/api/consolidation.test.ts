@@ -1,4 +1,4 @@
-// Former C facade contracts that survive retirement now exercise joint N terminal publication.
+// Former C facade contracts that survive retirement exercise the two-lane N publication protocol.
 // C-only fact triggers, processing watermarks and immediate-commit protocols have no live replacement.
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -61,7 +61,7 @@ function deferred() {
   return resolve;
 }
 
-test("freezes branch, Raw membership and references until a single terminal publication", async () => {
+test("freezes branch, Raw membership and references through both lane publications", async () => {
   const old = fact(), existing = knowledge(old.id);
   const frozen = memory.store.sourcePath(sessionId, "main", old.turnId).map(entry => entry.id);
   const resolve = deferred();
@@ -87,7 +87,7 @@ test("freezes branch, Raw membership and references until a single terminal publ
 });
 
 for (const bad of ["shape", "failure", "cancelled", "missing request", "throw", "abort"] as const) {
-  test(`${bad} records the attempt, advances neither layer and releases admission`, async () => {
+  test(`${bad} records the attempt, keeps the batch pending and releases admission`, async () => {
     const evidence = fact();
     script.push(async input => {
       if (bad === "throw" || bad === "abort") { const error = new Error("stopped"); error.name = bad === "abort" ? "AbortError" : "Error"; throw error; }
@@ -103,7 +103,7 @@ for (const bad of ["shape", "failure", "cancelled", "missing request", "throw", 
     expect(memory.store.getRun(result.runId)!.outcome).toBe(expected);
     expect(memory.store.currentKnowledge()).toEqual([]);
     expect(memory.store.listSessionFacts(sessionId)).toHaveLength(1);
-    expect(memory.pendingEntries(sessionId, "main", evidence.turnId)).toHaveLength(1);
+    expect(memory.progress(sessionId, "main", evidence.turnId).entries).toBe(1);
     expect(memory.store.getClaim(sessionId, "noting")).toBeNull();
     queue(empty); expect((await run()).outcome).toBe("success");
   });
@@ -148,7 +148,7 @@ for (const bad of ["missing fact", "foreign fact", "late fact", "untagged base",
   expect(result.outcome, JSON.stringify(result)).toBe("failure");
   expect(memory.store.listKnowledgeRevisions()).toHaveLength(1);
   expect(memory.store.currentCommit(base.knowledgeId)[0]!.id).toBe(base.commit);
-  expect(memory.pendingEntries(sessionId, "main", late.turnId)).toHaveLength(2);
+  expect(memory.progress(sessionId, "main", late.turnId).entries).toBe(2);
 });
 
 for (const sameProject of [false, true]) test(`independent sessions publish while another N is pending (same project: ${sameProject})`, async () => {
@@ -163,7 +163,7 @@ for (const sameProject of [false, true]) test(`independent sessions publish whil
   expect(memory.store.listConsolidatedProjectFacts(projectId)).toEqual([]);
 });
 
-test("Raw progress failure inside terminal publication rolls back facts, knowledge and success audit", async () => {
+test("Raw progress failure inside fact publication rolls back facts, knowledge and success audit", async () => {
   const evidence = fact();
   script.push(async input => {
     await submit(input, memory, { noteInput: [{ title: "New episode", sources: `[T${evidence.turnId}#E1] New episode` }], memoryInput: { ...create(evidence.id), supports: ["$1"] } });
@@ -194,14 +194,14 @@ test("simulation v7m Chinese evidence remains traceable through N knowledge publ
   for (const source of fixture.facts) expect(memory.trace(`F${ids.get(source.id)}`)).toContain(source.text);
 });
 
-test("one malformed reason prevents valid siblings and Raw progress from publishing", async () => {
+test("one malformed reason prevents sibling knowledge publication and complete-batch progress", async () => {
   const evidence = fact(), good = create(evidence.id);
   queue([good, { ...good, text: "Second conclusion", reason: "   " }]);
   const result = await run();
   expect(result.outcome).toBe("failure");
   expect("problems" in result && result.problems?.join(" ")).toContain("reason");
   expect(memory.store.currentKnowledge()).toEqual([]);
-  expect(memory.pendingEntries(sessionId, "main", evidence.turnId)).toHaveLength(1);
+  expect(memory.progress(sessionId, "main", evidence.turnId).entries).toBe(1);
 });
 
 // 144 supersedes the 200-versus-1000 half of this case: a body over 200 estimated tokens is now refused at the write call.

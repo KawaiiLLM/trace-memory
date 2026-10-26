@@ -8,7 +8,6 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { readBinding, recordSessionStart, updateBinding, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
 import { controlSession } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator } from "../../src/hosts/cc/lifecycle.ts";
-import { CcTaskScheduler } from "../../src/hosts/cc/scheduler.ts";
 import { handleCcHook } from "../../src/hosts/cc/index.ts";
 import { readCcStatus, removeCcStatus, statusPath, writeCcStatus, type CcStatusFile } from "../../src/hosts/cc/status.ts";
 import { runCcStatusCommand } from "../../src/hosts/cc/status-entry.ts";
@@ -46,51 +45,6 @@ test("readCcStatus returns null for a missing file and removeCcStatus is idempot
   removeCcStatus(dir, "s1");
   expect(readCcStatus(dir, "s1")).toBeNull();
   removeCcStatus(dir, "s1"); // idempotent
-});
-
-// --- scheduler.ts: notify at admission and at settlement --------------------------------------------
-
-const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-75.db", stateDir: "/tmp/unused-75",
-  notingModel: "synthetic", notingThinking: "medium",
-  "dreaming.model": "synthetic", "dreaming.thinking": "medium",
-  worker: { cwd: "/tmp", claudeExecutable: "/missing/claude", contextWindows: { synthetic: 200_000, sonnet: 200_000 } } }).worker;
-const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
-  selectedEntryIds: [1, 2], selectedCount: 2, selectedTailId: 2,
-  selectedAppendedEntryIds: [1, 2], appendedEntryIds: [1, 2], problems: [], snapshot: {} as any, bootstrap: true };
-
-test("scheduler notifies admission and settlement, and a failing notify never blocks a task", async () => {
-  const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-  let release!: (value: unknown) => void;
-  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: {} },
-    store: { enabled: () => true, pendingEntryIds: () => [1, 2], getClaim: () => null, closedTasks: () => [],
-      getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "s0" },
-    taskEligibility: vi.fn((phase: string) => ({ due: phase === "noting" })),
-    noting: vi.fn(async () => { await new Promise(resolve => { release = resolve; }); return { outcome: "success", facts: [] }; }),
-    dream: vi.fn(async () => ({ outcome: "success" })) };
-  const calls: string[] = [];
-  const scheduler = new CcTaskScheduler(memory as any, worker, () => {}, reason => { calls.push(reason); });
-  scheduler.reconcile(projection);
-  expect(calls).toEqual(["noting admitted"]); // Newly imported bootstrap history checks once.
-  scheduler.turnEnd(projection, scheduler.catchupTicket());
-  await tick();
-  expect(calls).toEqual(["noting admitted"]); // admission fires synchronously, before the run settles
-  release(undefined);
-  await until(() => calls.length > 1);
-  expect(calls).toEqual(["noting admitted", "noting settled"]);
-});
-
-test("a throwing notify never prevents admission or settlement (fault isolation)", async () => {
-  const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-  const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: {} },
-    store: { enabled: () => true, pendingEntryIds: () => [1, 2], getClaim: () => null, closedTasks: () => [],
-      getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "s0" },
-    taskEligibility: vi.fn((phase: string) => ({ due: phase === "noting" })),
-    noting: vi.fn(async () => ({ outcome: "success", facts: [] })), dream: vi.fn() };
-  const scheduler = new CcTaskScheduler(memory as any, worker, () => {}, () => { throw new Error("publish exploded"); });
-  scheduler.reconcile(projection);
-  scheduler.turnEnd(projection, scheduler.catchupTicket());
-  await tick(); await tick();
-  expect(memory.noting).toHaveBeenCalledTimes(1); // admission proceeded despite the throwing hook
 });
 
 // --- lifecycle.ts: the publisher wired into a real CcCoordinator ------------------------------------

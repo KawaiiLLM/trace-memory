@@ -17,7 +17,7 @@ type Result = { outcome: string; problems?: string[]; reason?: string; automatic
 
 function fixture() {
   const memory = { executorId: "ours", config: { closedSessionScope: "project" }, cancelTasks: vi.fn(),
-    store: { enabled: () => true, pendingEntryIds: () => [], getClaim: () => null, closedTasks: () => [], progressSignal: () => "sig" },
+    store: { enabled: () => true, handoff: () => null, pendingEntryIds: () => [], incompleteEntryIds: () => [], getClaim: () => null, closedTasks: () => [], progressSignal: () => "sig" },
     taskEligibility: vi.fn(() => ({ due: false })),
     noting: vi.fn(async (): Promise<Result> => ({ outcome: "success" })),
     dream: vi.fn(async (_input: unknown): Promise<Result> => ({ outcome: "success" })) };

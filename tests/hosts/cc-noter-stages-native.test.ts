@@ -53,7 +53,7 @@ for (const variant of ["published", "corrected-at-stop", "unfixed"] as const) te
     const task = raw as CcAgentTask;
     if (task.kind !== "noting") throw new Error("unexpected Dreamer");
     workspace = task.workspace; firsts.push(requests.length);
-    expect(memory.store.listSessionFacts(1)).toEqual([]);
+    expect(memory.store.listSessionFacts(1).map(fact => fact.title)).toEqual(task.task.endsWith("knowledge") ? ["Episode one, verified"] : []);
     expect(memory.store.currentKnowledge()).toEqual([]);
     const result = await new CcAgentWorker(settings, { environment: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: configDir,
       TMPDIR: cwd, CLAUDE_CODE_TMPDIR: cwd, ANTHROPIC_BASE_URL: loopback.url, ANTHROPIC_API_KEY: "sk-ant-local-only", CLAUDE_CODE_MAX_RETRIES: "0", ...opts } }).run(task, 0);

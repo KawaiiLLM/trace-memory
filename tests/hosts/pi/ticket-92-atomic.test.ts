@@ -18,8 +18,8 @@ function frozenRead(memory: ReturnType<typeof sourceSeededMemory>, task: NotingA
 
 // Tickets 113, 116 and 117 (held slots, receipts, the closing review round) are superseded for the Noter on 2026-10-22: it writes
 // two files, and a request is a task's check, its writes and its stop. What this file keeps is the atomic publication seen on a
-// real Pi child.
-for (const ending of ["success", "error"] as const) test(`04: actual Pi worker leaves its two files private until the ${ending} terminal`, async () => {
+// real Pi child. Ticket 179: the facts file publishes when check-facts passes; the knowledge file stays private until the final terminal.
+for (const ending of ["success", "error"] as const) test(`04: actual Pi worker publishes facts at their check and keeps knowledge private until the ${ending} terminal`, async () => {
   const f = await fixture();
   const memory = sourceSeededMemory(join(f.h.dir, "atomic.sqlite"), raw => {
     const task = raw as NotingAgentInput;
@@ -35,9 +35,10 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker l
     const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "A durable rule", assistantText: "Acknowledged", startedAt: "now" });
     const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     let rounds = 0;
+    const factsSeen: number[] = [];
     f.script(body => {
       rounds++;
-      expect(memory.store.listSessionFacts(session.id)).toEqual([]);
+      factsSeen.push(memory.store.listSessionFacts(session.id).length);
       expect(memory.store.currentKnowledge(path)).toEqual([]);
       if (ending === "error" && writes(body) >= 1 && JSON.stringify(body.messages).includes("Task: write-knowledge")) return broken();
       return noterTurn(body, { title: "Durable rule", sources: "[T1#E1] User set a durable rule" }, usage(),
@@ -46,7 +47,11 @@ for (const ending of ["success", "error"] as const) test(`04: actual Pi worker l
     const result = await memory.noting({ ...path });
     expect(result.outcome).toBe(ending === "success" ? "success" : "failure");
     expect(rounds).toBeGreaterThanOrEqual(ending === "success" ? 5 : 3);
-    expect(memory.store.listSessionFacts(session.id)).toHaveLength(ending === "success" ? 1 : 0);
+    // The fact lane's rounds see no fact; every later round sees the committed one, and a knowledge failure does not take it back.
+    expect(factsSeen[0]).toBe(0);
+    expect(factsSeen).toEqual([...factsSeen].sort());
+    expect(factsSeen.at(-1)).toBe(1);
+    expect(memory.store.listSessionFacts(session.id)).toHaveLength(1);
     expect(memory.store.currentKnowledge(path)).toHaveLength(ending === "success" ? 1 : 0);
     if (!("runId" in result)) throw new Error("missing audit");
     const audit = JSON.parse(memory.store.getRun(result.runId!)!.response!);

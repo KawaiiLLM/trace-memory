@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { TriggerOrigin } from "../model/index.ts";
-import type { Store, RunInput, Phase } from "./index.ts";
+import type { Store, RunInput, Phase, ClosedSessionScope } from "./index.ts";
 import { ALL_POOLS } from "./processing.ts";
 import type { Cluster } from "../dreaming/clustering.ts";
 
@@ -38,11 +38,14 @@ ${TASK_FAILURES_TABLE};
 CREATE TABLE IF NOT EXISTS task_handoffs (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   phase TEXT NOT NULL CHECK (phase IN ('noting','dreaming')),
+  lane TEXT NOT NULL DEFAULT 'facts' CHECK(lane IN ('facts','knowledge') AND (phase = 'noting' OR lane = 'facts')),
+  batch INTEGER NOT NULL DEFAULT 0 CHECK(lane = 'facts' AND batch = 0 OR lane = 'knowledge' AND batch > 0),
   next_task TEXT NOT NULL,
   run_id INTEGER NOT NULL REFERENCES runs(id),
   branch TEXT, entry_ids TEXT,
+  detail TEXT,
   created_at TEXT NOT NULL,
-  PRIMARY KEY (session_id, phase)
+  PRIMARY KEY (session_id, phase, lane, batch)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_failure_head ON task_failures(session_id,phase,head) WHERE head IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_failure_pool ON task_failures(session_id,phase,pool) WHERE pool IS NOT NULL;
@@ -90,11 +93,18 @@ export function beginExecution(store: Store, task: LogicalTask): string {
 
 /** What a passed first task leaves for the second: the files live in the first task's run body, so a restarted or
  * borrowing executor finds them with this one indexed read. */
-export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; nextTask: string; runId: number; branch: string | null; entryIds: number[]; createdAt: string;
+export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; lane?: "facts" | "knowledge"; batch?: number; nextTask: string; runId: number; branch: string | null; entryIds: number[]; createdAt: string;
   /** Frozen incremental groups and shared prefix survive an interrupted run. */
   detail?: HandoffDetail }
 export interface DreamerBoundary { fact: number; revision: number; versions: Record<string, number> }
 export interface HandoffDetail {
+  noting?: { frozen: string; factIds: Record<string, number>; committedAt: number; executionId: string; startedAt?: number;
+    /** The highest fact id below this batch's own: facts above it were committed with or after the batch. */
+    factsAfter: number;
+    /** How the fact lane was admitted (ticket 179, user ruling): the knowledge lane's first admission, by that same executor, keeps it, so
+     * the borrowing scope in force then, not now, governs both lanes and the frozen path is not checked again. That admission consumes
+     * the field; a hand-off without it (retry, takeover, another executor, older data) is admitted afresh. */
+    admission?: { borrowed: boolean; executorSessionId?: number; scope: ClosedSessionScope } };
   fullCheck?: boolean;
   clusteringItems?: number[];
   candidates?: number[];
@@ -107,15 +117,16 @@ export interface HandoffDetail {
   /** Last successful run's covered versions, distinct from this run's publication boundary. */
   baselineVersions?: DreamerBoundary["versions"];
 }
-export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"]): Handoff | null {
-  const row = store.db.prepare("SELECT * FROM task_handoffs WHERE session_id = ? AND phase = ?").get(sessionId, phase);
-  return row ? { sessionId, phase, nextTask: String(row.next_task), runId: Number(row.run_id), branch: row.branch === null ? null : String(row.branch),
+export function readHandoff(store: Store, sessionId: number, phase: Handoff["phase"], lane = "facts"): Handoff | null {
+  const row = store.db.prepare("SELECT * FROM task_handoffs WHERE session_id = ? AND phase = ? AND lane = ? ORDER BY batch LIMIT 1").get(sessionId, phase, lane);
+  return row ? { sessionId, phase, lane: row.lane as "facts" | "knowledge", batch: Number(row.batch),
+    nextTask: String(row.next_task), runId: Number(row.run_id), branch: row.branch === null ? null : String(row.branch),
     entryIds: row.entry_ids === null ? [] : JSON.parse(String(row.entry_ids)) as number[], createdAt: String(row.created_at),
     ...(row.detail === null ? {} : { detail: JSON.parse(String(row.detail)) as NonNullable<Handoff["detail"]> }) } : null;
 }
 export function writeHandoff(store: Store, handoff: Omit<Handoff, "createdAt">): void {
-  store.db.prepare("INSERT OR REPLACE INTO task_handoffs(session_id,phase,next_task,run_id,branch,entry_ids,created_at,detail) VALUES (?,?,?,?,?,?,?,?)")
-    .run(handoff.sessionId, handoff.phase, handoff.nextTask, handoff.runId, handoff.branch, JSON.stringify(handoff.entryIds), new Date().toISOString(),
+  store.db.prepare("INSERT OR REPLACE INTO task_handoffs(session_id,phase,lane,batch,next_task,run_id,branch,entry_ids,created_at,detail) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run(handoff.sessionId, handoff.phase, handoff.lane ?? "facts", handoff.batch ?? 0, handoff.nextTask, handoff.runId, handoff.branch, JSON.stringify(handoff.entryIds), new Date().toISOString(),
       handoff.detail ? JSON.stringify(handoff.detail) : null);
 }
 /** A publication that processed any entry of the hand-off's batch ends the hand-off: the rest of that batch can no longer be taken whole. */

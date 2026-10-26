@@ -2,8 +2,9 @@ import { loadPrompt } from "../prompts/load.ts";
 import { readingGuide } from "../render/reading-guide.ts";
 import { withRetrievalPolicy } from "../render/retrieval-policy.ts";
 import { createHash } from "node:crypto";
-import { type Fact, type Turn, type WritingLimits } from "../model/index.ts";
+import { type Fact, type Turn, type ToolCall, type WritingLimits } from "../model/index.ts";
 import type { Store, RunInput, SourceEntry, SourceEntryMeta } from "../store/index.ts";
+import type { Handoff } from "../store/executions.ts";
 import { isThinkingOnly, type HumanUserDetector } from "../model/source.ts";
 import type { bindTools } from "../api/tools.ts";
 import { pricedToolDefinitions, notingToolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
@@ -36,11 +37,13 @@ const fixedCost = (names: ToolNames, native: number, limits: WritingLimits) => {
   return cost;
 };
 
-/** All four tasks start with identical material; instructions arrive in the first check result. */
+/** Stage instructions arrive in the first check result, keeping the prepared lane prefix stable. */
 const CHECK_FIRST = "Call {{tool.check}} first: it names your stage and your files.";
 
 export interface NotingInput extends TaskOptions {
   sessionId: number;
+  /** Hosts reserve these independently; omitted runs the two lanes in order. */
+  lane?: "facts" | "knowledge";
   branch: string;
   headTurnId: number;
   /** Host model capacity (27a): `inputTokens` is the model's context window minus the host's fixed
@@ -69,7 +72,7 @@ export interface NotingAgentInput extends AgentControl {
   prompt: string;
   promptHash: string;
   material: NotingMaterial;
-  /** Identical prepared first message for all four stages. */
+  /** Prepared first message, frozen for this lane and retained on resume. */
   text: string;
   /** 29a/29b: the identities this text actually carries, so the host can persist a carrier for the
    * entry it puts the text in and a later context can prove what it holds. Budget omissions are
@@ -154,8 +157,20 @@ export const notingBatch = (store: Store, pending: readonly SourceEntryMeta[], c
   return { entries, views, rendered };
 };
 
+/** Durable task material carried from the fact lane into the knowledge lane. */
+export interface FrozenNoting {
+  sessionId: number; branch: string; headTurnId: number; entries: SourceEntry[]; headEntryId?: number;
+  turns: { turn: Turn; calls: ToolCall[] }[];
+  harness?: string; model: string; names: ToolNames; prompt: string; promptHash: string; taskPrompts: StagePrompts;
+  thinkingLevel?: string; subagentThinkingLevel?: string;
+  prepared?: {
+    range: { from: string; to: string }; views: Map<number, EntryView>;
+    material: NotingMaterial; text: string; selectedEntryIds: number[]; supplied: SuppliedMaterial;
+  };
+}
+
 export function freezeNoting(store: Store, input: NotingInput, config: TraceMemoryConfig, resultText: ResultExtractor = rawResultText,
-  pendingAll?: SourceEntryMeta[], humanUser?: HumanUserDetector) {
+  pendingAll?: SourceEntryMeta[], humanUser?: HumanUserDetector): FrozenNoting {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
   if (session.host.startsWith("cc:") && !input.toolNames) throw new Error("CC Noter launch requires exposed tool names");
@@ -221,9 +236,9 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
         assistantText: selected.filter(e => e.role === "assistant" && e.text).map(e => e.text).join("\n") || null },
         calls: toolCalls(turn.id).filter(c => ordinals.has(c.ordinal)) };
     });
-    const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], headEntryId, turns,
+    const frozen = { sessionId: session.id, branch: input.branch, headTurnId: input.headTurnId, entries: [...entries], headEntryId, turns,
       harness: session.host.startsWith("pi:") ? "Pi agent" : session.host.startsWith("cc:") ? "Claude Code" : session.host,
-      model: input.model ?? "session" };
+      model: input.model ?? "session", thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel };
     const endpoint = entries.at(-1)!;
     const assembled = readFacade(store, { ...config, compaction: { ...config.compaction,
       rawTokens: config.noting.batchTokens, factsTokens: history, temporaryTokens: temporary } }, undefined, resultText, humanUser)
@@ -268,7 +283,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   if (pending.length) throw new Error(NOTING_CAPACITY
     + `it costs ${lastPrice} tokens`
     + `${input.capacity ? ` against the ${input.capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
-  return { sessionId: session.id, branch: input.branch, entries, turns: [], model: input.model ?? "session", prepared: undefined,
+  return { sessionId: session.id, branch: input.branch, headTurnId: input.headTurnId, entries, turns: [], model: input.model ?? "session", prepared: undefined,
+    thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel,
     names, prompt, taskPrompts, promptHash: createHash("sha256").update(prompt).digest("hex") };
 }
 
@@ -315,13 +331,17 @@ export interface NotingRunOptions {
   executionId: string;
   /** The latest passed stage's run, whose files seed the failed next stage. */
   resumeRunId?: number;
+  lane: "facts" | "knowledge";
+  /** The fact lane's admission, kept in the knowledge hand-off. */
+  admission?: NonNullable<NonNullable<Handoff["detail"]>["noting"]>["admission"];
+  handoff?: Handoff;
   /** Registers the run's workspace with the cancellation fence (stage 4 §1.5): closing the task closes it. */
   registerFence?(workspace: { close(): void }): void;
 }
 
-/** Four independently resumed stages; empty checks pass without a model call before terminal publication. */
+/** One independently resumed lane; empty checks pass without a model call before lane publication. */
 export async function runNoting(
-  store: Store, frozen: ReturnType<typeof freezeNoting>, runAgent: RunAgent,
+  store: Store, frozen: FrozenNoting, runAgent: RunAgent,
   config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput, noting?: { check(): string }) => ReturnType<typeof bindTools>,
   options: NotingRunOptions,
 ): Promise<NotingResult> {
@@ -342,11 +362,14 @@ export async function runNoting(
       toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } };
   const entryIds = entries.map(e => e.id);
   const scope: NotingScope = { sessionId, branch, range, entryIds };
-  const workspace = new NotingWorkspace(store, scope, options.workspaceRoot ?? defaultWorkspaceRoot(), sessionId, options.executionId, frozen.taskPrompts, config.noting);
+  const workspace = new NotingWorkspace(store, scope, options.workspaceRoot ?? defaultWorkspaceRoot(), sessionId, options.executionId, frozen.taskPrompts, config.noting, options.lane);
   options.registerFence?.(workspace);
   let previousRunId = options.resumeRunId;
+  const seed = options.resumeRunId === undefined ? undefined : resumedFiles(store, options.resumeRunId, options.handoff?.nextTask);
+  // Pre-lane hand-offs can already have checked facts, but have not published them yet.
+  const publicationOnly = options.lane === "facts" && !!seed?.nextTask.endsWith("knowledge");
 
-  /** A passing intermediate stage keeps only an audit and handoff, never facts or knowledge. */
+  /** Passing writer stages keep the audit and hand-off; checkers publish their lane. */
   const runTask = async (task: NotingTask): Promise<NotingResult | undefined> => {
     const started = Date.now();
     const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
@@ -356,9 +379,9 @@ export async function runNoting(
     const noWork = workspace.noWork();
     try {
       let result: RunAgentResult;
-      if (noWork) {
+      if (noWork || publicationOnly) {
         workspace.passEnd();
-        result = { outcome: "success", output: "Skipped empty check" };
+        result = { outcome: "success", output: publicationOnly ? "Publishing saved checked facts" : "Skipped empty check" };
       } else {
         const agentInput: NotingAgentInput = { kind: "noting", task, entryIds, sessionId, branch, range,
           model, prompt: frozen.prompt!, promptHash: frozen.promptHash!,
@@ -378,23 +401,40 @@ export async function runNoting(
       const final = result.outcome === "success" ? workspace.check() : undefined;
       const unfinished = result.outcome === "success" ? workspace.unfinished() : undefined;
       const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)]
-        : !noWork && requestMissing(result) ? ["runAgent must return the exact provider request"] : [...(unfinished ? [unfinished] : []), ...final!.problems];
+        : !noWork && !publicationOnly && requestMissing(result) ? ["runAgent must return the exact provider request"] : [...(unfinished ? [unfinished] : []), ...final!.problems];
       const { facts, knowledge } = workspace.read();
       recordAttempt(run, result, { task, ...(previousRunId === undefined ? {} : { previousRun: previousRunId }), files: { facts, knowledge },
-        ...(noWork ? { noWork: true } : {}), ...workspace.record(), toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
+        ...(noWork ? { noWork: true } : {}), ...(publicationOnly ? { resumedPublication: true } : {}),
+        ...workspace.record(), toolCalls: binding.sequence, fetched: binding.fetched, problems, durationMs: Date.now() - started });
       if (problems.length || result.outcome !== "success") {
         const outcome = result.outcome !== "success" ? result.outcome : "failure";
         return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id };
       }
-      if (task !== "check-knowledge") {
+      if (task === "extract-facts" || task === "write-knowledge") {
         const nextTask = NOTING_TASKS[NOTING_TASKS.indexOf(task) + 1]!;
-        const passed = store.commitNotingStage({ run, handoff: { nextTask, branch, entryIds } });
+        const passed = store.commitNotingStage({ run, handoff: { nextTask, branch, entryIds,
+          lane: options.lane, batch: options.handoff?.batch ?? 0, detail: options.handoff?.detail } });
         if (!passed.ok) return { outcome: "failure", runId: passed.runId, problems: passed.problems };
         previousRunId = passed.runId;
         return undefined;
       }
       checkMembership();
-      const published = applyWorkspace(store, { kind: "noting", scope, facts: workspace.read().files.facts, knowledge: workspace.read().files.knowledge, run });
+      const published = applyWorkspace(store, { kind: "noting", scope, facts: workspace.read().files.facts,
+        knowledge: task === "check-facts" ? { name: "knowledge.md", text: "## none\n" } : workspace.read().files.knowledge,
+        run, ...(options.lane === "facts" ? { lane: "facts" as const }
+          : { lane: "knowledge" as const, factIds: options.handoff!.detail!.noting!.factIds, factsAfter: options.handoff!.detail!.noting!.factsAfter }),
+        after: done => {
+          if (task === "check-facts") {
+            const ids = Object.values(done.factIds);
+            const factsAfter = ids.length ? Math.min(...ids) - 1 : Number(store.db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM facts").get()!.id);
+            store.writeNotingHandoff({ sessionId, lane: "knowledge", batch: entryIds[0]!, nextTask: publicationOnly ? seed!.nextTask : "write-knowledge",
+              runId: done.runId, branch, entryIds, detail: { noting: { frozen: saveNoting(frozen), factIds: done.factIds,
+                committedAt: Date.now(), executionId: options.executionId, factsAfter, admission: options.admission } } });
+          } else {
+            store.db.prepare("DELETE FROM task_handoffs WHERE session_id=? AND phase='noting' AND lane='knowledge' AND batch=?")
+              .run(sessionId, options.handoff!.batch!);
+          }
+        } });
       if (!published.ok) {
         const response = JSON.stringify({ ...JSON.parse(run.response ?? "{}"), problems: published.problems });
         return { outcome: "failure", problems: published.problems,
@@ -405,13 +445,12 @@ export async function runNoting(
   };
 
   try {
-    const seed = options.resumeRunId === undefined ? undefined : resumedFiles(store, options.resumeRunId);
     workspace.open(seed ? { "facts.md": seed.facts, "knowledge.md": seed.knowledge } : {
       "facts.md": "## fact f1\ntitle: \nobjects: \nnegate: \ncaused_by: \n\n",
       "knowledge.md": "## create\ntitle: \ncategory: \nscope: \ntopics: \nsupports: \nfiles: \nreason: \n\n",
     });
-    const first = seed ? NOTING_TASKS.indexOf(seed.nextTask) : 0;
-    for (const task of NOTING_TASKS.slice(first)) {
+    const first = publicationOnly ? 1 : seed ? NOTING_TASKS.indexOf(seed.nextTask) : 0;
+    for (const task of NOTING_TASKS.slice(first, options.lane === "facts" ? 2 : 4)) {
       const result = await runTask(task);
       if (result) return result;
     }
@@ -420,11 +459,21 @@ export async function runNoting(
 }
 
 /** Passed stage snapshots, rather than a failed stage's partial edits, are durable. */
-function resumedFiles(store: Store, runId: number) {
+function resumedFiles(store: Store, runId: number, next?: string) {
   const saved = JSON.parse(store.getRun(runId)?.response ?? "{}") as { task?: NotingTask; files?: { facts?: unknown; knowledge?: unknown } };
   const { files, task } = saved;
-  const nextTask = task === undefined ? undefined : NOTING_TASKS[NOTING_TASKS.indexOf(task) + 1];
-  if (typeof files?.facts !== "string" || typeof files.knowledge !== "string" || !nextTask)
+  const nextTask = next as NotingTask | undefined ?? (task === undefined ? undefined : NOTING_TASKS[NOTING_TASKS.indexOf(task) + 1]);
+  if (typeof files?.facts !== "string" || typeof files.knowledge !== "string" || !nextTask || !NOTING_TASKS.includes(nextTask))
     throw new Error(`passed stage R${runId} holds no workspace files or next stage to resume`);
   return { facts: files.facts, knowledge: files.knowledge, nextTask };
+}
+
+/** JSON keeps the prepared bytes and frozen membership; only the rendered-view lookup is a Map. */
+export function saveNoting(frozen: FrozenNoting): string {
+  return JSON.stringify(frozen, (_key, value) => value instanceof Map ? [...value] : value);
+}
+export function restoreNoting(saved: string): FrozenNoting {
+  const frozen = JSON.parse(saved);
+  if (frozen.prepared) frozen.prepared.views = new Map(frozen.prepared.views);
+  return frozen;
 }

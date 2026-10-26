@@ -8,7 +8,11 @@ import { plan, type NotingScope, type PlannedBlock } from "./plan.ts";
 import type { KnowledgePath, RunInput, Store } from "../store/index.ts";
 
 export type ApplyInput =
-  | { kind: "noting"; scope: NotingScope; facts: WorkspaceFile; knowledge: WorkspaceFile; run?: RunInput }
+  | ({ kind: "noting"; scope: NotingScope; facts: WorkspaceFile; knowledge: WorkspaceFile; run?: RunInput;
+      after?: (done: { runId: number; factIds: Record<string, number> }) => void } &
+      ({ lane: "facts"; factIds?: never; factsAfter?: never }
+        /** `factsAfter`: the batch published facts above this id; negations by any fact above it reach the knowledge at its publication. */
+        | { lane: "knowledge"; factIds: Record<string, number>; factsAfter?: number }))
   | { kind: "curate"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile; run?: RunInput };
 
 /** What publishing did with one block. `versions` are the versions it wrote, as `K<id>@v<n>`. */
@@ -59,16 +63,20 @@ function applyNoting(store: Store, input: Extract<ApplyInput, { kind: "noting" }
   const responseForFacts = (ids: number[]) => JSON.stringify({ ...JSON.parse(run.response ?? "{}"),
     labels: Object.fromEntries(facts.facts.map((entry, i) => [entry.label, `F${ids[i]}`])),
     blocks: knowledge.knowledge.map(entry => ({ block: describeBlock(entry.block), line: entry.block.line })) });
-  const committed = store.commitNotingRun({ run, responseForFacts, facts: facts.facts.map(entry => entry.fact), entryIds: sources.frozenEntries,
-    held: { path, slots: facts.facts.map((_, i) => i + 1),
-      flags: knowledge.flags,
-      // The batch is published once: its frozen entries must still be pending on the path.
+  const existing = input.factIds;
+  const committed = store.commitNotingRun({ run, responseForFacts: existing ? () => responseForFacts(Object.values(existing)) : responseForFacts,
+    facts: existing ? [] : facts.facts.map(entry => entry.fact), entryIds: existing ? [] : sources.frozenEntries,
+    intermediate: input.lane === "facts", negatedAfter: input.factsAfter,
+    after: done => input.after?.({ runId: done.runId, factIds: existing ?? Object.fromEntries(facts.facts.map((entry, i) => [entry.label, done.facts[i]!.id])) }),
+    held: { path, slots: existing ? [] : facts.facts.map((_, i) => i + 1),
+      flags: input.lane === "facts" ? [] : knowledge.flags,
       validate: () => {
+        if (existing) return;
         const pending = new Set(store.pendingEntries(path.sessionId, path.branch!, path.headTurnId!, store.pathSnapshot(path)).map(entry => entry.id));
         if (sources.frozenEntries.some(id => !pending.has(id))) throw new Error("frozen Noter entries are no longer pending on the target path");
       },
-      knowledge: mapping => knowledge.knowledge.map((entry: PlannedBlock) => {
-        const made = entry.make(mapping);
+      knowledge: mapping => (input.lane === "facts" ? [] : knowledge.knowledge).map((entry: PlannedBlock) => {
+        const made = entry.make(existing ? new Map(facts.facts.map((entry, i) => [i + 1, existing[entry.label]!])) : mapping);
         if (!made.operation) throw new Error(made.problems.join("; ") || "invalid knowledge operation");
         return made.operation;
       }) } });
@@ -78,7 +86,7 @@ function applyNoting(store: Store, input: Extract<ApplyInput, { kind: "noting" }
   const blocks = knowledge.knowledge.map((entry, i): BlockResult => ({ block: describeBlock(entry.block), line: entry.block.line, status: "applied",
     versions: (audit[i]?.committed ?? []).map(item => version(store, item)),
     ...(audit[i]?.requested.op === "update" && audit[i]?.applied?.op === "create" ? { converted: true } : {}) }));
-  return { ok: true, runId: committed.runId, blocks, factIds: Object.fromEntries(facts.facts.map((entry, i) => [entry.label, committed.facts[i]!.id])) };
+  return { ok: true, runId: committed.runId, blocks, factIds: existing ?? Object.fromEntries(facts.facts.map((entry, i) => [entry.label, committed.facts[i]!.id])) };
 }
 
 export type { Block };
