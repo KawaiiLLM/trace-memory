@@ -201,3 +201,44 @@ test("Pi busy own phases defer closed-session scans and never borrow invalid tar
     }
   } finally { await h.dispose(); }
 });
+
+/** Turn borrowing off as soon as a batch's fact lane has published: the knowledge lane is that batch's continuation, not a new admission. */
+function scopeOffAfterFacts(memory: ReturnType<typeof TraceMemory>) {
+  const noting = memory.noting, atKnowledge: string[] = [];
+  vi.spyOn(memory, "noting").mockImplementation(async input => {
+    if (input.lane === "knowledge") atKnowledge.push(memory.config.closedSessionScope);
+    const result = await noting(input);
+    if (input.lane === "facts" && result.outcome === "success") memory.configure({ closedSessionScope: "off" });
+    return result;
+  });
+  return atKnowledge;
+}
+
+test("CC: a borrowed batch whose scope is turned off between its lanes still completes its knowledge lane", async () => {
+  const memory = TraceMemory(":memory:", async raw => {
+    const input = raw as NotingAgentInput;
+    input.reportRequest({ offline: true });
+    submitEmpty(input);
+    return { outcome: "success", output: "No new knowledge.", request: { offline: true } };
+  }, { noting: { triggerTokens: 1_000_000 } });
+  try {
+    const store = memory.store;
+    const project = store.createProject({ name: "89-scope-off", declaredBy: "mark" });
+    const own = store.createSession({ host: "cc", projectId: project.id, startedAt: at, firstReplyAt: at, enrollmentChoice: true });
+    const turn = store.appendTurn({ sessionId: own.id, kind: "turn", userPrompt: "own", startedAt: at });
+    const entry = memory.appendEntry({ sessionId: own.id, turnId: turn.id, nativeLineage: "cc", nativeId: "own-0", role: "assistant", text: "own boundary", raw: "own boundary", calls: [] });
+    store.publishSourcePath(own.id, "main", [entry.id], turn.id, "cc");
+    const target = closedTarget(memory, own.projectId);
+    const atKnowledge = scopeOffAfterFacts(memory);
+    const scheduler = new CcTaskScheduler(memory, worker, () => {});
+    const projection = { state: "ready" as const, coreSessionId: own.id, branch: "main", headTurnId: turn.id, selectedEntryIds: [entry.id], selectedCount: 1,
+      selectedTailId: entry.id, selectedAppendedEntryIds: [entry.id], appendedEntryIds: [entry.id], problems: [], snapshot: {} as never };
+    scheduler.reconcile(projection);
+    scheduler.turnEnd(projection, scheduler.catchupTicket());
+    await scheduler.settle();
+    expect(atKnowledge).toEqual(["off"]); // the knowledge lane was admitted with borrowing off
+    expect(store.listRuns(target.sessionId).filter(run => run.kind === "noting" && run.outcome === "success" && run.branch === target.branch)).toHaveLength(4);
+    expect(store.handoff(target.sessionId, "noting", "knowledge")).toBeNull();
+    expect(store.incompleteEntryIds(target.sessionId, target.branch, target.headTurnId)).toEqual([]);
+  } finally { memory.close(); }
+});

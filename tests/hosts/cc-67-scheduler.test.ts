@@ -14,7 +14,7 @@ const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", 
   selectedEntryIds: [1, 2], selectedCount: 2, selectedTailId: 2,
   selectedAppendedEntryIds: [], appendedEntryIds: [], problems: [], snapshot: {} as never };
 type Result = { outcome: string; problems?: string[]; automaticOff?: string };
-function fixture() {
+function fixture(notify?: (reason: string) => void) {
   const pending = [1, 2], starts: string[] = []; let enabled = true;
   const knowledgePending: number[][] = [];
   const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: {} }, cancelTasks: vi.fn(),
@@ -33,7 +33,7 @@ function fixture() {
     if (result.outcome === "success" && committed.length) knowledgePending.push(committed);
     return result;
   } };
-  const scheduler = new CcTaskScheduler(facade as unknown as ConstructorParameters<typeof CcTaskScheduler>[0], worker, () => {});
+  const scheduler = new CcTaskScheduler(facade as unknown as ConstructorParameters<typeof CcTaskScheduler>[0], worker, () => {}, notify);
   return { scheduler, memory, starts, pending, disable: () => { enabled = false; } };
 }
 const settle = async (f: ReturnType<typeof fixture>) => { for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick(); };
@@ -54,6 +54,14 @@ test("entry ends reuse a not-due Dreaming result until its progress signal chang
   expect(f.memory.taskEligibility.mock.calls.slice(-2).map(([phase]) => phase)).toEqual(["noting", "dreaming"]);
 });
 
+
+test("a throwing status publisher never prevents admission or settlement", async () => {
+  const f = fixture(() => { throw new Error("publish exploded"); }); f.memory.taskEligibility.mockImplementation(() => ({ due: false }));
+  f.scheduler.startCatchup(projection); await settle(f);
+  expect(f.memory.noting).toHaveBeenCalled(); // admitted
+  expect(f.pending).toEqual([]); // every batch settled and released its slot for the next
+  expect(f.scheduler.catchupStatus().state).toBe("completed");
+});
 
 test("known restart grants no automatic opportunity but explicit catchup drains frozen Raw", async () => {
   const f = fixture(); f.memory.taskEligibility.mockImplementation(() => ({ due: false }));

@@ -860,7 +860,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       : { outcome: "dropped" };
     const target = { sessionId: input.sessionId, branch: input.branch, triggerEntryId: input.triggerEntryId,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
-    const closedSessionScope = cfg.closedSessionScope;
+    let closedSessionScope = cfg.closedSessionScope;
     let claim: TaskClaim | null = null;
     let empty = false, projectId: number, refusal: string | undefined;
     let executionId: string;
@@ -872,7 +872,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     try { frozen = store.transaction(() => {
       // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
       // with claim acquisition, before loading a closed target's evidence or constructing material.
-      if (input.borrowed && (!store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope) ||
+      if (input.borrowed && input.lane !== "knowledge" && (!store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope) ||
           !store.borrowedTargetActive(target))) return null;
       if (phase === "dreaming") {
         // 144 stage 4: one admission is one claim and one execution for the tasks left, whatever the budget of any pool.
@@ -908,27 +908,37 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         empty = !handoff;
         if (!handoff ||
             input.boundary?.maxEntryId !== undefined && handoff.entryIds.some(id => id > input.boundary!.maxEntryId!)) return null;
+        // The continuation runs on the batch's own frozen path; the caller's target authorizes and redirects nothing.
+        const frozen = restoreNoting(handoff.detail!.noting!.frozen);
+        Object.assign(target, { branch: frozen.branch, headTurnId: frozen.headTurnId, triggerEntryId: frozen.headEntryId });
+        // The executor that admitted the fact lane keeps that admission for the batch's knowledge: the scope then in force governs it,
+        // and the path is not checked for activity again. Any other borrower is a fresh admission and passes the full check.
+        const admitted = handoff.detail!.noting!.admission;
+        if (input.borrowed && admitted?.borrowed && admitted.executorSessionId === input.executorSessionId) closedSessionScope = admitted.scope;
+        else if (input.borrowed && (!store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope) || !store.borrowedTargetActive(target))) return null;
         claim = store.acquireClaim(target, phase, executorId, input.borrowed,
           () => input.executorSessionId === undefined || store.enabled(input.executorSessionId),
           undefined, undefined, false, "knowledge");
         if (!claim) return null;
         notingHandoff = handoff;
         resumeRunId = handoff.runId;
-        const frozen = restoreNoting(handoff.detail!.noting!.frozen);
-        Object.assign(target, { branch: frozen.branch, headTurnId: frozen.headTurnId, triggerEntryId: frozen.headEntryId });
         projectId = store.getSession(input.sessionId)!.projectId;
         origin = store.triggerOrigin(target, target.triggerEntryId);
         const detail = handoff.detail!.noting!;
         const previous = store.db.prepare("SELECT outcome FROM task_executions WHERE id=?").get(detail.executionId);
-        executionId = previous?.outcome === null ? detail.executionId
+        // Only the first claim of the lane continues the fact lane's open execution. A takeover is an attempt of its own: a
+        // predecessor returning after its lease must settle and clean up only what it was given, never the replacement's.
+        executionId = detail.startedAt === undefined && previous?.outcome === null ? detail.executionId
           : store.beginExecution({ sessionId: target.sessionId, phase, head: handoff.entryIds[0], origin });
         if (detail.startedAt === undefined) {
           detail.startedAt = Date.now();
           if (detail.startedAt - detail.committedAt > cfg.noting.knowledgePrefixReuseMs) {
             const prepared = frozen.prepared!;
-            const ids = Object.values(detail.factIds);
+            const ids = Object.values(detail.factIds), published = Math.max(...ids);
+            // Relations as they stood when the facts published: on the frozen path, made by a fact no later than the batch's last.
+            const relations = store.listFactRelationsOnPathOf(ids, target);
             prepared.material = { knowledge: prepared.material.knowledge, knowledgeNotice: prepared.material.knowledgeNotice,
-              facts: ids.map(id => renderFact(store.getFact(id)!, store.listFactRelations(id))), receipts: [], entries: [] };
+              facts: ids.map(id => renderFact(store.getFact(id)!, relations.get(id)!.filter(relation => relation.fromFact <= published))), receipts: [], entries: [] };
             prepared.text = `${notingText(prepared.material, prepared.range)}\n\nCall ${frozen.names.check} first: it names your stage and your files.`;
             prepared.supplied = { ...prepared.supplied, entries: [], factIds: ids };
           }
@@ -1093,7 +1103,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     try {
       result = phase === "noting"
         ? await runNoting(store, frozen as FrozenNoting, agent, cfg, bind,
-          { workspaceRoot: input.workspaceRoot, executionId: executionId!, resumeRunId, lane: input.lane ?? "facts", handoff: notingHandoff, registerFence: workspace => { fences.add(workspace); } })
+          { workspaceRoot: input.workspaceRoot, executionId: executionId!, resumeRunId, lane: input.lane ?? "facts", handoff: notingHandoff,
+            admission: { borrowed: !!input.borrowed, executorSessionId: input.executorSessionId, scope: closedSessionScope }, registerFence: workspace => { fences.add(workspace); } })
         : await runDreaming(store, frozen as DreamingFrozen, agent, cfg, bind,
           { workspaceRoot: input.workspaceRoot, executionId: executionId!, registerFence: workspace => { fences.add(workspace); } });
     } finally {

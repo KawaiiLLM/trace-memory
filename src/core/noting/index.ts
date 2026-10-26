@@ -337,6 +337,8 @@ export interface NotingRunOptions {
   /** The latest passed stage's run, whose files seed the failed next stage. */
   resumeRunId?: number;
   lane: "facts" | "knowledge";
+  /** The fact lane's admission, kept in the knowledge hand-off. */
+  admission?: NonNullable<NonNullable<Handoff["detail"]>["noting"]>["admission"];
   handoff?: Handoff;
   /** Registers the run's workspace with the cancellation fence (stage 4 §1.5): closing the task closes it. */
   registerFence?(workspace: { close(): void }): void;
@@ -425,12 +427,14 @@ export async function runNoting(
       const published = applyWorkspace(store, { kind: "noting", scope, facts: workspace.read().files.facts,
         knowledge: task === "check-facts" ? { name: "knowledge.md", text: "## none\n" } : workspace.read().files.knowledge,
         run, ...(options.lane === "facts" ? { lane: "facts" as const }
-          : { lane: "knowledge" as const, factIds: options.handoff!.detail!.noting!.factIds }),
+          : { lane: "knowledge" as const, factIds: options.handoff!.detail!.noting!.factIds, factsAfter: options.handoff!.detail!.noting!.factsAfter }),
         after: done => {
           if (task === "check-facts") {
+            const ids = Object.values(done.factIds);
+            const factsAfter = ids.length ? Math.min(...ids) - 1 : Number(store.db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM facts").get()!.id);
             store.writeNotingHandoff({ sessionId, lane: "knowledge", batch: entryIds[0]!, nextTask: publicationOnly ? seed!.nextTask : "write-knowledge",
               runId: done.runId, branch, entryIds, detail: { noting: { frozen: saveNoting(frozen), factIds: done.factIds,
-                committedAt: Date.now(), executionId: options.executionId } } });
+                committedAt: Date.now(), executionId: options.executionId, factsAfter, admission: options.admission } } });
           } else {
             store.db.prepare("DELETE FROM task_handoffs WHERE session_id=? AND phase='noting' AND lane='knowledge' AND batch=?")
               .run(sessionId, options.handoff!.batch!);

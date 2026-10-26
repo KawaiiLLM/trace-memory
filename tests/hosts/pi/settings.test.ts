@@ -3,10 +3,10 @@
 // resolved agent settings file by a re-read-and-merge write, and applied to tasks admitted afterwards
 // through the façade's `configure` (amendment 2) and the host's own model selection. No new key, no
 // second configuration source, no reload, no credential and no model call to validate a selection.
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { emptyNote, host, EMPTY_NOTER_BATCH_REQUESTS, notingFact, reply } from "./test-host.ts";
+import { emptyNote, host, EMPTY_NOTER_BATCH_REQUESTS, holdFirstRequest, notingFact, reply } from "./test-host.ts";
 import { configuration, parseKnowledgeBudgetInput, parseLayer, preferences, thinkingChoices, writeGlobal } from "../../../src/hosts/pi/settings.ts";
 import { validateConfig } from "../../../src/core/api/index.ts";
 
@@ -226,6 +226,24 @@ test("closed-session scope is saved globally and changes subsequent queue admiss
   expect(h.requests).toEqual([]); // a settings change is not an extraction opportunity
   await tick(); expect(h.requests).toHaveLength(EMPTY_NOTER_BATCH_REQUESTS);
   expect(h.memory.store.listRuns(s.id).some(r => r.kind === "noting")).toBe(true);
+});
+
+test("closed-session scope turned off while a borrowed batch runs does not strand its knowledge lane", async () => {
+  const h = setup({ "noting.triggerTokens": 1_000_000_000 });
+  await h.turn();
+  const store = h.memory.store;
+  const s = store.createSession({ host: "closed", projectId: store.getSession(1)!.projectId, enrollmentChoice: true, startedAt: "t", firstReplyAt: "t" });
+  const t = store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "closed evidence", startedAt: "t" });
+  const e = h.memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeId: "closed", nativeLineage: "closed", role: "user", text: "closed evidence", raw: "closed evidence", calls: [] });
+  h.memory.selectEntries(s.id, "main", [e.id]); store.closeSession(s.id);
+  const release = holdFirstRequest(h);
+  await h.prompt("another main turn"); await h.answer("small new completion");
+  await vi.waitFor(() => expect(h.requests).toHaveLength(1)); // the borrowed fact lane is admitted and running
+  await edit(h, "Closed-session scope: project (Default)", "off");
+  release(notingFact(h.conversations[0]!)); await h.drain();
+  expect(store.handoff(s.id, "noting", "knowledge")).toBeNull();
+  expect(store.incompleteEntryIds(s.id, "main", t.id)).toEqual([]);
+  expect(store.listRuns(s.id).filter(run => run.kind === "noting").every(run => run.outcome === "success" && run.branch === "main")).toBe(true);
 });
 
 test("closed-session scope respects a project override and invalid values never overwrite settings", async () => {

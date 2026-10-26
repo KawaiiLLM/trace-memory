@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { TriggerOrigin } from "../model/index.ts";
-import type { Store, RunInput, Phase } from "./index.ts";
+import type { Store, RunInput, Phase, ClosedSessionScope } from "./index.ts";
 import { ALL_POOLS } from "./processing.ts";
 import type { Cluster } from "../dreaming/clustering.ts";
 
@@ -98,7 +98,12 @@ export interface Handoff { sessionId: number; phase: "noting" | "dreaming"; lane
   detail?: HandoffDetail }
 export interface DreamerBoundary { fact: number; revision: number; versions: Record<string, number> }
 export interface HandoffDetail {
-  noting?: { frozen: string; factIds: Record<string, number>; committedAt: number; executionId: string; startedAt?: number };
+  noting?: { frozen: string; factIds: Record<string, number>; committedAt: number; executionId: string; startedAt?: number;
+    /** The highest fact id below this batch's own: facts above it were committed with or after the batch. */
+    factsAfter: number;
+    /** How the fact lane was admitted (ticket 179, user ruling): the same executor's knowledge lane for this batch keeps it, so the
+     * borrowing scope in force then, not now, governs both lanes, and the frozen path is not checked for activity again. */
+    admission?: { borrowed: boolean; executorSessionId?: number; scope: ClosedSessionScope } };
   fullCheck?: boolean;
   clusteringItems?: number[];
   candidates?: number[];

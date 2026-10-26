@@ -10,7 +10,9 @@ import type { KnowledgePath, RunInput, Store } from "../store/index.ts";
 export type ApplyInput =
   | ({ kind: "noting"; scope: NotingScope; facts: WorkspaceFile; knowledge: WorkspaceFile; run?: RunInput;
       after?: (done: { runId: number; factIds: Record<string, number> }) => void } &
-      ({ lane: "facts"; factIds?: never } | { lane: "knowledge"; factIds: Record<string, number> }))
+      ({ lane: "facts"; factIds?: never; factsAfter?: never }
+        /** `factsAfter`: the batch published facts above this id; negations by any fact above it reach the knowledge at its publication. */
+        | { lane: "knowledge"; factIds: Record<string, number>; factsAfter?: number }))
   | { kind: "curate"; sessionId: number; path?: KnowledgePath; file: WorkspaceFile; run?: RunInput };
 
 /** What publishing did with one block. `versions` are the versions it wrote, as `K<id>@v<n>`. */
@@ -64,7 +66,7 @@ function applyNoting(store: Store, input: Extract<ApplyInput, { kind: "noting" }
   const existing = input.factIds;
   const committed = store.commitNotingRun({ run, responseForFacts: existing ? () => responseForFacts(Object.values(existing)) : responseForFacts,
     facts: existing ? [] : facts.facts.map(entry => entry.fact), entryIds: existing ? [] : sources.frozenEntries,
-    intermediate: input.lane === "facts",
+    intermediate: input.lane === "facts", negatedAfter: input.factsAfter,
     after: done => input.after?.({ runId: done.runId, factIds: existing ?? Object.fromEntries(facts.facts.map((entry, i) => [entry.label, done.facts[i]!.id])) }),
     held: { path, slots: existing ? [] : facts.facts.map((_, i) => i + 1),
       flags: input.lane === "facts" ? [] : knowledge.flags,

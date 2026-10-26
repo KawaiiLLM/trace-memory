@@ -527,6 +527,8 @@ export interface CommitNotingRunInput {
   /** Lane publication and its durable hand-off share the business transaction. */
   after?: (done: { runId: number; facts: Fact[] }) => void;
   intermediate?: boolean;
+  /** Knowledge published after its facts (ticket 179): the Noter negations by facts above this id also flag the new revisions that cite what they negate. */
+  negatedAfter?: number;
   /** N's private draft is revalidated and published inside this transaction, never a second run. */
   held?: {
     path: KnowledgePath;
@@ -2468,6 +2470,20 @@ export class Store {
         if (negated.size) for (const { revision } of this.currentKnowledge(publicationPath)) {
           for (const id of revision.supports) if (negated.has(id))
             this.setKnowledgeStale(revision.id, { reason: "negated_fact", detail: `F${id} negated by Noter run R${runId}` });
+        }
+        // Knowledge that waited for its lane was not yet there when those facts published. Only the revisions committed here are
+        // checked: an update that stopped citing the negated fact is a resolution, and older knowledge was flagged (or cleared) already.
+        // A negation applies where sequential publication would have flagged it: on the path its own batch wrote for, where the revision is current.
+        if (input.negatedAfter !== undefined) for (const audit of knowledgeAudit) for (const committed of audit.committed) {
+          const revision = this.getKnowledgeRevision(committed.knowledgeId, committed.commit)!;
+          for (const row of this.db.prepare(`SELECT r.to_fact, f.run_id, runs.session_id, runs.branch, runs.range_to
+            FROM fact_relations r JOIN facts f ON f.id = r.from_fact JOIN runs ON runs.id = f.run_id
+            WHERE r.kind = 'negate' AND runs.kind = 'noting' AND r.from_fact > ? AND r.to_fact IN (SELECT value FROM json_each(?))`)
+            .all(input.negatedAfter, JSON.stringify(revision.supports)) as { to_fact: number; run_id: number; session_id: number; branch: string; range_to: string }[]) {
+            const negatorPath = { sessionId: row.session_id, branch: row.branch, headTurnId: Number(/\/T(\d+)$/.exec(row.range_to)![1]) };
+            if (this.currentKnowledge(negatorPath).some(item => item.revision.id === revision.id))
+              this.setKnowledgeStale(revision.id, { reason: "negated_fact", detail: `F${row.to_fact} negated by Noter run R${row.run_id}` });
+          }
         }
         for (const audit of knowledgeAudit) for (const committed of audit.committed) {
           const revision = this.getKnowledgeRevision(committed.knowledgeId, committed.commit)!;

@@ -89,12 +89,38 @@ test.each(["project", "global"] as const)("%s is frozen for a running task when 
   });
   try {
     const target = scope === "project" ? same : other;
-    // 179: a lane is one admission. A combined call would admit its knowledge lane afresh under the scope then in force.
-    const pending = memory.noting({ ...target, borrowed: true, executorSessionId: active.sessionId, lane: "facts" });
+    // 179 (user ruling): the knowledge lane continues its batch's admission, so the scope is frozen for all four stages.
+    const pending = memory.noting({ ...target, borrowed: true, executorSessionId: active.sessionId });
     memory.configure({ closedSessionScope: "off" });
     finish();
     expect((await pending).outcome).toBe("success");
     expect(memory.pendingEntries(target.sessionId, target.branch, target.headTurnId)).toEqual([]);
+    expect(memory.store.handoff(target.sessionId, "noting", "knowledge")).toBeNull();
+    expect(memory.store.incompleteEntryIds(target.sessionId, target.branch, target.headTurnId)).toEqual([]);
+  } finally { memory.close(); }
+});
+
+test("a batch's knowledge lane keeps its fact lane's admission and frozen path; another borrower is admitted afresh and cannot redirect it", async () => {
+  const { memory, active, same } = setup("project");
+  try {
+    const stranger = memory.store.createSession({ host: "fake", projectId: memory.store.getSession(active.sessionId)!.projectId,
+      enrollmentChoice: true, startedAt: at, firstReplyAt: at }).id;
+    const borrow = (executorSessionId: number, target: typeof same) => memory.noting({ ...target, borrowed: true, executorSessionId, lane: "knowledge" });
+    expect((await memory.noting({ ...same, borrowed: true, executorSessionId: active.sessionId, lane: "facts" })).outcome).toBe("success");
+    const pendingKnowledge = () => memory.store.handoff(same.sessionId, "noting", "knowledge");
+    expect(pendingKnowledge()).not.toBeNull();
+    memory.configure({ closedSessionScope: "off" });
+    expect((await borrow(stranger, same)).outcome).toBe("dropped"); // not the admitting executor: scope is checked now
+    // The session's active path moves away from the one the batch froze.
+    memory.selectEntries(same.sessionId, "moved", memory.store.listSourceEntries(same.sessionId).map(entry => entry.id));
+    memory.store.setCurrentPath(same.sessionId, "moved", same.headTurnId, "closed");
+    memory.configure({ closedSessionScope: "project" });
+    expect((await borrow(stranger, { ...same, branch: "moved" })).outcome).toBe("dropped"); // validated on its own frozen path, not the caller's
+    expect(pendingKnowledge()).not.toBeNull();
+    memory.configure({ closedSessionScope: "off" });
+    expect((await borrow(active.sessionId, { ...same, branch: "moved" })).outcome).toBe("success"); // the admitting executor continues
+    expect(pendingKnowledge()).toBeNull();
+    expect(memory.store.listRuns(same.sessionId).filter(run => run.kind === "noting").every(run => run.branch === same.branch)).toBe(true);
   } finally { memory.close(); }
 });
 
