@@ -205,6 +205,10 @@ export default function (pi: ExtensionAPI) {
   const baselinePath = join(agentDir, "trace-memory-baseline.json");
   const enrollment = () => state.sessionId ? memory.store.enrollment(state.sessionId) : state.enrollment!;
   const enabled = () => { const e = enrollment(); return e.choice ?? e.defaultEnabled; };
+  // 183: dormant = enabled, but three failures stopped the Noter and Dreamer. Import and Knowledge delivery stay on (`enabled`); work admission and
+  // compaction ask these. `/trace on` clears the streak in the Store, so there is no flag here to reset.
+  const dormant = () => !!state.sessionId && memory.store.dormant(state.sessionId);
+  const tasksEnabled = () => enabled() && !dormant();
 
   // Pi does not flush a new native file before its first assistant message. Keep the
   // provisional enrollment entry durable without manufacturing a reply or a Turn.
@@ -298,7 +302,7 @@ export default function (pi: ExtensionAPI) {
    *
    * The indicator is Pi theme roles, never a literal colour: one role per running phase — Noting
    * `accent`, Dreaming `customMessageLabel` (teal, purple in both
-   * bundled themes) — in that precedence when phases overlap; idle and off are `dim`. A retry, a
+   * bundled themes) — in that precedence when phases overlap; idle and off are `dim`, dormant (183) is `warning`. A retry, a
    * failure or a warning does not colour it: the foreground notify reports those (51). It describes
    * this executor, including while it works on a borrowed target. */
   /** Local midnight of the host's clock as the UTC instant `runs.created_at` is compared against (51). */
@@ -307,10 +311,10 @@ export default function (pi: ExtensionAPI) {
     if (closed || !context.ui?.setStatus) return;
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
-    const isEnabled = enabled();
+    const isEnabled = enabled(), isDormant = dormant();
     let counts: ReturnType<typeof memory.progress> | undefined, cost: number | undefined, costUnknown = 0;
     // Off counts nothing at all (24a): the off line reads no path, no Raw and no run audit body.
-    if (isEnabled) {
+    if (isEnabled && !isDormant) {
       if (state?.sessionId) {
         try { counts = memory.progress(state.sessionId, state.branch, state.head ?? null); } catch { /* unavailable: shown as ?, never as 0 */ }
       }
@@ -318,7 +322,7 @@ export default function (pi: ExtensionAPI) {
     }
     // Ticket 75: text/indicator logic moved to the host-neutral formatter Claude Code's status
     // command shares; only the painting (this host's theme roles) stays here.
-    const segments = memoryStatusLine({ enabled: isEnabled,
+    const segments = memoryStatusLine({ enabled: isEnabled, dormant: isDormant,
       running: { noting: runningKind("noting"), dreaming: runningKind("dreaming") },
       counts, cost, costUnknown });
     context.ui.setStatus(tag, `🧠 ${segments.map(segment => paint(segment.role, segment.text)).join(" ")}`);
@@ -334,7 +338,7 @@ export default function (pi: ExtensionAPI) {
   const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
       options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; manual?: boolean; fullCheck?: boolean },
       ): Promise<NotingResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
-    if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
+    if (closed || !tasksEnabled()) return Promise.resolve({ outcome: "dropped" } as const);
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
     // material. The foreground level is read once here, as a value — every later round of this run
     // uses exactly this level, whatever the foreground switches to meanwhile — and Pi's own session
@@ -378,16 +382,16 @@ export default function (pi: ExtensionAPI) {
       nativeReadToolTokens, nativeWriteToolTokens, workspaceRoot: defaultWorkspaceRoot(),
       ...(options.boundary ? { boundary: options.boundary } : {}) };
     return (kind === "dreaming" ? memory.dream({ ...common, ...(options.manual ? { manual: true } : {}), ...(options.fullCheck ? { fullCheck: true } : {}) }) : memory.noting(common))
-      .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); endCatchupOnDreamingFailure(kind, target, result); return result; });
+      .then(result => { if (result.dormant) context.ui.notify(result.dormant, "warning"); endCatchupOnDreamingFailure(kind, target, result); return result; });
   };
   /** 146 Q18: a Dreaming failure retries at the next entry-end check (ruling 10), so it ends an active drain for the same session and
    * path, whoever started the run (the drain, an entry-end check the drain skipped as busy, or `/trace dream`). The Noter's retry loop
    * is unchanged. A Noter run still in flight is not cancelled; its late success finds an ended drain and drives nothing. */
-  const endCatchupOnDreamingFailure = (kind: WorkerPhase, target: TaskTarget, result: { outcome: string; problems?: string[]; automaticOff?: string }) => {
+  const endCatchupOnDreamingFailure = (kind: WorkerPhase, target: TaskTarget, result: { outcome: string; problems?: string[]; dormant?: string }) => {
     const c = catchup;
     if (kind !== "dreaming" || result.outcome !== "failure" || !c || c.outcome || c.stopped ||
         c.sessionId !== target.sessionId || c.branch !== target.branch) return;
-    c.outcome = result.automaticOff ? "stopped" : "failed"; c.waitingPhase = undefined;
+    c.outcome = result.dormant ? "stopped" : "failed"; c.waitingPhase = undefined;
     c.diagnostic = result.problems?.join("; ") || result.outcome;
   };
   // Keep the existing storage provenance value; session.project_declaration controls sharing.
@@ -824,7 +828,7 @@ export default function (pi: ExtensionAPI) {
     if (catchup && outcome !== "failure" && outcome !== "cancelled") driveCatchup(outcome === "success");
   };
   const checkQueues = (opportunity?: TaskTarget, includeBorrowed = false) => {
-    if (closed || !enabled() || !state.sessionId || !state.head) return;
+    if (closed || !tasksEnabled() || !state.sessionId || !state.head) return;
     const context = ctx;
     const own = opportunity ?? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
     const signal = memory.store.progressSignal(own.sessionId);
@@ -850,7 +854,7 @@ export default function (pi: ExtensionAPI) {
       slots.set(kind, slot); // Reserve before any asynchronous admission or model work.
       const work = async () => {
         for (const { borrowed, ...target } of candidates) {
-          if (closed || !enabled() || memory.cancellation !== generation || state.sessionId !== own.sessionId
+          if (closed || !tasksEnabled() || memory.cancellation !== generation || state.sessionId !== own.sessionId
               || state.branch !== own.branch || state.head !== own.headTurnId) return;
           try {
             const result = await attemptPhase(context, kind, target, { borrowed, automatic: true });
@@ -906,7 +910,7 @@ export default function (pi: ExtensionAPI) {
   };
   const driveCatchup = (checkAll = true, retryPhase?: WorkerPhase) => {
     const c = catchup;
-    if (!c || c.stopped || c.outcome || closed || !enabled()) return;
+    if (!c || c.stopped || c.outcome || closed || !tasksEnabled()) return;
     const context = ctx;
     const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId, triggerEntryId: c.triggerEntryId };
     const remainingEntries = pendingCatchupEntryIds(c);
@@ -952,7 +956,7 @@ export default function (pi: ExtensionAPI) {
         if (outcome === "dropped") { if (phase === "noting") c.waitingPhase = phase; return; }
         if (outcome === "failure") {
           c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
-          if ((result as { automaticOff?: string }).automaticOff) c.outcome = "stopped";
+          if ((result as { dormant?: string }).dormant) c.outcome = "stopped";
           else if (phase === "noting") retry = true; // a Dreaming failure already ended the drain (Q18)
         } else if (outcome !== "success" && outcome !== "empty") {
           c.outcome = outcome === "cancelled" ? "stopped" : "failed";
@@ -974,6 +978,7 @@ export default function (pi: ExtensionAPI) {
   };
   const startCatchup = () => {
     if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
+    if (dormant()) throw new Error("Trace Memory is dormant after three failures; use /trace on to resume.");
     if (catchup && !catchup.outcome) {
       // A waiting/idle drain (nothing drain-owned active) has no in-process completion left to wake it
       // (e.g. a D admission dropped by a foreign claim). A repeated command is that recovery. A
@@ -1006,6 +1011,7 @@ export default function (pi: ExtensionAPI) {
   // Like `startCatchup` it answers at once; the refusal or the outcome arrives through the status line and a notification.
   const startDream = (fullCheck = false) => {
     if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
+    if (dormant()) throw new Error("Trace Memory is dormant after three failures; use /trace on to resume.");
     if (dream?.state === "running") { ctx.ui.notify(dreamLine()!, "info"); return; }
     if (!state.sessionId || !state.head) { ctx.ui.notify("Trace Memory: no assistant reply yet; nothing to dream.", "info"); return; }
     const refuse = (diagnostic: string) => { dream = { state: "failed", diagnostic }; ctx.ui.notify(dreamLine()!, "warning"); };
@@ -1019,13 +1025,13 @@ export default function (pi: ExtensionAPI) {
     slot.result = promise.catch(() => undefined);
     let outcome: string | undefined;
     const handled = promise.then(result => {
-      const r = result as { outcome: string; problems?: string[]; reason?: string; permanent?: string; automaticOff?: string };
+      const r = result as { outcome: string; problems?: string[]; reason?: string; permanent?: string; dormant?: string };
       outcome = r.outcome;
       const problems = r.problems?.join("; ");
       dream = r.outcome === "success" ? { state: "completed" }
         : r.outcome === "empty" ? { state: "failed", diagnostic: "nothing to curate" }
         : r.outcome === "dropped" ? { state: "failed", diagnostic: r.permanent ?? r.reason ?? "the core refused the run" }
-        : { state: r.outcome === "cancelled" || r.automaticOff ? "stopped" : "failed", diagnostic: problems || r.outcome };
+        : { state: r.outcome === "cancelled" || r.dormant ? "stopped" : "failed", diagnostic: problems || r.outcome };
     }, error => { dream = { state: "failed", diagnostic: String(error) }; });
     trackSlot("dreaming", slot, handled, context, () => { releaseOrdinary(context, outcome); context.ui.notify(dreamLine()!, "info"); });
     context.ui.notify("Dream: starting", "info");
@@ -1069,6 +1075,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_before_compact", async (event, context) => {
     publishedTruncation = undefined;
     ensure(context); if (!enabled()) return; flush();
+    // 183: a dormant session keeps Pi's own summary; the Knowledge part comes back at the next prompt, as after any native compaction.
+    if (dormant()) return;
     // 130: instructions typed after `/compact` steer Pi's own summary, which we do not write; Pi compacts natively.
     if (event.customInstructions?.trim()) return;
     const signal = (event as { signal?: AbortSignal }).signal;
@@ -1520,8 +1528,8 @@ export default function (pi: ExtensionAPI) {
     try {
       const s = state.sessionId ? memory.store.getSession(state.sessionId) : null;
       lines.push(`Project: ${s ? `${memory.store.getProject(s.projectId)!.name} (${memory.store.projectDeclaration(s.id)})` : state.project ?? "Unassigned"}`);
-      if (s && !enabled()) for (const task of memory.store.taskFailures(s.id).filter(t => t.count >= 3))
-        recovery.push(`Automatic off: ${task.phase}, ${task.pool ? `pool ${task.pool}` : `backlog head ${task.head}`}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`);
+      if (s && dormant()) for (const task of memory.store.taskFailures(s.id).filter(t => t.count >= 3))
+        recovery.push(`Dormant: ${task.phase}, ${task.pool ? `pool ${task.pool}` : `backlog head ${task.head}`}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`);
     } catch { recovery.push("Project / recovery: Unknown (unavailable)"); }
     let cost: string; const composition: string[] = [];
     try {
@@ -1556,8 +1564,8 @@ export default function (pi: ExtensionAPI) {
     const dreaming = memory.dreamingPending(target);
     const totals = state.sessionId ? memory.spend(state.sessionId) : undefined;
     const notices: string[] = [];
-    if (state.sessionId && !enabled()) for (const task of memory.store.taskFailures(state.sessionId).filter(t => t.count >= 3))
-      notices.push(`Automatic off: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). Turn on to resume.`);
+    if (dormant()) for (const task of memory.store.taskFailures(state.sessionId!).filter(t => t.count >= 3))
+      notices.push(`Dormant: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). No Noter or Dreamer runs; use /trace on to resume.`);
     if (state.sessionId) notices.push(...dreamerFailureNotice(memory.store.dreamerFailure(state.sessionId)));
     if (lastCompaction) notices.push(`Compaction: ${lastCompaction}`);
     const catchup = catchupLine();

@@ -495,7 +495,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   };
   const settleExecution: TraceMemory["settleExecution"] = (id, outcome, runId, reason) => {
     const settled = store.settleExecution(id, outcome, runId, reason);
-    if (settled.automaticOff) abortTarget(store.getRun(runId)!.sessionId!);
+    if (settled.dormant) abortTarget(store.getRun(runId)!.sessionId!);
     return settled;
   };
   // The cancellation generation: every cancellation advances it, stop or not — `/trace stop` cancels
@@ -852,12 +852,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // readiness wait and claim checks are untouched.
   const taskEligibility = (phase: Phase, target: TaskTarget) => {
     if (phase !== "noting" && phase !== "dreaming") throw new Error(`Unsupported live phase: ${phase}`);
-    if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false };
+    if (stopping || store.closed || !store.tasksEnabled(target.sessionId)) return { due: false };
     return { due: phase === "noting" ? notingDue(target) : dreamingDue(target) };
   };
   const execute = async (phase: Phase, input: NotingInput & { manual?: boolean; fullCheck?: boolean }): Promise<NotingResult | DreamingResult> => {
-    if (stopping || store.closed || !store.enabled(input.sessionId)) return input.manual
-      ? { outcome: "dropped", reason: stopping || store.closed ? "the executor is shutting down" : "Trace Memory is off for this session" }
+    if (stopping || store.closed || !store.tasksEnabled(input.sessionId)) return input.manual
+      ? { outcome: "dropped", reason: stopping || store.closed ? "the executor is shutting down" : "Trace Memory is off or dormant for this session" }
       : { outcome: "dropped" };
     const target = { sessionId: input.sessionId, branch: input.branch, triggerEntryId: input.triggerEntryId,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
@@ -876,8 +876,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           !store.borrowedTargetActive(target))) return null;
       if (phase === "dreaming") {
         // 144 stage 4: one admission is one claim and one execution for the tasks left, whatever the budget of any pool.
-        if (!store.enabled(target.sessionId) || (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId))) {
-          if (input.manual) refusal = "Trace Memory is off for this session";
+        if (!store.tasksEnabled(target.sessionId) || (input.executorSessionId !== undefined && !store.tasksEnabled(input.executorSessionId))) {
+          if (input.manual) refusal = "Trace Memory is off or dormant for this session";
           return null;
         }
         const previous = store.handoff(target.sessionId, "dreaming");
@@ -915,7 +915,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
             && (boundary.maxEntryId === undefined || e.id <= boundary.maxEntryId));
       if (empty) return null;
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
-        if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
+        if (input.executorSessionId !== undefined && !store.tasksEnabled(input.executorSessionId)) return false;
         if (!input.automatic || input.borrowed) return true;
         return taskEligibility(phase, target).due;
       });
@@ -1068,9 +1068,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       try {
         if (!store.closed && result && result.outcome !== "empty" && result.outcome !== "dropped") {
           const terminal = result;
-          // §3.4, in this order. Only user stop, memory off and executor exit are not failures; a lost claim is one, for both phases (146: and it counts toward the streak of both).
+          // §3.4, in this order. Only user stop, memory off or dormant and executor exit are not failures; a lost claim is one, for both phases (146: and it counts toward the streak of both).
           const lost = !owned();
-          const stopped = (controller.signal.aborted && !timedOut) || !store.enabled(target.sessionId) || terminal.outcome === "cancelled";
+          const stopped = (controller.signal.aborted && !timedOut) || !store.tasksEnabled(target.sessionId) || terminal.outcome === "cancelled";
           const outcome = terminal.outcome === "success" ? "success" : stopped ? "cancelled" : "failure";
           const failure = phase === "dreaming" && "failure" in terminal ? terminal.failure : undefined;
           // 146 §7: the reason names every failed group; a lost claim joins them (it is not a replacement) unless a group already says so.
@@ -1079,8 +1079,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           const taskFailure = failure ?? (outcome === "failure" && lost && phase === "dreaming" ? { task: "curate" } : undefined);
           const reason = reasons.length ? reasons.join("; ") : terminal.problems?.join("; ");
           const settled = store.transaction(() => store.settleExecution(executionId!, outcome, terminal.runId, reason, taskFailure));
-          if (settled.automaticOff) {
-            terminal.automaticOff = settled.automaticOff;
+          if (settled.dormant) {
+            terminal.dormant = settled.dormant;
             // The off/fence transaction has committed before invoking any local abort listener.
             abortTarget(target.sessionId);
           }

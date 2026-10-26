@@ -30,7 +30,7 @@ export const TASK_GAP_MS = 15_000;
 export const CLAIM_LEASE_MARGIN_MS = 60_000;
 export interface DreamingTaskConfig { model: string; thinking?: string; capacity?: { inputTokens: number } }
 export interface DreamingInput extends Omit<NotingInput, "boundary"> { fullCheck?: boolean }
-export type DreamingResult = { automaticOff?: string } & (
+export type DreamingResult = { dormant?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
   | { outcome: "success" | "failure" | "cancelled"; runId: number; problems: string[];

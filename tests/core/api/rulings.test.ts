@@ -200,7 +200,7 @@ test("pending counts stay exact as mixed batches publish and only thinking remai
   } finally { m.close(); }
 });
 
-test("2026-10-17, 141: entry ends retry failed automatic work; completion schedules nothing and three failures disable memory", async () => {
+test("2026-10-17, 141: entry ends retry failed automatic work; completion schedules nothing and three failures make the session dormant", async () => {
   const attempts: number[][] = [];
   const fresh = createMemory(":memory:", async raw => {
     const task = raw as NotingAgentInput;
@@ -227,7 +227,7 @@ test("2026-10-17, 141: entry ends retry failed automatic work; completion schedu
       expect(fresh.store.entryNoted(selected[0]!)).toBe(false);
     }
     expect(fresh.store.listRuns(owner.id).map(run => run.outcome)).toEqual(["failure", "failure", "failure"]);
-    expect(fresh.store.enabled(owner.id)).toBe(false);
+    expect(fresh.store.dormant(owner.id)).toBe(true);
   } finally { scheduler.stop(); await scheduler.settle(); fresh.close(); }
 });
 
@@ -1896,7 +1896,7 @@ test("2026-10-22: `## none` replaces calling both tools; silence and one file al
 });
 
 // Maintainer, 2026-10-22: 「算，每次N未正常结束，无论中断在什么任务，都记为一次N失败」. One Noter run is one failure toward the
-// three-failure switch-off, whichever task it stopped in; cancellation still counts nothing.
+// three-failure streak (183: dormancy), whichever task it stopped in; cancellation still counts nothing.
 test("2026-10-22: a Noter run that does not finish normally is one failure, whichever task", async () => {
   const { s, t } = session(); memory.close();
   const script = [
@@ -1917,8 +1917,8 @@ test("2026-10-22: a Noter run that does not finish normally is one failure, whic
   expect(resumed.outcome).toBe("failure");
   expect(memory.store.listRuns(s.id).filter(run => run.kind === "noting" && JSON.parse(run.response!).task === "extract-facts")).toHaveLength(2); // resume does not extract again
   expect(count()).toBe(3);
-  expect(memory.store.enabled(s.id)).toBe(false);
-  expect("automaticOff" in resumed && resumed.automaticOff).toBeTruthy();
+  expect(memory.store.dormant(s.id)).toBe(true);
+  expect("dormant" in resumed && resumed.dormant).toBeTruthy();
 });
 
 // Ticket 155 supersedes the two-task and two-step Noter rulings; keep their publication and retry guarantees.
@@ -2722,20 +2722,34 @@ test("2026-10-26, 181 — a covered but unscored item becomes a candidate and is
 
 
 
-// consecutive failures switch trace off; follow Magic Context's practice (maintainer, translated)
-test("2026-10-22, 146 supersedes the 2026-10-21 failure-handling ruling — the third consecutive Dreamer failure switches memory off like the Noter's, the first two do not, and the Dreamer's streak is its own row", async () => {
+// 146 (2026-10-22) switched trace off on the third consecutive failure; 183 (2026-10-26) supersedes the effect: the session goes dormant. The streak rules stand.
+// Maintainer, 2026-10-26: 「失败三次后不要关闭记忆，而是转为休眠状态，压缩时只注入知识部分，并回退到原生压缩，不再触发 N D，指示灯另一种颜色标识」; asked whether a dormant session keeps importing: 「继续导入」.
+test("2026-10-26, 183 supersedes 146's switch-off — the third consecutive Dreamer failure makes the session dormant, the first two do not, and the Dreamer's streak is its own row", async () => {
   const f = dreamerFixture();
   f.item("Rule", { category: "constraint" });
   const results = [];
   for (let failure = 1; failure <= 3; failure++) {
     f.next(async () => ({ outcome: "failure", output: "bad request" }));
     results.push(await f.dream());
-    expect(f.store.enabled(f.session.id), `after failure ${failure}`).toBe(failure < 3);
+    expect(f.store.dormant(f.session.id), `after failure ${failure}`).toBe(failure === 3);
+    expect(f.store.enabled(f.session.id)).toBe(true);
   }
-  expect(results.slice(0, 2).every(result => !("automaticOff" in result))).toBe(true);
-  expect(results[2]).toMatchObject({ outcome: "failure", automaticOff: expect.stringMatching(/^Trace Memory: S\d+ dreaming off after three failures \(R\d+, R\d+, R\d+\); notes: error\. Use \/trace on to resume\.$/) });
+  expect(results.slice(0, 2).every(result => !("dormant" in result))).toBe(true);
+  expect(results[2]).toMatchObject({ outcome: "failure", dormant: expect.stringMatching(/^Trace Memory: S\d+ dreaming dormant after three failures \(R\d+, R\d+, R\d+\); notes: error\. .*Use \/trace on to resume, \/trace off to switch memory off\.$/) });
   expect(f.store.taskFailures(f.session.id).map(row => [row.phase, row.count])).toEqual([["dreaming", 3]]); // the Noter's row is separate
   expect(f.store.handoff(f.session.id, "dreaming")).not.toBeNull(); // the hand-off stays; /trace on resumes it
+  // Dormant is not off: import and Knowledge delivery go on, no task is admitted, and the user ends it either way.
+  expect(f.memory.injection(f.session.id).text).toContain("Rule");
+  f.memory.store.appendTurn({ sessionId: f.session.id, kind: "turn", userPrompt: "imported while dormant", startedAt: time });
+  expect(await f.dream()).toEqual({ outcome: "dropped" });
+  expect(f.memory.taskEligibility("noting", f.target).due).toBe(false);
+  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(false);
+  f.store.setEnrollment(f.session.id, false);
+  expect([f.store.enabled(f.session.id), f.store.dormant(f.session.id)]).toEqual([false, false]);
+  expect(f.memory.injection(f.session.id).text).toBe("");
+  f.store.setEnrollment(f.session.id, true);
+  expect(f.store.taskFailures(f.session.id)).toEqual([]);
+  expect((await f.dream()).outcome).not.toBe("dropped"); // the hand-off resumes
 });
 
 
@@ -2755,11 +2769,11 @@ test("2026-10-26, 181 — a Dreamer run whose frozen candidates are no less unsc
     } };
     results.push(await f.dream());
     expect(f.store.getKnowledge(current.knowledgeId)!.score, `after run ${run}`).toBeNull();
-    expect(f.store.enabled(f.session.id), `after run ${run}`).toBe(run < 3);
+    expect(f.store.dormant(f.session.id), `after run ${run}`).toBe(run === 3);
   }
   expect(results.map(result => result.outcome)).toEqual(["failure", "failure", "failure"]);
-  expect(results.slice(0, 2).every(result => !("automaticOff" in result))).toBe(true);
-  expect(results[2]).toMatchObject({ automaticOff: expect.stringMatching(/dreaming off after three failures/) });
+  expect(results.slice(0, 2).every(result => !("dormant" in result))).toBe(true);
+  expect(results[2]).toMatchObject({ dormant: expect.stringMatching(/dreaming dormant after three failures/) });
   expect(executionReasons(f)).toEqual(["curate: no progress", "curate: no progress", "curate: no progress"]);
   expect(f.store.taskFailures(f.session.id).map(row => [row.phase, row.count])).toEqual([["dreaming", 3]]);
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull(); // each run was complete: nothing to resume

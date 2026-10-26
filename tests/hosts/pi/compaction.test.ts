@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { host, reply, notingFact, type Reply } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { fact, knowledge, scoreAll } from "../../support/seed.ts";
+import { fact, knowledge, makeDormant, scoreAll } from "../../support/seed.ts";
 
 // Ticket 20c — compaction at the host boundary. Core decides between the custom replacement and the
 // native delegation over its own frozen snapshot (core/api/read.test.ts); this file pins what the Pi
@@ -201,6 +201,32 @@ test("133 R1: native fallback leaves Knowledge recovery at the next ordinary pro
     expect(recovered.details.traceMemory.supplied.knowledgeCommitIds).toEqual([created.commit]);
     await h.answer();
     expect((await h.prompt("already recovered"))?.message).toBeUndefined();
+  } finally { await h.dispose(); }
+});
+
+test("183: a dormant session compacts natively and its Knowledge returns at the next prompt; `/trace on` compacts with Trace Memory again", async () => {
+  const h = host({ ...quiet, "compaction.temporaryTokens": 1 });
+  try {
+    await h.prompt("establish support"); await h.answer();
+    const path = h.memory.store.knowledgePath(1, "main", 1);
+    const source = h.memory.store.sourcePath(1, "main", 1).map(entry => h.memory.store.getSourceEntry(entry.id)!).find(entry => entry.role === "user")!;
+    const support = fact(h.memory, path, "Support", [{ entry: source, text: "establish support" }]);
+    const created = knowledge(h.memory.store, path, "project", "constraint", [support.id], "RECOVER_WHILE_DORMANT");
+    scoreAll(h.memory.store);
+    expect((await h.prompt("deliver before compaction")).message.content).toContain("RECOVER_WHILE_DORMANT");
+    await h.answer();
+    expect((await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } })).compaction.summary).toBeTruthy(); // the control: not dormant
+    makeDormant(h.memory.store, 1);
+    expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } })).toBeUndefined();
+    const entry = h.compaction("native summary");
+    expect(entry).not.toHaveProperty("details.traceMemory");
+    await h.emit("session_compact", { compactionEntry: entry });
+    const recovered = (await h.prompt("after native compaction")).message;
+    expect(recovered.content).toContain("RECOVER_WHILE_DORMANT");
+    expect(recovered.details.traceMemory.supplied.knowledgeCommitIds).toEqual([created.commit]);
+    await h.answer();
+    h.memory.store.setEnrollment(1, true);
+    expect((await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } })).compaction.summary).toBeTruthy();
   } finally { await h.dispose(); }
 });
 

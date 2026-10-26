@@ -11,7 +11,7 @@ import { migrateWordSimilarity, migrateStartDirectories163, migrateFactsFts160, 
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, PendingNode } from "./deliveries.ts";
-import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome, type DreamerBoundary } from "./executions.ts";
+import { EXECUTIONS_SQL, FAILURE_LIMIT, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome, type DreamerBoundary } from "./executions.ts";
 import { DELIVERIES_SQL, STATE_KEY, GUIDE_VERSION, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
 import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_KNOWLEDGE, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
@@ -1763,6 +1763,14 @@ export class Store {
     this.enrolledCache?.set(sessionId, result);
     return result;
   }
+  /** 183: a session whose task failed `FAILURE_LIMIT` times in a row is dormant: still enabled (import and Knowledge delivery go on) but
+   * it runs no Noter or Dreamer. Derived from the failure counters, which persist and which `setEnrollment(true)` clears, so there is no second
+   * state to keep in step; `/trace off` leaves the counters but an off session is not dormant. */
+  dormant(sessionId: number): boolean {
+    return this.enabled(sessionId) && !!this.db.prepare("SELECT 1 FROM task_failures WHERE session_id = ? AND count >= ? LIMIT 1").get(sessionId, FAILURE_LIMIT);
+  }
+  /** Whether Noter and Dreamer work may be admitted for, or run by, this session: enabled and not dormant. */
+  tasksEnabled(sessionId: number): boolean { return this.enabled(sessionId) && !this.dormant(sessionId); }
   setEnrollment(sessionId: number, enabled: boolean): void {
     if (typeof enabled !== "boolean") throw new Error("Enrollment choice must be boolean");
     this.transaction(() => {
@@ -1797,6 +1805,10 @@ export class Store {
   }
   requireEnabled(sessionId: number): void {
     if (!this.enabled(sessionId)) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
+  }
+  requireTasksEnabled(sessionId: number): void {
+    this.requireEnabled(sessionId);
+    if (this.dormant(sessionId)) throw new Error("Trace Memory is dormant after three failures; use /trace on to resume.");
   }
 
   closeSession(sessionId: number, at = new Date().toISOString()): void {
@@ -1855,7 +1867,7 @@ export class Store {
    * before terminal settlement reads it, misfiling the run as cancelled instead of a failure). */
   private acquireAvailableClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed: boolean,
     hasPending: () => boolean, eligible: () => boolean, leaseMs = 30 * 60_000): TaskClaim | null {
-    if (!executorId || !this.enabled(target.sessionId)) return null;
+    if (!executorId || !this.tasksEnabled(target.sessionId)) return null;
     if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
     const pending = hasPending();
     const now = Date.now();
@@ -1895,7 +1907,7 @@ export class Store {
     if (!run.claim) return; // Manual writes and explicit low-level store commits have no worker.
     // Off fences new model work and knowledge writes, not completion of an already admitted run.
     // Terminal processing still requires the exact live token and all ownership/range fences.
-    if (!terminalProcessing && run.executorSessionId !== undefined) this.requireEnabled(run.executorSessionId);
+    if (!terminalProcessing && run.executorSessionId !== undefined) this.requireTasksEnabled(run.executorSessionId);
     const claim = run.claim, current = this.getClaim(claim.sessionId, claim.phase);
     if (claim.sessionId !== run.sessionId || claim.phase !== run.kind || !current || current.reserved ||
         current.token !== claim.token || current.executorId !== claim.executorId || current.expiresAt <= Date.now())
@@ -1907,13 +1919,13 @@ export class Store {
       throw new Error("target project changed after admission");
   }
 
-  /** Closed tails require an enabled, open executor. Project scope additionally requires the same
+  /** Closed tails require an open executor and target that run tasks (enabled, not dormant). Project scope additionally requires the same
    * project id. Rechecked at admission and commit; project names/cwd are never inferred. */
   canBorrow(targetSessionId: number, executorSessionId?: number, scope: ClosedSessionScope = "project"): boolean {
     if (scope === "off" || executorSessionId === undefined || executorSessionId === targetSessionId) return false;
     const executor = this.getSession(executorSessionId), target = this.getSession(targetSessionId);
     return !!executor && !!target && executor.closedAt === null && target.closedAt !== null &&
-      (scope === "global" || executor.projectId === target.projectId) && this.enabled(executorSessionId) && this.enabled(targetSessionId);
+      (scope === "global" || executor.projectId === target.projectId) && this.tasksEnabled(executorSessionId) && this.tasksEnabled(targetSessionId);
   }
 
   /** Recorded foregrounds are the borrowing authority. An invalid cursor fails the whole scan
@@ -1938,10 +1950,11 @@ export class Store {
   closedTasks(phase: "noting", executorSessionId: number, scope: ClosedSessionScope = "project"): TaskTarget[] {
     if (phase !== "noting") throw new Error(`Unsupported borrowed phase: ${phase}`);
     const executor = this.getSession(executorSessionId);
-    if (scope === "off" || !executor || executor.closedAt !== null || !this.enabled(executorSessionId)) return [];
+    if (scope === "off" || !executor || executor.closedAt !== null || !this.tasksEnabled(executorSessionId)) return [];
     const targets: (TaskTarget & { oldest: number })[] = [];
-    const sessions = this.db.prepare("SELECT id FROM sessions WHERE (? = 'global' OR project_id = ?) AND closed_at IS NOT NULL AND id != ? AND COALESCE(enrollment_choice, enrollment_default) = 1 ORDER BY id")
-      .all(scope, executor.projectId, executorSessionId);
+    const sessions = this.db.prepare(`SELECT id FROM sessions WHERE (? = 'global' OR project_id = ?) AND closed_at IS NOT NULL AND id != ? AND COALESCE(enrollment_choice, enrollment_default) = 1
+      AND NOT EXISTS (SELECT 1 FROM task_failures WHERE session_id = sessions.id AND count >= ?) ORDER BY id`)
+      .all(scope, executor.projectId, executorSessionId, FAILURE_LIMIT); // 183: a dormant target's tail is not borrowed
     for (const row of sessions) {
       const sessionId = Number(row.id);
       const claimed = (this.getClaim(sessionId, phase)?.expiresAt ?? 0) > Date.now();

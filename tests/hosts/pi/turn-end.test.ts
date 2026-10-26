@@ -130,7 +130,7 @@ test("busy entries queue nothing; the next entry after publication admits the ne
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(8);
 });
 
-test("failed Noting retries at later entry ends and disables memory after three failures", async () => {
+test("failed Noting retries at later entry ends and makes the session dormant after three failures", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   h.provider(async () => reply("Incomplete Noter."));
   await h.prompt("word ".repeat(400)); await h.answer(); await h.drain();
@@ -142,7 +142,7 @@ test("failed Noting retries at later entry ends and disables memory after three 
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["failure", "failure"]);
   h.persist(reply("third entry")); await h.emit("tool_execution_start"); await h.drain();
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["failure", "failure", "failure"]);
-  expect(h.memory.store.enabled(1)).toBe(false);
+  expect(h.memory.store.dormant(1)).toBe(true);
 });
 
 test.each(["aborted", "error"] as const)("%s assistant entries admit without waiting for settlement", async outcome => {

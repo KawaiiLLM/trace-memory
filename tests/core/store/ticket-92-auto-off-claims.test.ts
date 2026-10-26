@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { Store } from "../../../src/core/store/index.ts";
 
 for (const state of ["active", "reserved", "replaced", "expired", "none"] as const)
-  test(`92: a third Noter failure expires every Dreamer claim of the session (${state})`, () => {
+  test(`92: a third Noter failure makes the session dormant and expires every Dreamer claim of it (${state})`, () => {
     const store = new Store(":memory:");
     try {
       const project = store.createProject({ name: "claims", declaredBy: "mark" });
@@ -29,10 +29,11 @@ for (const state of ["active", "reserved", "replaced", "expired", "none"] as con
       for (let n = 0; n < 3; n++) {
         const executionId = store.beginExecution({ sessionId: session.id, phase: "noting", head: entry.id });
         const failed = store.recordRun({ kind: "noting", sessionId: session.id, executionId, outcome: "failure", createdAt: "now" });
-        expect(!!store.settleExecution(executionId, "failure", failed.id).automaticOff).toBe(n === 2);
+        expect(!!store.settleExecution(executionId, "failure", failed.id).dormant).toBe(n === 2);
       }
-      expect(store.enabled(session.id)).toBe(false);
-      // Stage 4 §1.5: nothing keeps an admitted Dreamer's token alive past an automatic off, whatever its state; it writes no coverage.
+      expect(store.dormant(session.id)).toBe(true);
+      expect(store.enabled(session.id)).toBe(true); // 183: dormant, not off
+      // Stage 4 §1.5: nothing keeps an admitted Dreamer's token alive past dormancy, whatever its state; it writes no coverage.
       if (state === "none") expect(store.getClaim(session.id, "dreaming")).toBeNull();
       else expect(store.getClaim(session.id, "dreaming")!.expiresAt).toBe(0);
       expect(store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);

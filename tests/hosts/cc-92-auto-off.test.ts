@@ -60,12 +60,11 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
       if (!signal) throw Error("Dreamer worker has no cancellation signal");
       return new Promise(resolve => signal.addEventListener("abort", () => {
         observedAbort = true;
-        expect(store.enabled(session.id)).toBe(false);
+        expect(store.dormant(session.id)).toBe(true);
         expect(nCalls).toBe(3);
-        expect(store.getClaim(session.id, "dreaming")).toEqual({ ...claim, expiresAt: 0 }); // the same claim row stays until settlement; memory off expires its lease
+        expect(store.getClaim(session.id, "dreaming")).toEqual({ ...claim, expiresAt: 0 }); // the same claim row stays until settlement; dormancy expires its lease
         revisionsAtAbort = revisions();
         expect(lateWrite()).toBeUndefined(); // a late pass end applies nothing
-        expect(tools.find(tool => tool.name === "note")!.execute({})).toContain("Disabled");
         resolve({ outcome: "cancelled", output: "aborted", request });
       }, { once: true }));
     };
@@ -82,7 +81,7 @@ test("92/07: CC catchup third N failure cancels active D without losing exact se
     expect(nCalls).toBe(3);
     const stoppedDCalls = dCalls;
     expect(scheduler.catchupStatus().state).toBe("stopped");
-    expect(diagnostics.some(message => message.includes("off after three failures"))).toBe(true);
+    expect(diagnostics.some(message => message.includes("dormant after three failures"))).toBe(true);
     expect(store.getClaim(session.id, "dreaming")).toBeNull();
     expect(lateWrite()).toBeUndefined();
     expect(revisions()).toBe(revisionsAtAbort); // 169: the group is unpublished; late scoring adds nothing.

@@ -437,7 +437,7 @@ const TRIGGER_WAIT_MS = 10_000;
  * starts), so the build waits for the row and for the live executor to import it, reading only the
  * tail after the stored leaf (97); without a live executor the importer runs here. The block's
  * Knowledge is recorded as the delivery of the compaction the import will append after that leaf,
- * before the text is returned. Null: an unbound/disabled session or pending Raw overflow, which keeps native compaction.
+ * before the text is returned. Null: an unbound, disabled or dormant (183) session or pending Raw overflow, which keeps native compaction.
  * `auto` (requirement 14, ruled): the caller's own `manual`/`auto` event trigger, distinct from the
  * handle above; only `auto` gets the trailing continue sentence. */
 export async function ccCompaction(config: ResolvedCcHostConfig,
@@ -452,10 +452,12 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
   try {
     // Enrollment is settled once a core session exists or the import has read the creation time.
     const disabled = (binding: CcSessionBinding) => (binding.coreSessionId !== null || binding.nativeCreatedAt !== null) && !enabled(binding, memory);
+    // 183: a dormant session builds nothing here (no wait for the trigger either); the hook runs native compaction and its Knowledge supplement.
+    const dormant = (binding: CcSessionBinding) => binding.coreSessionId !== null && memory.store.dormant(binding.coreSessionId);
     const importing = (binding: CcSessionBinding) => binding.executor !== null && executorLiveness(binding.executor) !== "dead";
     let binding = initial;
     for (const deadline = Date.now() + TRIGGER_WAIT_MS; ;) {
-      if (disabled(binding)) return null;
+      if (disabled(binding) || dormant(binding)) return null;
       const present = written(binding, input.trigger, memory.store);
       if (present && (importedToEnd(binding) || !importing(binding))) break;
       if (Date.now() >= deadline) {

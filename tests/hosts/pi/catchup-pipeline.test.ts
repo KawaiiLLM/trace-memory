@@ -200,7 +200,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
   } finally { await h.dispose(); }
 });
 
-for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries the frozen entry successfully" : "turns memory off after three failures"} without an intervening D check`, async () => {
+for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries the frozen entry successfully" : "turns memory dormant after three failures"} without an intervening D check`, async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   try {
     await h.turn(); const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
@@ -219,8 +219,8 @@ for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries 
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting").map(r => r.outcome))
       .toEqual(correct ? ["failure", ...Array(4).fill("success")] : ["failure", "failure", "failure"]);
     expect(attempts).toBe(correct ? 2 : 3);
-    if (!correct) expect(h.notices.some(notice => notice.includes("off after three failures"))).toBe(true);
-    expect(h.memory.store.enabled(1)).toBe(correct);
+    if (!correct) expect(h.notices.some(notice => notice.includes("dormant after three failures"))).toBe(true);
+    expect(h.memory.store.dormant(1)).toBe(!correct);
     expect(h.memory.store.listSessionFacts(1)).toEqual([]);
     await command(h, ""); expect(h.notices.at(-1)).toContain(correct ? "Catchup: completed" : "Catchup: stopped");
     eligibility.mockRestore();
@@ -313,7 +313,7 @@ test("146 Q18: the drain's own D fails: one run, the drain ends, and the next en
   } finally { await h.dispose(); }
 }, 30000);
 
-test("146 Q18: a D failure that carries automaticOff stops the drain", async () => {
+test("146 Q18: a D failure that carries dormant stops the drain", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   try {
     await h.turn(); seed(h);
@@ -321,8 +321,8 @@ test("146 Q18: a D failure that carries automaticOff stops the drain", async () 
     for (let i = 0; i < 2; i++) { await command(h, "dream"); await settle(h); }
     h.memory.config.dreaming.triggerKnowledge = 1; // the drain's own D is now due
     await command(h, "catchup"); await settle(h);
-    expect(h.memory.store.enabled(1)).toBe(false); // the third failure switched memory off
-    expect(h.notices.some(text => text.includes("dreaming off after three failures"))).toBe(true);
+    expect(h.memory.store.dormant(1)).toBe(true); // the third failure made the session dormant
+    expect(h.notices.some(text => text.includes("dreaming dormant after three failures"))).toBe(true);
   } finally { await h.dispose(); }
 }, 30000);
 

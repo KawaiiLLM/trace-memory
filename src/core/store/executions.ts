@@ -77,7 +77,7 @@ export function migrateDreamerTask126(store: Store): void {
  * A refusal carries this identity back; it does not settle it. Unfinished executions remain
  * visible after interruption, without inferring a terminal outcome from an attempt audit. */
 export function beginExecution(store: Store, task: LogicalTask): string {
-  store.requireEnabled(task.sessionId);
+  store.requireEnabled(task.sessionId); // 183: admission (`acquireClaim`) already refuses a dormant session; this is the off fence
   if (task.phase !== "noting" && task.phase !== "dreaming") throw new Error(`Unsupported live phase: ${task.phase}`);
   const head = task.phase === "noting" ? task.head ?? null : null, pool = task.phase === "dreaming" ? ALL_POOLS : null;
   if (task.phase === "noting" ? !Number.isSafeInteger(head) || head! <= 0 : task.head !== undefined)
@@ -132,13 +132,16 @@ export function linkExecutionRun(store: Store, runId: number, input: RunInput): 
   store.db.prepare("INSERT INTO execution_runs VALUES (?,?)").run(runId, input.executionId);
 }
 
+/** 146, 183: this many consecutive failures of one task make the session dormant. */
+export const FAILURE_LIMIT = 3;
+
 /** The stage at which an execution failed. */
 /** `noProgress`: the Dreamer's run published (wrote `finished`) but left its frozen candidates as unscored as it found them; unlike a failure after `finished`, it counts (181). */
 export interface TaskFailure { task: string; noProgress?: boolean }
 
 /** Caller owns the terminal decision.
  * Dreamer calls it alongside completeDreaming in the final-check transaction, not at a write. */
-export function settleExecution(store: Store, id: string, outcome: ExecutionOutcome, runId: number, reason = "", failure?: TaskFailure): { automaticOff?: string } {
+export function settleExecution(store: Store, id: string, outcome: ExecutionOutcome, runId: number, reason = "", failure?: TaskFailure): { dormant?: string } {
   return store.transaction(() => {
     const row = store.db.prepare("SELECT * FROM task_executions WHERE id = ?").get(id);
     if (!row) throw new Error("Unknown execution");
@@ -175,14 +178,15 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
       VALUES (?,?,?,?,?,?,?,?)`).run(...key, outcome === "success" ? 0 : 1, reason, runId, now);
     // A no-progress run is complete: there is nothing to resume, and the triggers fire again while the candidates stay unscored.
     if (row.phase === "dreaming" && outcome === "failure" && !failure?.noProgress) keepDreamerRetry(store, Number(row.session_id), runId, failure);
-    // 146 (maintainer, 2026-10-22): the Dreamer's streak works like the Noter's; the third consecutive failure switches memory off.
+    // 183 (maintainer, 2026-10-26; 146's streak): the third consecutive failure of either task makes the session dormant, not off. The counters
+    // are the state (`Store.dormant`); only the claims are expired here, so a run in flight loses its token as it did on the old switch-off.
     const count = Number(store.db.prepare(`SELECT count FROM task_failures WHERE ${task}`).get(...key)!.count);
-    if (count !== 3 || !store.enabled(Number(row.session_id))) return {};
-    store.setEnrollment(Number(row.session_id), false);
+    if (count !== FAILURE_LIMIT || !store.enabled(Number(row.session_id))) return {};
     store.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE session_id = ?").run(row.session_id!);
     const runs = store.db.prepare(`SELECT terminal_run FROM task_executions WHERE ${task}
-      AND outcome = 'failure' ORDER BY updated_at DESC, rowid DESC LIMIT 3`).all(...key).reverse();
-    return { automaticOff: `Trace Memory: S${row.session_id} ${row.phase} off after three failures (${runs.map(r => `R${r.terminal_run}`).join(", ")}); ${reason || "business completion failed"}. Use /trace on to resume.` };
+      AND outcome = 'failure' ORDER BY updated_at DESC, rowid DESC LIMIT ${FAILURE_LIMIT}`).all(...key).reverse();
+    return { dormant: `Trace Memory: S${row.session_id} ${row.phase} dormant after three failures (${runs.map(r => `R${r.terminal_run}`).join(", ")}); ${reason || "business completion failed"}. `
+      + "Recording and Knowledge delivery continue; no Noter or Dreamer runs for this session. Use /trace on to resume, /trace off to switch memory off." };
   });
 }
 

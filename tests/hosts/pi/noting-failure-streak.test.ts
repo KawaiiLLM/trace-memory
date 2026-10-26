@@ -11,7 +11,7 @@ const at = "2026-09-09T00:00:00.000Z";
 const config = { "noting.triggerTokens": 30 };
 const command = (h: Host, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const notingRuns = (h: Host) => h.memory.store.listRuns(1).filter(r => r.kind === "noting");
-const disabled = (h: Host) => h.notices.filter(n => n.includes("off after three failures"));
+const disabled = (h: Host) => h.notices.filter(n => n.includes("dormant after three failures"));
 const tick = async (h: Host, text = "eligible completion " + "word ".repeat(40)) => {
   await h.prompt(text); await h.answer(); await h.drain();
 };
@@ -47,7 +47,7 @@ test("155: a knowledge writer that stops without its file publishes nothing or R
   } finally { await h.dispose(); }
 });
 
-test("32c replaces 26a: three incomplete runs with a growing tail disable memory once and show the off footer", async () => {
+test("32c replaces 26a: three incomplete runs with a growing tail make the session dormant once and show the dormant footer", async () => {
   const h = host(config);
   try {
     silent(h); await h.turn(); const first = head(h);
@@ -61,7 +61,8 @@ test("32c replaces 26a: three incomplete runs with a growing tail disable memory
     expect(disabled(h)).toHaveLength(1);
     expect(disabled(h)[0]).toContain("R1, R2, R3");
     expect(disabled(h)[0]).toContain("/trace on");
-    expect(h.statuses.get("trace-memory")).toContain("off");
+    expect(h.statuses.get("trace-memory")).toContain("◐ dormant");
+    expect(h.memory.store.enabled(1)).toBe(true);
     await tick(h); await tick(h);
     expect(notingRuns(h)).toHaveLength(3);
     expect(disabled(h)).toHaveLength(1);
@@ -112,7 +113,7 @@ test("32c replaces 26a: provider failure between incomplete runs counts as one f
   } finally { await h.dispose(); }
 }, 20000);
 
-test("32c replaces 26a: off preserves committed facts and reads, blocks both phases and catchup, and only explicit on resets", async () => {
+test("32c replaces 26a, 183: dormant preserves committed facts and reads, blocks both phases and catchup, and only explicit on resets", async () => {
   const h = host(config);
   try {
     silent(h); await h.turn();
@@ -122,8 +123,8 @@ test("32c replaces 26a: off preserves committed facts and reads, blocks both pha
     expect(disabled(h)).toHaveLength(1);
     expect(memoryFiles(h.memory, { sessionId: 1, branch: "main", headTurnId: 1 }).read("trace://F1").content).toContain("Retained claim");
     const count = h.memory.store.listRuns(1).length;
-    await expect(command(h, "catchup")).rejects.toThrow("Disabled"); await h.drain();
-    expect(h.memory.store.enabled(1)).toBe(false);
+    await expect(command(h, "catchup")).rejects.toThrow("dormant"); await h.drain();
+    expect(h.memory.store.dormant(1)).toBe(true);
     expect(h.memory.store.listRuns(1)).toHaveLength(count);
     const target = { sessionId: 1, branch: "main", headTurnId: h.memory.store.listTurns(1).at(-1)!.id };
     expect(h.memory.taskEligibility("noting", target).due).toBe(false);
@@ -135,7 +136,7 @@ test("32c replaces 26a: off preserves committed facts and reads, blocks both pha
   } finally { await h.dispose(); }
 }, 30000);
 
-test("32c replaces 26a: reopening resets neither an enabled streak nor disabled enrollment", async () => {
+test("32c replaces 26a: reopening resets neither a streak nor dormancy", async () => {
   const h = host(config);
   try {
     silent(h); await h.turn(); await tick(h);
@@ -143,24 +144,24 @@ test("32c replaces 26a: reopening resets neither an enabled streak nor disabled 
     await tick(h); expect(disabled(h)).toHaveLength(1);
     const count = notingRuns(h).length;
     await h.emit("session_start"); await tick(h);
-    expect(h.memory.store.enabled(1)).toBe(false);
+    expect(h.memory.store.dormant(1)).toBe(true);
     expect(notingRuns(h)).toHaveLength(count);
     await command(h, "on"); h.provider(async c => emptyNote(c) ?? reply("Done.")); await tick(h);
     expect(notingRuns(h).at(-1)!.outcome).toBe("success");
   } finally { await h.dispose(); }
 }, 20000);
 
-test("32c replaces 26a: real native children disable on the third incomplete execution, not the second", async () => {
+test("32c replaces 26a: real native children make the session dormant on the third incomplete execution, not the second", async () => {
   const f = await fixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : say("Nothing to note."));
     for (let i = 1; i <= 3; i++) {
       await f.turn(`question ${i} ` + "word ".repeat(400));
       await vi.waitFor(() => expect(f.h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.response)).toHaveLength(i), { timeout: 5000 });
-      if (i < 3) expect(f.h.memory.store.enabled(1)).toBe(true);
+      if (i < 3) expect(f.h.memory.store.dormant(1)).toBe(false);
     }
     await vi.waitFor(() => expect(disabled(f.h)).toHaveLength(1), { timeout: 5000 });
-    expect(f.h.statuses.get("trace-memory")).toContain("off");
+    expect(f.h.statuses.get("trace-memory")).toContain("dormant");
     await f.turn("disabled opportunity " + "word ".repeat(400));
     expect(notingRuns(f.h)).toHaveLength(3);
     await command(f.h, "on");
@@ -170,7 +171,7 @@ test("32c replaces 26a: real native children disable on the third incomplete exe
   } finally { await f.dispose(); }
 }, 40000);
 
-test("32c replaces 26a: a disabled executor cannot borrow another enabled session's closed tail", async () => {
+test("32c replaces 26a: a dormant executor cannot borrow another enabled session's closed tail", async () => {
   const h = host(config);
   try {
     silent(h); await h.turn(); await tick(h); await tick(h);

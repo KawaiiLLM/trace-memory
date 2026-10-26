@@ -39,7 +39,7 @@ const decision = (m: TraceMemory, target: ReturnType<typeof seed>, text: string)
     text, category: "decision", actor: "user", createdAt: "now",
   }]);
 
-test("32c: borrowed failures continue across executors, disable only the target and fence its other phase", async () => {
+test("32c, 183: borrowed failures continue across executors, make only the target dormant and fence its other phase", async () => {
   const db = file(), first = open(db), target = seed(first), executor = seed(first), other = seed(first);
   first.store.closeSession(target.sessionId);
   const options = { borrowed: true, executorSessionId: executor.sessionId };
@@ -55,22 +55,26 @@ test("32c: borrowed failures continue across executors, disable only the target 
   if (!knowledge.ok) throw Error(knowledge.problems.join("; "));
   const claim = second.store.acquireClaim(target, "dreaming", "another-process", false, () => true, 0)!; // trigger 0: this test needs the claim held, not a due Dreamer
   expect(claim).not.toBeNull();
+  expect(first.store.canBorrow(target.sessionId, executor.sessionId, "global")).toBe(true);
   const result = await note(first, target, options);
-  expect(result.automaticOff).toContain(`S${target.sessionId} noting`);
-  expect(first.store.enabled(target.sessionId)).toBe(false);
-  expect(first.store.enabled(executor.sessionId)).toBe(true);
-  expect(first.store.enabled(other.sessionId)).toBe(true);
+  expect(result.dormant).toContain(`S${target.sessionId} noting`);
+  expect(first.store.dormant(target.sessionId)).toBe(true);
+  expect(first.store.enabled(target.sessionId)).toBe(true);
+  expect(first.store.dormant(executor.sessionId)).toBe(false);
+  expect(first.store.dormant(other.sessionId)).toBe(false);
   expect(second.store.getClaim(target.sessionId, "dreaming")!.expiresAt).toBe(0);
   expect(first.store.listSessionFacts(target.sessionId)).toHaveLength(1);
   expect(first.pendingEntries(target.sessionId, target.branch, target.headTurnId)).not.toEqual([]);
   expect(streaks(first)[0]!.count).toBe(3);
+  expect(first.store.canBorrow(target.sessionId, executor.sessionId, "global")).toBe(false); // 183: nobody borrows a dormant target's tail
   first.store.reopenSession(target.sessionId, first.executorId);
-  expect(first.store.enabled(target.sessionId)).toBe(false);
-  first.store.setEnrollment(target.sessionId, true);
+  expect(first.store.dormant(target.sessionId)).toBe(true);
+  first.store.setEnrollment(target.sessionId, true); // `/trace on` resumes: the streak is gone
   expect(streaks(first)).toEqual([]);
+  expect(first.store.dormant(target.sessionId)).toBe(false);
 });
 
-test("92: N auto-off fences a running D: its late pass changes nothing, its claim is released only at settlement, manual notes are refused", async () => {
+test("92, 183: N going dormant fences a running D: its late pass changes nothing, its claim is released only at settlement, a manual note is still accepted", async () => {
   let scenario!: (input: DreamingAgentInput) => ReturnType<RunAgent>;
   const ready = Promise.withResolvers<void>(), notes = scriptedDreamer();
   const m = open(":memory:", raw => {
@@ -93,10 +97,9 @@ test("92: N auto-off fences a running D: its late pass changes nothing, its clai
     expect(input.signal?.aborted).toBe(false);
     ready.resolve();
     return new Promise(resolve => input.signal!.addEventListener("abort", () => {
-      // The lease is fenced (expired) by the auto-off, but the claim is not released or taken over before the run settles.
+      // The lease is fenced (expired) by dormancy, but the claim is not released or taken over before the run settles.
       expect(m.store.getClaim(target.sessionId, "dreaming")).toMatchObject({ executorId: claim.executorId, token: claim.token });
       expect(late()).toBeUndefined();
-      expect(manual.execute({ title: "Late note", sources: `[T${target.headTurnId}#E1] late note` })).toContain("Disabled");
       resolve({ outcome: "cancelled", output: "aborted", request });
     }, { once: true }));
   };
@@ -104,17 +107,20 @@ test("92: N auto-off fences a running D: its late pass changes nothing, its clai
   const before = revisions();
   const held = m.dream({ ...target, model: "fake" });
   await ready.promise;
-  expect((await note(m, target)).automaticOff).toBeTruthy();
+  expect((await note(m, target)).dormant).toBeTruthy();
   const cancelled = await held;
   expect(cancelled.outcome, JSON.stringify(cancelled)).toBe("cancelled");
   expect(late()).toBeUndefined();
   expect(revisions()).toBe(before);
   expect(m.store.getClaim(target.sessionId, "dreaming")).toBeNull();
   expect(m.store.listSessionFacts(target.sessionId)).toHaveLength(1);
-  expect(m.store.enabled(other.sessionId)).toBe(true);
+  expect(m.store.dormant(target.sessionId)).toBe(true);
+  expect(m.store.dormant(other.sessionId)).toBe(false);
   expect(streaks(m).filter(r => r.phase === "dreaming")).toEqual([]);
   expect(await m.dream(target)).toEqual({ outcome: "dropped" });
   expect(await note(m, target)).toEqual({ outcome: "dropped" });
+  // 183: dormant is not off. The foreground's own `note` is a write by the user's model, not a Noter run, and goes on working.
+  expect(manual.execute({ title: "Late note", sources: `[T${target.headTurnId}#E1] late note` })).not.toContain("Disabled");
 });
 
 test.each([false, true])("92: the failure streak resets only after atomic terminal publication (audit failure: %s)", async auditFailure => {
@@ -168,7 +174,7 @@ test("92: Noting failure identity stays at the oldest pending entry while the li
   for (let i = 1; i <= 3; i++) {
     head = m.store.appendTurn({ sessionId: target.sessionId, parentTurnId: head, kind: "turn", userPrompt: `later ${i}`, startedAt: "later" }).id;
     const result = await note(m, { ...target, headTurnId: head });
-    expect(!!result.automaticOff).toBe(i === 3);
+    expect(!!result.dormant).toBe(i === 3);
     expect(streaks(m)[0]!.head).toBe(oldest);
     expect(streaks(m)[0]!.count).toBe(i);
   }
@@ -191,28 +197,51 @@ test("92: successful N publication resets its own task in the terminal transacti
   expect(m.pendingEntries(target.sessionId, "main", target.headTurnId)).toEqual([]);
 });
 
-test("32c: failed off transaction rolls back the outcome and count; claim cleanup cannot undo a committed off", async () => {
+test("32c, 183: a failed dormancy transaction rolls back the outcome and count; claim cleanup cannot undo a committed dormancy", async () => {
   const m = open(), target = seed(m);
   await note(m, target); await note(m, target);
-  const enrollment = vi.spyOn(m.store, "setEnrollment").mockImplementation(() => { throw Error("off persistence failed"); });
-  await expect(note(m, target)).rejects.toThrow("off persistence failed");
+  m.store.db.exec("CREATE TEMP TRIGGER fail_expiry BEFORE UPDATE ON task_claims BEGIN SELECT RAISE(ABORT, 'dormancy persistence failed'); END");
+  await expect(note(m, target)).rejects.toThrow("dormancy persistence failed");
   expect(streaks(m)[0]!.count).toBe(2);
-  expect(m.store.enabled(target.sessionId)).toBe(true);
+  expect(m.store.dormant(target.sessionId)).toBe(false);
   expect(m.store.getClaim(target.sessionId, "noting")).toBeNull();
   const run = m.store.listRuns(target.sessionId).at(-1)!;
   const id = execution(m, run.id);
   expect(m.store.db.prepare("SELECT outcome FROM task_executions WHERE id = ?").get(id)!.outcome).toBeNull();
-  enrollment.mockRestore();
-  expect(m.store.settleExecution(id, "failure", run.id, "provider failed").automaticOff).toBeTruthy();
+  m.store.db.exec("DROP TRIGGER fail_expiry");
+  expect(m.store.settleExecution(id, "failure", run.id, "provider failed").dormant).toBeTruthy();
   expect(m.store.settleExecution(id, "failure", run.id)).toEqual({});
   expect(streaks(m)[0]!.count).toBe(3);
   m.store.setEnrollment(target.sessionId, true);
   await note(m, target); await note(m, target);
   vi.spyOn(m.store, "releaseClaim").mockImplementation(() => { throw Error("cleanup failed"); });
   const third = await note(m, target);
-  expect(third.automaticOff).toBeTruthy();
-  expect(m.store.enabled(target.sessionId)).toBe(false);
+  expect(third.dormant).toBeTruthy();
+  expect(m.store.dormant(target.sessionId)).toBe(true);
   expect(streaks(m)[0]!.count).toBe(3);
+});
+
+test("183: a dormant session keeps importing, claims no N, and `/trace on` has N process what was imported meanwhile", async () => {
+  const db = file(), m = open(db), target = seed(m);
+  m.config.noting.triggerTokens = 1; // anything pending is due, so only dormancy can make it not due
+  for (let n = 1; n <= 3; n++) {
+    expect((await note(m, target)).outcome).toBe("failure");
+    expect(m.store.dormant(target.sessionId)).toBe(n === 3);
+  }
+  const later = m.store.appendTurn({ sessionId: target.sessionId, parentTurnId: target.headTurnId, kind: "turn", userPrompt: "imported while dormant", startedAt: "later" });
+  const tip = { ...target, headTurnId: later.id };
+  expect(m.pendingEntries(tip.sessionId, tip.branch, tip.headTurnId)).toHaveLength(2);
+  expect(m.taskEligibility("noting", tip).due).toBe(false);
+  expect(await note(m, tip)).toEqual({ outcome: "dropped" });
+  m.close(); // dormant survives an executor restart
+  const restarted = open(db, async raw => { submitEmpty(raw); return { outcome: "success", output: "done", request }; });
+  restarted.config.noting.triggerTokens = 1;
+  expect(restarted.store.dormant(target.sessionId)).toBe(true);
+  expect(await note(restarted, tip)).toEqual({ outcome: "dropped" });
+  restarted.store.setEnrollment(target.sessionId, true);
+  expect(restarted.taskEligibility("noting", tip).due).toBe(true);
+  expect((await note(restarted, tip)).outcome).toBe("success");
+  expect(restarted.pendingEntries(tip.sessionId, tip.branch, tip.headTurnId)).toEqual([]);
 });
 
 test("32c migration: additive execution state survives reopen without inventing legacy outcomes", () => {

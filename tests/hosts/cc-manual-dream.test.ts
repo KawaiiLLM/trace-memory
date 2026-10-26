@@ -13,11 +13,11 @@ const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-146.db", stateDir: "/t
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
   selectedEntryIds: [1], selectedCount: 1, selectedTailId: 1,
   selectedAppendedEntryIds: [], appendedEntryIds: [], problems: [], snapshot: {} as any };
-type Result = { outcome: string; problems?: string[]; reason?: string; automaticOff?: string };
+type Result = { outcome: string; problems?: string[]; reason?: string; dormant?: string };
 
 function fixture() {
   const memory = { executorId: "ours", config: { closedSessionScope: "project" }, cancelTasks: vi.fn(),
-    store: { enabled: () => true, pendingEntryIds: () => [], getClaim: () => null, closedTasks: () => [], progressSignal: () => "sig" },
+    store: { enabled: () => true, tasksEnabled: () => true, pendingEntryIds: () => [], getClaim: () => null, closedTasks: () => [], progressSignal: () => "sig" },
     taskEligibility: vi.fn(() => ({ due: false })),
     noting: vi.fn(async (): Promise<Result> => ({ outcome: "success" })),
     dream: vi.fn(async (_input: unknown): Promise<Result> => ({ outcome: "success" })) };
@@ -76,12 +76,12 @@ test("a model that never returns leaves the command answered; the status stays r
   expect(f.scheduler.dreamSnapshot()).toMatchObject({ state: "stopped" });
 });
 
-test("a failure shows the diagnostic; one that carries automaticOff reads as stopped; a stop during the sync is not admitted", async () => {
+test("a failure shows the diagnostic; one that carries dormant reads as stopped; a stop during the sync is not admitted", async () => {
   const f = fixture();
   f.memory.dream.mockResolvedValueOnce({ outcome: "failure", problems: ["curate g1: timeout"] });
   f.dream(); await settle();
   expect(f.scheduler.dreamSnapshot()).toEqual({ state: "failed", diagnostic: "curate g1: timeout" });
-  f.memory.dream.mockResolvedValueOnce({ outcome: "failure", problems: ["terminal"], automaticOff: "off after three failures" });
+  f.memory.dream.mockResolvedValueOnce({ outcome: "failure", problems: ["terminal"], dormant: "dormant after three failures" });
   f.dream(); await settle();
   expect(f.scheduler.dreamSnapshot()).toEqual({ state: "stopped", diagnostic: "terminal" });
   const starting = f.scheduler.beginDream(), ticket = f.scheduler.catchupTicket();

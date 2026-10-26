@@ -1048,9 +1048,9 @@ test("production protocol aborts remain failures while external cancellation sta
     const result = await memory.noting(target);
     expect(result.outcome).toBe("failure");
     expect(memory.store.taskFailures(session.id)).toMatchObject([{ phase: "noting", count: attempt }]);
-    expect(Boolean(result.automaticOff)).toBe(attempt === 3);
+    expect(Boolean(result.dormant)).toBe(attempt === 3);
   }
-  expect(memory.store.enabled(session.id)).toBe(false);
+  expect(memory.store.dormant(session.id)).toBe(true);
   memory.close();
 });
 
@@ -1382,7 +1382,7 @@ test("scheduler reserves independent N/D slots and failed worker completion does
 
 test("manual catchup reports missing worker, disabled enrollment, and unavailable persisted path", () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-preflight-")); dirs.push(directory);
-  const memory = { store: { enabled: () => true, pendingEntryIds: () => [] }, pendingEntries: () => [] } as any;
+  const memory = { store: { enabled: () => true, tasksEnabled: () => true, pendingEntryIds: () => [] }, pendingEntries: () => [] } as any;
   const ready = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [], problems: [], snapshot: {} as any };
   const missing = new CcTaskScheduler(memory, undefined, () => {});
@@ -1471,7 +1471,7 @@ test("86: a failed N retries the frozen entry before checking other phases after
   } finally { scheduler.stop(); await scheduler.settle(); memory.close(); }
 });
 
-test("86: refused uncorrected N files fail and retry without C/D checks until core disables memory", async () => {
+test("86: refused uncorrected N files fail and retry without C/D checks until core makes the session dormant", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-bounced-n-")); dirs.push(directory);
   let attempts = 0;
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
@@ -1498,7 +1498,7 @@ test("86: refused uncorrected N files fail and retry without C/D checks until co
       .toEqual(["failure", "failure", "failure"]);
     expect(attempts).toBe(3);
     expect(checks.mock.calls.map(([phase]) => phase)).toEqual(["dreaming"]);
-    expect(memory.store.enabled(session.id)).toBe(false);
+    expect(memory.store.dormant(session.id)).toBe(true);
     expect(memory.store.listSessionFacts(session.id)).toEqual([]);
     expect(scheduler.catchupStatus()).toMatchObject({ state: "stopped" });
   } finally { scheduler.stop(); await scheduler.settle(); memory.close(); }
@@ -1538,7 +1538,7 @@ test("manual catchup reports waiting on a foreign claim and resumes only on a la
   const calls: string[] = []; let foreign = true, pending = true;
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     pendingEntries: () => pending ? [{ id: 1 }] : [],
-    store: { enabled: () => true, pendingEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [],
+    store: { enabled: () => true, tasksEnabled: () => true, pendingEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [],
       getClaim: () => foreign ? ({ executorId: "foreign", expiresAt: Date.now() + 60_000 }) : null, progressSignal: () => "sig" },
     noting: async () => { calls.push("noting"); pending = false; return { outcome: "success", facts: [] }; },
     dream: async () => ({ outcome: "success" }),
@@ -1605,7 +1605,7 @@ test("manual catchup fences pre-admission cancellation, concurrent status, dropp
   const memory = { executorId: "ours", config: { closedSessionScope: "project" },
     pendingEntries: () => pending ? [{ id: 1 }] : [],
     cancelTasks: () => { cancelled++; return []; },
-    store: { enabled: () => true, pendingEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [], getClaim: () => null, progressSignal: () => "sig" },
+    store: { enabled: () => true, tasksEnabled: () => true, pendingEntryIds: () => pending ? [1] : [], consolidationBatch: () => [], closedTasks: () => [], getClaim: () => null, progressSignal: () => "sig" },
     noting: async () => { calls.push("noting"); if (!dropped) pending = false; return { outcome: dropped ? "dropped" : "success", facts: [] }; },
     dream: async () => ({ outcome: "success" }),
     taskEligibility: () => ({ due: false }) } as any;
@@ -1641,7 +1641,7 @@ test("stop before the reservation microtask fences all ordinary phases and later
   const result = (phase: string) => async () => { calls.push(phase); return { outcome: "success" }; };
   const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: {} },
     taskEligibility: () => ({ due: true }), cancelTasks: vi.fn(() => []),
-    store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
+    store: { enabled: () => true, tasksEnabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: result("noting"), dream: result("dreaming") } as any;
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
@@ -1667,7 +1667,7 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
     return { outcome: "failure", runId: 1, problems: ["synthetic"] };
   };
   const memory = { config: { closedSessionScope: "project", noting: {} }, taskEligibility: () => ({ due: true }),
-    store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
+    store: { enabled: () => true, tasksEnabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: phase("noting"), dream: phase("dreaming") } as any;
   const config = phaseWorkerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker, () => {});
   const reconcile = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
@@ -1686,7 +1686,7 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
 test("scheduler diagnoses resolved bounced and successful-but-problemed results", async () => {
   const diagnostics: string[] = [];
   const memory = { config: { closedSessionScope: "project", noting: {} }, taskEligibility: () => ({ due: true }),
-    store: { enabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
+    store: { enabled: () => true, tasksEnabled: () => true, closedTasks: () => [], getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     noting: async () => ({ outcome: "bounced", runId: 7, problems: ["candidate rejected"] }),
     dream: async () => ({ outcome: "success", runId: 8, diagnostics: [], committed: [], problems: ["post-commit warning"] }) } as any;
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-diagnostics-")); dirs.push(directory);
@@ -1706,7 +1706,7 @@ test("scheduler borrows closed Noting work but never a closed Dreamer target", a
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-no-dreamer-borrow-")); dirs.push(directory);
   const queried: string[] = [], started: string[] = [];
   const memory = { config: { closedSessionScope: "project", noting: {} }, taskEligibility: () => ({ due: false }),
-    store: { enabled: () => true, getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig",
+    store: { enabled: () => true, tasksEnabled: () => true, getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig",
       closedTasks: (phase: string) => { queried.push(phase); return [{ sessionId: 2, branch: "closed", headTurnId: 2, triggerEntryId: 20 }]; } },
     noting: async () => { started.push("noting"); return { outcome: "success" }; },
     dream: async () => { started.push("dreaming"); return { outcome: "success" }; } } as any;

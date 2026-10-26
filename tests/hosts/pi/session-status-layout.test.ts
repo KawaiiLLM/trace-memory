@@ -419,12 +419,12 @@ test.each([20, 40, 79, 80, 100, 160])("long project and actual recovery remain r
     const seen: string[] = [];
     for (let i = 0; i < 20; i++) {
       const frame = s.frame(); seen.push(...frame);
-      for (const label of ["Turn on", "Catch up", "Stop", "Project…", "Runs…", "Settings…"])
+      for (const label of ["Turn off", "Catch up", "Stop", "Project…", "Runs…", "Settings…"])
         expect(frame.some(line => line.trim().replace(/^→ /, "") === label)).toBe(true);
       s.key("\x1b[6~");
     }
     const text = seen.join(" ").replace(/\s+/g, " ");
-    for (const phrase of ["Automatic off:", "Turn on to resume.", "pending", "END"])
+    for (const phrase of ["Dormant:", "to resume.", "pending", "END"])
       expect(text).toContain(phrase);
     expect(text).toContain("long-projec");
     expect(text.replace(/\s+/g, "")).toContain("PROVIDER-END");

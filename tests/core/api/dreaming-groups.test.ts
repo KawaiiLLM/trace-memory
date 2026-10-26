@@ -62,9 +62,9 @@ test("multiple failed groups count once per execution, and a committed sibling c
   expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(75); // 169: the successful sibling publishes its own ratings.
   expect(f.store.getKnowledge(b.knowledgeId)!.score).toBeNull();
   expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")!.count).toBe(2);
-  expect(await f.dream()).toMatchObject({ outcome: "failure", automaticOff: expect.any(String) });
+  expect(await f.dream()).toMatchObject({ outcome: "failure", dormant: expect.any(String) });
   expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")!.count).toBe(3);
-  expect(f.store.enabled(f.session.id)).toBe(false);
+  expect(f.store.dormant(f.session.id)).toBe(true);
   expect(f.store.noterChangedItems(f.path)).toBe(1);
   expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
 });

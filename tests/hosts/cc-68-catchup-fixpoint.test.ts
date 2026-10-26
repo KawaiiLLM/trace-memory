@@ -10,7 +10,7 @@ const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-68.db", stateDir: "/tm
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
   selectedEntryIds: [1], selectedCount: 1, selectedTailId: 1,
   selectedAppendedEntryIds: [], appendedEntryIds: [], problems: [], snapshot: {} as any };
-type Result = { outcome: string; problems?: string[]; automaticOff?: string };
+type Result = { outcome: string; problems?: string[]; dormant?: string };
 
 // This suite isolates scheduling; Pi catchup-pipeline and CC worker tests cover real writes/claims.
 function fixture() {
@@ -18,7 +18,7 @@ function fixture() {
   let dDue = 0;
   const memory = { executorId: "ours", config: { closedSessionScope: "project" }, cancelTasks: vi.fn(),
     pendingEntries: vi.fn(() => { throw new Error("catchup progress hydrated Raw"); }),
-    store: { enabled: () => true, pendingEntryIds: () => [...entries], getClaim: () => null, closedTasks: () => [],
+    store: { enabled: () => true, tasksEnabled: () => true, pendingEntryIds: () => [...entries], getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
     taskEligibility: vi.fn((phase: string) => ({ due: phase === "dreaming" ? dDue > 0 : entries.length > 0 })),
     noting: vi.fn(async (): Promise<Result> => { starts.push("N"); entries.shift(); return { outcome: "success" }; }),
@@ -126,9 +126,9 @@ test("R4 ordinary completion settles zero-Raw wait when it clears all due work w
   expect(f.memory.dream).toHaveBeenCalledTimes(1); expect(f.scheduler.catchupStatus().state).toBe("completed");
 });
 
-test("146 Q18: a D failure that carries automaticOff stops the drain with the diagnostic", async () => {
+test("146 Q18: a D failure that carries dormant stops the drain with the diagnostic", async () => {
   const f = fixture(); f.d(1);
-  f.memory.dream.mockImplementation(async () => ({ outcome: "failure", problems: ["terminal"], automaticOff: "off after three failures" }));
+  f.memory.dream.mockImplementation(async () => ({ outcome: "failure", problems: ["terminal"], dormant: "dormant after three failures" }));
   f.scheduler.startCatchup(projection); for (let i = 0; i < 10; i++) await tick();
   expect(f.memory.dream).toHaveBeenCalledTimes(1);
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: "stopped", diagnostic: "terminal" });

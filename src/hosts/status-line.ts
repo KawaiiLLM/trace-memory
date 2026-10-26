@@ -10,9 +10,9 @@ import { MEMORY_PHASES, type MemoryPhase } from "./phase-settings.ts";
  * `customMessageLabel` — in that precedence when phases overlap; idle is `dim`. Off collapses the
  * whole line to one `dim` segment, `○ off`, matching Pi's compact form exactly (not two segments
  * joined by a space, which would insert an extra paint boundary a host's `paint` wrapper does not
- * produce for a single call).
+ * produce for a single call). Dormant (183) collapses the same way: one `warning` segment, `◐ dormant`.
  */
-export type StatusColorRole = "accent" | "success" | "customMessageLabel" | "dim";
+export type StatusColorRole = "accent" | "success" | "customMessageLabel" | "warning" | "dim";
 
 /** One run of text a host paints with a single role, in display order. */
 export interface StatusSegment {
@@ -29,6 +29,8 @@ export interface MemoryStatusCounts {
 
 export interface MemoryStatusInput {
   enabled: boolean;
+  /** 183: enabled but past three failures: recording and delivery go on, no Noter or Dreamer runs. Renders `◐ dormant` in `warning`. */
+  dormant?: boolean;
   /** Which phases are running right now, keyed by `MemoryPhase`. An absent phase counts as idle. */
   running: Partial<Record<MemoryPhase, boolean>>;
   /** Undefined counts render as `?`, never as `0` (Pi review: an unknown value must never look like a fabricated zero). */
@@ -44,6 +46,7 @@ const INDICATOR_ROLE: Record<MemoryPhase, StatusColorRole> = { noting: "accent",
 /** The segments of the `🧠 ...` line, without the leading emoji (a host constant, not a colour role). */
 export function memoryStatusLine(input: MemoryStatusInput): StatusSegment[] {
   if (!input.enabled) return [{ role: "dim", text: "○ off" }];
+  if (input.dormant) return [{ role: "warning", text: "◐ dormant" }];
   const runningPhase = MEMORY_PHASES.find(phase => input.running[phase]);
   const role: StatusColorRole = runningPhase ? INDICATOR_ROLE[runningPhase] : "dim";
   const glyph = runningPhase ? "●" : "○";

@@ -99,7 +99,7 @@ export interface EntryAudit {
    * `{toolCallTokens, entryTokens}` shape, with its own `B`/`E` meaning, and is never relabelled. */
   viewBudgets: { entryTokens: number; toolInputTokens: number; toolResultTokens: number };
 }
-export type NotingResult = { executionId?: string; automaticOff?: string } & (
+export type NotingResult = { executionId?: string; dormant?: string } & (
   | { outcome: "empty" }
   /** `reason` says why a task that never ran dropped — evidence another executor already processed. */
   | { outcome: "dropped"; reason?: string }

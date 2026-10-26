@@ -376,7 +376,7 @@ test.each([100, 40])("exact capacity and trigger output at %i columns", width =>
   expect(statusBody(lines, width)).toMatchSnapshot();
 });
 
-test("automatic-off reason remains actionable and opening is inert", async () => {
+test("dormant reason remains actionable and opening is inert", async () => {
   const h = setup(); await h.turn();
   const s = h.memory.store;
   for (let i = 0; i < 3; i++) {
@@ -385,10 +385,10 @@ test("automatic-off reason remains actionable and opening is inert", async () =>
     s.settleExecution(execution, "failure", run.id, "incomplete submission");
   }
   const before = changes(h), title = await open(h);
-  expect(title).toContain("Automatic off: noting"); expect(title).toContain("incomplete submission");
-  expect(title.replace(/\s+/g, " ")).toContain("Turn on to resume.");
+  expect(title).toContain("Dormant: noting"); expect(title).toContain("incomplete submission");
+  expect(title.replace(/\s+/g, " ")).toContain("use /trace on to resume.");
   expect(changes(h)).toBe(before);
-  expect(s.enabled(1)).toBe(false); expect(h.requests).toEqual([]);
+  expect(s.dormant(1)).toBe(true); expect(s.enabled(1)).toBe(true); expect(h.requests).toEqual([]);
 });
 
 test("panel queries occur only on open; failure and shared-identity recovery remain visible", async () => {
