@@ -254,11 +254,11 @@ test("144 title-only injection: carried, recorded once, not re-sent, and a later
     const supplied = carrierOf(first.message).supplied;
     expect(supplied.knowledgeCommitIds).toEqual([]);
     expect(supplied.knowledgeTitleCommitIds).toEqual([commit]);
-    expect(supplied.pointerTokens).toBeGreaterThan(0);
+    expect(supplied.temporaryTokens).toBeGreaterThan(0); // 182: a title charges the one shared pool
     const owner = `pi:${h.ctx.sessionManager.getSessionId()}`;
     const delivered = h.memory.store.deliveredKnowledge({ owner, sessionId: null, headTurnId: null, pending: [{ key: carrierOf(customMessages(h)[0]!).prompt! }] });
     expect([...delivered.knowledgeTitleCommitIds]).toEqual([commit]);
-    expect(delivered.pointerTokens).toBe(supplied.pointerTokens);
+    expect(delivered.temporaryTokens).toBe(supplied.temporaryTokens);
     await h.answer(); await h.emit("agent_settled"); await h.drain();
     expect(await h.prompt("second")).toBeUndefined(); // a title is never re-sent for the same version
     await h.answer(); await h.emit("agent_settled"); await h.drain();

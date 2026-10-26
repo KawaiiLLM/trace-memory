@@ -484,9 +484,9 @@ processed, including thinking-only entries. An all-thinking pending path weighs 
 catchup can still process it. Compaction, `trace://raw`, search and citation validation are unchanged:
 thinking-only entries remain readable but cannot support new facts.
 
-Ticket 165 splits temporary material into independent 10,000-token body and pointer pools.
+Ticket 182 merges 165's body and pointer pools into one 10,000-token temporary pool.
 The anchor is the batch's newest turn. Its frozen batch already fits its Raw base, so no
-Noter Raw borrows. The pointer pool holds knowledge titles, then human user words and uncovered fact titles,
+Noter Raw borrows. The pool holds unscored bodies and knowledge titles, then human user words and uncovered fact titles,
 filled together by turn as in compaction (140), each from the anchor and 99 preceding path turns by
 default. User entries use the normal head/tail middle cut at 300 tokens each. Neither these excerpts
 nor titles grant full-body coverage or enlarge the frozen processing batch.
@@ -494,7 +494,7 @@ nor titles grant full-body coverage or enlarge the frozen processing batch.
 When the host's measured input capacity is insufficient, optional temporary material is
 trimmed first, then full historical facts, then the selected batch is reduced and re-frozen.
 An oldest admissible unit that cannot fit stays pending with a capacity diagnostic.
-Noter material also carries current Knowledge: scored items within the Knowledge base in score order, unscored bodies from the body pool, and remaining knowledge titles from the pointer pool (165). Visible
+Noter material also carries current Knowledge: scored items within the Knowledge base in score order, unscored bodies and then remaining knowledge titles from the temporary pool (182). Visible
 revisions at admission remain the frozen read base.
 The budgets themselves, and what each one charges, are in "Material budgets (20b)" below.
 Historically, this ticket emitted expansion addresses for future trace support and
@@ -538,7 +538,7 @@ the injection budget. Never a budget-limited prefix with visibility subtracted a
 newest facts already visible, the whole history allowance goes to the older ones the child cannot see.
 The allowance is a ceiling, never a target — fewer needed facts make a smaller block, not filler.
 
-- **Noting.** The whole target is supplied. Optional: applicable historical facts within their own base, and current Knowledge within its base plus the body and pointer pools (165).
+- **Noting.** The whole target is supplied. Optional: applicable historical facts within their own base, and current Knowledge within its base plus the temporary pool (182).
 - **Consolidation.** Target fact bodies the view does not hold by id, with `factAddresses` still naming
   the whole target. Optional: the current applicable knowledge the view does not hold at that exact
   commit — a visible predecessor covers nothing — plus one status line per inherited commit that is no
@@ -603,9 +603,8 @@ charged once to the block that emits it:
 | Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
 | Noter's full historical facts and framing | `compaction.factsTokens` | 10,000 |
 | compact's full facts and their framing/receipts; no borrowing | `compaction.factsTokens` | 10,000 |
-| compact's Raw, pending overflow borrowing only the body pool | `compaction.rawTokens` | 10,000 |
-| body pool (165): pending Raw overflow, then whole unscored Knowledge newest first; framing included | `compaction.temporaryTokens` | 10,000 |
-| pointer pool (165): all knowledge titles not shown whole, by score; then user words and fact titles together by newest path turn (140); framing/receipts included | `compaction.pointerTokens` | 10,000 |
+| compact's Raw, pending overflow borrowing only the temporary pool | `compaction.rawTokens` | 10,000 |
+| temporary pool (182): pending Raw overflow, then whole unscored Knowledge newest first (a misfit becomes a title), then all knowledge titles not shown whole, then user words and fact titles together by newest path turn (140); framing/receipts included | `compaction.temporaryTokens` | 10,000 |
 | Consolidator: its titles, range line and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
 
 Required task material is reserved first; historical facts then fill whatever episodic space is left, in the existing freshness order. A Noter batch consumes at most its own
@@ -614,7 +613,7 @@ block at all — its selected pending facts and their required framing share the
 allowance. Outer framing is never charged against the Noter's inner Raw ceiling, so an otherwise valid
 10,000-token entry stays batchable.
 
-Each database stores one Knowledge base, default 20,000 tokens. Knowledge, Facts and Raw retain 20,000/10,000/10,000 base windows. The body pool (`compaction.temporaryTokens`) and pointer pool (`compaction.pointerTokens`) each add 10,000 per context (165), independently of triggers or pool sizes. `compaction.sharedAllowanceTokens` remains removed. Processing state triggers maintenance; it does not change capacity, validity or visibility.
+Each database stores one Knowledge base, default 20,000 tokens. Knowledge, Facts and Raw retain 20,000/10,000/10,000 base windows. The temporary pool (`compaction.temporaryTokens`) adds 10,000 per context (182), independently of triggers. `compaction.sharedAllowanceTokens` and `compaction.pointerTokens` are removed settings. Processing state triggers maintenance; it does not change capacity, validity or visibility.
 
 Supported schema creation and upgrade, source/lineage migration, policy initialization and policy
 validation commit as one database transaction. A failed later migration or integrity check therefore
@@ -629,9 +628,9 @@ batch, so `noting.batchTokens` does not bound it. Ticket 28a replaced 25c's "kno
 `render.episodicBlockTokens` at all, and that key stayed exactly what it was for the Noter.
 Noter now assembles through `compact()` with its own frozen batch and endpoint; the legacy
 `budgetMaterial` API does not select that batch's history. Its Raw and full-fact bases remain
-independent, with the two temporary pools described above. At default policy the
-main-agent envelope is 60,000 estimated tokens: Knowledge 20,000, full facts 10,000, Raw 10,000
-and body/pointer pools of 10,000 each. Live running tasks and the reading guide are additional
+independent, with the temporary pool described above. At default policy the
+main-agent envelope is 50,000 estimated tokens: Knowledge 20,000, full facts 10,000, Raw 10,000
+and a temporary pool of 10,000. Live running tasks and the reading guide are additional
 measured text. When there is no Knowledge block, its ordering guide is also standalone framing.
 System instructions, tools, inherited context and later model-loop messages remain subject to the host's independent real-input capacity check.
 
@@ -871,20 +870,18 @@ since 30, one allocation since 73):
 | `{text, supplied, charged, truncated?}` | any valid path | knowledge/status, then `<episodic>` title index → full facts → earlier user words → Raw → live tasks; `truncated` reports omitted pending Raw entries |
 | `{native: true, reason}` | an unexpected host-caught error (a store error, an invalid path) | explicit native delegation; never returned for capacity |
 
-**Allowances (133, 144, 165).** Knowledge retains its database-derived 20,000-token base and spends it on
+**Allowances (133, 144, 165, 182).** Knowledge retains its database-derived 20,000-token base and spends it on
 scored items in score order (ties: newer version first); the first scored item that does not fit stops
 the base (user ruling, 2026-10-22: a smaller item behind it does not skip ahead). Facts and Raw retain 10,000-token bases.
-Two independent 10,000-token pools replace the single temporary allowance (165).
-The body pool takes pending Raw overflow first (compaction only), then whole unscored Knowledge newest first.
-The pointer pool takes titles of all Knowledge not shown whole, score descending (unscored last), ties newest first.
-A title already delivered is not re-sent, but its body can later arrive. The pointer remainder holds users and fact titles together,
+One 10,000-token temporary pool (182) replaces 165's body and pointer pools, filled in order, later classes dropping first: pending Raw overflow (compaction only); whole unscored Knowledge newest first, an unscored item whose body does not fit being listed as a title instead; titles of all Knowledge not shown whole (those unscored fallbacks first, then score descending, ties newest first); then users and fact titles.
+A title already delivered is not re-sent, but its body can later arrive. The remainder holds users and fact titles together,
 newest first (140). For each turn on the anchor's path, that turn's missing human user entries
 within `compaction.userTurns` (100) path turns, then its titles within `compaction.titleTurns`
 (100) path turns, so both kinds reach the same depth while the allowance lasts. A kind past its
 own reach drops out and the other continues alone to its reach. Both configurable reaches include
 the anchor; no older material fills spare room. Each kind keeps a newest-first whole-item prefix,
 and the first item that does not fit stops both kinds. User entries use the normal renderer with
-`compaction.userEntryTokens` (300) as their middle-cut cap. All pool/reach/entry-cap settings require positive safe integers. Each pool pays for the framing it adds; omission receipts use spare Knowledge base capacity, otherwise pointer capacity. Delivery rows retain separate `temporary_tokens` (bodies) and `pointer_tokens` charges, so ordinary prompts spend only each pool's remainder. Existing pre-165 rows retain their original temporary charge as a body charge; their new pointer charge starts at zero. Compaction starts fresh pools.
+`compaction.userEntryTokens` (300) as their middle-cut cap. All pool/reach/entry-cap settings require positive safe integers. The pool pays for the framing it adds; omission receipts use spare Knowledge base capacity, otherwise the pool. New delivery rows charge `temporary_tokens` alone, so ordinary prompts spend only the pool's remainder; a row recorded before 182 keeps its `pointer_tokens`, which count against the same pool when its context is read. Compaction starts a fresh pool.
 
 Full facts and Raw preserve their selection and coverage rules. Framing and receipts are
 charged in their owning window or allowance. Raw omissions stay pending; hosts delegate to

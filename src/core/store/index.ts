@@ -2718,7 +2718,7 @@ export class Store {
     for (const pending of node.pending ?? [])
       state = withRows(pending.compaction ? noDelivery() : state, pending.key === null ? undefined : owner.byKey.get(pending.key));
     return { knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeTitleCommitIds: new Set(state.knowledgeTitleCommitIds),
-      knowledgeStates: new Set(state.knowledgeStates), guideVersions: new Set(state.guideVersions), knowledgeTokens: state.knowledgeTokens, temporaryTokens: state.temporaryTokens, pointerTokens: state.pointerTokens };
+      knowledgeStates: new Set(state.knowledgeStates), guideVersions: new Set(state.guideVersions), knowledgeTokens: state.knowledgeTokens, temporaryTokens: state.temporaryTokens };
   }
 
   /** The newest delivery row of an owner; a publisher compares it before recording. */
@@ -2738,11 +2738,10 @@ export class Store {
           || !Number.isSafeInteger(part.knowledgeTokens) || part.knowledgeTokens < 0
           || !(part.knowledgeTitleCommitIds ?? []).every(id => Number.isSafeInteger(id) && id > 0)
           || !(part.guideVersions ?? []).every(version => GUIDE_VERSION.test(version))
-          || !Number.isSafeInteger(part.temporaryTokens ?? 0) || (part.temporaryTokens ?? 0) < 0
-          || !Number.isSafeInteger(part.pointerTokens ?? 0) || (part.pointerTokens ?? 0) < 0) throw new Error("invalid delivery part");
+          || !Number.isSafeInteger(part.temporaryTokens ?? 0) || (part.temporaryTokens ?? 0) < 0) throw new Error("invalid delivery part");
     }
     const rows = parts.filter(part => part.knowledgeCommitIds.length || part.knowledgeStates.length || part.knowledgeTokens
-      || part.knowledgeTitleCommitIds?.length || part.guideVersions?.length || part.temporaryTokens || part.pointerTokens);
+      || part.knowledgeTitleCommitIds?.length || part.guideVersions?.length || part.temporaryTokens);
     if (!rows.length) return [];
     return this.transaction(() => {
       if (target.turnId != null) {
@@ -2753,11 +2752,11 @@ export class Store {
       const known = Number((this.db.prepare("SELECT COUNT(*) AS count FROM knowledge_revisions WHERE id IN (SELECT value FROM json_each(?))")
         .get(JSON.stringify(commits)) as { count: number }).count);
       if (known !== commits.length) throw new Error("delivery names an unknown knowledge version");
-      const insert = this.db.prepare(`INSERT INTO knowledge_deliveries(owner, turn_id, node_key, follows, commits, states, knowledge_tokens, titles, temporary_tokens, pointer_tokens, guides, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const insert = this.db.prepare(`INSERT INTO knowledge_deliveries(owner, turn_id, node_key, follows, commits, states, knowledge_tokens, titles, temporary_tokens, guides, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       return rows.map(part => Number(insert.run(target.owner, target.turnId ?? null, target.nodeKey ?? null, target.follows ?? null,
         JSON.stringify(part.knowledgeCommitIds), JSON.stringify(part.knowledgeStates), part.knowledgeTokens,
-        JSON.stringify(part.knowledgeTitleCommitIds ?? []), part.temporaryTokens ?? 0, part.pointerTokens ?? 0, JSON.stringify(part.guideVersions ?? []), createdAt).lastInsertRowid));
+        JSON.stringify(part.knowledgeTitleCommitIds ?? []), part.temporaryTokens ?? 0, JSON.stringify(part.guideVersions ?? []), createdAt).lastInsertRowid));
     });
   }
 
@@ -3159,7 +3158,8 @@ export class Store {
       commits: string; titles: string; states: string; guides: string; knowledge_tokens: number; temporary_tokens: number; pointer_tokens: number }[]).map(row => ({ id: Number(row.id), owner: row.owner,
       turnId: row.turn_id === null ? null : Number(row.turn_id), nodeKey: row.node_key, commits: JSON.parse(row.commits) as number[],
       titles: JSON.parse(row.titles) as number[], states: JSON.parse(row.states) as string[], guides: JSON.parse(row.guides) as string[], tokens: Number(row.knowledge_tokens),
-      temporaryTokens: Number(row.temporary_tokens), pointerTokens: Number(row.pointer_tokens) }));
+      // 182: a row written before the pools merged keeps its pointer charge; both now count against the one pool.
+      temporaryTokens: Number(row.temporary_tokens) + Number(row.pointer_tokens) }));
   }
 
   /** Bindings of the rows' keys, up to a binding watermark. */

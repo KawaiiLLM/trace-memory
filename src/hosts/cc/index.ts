@@ -216,7 +216,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
       throw new Error("CC prompt delta requires the native prompt_id");
     const slices = await ccDeltaInjection(config, { session_id: input.session_id, transcript_path: binding.transcriptPath },
       input.messages ? { kind: "compact" } : { kind: "prompt", promptId: input.prompt_id as string },
-      (output, visible) => sliceCcInjection(visible, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance, output?.transportTemporaryAllowance, output?.transportPointerAllowance));
+      (output, visible) => sliceCcInjection(visible, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance, output?.transportTemporaryAllowance));
     process.stdout.write(`${JSON.stringify({ slices })}\n`);
     return;
   }
@@ -224,14 +224,14 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
     const input = JSON.parse(await readStdin()) as CcHookInput;
     if (command !== "hook-slices") {
       const output = await handleCcHook(config, input, command === "hook-prepare");
-      if (command === "hook" && output) { const { transportItems: _, transportKnowledgeAllowance: _allowance, transportTemporaryAllowance: _temporary, transportPointerAllowance: _pointer, ...native } = output; process.stdout.write(`${JSON.stringify(native)}\n`); }
+      if (command === "hook" && output) { const { transportItems: _, transportKnowledgeAllowance: _allowance, transportTemporaryAllowance: _temporary, ...native } = output; process.stdout.write(`${JSON.stringify(native)}\n`); }
       return;
     }
     if (input.hook_event_name !== "SessionStart") throw new Error("hook-slices requires SessionStart");
     const sliced = (output: CcHookOutput | null, visible: { db: string; nativeSession: string; coreSession: number | null }) => {
       if (output?.hookSpecificOutput.additionalContext && !output.transportItems)
         throw new Error("CC SessionStart has no structured transport material");
-      return sliceCcInjection(visible, output?.transportItems ?? [], output?.systemMessage, output?.transportKnowledgeAllowance, output?.transportTemporaryAllowance, output?.transportPointerAllowance);
+      return sliceCcInjection(visible, output?.transportItems ?? [], output?.systemMessage, output?.transportKnowledgeAllowance, output?.transportTemporaryAllowance);
     };
     const { output, slices, snapshot } = await ccPreparedSessionStartInjection(config, input, sliced);
     const bound = readBinding(config, input.session_id);
@@ -245,7 +245,7 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
       });
     }
     const selection = createHash("sha256").update(JSON.stringify({ material: output?.transportItems ?? [],
-      warning: output?.systemMessage ?? null, knowledgeAllowance: output?.transportKnowledgeAllowance ?? null, temporaryAllowance: output?.transportTemporaryAllowance ?? null, pointerAllowance: output?.transportPointerAllowance ?? null })).digest("hex");
+      warning: output?.systemMessage ?? null, knowledgeAllowance: output?.transportKnowledgeAllowance ?? null, temporaryAllowance: output?.transportTemporaryAllowance ?? null })).digest("hex");
     process.stdout.write(`${JSON.stringify({ selection, snapshot, slices })}\n`);
     return;
   }

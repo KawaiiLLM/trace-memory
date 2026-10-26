@@ -59,7 +59,7 @@ async function fixture(texts = ["Use pnpm."], settings: Record<string, unknown> 
   const input = { session_id: nativeSession, transcript_path: transcriptPath };
   const visible = () => ({ db: databaseIdentity(config.dbPath), nativeSession, coreSession: readBinding(config, nativeSession)!.coreSessionId });
   const slicer = (output: Parameters<typeof sliceCcInjection>[1] extends never ? never : any, binding: Parameters<typeof sliceCcInjection>[0]) =>
-    sliceCcInjection(binding, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance, output?.transportTemporaryAllowance, output?.transportPointerAllowance);
+    sliceCcInjection(binding, output?.transportItems ?? [], undefined, output?.transportKnowledgeAllowance, output?.transportTemporaryAllowance);
   const decode = (outputs: readonly ({ hookSpecificOutput: { additionalContext: string } } | null)[]) => outputs
     .filter(output => output?.hookSpecificOutput.additionalContext).map(output => decodeCcInjection(output!.hookSpecificOutput.additionalContext, visible())!);
   const commits = (outputs: Parameters<typeof decode>[0]) => decode(outputs).flatMap(header => header.commits);
@@ -169,7 +169,7 @@ test("97 a compaction's supplement belongs to the compaction's own node: version
     expect(f.decode(await f.prompt("p5"))).toEqual([]);
     await f.restartExecutor();
     const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
-    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set([kept, added]), knowledgeStates: new Set(), guideVersions: new Set(supplement.flatMap(header => header.guideVersions)), knowledgeTokens: cost, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
+    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set([kept, added]), knowledgeStates: new Set(), guideVersions: new Set(supplement.flatMap(header => header.guideVersions)), knowledgeTokens: cost, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
     expect(f.delivered(f.turnOf("u4"))).toEqual(before);
     expect(f.decode(await f.prompt("p5"))).toEqual([]);
     // A branch from before the compaction, rewinding to that node, still misses what came later.
@@ -277,7 +277,7 @@ test("97 hooks read the transcript only after the stored leaf", async () => {
 
 test("97 transition: a context with no records gets one delivery within its budget; unchanged, later prompts deliver nothing", async () => {
   const f = await fixture(["First rule. " + "x".repeat(400), "Second rule. " + "y".repeat(400), "Third rule. " + "z".repeat(400)],
-    { "compaction.temporaryTokens": 1, "compaction.pointerTokens": 1 }); // 165: isolate base-only delivery
+    { "compaction.temporaryTokens": 1 }); // 165: isolate base-only delivery
   try {
     // Carriers written before 97 are never read: one here claims every version.
     const old = encodeCcInjection(f.visible(), { text: "legacy", knowledgeCommitIds: f.versions.map(item => item.commit) });
@@ -327,7 +327,7 @@ test("102 a Trace Memory compaction's node holds exactly what its block emitted;
     expect(built!.warning).toBeUndefined();
     await f.append(...installedBlock("cb", "u3", built!.text, "p3"), assistant("a3", "cb-block"));
     const compaction = f.store.findNativeTurn(f.sessionId, f.nativeSession, "cb")!.turnId;
-    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set(header.commits), knowledgeStates: new Set(), guideVersions: new Set(header.guideVersions), knowledgeTokens: header.knowledgeTokens, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0, pointerTokens: 0 });
+    expect(f.delivered(compaction)).toEqual({ knowledgeCommitIds: new Set(header.commits), knowledgeStates: new Set(), guideVersions: new Set(header.guideVersions), knowledgeTokens: header.knowledgeTokens, knowledgeTitleCommitIds: new Set(), temporaryTokens: 0 });
     expect(f.delivered(f.turnOf("u3")).knowledgeStates).toEqual(new Set([`${first}>${archived.committed[0]!.commit}`]));
     // SessionStart(compact) never injects; the next prompt and a resume find nothing missing.
     expect(await f.sessionStart("compact")).toBeNull();

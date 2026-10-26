@@ -20,7 +20,7 @@ function fixture(config: Record<string, unknown> = {}) {
   const memory = TraceMemory(":memory:", async () => { throw new Error("offline only"); }, { writing: { bodyWords: 1_000_000 }, ...config });
   memories.push(memory);
   // These tests pin the Knowledge base's arithmetic; titles and unscored items in the temporary allowance have their own tests.
-  if (!("compaction" in config)) Object.assign(memory.config.compaction, { temporaryTokens: 0, pointerTokens: 0 }); // 165
+  if (!("compaction" in config)) Object.assign(memory.config.compaction, { temporaryTokens: 0 }); // 165
   const project = memory.store.createProject({ name: "delivery", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: time, firstReplyAt: time });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: time });

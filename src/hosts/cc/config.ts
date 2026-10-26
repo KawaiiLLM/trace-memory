@@ -51,9 +51,8 @@ export interface CcHostConfig extends Partial<{ [K in keyof TraceMemoryConfig["n
   notingThinking?: string;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
-  /** Independent temporary body and pointer pools (165). */
+  /** The one shared temporary pool (182). */
   "compaction.temporaryTokens"?: number;
-  "compaction.pointerTokens"?: number;
   "compaction.userTurns"?: number;
   "compaction.titleTurns"?: number;
   "compaction.userEntryTokens"?: number;
@@ -135,10 +134,10 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("CC configuration is required");
   const retired = retireConsolidationSettings(input);
   input = retired.values;
-  // Superseding rulings: the Noter runs fresh only; body/pointer pools replace the Knowledge-only shared allowance;
+  // Superseding rulings: the Noter runs fresh only; one temporary pool replaces the Knowledge-only shared allowance and the pointer pool (182);
   // the length caps are counted in units (ticket 145); Dreaming is due by changed knowledge items (tickets 146, 181).
   // A leftover key of any of them fails the load with core's removed-setting message.
-  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds", "dreaming.classifyModel", "dreaming.classifyThinking", "writing.titleTokens", "writing.bodyTokens", "dreaming.triggerTokens", "dreaming.triggerOperations"])
+  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "compaction.pointerTokens", "dreaming.maxToolRounds", "dreaming.classifyModel", "dreaming.classifyThinking", "writing.titleTokens", "writing.bodyTokens", "dreaming.triggerTokens", "dreaming.triggerOperations"])
     if (Object.hasOwn(input, key)) canonicalFlatConfig({ [key]: true });
   const dbPath = input.dbPath === undefined ? join(homedir(), ".trace-memory", "trace.db") : input.dbPath;
   if (typeof dbPath !== "string" || !dbPath.trim()) throw new Error("CC dbPath must be a non-empty absolute path when specified");
@@ -190,7 +189,6 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
     })),
     compaction: {
       ...(input["compaction.temporaryTokens"] === undefined ? {} : { temporaryTokens: input["compaction.temporaryTokens"] }),
-      ...(input["compaction.pointerTokens"] === undefined ? {} : { pointerTokens: input["compaction.pointerTokens"] }),
       ...(input["compaction.userTurns"] === undefined ? {} : { userTurns: input["compaction.userTurns"] }),
       ...(input["compaction.titleTurns"] === undefined ? {} : { titleTurns: input["compaction.titleTurns"] }),
       ...(input["compaction.userEntryTokens"] === undefined ? {} : { userEntryTokens: input["compaction.userEntryTokens"] }),

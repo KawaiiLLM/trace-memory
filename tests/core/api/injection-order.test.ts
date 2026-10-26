@@ -49,7 +49,6 @@ test("what fits nowhere is named even when only the mandatory reselection can ma
   const u = f.create("UNSCORED", 400, null);
   setKnowledgeInjection(f.memory, exact);
   f.memory.config.compaction.temporaryTokens = 0; // U fits nowhere
-  f.memory.config.compaction.pointerTokens = 0; // 165: neither body nor title fits
   const delivery = f.memory.injection(f.target);
   expect(delivery.text).toContain(`trace://K${u.knowledgeId}`);
   expect(delivery.knowledgeCommitIds).toContain(a.commit);
@@ -102,7 +101,7 @@ test("a title is delivered once, is not re-sent, and a later body upgrades it", 
   expect(first.knowledgeTitleCommitIds).toEqual([big.commit]);
   const after = { ...noVisibility(), knowledgeCommitIds: new Set(first.knowledgeCommitIds), knowledgeTitleCommitIds: new Set(first.knowledgeTitleCommitIds),
     guideVersions: new Set(first.guideVersions),
-    knowledgeTokens: first.knowledgeTokens!, temporaryTokens: first.temporaryTokens!, pointerTokens: first.pointerTokens! };
+    knowledgeTokens: first.knowledgeTokens!, temporaryTokens: first.temporaryTokens! };
   expect(f.memory.injection(f.target, after).text).toBe(""); // not re-sent while it is still a title
   // Base room appears: the body is delivered although a title for the same version is visible.
   setKnowledgeInjection(f.memory, 5_000);
@@ -120,15 +119,14 @@ test("delivery rows carry the titles and the temporary charge; a title does not 
   const owner = "test";
   f.memory.store.recordKnowledgeDelivery({ owner, turnId: f.target.headTurnId }, [{ knowledgeCommitIds: first.knowledgeCommitIds, knowledgeTitleCommitIds: first.knowledgeTitleCommitIds,
     guideVersions: first.guideVersions,
-    knowledgeStates: [], knowledgeTokens: first.knowledgeTokens!, temporaryTokens: first.temporaryTokens!, pointerTokens: first.pointerTokens! }]);
+    knowledgeStates: [], knowledgeTokens: first.knowledgeTokens!, temporaryTokens: first.temporaryTokens! }]);
   const view = deliveredView(f.memory.store.deliveredKnowledge({ owner, sessionId: f.session.id, branch: "main", headTurnId: f.target.headTurnId }));
   expect(view.knowledgeCommitIds.has(big.commit)).toBe(false);
   expect([...view.knowledgeTitleCommitIds!]).toEqual([big.commit]);
   expect(view.temporaryTokens).toBe(first.temporaryTokens);
-  expect(view.pointerTokens).toBe(first.pointerTokens);
 });
 
-test("compaction keeps knowledge titles when pending Raw exhausts the body pool", () => {
+test("182: the shared pool takes an unscored body before titles, and a smaller pool drops the titles first", () => {
   const f = fixture();
   const unscored = f.create("UNSCORED", 400, null), scoredBig = f.create("SCOREDBIG", 3_000, 60);
   setKnowledgeInjection(f.memory, 1_000);
@@ -137,14 +135,20 @@ test("compaction keeps knowledge titles when pending Raw exhausts the body pool"
   expect(roomy.supplied.knowledgeCommitIds).toEqual([unscored.commit]);
   expect(roomy.supplied.knowledgeTitleCommitIds).toEqual([scoredBig.commit]);
   expect(roomy.supplied.temporaryTokens).toBe(roomy.charged!.temporary);
-  expect(roomy.charged!.envelope).toBe(f.memory.knowledgeBase() + f.memory.config.compaction.factsTokens + f.memory.config.compaction.rawTokens + f.memory.config.compaction.temporaryTokens + f.memory.config.compaction.pointerTokens);
+  expect(roomy.charged!.envelope).toBe(f.memory.knowledgeBase() + f.memory.config.compaction.factsTokens + f.memory.config.compaction.rawTokens + f.memory.config.compaction.temporaryTokens);
   expect(roomy.charged!.temporary).toBeLessThanOrEqual(f.memory.config.compaction.temporaryTokens);
-  // 165: exhausting body capacity does not remove pointers.
+  // Later classes drop first: a pool one token short of the body and the title loses the title.
+  f.memory.config.compaction.temporaryTokens = roomy.charged!.temporary - 1;
+  const noTitle = f.memory.compact(f.session.id, "main", f.target.headTurnId);
+  if ("native" in noTitle) throw new Error(noTitle.reason);
+  expect(noTitle.supplied.knowledgeCommitIds).toEqual([unscored.commit]);
+  expect(noTitle.supplied.knowledgeTitleCommitIds ?? []).toEqual([]);
+  // An unscored body that does not fit falls back to a title only when a title fits; a pool of one token holds neither.
   f.memory.config.compaction.temporaryTokens = 1;
   const none = f.memory.compact(f.session.id, "main", f.target.headTurnId);
   if ("native" in none) throw new Error(none.reason);
   expect(none.supplied.knowledgeCommitIds).toEqual([]);
-  expect(none.supplied.knowledgeTitleCommitIds).toEqual(expect.arrayContaining([scoredBig.commit, unscored.commit]));
+  expect(none.supplied.knowledgeTitleCommitIds ?? []).toEqual([]);
 });
 
 test("a compaction that spent the temporary allowance on pending Raw leaves none for the next prompt", () => {

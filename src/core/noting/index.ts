@@ -211,7 +211,6 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   const historyCap = config.compaction.factsTokens;
   let history = historyCap; // lowered further by the capacity negotiation below
   let temporary = config.compaction.temporaryTokens;
-  let pointers = config.compaction.pointerTokens;
   let lastPrice = 0;
   while (entries.length) {
     const ids = new Set(entries.map(e => e.turnId));
@@ -227,7 +226,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
       model: input.model ?? "session" };
     const endpoint = entries.at(-1)!;
     const assembled = readFacade(store, { ...config, compaction: { ...config.compaction,
-      rawTokens: config.noting.batchTokens, factsTokens: history, temporaryTokens: temporary, pointerTokens: pointers } }, undefined, resultText, humanUser)
+      rawTokens: config.noting.batchTokens, factsTokens: history, temporaryTokens: temporary } }, undefined, resultText, humanUser)
       .compact(session.id, input.branch, endpoint.turnId, [], false,
         { endpointEntryId: endpoint.id, processedRawRefill: false, showKnowledgeSize: true, readingGuide: false,
           renderedEntries: rendered, historicalUserEntries, preparedSources, toolNames: names });
@@ -248,10 +247,6 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const fits = !capacity || priced <= capacity.inputTokens;
     if (fits) return { ...frozen, prepared, prompt, taskPrompts, promptHash: createHash("sha256").update(prompt).digest("hex"), names };
     // 133: temporary context, including receipt-only omissions, goes before full facts.
-    if (capacity && pointers && assembled.charged!.pointer) {
-      pointers = Math.max(0, Math.min(pointers - 1, assembled.charged!.pointer - Math.max(1, priced - capacity.inputTokens)));
-      continue;
-    }
     if (capacity && temporary && assembled.charged!.temporary) {
       temporary = Math.max(0, Math.min(temporary - 1, assembled.charged!.temporary - Math.max(1, priced - capacity.inputTokens)));
       continue;
@@ -265,7 +260,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     // pending under the diagnostic below, because a smaller batch is a membership change made after
     // execution had already started.
     if (exact) break;
-    entries.pop(); history = historyCap; temporary = config.compaction.temporaryTokens; pointers = config.compaction.pointerTokens;
+    entries.pop(); history = historyCap; temporary = config.compaction.temporaryTokens;
   }
   // 27a: the diagnostic says what the numbers were — the last candidate the loop priced was the
   // smallest one it was allowed to reach: the oldest entry alone, or, under 27d's exact membership,

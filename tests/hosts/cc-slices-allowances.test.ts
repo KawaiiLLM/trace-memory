@@ -1,19 +1,20 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
 import { decodeCcInjection, encodeCcInjection, type CcVisibleBinding } from "../../src/hosts/cc/injection.ts";
 import { sliceCcInjection } from "../../src/hosts/cc/slices.ts";
 import type { TransportItem } from "../../src/core/render/material.ts";
 
-// 165: CC preserves three independent caps; t/u/v record base/body/pointer charges.
+// 182: CC preserves two independent caps, the base and the one shared temporary pool; t/u record their charges.
 
 const binding: CcVisibleBinding = { db: "unit-db", nativeSession: "native-144", coreSession: 1 };
 type K = Extract<TransportItem, { kind: "knowledge" }>;
-const knowledge = (commitId: number, rank: number, allowance: "base" | "temporary" | "pointer", size = 200, over: Partial<K> = {}): K => ({ kind: "knowledge", commitId,
+const knowledge = (commitId: number, rank: number, allowance: "base" | "temporary", size = 200, over: Partial<K> = {}): K => ({ kind: "knowledge", commitId,
   text: `[K${commitId}@${commitId}] ${"word ".repeat(Math.ceil(size / 5))}`, category: "constraint", scope: "project", address: `K${commitId}@${commitId}`, form: "body", allowance, rank, ...over });
 const decoded = (slices: ReturnType<typeof sliceCcInjection>) => slices.flatMap(slice => {
   const text = slice?.hookSpecificOutput.additionalContext;
   return text ? [decodeCcInjection(text, binding)!] : [];
 });
-const sum = (slices: ReturnType<typeof sliceCcInjection>, key: "knowledgeTokens" | "temporaryTokens" | "pointerTokens") =>
+const sum = (slices: ReturnType<typeof sliceCcInjection>, key: "knowledgeTokens" | "temporaryTokens") =>
   decoded(slices).reduce((total, header) => total + (header[key] ?? 0), 0);
 const commits = (slices: ReturnType<typeof sliceCcInjection>) => decoded(slices).flatMap(header => header.commits).sort((a, b) => a - b);
 
@@ -28,7 +29,7 @@ test("a high-score old item outranks a low-score new one when the base cap trims
 });
 
 test("base full with temporary room: temporary items are delivered and both caps hold", () => {
-  const items = [knowledge(1, 0, "base"), knowledge(2, 1, "temporary"), knowledge(3, 2, "pointer", 200, { form: "title", text: "[K3@3] [constraint/project] (title only) T" })];
+  const items = [knowledge(1, 0, "base"), knowledge(2, 1, "temporary"), knowledge(3, 2, "temporary", 200, { form: "title", text: "[K3@3] [constraint/project] (title only) T" })];
   const baseOnly = sum(sliceCcInjection(binding, [items[0]!]), "knowledgeTokens");
   const slices = sliceCcInjection(binding, items, undefined, baseOnly, 400);
   expect(commits(slices)).toEqual([1, 2]);
@@ -68,14 +69,13 @@ test("the receipt for a temporary item the slice cannot carry is charged to the 
   expect(sum(slices, "temporaryTokens")).toBeLessThanOrEqual(1_000);
 });
 
-test("an oversized overflow body's receipt uses the body pool and preserves base knowledge with one pointer token left", () => {
+test("an oversized overflow body's receipt uses the shared pool and preserves base knowledge", () => {
   const base = knowledge(1, 0, "base");
-  const slices = sliceCcInjection(binding, [base, knowledge(2, 1, "temporary", 12_000)], undefined, 20_000, 10_000, 1);
+  const slices = sliceCcInjection(binding, [base, knowledge(2, 1, "temporary", 12_000)], undefined, 20_000, 10_000);
   expect(commits(slices)).toEqual([1]);
   expect(slices.map(slice => slice?.hookSpecificOutput.additionalContext ?? "").join("")).toContain("trace://K2@2");
   expect(sum(slices, "knowledgeTokens")).toBe(sum(sliceCcInjection(binding, [base]), "knowledgeTokens"));
   expect(sum(slices, "temporaryTokens")).toBeGreaterThan(0);
-  expect(sum(slices, "pointerTokens")).toBe(0);
 });
 
 test("a base item omitted for capacity charges its receipt to the base, and the resulting overrun evicts base items, never the temporary one", () => {
@@ -95,28 +95,41 @@ test("Raw omitted for capacity lowers u", () => {
   expect(sum(huge, "temporaryTokens")).toBe(100);
 });
 
-test("the wire digest protects both pool charges and still accepts old carriers", () => {
-  const text = encodeCcInjection(binding, { text: "body", knowledgeCommitIds: [1], knowledgeTitleCommitIds: [2, 3], knowledgeTokens: 11, temporaryTokens: 7, pointerTokens: 9 });
+test("the wire digest protects the pool charge and still accepts old carriers, including a pointer charge they carry", () => {
+  const text = encodeCcInjection(binding, { text: "body", knowledgeCommitIds: [1], knowledgeTitleCommitIds: [2, 3], knowledgeTokens: 11, temporaryTokens: 7 });
   const header = decodeCcInjection(text, binding)!;
-  expect(header).toMatchObject({ commits: [1], titles: [2, 3], knowledgeTokens: 11, temporaryTokens: 7, pointerTokens: 9 });
+  expect(header).toMatchObject({ commits: [1], titles: [2, 3], knowledgeTokens: 11, temporaryTokens: 7 });
   const plain = decodeCcInjection(encodeCcInjection(binding, { text: "body", knowledgeCommitIds: [1], knowledgeTokens: 11 }), binding)!;
   expect(plain.titles).toEqual([]);
   expect(plain.temporaryTokens).toBeUndefined();
   expect(decodeCcInjection(text.replace('"u":7', '"u":8'), binding)).toBeNull(); // the digest covers the accounting
-  expect(decodeCcInjection(text.replace('"v":9', '"v":10'), binding)).toBeNull();
+  expect(text).not.toContain('"v":'); // 182: no writer emits a pointer charge
+  // A carrier written before 182 names its pointer charge in `v`, covered by the same digest.
+  const lines = text.split("\n"), at = lines.findIndex(line => line.includes('"h":"'));
+  const wire = JSON.parse(lines[at]!.slice(lines[at]!.indexOf("{")));
+  const legacy = (pointer: number, claimed = pointer) => {
+    const sealed = { ...wire, v: claimed, h: createHash("sha256").update(JSON.stringify([11, 7, [2, 3], "body", pointer]), "utf8").digest("hex") };
+    return [...lines.slice(0, at), lines[at]!.slice(0, lines[at]!.indexOf("{")) + JSON.stringify(sealed), ...lines.slice(at + 1)].join("\n");
+  };
+  expect(decodeCcInjection(legacy(9), binding)).toMatchObject({ temporaryTokens: 7, pointerTokens: 9 });
+  expect(decodeCcInjection(legacy(9, 10), binding)).toBeNull();
 });
 
-test("body-cap trimming preserves pointers and pointer-cap trimming preserves bodies", () => {
+test("182: shared-pool trimming drops the title before the body that ranks ahead of it", () => {
   const body = knowledge(1, 0, "temporary", 400);
-  const title = knowledge(2, 1, "pointer", 200, { form: "title", text: "[K2@2] [constraint/project] (title only) Pointer" });
-  const bodyTight = sliceCcInjection(binding, [body, title], undefined, 0, 1, 1_000);
-  expect(commits(bodyTight)).toEqual([]);
-  expect(decoded(bodyTight).flatMap(header => header.titles)).toEqual([2]);
-  expect(sum(bodyTight, "pointerTokens")).toBeLessThanOrEqual(1_000);
-  const pointerTight = sliceCcInjection(binding, [body, title], undefined, 1_000, 1_000, 1);
-  expect(commits(pointerTight)).toEqual([1]);
-  expect(decoded(pointerTight).flatMap(header => header.titles)).toEqual([]);
-  expect(sum(pointerTight, "temporaryTokens")).toBeLessThanOrEqual(1_000);
+  const title = knowledge(2, 1, "temporary", 200, { form: "title", text: "[K2@2] [constraint/project] (title only) Title" });
+  const both = sum(sliceCcInjection(binding, [body, title]), "temporaryTokens");
+  const bodyOnly = sum(sliceCcInjection(binding, [body]), "temporaryTokens");
+  expect(bodyOnly).toBeLessThan(both);
+  const roomy = sliceCcInjection(binding, [body, title], undefined, Infinity, both);
+  expect(commits(roomy)).toEqual([1]);
+  expect(decoded(roomy).flatMap(header => header.titles)).toEqual([2]);
+  const tight = sliceCcInjection(binding, [body, title], undefined, Infinity, both - 1);
+  expect(commits(tight)).toEqual([1]); // the body kept
+  expect(decoded(tight).flatMap(header => header.titles)).toEqual([]); // the lowest-ranked item, the title, went
+  expect(sum(tight, "temporaryTokens")).toBeLessThanOrEqual(both - 1);
+  const none = sliceCcInjection(binding, [body, title], undefined, Infinity, 1);
+  expect(commits(none)).toEqual([]);
 });
 
 const tokens = (text: string): number => text.length;

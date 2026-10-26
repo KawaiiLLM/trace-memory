@@ -28,7 +28,6 @@ function fixture(agent?: (input: NotingAgentInput) => Promise<void>, stage = "ex
   // The oversized body then exercises omission without a retired fixed allowance.
   setKnowledgeCapacity(memory, 5_000);
   memory.config.compaction.temporaryTokens = 0; // omission from the base window, not a title or an unscored item in the temporary allowance
-  memory.config.compaction.pointerTokens = 0; // 165: isolate the base from titles
   const target = { sessionId: s.id, branch: "main", headTurnId: turn.id };
   const freeze = (extra = {}) => freezeNoting(memory.store, { ...target, ...extra }, memory.config);
   return { memory, tools, content, target, freeze };

@@ -231,13 +231,13 @@ export function buildTraceMenu(input: TraceMenuInput): TraceMenuModel {
 
 // ---- Settings screen -------------------------------------------------------------------------------
 
-export interface SettingsBudgetsInput { base: number; temporaryTokens: number; pointerTokens: number }
+export interface SettingsBudgetsInput { base: number; temporaryTokens: number }
 export interface SettingsBudgetRow { label: string; value: string }
 export interface SettingsBudgets { rows: SettingsBudgetRow[]; derivedLine: string }
 export function buildSettingsBudgets(input: SettingsBudgetsInput): SettingsBudgets {
   return {
     rows: [{ label: "Knowledge base", value: formatTokens(input.base) }],
-    derivedLine: `→ knowledge base ${formatTokens(input.base)} + body pool ${formatTokens(input.temporaryTokens)} + pointer pool ${formatTokens(input.pointerTokens)} = ${formatTokens(input.base + input.temporaryTokens + input.pointerTokens)} max input`,
+    derivedLine: `→ knowledge base ${formatTokens(input.base)} + temporary pool ${formatTokens(input.temporaryTokens)} = ${formatTokens(input.base + input.temporaryTokens)} max input`,
   };
 }
 
@@ -333,7 +333,7 @@ export const TRACE_MENU_FIXTURE_WITH_NOTICE: TraceMenuInput = {
 
 export const TRACE_SETTINGS_FIXTURE: SettingsInput = {
   database: "~/.trace-memory/trace.db",
-  budgets: { base: 20_000, temporaryTokens: 10_000, pointerTokens: 10_000 },
+  budgets: { base: 20_000, temporaryTokens: 10_000 },
   workers: [
     { phase: "Noter", model: "follow foreground", thinking: "inherit" },
     { phase: "Dreamer", model: "claude-sonnet-5", thinking: "medium" },

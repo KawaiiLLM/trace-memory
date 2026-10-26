@@ -259,10 +259,10 @@ export default function (pi: ExtensionAPI) {
         entry.type === "compaction" ? [{ key: deliveryKey(entry) ?? null, compaction: true }]
           : entry.type === "custom_message" && entry.customType === tag ? [deliveryKey(entry)].filter(key => key !== undefined).map(key => ({ key })) : []) }));
   const deliveryPart = (block: { knowledgeCommitIds: number[]; knowledgeTitleCommitIds?: number[]; knowledgeStates?: { fromCommit: number; toCommits: number[] }[];
-    knowledgeTokens?: number; temporaryTokens?: number; pointerTokens?: number; guideVersions?: string[]; text: string }) =>
+    knowledgeTokens?: number; temporaryTokens?: number; guideVersions?: string[]; text: string }) =>
     ({ knowledgeCommitIds: block.knowledgeCommitIds, knowledgeTitleCommitIds: block.knowledgeTitleCommitIds ?? [], knowledgeStates: (block.knowledgeStates ?? []).map(knowledgeStateKey),
       guideVersions: block.guideVersions,
-      knowledgeTokens: block.knowledgeTokens ?? tokens(block.text), temporaryTokens: block.temporaryTokens ?? 0, pointerTokens: block.pointerTokens ?? 0 });
+      knowledgeTokens: block.knowledgeTokens ?? tokens(block.text), temporaryTokens: block.temporaryTokens ?? 0 });
   const modelNameOf = (key: string) => {
     const configured = flat[key];
     return String(configured && configured !== "session" ? configured : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
@@ -752,7 +752,6 @@ export default function (pi: ExtensionAPI) {
       ...(block.knowledgeTitleCommitIds?.length ? { knowledgeTitleCommitIds: block.knowledgeTitleCommitIds } : {}),
       guideVersions: block.guideVersions,
       knowledgeTokens: block.knowledgeTokens, ...(block.temporaryTokens ? { temporaryTokens: block.temporaryTokens } : {}),
-      ...(block.pointerTokens ? { pointerTokens: block.pointerTokens } : {}),
       ...(block.knowledgeStates?.length ? { knowledgeStates: block.knowledgeStates } : {}) };
     // 97 "Record at emission": this prompt's node owns the delivery once Pi persists the prompt.
     const prompt = randomUUID();
@@ -1100,7 +1099,7 @@ export default function (pi: ExtensionAPI) {
         return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
           ...(block.knowledgeTitleCommitIds?.length ? { knowledgeTitleCommitIds: block.knowledgeTitleCommitIds } : {}),
           guideVersions: block.guideVersions,
-          knowledgeTokens: block.knowledgeTokens, ...(block.temporaryTokens ? { temporaryTokens: block.temporaryTokens } : {}), pointerTokens: block.pointerTokens, knowledgeStates: block.knowledgeStates } };
+          knowledgeTokens: block.knowledgeTokens, ...(block.temporaryTokens ? { temporaryTokens: block.temporaryTokens } : {}), knowledgeStates: block.knowledgeStates } };
       } catch (error) { return { native: true, reason: String(error) }; } // 133 R2: store and live-task lookup errors delegate.
     };
     // 28 "Failure and persistence": user cancellation publishes nothing and starts no native fallback.
@@ -1149,7 +1148,7 @@ export default function (pi: ExtensionAPI) {
       if ("native" in result || result.truncated?.raw || !result.text || result.hasMaterialCandidates === false) return;
     }
     publishedTruncation = result.truncated ?? (result.hasMaterialCandidates && result.charged &&
-      !result.charged.knowledge && !result.charged.facts && !result.charged.raw && !result.charged.temporary && !result.charged.pointer ? {} : undefined);
+      !result.charged.knowledge && !result.charged.facts && !result.charged.raw && !result.charged.temporary ? {} : undefined);
     return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied, prompt).traceMemory, composition: result.composition } } } };
   });
   pi.on("session_compact", (_event, context) => {
@@ -1474,7 +1473,7 @@ export default function (pi: ExtensionAPI) {
       return { phase, model: effective(model), thinking: effective(thinking),
         sources: { model: source(model), thinking: source(thinking) } };
     };
-    return { database: dbPath, budgets: { base: memory.knowledgeBase(), temporaryTokens: memory.config.compaction.temporaryTokens, pointerTokens: memory.config.compaction.pointerTokens },
+    return { database: dbPath, budgets: { base: memory.knowledgeBase(), temporaryTokens: memory.config.compaction.temporaryTokens },
       workers: [worker("Noter", "noting"), worker("Dreamer", "dreaming")],
       closedSessionScope: memory.config.closedSessionScope,
       closedSessionSource: sources.closedSessionScope && sources.closedSessionScope !== "Global"
@@ -1497,9 +1496,9 @@ export default function (pi: ExtensionAPI) {
         const value = parseKnowledgeBudgetInput(input, name);
         const saved = memory.setKnowledgeBase(value);
         if (saved.changed) armDreaming();
-        const shared = memory.config.compaction.temporaryTokens, pointers = memory.config.compaction.pointerTokens;
+        const shared = memory.config.compaction.temporaryTokens;
         ctx.ui.notify(saved.changed
-          ? `Trace Memory: saved ${name} = ${value} tokens in database ${dbPath}. Body pool ${shared}; pointer pool ${pointers}; maximum Knowledge input ${value + shared + pointers}. New admissions use these capacities; running inputs remain frozen.`
+          ? `Trace Memory: saved ${name} = ${value} tokens in database ${dbPath}. Temporary pool ${shared}; maximum Knowledge input ${value + shared}. New admissions use these capacities; running inputs remain frozen.`
           : `Trace Memory: ${name} is already ${value} tokens in database ${dbPath}; nothing was written.`, "info");
       } catch (error) { ctx.ui.notify(`Trace Memory: ${name} unchanged — ${String(error)}`, "error"); }
       return;

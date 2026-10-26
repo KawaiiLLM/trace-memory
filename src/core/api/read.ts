@@ -68,8 +68,8 @@ export interface TopicGroups {
 }
 
 /** One custom replacement from a frozen path. Scored Knowledge, full facts and Raw have their
- * own bases. The body pool holds pending Raw overflow, then unscored Knowledge; the pointer
- * pool holds all remaining knowledge titles, then the balanced user/fact-title fill (165).
+ * own bases. One shared temporary pool (182) holds, in this order and later classes dropping first:
+ * pending Raw overflow, unscored Knowledge bodies, knowledge titles, then the balanced user/fact-title fill (165).
  * Compact never falls back:
  * over-budget material is truncated — newest kept, oldest omitted with a receipt — rather than
  * escalated to a native delegation. Omitted pending Raw stays pending for Noting; fact omission
@@ -80,7 +80,7 @@ export interface TopicGroups {
  * carries — every supplied entry, pending and refilled alike, plus the facts and knowledge commits
  * that survived budgeting. What a budget dropped is absent here. A native delegation supplies
  * nothing, so it has no `supplied` at all. */
-export type CompactResult = { text: string; material?: SharedMaterial; supplied: SuppliedMaterial; knowledgeAllowance?: number; temporaryAllowance?: number; pointerAllowance?: number; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt;
+export type CompactResult = { text: string; material?: SharedMaterial; supplied: SuppliedMaterial; knowledgeAllowance?: number; temporaryAllowance?: number; transportItems?: TransportItem[]; composition?: MemoryComposition; charged?: ChargedWindows; truncated?: TruncationReceipt;
   /** Material exists before capacity selection, even if no body or omission receipt fits. */
   hasMaterialCandidates?: boolean }
   | { native: true; reason: string };
@@ -92,15 +92,15 @@ export type CompactResult = { text: string; material?: SharedMaterial; supplied:
  * small, so facts keep both a count and a token figure. */
 export interface TruncationReceipt { raw?: { entries: number }; facts?: { count: number; tokens: number } }
 
-/** Per-window accounting. The envelope sums three bases and two independent pools (165).
- * Raw overflow and unscored Knowledge charge `temporary`; titles and earlier users charge `pointer`.
+/** Per-window accounting. The envelope sums three bases and one shared pool (182).
+ * Raw overflow, unscored Knowledge, titles and earlier users all charge `temporary`.
  * The reading guide and live running-task block are outside these windows but inside measured text
  * and model-input capacity. Every window is optional and truncates. */
-export interface ChargedWindows { knowledge: number; facts: number; raw: number; temporary: number; pointer: number; envelope: number }
+export interface ChargedWindows { knowledge: number; facts: number; raw: number; temporary: number; envelope: number }
 /** Foreground Knowledge delivery and the exact body/state identities its carrier may persist. */
 export interface Injection { text: string; knowledgeTokens?: number; knowledgeAllowance?: number; knowledgeCommitIds: number[];
-  /** Exact title-only membership, independent pool charges and their remaining capacities. */
-  knowledgeTitleCommitIds?: number[]; guideVersions?: string[]; temporaryTokens?: number; pointerTokens?: number; temporaryAllowance?: number; pointerAllowance?: number; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
+  /** Exact title-only membership, the shared pool's charge and its remaining capacity. */
+  knowledgeTitleCommitIds?: number[]; guideVersions?: string[]; temporaryTokens?: number; temporaryAllowance?: number; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
 
 /** One component of a `trace` comma list, in request order, rendered over frozen metadata. */
 type TaggedBody = { lines: string[]; taggedHeader: string; plainHeader: string; tag: string };
@@ -339,8 +339,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility(),
     transport = false, toolNames: ToolNames = canonicalToolNames): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
-    const baseCap = store.knowledgeBase(), temporaryCap = config.compaction.temporaryTokens, pointerCap = config.compaction.pointerTokens;
-    if (!Number.isSafeInteger(baseCap + temporaryCap + pointerCap)) throw new Error("derived foreground Knowledge capacity must be a safe integer");
+    const baseCap = store.knowledgeBase(), temporaryCap = config.compaction.temporaryTokens;
+    if (!Number.isSafeInteger(baseCap + temporaryCap)) throw new Error("derived foreground Knowledge capacity must be a safe integer");
     const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
     if (id !== undefined && !store.enabled(id)) return empty();
     const projectId = id === undefined ? (target as { projectId: number }).projectId : session(id).projectId;
@@ -365,7 +365,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const ordering = guides.find(guide => guide.purpose === "ordering")?.text ?? "";
     const notice = id === undefined ? ordering : sessionKnowledgeNotice(id, ordering);
     // Guides ride real material; an empty offer must not acknowledge pending guide versions.
-    const noMaterial = (): Injection => ({ text: "", knowledgeCommitIds: [], knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
+    const noMaterial = (): Injection => ({ text: "", knowledgeCommitIds: [], knowledgeTokens: 0, temporaryTokens: 0 });
 
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
     const states = allStates.filter(state => !(visible.knowledgeStates ?? new Set()).has(knowledgeStateKey(state.receipt)));
@@ -389,8 +389,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // User ruling, 2026-10-22: an ordinary prompt may spend what the context's 10k has left since its last compaction, /clear
     // or session start, and that includes knowledge the Noter has just written.
     const temporaryLeft = Math.max(0, temporaryCap - (visible.temporaryTokens ?? 0));
-    const pointerLeft = Math.max(0, pointerCap - (visible.pointerTokens ?? 0));
-    if (baseLeft <= 0 && temporaryLeft <= 0 && pointerLeft <= 0) return noMaterial();
+    if (baseLeft <= 0 && temporaryLeft <= 0) return noMaterial();
 
     // State transitions retain priority over optional bodies. Then the shared selector preserves
     // the newest commits and receipts omitted older items, without publishing a receipt alone.
@@ -413,7 +412,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (!stateCount) return noMaterial();
       const material = { knowledge: [], receipts: [], readingGuide: guide };
       const rendered = measuredMemory(buildStates(stateCount), material);
-      return { ...rendered, guideVersions, knowledgeTokens: tokens(buildStates(stateCount, false)), knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft, pointerAllowance: pointerLeft, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
+      return { ...rendered, guideVersions, knowledgeTokens: tokens(buildStates(stateCount, false)), knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
         ...(transport ? { transportItems: [...guides, ...states.slice(0, stateCount).map(transportState)] } : {}) };
     }
     const selectedStates = states.slice(0, stateCount);
@@ -423,26 +422,22 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const statesCost = tokens(injectionText({ knowledge: [], receipts: [] }, statesText));
     // The selector prices parts conservatively; the exact rendered window is checked afterwards and the caps
     // are tightened by any overshoot, so both allowances hold on the text actually emitted.
-    let slackBase = 0, slackTemporary = 0, slackPointer = 0;
+    let slackBase = 0, slackTemporary = 0;
     for (;;) {
-      const selection = selectKnowledge(delta, { baseCap: Math.max(0, baseLeft - statesCost - slackBase), temporaryCap: Math.max(0, temporaryLeft - slackTemporary),
-        pointerCap: Math.max(0, pointerLeft - slackPointer), line, titleLine, recencyNotice: notice, titled: visible.knowledgeTitleCommitIds });
+      const selection = selectKnowledge(delta, { baseCap: Math.max(0, baseLeft - statesCost - slackBase), temporaryCap: Math.max(0, temporaryLeft - slackTemporary), line, titleLine, recencyNotice: notice, titled: visible.knowledgeTitleCommitIds });
       const material = { knowledge: selection.groups, receipts: selection.receipts, knowledgeNotice: notice,
         readingGuide: selection.groups.length ? reading : guide };
       const text = injectionText(material, statesText);
       const windowText = injectionText({ ...material, readingGuide: "" }, statesText);
-      // Price successive windows exactly: base, all bodies, then pointers.
+      // Price the windows exactly: the base, then everything else is the shared pool's.
       const total = tokens(windowText), baseUsed = selection.baseGroups.length || selectedStates.length || selection.baseReceipts.length
         ? tokens(injectionText({ knowledge: selection.baseGroups, receipts: selection.baseReceipts, knowledgeNotice: notice }, statesText)) : 0;
-      const bodyUsed = (selection.bodyGroups.length || selectedStates.length || selection.baseReceipts.length
-        ? tokens(injectionText({ knowledge: selection.bodyGroups, receipts: selection.baseReceipts, knowledgeNotice: notice }, statesText)) : 0) - baseUsed;
-      const pointerUsed = total - baseUsed - bodyUsed;
+      const temporaryUsed = total - baseUsed;
       if (baseUsed > baseLeft && selection.ranked.some(item => item.allowance === "base")) { slackBase += baseUsed - baseLeft; continue; }
-      if (bodyUsed > temporaryLeft && selection.ranked.some(item => item.allowance === "temporary")) { slackTemporary += bodyUsed - temporaryLeft; continue; }
-      if (pointerUsed > pointerLeft && selection.ranked.some(item => item.allowance === "pointer")) { slackPointer += pointerUsed - pointerLeft; continue; }
+      if (temporaryUsed > temporaryLeft && selection.ranked.some(item => item.allowance === "temporary")) { slackTemporary += temporaryUsed - temporaryLeft; continue; }
       if (!selection.ranked.length && !selectedStates.length) return noMaterial();
       const rendered = measuredMemory(text, material);
-      return { ...rendered, guideVersions, knowledgeTokens: baseUsed, temporaryTokens: bodyUsed, pointerTokens: pointerUsed, knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft, pointerAllowance: pointerLeft,
+      return { ...rendered, guideVersions, knowledgeTokens: baseUsed, temporaryTokens: temporaryUsed, knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft,
         knowledgeCommitIds: selection.bodyCommits, ...(selection.titleCommits.length ? { knowledgeTitleCommitIds: selection.titleCommits } : {}),
         ...(transport ? { transportItems: [
           ...guides,
@@ -683,8 +678,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // One allocator: required state notices/facts/Raw first, then optional current knowledge and
     // Raw-first historical refill in each own base remainder. Scheduling pairs never affect it.
     // No worker, processing mark or coverage persistence is performed by this synchronous render.
-    // 165: Raw overflow precedes unscored bodies in the body pool. Knowledge titles precede
-    // the balanced user/fact-title fill in the pointer pool. Bases remain independent. Nothing
+    // 182: one temporary pool, filled Raw overflow, unscored bodies, knowledge titles, then the
+    // balanced user/fact-title fill (165). Bases remain independent. Nothing
     // is required any more: every window truncates — newest kept, oldest omitted with a receipt —
     // rather than escalating to a native delegation. Omitted material stays pending in the store.
     compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = [],
@@ -726,8 +721,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const applicable = sessionFacts.filter(f => store.factOnPath(f, path, snapshot, undefined, owners, boundEntries));
       const factTurns = store.factTurnTimes(applicable);
       const caps = { knowledge: store.knowledgeBase(), facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
-      const temporaryCap = config.compaction.temporaryTokens, pointerCap = config.compaction.pointerTokens;
-      const envelope = caps.knowledge + caps.facts + caps.raw + temporaryCap + pointerCap;
+      const temporaryCap = config.compaction.temporaryTokens;
+      const envelope = caps.knowledge + caps.facts + caps.raw + temporaryCap;
       if (!Number.isSafeInteger(envelope)) throw new Error("compact envelope must be a safe integer");
       // Every emitted component is charged inside the window that owns it, and a window that emits
       // nothing is charged nothing: the `<episodic>` tag once, with the first of Raw and facts that
@@ -823,9 +818,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const rawOmittedPending = rawOmitted.filter(e => pendingIds.has(e.id));
       const rawBorrowed = Math.max(0, rawCharged - caps.raw);
 
-      // Scored base bodies, unscored overflow bodies, then independently budgeted pointers (165).
+      // Scored base bodies, then unscored bodies and titles in what Raw overflow left of the shared pool (182).
       const active = selectKnowledge(knowledge, { baseCap: Math.max(0, knowledgeEnvelope - knowledgeNoticeCost),
-        temporaryCap: Math.max(0, temporaryCap - rawBorrowed), pointerCap, line, titleLine, recencyNotice: notice });
+        temporaryCap: Math.max(0, temporaryCap - rawBorrowed), line, titleLine, recencyNotice: notice });
       const knowledgeUsed = knowledgeNoticeCost + active.baseCharge;
 
       // Full facts and their source coverage retain ticket 73's selection unchanged.
@@ -874,7 +869,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       };
       const userCost = (receipts: string[]) => (earlierUsers.length
         ? (rawKept || factsKept ? charge([EARLIER_USERS_TITLE]) : opener(EARLIER_USERS_TITLE)) + charge(earlierUsers.map(entry => entry.view)) : 0) + receiptCharge(receipts);
-      const afterRaw = pointerCap - active.pointerCharge;
+      const afterKnowledge = temporaryCap - rawBorrowed - active.temporaryCharge;
 
       const titleCandidates = eligibleFacts.slice(factsKept).filter(fact => titleTurns.has(fact.turnId) && fact.title);
       const selectedTitles: Fact[] = [];
@@ -901,20 +896,19 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const ids = new Set(selectedTitles.map(value => value.id));
         const receipt = omission(eligibleFacts.slice(factsKept).filter(value => !ids.has(value.id)));
         // Title fitting reserves room for the shared fact omission receipt, but facts charge it once.
-        if (userCost(userReceipts()) + titleCost() + (selectedTitles.length ? receiptCharge(receipt) : 0) > afterRaw) {
+        if (userCost(userReceipts()) + titleCost() + (selectedTitles.length ? receiptCharge(receipt) : 0) > afterKnowledge) {
           if ("user" in item) earlierUsers.pop(); else selectedTitles.pop();
           break;
         }
       }
-      const finalUserReceipts = userCost(userReceipts()) <= afterRaw ? userReceipts() : [];
+      const finalUserReceipts = userCost(userReceipts()) <= afterKnowledge ? userReceipts() : [];
       const usersCharged = userCost(finalUserReceipts);
       earlierUsers.reverse();
       const titleIds = new Set(selectedTitles.map(fact => fact.id));
       if (selectedTitles.length) finalFactReceipts = omission(eligibleFacts.slice(factsKept).filter(fact => !titleIds.has(fact.id)));
       // Title fitting reserves room for the shared fact omission receipt, but facts charge it once.
       const titlesCharged = titleCost();
-      const temporaryCharged = rawBorrowed + active.temporaryCharge;
-      const pointerCharged = active.pointerCharge + usersCharged + titlesCharged;
+      const temporaryCharged = rawBorrowed + active.temporaryCharge + usersCharged + titlesCharged;
 
       const truncated: TruncationReceipt = {};
       if (rawOmittedPending.length) truncated.raw = { entries: rawOmittedPending.length };
@@ -926,7 +920,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         knowledgeNotice: notice, readingGuide: active.groups.length ? reading : guide };
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material), material,
         // Transport may repeat K framing, but cannot borrow bases reserved for facts/Raw.
-        knowledgeAllowance: knowledgeEnvelope, temporaryAllowance: temporaryCap, pointerAllowance: pointerCap,
+        knowledgeAllowance: knowledgeEnvelope, temporaryAllowance: temporaryCap,
         ...(transport ? { transportItems: [
           ...guides,
           ...active.ranked.map(({ value, form, allowance, rank }) => ({ kind: "knowledge" as const,
@@ -951,15 +945,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.bodyCommits,
           guideVersions: guides.map(guide => guide.version),
           ...(active.titleCommits.length ? { knowledgeTitleCommitIds: active.titleCommits } : {}),
-          // Each pool records its own charge for later foreground admissions.
+          // The shared pool's charge, for later foreground admissions.
           knowledgeTokens: active.baseGroups.length || notes.length || active.baseReceipts.length || noteOmittedReceipt.length
             ? tokens(injectionText({ knowledge: active.baseGroups, receipts: [...active.baseReceipts, ...noteOmittedReceipt], knowledgeNotice: notice }, notes)) : 0,
           temporaryTokens: temporaryCharged,
-          pointerTokens: pointerCharged,
           ...(noteKept ? { knowledgeStates: allNotes.slice(0, noteKept).map(note => note.receipt) } : {}) },
         // The per-window accounting beside the text, for the acceptance probe; diagnostics only.
         charged: { knowledge: knowledgeUsed, facts: factsWindowCost(finalFacts.length, finalFactReceipts),
-          raw: Math.min(rawCharged, caps.raw), temporary: temporaryCharged, pointer: pointerCharged, envelope },
+          raw: Math.min(rawCharged, caps.raw), temporary: temporaryCharged, envelope },
         hasMaterialCandidates: Boolean(allNotes.length || knowledge.length || candidates.length || eligibleFacts.length),
         ...(Object.keys(truncated).length ? { truncated } : {}) };
     },

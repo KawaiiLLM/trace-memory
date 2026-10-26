@@ -39,8 +39,8 @@ export interface DeliveryPart { knowledgeCommitIds: readonly number[]; knowledge
   knowledgeTitleCommitIds?: readonly number[];
   /** Exact-text SHA-256 versions of context guides actually carried by this part. */
   guideVersions?: readonly string[];
-  /** Independent body and pointer charges; pre-165 rows retain their original charge as bodies. */
-  temporaryTokens?: number; pointerTokens?: number }
+  /** The shared temporary pool's charge (182). */
+  temporaryTokens?: number }
 
 /** Where a publication is recorded: a Turn, a node key, or neither (the root). `follows` marks the
  * key as a compaction not yet imported and names the native record it follows. */
@@ -54,10 +54,12 @@ export interface PendingNode { key: string | null; compaction?: boolean }
 export interface DeliveryNode { owner: string; sessionId: number | null; branch?: string; headTurnId: number | null;
   pending?: readonly PendingNode[] }
 
-export interface DeliveredState { knowledgeCommitIds: Set<number>; knowledgeTitleCommitIds: Set<number>; knowledgeStates: Set<string>; guideVersions: Set<string>; knowledgeTokens: number; temporaryTokens: number; pointerTokens: number }
+export interface DeliveredState { knowledgeCommitIds: Set<number>; knowledgeTitleCommitIds: Set<number>; knowledgeStates: Set<string>; guideVersions: Set<string>; knowledgeTokens: number; temporaryTokens: number }
 
 export interface DeliveryRow { id: number; owner: string; turnId: number | null; nodeKey: string | null;
-  commits: number[]; titles: number[]; states: string[]; guides: string[]; tokens: number; temporaryTokens: number; pointerTokens: number }
+  commits: number[]; titles: number[]; states: string[]; guides: string[]; tokens: number;
+  /** Includes the pointer charge of rows recorded before the pools merged (182). */
+  temporaryTokens: number }
 
 /** One owner's rows by node. A key's rows stay under `byKey` after the key is bound to a Turn. */
 export interface OwnerDeliveries { root: DeliveryRow[]; byTurn: Map<number, DeliveryRow[]>;
@@ -71,14 +73,14 @@ export interface DeliveryCache { row: number; node: number; owners: Map<string, 
 export const STATE_KEY = /^[1-9]\d*>[1-9]\d*(?:,[1-9]\d*)*$/;
 export const GUIDE_VERSION = /^[0-9a-f]{64}$/;
 
-export const noDelivery = (): DeliveredState => ({ knowledgeCommitIds: new Set(), knowledgeTitleCommitIds: new Set(), knowledgeStates: new Set(), guideVersions: new Set(), knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0 });
+export const noDelivery = (): DeliveredState => ({ knowledgeCommitIds: new Set(), knowledgeTitleCommitIds: new Set(), knowledgeStates: new Set(), guideVersions: new Set(), knowledgeTokens: 0, temporaryTokens: 0 });
 
 /** A state plus some rows. States are shared between nodes, so this copies; without rows it
  * returns the same state. */
 export function withRows(state: DeliveredState, rows: readonly DeliveryRow[] | undefined): DeliveredState {
   if (!rows?.length) return state;
   const next = { knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeTitleCommitIds: new Set(state.knowledgeTitleCommitIds),
-    knowledgeStates: new Set(state.knowledgeStates), guideVersions: new Set(state.guideVersions), knowledgeTokens: state.knowledgeTokens, temporaryTokens: state.temporaryTokens, pointerTokens: state.pointerTokens };
+    knowledgeStates: new Set(state.knowledgeStates), guideVersions: new Set(state.guideVersions), knowledgeTokens: state.knowledgeTokens, temporaryTokens: state.temporaryTokens };
   for (const row of rows) {
     for (const id of row.commits) next.knowledgeCommitIds.add(id);
     for (const id of row.titles) next.knowledgeTitleCommitIds.add(id);
@@ -86,7 +88,6 @@ export function withRows(state: DeliveredState, rows: readonly DeliveryRow[] | u
     for (const version of row.guides) next.guideVersions.add(version);
     next.knowledgeTokens += row.tokens;
     next.temporaryTokens += row.temporaryTokens;
-    next.pointerTokens += row.pointerTokens;
   }
   return next;
 }

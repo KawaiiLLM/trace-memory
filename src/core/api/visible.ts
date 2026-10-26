@@ -27,9 +27,8 @@ export interface SuppliedMaterial {
   guideVersions?: string[];
   /** Base-only Knowledge rendering, including notices/framing but excluding the reading guide and both pools. */
   knowledgeTokens?: number;
-  /** Independent temporary body and pointer charges (165). */
+  /** The shared temporary pool's charge (182). */
   temporaryTokens?: number;
-  pointerTokens?: number;
 }
 
 /** The host-neutral visible material of one selected context. `raw` is keyed by native entry id:
@@ -47,10 +46,9 @@ export interface VisibleView {
   guideVersions?: Set<string>;
   /** 97: the delivered publications' summed render-time Knowledge cost. Only unaccounted API views omit it. */
   knowledgeTokens?: number;
-  /** Versions already delivered as titles; body and pointer charges remain independent. */
+  /** Versions already delivered as titles. */
   knowledgeTitleCommitIds?: Set<number>;
   temporaryTokens?: number;
-  pointerTokens?: number;
   /** Legacy visibility metadata retained for worker/fixture compatibility. Foreground eligibility
    * depends on exact bodies and state notices, never this initial-injection marker. */
   injection: boolean;
@@ -67,6 +65,6 @@ export const knowledgeStateKey = (state: KnowledgeStateReceipt): string =>
 
 /** 97: a node's recorded delivered state, in the shape the foreground selector subtracts. */
 export const deliveredView = (state: { knowledgeCommitIds: Set<number>; knowledgeTitleCommitIds: Set<number>; knowledgeStates: Set<string>;
-  knowledgeTokens: number; temporaryTokens: number; pointerTokens?: number; guideVersions?: Set<string> }): VisibleView =>
+  knowledgeTokens: number; temporaryTokens: number; guideVersions?: Set<string> }): VisibleView =>
   ({ ...noVisibility(), knowledgeCommitIds: new Set(state.knowledgeCommitIds), knowledgeTitleCommitIds: new Set(state.knowledgeTitleCommitIds),
-    knowledgeStates: new Set(state.knowledgeStates), guideVersions: new Set(state.guideVersions), knowledgeTokens: state.knowledgeTokens, temporaryTokens: state.temporaryTokens, pointerTokens: state.pointerTokens ?? 0 });
+    knowledgeStates: new Set(state.knowledgeStates), guideVersions: new Set(state.guideVersions), knowledgeTokens: state.knowledgeTokens, temporaryTokens: state.temporaryTokens });

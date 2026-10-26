@@ -59,7 +59,7 @@ test("178: guide versions are authenticated and legacy receipts imply no deliver
 
 test("old array and new range receipts decode to identical ordered membership and accounting", () => {
   const membership = { knowledgeCommitIds: [8, 9, 10, 4], knowledgeTitleCommitIds: [20, 21, 24],
-    factIds: [30, 31, 32], entryIds: [40, 41], knowledgeTokens: 123, temporaryTokens: 45, pointerTokens: 67 };
+    factIds: [30, 31, 32], entryIds: [40, 41], knowledgeTokens: 123, temporaryTokens: 45 };
   const encoded = encodeCcInjection(binding, { text: "whole item", ...membership });
   const lines = encoded.split("\n"), header = JSON.parse(lines[1]!.slice("TRACE-MEMORY-CC/1 ".length));
   expect(header).toMatchObject({ k: "8-10,4", i: "20-21,24", f: "30-32", e: "40-41" });
@@ -69,7 +69,7 @@ test("old array and new range receipts decode to identical ordered membership an
   expect(decodeCcInjection(encoded, binding)).toEqual(decodeCcInjection(legacy, binding));
   expect(decodeCcInjection(legacy, binding)).toMatchObject({ commits: membership.knowledgeCommitIds,
     titles: membership.knowledgeTitleCommitIds, factIds: membership.factIds, entryIds: membership.entryIds,
-    knowledgeTokens: 123, temporaryTokens: 45, pointerTokens: 67 });
+    knowledgeTokens: 123, temporaryTokens: 45 });
   for (const invalid of ["10-8", "8-10,9", "0", "8-", "1-9007199254740991", "9007199254740992"]) {
     expect(decodeCcInjection(encoded.replace('"k":"8-10,4"', `"k":${JSON.stringify(invalid)}`), binding)).toBeNull();
   }
@@ -279,7 +279,7 @@ test("73: SessionStart injection reads the resolved configuration, not the defau
     return output?.hookSpecificOutput.additionalContext;
   };
   expect(await build()).toContain("config knowledge"); // default allowance (10,000): fits
-  const tight = await build(1);
-  expect(tight).not.toContain("config knowledge"); // configured body pool excludes the body
-  expect(tight).toMatch(/\nTRACE-MEMORY-CC\/1 [^\n]*"i":"1"/); // The independent pointer pool still carries K1's title.
+  const tight = await build(200);
+  expect(tight).not.toContain("config knowledge"); // the configured shared pool cannot hold the body
+  expect(tight).toMatch(/\nTRACE-MEMORY-CC\/1 [^\n]*"i":"1"/); // and carries K1's title instead.
 });

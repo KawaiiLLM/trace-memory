@@ -95,9 +95,9 @@ For example, either settings file can contain:
 
 `compaction.factsTokens` and `compaction.rawTokens` retain their independent 10,000-token bases.
 The database-owned Knowledge base is the safe-integer sum of Global, Project and Session budgets,
-defaulting to 4,000, 15,000 and 1,000. Two independent temporary pools each default to 10,000 (165).
-The body pool, `compaction.temporaryTokens`, takes pending Raw overflow, then unscored Knowledge newest first.
-The pointer pool, `compaction.pointerTokens`, takes titles of all Knowledge not shown whole by score (unscored last), ties newest first,
+defaulting to 4,000, 15,000 and 1,000. One shared temporary pool defaults to 10,000 (182); `compaction.pointerTokens` is a removed setting.
+The pool, `compaction.temporaryTokens`, takes pending Raw overflow, then unscored Knowledge newest first (a body that does not fit becomes a title),
+then titles of all Knowledge not shown whole (those fallbacks first, then by score), ties newest first,
 then human user words within `compaction.userTurns` (100) and uncovered fact
 titles within `compaction.titleTurns` (100), filled together turn by turn, newest first (each turn's
 user entries, then its titles), so both reach the same depth; the first item that does not fit stops
@@ -111,7 +111,7 @@ from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a n
 updated since the last covered Dreamer pass (181; an item counts once). `dreaming.triggerUnscoredRatio` (default 0.4) is the second
 trigger: unscored knowledge reaching that share of `compaction.temporaryTokens`. `dreaming.triggerTokens` and `dreaming.triggerOperations`
 are removed: a settings file that still carries one fails to load by name. Foreground publication may use the Knowledge base and what the context's
-body and pointer pools have left, independently. Database budget edits accept exact
+temporary pool has left. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
 connections to that database. The budgets size injection and compaction only: they trigger no Dreamer run and decide none's success.
 Running requests keep their frozen admitted capacities; later admissions use the current policy. Actual
@@ -204,7 +204,7 @@ the standalone smoke uses Node's built-in TypeScript support and does not load V
   identities for archive/supersede/merge/split notices. Notice visibility is separate and never grants
   a replacement body. The publication contains no Fact, Raw, pool-scheduling metadata,
   command-generation metadata or omission-only block. Retained applicable Knowledge bodies and notices
-  consume the Knowledge base (20,000 tokens at defaults); unscored bodies and knowledge titles consume independent body/pointer pools. Missing state
+  consume the Knowledge base (20,000 tokens at defaults); unscored bodies and knowledge titles consume the one temporary pool. Missing state
   transitions fit as a deterministic whole-item prefix before complete new bodies; only selected
   transition receipts persist. Knowledge keeps category groups and chronological display inside each
   group. The common header says items are grouped by category, position does not compare items across categories, and a newer same-object item within a category stands
@@ -685,10 +685,10 @@ Successful allocations are repriced before publication; cancellation still publi
 | No material candidates | Nothing to supply or omit; guide or tasks alone are not material | Delegate without a custom delivery |
 | `{native: true, reason}` | Unexpected host-caught error, including a live-task lookup failure | Delegate to Pi's native compaction |
 
-The default envelope is 60,000 tokens: Knowledge 20,000, full facts 10,000, Raw 10,000
-and independent body/pointer pools of 10,000 each (165).
-Pending Raw has first claim on the body pool, followed by unscored Knowledge. The pointer pool independently
-holds knowledge titles, then the balanced earlier-user/fact-title fill. Headings, groups and receipts are charged.
+The default envelope is 50,000 tokens: Knowledge 20,000, full facts 10,000, Raw 10,000
+and a shared temporary pool of 10,000 (182).
+Pending Raw has first claim on the pool, followed by unscored Knowledge, then
+knowledge titles, then the balanced earlier-user/fact-title fill. Headings, groups and receipts are charged.
 
 Inside `<episodic>` the order is fact titles, full facts, earlier user messages, Raw, running tasks.
 The optional pi-subagents service at `Symbol.for("@gotgenes/pi-subagents:service")` supplies

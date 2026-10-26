@@ -33,8 +33,7 @@ Core phase bounds use optional top-level keys in the same file:
 | `dreaming.clusteringSteps` / `dreaming.clusteringContextTokens` | 30 / 150,000 | Every-run clustering soft response / context-growth budgets |
 | `dreaming.curateSteps` / `dreaming.curateContextTokens` | 100 / 200,000 | Dispatcher-proposed soft response / context-growth budgets |
 | `dreaming.scoringSteps` / `dreaming.scoringContextTokens` | 10 / 60,000 | Soft response / context-growth budgets counted from the scoring stage's start |
-| `compaction.temporaryTokens` | 10,000 | Body pool: pending Raw overflow, then unscored Knowledge newest first (165) |
-| `compaction.pointerTokens` | 10,000 | Independent pointer pool: titles of Knowledge not shown whole by score, then user words and fact titles together by newest path turn (165/140) |
+| `compaction.temporaryTokens` | 10,000 | The one temporary pool (182): pending Raw overflow, then unscored Knowledge newest first, then titles of Knowledge not shown whole (unscored fallbacks first, then by score), then user words and fact titles together by newest path turn (140). `compaction.pointerTokens` is removed |
 | `compaction.userTurns` | 100 | User-word reach including the anchor, counted along its path |
 | `compaction.titleTurns` | 100 | Fact-title reach including the anchor, counted along its path |
 | `compaction.userEntryTokens` | 300 | Middle-cut cap for each earlier human user entry |
@@ -47,10 +46,9 @@ budgets size injection and compaction only: they trigger no Dreamer run and deci
 curates the knowledge (merge, split, archive, rewrite), verifies its own changes against facts and the repositories,
 and classifies items by importance (1 to 100); a task with nothing to do makes no model call.
 
-Compaction retains the 20k Knowledge, 10k Raw and 10k full-fact bases. Independent 10k body and
-pointer pools make the default envelope 60k before the guide and live tasks. Bodies cannot crowd out titles.
+Compaction retains the 20k Knowledge, 10k Raw and 10k full-fact bases. One shared 10k temporary pool makes the default envelope 50k before the guide and live tasks. Later classes drop first.
 Noter shares selection at its batch endpoint without extending the configured reaches;
-capacity negotiation reduces pointers, then overflow bodies, then full historical facts.
+capacity negotiation reduces the pool, then full historical facts.
 The episodic order is titles, full facts, user words, Raw, running tasks.
 
 The compaction hook supplies running/waiting agents from `$.agent.list()`. Claude Code 2.1.293
@@ -94,7 +92,7 @@ Omit `dbPath` to use `~/.trace-memory/trace.db`, the same default as Pi. An exis
 
 For startup, resume and clear, SessionStart uses 24 command slots, each at most 10,000 UTF-16 code units. An elected producer freezes one rendering; the other slots read their independently identified parts. Empty slots print nothing. Whole items that do not fit are named in omission receipts. Staging records the publication as delivered in the database; hooks read the delivered state from there and never read carriers back from the transcript. The plugin also registers SessionEnd, a stdio MCP server and the function-hooks `/trace` command.
 
-CC omission receipts retain the omitted material's pool: base bodies charge the Knowledge base, overflow bodies charge the body pool, and titles charge the pointer pool. Mixed omissions use separate receipts per pool. A pool overrun never evicts knowledge from another pool.
+CC omission receipts retain the omitted material's allowance: base bodies charge the Knowledge base, and overflow bodies and titles charge the temporary pool. Mixed omissions use separate receipts per allowance. An overrun never evicts knowledge charged to the other allowance.
 
 ## Automatic scheduling
 

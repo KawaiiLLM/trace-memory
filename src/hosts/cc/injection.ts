@@ -38,6 +38,7 @@ interface EnvelopeHeader {
   titles: number[];
   guideVersions: string[];
   temporaryTokens?: number;
+  /** Read only: carriers written before 182 charged a pointer pool; no writer emits it, and its digest still verifies. */
   pointerTokens?: number;
 }
 interface WireHeader { d: string; n: string; s: number | null; k: string; r: string[]; h: string; t?: number; f?: string; e?: string; p?: [number, number];
@@ -49,7 +50,6 @@ export interface CcHookOutput { hookSpecificOutput: { hookEventName: "SessionSta
   transportKnowledgeAllowance?: number;
   /** What the context's temporary allowance has left (144 §7.3); the base is `transportKnowledgeAllowance`. */
   transportTemporaryAllowance?: number;
-  transportPointerAllowance?: number;
   /** 73 "Truncation is announced in the foreground": Claude Code 2.1.280's hook runner turns this
    * top-level field into a user-visible `hook_system_message`, capped at 4,000 characters. Present
    * only when a slice's transport omitted pending material. */
@@ -107,20 +107,17 @@ function injectionFrame(binding: CcVisibleBinding, injection: InjectionMembershi
     throw new Error("invalid Knowledge accounting metadata");
   if (injection.temporaryTokens !== undefined && (!Number.isSafeInteger(injection.temporaryTokens) || injection.temporaryTokens < 0))
     throw new Error("invalid temporary allowance accounting metadata");
-  if (injection.pointerTokens !== undefined && (!Number.isSafeInteger(injection.pointerTokens) || injection.pointerTokens < 0))
-    throw new Error("invalid pointer allowance accounting metadata");
   const header: WireHeader = { d: binding.db, n: binding.nativeSession, s: binding.coreSession,
     ...(injection.guideVersions?.length ? { g: injection.guideVersions } : {}),
     ...(injection.knowledgeTokens === undefined ? {} : { t: injection.knowledgeTokens }),
     ...(injection.temporaryTokens ? { u: injection.temporaryTokens } : {}),
-    ...(injection.pointerTokens ? { v: injection.pointerTokens } : {}),
     ...(injection.knowledgeTitleCommitIds?.length ? { i: encodeIds(injection.knowledgeTitleCommitIds) } : {}),
     k: encodeIds(injection.knowledgeCommitIds), r: (injection.knowledgeStates ?? []).map(knowledgeStateKey), h: hash,
     ...(injection.factIds === undefined ? {} : { f: encodeIds(injection.factIds) }),
     ...(injection.entryIds === undefined ? {} : { e: encodeIds(injection.entryIds) }),
     ...(injection.slice === undefined ? {} : { p: injection.slice }) };
   const framing = `${BEGIN}\n${CC_INJECTION_HEADER}${JSON.stringify(header)}\n\n${END}`;
-  const bound = 316 + (injection.knowledgeTokens === undefined ? 0 : 22) + (injection.temporaryTokens ? 22 : 0) + (injection.pointerTokens ? 22 : 0) + (injection.slice ? 16 : 0) + 17 * identityCount(injection) + (injection.guideVersions?.length ? 6 + 67 * injection.guideVersions.length : 0);
+  const bound = 316 + (injection.knowledgeTokens === undefined ? 0 : 22) + (injection.temporaryTokens ? 22 : 0) + (injection.slice ? 16 : 0) + 17 * identityCount(injection) + (injection.guideVersions?.length ? 6 + 67 * injection.guideVersions.length : 0);
   if (framing.length > bound) throw new Error(`CC injection envelope exceeds its ${bound}-character host framing bound`);
   return framing;
 }
@@ -132,7 +129,7 @@ export function ccInjectionLength(binding: CcVisibleBinding, injection: Injectio
 
 /** Encode exactly one core block. The host envelope is outside core's allowance but has its own bound. */
 export function encodeCcInjection(binding: CcVisibleBinding, injection: CcInjectionPayload): string {
-  const frame = injectionFrame(binding, injection, bodyDigest(injection.knowledgeTokens, injection.temporaryTokens, injection.knowledgeTitleCommitIds ?? [], injection.text, injection.pointerTokens, injection.guideVersions));
+  const frame = injectionFrame(binding, injection, bodyDigest(injection.knowledgeTokens, injection.temporaryTokens, injection.knowledgeTitleCommitIds ?? [], injection.text, undefined, injection.guideVersions));
   const boundary = frame.length - END.length - 1;
   return frame.slice(0, boundary) + injection.text + frame.slice(boundary);
 }
@@ -288,7 +285,7 @@ const partOf = (output: CcHookOutput | null, visible: CcVisibleBinding): Deliver
   const header = decodeCcInjection(context, visible);
   if (!header) throw new Error("emitted Claude Code carrier failed its own decoding");
   return [{ knowledgeCommitIds: header.commits, knowledgeStates: header.states.map(knowledgeStateKey),
-    knowledgeTokens: header.knowledgeTokens ?? 0, knowledgeTitleCommitIds: header.titles, guideVersions: header.guideVersions, temporaryTokens: header.temporaryTokens ?? 0, pointerTokens: header.pointerTokens ?? 0 }];
+    knowledgeTokens: header.knowledgeTokens ?? 0, knowledgeTitleCommitIds: header.titles, guideVersions: header.guideVersions, temporaryTokens: header.temporaryTokens ?? 0 }];
 };
 
 /** 97 "Record at emission": whatever parts `emit` returns are recorded at their node before the
@@ -319,7 +316,7 @@ async function deliver<T>(config: ResolvedCcHostConfig, input: Pick<CcHookInput,
     const { head, at, injection } = selected;
     const output: CcHookOutput | null = injection.text ? { hookSpecificOutput: { hookEventName: "SessionStart",
       additionalContext: encodeCcInjection(visible, injection) }, transportItems: injection.transportItems,
-      transportKnowledgeAllowance: injection.knowledgeAllowance, transportTemporaryAllowance: injection.temporaryAllowance, transportPointerAllowance: injection.pointerAllowance } : null;
+      transportKnowledgeAllowance: injection.knowledgeAllowance, transportTemporaryAllowance: injection.temporaryAllowance } : null;
     const { outputs, result } = emit(output, visible);
     const parts = outputs.flatMap(value => partOf(value, visible));
     if (parts.length) memory.store.transaction(() => {
@@ -495,7 +492,6 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
       text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0,
       knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds, temporaryTokens: compacted.supplied.temporaryTokens ?? 0,
       guideVersions: compacted.supplied.guideVersions,
-      pointerTokens: compacted.supplied.pointerTokens ?? 0,
       knowledgeStates: compacted.supplied.knowledgeStates, factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id) }) +
       COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
     memory.store.transaction(() => {
@@ -507,7 +503,7 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
         knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
         knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0, knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds ?? [],
         guideVersions: compacted.supplied.guideVersions,
-        temporaryTokens: compacted.supplied.temporaryTokens ?? 0, pointerTokens: compacted.supplied.pointerTokens ?? 0 }]);
+        temporaryTokens: compacted.supplied.temporaryTokens ?? 0 }]);
     });
     const warning = ccTruncationWarning(compacted.truncated);
     return { text, ...(warning ? { warning } : {}) };

@@ -100,7 +100,7 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     });
     const settings: SettingsInput = { database: config.dbPath,
       budgets: { base: memory.knowledgeBase(),
-        temporaryTokens: active.coreConfig.compaction.temporaryTokens, pointerTokens: active.coreConfig.compaction.pointerTokens }, workers,
+        temporaryTokens: active.coreConfig.compaction.temporaryTokens }, workers,
       closedSessionScope: active.closedSessionScope,
       ...(!effective ? { closedSessionSource: "saved file; effective configuration unavailable" }
         : active.closedSessionScope !== config.closedSessionScope

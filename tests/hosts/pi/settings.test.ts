@@ -58,6 +58,13 @@ test("35d/45 retire file-owned knowledge caps and parse exact database-budget in
   expect(globalFile(h)["trace-memory"]).toBeUndefined();
 });
 
+test("182: a Pi configuration that still carries the pointer pool fails to load and names the shared pool", () => {
+  const h = setup();
+  expect(() => parseLayer({ "compaction.pointerTokens": 10_000 })).toThrow(/Removed setting compaction\.pointerTokens: .*compaction\.temporaryTokens/);
+  expect(() => configuration(h.dir, JSON.stringify({ "compaction.pointerTokens": 10_000 }), join(h.dir, "agent")))
+    .toThrow(/Removed setting compaction\.pointerTokens: .*compaction\.temporaryTokens/);
+});
+
 test("35d Settings edits the bound database row, shows derived diagnostics, and never writes preferences", async () => {
   const h = setup();
   await h.emit("session_start");
