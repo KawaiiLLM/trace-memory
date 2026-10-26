@@ -108,8 +108,8 @@ export function readCcMenu(config: ResolvedCcHostConfig, nativeSessionId: string
     const runs: CcMenuRun[] = session ? runsFor(store, session.id, runLimit) : [];
     const notices: string[] = [];
     if (binding.lastCompactionNotice) notices.push(binding.lastCompactionNotice);
-    if (session && !enabled) for (const task of store.taskFailures(session.id).filter(value => value.count >= 3))
-      notices.push(`Automatic off: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). Turn on to resume.`);
+    if (session && store.dormant(session.id)) for (const task of store.taskFailures(session.id).filter(value => value.count >= 3))
+      notices.push(`Dormant: ${task.phase} failed ${task.count} times (R${task.lastRunId}: ${task.lastReason}). No Noter or Dreamer runs; use /trace on to resume.`);
     if (session) notices.push(...dreamerFailureNotice(store.dreamerFailure(session.id)));
     if (!effective) notices.push("Running executor configuration unavailable");
     else if (active.closedSessionScope !== config.closedSessionScope || workers.some(w => w.sources))

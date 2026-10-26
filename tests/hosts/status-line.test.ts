@@ -28,6 +28,11 @@ test("off collapses to one dim segment, never two joined by a space", () => {
   expect(memoryStatusLine({ enabled: false, running: { noting: true }, counts, cost: 5 })).toEqual([{ role: "dim", text: "○ off" }]);
 });
 
+test("dormant (183) collapses to one warning segment, between off and on", () => {
+  expect(memoryStatusLine({ enabled: true, dormant: true, running: { noting: true }, counts, cost: 5 })).toEqual([{ role: "warning", text: "◐ dormant" }]);
+  expect(memoryStatusLine({ enabled: false, dormant: true, running: {} })).toEqual([{ role: "dim", text: "○ off" }]);
+});
+
 test("unknown counts render ?, never 0, with a known cost", () => {
   expect(memoryStatusLine({ enabled: true, running: {}, cost: 0 })[1]).toEqual({ role: "dim", text: "notes: ?->? memory: ?/? cost: $0.00" });
 });

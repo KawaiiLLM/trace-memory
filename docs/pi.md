@@ -58,7 +58,7 @@ Every Noter and Dreamer task, including classify, also gets Pi's native `bash` w
 
 Pi checks own N/D downstream of the committed ancestry transaction, once per import that persists new main-session entries, anchored at the selected `state.head` after import with the newest persisted entry's id as trigger. The selected head can be a compaction Turn even when the newest entry belongs to an earlier user Turn. Historical bootstrap at `session_start` or enabling memory publishes the complete selected path before this one check. Fully imported restart/resume and zero-append scans do not check; `session_tree` never checks, even when it imports new history. Manual catchup freezes its own boundary instead. Pi persists after `message_end`; tool preflight, tool-result/next-message boundaries, provider requests and agent-end/settlement import the entries once available. Unchanged native leaves do no work. Before admission, the adapter saves its native state so a fork freezes a stable checkpoint. A busy phase queues nothing; the next entry after settlement checks afresh. Ordinary task success or failure starts no new check. Stop and path changes fence subsequent borrowed-candidate launches as well as current-session work.
 
-Noting uses the existing incremental pending counter, stopping at its trigger. Dreaming caches a not-due result until restore, enrollment or the database progress signal (coverage, the Dreamer's hand-off and failure rows, scores) re-arms it; a knowledge commit changes that signal, while Raw ingestion does not. Failures retry at a later entry end; three consecutive failures still disable memory. Closed-session borrowing stays at the deduplicated `agent_settled` checkpoint, and manual catchup remains an independent drain. See the [Core scheduling contract](core.md#automatic-scheduling-141).
+Noting uses the existing incremental pending counter, stopping at its trigger. Dreaming caches a not-due result until restore, enrollment or the database progress signal (coverage, the Dreamer's hand-off and failure rows, scores) re-arms it; a knowledge commit changes that signal, while Raw ingestion does not. Failures retry at a later entry end; three consecutive failures still make the session dormant. Closed-session borrowing stays at the deduplicated `agent_settled` checkpoint, and manual catchup remains an independent drain. See the [Core scheduling contract](core.md#automatic-scheduling-141).
 
 ## Configuration
 
@@ -394,7 +394,7 @@ Known usage and cancellation diagnostics are retained; missing cancelled usage r
 ## Enrollment and native menu
 
 One enrollment switch belongs to each memory identity. Three failures of the same logical
-task can turn it off automatically; see [Three failures turn memory off](#three-failures-turn-memory-off-32c).
+task can make the session dormant: still on, with no Noter or Dreamer; see [Three failures make memory dormant](#three-failures-make-memory-dormant-32c).
 Explicit `/trace on` clears that identity's persisted failure streaks; reopening does not.
 
 New native sessions whose
@@ -561,7 +561,7 @@ completion. Bars cap at 100%; numbers and percentages do not:
 - **Dreaming:** one row (181): the Noter-changed items since the last covered Dreamer pass against
   `dreaming.triggerKnowledge`, as `n / 40 items` (`≥40` once the count reaches the trigger). There is no next-operation-pair row. The bar does not imply that the database-wide seat is available. The notice area also shows the
   Dreamer's latest failure while no later run has succeeded: `Dreamer failed: <task>: <class> (R<run>, <UTC time>)`.
-  Three consecutive Dreamer failures switch memory off like the Noter's; this notice does not depend on the automatic-off state.
+  Three consecutive Dreamer failures make the session dormant like the Noter's; this notice does not depend on the dormant state.
 
 Thresholds come from the live core configuration. Off retains stored measurements;
 no memory identity and unavailable reads are shown separately from zero. Opening
@@ -569,7 +569,7 @@ or cancelling the panel neither imports history nor freezes/claims tasks, grants
 read handles, changes visibility, writes weight caches or calls a model. Cold
 weights are computed with the existing renderer without caching. Measurements are
 read once per opening, not refreshed by a timer or footer updates. Run history
-stays under **Runs**; automatic-off reasons and fork recovery remain in the panel.
+stays under **Runs**; dormancy reasons and fork recovery remain in the panel.
 Headless bare `/trace` uses the same read-only composition snapshot and classification as
 the UI, retaining its verbose enrollment, pending/trigger, shared-identity and recovery
 explanations and command forms. Both paths read once per opening, never per render.
@@ -803,7 +803,7 @@ Below-threshold tails remain. Empty/dropped results do not re-arm. A failed Noti
 retries the same phase under the existing boundary, without checking other phases. A failed Dreaming
 run does not (146): it retries at the next entry-end check, and it ends an active drain for the same
 session and branch whoever started it (the drain, an ordinary check the drain skipped as busy, or
-`/trace dream`). Ordinary failure accounting disables memory after three consecutive failures of
+`/trace dream`). Ordinary failure accounting makes the session dormant after three consecutive failures of
 the same logical task and ends the drain. Cancellation also ends it. A waiting state need not imply an in-flight task when a due phase could not progress.
 
 N and C can overlap. Successful owned completions remain checkpoints after the final N batch.
@@ -992,14 +992,14 @@ commit in place and core records the problem.
 Limits: the runs directory is never pruned, and no live provider run was made — every check above
 uses stubbed HTTP with the real adapters.
 
-## Three failures turn memory off (32c)
+## Three failures make memory dormant (32c)
 
-Three terminal business failures of one **logical task** persistently disable its target's memory.
+Three terminal business failures of one **logical task** persistently make its target session dormant.
 The key is target session, phase and stable oldest selected backlog item: a source entry for Noting,
 the first fact in Consolidation order; since 126 the Dreamer's key is its session alone. A new leaf,
 a growing tail, another executor or partial Dreamer edits do not reset it. Cancellation is not a
-business failure. A failed Dreamer task keeps its hand-off and is retried by the rule above; a Dreamer failure is
-never counted toward switching memory off. Ordinary worker
+business failure. A failed Dreamer task keeps its hand-off and is retried by the rule above; a Dreamer failure counts
+toward dormancy like the Noter's (146). Ordinary worker
 completion starts no next task beyond the Dreamer check after a successful run; later eligible entries supply new opportunities (compaction no
 longer runs recovery tasks: 73). Manual catchup alone rechecks all phases after its own successful
 completions.
@@ -1009,15 +1009,15 @@ normally, in either task (a lost execution claim included), counts; cancellation
 after business success do not. Duplicate observers and process restarts cannot count an
 execution twice. A successful task resets its own streak.
 
-The third failure atomically disables enrollment and fences the target's outstanding claims.
+The third failure atomically makes the session dormant (import and Knowledge delivery go on, no Noter or Dreamer runs) and fences the target's outstanding claims.
 Locally owned work for that target is aborted; committed data and pending work survive. A
-borrowed failure disables the target, not its executor or another session. One notification
-names the phase, failed runs, latest reason and `/trace on`; the footer becomes `🧠 ○ off`.
-Compaction with disabled memory delegates natively rather than publishing an empty custom
+borrowed failure makes the target dormant, not its executor or another session. One notification
+names the phase, failed runs, latest reason and `/trace on`; the footer becomes `🧠 ◐ dormant`.
+Compaction of a dormant session delegates natively, with only the Knowledge supplement, rather than publishing a custom
 summary; user cancellation still takes precedence.
 
-**Only explicit `/trace on` resets all target streaks and re-enables memory.** Reopening and
-`/trace catchup` do neither. Status retains the automatic-off cause. This replaces the old
+**Only explicit `/trace on` resets all target streaks and resumes memory.** Reopening and
+`/trace catchup` do neither. Status retains the dormant cause. This replaces the old
 process-local two-incomplete-Noting pause; it adds no retry loop, scheduler or setting.
 
 ## Attribution and tree navigation (ticket 07)

@@ -13,12 +13,12 @@ const worker = resolveCcHostConfig({ dbPath: "/tmp/unused-67.db", stateDir: "/tm
 const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
   selectedEntryIds: [1, 2], selectedCount: 2, selectedTailId: 2,
   selectedAppendedEntryIds: [], appendedEntryIds: [], problems: [], snapshot: {} as never };
-type Result = { outcome: string; problems?: string[]; automaticOff?: string };
+type Result = { outcome: string; problems?: string[]; dormant?: string };
 function fixture(notify?: (reason: string) => void) {
   const pending = [1, 2], starts: string[] = []; let enabled = true;
   const knowledgePending: number[][] = [];
   const memory = { executorId: "ours", config: { closedSessionScope: "project", noting: {} }, cancelTasks: vi.fn(),
-    store: { enabled: () => enabled, pendingEntryIds: () => [...pending], incompleteEntryIds: () => [...pending, ...knowledgePending.flat()],
+    store: { enabled: () => enabled, tasksEnabled: () => enabled, pendingEntryIds: () => [...pending], incompleteEntryIds: () => [...pending, ...knowledgePending.flat()],
       handoff: (_session: number, _phase: string, lane?: string) => lane === "knowledge" && knowledgePending.length ? { entryIds: knowledgePending[0], branch: "main" } : null,
       getClaim: () => null, closedTasks: () => [],
       getSourceEntry: (id: number) => ({ id, turnId: 1 }), progressSignal: () => "sig" },
@@ -126,7 +126,7 @@ test.each(["failure", "cancelled", "throw"] as const)("catchup-owned D %s fences
   f.memory.dream.mockImplementation(async () => {
     await new Promise<void>(resolve => { releaseD = resolve; });
     if (outcome === "throw") throw new Error("downstream transport failed");
-    return { outcome, problems: ["downstream terminated"], ...(outcome === "failure" ? { automaticOff: "off after three failures" } : {}) };
+    return { outcome, problems: ["downstream terminated"], ...(outcome === "failure" ? { dormant: "dormant after three failures" } : {}) };
   });
   f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "dreaming" && f.memory.dream.mock.calls.length === 0 }));
   f.scheduler.startCatchup({ ...projection, selectedEntryIds: [1, 2, 3], selectedCount: 3, selectedTailId: 3 });

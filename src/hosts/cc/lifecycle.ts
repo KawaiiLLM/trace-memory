@@ -181,8 +181,11 @@ export class CcCoordinator {
    * `null` before any successful reconcile — counts render as `?`, never as `0`. */
   private lastReconcile: CcReconcileResult | null = null;
   /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
-   * nothing — publishing is a lifecycle event, never a timer. */
+   * nothing — publishing is a lifecycle event, never a timer. Every publication records its own (183), the scheduler's included. */
   private lastStatusKey: string | null = null;
+  private static statusKey(result: CcReconcileResult, dormant: boolean): string {
+    return `${result.coreSessionId}|${result.branch}|${result.headTurnId}|${result.state}|${dormant}`;
+  }
   /** Native live turns only. No historical terminal is replayed on attach or restart. */
   private readonly completedTurns = new Set<string>();
   private readonly completedTerminals = new Set<string>();
@@ -221,6 +224,11 @@ export class CcCoordinator {
     return () => { if (released) return; released = true; this.importHolds = Math.max(0, this.importHolds - 1); };
   }
 
+  /** 183: whether the session is dormant (three failures); false without a core session or an open Store. */
+  private dormant(coreSessionId: number | null): boolean {
+    return coreSessionId !== null && !!this.importer?.memory.store.dormant(coreSessionId);
+  }
+
   /** Ticket 75: publish this executor's status file, or do nothing. Every failure mode — a stale
    * binding, a `progress`/`spendSince` read that throws, a write that throws — is caught here and
    * turned into a diagnostic at worst; publishing never affects memory work, never delays a control
@@ -232,10 +240,11 @@ export class CcCoordinator {
     try {
       const binding = readBinding(this.config, this.nativeSessionId);
       if (!binding?.executor || !this.control || binding.executor.token !== this.control.executor.token) return;
-      // The same rule injection uses: the Store's enrollment once a core session exists, so an
-      // automatic off is published as off. Without an open Store there is nothing true to publish.
+      // The same rule injection uses: the Store's enrollment once a core session exists, so a
+      // dormant session is published as dormant (183). Without an open Store there is nothing true to publish.
       if (binding.coreSessionId !== null && !this.importer) return;
       const enabled = sessionEnabled(binding, this.importer?.memory.store ?? { enabled: () => false });
+      const dormant = this.dormant(binding.coreSessionId);
       const running = new Set(this.scheduler?.running() ?? []);
       let counts: CcStatusFile["counts"], cost: number | undefined, costUnknown = 0;
       const reconcile = this.lastReconcile;
@@ -249,10 +258,12 @@ export class CcCoordinator {
         catch (error) { this.diagnostic(`status cost unavailable (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
       }
       const status: CcStatusFile = { version: 1, nativeSessionId: this.nativeSessionId, executorId: binding.executor.executorId,
-        pid: binding.executor.pid, token: binding.executor.token, updatedAt: new Date().toISOString(), enabled,
+        pid: binding.executor.pid, token: binding.executor.token, updatedAt: new Date().toISOString(), enabled, ...(dormant ? { dormant } : {}),
         running: { noting: running.has("noting"), dreaming: running.has("dreaming") },
         ...(counts ? { counts } : {}), ...(cost !== undefined ? { cost, ...(costUnknown ? { costUnknown } : {}) } : {}) };
       writeCcStatus(this.config.stateDir, status);
+      // 183: the scheduler publishes dormancy between reconciles; the cache must name what the file now says, or `/trace on` is never republished.
+      if (reconcile) this.lastStatusKey = CcCoordinator.statusKey(reconcile, dormant);
     } catch (error) { this.diagnostic(`status publish failed (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
   }
 
@@ -568,7 +579,8 @@ export class CcCoordinator {
         // nothing. `final` reconciles (shutdown's drain) publish nothing; shutdown removes the file.
         if (!final && result) {
           this.lastReconcile = result;
-          const pathKey = `${result.coreSessionId}|${result.branch}|${result.headTurnId}|${result.state}`;
+          // 183: dormancy joins the key; `/trace on` ends it without any state or path change, and the line must follow.
+          const pathKey = CcCoordinator.statusKey(result, this.dormant(result.coreSessionId));
           if (result.appendedEntryIds.length > 0 || pathKey !== this.lastStatusKey) {
             this.lastStatusKey = pathKey;
             this.publish(reason);

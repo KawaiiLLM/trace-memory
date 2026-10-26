@@ -117,7 +117,7 @@ export class CcTaskScheduler {
     if (reconcile.state === "disabled") return this.failedStatus("Trace Memory is disabled for this session");
     if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedCount)
       return this.failedStatus(reconcile.problems.join("; ") || "persisted selected source path is not ready");
-    if (!this.memory.store.enabled(reconcile.coreSessionId)) return this.failedStatus("Trace Memory is disabled for this session");
+    if (!this.memory.store.tasksEnabled(reconcile.coreSessionId)) return this.failedStatus("Trace Memory is disabled or dormant for this session");
     const target: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
       headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedTailId! };
     const entries = this.memory.store.incompleteEntryIds(target.sessionId, target.branch, target.headTurnId);
@@ -186,7 +186,7 @@ export class CcTaskScheduler {
     if (reconcile.state === "disabled") return refuse("Trace Memory is disabled for this session");
     if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedCount)
       return refuse(reconcile.problems.join("; ") || "persisted selected source path is not ready");
-    if (!this.memory.store.enabled(reconcile.coreSessionId)) return refuse("Trace Memory is disabled for this session");
+    if (!this.memory.store.tasksEnabled(reconcile.coreSessionId)) return refuse("Trace Memory is disabled or dormant for this session");
     if (this.slots.has(`${reconcile.coreSessionId}:dreaming`)) return refuse("a Dreamer is already running in this session");
     const target: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
       headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedTailId! };
@@ -306,7 +306,7 @@ export class CcTaskScheduler {
     }, result => {
       const drain = this.catchup;
       const active = drain && (drain.state === "running" || drain.state === "waiting") && drain.target.sessionId === target.sessionId;
-      if (result?.automaticOff && active) this.stopCatchup(result.automaticOff);
+      if (result?.dormant && active) this.stopCatchup(result.dormant);
       else if (active && (result?.outcome === "success" || result?.outcome === "failure")) this.driveCatchup(result.outcome === "success");
       return false;
     }, "knowledge");
@@ -337,7 +337,7 @@ export class CcTaskScheduler {
   /** One ordinary admission path; callers own continuation and error handling, not claim policy. */
   private async runCandidate(phase: CcWorkerPhase, executorSessionId: number, target: TaskTarget,
     borrowed: boolean, epoch: number, manual = false, fullCheck = false): Promise<CcTaskResult | undefined> {
-    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) return;
+    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.tasksEnabled(executorSessionId)) return;
     const options = { ...this.common(phase, target, borrowed, !manual), executorSessionId };
     const result = phase === "noting" ? await this.memory.noting(options) : await this.memory.dream({ ...options, manual, fullCheck });
     this.report(phase, target, result);
@@ -352,12 +352,12 @@ export class CcTaskScheduler {
     const drain = this.catchup;
     if (result.outcome !== "failure" || !drain || (drain.state !== "running" && drain.state !== "waiting") ||
         drain.target.sessionId !== target.sessionId || drain.target.branch !== target.branch) return;
-    drain.state = result.automaticOff ? "stopped" : "failed"; drain.phase = undefined;
+    drain.state = result.dormant ? "stopped" : "failed"; drain.phase = undefined;
     drain.diagnostic = result.problems.join("; ") || result.outcome;
   }
 
   private report(phase: CcWorkerPhase, target: TaskTarget, result: CcTaskResult): void {
-    if (result.automaticOff) this.diagnostic(result.automaticOff);
+    if (result.dormant) this.diagnostic(result.dormant);
     const problems = "problems" in result ? result.problems ?? [] : [];
     if (result.outcome === "failure" || result.outcome === "cancelled" || problems.length)
       this.diagnostic(`${phase} worker ${result.outcome} for S${target.sessionId}${"runId" in result ? ` R${result.runId}` : ""}: ${problems.join("; ") || result.outcome}`);
@@ -377,7 +377,7 @@ export class CcTaskScheduler {
   private driveCatchup(checkAll = true, retryPhase?: CcWorkerPhase): void {
     const drain = this.catchup;
     if (!drain || this.stopped || (drain.state !== "running" && drain.state !== "waiting")) return;
-    if (!this.memory.store.enabled(drain.target.sessionId)) { this.stopCatchup("Trace Memory was disabled"); return; }
+    if (!this.memory.store.tasksEnabled(drain.target.sessionId)) { this.stopCatchup("Trace Memory was disabled or went dormant"); return; }
     const epoch = this.cancellationEpoch;
     const owned = () => !this.stopped && this.catchup === drain && this.cancellationEpoch === epoch &&
       (drain.state === "running" || drain.state === "waiting");
@@ -432,7 +432,7 @@ export class CcTaskScheduler {
             if (phase === "noting") { drain.state = "waiting"; drain.phase = "noting"; }
           } else if (result.outcome === "failure") {
             drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : undefined) || result.outcome;
-            if (result.automaticOff) { drain.state = "stopped"; drain.phase = undefined; }
+            if (result.dormant) { drain.state = "stopped"; drain.phase = undefined; }
             else retry = true;
           } else if (result.outcome !== "success" && result.outcome !== "empty") {
             drain.state = result.outcome === "cancelled" ? "stopped" : "failed";
@@ -496,5 +496,5 @@ function dreamOutcome(result: CcTaskResult | undefined): CcDreamStatus {
   if (result.outcome === "empty") return { state: "failed", diagnostic: "nothing to curate" };
   if (result.outcome === "dropped") return { state: "failed", diagnostic: result.reason ?? "the core refused the run" };
   const diagnostic = ("problems" in result ? result.problems.join("; ") : "") || result.outcome;
-  return { state: result.outcome === "cancelled" || result.automaticOff ? "stopped" : "failed", diagnostic };
+  return { state: result.outcome === "cancelled" || result.dormant ? "stopped" : "failed", diagnostic };
 }

@@ -42,10 +42,9 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
       ready();
       return new Promise<Reply>(resolve => signal.addEventListener("abort", () => {
         expect(nCalls).toBe(3);
-        expect(store.enabled(session.id)).toBe(false);
-        // The same claim row stays until settlement; switching memory off only expires its lease.
+        expect(store.dormant(session.id)).toBe(true);
+        // The same claim row stays until settlement; dormancy only expires its lease.
         expect(store.getClaim(session.id, "dreaming")).toEqual({ ...claim, expiresAt: 0 });
-        expect(tools.find(tool => tool.name === "note")!.execute({})).toContain("Disabled");
         revisionsAtAbort = revisions();
         abortChecked = true;
         // Return a late scoring write after abort; native cancellation must not dispatch it.
@@ -53,7 +52,7 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
       }, { once: true }));
     }, { autoStop: false, ignoreAbort: true });
     await f.commands.get("trace")!.handler("catchup", f.ctx);
-    await vi.waitFor(() => expect(store.enabled(session.id), f.notices.join("\n")).toBe(false));
+    await vi.waitFor(() => expect(store.dormant(session.id), f.notices.join("\n")).toBe(true));
     await vi.waitFor(() => expect(store.getClaim(session.id, "dreaming")).toBeNull());
     expect(abortChecked).toBe(true);
     expect(nCalls).toBe(3);
@@ -66,7 +65,7 @@ test("92/07: Pi catchup third N failure cancels D, retaining its exact claim onl
     expect(f.memory.pendingEntries(session.id, "main", turn.id).map(entry => entry.id)).toEqual(entries);
     expect(store.taskFailures(session.id).filter(item => item.phase === "dreaming")).toEqual([]);
     expect(store.listRuns(session.id).filter(run => run.kind === "dreaming").at(-1)?.outcome).toBe("cancelled");
-    expect(f.notices.some(message => message.includes("off after three failures"))).toBe(true);
+    expect(f.notices.some(message => message.includes("dormant after three failures"))).toBe(true);
     const settled = f.requests.length;
     await f.emit("agent_settled"); await f.drain();
     expect(nCalls).toBe(3); expect(f.requests).toHaveLength(settled);

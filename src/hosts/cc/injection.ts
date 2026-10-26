@@ -434,7 +434,7 @@ const TRIGGER_WAIT_MS = 10_000;
  * starts), so the build waits for the row and for the live executor to import it, reading only the
  * tail after the stored leaf (97); without a live executor the importer runs here. The block's
  * Knowledge is recorded as the delivery of the compaction the import will append after that leaf,
- * before the text is returned. Null: an unbound/disabled session or pending Raw overflow, which keeps native compaction.
+ * before the text is returned. Null: an unbound, disabled or dormant (183) session or pending Raw overflow, which keeps native compaction.
  * `auto` (requirement 14, ruled): the caller's own `manual`/`auto` event trigger, distinct from the
  * handle above; only `auto` gets the trailing continue sentence. */
 export async function ccCompaction(config: ResolvedCcHostConfig,
@@ -449,10 +449,12 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
   try {
     // Enrollment is settled once a core session exists or the import has read the creation time.
     const disabled = (binding: CcSessionBinding) => (binding.coreSessionId !== null || binding.nativeCreatedAt !== null) && !enabled(binding, memory);
+    // 183: a dormant session builds nothing here (no wait for the trigger either); the hook runs native compaction and its Knowledge supplement.
+    const dormant = (binding: CcSessionBinding) => binding.coreSessionId !== null && memory.store.dormant(binding.coreSessionId);
     const importing = (binding: CcSessionBinding) => binding.executor !== null && executorLiveness(binding.executor) !== "dead";
     let binding = initial;
     for (const deadline = Date.now() + TRIGGER_WAIT_MS; ;) {
-      if (disabled(binding)) return null;
+      if (disabled(binding) || dormant(binding)) return null;
       const present = written(binding, input.trigger, memory.store);
       if (present && (importedToEnd(binding) || !importing(binding))) break;
       if (Date.now() >= deadline) {
@@ -494,17 +496,21 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
       guideVersions: compacted.supplied.guideVersions,
       knowledgeStates: compacted.supplied.knowledgeStates, factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id) }) +
       COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
-    memory.store.transaction(() => {
+    const published = memory.store.transaction(() => {
       const current = readBinding(config, input.session_id);
       if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch ||
           current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
         throw new Error("the session or its selected path changed while the compaction was built");
+      // 183: the entry check is stale after the import await and the build; the executor may have settled a third failure since. Native compaction instead.
+      if (!memory.store.tasksEnabled(core)) return false;
       memory.store.recordKnowledgeDelivery({ owner, nodeKey: randomUUID(), follows: leaf }, [{
         knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
         knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0, knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds ?? [],
         guideVersions: compacted.supplied.guideVersions,
         temporaryTokens: compacted.supplied.temporaryTokens ?? 0 }]);
+      return true;
     });
+    if (!published) return null;
     const warning = ccTruncationWarning(compacted.truncated);
     return { text, ...(warning ? { warning } : {}) };
   } finally {

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { hydrate, sourceSeededMemory, validateConfig, type ClosedSessionScope, type NotingAgentInput } from "../../source-fixture.ts";
-import { legacyFacts } from "../../support/seed.ts";
+import { legacyFacts, makeDormant } from "../../support/seed.ts";
 import { submit, submitEmpty, verifyUnchanged } from "../../support/noter.ts";
 
 const at = "2026-09-09T00:00:00Z";
@@ -53,6 +53,14 @@ test.each(["noting"] as const)("%s discovery filters project/global/off without 
     expect(list("project")).toEqual([same.sessionId]);
     expect(list("global")).toEqual([same.sessionId, other.sessionId]);
     expect(list("off")).toEqual([]);
+    // 183: a dormant session's tail is not borrowed, and a dormant executor borrows nothing; `/trace on` ends both.
+    makeDormant(memory.store, same.sessionId);
+    expect(list("global")).toEqual([other.sessionId]);
+    memory.store.setEnrollment(same.sessionId, true);
+    makeDormant(memory.store, active.sessionId);
+    expect(list("global")).toEqual([]);
+    memory.store.setEnrollment(active.sessionId, true);
+    expect(list("global")).toEqual([same.sessionId, other.sessionId]);
     memory.store.setEnrollment(active.sessionId, false);
     expect(list("global")).toEqual([]);
     memory.store.setEnrollment(active.sessionId, true);

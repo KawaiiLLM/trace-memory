@@ -1,8 +1,9 @@
 import { expect, test } from "vitest";
 import { Store } from "../../../src/core/store/index.ts";
+import { makeDormant } from "../../support/seed.ts";
 
 for (const state of ["active", "reserved", "replaced", "expired", "none"] as const)
-  test(`92: a third Noter failure expires every Dreamer claim of the session (${state})`, () => {
+  test(`92: a third Noter failure makes the session dormant and expires every Dreamer claim of it (${state})`, () => {
     const store = new Store(":memory:");
     try {
       const project = store.createProject({ name: "claims", declaredBy: "mark" });
@@ -29,12 +30,32 @@ for (const state of ["active", "reserved", "replaced", "expired", "none"] as con
       for (let n = 0; n < 3; n++) {
         const executionId = store.beginExecution({ sessionId: session.id, phase: "noting", head: entry.id });
         const failed = store.recordRun({ kind: "noting", sessionId: session.id, executionId, outcome: "failure", createdAt: "now" });
-        expect(!!store.settleExecution(executionId, "failure", failed.id).automaticOff).toBe(n === 2);
+        expect(!!store.settleExecution(executionId, "failure", failed.id).dormant).toBe(n === 2);
       }
-      expect(store.enabled(session.id)).toBe(false);
-      // Stage 4 §1.5: nothing keeps an admitted Dreamer's token alive past an automatic off, whatever its state; it writes no coverage.
+      expect(store.dormant(session.id)).toBe(true);
+      expect(store.enabled(session.id)).toBe(true); // 183: dormant, not off
+      // Stage 4 §1.5: nothing keeps an admitted Dreamer's token alive past dormancy, whatever its state; it writes no coverage.
       if (state === "none") expect(store.getClaim(session.id, "dreaming")).toBeNull();
       else expect(store.getClaim(session.id, "dreaming")!.expiresAt).toBe(0);
       expect(store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
     } finally { store.close(); }
   });
+
+test("183: reopening a dormant session renews no claim: its expired Dreamer claim neither holds the database-wide seat nor changes hands, and `/trace on` still clears dormancy", () => {
+  const store = new Store(":memory:");
+  try {
+    const project = store.createProject({ name: "reopen", declaredBy: "mark" });
+    const open = () => store.createSession({ host: "pi:test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+    const dormant = open(), healthy = open();
+    store.db.prepare("INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, 'dreaming', 'old', 'live', ?, 0, 0)")
+      .run(dormant.id, Date.now() + 60_000);
+    makeDormant(store, dormant.id); // the third failure expires the in-flight claim
+    store.closeSession(dormant.id);
+    store.reopenSession(dormant.id, "new");
+    expect(store.getSession(dormant.id)!.closedAt).toBeNull();
+    expect(store.getClaim(dormant.id, "dreaming")).toMatchObject({ executorId: "old", token: "live", expiresAt: 0 });
+    expect(store.dreamerSeatHolder(healthy.id)).toBeNull();
+    store.setEnrollment(dormant.id, true);
+    expect(store.dormant(dormant.id)).toBe(false);
+  } finally { store.close(); }
+});

@@ -206,6 +206,14 @@ function indexLegacyVersion(store: Store, commit: number): void {
   store.transaction(() => new WordSimilarity(store.db, "knowledge").write(commit, row.title as string | null, String(row.text)));
 }
 
+/** Three consecutive Noter failures through the public Store path: the session is dormant (183), still enabled. `/trace on` is `store.setEnrollment(id, true)`. */
+export function makeDormant(store: Store, sessionId: number): void {
+  for (let n = 0; n < 3; n++) {
+    const executionId = store.beginExecution({ sessionId, phase: "noting", head: 1 });
+    store.settleExecution(executionId, "failure", store.recordRun({ kind: "noting", sessionId, executionId, outcome: "failure", createdAt: at }).id);
+  }
+}
+
 /** Scores every knowledge item that has none (default 50): injection spends the Knowledge base on scored items only,
  * so a test of the base window scores its items first. A test of unscored knowledge leaves them alone. */
 export function scoreAll(store: Store, score = 50): void {

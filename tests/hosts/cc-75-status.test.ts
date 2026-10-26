@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../src/core/store/index.ts";
+import { makeDormant } from "../support/seed.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { readBinding, recordSessionStart, updateBinding, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
 import { controlSession } from "../../src/hosts/cc/control.ts";
@@ -155,6 +156,45 @@ test("an automatic off recorded only in the Store publishes off, never the bindi
     expect(status.enabled).toBe(false);
     expect(status.counts).toBeUndefined(); // off counts nothing, as Pi's footer (24a)
     expect(status.cost).toBeUndefined();
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test("dormancy recorded only in the Store publishes dormant, and `/trace on` publishes it cleared with no path change (183)", async () => {
+  const f = fixture("dormant", { pollIntervalMs: 60_000, "noting.triggerTokens": 10_000 });
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  try {
+    await coordinator.start();
+    expect(readCcStatus(f.stateDir, f.nativeSessionId)!.dormant).toBeUndefined();
+    const coreSessionId = readBinding(f.config, f.nativeSessionId)!.coreSessionId!;
+    const store = new Store(f.config.dbPath);
+    try {
+      makeDormant(store, coreSessionId);
+      await coordinator.requestReconcile("binding watch");
+      expect(readCcStatus(f.stateDir, f.nativeSessionId)).toMatchObject({ enabled: true, dormant: true });
+      store.setEnrollment(coreSessionId, true);
+      await coordinator.requestReconcile("binding watch");
+      expect(readCcStatus(f.stateDir, f.nativeSessionId)!.dormant).toBeUndefined();
+    } finally { store.close(); }
+  } finally { await coordinator.shutdown("test"); }
+});
+
+test("a dormant status published by the scheduler is cached, so `/trace on` is republished by the next reconcile (183)", async () => {
+  const f = fixture("dormant-notify", { pollIntervalMs: 60_000, "noting.triggerTokens": 10_000 });
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  try {
+    await coordinator.start(); // the reconcile caches the not-dormant key
+    const coreSessionId = readBinding(f.config, f.nativeSessionId)!.coreSessionId!;
+    const store = new Store(f.config.dbPath);
+    try {
+      makeDormant(store, coreSessionId);
+      coordinator["publish"]("settlement"); // the scheduler's settlement notification: no reconcile in between
+      expect(readCcStatus(f.stateDir, f.nativeSessionId)).toMatchObject({ enabled: true, dormant: true });
+      store.setEnrollment(coreSessionId, true);
+      await coordinator.requestReconcile("binding watch");
+      expect(readCcStatus(f.stateDir, f.nativeSessionId)!.dormant).toBeUndefined();
+    } finally { store.close(); }
   } finally { await coordinator.shutdown("test"); }
 });
 
@@ -355,6 +395,13 @@ test("off: the compact line", async () => {
   seedBinding(f.stateDir, "s1", { token: "tok" });
   writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: process.pid, enabled: false });
   expect(await runCommand(f.configPath, { session_id: "s1" })).toBe("🧠 \x1b[2m○ off\x1b[0m\n");
+});
+
+test("dormant (183): the compact line in yellow", async () => {
+  const f = statusFixture("dormant");
+  seedBinding(f.stateDir, "s1", { token: "tok" });
+  writeCcStatus(f.stateDir, { ...sample, nativeSessionId: "s1", token: "tok", pid: process.pid, enabled: true, dormant: true });
+  expect(await runCommand(f.configPath, { session_id: "s1" })).toBe("🧠 \x1b[33m◐ dormant\x1b[0m\n");
 });
 
 test("dreaming paints customMessageLabel", async () => {

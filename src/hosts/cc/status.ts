@@ -21,6 +21,8 @@ export interface CcStatusFile {
   token: string;
   updatedAt: string;
   enabled: boolean;
+  /** 183: enabled but dormant (three failures): the line shows `◐ dormant`. Absent in files from before. */
+  dormant?: boolean;
   running: CcStatusRunning;
   counts?: MemoryStatusCounts;
   cost?: number;

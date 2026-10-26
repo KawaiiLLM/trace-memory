@@ -4,7 +4,7 @@ import { appendFileSync, closeSync, mkdtempSync, openSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../src/core/store/index.ts";
-import { entry, knowledge, knowledgeBatch, legacyFacts, scoreAll, session } from "../support/seed.ts";
+import { entry, knowledge, knowledgeBatch, legacyFacts, makeDormant, scoreAll, session } from "../support/seed.ts";
 import { readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
@@ -380,6 +380,37 @@ test("102 an unbound or disabled session passes through; a path that moves durin
     expect(rows().count).toBe(before);
     f.store.setEnrollment(f.sessionId, false);
     expect(await f.build("u2")).toBeNull();
+  } finally { f.close(); }
+});
+
+test("183 a dormant session builds no compaction, so the hook runs the native one; the supplement after it still delivers Knowledge, and `/trace on` builds again", async () => {
+  const f = await fixture();
+  try {
+    const [rule] = f.versions.map(item => item.commit);
+    await f.append(user("u2", "a1", "p2"));
+    makeDormant(f.store, f.sessionId);
+    expect(await f.build("u2")).toBeNull();
+    expect(f.commits(await f.compact())).toEqual([rule]);
+    f.store.setEnrollment(f.sessionId, true);
+    expect((await f.build("u2"))!.text).toContain("Use pnpm.");
+  } finally { f.close(); }
+});
+
+test("183 a session that goes dormant after the entry check still compacts natively: the final fence re-checks, records nothing, and the supplement delivers Knowledge", async () => {
+  const f = await fixture();
+  try {
+    const [rule] = f.versions.map(item => item.commit);
+    await f.append(user("u2", "a1", "p2"));
+    const rows = () => (f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_deliveries").get() as { count: number }).count;
+    const before = rows(), snapshot = Store.prototype.readSnapshot;
+    vi.spyOn(Store.prototype, "readSnapshot").mockImplementationOnce(function (this: Store, fn) {
+      const value = snapshot.call(this, fn);
+      makeDormant(f.store, f.sessionId); // the executor settles the third failure while the block is rendered
+      return value;
+    });
+    expect(await f.build("u2")).toBeNull();
+    expect(rows()).toBe(before);
+    expect(f.commits(await f.compact())).toEqual([rule]);
   } finally { f.close(); }
 });
 

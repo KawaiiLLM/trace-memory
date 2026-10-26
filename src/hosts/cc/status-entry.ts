@@ -17,7 +17,7 @@ import { CC_VERIFIED_VERSION } from "./verified-version.ts";
 
 // Pi's bundled themes paint accent/success/customMessageLabel as teal/green/purple (24a/51); dim is
 // the ANSI faint attribute Pi's own terminal fallback uses when no theme is available.
-const ANSI: Record<StatusColorRole, string> = { accent: "\x1b[36m", success: "\x1b[32m", customMessageLabel: "\x1b[35m", dim: "\x1b[2m" };
+const ANSI: Record<StatusColorRole, string> = { accent: "\x1b[36m", success: "\x1b[32m", customMessageLabel: "\x1b[35m", warning: "\x1b[33m", dim: "\x1b[2m" };
 const RESET = "\x1b[0m";
 const paint = (role: StatusColorRole, text: string): string => `${ANSI[role]}${text}${RESET}`;
 
@@ -70,6 +70,7 @@ export async function runCcStatusCommand(io: CcStatusIo = {}): Promise<void> {
     const alive = owned && executorAlive(status.pid);
     const segments = memoryStatusLine({
       enabled: status.enabled,
+      dormant: status.dormant,
       running: alive ? status.running : { noting: false, dreaming: false },
       counts: alive ? status.counts : undefined,
       cost: alive ? status.cost : undefined,
