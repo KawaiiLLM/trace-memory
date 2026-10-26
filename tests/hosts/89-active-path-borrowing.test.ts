@@ -42,8 +42,9 @@ function expectConsumedOnlySibling(memory: ReturnType<typeof TraceMemory>, sessi
   const runs = store.listRuns(sessionId).filter(run => run.kind !== "manual" && run.branch === "abandoned");
   expect(runs).toHaveLength(4);
   expect(runs.every(run => run.kind === "noting" && run.outcome === "success")).toBe(true);
-  // Only the verify run, which publishes, owns the processed entries.
-  expect(store.db.prepare("SELECT entry_id FROM noted_entries WHERE run_id = ?").all(runs[3]!.id).map(row => Number(row.entry_id))).toEqual([sibling.entry.id]);
+  // 179: the check-facts run publishes the facts and owns the processed entries; the knowledge lane's runs own none.
+  const owned = (run: (typeof runs)[number]) => store.db.prepare("SELECT entry_id FROM noted_entries WHERE run_id = ?").all(run.id).map(row => Number(row.entry_id));
+  expect(runs.map(owned)).toEqual([[], [sibling.entry.id], [], []]);
   expect(store.pendingEntries(sessionId, "abandoned", sibling.turn.id)).toEqual([]);
   // C retirement does not clear or replay historical unprocessed facts.
   expect(store.consolidationBatch(sessionId, "abandoned", sibling.turn.id).map(fact => fact.id))

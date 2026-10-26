@@ -89,7 +89,8 @@ test.each(["project", "global"] as const)("%s is frozen for a running task when 
   });
   try {
     const target = scope === "project" ? same : other;
-    const pending = memory.noting({ ...target, borrowed: true, executorSessionId: active.sessionId });
+    // 179: a lane is one admission. A combined call would admit its knowledge lane afresh under the scope then in force.
+    const pending = memory.noting({ ...target, borrowed: true, executorSessionId: active.sessionId, lane: "facts" });
     memory.configure({ closedSessionScope: "off" });
     finish();
     expect((await pending).outcome).toBe("success");

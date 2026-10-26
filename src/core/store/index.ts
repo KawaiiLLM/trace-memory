@@ -1959,6 +1959,8 @@ export class Store {
       .all(scope, executor.projectId, executorSessionId);
     for (const row of sessions) {
       const sessionId = Number(row.id);
+      // The knowledge lane only resumes a stored hand-off: sessions without one are not scanned (their cursors need no check).
+      if (lane === "knowledge" && !this.handoff(sessionId, phase, lane)) continue;
       const claimed = (this.getClaim(sessionId, phase, lane)?.expiresAt ?? 0) > Date.now();
       const cursors = this.borrowedCursorTargets(sessionId);
       if (claimed) continue;
