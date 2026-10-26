@@ -50,12 +50,16 @@ test("29a case 3 (injection identity): the injected message carries exactly the 
     expect(carrierOf(result.message).supplied.knowledgeCommitIds).toEqual([commit]);
     const entry = customMessages(h)[0]!;
     expect(carrierOf(entry).db).toBe(h.dbPath);
-    expect(carrierOf(entry).supplied).toEqual({ entries: [], factIds: [], knowledgeCommitIds: [commit], knowledgeTokens: tokens(result.message.content.split("\n\n").slice(1).join("\n\n")) });
+    expect(carrierOf(entry).supplied).toEqual({ entries: [], factIds: [], knowledgeCommitIds: [commit],
+      guideVersions: carrierOf(result.message).supplied.guideVersions, knowledgeTokens: tokens(result.message.content.split("\n\n").slice(1).join("\n\n")) });
     expect(view(h).raw.get(entry.id)).toBeUndefined(); // our own injection is not a source entry
-    // The injection happens once: the next prompt returns no message and therefore no second carrier.
+    // Allocation changes the reading guide's exact session text, not knowledge membership.
     await h.answer(); await h.emit("agent_settled"); await h.drain();
-    expect(await h.prompt("second")).toBeUndefined();
-    expect(customMessages(h)).toHaveLength(1);
+    const allocated = await h.prompt("second");
+    expect(carrierOf(allocated.message).supplied.knowledgeCommitIds).toEqual([]);
+    expect(carrierOf(allocated.message).supplied.guideVersions).toHaveLength(1);
+    await h.answer(); await h.emit("agent_settled"); await h.drain();
+    expect(await h.prompt("third")).toBeUndefined();
   } finally { await h.dispose(); }
 });
 
@@ -220,7 +224,7 @@ test("144 title-only injection: carried, recorded once, not re-sent, and a later
     const commit = seedKnowledge(h, "big rule " + "word ".repeat(1_500));
     h.memory.setKnowledgeBase(0); // the base holds nothing: a title
     const first = await h.prompt("first");
-    expect(first.message.content).toContain("(title only)");
+    expect(first.message.content).not.toMatch(/\[K\d+#/); // Titles carry no exact body version.
     const supplied = carrierOf(first.message).supplied;
     expect(supplied.knowledgeCommitIds).toEqual([]);
     expect(supplied.knowledgeTitleCommitIds).toEqual([commit]);
@@ -230,7 +234,9 @@ test("144 title-only injection: carried, recorded once, not re-sent, and a later
     expect([...delivered.knowledgeTitleCommitIds]).toEqual([commit]);
     expect(delivered.pointerTokens).toBe(supplied.pointerTokens);
     await h.answer(); await h.emit("agent_settled"); await h.drain();
-    expect(await h.prompt("second")).toBeUndefined(); // a title is never re-sent for the same version
+    const allocated = await h.prompt("second");
+    expect(carrierOf(allocated.message).supplied.knowledgeTitleCommitIds ?? []).toEqual([]);
+    expect(carrierOf(allocated.message).supplied.guideVersions).toHaveLength(1); // Changed session text is delivered despite the exhausted base.
     await h.answer(); await h.emit("agent_settled"); await h.drain();
     h.memory.setKnowledgeBase(20_000); // base room appears
     const third = await h.prompt("third");

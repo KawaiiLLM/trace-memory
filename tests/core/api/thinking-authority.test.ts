@@ -81,3 +81,18 @@ test("thinking: bound historical facts and knowledge retain stored sources but d
     expect(f.m.store.getSourceEntry(f.pure.id)!.raw).toBe(raw);
   } finally { f.m.close(); }
 });
+
+test("compaction omits thinking-only Raw placeholders without changing ordinary Raw views or mixed entries", () => {
+  const f = fixture();
+  try {
+    const raw = memoryFiles(f.m, { sessionId: f.sessionId, branch: "main", headTurnId: f.turnId })
+      .read(`trace://raw/S${f.sessionId}/T${f.turnId}`).content;
+    expect(raw).toContain("[thinking omitted]");
+    const compact = f.m.compact(f.sessionId, "main", f.turnId);
+    if ("native" in compact) throw new Error(compact.reason);
+    expect(compact.text).not.toContain("[thinking omitted]");
+    expect(compact.text).toContain("Public explanation");
+    expect(compact.text).toContain("Passed");
+    expect(compact.supplied.entries.map(entry => entry.id)).toEqual(f.entries.map(entry => entry.id));
+  } finally { f.m.close(); }
+});

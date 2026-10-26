@@ -211,6 +211,7 @@ function installed(result: Awaited<ReturnType<typeof run>>) {
   expect(persisted.turns).toHaveLength(1);
   // The compaction node's delivered state is exactly what the block emitted (97's records).
   expect(persisted.delivered[0]).toEqual({ knowledgeCommitIds: new Set(header.commits),
+    guideVersions: new Set(header.guideVersions),
     knowledgeStates: new Set(header.states.map(state => `${state.fromCommit}>${state.toCommits.join(",")}`)), knowledgeTokens: header.knowledgeTokens,
     knowledgeTitleCommitIds: new Set(header.titles), temporaryTokens: header.temporaryTokens ?? 0, pointerTokens: header.pointerTokens ?? 0 });
   return { at, block, header, raw: block.split("\n").filter(line => /^\[T\d+#E\d+@/.test(line)) };

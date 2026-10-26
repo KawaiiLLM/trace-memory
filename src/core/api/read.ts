@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readingGuide } from "../render/reading-guide.ts";
+import { readingGuide, contextGuides } from "../render/reading-guide.ts";
 import { searchFacade } from "./search.ts";
 import { knowledgeReadSelection, KNOWLEDGE_REPRESENTATIVE_RECEIPT } from "./knowledge-read.ts";
 import { canonicalToolNames, renderToolNames, type ToolNames } from "../prompts/tool-names.ts";
@@ -8,7 +8,7 @@ import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry, SourceEntryMeta, PathSnapshot } from "../store/index.ts";
 import type { HumanUserDetector } from "../model/source.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, knowledgeCategoryGroup, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
-import { formatCost, budgetKnowledge, selectKnowledge, renderKnowledgeTitle, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, sessionKnowledgeNotice, renderKnowledge, renderFact, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
+import { formatCost, budgetKnowledge, selectKnowledge, renderKnowledgeTitle, renderKnowledgeOmissions, charge, expandList, tokens, finish, listingLine, sessionKnowledgeNotice, renderKnowledge, renderFact, renderKnowledgeTrace, renderFactGroups, factGroupLayout, shortTurnTime, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { injectionText, compactText, measuredMemory, type MemoryComposition, type SharedMaterial, type TransportItem, type RunningTask, rawWindowTokens, FACTS_TITLE, FACT_TITLES_TITLE, RAW_TITLE, EARLIER_USERS_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
@@ -100,7 +100,7 @@ export interface ChargedWindows { knowledge: number; facts: number; raw: number;
 /** Foreground Knowledge delivery and the exact body/state identities its carrier may persist. */
 export interface Injection { text: string; knowledgeTokens?: number; knowledgeAllowance?: number; knowledgeCommitIds: number[];
   /** Exact title-only membership, independent pool charges and their remaining capacities. */
-  knowledgeTitleCommitIds?: number[]; temporaryTokens?: number; pointerTokens?: number; temporaryAllowance?: number; pointerAllowance?: number; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
+  knowledgeTitleCommitIds?: number[]; guideVersions?: string[]; temporaryTokens?: number; pointerTokens?: number; temporaryAllowance?: number; pointerAllowance?: number; knowledgeStates?: KnowledgeStateReceipt[]; transportItems?: TransportItem[]; composition?: MemoryComposition }
 
 /** One component of a `trace` comma list, in request order, rendered over frozen metadata. */
 type TaggedBody = { lines: string[]; taggedHeader: string; plainHeader: string; tag: string };
@@ -330,7 +330,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const factGroups = (facts: Fact[], relations = store.listFactRelationsOf(facts.map(fact => fact.id))) =>
     renderFactGroups(facts, f => factLine(f.id, relations.get(f.id) ?? []), store.factTurnTimes(facts));
   const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge({ ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
-    `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, false, store.writing);
+    `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, false, store.writing, true);
   // The knowledge part of the shared material contract (20a): the applicable commits at one node,
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
   const applicable = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) =>
@@ -358,11 +358,20 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     }));
     const current = values(graph.current.filter(revision => revision.op !== "archive"));
     const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? undefined : projectId, graph, true);
-    const notice = id === undefined ? undefined : sessionKnowledgeNotice(id);
+    if (!current.length && !allStates.length) return empty();
+    const guides = contextGuides(id, toolNames, visible.guideVersions);
+    const guideVersions = guides.map(guide => guide.version);
+    const guide = guides.map(guide => guide.text).join("\n\n");
+    const reading = guides.find(guide => guide.purpose === "reading")?.text ?? "";
+    const ordering = guides.find(guide => guide.purpose === "ordering")?.text ?? "";
+    const notice = id === undefined ? ordering : sessionKnowledgeNotice(id, ordering);
+    const guidesOnly = (): Injection => ({ ...measuredMemory(guide, { receipts: [] }), knowledgeCommitIds: [], guideVersions,
+      knowledgeTokens: 0, temporaryTokens: 0, pointerTokens: 0,
+      ...(transport ? { transportItems: guides } : {}) });
 
     const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
     const states = allStates.filter(state => !(visible.knowledgeStates ?? new Set()).has(knowledgeStateKey(state.receipt)));
-    if (!delta.length && !states.length) return empty();
+    if (!delta.length && !states.length) return guidesOnly();
 
     const line = knowledgeLine;
     // Hosts pass the recorded cost of every delivery on the path, including inapplicable bodies.
@@ -375,7 +384,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const sources = [...acknowledged].map(key => Number(key.split(">")[0]));
       const notes = knowledgeStateNotes(store, current, sources, path, path ? undefined : projectId, graph, true)
         .filter(state => acknowledged.has(knowledgeStateKey(state.receipt))).map(state => state.text);
-      return tokens(injectionText({ knowledge: groups, receipts: [] }, notes));
+      return tokens(injectionText({ knowledge: groups, knowledgeNotice: notice, receipts: [] }, notes));
     };
     // Each context cap is reduced only by deliveries charged to that cap.
     const baseLeft = Math.max(0, baseCap - (visible.knowledgeTokens ?? unaccountedCost()));
@@ -383,11 +392,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     // or session start, and that includes knowledge the Noter has just written.
     const temporaryLeft = Math.max(0, temporaryCap - (visible.temporaryTokens ?? 0));
     const pointerLeft = Math.max(0, pointerCap - (visible.pointerTokens ?? 0));
-    if (baseLeft <= 0 && temporaryLeft <= 0 && pointerLeft <= 0) return empty();
+    if (baseLeft <= 0 && temporaryLeft <= 0 && pointerLeft <= 0) return guidesOnly();
 
     // State transitions retain priority over optional bodies. Then the shared selector preserves
     // the newest commits and receipts omitted older items, without publishing a receipt alone.
-    const guide = readingGuide(id, toolNames);
     const buildStates = (count: number, includeGuide = true) => injectionText({ knowledge: [], receipts: [], ...(includeGuide ? { readingGuide: guide } : {}) }, states.slice(0, count).map(state => state.text));
     const longest = (high: number, fits: (count: number) => boolean) => {
       let low = 0;
@@ -404,15 +412,15 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     };
     const stateCount = longest(states.length, count => tokens(buildStates(count, false)) <= baseLeft);
     if (stateCount < states.length) {
-      if (!stateCount) return empty();
+      if (!stateCount) return guidesOnly();
       const material = { knowledge: [], receipts: [], readingGuide: guide };
       const rendered = measuredMemory(buildStates(stateCount), material);
-      return { ...rendered, knowledgeTokens: tokens(buildStates(stateCount, false)), knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft, pointerAllowance: pointerLeft, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
-        ...(transport ? { transportItems: states.slice(0, stateCount).map(transportState) } : {}) };
+      return { ...rendered, guideVersions, knowledgeTokens: tokens(buildStates(stateCount, false)), knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft, pointerAllowance: pointerLeft, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt),
+        ...(transport ? { transportItems: [...guides, ...states.slice(0, stateCount).map(transportState)] } : {}) };
     }
     const selectedStates = states.slice(0, stateCount);
     const titleLine = (value: KnowledgeWithRevision) => renderKnowledgeTitle({ ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
-      `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, store.writing);
+      `K${value.knowledge.id}`, store.writing);
     const statesText = selectedStates.map(state => state.text);
     const statesCost = tokens(injectionText({ knowledge: [], receipts: [] }, statesText));
     // The selector prices parts conservatively; the exact rendered window is checked afterwards and the caps
@@ -420,8 +428,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     let slackBase = 0, slackTemporary = 0, slackPointer = 0;
     for (;;) {
       const selection = selectKnowledge(delta, { baseCap: Math.max(0, baseLeft - statesCost - slackBase), temporaryCap: Math.max(0, temporaryLeft - slackTemporary),
-        pointerCap: Math.max(0, pointerLeft - slackPointer), line, titleLine, recencyNotice: undefined, titled: visible.knowledgeTitleCommitIds });
-      const material = { knowledge: selection.groups, receipts: selection.receipts, knowledgeNotice: notice, readingGuide: guide };
+        pointerCap: Math.max(0, pointerLeft - slackPointer), line, titleLine, recencyNotice: notice, titled: visible.knowledgeTitleCommitIds });
+      const material = { knowledge: selection.groups, receipts: selection.receipts, knowledgeNotice: notice,
+        readingGuide: selection.groups.length ? reading : guide };
       const text = injectionText(material, statesText);
       const windowText = injectionText({ ...material, readingGuide: "" }, statesText);
       // Price successive windows exactly: base, all bodies, then pointers.
@@ -433,13 +442,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (baseUsed > baseLeft && selection.ranked.some(item => item.allowance === "base")) { slackBase += baseUsed - baseLeft; continue; }
       if (bodyUsed > temporaryLeft && selection.ranked.some(item => item.allowance === "temporary")) { slackTemporary += bodyUsed - temporaryLeft; continue; }
       if (pointerUsed > pointerLeft && selection.ranked.some(item => item.allowance === "pointer")) { slackPointer += pointerUsed - pointerLeft; continue; }
-      if (!selection.ranked.length && !selectedStates.length) return empty();
+      if (!selection.ranked.length && !selectedStates.length) return guidesOnly();
       const rendered = measuredMemory(text, material);
-      return { ...rendered, knowledgeTokens: baseUsed, temporaryTokens: bodyUsed, pointerTokens: pointerUsed, knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft, pointerAllowance: pointerLeft,
+      return { ...rendered, guideVersions, knowledgeTokens: baseUsed, temporaryTokens: bodyUsed, pointerTokens: pointerUsed, knowledgeAllowance: baseLeft, temporaryAllowance: temporaryLeft, pointerAllowance: pointerLeft,
         knowledgeCommitIds: selection.bodyCommits, ...(selection.titleCommits.length ? { knowledgeTitleCommitIds: selection.titleCommits } : {}),
         ...(transport ? { transportItems: [
+          ...guides,
           ...selection.ranked.map(({ value, form, allowance, rank }) => ({ kind: "knowledge" as const,
-            text: form === "title" ? titleLine(value) : knowledgeLine(value), category: knowledgeCategoryGroup(value.revision.category), commitId: value.revision.id,
+            text: form === "title" ? titleLine(value) : knowledgeLine(value), category: knowledgeCategoryGroup(value.revision.category), scope: value.revision.scope, commitId: value.revision.id,
             address: `K${value.knowledge.id}@v${store.versionOrdinal(value.knowledge.id, value.revision.id)}`, form, allowance, rank })),
           ...selectedStates.map(transportState),
           ...material.receipts.map(text => ({ kind: "receipt" as const, text, allowance: selection.receiptAllowance })),
@@ -733,7 +743,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const view = (entry: SourceEntry) => renderEntry(entry, config.render, resultText);
 
       // ---- 1. Status notices use the Knowledge base; body selection follows Raw's overflow claim. ----
-      const guide = options.readingGuide === false ? "" : readingGuide(sessionId, options.toolNames ?? canonicalToolNames);
+      const guides = options.readingGuide === false ? [] : contextGuides(sessionId, options.toolNames ?? canonicalToolNames);
+      const guide = guides.map(guide => guide.text).join("\n\n");
+      const reading = guides.find(guide => guide.purpose === "reading")?.text ?? "";
       const knowledgeEnvelope = caps.knowledge;
       const allNotes = options.knowledge === false ? [] : knowledgeStateNotes(store, knowledge, visible.knowledgeCommitIds, path, undefined, undefined, true)
         .sort((a, b) => b.receipt.fromCommit - a.receipt.fromCommit);
@@ -750,9 +762,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const notice = sessionKnowledgeNotice(sessionId);
       // The count is part of the rendered line, so the budget below charges it like any other text.
       const line = options.showKnowledgeSize ? (value: KnowledgeWithRevision) => renderKnowledge({ ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
-        `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, true, store.writing) : knowledgeLine;
+        `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, true, store.writing, true) : knowledgeLine;
       const titleLine = (value: KnowledgeWithRevision) => renderKnowledgeTitle({ ...value, staleReasons: store.knowledgeStaleReasons(value.revision.id) },
-        `K${value.knowledge.id}#${store.versionTag(value.knowledge.id, value.revision.id)}`, store.writing);
+        `K${value.knowledge.id}`, store.writing);
 
       // ---- 2. Raw second: the newest contiguous span. Pending entries borrow from temporary;
       // noted entries only fill the Raw base remainder. The walk never skips to an older entry. ----
@@ -771,7 +783,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           let rendered: EntryView;
           try { rendered = options.renderedEntries?.get(entry.id) ?? view(store.getSourceEntry(entry.id)!); }
           catch (error) { if (/capacity/.test(String(error))) break; throw error; }
-          const cost = tokens(rendered.content) + 1;
+          if (/^\[T\d+#E\d+\] assistant: \[thinking omitted\]$/.test(rendered.content))
+            rendered = { ...rendered, content: "" };
+          const cost = rendered.content ? tokens(rendered.content) + 1 : 0;
           const availableBase = Math.max(0, caps.raw - rawBaseUsed);
           if (pendingIds.has(entry.id)) {
             const availableAllowance = Math.max(0, temporaryCap - allowanceUsed);
@@ -867,7 +881,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const titleLines = () => factGroupLayout(selectedTitles, factTurns).map(({ fact, header }) => {
         const value = factTurns.get(fact.turnId)!;
         const time = typeof value === "string" ? value : value.time;
-        return `${header ? `[T${fact.turnId}] ${time}\n` : ""}[F${fact.id}] ${fact.title}`;
+        return `${header ? `[T${fact.turnId}] ${shortTurnTime(time)}\n` : ""}[F${fact.id}] ${fact.title}`;
       });
       const titleCost = () => selectedTitles.length
         ? (rawKept || factsKept || earlierUsers.length ? charge([FACT_TITLES_TITLE]) : opener(FACT_TITLES_TITLE)) + charge(titleLines()) : 0;
@@ -909,13 +923,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         ...(!prepared && options.runningTasks?.length ? { runningTasks: options.runningTasks } : {}),
         entries: suppliedRaw.map(s => ({ id: s.entry.id, view: s.content })),
         receipts: [...suppliedRaw.flatMap(s => s.receipts), ...rawFinalReceipt, ...finalFactReceipts, ...finalUserReceipts, ...active.receipts, ...noteOmittedReceipt],
-        knowledgeNotice: notice, readingGuide: guide };
+        knowledgeNotice: notice, readingGuide: active.groups.length ? reading : guide };
       return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material), material,
         // Transport may repeat K framing, but cannot borrow bases reserved for facts/Raw.
         knowledgeAllowance: knowledgeEnvelope, temporaryAllowance: temporaryCap, pointerAllowance: pointerCap,
         ...(transport ? { transportItems: [
+          ...guides,
           ...active.ranked.map(({ value, form, allowance, rank }) => ({ kind: "knowledge" as const,
-            text: form === "title" ? titleLine(value) : line(value), category: knowledgeCategoryGroup(value.revision.category), commitId: value.revision.id,
+            text: form === "title" ? titleLine(value) : line(value), category: knowledgeCategoryGroup(value.revision.category), scope: value.revision.scope, commitId: value.revision.id,
             address: `K${value.knowledge.id}@v${store.versionOrdinal(value.knowledge.id, value.revision.id)}`, form, allowance, rank })),
           ...allNotes.slice(0, noteKept).map(note => ({ kind: "state" as const, text: note.text, receipt: note.receipt,
             address: `K${store.knowledgeRevision(note.receipt.fromCommit)!.knowledgeId}` })),
@@ -934,6 +949,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         // Earlier-user excerpts use a smaller profile and are not Raw coverage.
         supplied: { entries: suppliedRaw.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),
           factIds: finalFacts.map(f => f.id), knowledgeCommitIds: active.bodyCommits,
+          guideVersions: guides.map(guide => guide.version),
           ...(active.titleCommits.length ? { knowledgeTitleCommitIds: active.titleCommits } : {}),
           // Each pool records its own charge for later foreground admissions.
           knowledgeTokens: active.baseGroups.length || notes.length || active.baseReceipts.length || noteOmittedReceipt.length

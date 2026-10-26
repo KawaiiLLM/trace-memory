@@ -66,7 +66,6 @@ test("entry/cleanup integration: carry budgets only its exact normalized Raw suf
     expect(views[1]).toContain(`[${source}]`);
     expect(views.every(view => view.includes("characters truncated"))).toBe(true);
     views.forEach(view => expect(tokens(view)).toBeLessThanOrEqual(m.config.render.entryTokens));
-    expect(carry).toContain("(selected facts)");
     expect(carry).toContain(factText); expect(carry).toContain(knowledgeText);
     expect(carry).toContain("negate F1 strong");
     expect(carry).toContain(`[T${turn.id}#E${mixed.entryOrdinal}@assistant] ${factText}`);

@@ -4,13 +4,13 @@ import { transportItemText } from "../../src/core/render/material.ts";
 import { sliceCcInjection, ccKnowledgeHeader, CC_SLICE_COUNT, CC_SLICE_LIMIT, CC_KNOWLEDGE_RECENCY_NOTICE } from "../../src/hosts/cc/slices.ts";
 import type { TransportItem } from "../../src/core/render/material.ts";
 import { knowledgeGroups, renderKnowledgeBlock, tokens } from "../../src/core/render/index.ts";
-import { readingGuide } from "../../src/core/render/reading-guide.ts";
+import { contextGuides } from "../../src/core/render/reading-guide.ts";
 import { ccPluginToolNames } from "../../src/hosts/cc/tool-names.ts";
 
 const binding: CcVisibleBinding = { db: "unit-db", nativeSession: "native-66", coreSession: 1 };
 const items: TransportItem[] = [
   ...Array.from({ length: 45 }, (_, i) => ({ kind: "knowledge" as const, text: `[K1@${i + 1}] ${"a".repeat(800)}`,
-    category: "constraint", commitId: i + 1, address: `K1@${i + 1}` })),
+    category: "constraint", scope: "project" as const, commitId: i + 1, address: `K1@${i + 1}` })),
   { kind: "fact", text: `[T1] selected facts\n[F2] ${"b".repeat(500)}`, factId: 2, pending: true },
   { kind: "raw", text: `[T1#E1@text] user: ${"c".repeat(500)}`, entryId: 3, address: "T1#E1", pending: true },
 ];
@@ -78,7 +78,7 @@ test("66 legacy oversized omission receipt keeps its actual bounded expansion", 
 
 test("66 slice marker fits its extended host framing bound without changing the 10k UTF-16 cap", () => {
   const native: CcVisibleBinding = { db: "123456789:123456789", nativeSession: "12345678-1234-1234-1234-123456789012", coreSession: 123 };
-  const base: TransportItem = { kind: "knowledge", category: "constraint", commitId: 1, address: "K1@1", text: "" };
+  const base: TransportItem = { kind: "knowledge", category: "constraint", scope: "project", commitId: 1, address: "K1@1", text: "" };
   const frame = encodeCcInjection(native, { text: transportItemText(base, ccKnowledgeHeader(native)), knowledgeCommitIds: [1],
     factIds: [], entryIds: [], slice: [23, 24] });
   const oldFraming = frame.length - transportItemText(base, ccKnowledgeHeader(native)).length;
@@ -102,12 +102,11 @@ test("66 slice marker fits its extended host framing bound without changing the 
 });
 
 test("92 CC placement prices the final single knowledge list, including exact UTF-16 boundaries", () => {
-  const first: TransportItem = { kind: "knowledge", category: "reference", commitId: 1, address: "K1@v1", text: `[K1#aaaa] ${"a".repeat(3_000)}` };
-  const emptySecond: TransportItem = { kind: "knowledge", category: "reference", commitId: 2, address: "K2@v1", text: "[K2#bbbb] " };
+  const first: TransportItem = { kind: "knowledge", category: "reference", scope: "project", commitId: 1, address: "K1@v1", text: `[K1#aaaa] ${"a".repeat(3_000)}` };
+  const emptySecond: TransportItem = { kind: "knowledge", category: "reference", scope: "project", commitId: 2, address: "K2@v1", text: "[K2#bbbb] " };
   const membership = { knowledgeCommitIds: [1, 2], factIds: [], entryIds: [], slice: [0, 24] as [number, number] };
-  const guide = readingGuide(binding.coreSession!, ccPluginToolNames);
-  const knowledgeBody = (second: TransportItem) => renderKnowledgeBlock(knowledgeGroups([first, second].map(item => ({ category: "reference", text: item.text }))), ccKnowledgeHeader(binding));
-  const body = (second: TransportItem) => `${guide}\n\n${knowledgeBody(second)}`;
+  const knowledgeBody = (second: TransportItem) => renderKnowledgeBlock(knowledgeGroups([first, second].map(item => ({ category: "reference", scope: "project", text: item.text }))), ccKnowledgeHeader(binding));
+  const body = knowledgeBody;
   const initial = encodeCcInjection(binding, { ...membership, text: body(emptySecond) }).length;
   for (const target of [9999, 10000, 10001]) {
     const second = { ...emptySecond, text: emptySecond.text + "x".repeat(target - initial - 30) + "😀" };
@@ -125,9 +124,9 @@ test("92 CC placement prices the final single knowledge list, including exact UT
 });
 
 test("92 CC knowledge is next-fit oldest-first by segment, while Raw and facts fill earlier gaps", () => {
-  const knowledge = (id: number, size: number): TransportItem => ({ kind: "knowledge", category: "constraint", commitId: id,
-    address: `K${id}@v1`, text: `[K${id}#aaaa] [constraint/project] ${"x".repeat(size)}` });
-  const values: TransportItem[] = [knowledge(1, 6_000), knowledge(2, 5_000), knowledge(3, 500),
+  const knowledge = (id: number, size: number): TransportItem => ({ kind: "knowledge", category: "constraint", scope: "project", commitId: id,
+    address: `K${id}@v1`, text: `[K${id}#aaaa] ${"x".repeat(size)}` });
+  const values: TransportItem[] = [...contextGuides(binding.coreSession!, ccPluginToolNames), knowledge(1, 6_000), knowledge(2, 5_000), knowledge(3, 500),
     { kind: "raw", address: "T8#E1", entryId: 8, pending: true, text: `[T8#E1@text] user: ${"r".repeat(500)}` },
     { kind: "fact", factId: 9, pending: true, text: `[F9] ${"f".repeat(500)}` }];
   const outputs = sliceCcInjection(binding, values);
@@ -139,13 +138,10 @@ test("92 CC knowledge is next-fit oldest-first by segment, while Raw and facts f
     const header = decodeCcInjection(text, binding)!;
     const bodies = [...text.matchAll(/\[K(\d+)#aaaa\]/g)].map(match => Number(match[1]));
     expect(bodies).toEqual(header.commits);
-    if (bodies.length) {
-      expect(text.split(CC_KNOWLEDGE_RECENCY_NOTICE)).toHaveLength(2);
-      expect(text).toContain("Arrival order is not recency");
-    }
     return { text, header };
   });
   const ordered = received.sort((a, b) => a.header.slice![0] - b.header.slice![0]);
+  expect(ordered.flatMap(value => value.header.guideVersions)).toHaveLength(2);
   expect(ordered.flatMap(value => value.header.commits)).toEqual([1, 2, 3]);
   expect(ordered[0]!.header.commits).toEqual([1]);
   expect(ordered[1]!.header.commits).toEqual([2, 3]); // small K3 must not fill segment zero
@@ -155,8 +151,8 @@ test("92 CC knowledge is next-fit oldest-first by segment, while Raw and facts f
 });
 
 test("132 CC parts keep category order across segments; each part groups its own items under counted headers", () => {
-  const knowledge = (id: number, category: string, size: number): TransportItem => ({ kind: "knowledge", category, commitId: id,
-    address: `K${id}@v1`, text: `[K${id}#aaaa] [${category}/project] ${"x".repeat(size)}` });
+  const knowledge = (id: number, category: string, size: number): TransportItem => ({ kind: "knowledge", category, scope: "project", commitId: id,
+    address: `K${id}@v1`, text: `[K${id}#aaaa] ${"x".repeat(size)}` });
   // Commit order is 1..4, category order puts the constraint items before the older reference.
   const values = [knowledge(1, "reference", 500), knowledge(2, "constraint", 6_000), knowledge(3, "constraint", 5_000), knowledge(4, "understanding", 500)];
   const parts = sliceCcInjection(binding, values).flatMap(output => {
@@ -172,9 +168,9 @@ test("132 CC parts keep category order across segments; each part groups its own
 });
 
 test("92 CC sequential overflow retains newest whole knowledge and accounts only actual carriers", () => {
-  const values: TransportItem[] = Array.from({ length: 80 }, (_, i) => ({ kind: "knowledge", category: "reference", commitId: i + 1,
+  const values: TransportItem[] = Array.from({ length: 80 }, (_, i) => ({ kind: "knowledge", category: "reference", scope: "project", commitId: i + 1,
     address: `K${i + 1}@v1`, text: `[K${i + 1}#aaaa] ${"x".repeat(4_500)}` }));
-  values.push({ kind: "knowledge", category: "reference", commitId: 81, address: "K81@v1", text: `[K81#aaaa] ${"x".repeat(20_000)}` });
+  values.push({ kind: "knowledge", category: "reference", scope: "project", commitId: 81, address: "K81@v1", text: `[K81#aaaa] ${"x".repeat(20_000)}` });
   const outputs = sliceCcInjection(binding, values);
   expect(outputs).toHaveLength(24);
   // A deterministic permutation of all 24 arrivals, not just the first two populated segments.
@@ -200,9 +196,33 @@ test("92 CC sequential overflow retains newest whole knowledge and accounts only
 });
 
 test("66 oversized whole item is not split or counted delivered", () => {
-  const slices = sliceCcInjection(binding, [{ kind: "knowledge", category: "constraint", commitId: 50, address: "K50@50",
+  const slices = sliceCcInjection(binding, [{ kind: "knowledge", category: "constraint", scope: "project", commitId: 50, address: "K50@50",
     text: `[K50@50] ${"x".repeat(12_000)}` }]);
   const decoded = slices.filter(Boolean).map(value => decodeCcInjection(value!.hookSpecificOutput.additionalContext, binding)!);
   expect(decoded.flatMap(value => value.commits)).toEqual([]);
   expect(slices.filter(Boolean).map(value => value!.hookSpecificOutput.additionalContext).join(" ")).toContain("omitted 1 whole items");
+});
+
+test("a split inside a titles-only tail repeats category, scope and the tail notice with local counts", () => {
+  const values: TransportItem[] = [
+    { kind: "knowledge", category: "constraint", scope: "project", commitId: 100, address: "K100@v1", form: "body",
+      text: `[K100#aaaa] Full rule\n${"x".repeat(5500)}\n  change supports: F1` },
+    ...Array.from({ length: 5 }, (_, i) => ({ kind: "knowledge" as const, category: "constraint", scope: "project" as const,
+      commitId: i + 1, address: `K${i + 1}@v1`, form: "title" as const, text: `[K${i + 1}] Title ${"t".repeat(1800)}` })),
+  ];
+  const parts = sliceCcInjection(binding, values).flatMap(output => {
+    if (!output) return [];
+    const text = output.hookSpecificOutput.additionalContext;
+    return [{ text, header: decodeCcInjection(text, binding)! }];
+  });
+  expect(parts.length).toBeGreaterThan(1);
+  expect(parts.flatMap(part => part.header.commits)).toEqual([100]);
+  expect(parts.flatMap(part => part.header.titles)).toEqual([1, 2, 3, 4, 5]);
+  for (const { text, header } of parts) {
+    const count = header.commits.length + header.titles.length;
+    expect(text).toContain(`## constraint (${count})\n### project (${count})\n`);
+    expect(text.match(/^Titles only .*$/gm)).toHaveLength(1);
+    expect(text.length).toBeLessThanOrEqual(CC_SLICE_LIMIT);
+    if (header.commits.length) expect(text.indexOf("[K100#")).toBeLessThan(text.indexOf("Titles only"));
+  }
 });

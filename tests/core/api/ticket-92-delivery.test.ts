@@ -40,7 +40,7 @@ test("92 warm reader memo respects an older SQLite read snapshot across an exter
   const external = TraceMemory(f.path, offline); memories.push(external);
   const offered = f.memory.injection(f.target);
   expect(offered.knowledgeCommitIds).toEqual([first.commit]);
-  const retained = { ...noVisibility(), knowledgeCommitIds: new Set([first.commit]), knowledgeTokens: offered.knowledgeTokens };
+  const retained = { ...noVisibility(), guideVersions: new Set(offered.guideVersions), knowledgeCommitIds: new Set([first.commit]), knowledgeTokens: offered.knowledgeTokens };
   expect(f.memory.injection(f.target, retained).text).toBe(""); // warm 88 memo
   f.store.db.exec("BEGIN");
   const descriptor = f.store.db.prepare("SELECT MAX(id) n FROM knowledge_revisions").get()!.n;
@@ -78,6 +78,7 @@ test("92 a globally current but reader-invisible successor hides the identity an
   expect(delta.text).not.toContain("Secret"); expect(delta.text).not.toContain("@v2");
   expect(delta.text).not.toContain(`K${first.knowledgeId} is superseded`);
   expect(f.memory.injection(f.target, { ...retained, knowledgeStates: new Set([`${first.commit}>${first.commit}`]),
+    guideVersions: new Set([...(offered.guideVersions ?? []), ...(delta.guideVersions ?? [])]),
     knowledgeTokens: retained.knowledgeTokens! + delta.knowledgeTokens! }).text).toBe("");
   expect(f.memory.injection(target).knowledgeCommitIds).toEqual([changed.committed[0]!.commit]);
 });
@@ -98,17 +99,17 @@ test("92 actual retained costs, including obsolete bodies and repeated carriers,
     expect(f.memory.injection(f.target, retained).knowledgeCommitIds).toEqual([next.commit]);
     expect(tag.mock.calls.some(([id]) => id === old.knowledgeId)).toBe(false); // retained text is not rendered again
   } finally { tag.mockRestore(); }
-  expect(f.memory.injection(f.target, { ...retained, knowledgeTokens: retained.knowledgeTokens + 1 }).text).toBe("");
+  expect(f.memory.injection(f.target, { ...retained, knowledgeTokens: retained.knowledgeTokens + 1 })).toMatchObject({ knowledgeCommitIds: [], knowledgeTokens: 0 });
   // IDs grant membership, not a refund for text which remains in context.
-  expect(f.memory.injection(f.target, { ...retained, knowledgeTokens: 5000 }).text).toBe("");
-  expect(f.memory.injection(f.target, { ...retained, knowledgeCommitIds: new Set([old.commit, next.commit]) }).text).toBe("");
+  expect(f.memory.injection(f.target, { ...retained, knowledgeTokens: 5000 })).toMatchObject({ knowledgeCommitIds: [], knowledgeTokens: 0 });
+  expect(f.memory.injection(f.target, { ...retained, guideVersions: new Set(offered.guideVersions), knowledgeCommitIds: new Set([old.commit, next.commit]) }).text).toBe("");
 });
 
 test("92 unchanged foreground checks reuse 88 reader projection and do not read Raw or build a fresh path snapshot", () => {
   const f = fixture();
   for (let n = 0; n < 20; n++) f.create(`Rule ${n}`);
   const first = f.memory.injection(f.target);
-  const view = { ...noVisibility(), knowledgeCommitIds: new Set(first.knowledgeCommitIds), knowledgeTokens: first.knowledgeTokens };
+  const view = { ...noVisibility(), guideVersions: new Set(first.guideVersions), knowledgeCommitIds: new Set(first.knowledgeCommitIds), knowledgeTokens: first.knowledgeTokens };
   const path = vi.spyOn(f.store, "pathSnapshot"), prepare = vi.spyOn(f.store.db, "prepare");
   try {
     for (let n = 0; n < 20; n++) expect(f.memory.injection(f.target, view).text).toBe("");

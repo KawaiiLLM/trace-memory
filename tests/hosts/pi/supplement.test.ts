@@ -250,11 +250,10 @@ test("97 transition: carriers from before 97 are not read; one delivery within b
     h.persist({ role: "custom", customType: "trace-memory", content: "legacy", display: false, details: { traceMemory: {
       db: h.dbPath, session: 1, pi: h.ctx.sessionManager.getSessionId(),
       supplied: { entries: [], factIds: [], knowledgeCommitIds: created.map(item => item.commit) } } } });
-    h.memory.store.setKnowledgeBase(300);
+    h.memory.store.setKnowledgeBase(450); // Includes the one-time ordering guide and scope framing; one body fits, not three.
     const first = await served(h, "first after deployment");
     const ids = carrier(first).supplied.knowledgeCommitIds;
-    expect(ids.length).toBeGreaterThan(0);
-    expect(ids.length).toBeLessThan(3);
+    expect(ids).toEqual(created.slice(-1).map(item => item.commit));
     expect((await h.prompt("unchanged"))?.message).toBeUndefined();
   } finally { await h.dispose(); }
 });

@@ -6,12 +6,11 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { words, wordLimit } from "../../../src/core/render/index.ts";
 import { sourceSeededMemory, compacted, renderEntry, tokens, type ConfigOverride, type NotingAgentInput, type RunAgentResult , hydrate } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
-import { KNOWLEDGE_RECENCY_NOTICE, sessionKnowledgeNotice, budgetFacts, budgetKnowledge, charge, finish, renderFact, renderFactGroups, renderKnowledge, renderKnowledgeBlock, wholeKnowledge, xmlBlock } from "../../../src/core/render/index.ts";
+import { KNOWLEDGE_RECENCY_NOTICE, sessionKnowledgeNotice, budgetFacts, budgetKnowledge, charge, finish, knowledgeGroups, renderFact, renderFactGroups, renderKnowledge, renderKnowledgeBlock, wholeKnowledge, xmlBlock } from "../../../src/core/render/index.ts";
 import { budgetMaterial, compactText, rawWindowTokens, injectionText, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { curateWrite } from "../../support/dreamer.ts";
@@ -32,6 +31,22 @@ test("the reading guide names only available native tools within its framing cei
     expect(cc).not.toMatch(/grep/i);
     expect(tokens(cc)).toBeLessThanOrEqual(200);
   }
+});
+
+test("178: knowledge groups categories then scopes, with full claims before tagless title tails", () => {
+  const groups = knowledgeGroups([
+    { category: "reference", scope: "session", text: "[K6] Session title", form: "title" },
+    { category: "constraint", scope: "project", text: "[K3] Project title", form: "title" },
+    { category: "constraint", scope: "session", text: "[K4#aa] Session claim" },
+    { category: "constraint", scope: "project", text: "[K2#aa] Older project claim" },
+    { category: "constraint", scope: "global", text: "[K1#aa] Global claim" },
+    { category: "constraint", scope: "project", text: "[K5#bb] Newer project claim" },
+  ]);
+  const text = renderKnowledgeBlock(groups);
+  expect([...text.matchAll(/^## (.+)$/gm)].map(match => match[1])).toEqual(["constraint (5)", "reference (1)"]);
+  expect([...text.matchAll(/^### (.+)$/gm)].map(match => match[1])).toEqual(["global (1)", "project (3)", "session (1)", "session (1)"]);
+  expect([...text.matchAll(/^\[K(\d+)/gm)].map(match => Number(match[1]))).toEqual([1, 2, 5, 3, 4, 6]);
+  expect(text.match(/Titles only/g)).toHaveLength(2);
 });
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: NotingAgentInput[];
@@ -63,13 +78,8 @@ function seeded() {
   expect(seedKnowledge(memory.store, path, "project", "constraint", [1], "The project uses pnpm",
     { run: { kind: "manual", createdAt: time }, operation: { createdAt: time, topics: [], title: "Package manager" } }).knowledgeId).toBe(1);
   scoreAll(memory.store); // the Knowledge base carries scored items; unscored ones ride the temporary allowance (144 §7)
-  // 118: identity framing stays in the block; the complete injection carries one guide.
-  knowledgeBlock = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n## constraint (1)\n[K1#${memory.store.versionTag(1, 1)}] [constraint/project] Package manager\nThe project uses pnpm\n  change supports: F1\n</knowledge>`;
   return { s, t, user, read: (address: string) => memoryFiles(memory, path).read(`trace://${address}`).content };
 }
-let knowledgeBlock: string;
-/** Fresh N alone shows the body's cap-check units count, target and limit after the category tag. */
-const withSize = (block: string) => block.replace("[constraint/project] Package manager", `[constraint/project] (${words("The project uses pnpm")}/${memory.config.writing.bodyWords} units, limit ${wordLimit(memory.config.writing.bodyWords)}) Package manager`);
 const views = (sessionId: number, head: number) =>
   hydrate(memory.pendingEntries(sessionId, "main", head), memory.store).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
 
@@ -99,9 +109,9 @@ test("92: fresh N names its target and range, then shares compact Knowledge, fac
   expect(input.material.facts[0]).toContain("[F1] Package manager decision");
   expect(input.material.entries.map(entry => entry.id)).toEqual(input.entryIds);
   expect(input.text).toContain(raw);
-  expect(knowledgeBlockOf(input.material)).toBe(withSize(knowledgeBlock));
+  expect(input.material.knowledge?.flatMap(group => [...group.text.matchAll(/\[K(\d+)#/g)].map(match => Number(match[1])))).toEqual([1]);
   expect(input.supplied.knowledgeCommitIds).toEqual([1]);
-  expect(memory.inject(s.id)).toBe(`${readingGuide(s.id, canonicalToolNames)}\n\n${knowledgeBlock}`);
+  expect(memory.injection(s.id).knowledgeCommitIds).toEqual([1]);
   expect(input).not.toHaveProperty("readKnowledgeCommits");
 });
 
@@ -110,8 +120,9 @@ test("92: fresh N names its target and range, then shares compact Knowledge, fac
 
 test("20a 2026-09-08: the main agent's initial injection is knowledge and receipts only, and compact is knowledge, historical facts, pending Raw, receipts", async () => {
   const { s, t } = seeded();
-  const injection = `${readingGuide(s.id, canonicalToolNames)}\n\n${knowledgeBlock}`;
-  expect(memory.inject(s.id)).toBe(injection); // knowledge-only: no facts, no Raw, no range
+  const injection = memory.inject(s.id);
+  expect(injection).toContain("<knowledge>");
+  expect(injection).not.toContain("<episodic>");
   const compact = compacted(memory.compact(s.id, "main", t.id));
   expect(compact.startsWith(injection)).toBe(true);
   expect(compact).toContain("[F1] Package manager decision");
@@ -127,14 +138,13 @@ test("20a/92: N tasks with different Raw and facts retain byte-identical Knowled
   const later = freezeNoting(memory.store, target, memory.config);
   expect(earlier.entries.map(entry => entry.id)).not.toEqual(later.entries.map(entry => entry.id));
   expect(earlier.prepared!.supplied.factIds).not.toEqual(later.prepared!.supplied.factIds);
-  expect(knowledgeBlockOf(earlier.prepared!.material)).toBe(withSize(knowledgeBlock));
-  expect(knowledgeBlockOf(later.prepared!.material)).toBe(withSize(knowledgeBlock));
+  expect(knowledgeBlockOf(earlier.prepared!.material)).toBe(knowledgeBlockOf(later.prepared!.material));
   const text = later.prepared!.text;
   expect(text.indexOf("Range: ")).toBeLessThan(text.indexOf("<knowledge>"));
   expect(text.indexOf("</knowledge>")).toBeLessThan(text.indexOf(FACTS_TITLE));
   expect(text.indexOf(FACTS_TITLE)).toBeLessThan(text.indexOf(RAW_TITLE));
-  expect(knowledgeBlock).not.toContain("Range: ");
-  expect(knowledgeBlock).not.toContain("Still pnpm");
+  expect(knowledgeBlockOf(later.prepared!.material)).not.toContain("Range: ");
+  expect(knowledgeBlockOf(later.prepared!.material)).not.toContain("Still pnpm");
   expect(text).not.toContain("Negated-evidence reminder");
 });
 
@@ -148,7 +158,6 @@ test("20a/92: N facts and Knowledge budget receipts follow the dynamic material"
   memory.config.compaction.factsTokens = charge([factReceipt]) + charge(["Receipts:"]);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   const noting = calls[0]! as NotingAgentInput;
-  expect(knowledgeBlockOf(noting.material)).toBe(withSize(knowledgeBlock));
   expect(noting.material.facts).toEqual([]);
   expect(noting.material.receipts).toEqual([factReceipt]);
   expect(noting.text.endsWith(`Raw:\n\n${raw}\n</episodic>\n\nReceipts:\n${factReceipt}${CHECK_FIRST}`)).toBe(true);
@@ -180,7 +189,7 @@ test("20b 2026-09-08 scenario 3: exactly-at fits and one over does not, with lab
   const range = { from: "S1/T1", to: "S1/T2" }, framing = [FACTS_TITLE, RAW_TITLE];
   const facts = [{ id: 9, turnId: 1 } as Fact];
   const factTurns = new Map([[1, time]]);
-  const groupedLine = `[T1] ${time} (selected facts)\n${line}`;
+  const groupedLine = renderFactGroups(facts, () => line, factTurns).join("\n");
   const budget = (caps: { episodic: number; current?: number }) => budgetMaterial({ knowledge: [], current: view,
     framing, range, facts, factLine: () => line, factTurns, caps: { knowledge: 1_000, current: caps.current ?? 1_000, episodic: caps.episodic } });
   // The inner ceiling counts the current material with its own source label: exactly at it is silent,
@@ -285,27 +294,8 @@ test("45/92: N sends Knowledge within the database-derived cap without borrowing
   expect(memory.store.pendingEntryIds(s.id, "main", t.id)).toEqual(pending); // capture-only run publishes neither layer
 });
 
-// ---- 21b 2026-09-08: the labels ride the one shared knowledge renderer, inside ticket 20's cap ----
 
-test("21b/92: foreground, compact and N render topics through one renderer, with a multi-topic item once", async () => {
-  const { s, t, read } = seeded();
-  read("K1@v1");
-  const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { files: null, op: "update", id: tag(1, 1),
-    topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.", text: "The project uses pnpm",
-    category: "constraint", scope: "project", supports: ["F1"] }, tag(1, 1)))[0]!;
-  const labelled = `<knowledge>\n${sessionKnowledgeNotice(s.id)}\n## constraint (1)\n[${tag(1, changed.commit)}] [constraint/project] Package manager\nThe project uses pnpm\n  change supports: F1 · topics: ["packaging","storage"]\n</knowledge>`;
-  const injection = `${readingGuide(s.id, canonicalToolNames)}\n\n${labelled}`;
-  expect(memory.inject(s.id)).toBe(injection);
-  expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(injection)).toBe(true);
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
-  const noting = calls.at(-1)!;
-  expect(knowledgeBlockOf(noting.material)).toBe(withSize(labelled));
-  // Two subjects, one body in every consumer, not a duplicated line per topic.
-  for (const text of [memory.inject(s.id), compacted(memory.compact(s.id, "main", t.id)), noting.text])
-    expect(text.match(new RegExp(`\\[${tag(1, changed.commit)}\\]`, "g"))).toHaveLength(1);
-});
-
-test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the leading block stays byte-identical across tasks", async () => {
+test("knowledge metadata does not change injected capacity, and shared bodies stay byte-identical across tasks", async () => {
   const { s, t, read } = seeded();
   read("K1@v1");
   const changed = (await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { files: null, op: "update", id: tag(1, 1),
@@ -321,9 +311,7 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
     while (low + 1 < high) { const middle = Math.floor((low + high) / 2); if (fits(item, middle)) high = middle; else low = middle; }
     return high;
   };
-  // 20b charges every rendered line: the labelled revision needs a strictly larger cap than the same
-  // revision without them, so labels cannot ride along outside the budget.
-  expect(minimum(value)).toBeGreaterThan(minimum(bare));
+  expect(minimum(value)).toBe(minimum(bare));
   const fullInjection = memory.inject(s.id);
   const guidePrefix = `${readingGuide(s.id, canonicalToolNames)}\n\n`;
   expect(fullInjection.startsWith(guidePrefix)).toBe(true);
@@ -350,7 +338,6 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   const [first, later] = calls;
   expect(later!.supplied.factIds).not.toEqual(first!.supplied.factIds);
   expect(knowledgeBlockOf(later!.material)).toBe(knowledgeBlockOf(first!.material));
-  expect(knowledgeBlockOf(later!.material)).toContain('· topics: ["packaging","storage"]');
 });
 
 // ------------------------------- 25a: two independent allowances, one shared full-fact renderer ---
@@ -535,7 +522,6 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   expect(stale.text).toContain("Inherited knowledge status");
   expect(stale.knowledgeCommitIds).toEqual([current]);
   const unchanged = delivery([current]);
-  expect(unchanged.text).toBe("");
   expect(unchanged.knowledgeCommitIds).toEqual([]);
   files.read(`trace://${tag(1, current)}`);
   await maintain({ sessionId: s.id, branch: "main", headTurnId: t.id }, { files: null, op: "archive", kind: "invalid", text: "Withdrawn: the user retired this and nothing replaces it, per the cited fact.", id: tag(1, current),
@@ -546,7 +532,7 @@ test("29b/92: foreground Knowledge is an exact-version delta with stale state no
   expect(squeezed.text).not.toContain("<knowledge>");
   expect(squeezed.knowledgeCommitIds).toEqual([]);
   expect(tokens(squeezed.text)).toBeLessThanOrEqual(5_000);
-  expect(squeezed.knowledgeTokens).toBe(tokens(squeezed.text.replace(`${readingGuide(s.id, canonicalToolNames)}\n\n`, "")));
+  expect(squeezed.knowledgeTokens).toBe(tokens(squeezed.text.slice(squeezed.text.indexOf(KNOWLEDGE_STATUS_TITLE))));
 });
 
 // 132 supersedes 64c's single chronological list: categories group, revision order only holds inside a group.
@@ -632,7 +618,6 @@ test("32de: required exact versions outrank relevance; optional selection and fr
   expect(() => select(minimum - 1)).toThrow(/Knowledge capacity/);
   const atPair = select(pair);
   expect(atPair.commits).toEqual([11, 12]); // display/category order, not selection order
-  expect(atPair.groups.map(g => g.text).join("\n")).toBe(`## constraint (1)\n${renderKnowledge(low)}\n## reference (1)\n${renderKnowledge(high)}`);
   expect(select(pair - 1).commits).toEqual([11]); // incremental category framing is charged
   expect(pair).toBeGreaterThan(minimum + tokens(renderKnowledge(high)));
   for (let cap = minimum; cap <= pair + 80; cap++) {

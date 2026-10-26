@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { TraceMemory, memoryFiles, knowledgeStateKey, noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
-import { budgetKnowledge, renderEntry, renderKnowledge, tokens } from "../../../src/core/render/index.ts";
+import { TraceMemory, memoryFiles, deliveredView, knowledgeStateKey, noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
+import { budgetKnowledge, renderEntry, renderKnowledge, sessionKnowledgeNotice, KNOWLEDGE_RECENCY_NOTICE, tokens } from "../../../src/core/render/index.ts";
 import { injectionText } from "../../../src/core/render/material.ts";
 import { readingGuide } from "../../../src/core/render/reading-guide.ts";
 import { canonicalToolNames } from "../../../src/core/prompts/tool-names.ts";
@@ -8,6 +8,8 @@ import { setKnowledgeCapacity } from "../../knowledge-budget-fixture.ts";
 import { commitNoterKnowledge } from "../../noting-knowledge-fixture.ts";
 import { curateWrite } from "../../support/dreamer.ts";
 import { receiptCommit, scoreAll } from "../../support/seed.ts";
+import type { KnowledgeWithRevision } from "../../../src/core/store/index.ts";
+import type { TraceMemory as Memory } from "../../../src/core/api/index.ts";
 
 const time = "2026-09-12T00:00:00Z";
 
@@ -53,9 +55,16 @@ const view = (over: Partial<VisibleView> = {}): VisibleView => ({ ...noVisibilit
 function windowCost(sessionId: number, publication: { text: string; knowledgeTokens?: number }): number {
   const prefix = `${readingGuide(sessionId, canonicalToolNames)}\n\n`;
   expect(publication.text.startsWith(prefix)).toBe(true);
-  const cost = tokens(publication.text.slice(prefix.length));
+  const text = publication.text.slice(prefix.length);
+  const cost = tokens(text.startsWith(KNOWLEDGE_RECENCY_NOTICE + "\n\n") ? text.slice(KNOWLEDGE_RECENCY_NOTICE.length + 2) : text);
   expect(publication.knowledgeTokens).toBe(cost);
   return cost;
+}
+
+function renderedWindow(memory: Memory, sessionId: number, values: KnowledgeWithRevision[]): string {
+  const groups = budgetKnowledge(values, Infinity, value => renderKnowledge(value,
+    `K${value.knowledge.id}#${memory.store.versionTag(value.knowledge.id, value.revision.id)}`, false, memory.store.writing, true)).groups;
+  return injectionText({ knowledge: groups, knowledgeNotice: sessionKnowledgeNotice(sessionId), receipts: [] });
 }
 
 /** A Dreamer's pass: the operation (named by `K<id>@<commit>` bases) applied as a curate file. */
@@ -173,17 +182,16 @@ test("34c remaining rendered allowance counts retained historical bodies and exa
   const rendered = (commit: number) => {
     const revision = f.memory.store.knowledgeRevision(commit)!;
     const value = { knowledge: f.memory.store.getKnowledge(revision.knowledgeId)!, revision };
-    const budgeted = budgetKnowledge([value], Infinity, renderKnowledge);
-    return injectionText({ knowledge: budgeted.groups, receipts: [] });
+    return renderedWindow(f.memory, f.session.id, [value]);
   };
   const oldCost = tokens(rendered(old.commit));
   const exact = oldCost + windowCost(f.session.id, full);
   setKnowledgeCapacity(f.memory, exact);
   expect(f.memory.injection(f.target, visible).knowledgeCommitIds).toEqual([newer.commit]);
   setKnowledgeCapacity(f.memory, exact - 1);
-  expect(f.memory.injection(f.target, visible).text).toBe(""); // no omission-only message
+  expect(f.memory.injection(f.target, visible).knowledgeCommitIds).toEqual([]); // Guides may re-send when their delivery metadata is absent.
   setKnowledgeCapacity(f.memory, oldCost);
-  expect(f.memory.injection(f.target, visible).text).toBe(""); // zero remainder
+  expect(f.memory.injection(f.target, visible).knowledgeCommitIds).toEqual([]); // zero body remainder
 });
 
 test("64c an oversized old body cannot displace a fitting newer body, and omission is receipted", () => {
@@ -204,8 +212,7 @@ test("34c a visible applicable Knowledge view at or above the configured 20,000 
   const revision = f.memory.store.knowledgeRevision(old.commit)!;
   const knowledge = f.memory.store.getKnowledge(old.knowledgeId)!;
   const cost = (text: string) => {
-    const line = renderKnowledge({ knowledge, revision: { ...revision, text } });
-    return tokens(injectionText({ knowledge: budgetKnowledge([{ knowledge, revision: { ...revision, text } }], Infinity, () => line).groups, receipts: [] }));
+    return tokens(renderedWindow(f.memory, f.session.id, [{ knowledge, revision: { ...revision, text } }]));
   };
   let body = "";
   for (let words = 19_800; words <= 20_100; words++) {
@@ -216,9 +223,9 @@ test("34c a visible applicable Knowledge view at or above the configured 20,000 
   f.memory.store.db.prepare("UPDATE knowledge_revisions SET text = ? WHERE id = ?").run(body, old.commit);
   f.create("pending body", [f.facts[1]!.id]);
   setKnowledgeCapacity(f.memory, 20_000);
-  expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).text).toBe("");
+  expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).knowledgeCommitIds).toEqual([]);
   f.memory.store.db.prepare("UPDATE knowledge_revisions SET text = ? WHERE id = ?").run(body + " x", old.commit);
-  expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).text).toBe("");
+  expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).knowledgeCommitIds).toEqual([]);
 });
 
 test("92 archive notices remain eligible even with complete current-change evidence", () => {
@@ -248,7 +255,7 @@ test("34c a retained state-only receipt consumes allowance without granting body
   const candidate = f.memory.injection(f.target);
   setKnowledgeCapacity(f.memory, windowCost(f.session.id, candidate));
   const state = { fromCommit: parent.commit, toCommits: [archive.committed[0]!.commit] };
-  expect(f.memory.injection(f.target, view({ knowledgeStates: new Set([knowledgeStateKey(state)]) })).text).toBe("");
+  expect(f.memory.injection(f.target, view({ knowledgeStates: new Set([knowledgeStateKey(state)]) })).knowledgeCommitIds).toEqual([]);
 });
 
 test("34c state transitions are whole deterministic prefix items and only selected receipts persist", () => {
@@ -268,7 +275,7 @@ test("34c state transitions are whole deterministic prefix items and only select
     const revision = f.memory.store.knowledgeRevision(parent.commit)!;
     return { knowledge: f.memory.store.getKnowledge(parent.knowledgeId)!, revision };
   });
-  const visibleCost = tokens(injectionText({ knowledge: budgetKnowledge(visibleValues, Infinity, renderKnowledge).groups, receipts: [] }));
+  const visibleCost = tokens(renderedWindow(f.memory, f.session.id, visibleValues));
   const firstCost = windowCost(f.session.id, firstOnly);
   setKnowledgeCapacity(f.memory, visibleCost + firstCost);
 
@@ -292,7 +299,7 @@ test("34c state transitions are whole deterministic prefix items and only select
 
   setKnowledgeCapacity(f.memory, visibleCost + firstCost - 1);
   const unfit = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents }));
-  expect(unfit).toMatchObject({ text: "", knowledgeCommitIds: [] });
+  expect(unfit.knowledgeCommitIds).toEqual([]);
   expect(unfit.knowledgeStates).toBeUndefined();
 });
 
@@ -310,7 +317,7 @@ test("34c state-prefix budgeting shares exact framing with bodies without acknow
   expect(full.knowledgeCommitIds).toEqual([body.commit]);
   const parentRevision = f.memory.store.knowledgeRevision(parent.commit)!;
   const parentValue = { knowledge: f.memory.store.getKnowledge(parent.knowledgeId)!, revision: parentRevision };
-  const visibleCost = tokens(injectionText({ knowledge: budgetKnowledge([parentValue], Infinity, renderKnowledge).groups, receipts: [] }));
+  const visibleCost = tokens(renderedWindow(f.memory, f.session.id, [parentValue]));
   const exact = visibleCost + windowCost(f.session.id, full);
   setKnowledgeCapacity(f.memory, exact);
   expect(f.memory.injection(f.target, visible)).toMatchObject({ knowledgeCommitIds: [body.commit], knowledgeStates: full.knowledgeStates });
@@ -409,4 +416,33 @@ test("34c delivery check keeps graph/source work bounded as candidate count grow
     previous = [sourceQueries, watermarkQueries];
     spy.mockRestore();
   }
+});
+
+test("guides follow context delivery: custom compact retains them, clear/native compact resets them, changed text returns once", () => {
+  const f = fixture();
+  f.create("Context guide delivery rule.", [f.facts[0]!.id]);
+  const owner = f.session.host, store = f.memory.store;
+  const compact = f.memory.compact(f.session.id, "main", f.turn.id);
+  if ("native" in compact) throw new Error(compact.reason);
+  const boundary = store.appendTurn({ sessionId: f.session.id, parentTurnId: f.turn.id, kind: "compaction", startedAt: time });
+  const record = (turnId: number, supplied: { knowledgeCommitIds: number[]; guideVersions?: string[]; knowledgeTokens?: number }) =>
+    store.recordKnowledgeDelivery({ owner, turnId }, [{ ...supplied, knowledgeStates: [], knowledgeTokens: supplied.knowledgeTokens ?? 0 }]);
+  const at = (turnId: number) => deliveredView(store.deliveredKnowledge({ owner, sessionId: f.session.id, headTurnId: turnId }));
+  record(boundary.id, compact.supplied);
+  expect(compact.supplied.guideVersions).toHaveLength(2);
+  expect(f.memory.injection({ ...f.target, headTurnId: boundary.id }, at(boundary.id)).text).toBe("");
+
+  const cleared = store.appendTurn({ sessionId: f.session.id, parentTurnId: boundary.id, kind: "compaction", startedAt: time });
+  const target = { ...f.target, headTurnId: cleared.id };
+  const first = f.memory.injection(target, at(cleared.id));
+  expect(first.guideVersions).toEqual(compact.supplied.guideVersions);
+  record(cleared.id, first);
+  expect(f.memory.injection(target, at(cleared.id)).text).toBe("");
+
+  const changedNames = { ...canonicalToolNames, read: "read_v2" };
+  const changed = f.memory.injection(target, at(cleared.id), false, changedNames);
+  expect(changed.guideVersions).toHaveLength(1); // Only reading text changed, not ordering.
+  expect(changed.text).toContain("read_v2");
+  record(cleared.id, changed);
+  expect(f.memory.injection(target, at(cleared.id), false, changedNames).text).toBe("");
 });

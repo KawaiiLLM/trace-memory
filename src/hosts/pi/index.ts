@@ -257,8 +257,9 @@ export default function (pi: ExtensionAPI) {
       : { owner: owner(), sessionId: null, headTurnId: null, pending: ctx.sessionManager.getBranch().flatMap(entry =>
         entry.type === "custom_message" && entry.customType === tag ? [deliveryKey(entry)].filter(key => key !== undefined).map(key => ({ key })) : []) }));
   const deliveryPart = (block: { knowledgeCommitIds: number[]; knowledgeTitleCommitIds?: number[]; knowledgeStates?: { fromCommit: number; toCommits: number[] }[];
-    knowledgeTokens?: number; temporaryTokens?: number; pointerTokens?: number; text: string }) =>
+    knowledgeTokens?: number; temporaryTokens?: number; pointerTokens?: number; guideVersions?: string[]; text: string }) =>
     ({ knowledgeCommitIds: block.knowledgeCommitIds, knowledgeTitleCommitIds: block.knowledgeTitleCommitIds ?? [], knowledgeStates: (block.knowledgeStates ?? []).map(knowledgeStateKey),
+      guideVersions: block.guideVersions,
       knowledgeTokens: block.knowledgeTokens ?? tokens(block.text), temporaryTokens: block.temporaryTokens ?? 0, pointerTokens: block.pointerTokens ?? 0 });
   const modelNameOf = (key: string) => {
     const configured = flat[key];
@@ -747,6 +748,7 @@ export default function (pi: ExtensionAPI) {
     if (!enabled() || !sameBinding || !sameTarget || !sameProject) return;
     const supplied: SuppliedMaterial = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
       ...(block.knowledgeTitleCommitIds?.length ? { knowledgeTitleCommitIds: block.knowledgeTitleCommitIds } : {}),
+      guideVersions: block.guideVersions,
       knowledgeTokens: block.knowledgeTokens, ...(block.temporaryTokens ? { temporaryTokens: block.temporaryTokens } : {}),
       ...(block.pointerTokens ? { pointerTokens: block.pointerTokens } : {}),
       ...(block.knowledgeStates?.length ? { knowledgeStates: block.knowledgeStates } : {}) };
@@ -1095,6 +1097,7 @@ export default function (pi: ExtensionAPI) {
         const block = memory.injection({ projectId: state.projectId });
         return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
           ...(block.knowledgeTitleCommitIds?.length ? { knowledgeTitleCommitIds: block.knowledgeTitleCommitIds } : {}),
+          guideVersions: block.guideVersions,
           knowledgeTokens: block.knowledgeTokens, ...(block.temporaryTokens ? { temporaryTokens: block.temporaryTokens } : {}), pointerTokens: block.pointerTokens, knowledgeStates: block.knowledgeStates } };
       } catch (error) { return { native: true, reason: String(error) }; } // 133 R2: store and live-task lookup errors delegate.
     };
