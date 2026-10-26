@@ -60,16 +60,16 @@ test("pending: Noting/Dreaming rows with compact ratios and whole-number percent
   const { pending } = buildTraceMenu(TRACE_MENU_FIXTURE);
   expect(pending.noting).toEqual({ label: "Noting", tokens: 3_200, trigger: 10_000, ratio: 0.32, percent: "32%", amount: "3.2k / 10k" });
   expect(pending).not.toHaveProperty("consolidation");
-  // 144 stage 4 §2.3, §7.6: one row, the Noter-changed tokens against the trigger; the pool-vs-window row is gone.
+  // 144 stage 4 §2.3, §7.6: one row, the Noter-changed items against the trigger; the pool-vs-window row is gone.
   expect(pending.dreaming).toEqual([
-    { label: "pending", tokens: 12, trigger: 30, ratio: 0.4, percent: "40%", amount: "12 / 30 Noter ops" },
+    { label: "pending", tokens: 12, trigger: 30, ratio: 0.4, percent: "40%", amount: "12 / 30 items" },
   ]);
 });
 
-test("pending: the Dreaming row counts Noter operations; at the trigger it shows at-least, and an unavailable count shows no number", () => {
+test("pending: the Dreaming row counts changed knowledge items; at the trigger it shows at-least, and an unavailable count shows no number", () => {
   const row = (dreaming: Parameters<typeof dreamingPendingInput>[0]) => buildTraceMenu({ ...TRACE_MENU_FIXTURE, pending: { ...TRACE_MENU_FIXTURE.pending,
     dreaming: { pending: dreamingPendingInput(dreaming, 30) } } }).pending.dreaming[0]!;
-  expect(row({ operations: 30, trigger: 30, atLeast: true })).toMatchObject({ ratio: 1, percent: "100%", amount: "≥30 / 30 Noter ops" });
+  expect(row({ items: 30, trigger: 30, atLeast: true })).toMatchObject({ ratio: 1, percent: "100%", amount: "≥30 / 30 items" });
   expect(row(null)).toMatchObject({ tokens: null, trigger: null, amount: "?" });
 });
 

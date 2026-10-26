@@ -20,7 +20,7 @@ const dreamExecutions = (h: ReturnType<typeof host>) => h.memory.store.db.prepar
 const retain = (c: Parameters<typeof dreamerFiles>[0]): Reply => dreamerFiles(c) ?? reply("Done");
 
 test("a manual dream answers at once and runs below the trigger; the status reads running, then completed", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
@@ -37,7 +37,7 @@ test("a manual dream answers at once and runs below the trigger; the status read
 }, 30000);
 
 test("a refusal reaches the status line with its reason and creates no execution", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
@@ -59,7 +59,7 @@ test("a refusal reaches the status line with its reason and creates no execution
 }, 30000);
 
 test("a failed manual dream counts once toward the streak, and the command is refused while memory is off", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   try {
     await h.turn(); seed(h);
     h.provider(async c => dreaming(c) ? fail("manual D terminal failure") : notingFact(c));
@@ -73,7 +73,7 @@ test("a failed manual dream counts once toward the streak, and the command is re
 }, 30000);
 
 test("a provider that never answers leaves the command answered; /trace stop ends the run as stopped", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   try {
     await h.turn(); seed(h);
     h.provider(async c => dreaming(c) ? new Promise<Reply>(() => {}) : notingFact(c));
@@ -86,7 +86,7 @@ test("a provider that never answers leaves the command answered; /trace stop end
 }, 30000);
 
 test("a manual dream that fails during an active drain ends the drain", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   let releaseN = () => {};
   const heldN = new Promise<void>(resolve => { releaseN = resolve; });
   let nCalls = 0;
@@ -105,7 +105,7 @@ const catchupLine = (h: ReturnType<typeof host>) => h.notices.at(-1)!.match(/Cat
 
 // A Noter run still in flight when a Dreaming failure ended the drain settles its own execution and slot, but not the drain (Q18).
 test.each(["fails", "is cancelled"] as const)("a manual dream fails first, then the drain's Noter %s: the drain keeps Dreaming's diagnostic", async late => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   let releaseN = () => {};
   const heldN = new Promise<void>(resolve => { releaseN = resolve; });
   let nCalls = 0;

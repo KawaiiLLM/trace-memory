@@ -61,7 +61,7 @@ test("Dreaming projection follows the selected head and current project, not dat
     const turn = s.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "reader", startedAt: "now" });
     const reader = { sessionId: session.id, branch: "main", headTurnId: turn.id };
     // All fixture knowledge is project-scoped Noter output; the count follows the project the reader is in.
-    const projectTokens = (target: typeof targetA) => memory.dreamingPending(target).pending!.operations;
+    const projectTokens = (target: typeof targetA) => memory.dreamingPending(target).pending!.items;
     const small = projectTokens(targetA), large = projectTokens(targetB);
     expect([small, large]).toEqual([1, 3]); // one Noter operation per item
     expect(projectTokens(reader)).toBe(small);

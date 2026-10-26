@@ -145,8 +145,8 @@ function measureLowHitChain(manual: number, children = 0) {
       if (!split.ok) throw new Error(split.problems.join("\n"));
       expect(store.liveKnowledge(path).length).toBe(children + 1);
     }
-    expect(store.noterOperations(path)).toBe(1);
-    expect(store.noterOperations(path, 1)).toBe(1);
+    expect(store.noterChangedItems(path)).toBe(1);
+    expect(store.noterChangedItems(path, 1)).toBe(1);
     store.dreamingDue(path);
     const samples: number[] = [];
     for (let i = 0; i < 40; i++) {

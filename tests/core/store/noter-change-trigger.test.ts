@@ -1,5 +1,5 @@
-// Ticket 146: the Dreamer's trigger counts the Noter knowledge operations (a create or an update) not yet covered
-// (`knowledge_processed`) on the chains of the live items, each revision once.
+// Tickets 146, 181: the Dreamer's trigger counts the knowledge items that have a Noter revision (a create or an update) not yet
+// covered (`knowledge_processed`) on the chains of the live items, each item once; and the unscored live knowledge, in tokens.
 import { afterEach, describe, expect, test } from "vitest";
 import { applyWorkspace } from "../../../src/core/workspace/index.ts";
 import { writeHandoff } from "../../../src/core/store/executions.ts";
@@ -37,7 +37,7 @@ function setup() {
     return b.store.liveKnowledge(b.path).find(r => r.op === "merge")!;
   };
   const support = () => [b.existingFact("Another support").id];
-  return { b, run, pool, cover, noterItem, noterUpdate, manualItem, merge, support, changed: (stopAt?: number) => b.store.noterOperations(b.path, stopAt) };
+  return { b, run, pool, cover, noterItem, noterUpdate, manualItem, merge, support, changed: (stopAt?: number) => b.store.noterChangedItems(b.path, stopAt) };
 }
 
 describe("what counts", () => {
@@ -48,16 +48,20 @@ describe("what counts", () => {
     expect(s.changed(2)).toBe(2); // stopped as soon as the limit was reached
   });
 
-  test("a second Noter update of one item counts again: the walk goes on past a Noter revision", () => {
+  test("181: two Noter revisions of one item count that item once, another item counts again, and a covered item stops counting", () => {
     const s = setup();
     const item = s.noterItem("Rule");
     const first = s.noterUpdate(item, "Rule, first update");
-    expect(s.changed()).toBe(2);
+    expect(s.changed()).toBe(1);
     const second = s.noterUpdate(first, "Rule, second update");
-    expect(s.changed()).toBe(3);
+    expect(s.changed()).toBe(1); // three Noter revisions, one item
+    const other = s.noterItem("Another rule");
+    expect(s.changed()).toBe(2);
     s.cover(first.commit);
-    expect(s.changed()).toBe(1); // the covered update ends the branch: the create behind it no longer counts
+    expect(s.changed()).toBe(2); // the item's current update is uncovered
     s.cover(second.commit);
+    expect(s.changed()).toBe(1);
+    s.cover(other.commit);
     expect(s.changed()).toBe(0);
   });
 
@@ -160,6 +164,22 @@ describe("the due rule", () => {
     s.noterItem("Rule one"); s.noterItem("Rule two");
     expect(s.b.store.dreamingDue(s.b.path, 2)).toBe(true);
     expect(s.b.store.dreamingDue(s.b.path, 3)).toBe(false);
+  });
+
+  test("181: unscored knowledge alone makes a run due once its rendered size reaches the cap; a scored item no longer counts", () => {
+    const s = setup();
+    const covered = s.noterItem("Rule one body, long enough to cost a few tokens"), second = s.noterItem("Rule two body, also long enough to cost a few tokens");
+    s.cover(covered.commit); s.cover(second.commit); // the item-count trigger has nothing left to count
+    const size = s.b.store.unscoredTokens(s.b.path);
+    expect(size).toBeGreaterThan(20);
+    expect(s.b.store.dreamingDue(s.b.path, 1e9, size)).toBe(true); // the size trigger alone
+    expect(s.b.store.dreamingDue(s.b.path, 1e9, size + 1)).toBe(false);
+    expect(s.b.store.dreamingDue(s.b.path, 1e9)).toBe(false); // no cap, no size trigger
+    s.b.store.db.prepare("UPDATE knowledge SET score=50,scored_commit=? WHERE id=?").run(covered.commit, covered.knowledgeId);
+    expect(s.b.store.unscoredTokens(s.b.path)).toBeLessThan(size);
+    s.b.store.db.prepare("UPDATE knowledge SET score=50,scored_commit=? WHERE id=?").run(second.commit, second.knowledgeId);
+    expect(s.b.store.unscoredTokens(s.b.path)).toBe(0);
+    expect(s.b.store.dreamingDue(s.b.path, 1e9, 1)).toBe(false);
   });
 
   test("a hand-off is due at once, whatever the count", () => {

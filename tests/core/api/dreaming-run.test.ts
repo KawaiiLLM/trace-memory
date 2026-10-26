@@ -6,7 +6,7 @@ import { block } from "../../support/workspace.ts";
 import type { DreamingAgentInput } from "../../../src/core/dreaming/index.ts";
 import { boundaryOf, incrementalCandidates, projectItems } from "../../../src/core/dreaming/candidates.ts";
 import { checkCurate, decisionsTemplate } from "../../../src/core/dreaming/curate.ts";
-import { updateKnowledge } from "../../support/seed.ts";
+import { scoreAll, updateKnowledge } from "../../support/seed.ts";
 
 const memories: TraceMemory[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
@@ -14,7 +14,7 @@ afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 test("a due incremental run covers processed project items and ends the handoff", async () => {
   const f = dreamerFixture(memories), a = f.item("Use pnpm"), b = f.item("Commit lockfiles", { category: "reference" });
   expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(f.store.noterOperations(f.path)).toBe(0);
+  expect(f.store.noterChangedItems(f.path)).toBe(0);
   expect(f.store.handoff(f.session.id, "dreaming")).toBeNull();
   for (const item of [a,b]) expect(f.store.currentCommit(item.knowledgeId, f.path)[0]).toMatchObject({ text: item === a ? "Use pnpm" : "Commit lockfiles", files: null });
   expect(await f.dream()).toMatchObject({ outcome: "empty" });
@@ -88,7 +88,7 @@ test("a late Noter version stays pending when its frozen predecessor is processe
     return scripted.agent(input);
   } };
   expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(f.store.noterOperations(f.path)).toBe(1);
+  expect(f.store.noterChangedItems(f.path)).toBe(1);
   expect(f.store.getKnowledge(original.knowledgeId)?.score).toBe(75);
 });
 
@@ -105,12 +105,13 @@ test("incremental groups freeze marks and references, share background, and resu
   f.memory.config.dreaming.groupItems = 3;
   f.memory.config.dreaming.parallelGroups = 1;
   const items = Array.from({ length: 8 }, (_, i) => f.item(`Supported body ${i + 1}`, { title: `Rule ${i + 1}` }));
+  scoreAll(f.store, 60); // earlier runs scored every item: only change, flags and marks select now (181)
   const boundary = boundaryOf(f.store, projectItems(f.store, f.path));
   f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: "main", createdAt: "now", outcome: "success", response: JSON.stringify({ finished: { boundary } }) });
   updateKnowledge(f.store, f.path, items[3]!.knowledgeId, items[3]!.commit, "Changed body after coverage", items[3]!.supports);
   for (const item of [items[0]!, items[1]!, items[3]!, items[4]!]) f.store.setKnowledgeStale(item.commit, { reason: "unresolved_check", detail: "Review this ruling" });
   const ids = items.map(item => item.knowledgeId);
-  f.dreamer.script.clustering = `# Group 1\n## Cluster First\n- K${ids[0]}\n- K${ids[1]}\n- K${ids[2]}\n# Group 2\n## Cluster Second\n- K${ids[3]}\n- K${ids[4]}\n- K${ids[5]}\n# Group 3\n## Cluster Extra\n- K${ids[6]} ! duplicate: Check overlapping rule\n- K${ids[7]}\n`;
+  f.dreamer.script.clustering = `# Group 1\n## Cluster First\n- K${ids[0]}\n- K${ids[1]}\n- K${ids[2]}\n# Group 2\n## Cluster Second\n- K${ids[3]}\n- K${ids[4]}\n- K${ids[5]}\n# Group 3\n## Cluster Extra\n- K${ids[6]} ! duplicate medium K${ids[0]}: Check overlapping rule\n- K${ids[7]}\n`;
   const inputs: { prefix: string; group: string; decisions: string }[] = [];
   f.dreamer.script.instead = { curate: async input => {
     inputs.push({ prefix: input.text.split("\n\nGroup ")[0]!, group: readFileSync(`${input.workspace.dir}/group.md`, "utf8"), decisions: readFileSync(`${input.workspace.dir}/decisions.md`, "utf8") });
@@ -118,16 +119,17 @@ test("incremental groups freeze marks and references, share background, and resu
   } };
   expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "failure" });
   const saved = f.store.handoff(f.session.id, "dreaming")!.detail!;
-  // Five candidates with the marked item exceed the group size of 3: parts per clustering group, merged while they fit (2026-10-24).
-  expect(saved.groups!.map(group => group.items)).toEqual([[ids[0], ids[1]], [ids[3], ids[4], ids[6]]]);
-  expect(saved.groups![1]!.clusters!.at(-1)!.marks).toEqual({ [ids[6]!]: { kind: "duplicate", reason: "Check overlapping rule" } });
+  // Four candidates exceed the group size of 3: parts per clustering group that do not fit together. The marked item only fills group 1's spare place (181).
+  expect(saved.groups!.map(group => group.items)).toEqual([[ids[0], ids[1], ids[6]], [ids[3], ids[4]]]);
+  expect(saved.groups![0]!.clusters!.at(-1)!.marks).toEqual({ [ids[6]!]: { kind: "duplicate", level: "medium", partners: [ids[0]], reason: "Check overlapping rule" } });
   expect(inputs[0]!.prefix).toBe(inputs[1]!.prefix);
   expect(inputs[0]!.prefix.indexOf("</repository_notes>")).toBeLessThan(inputs[0]!.prefix.indexOf("<background_material>"));
   expect(inputs[0]!.group).toContain(`- K${ids[2]}: Rule 3`);
   expect(inputs[0]!.group).not.toContain("Supported body 3");
   expect(inputs[0]!.decisions).not.toContain(`K${ids[2]}@`);
   expect(f.store.getKnowledge(ids[0]!)!.score).toBe(75);
-  expect(f.store.getKnowledge(ids[6]!)!.score).toBeNull(); // the marked item sits in the failed group 2
+  expect(f.store.getKnowledge(ids[6]!)!.score).toBe(75); // the marked item shares group 1's scoring
+  expect(f.store.getKnowledge(ids[3]!)!.score).toBe(60); // group 2 failed: nothing of it is scored
   const laterBoundary = boundaryOf(f.store, projectItems(f.store, f.path));
   f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: "main", createdAt: "later", outcome: "success", response: JSON.stringify({ finished: { boundary: laterBoundary } }) });
   // A hand-off written before 175 has no baseline; resume must not pair its candidates with the later run.
@@ -143,9 +145,9 @@ test("incremental groups freeze marks and references, share background, and resu
   expect(f.dreamer.inputs.slice(before).map(input => input.task)).toEqual(["curate"]);
   expect(resumedMaterial).toBe(inputs[1]!.group);
   expect(resumedMaterial).toContain(`[K${ids[3]}@v1..K${ids[3]}@v2]`);
-  expect(f.store.getKnowledge(ids[6]!)!.score).toBe(75);
-  expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE revision_id=? AND pool=?").get(items[6]!.commit, `project:${f.project.id}`)).toEqual({ revision_id: items[6]!.commit });
-  expect(f.store.getKnowledge(ids[2]!)!.score).toBeNull(); // A title-only reference is not this group's target (169).
+  expect(f.store.getKnowledge(ids[3]!)!.score).toBe(75);
+  expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE revision_id=? AND pool=?").get(items[4]!.commit, `project:${f.project.id}`)).toEqual({ revision_id: items[4]!.commit });
+  expect(f.store.getKnowledge(ids[2]!)!.score).toBe(60); // A title-only reference is not this group's target (169).
 });
 
 test("curate refuses a reference item as a decision, mutation target or absorbed merge parent", () => {
@@ -186,4 +188,23 @@ test("repository notes and full-pool clustering overlap, but neither alone admit
   notes.resolve();
   expect(await running).toMatchObject({ outcome: "success" });
   expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(75);
+});
+
+test("181: a group's run record lists every item's origins: changed, stale, unscored, its mark level, or joining as a mark's partner", async () => {
+  const f = dreamerFixture(memories);
+  const rule = (name: string) => f.item(`Supported body ${name}`, { title: `Rule ${name}` });
+  const a = rule("A"), b = rule("B"), c = rule("C"), d = rule("D"), e = rule("E");
+  scoreAll(f.store, 60);
+  f.store.db.prepare("UPDATE knowledge SET score = NULL WHERE id = ?").run(c.knowledgeId);
+  const boundary = boundaryOf(f.store, projectItems(f.store, f.path));
+  f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: "main", createdAt: "now", outcome: "success", response: JSON.stringify({ finished: { boundary } }) });
+  updateKnowledge(f.store, f.path, a.knowledgeId, a.commit, "Changed body after coverage", a.supports); // A: changed
+  for (const item of [b, c]) f.store.setKnowledgeStale(item.commit, { reason: "unresolved_check", detail: "Review this ruling" }); // B: stale; C: stale and unscored
+  // D is neither changed, stale nor unscored: it is here for its mark; E only as D's partner.
+  f.dreamer.script.clustering = `# Group 1\n## Cluster Rules\n- K${a.knowledgeId}\n- K${b.knowledgeId}\n- K${c.knowledgeId}\n- K${d.knowledgeId} ! duplicate high K${a.knowledgeId},K${e.knowledgeId}: Same rule\n- K${e.knowledgeId}\n`;
+  expect(await f.memory.dream({ ...f.target, manual: true })).toMatchObject({ outcome: "success" });
+  const records = f.store.db.prepare("SELECT b.response FROM runs r JOIN run_bodies b ON b.run_id = r.id WHERE r.kind = 'dreaming'").all().map(row => JSON.parse(String(row.response)));
+  expect(records.filter(record => record.task === "group").map(record => record.origins)).toEqual([{
+    [`K${a.knowledgeId}`]: ["changed"], [`K${b.knowledgeId}`]: ["stale"], [`K${c.knowledgeId}`]: ["stale", "unscored"],
+    [`K${d.knowledgeId}`]: ["mark:high"], [`K${e.knowledgeId}`]: ["partner"] }]);
 });

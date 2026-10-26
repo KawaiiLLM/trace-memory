@@ -1579,7 +1579,7 @@ export default function (pi: ExtensionAPI) {
           ...(["Conversation", "Other"] as const).map(name => ({ name, tokens: composition.amounts[name] })),
         ], complete: composition.complete },
       pending: { noting: { tokens: noting.tokens, trigger: noting.trigger, ...(noting.state === "known" && noting.atLeast ? { atLeast: true, entries: noting.entries } : {}) },
-        dreaming: { pending: dreamingPendingInput(dreaming.pending, memory.config.dreaming.triggerOperations) } },
+        dreaming: { pending: dreamingPendingInput(dreaming.pending, memory.config.dreaming.triggerKnowledge) } },
       spend: { session: totals?.cost ?? 0, sessionUnknown: totals?.unknown ?? 0,
         noting: { runs: totals?.runs.noting ?? 0, cost: totals?.costs.noting ?? 0 },
         consolidation: { runs: totals?.runs.consolidation ?? 0, cost: totals?.costs.consolidation ?? 0 },

@@ -239,10 +239,10 @@ test("67: the Dreamer's due read batches graph and processing history independen
         knowledge(f.store, f.target, (["global", "project", "session"] as const)[i % 3]!, "constraint", [f.fact.id], `rule ${i}`); // Noter versions: they count
       graphInput.mockClear(); graph.mockClear(); prepare.mockClear();
       const start = performance.now();
-      const changed = f.store.noterOperations(f.target);
+      const changed = f.store.noterChangedItems(f.target);
       const elapsedMs = performance.now() - start;
       expect(changed).toBe(count * 2 / 3);
-      expect(f.store.noterOperations(f.target)).toBe(count * 2 / 3);
+      expect(f.store.noterChangedItems(f.target)).toBe(count * 2 / 3);
       expect(graphInput).toHaveBeenCalledTimes(2); // one per read, never one per identity
       expect(graph).toHaveBeenCalledTimes(1); // the second read takes the live-set memo of the first
       prepares.push(prepare.mock.calls.length);
@@ -335,7 +335,7 @@ test("104: two sessions sharing a pool start one Dreamer run", async () => {
     started.add((raw as DreamingAgentInput).sessionId);
     await gate.promise;
     return { outcome: "cancelled", output: "fixture", request: {} };
-  }, { dreaming: { triggerOperations: 1 } });
+  }, { dreaming: { triggerKnowledge: 1 } });
   const a = setup(memory.store, "shared"), b = setup(memory.store, "shared");
   knowledge(memory.store, a.target, "project", "constraint", [a.fact.id], "shared rule ".repeat(30)); // a Noter version: only those make the Dreamer due
   expect([a, b].map(value => memory.taskEligibility("dreaming", value.target).due)).toEqual([true, true]);
@@ -355,7 +355,7 @@ test.each(["A", "B"] as const)("126: two sessions due at once on the shared glob
     runs.push((raw as DreamingAgentInput).sessionId);
     await gate.promise;
     return dreamer.agent(raw);
-  }, { dreaming: { triggerOperations: 1 } });
+  }, { dreaming: { triggerKnowledge: 1 } });
   const a = setup(memory.store, "A"), b = setup(memory.store, "B");
   const noted = (f: Fixture, scope: "global" | "project", text: string) => knowledge(memory.store, f.target, scope, "constraint", [f.fact.id], text);
   noted(a, "global", "shared rule ".repeat(30));

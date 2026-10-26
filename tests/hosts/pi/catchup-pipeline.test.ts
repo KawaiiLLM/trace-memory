@@ -37,7 +37,7 @@ const dreamExecutions = (h: ReturnType<typeof host>) => h.memory.store.db.prepar
   "SELECT outcome FROM task_executions WHERE session_id = 1 AND phase = 'dreaming' ORDER BY rowid").all().map(row => row.outcome);
 
 for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fences the held D" : "successful checkpoints drain due knowledge"}; no C seat`, async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   let dreams = 0;
@@ -75,7 +75,7 @@ for (const stop of [false, true]) test(`92: N and D overlap; ${stop ? "stop fenc
 }, 30000);
 
 test("92: catchup waits for ordinary N; its successful joint publication checkpoints D", async () => {
-  const h = host({ "noting.triggerTokens": 1000, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1000, "dreaming.triggerKnowledge": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
@@ -92,7 +92,7 @@ test("92: catchup waits for ordinary N; its successful joint publication checkpo
 });
 
 for (const success of [true, false]) test(`92: ordinary D ${success ? "success settles" : "failure ends (146 Q18)"} a zero-Raw catchup wait`, async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   let dreams = 0;
@@ -117,7 +117,7 @@ for (const success of [true, false]) test(`92: ordinary D ${success ? "success s
 });
 
 test("a Dreamer scoring failure leaves its group unpublished, with no extra eligibility check", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   let waiting = false;
@@ -158,7 +158,7 @@ test("92: repeated catchup while N is running reports without launching a duplic
 });
 
 test("92: successful N checks but does not run D below its ordinary threshold", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   try {
     await h.turn(); h.provider(async c => extract(c));
     const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
@@ -172,7 +172,7 @@ test("92: successful N checks but does not run D below its ordinary threshold", 
 });
 
 for (const recover of [false, true]) test(`92: foreign global D claim discards admission; ${recover ? "repeated idle catchup" : "new entry"} retries, release alone does not`, async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1 });
   let dreams = 0;
   try {
     await h.turn(); seed(h); const store = h.memory.store;
@@ -201,7 +201,7 @@ for (const recover of [false, true]) test(`92: foreign global D claim discards a
 });
 
 for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries the frozen entry successfully" : "turns memory off after three failures"} without an intervening D check`, async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   try {
     await h.turn(); const eligibility = vi.spyOn(Store.prototype, "dreamingDue");
     let attempts = 0; const checks: number[] = [];
@@ -228,7 +228,7 @@ for (const correct of [false, true]) test(`86: a refused N ${correct ? "retries 
 }, 30000);
 
 test.each(["stop", "path", "off", "shutdown"] as const)("86: Pi %s fences catchup retry despite a late D error reply", async action => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1 });
   let release = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   let dreams = 0, replied = false;
@@ -274,7 +274,7 @@ test("67: entries persisted after catchup freezes do not extend Noting's boundar
 const fail = (message: string): Reply => ({ ...reply(""), stopReason: "error", errorMessage: message });
 
 test("146 Q18: an ordinary D fails while the drain's N is still running: the drain ends, the late N success drives nothing, the next turn retries D once", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1 });
   let releaseD = () => {}, releaseN = () => {};
   const heldD = new Promise<void>(resolve => { releaseD = resolve; }), heldN = new Promise<void>(resolve => { releaseN = resolve; });
   let dFails = true, nCalls = 0;
@@ -299,7 +299,7 @@ test("146 Q18: an ordinary D fails while the drain's N is still running: the dra
 }, 30000);
 
 test("146 Q18: the drain's own D fails: one run, the drain ends, and the next entry-end check retries once", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1 });
   let dFails = true;
   try {
     await h.turn(); seed(h);
@@ -314,12 +314,12 @@ test("146 Q18: the drain's own D fails: one run, the drain ends, and the next en
 }, 30000);
 
 test("146 Q18: a D failure that carries automaticOff stops the drain", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   try {
     await h.turn(); seed(h);
     h.provider(async c => dreaming(c) ? fail("terminal") : notingFact(c));
     for (let i = 0; i < 2; i++) { await command(h, "dream"); await settle(h); }
-    h.memory.config.dreaming.triggerOperations = 1; // the drain's own D is now due
+    h.memory.config.dreaming.triggerKnowledge = 1; // the drain's own D is now due
     await command(h, "catchup"); await settle(h);
     expect(h.memory.store.enabled(1)).toBe(false); // the third failure switched memory off
     expect(h.notices.some(text => text.includes("dreaming off after three failures"))).toBe(true);
@@ -329,7 +329,7 @@ test("146 Q18: a D failure that carries automaticOff stops the drain", async () 
 // 146 Q18 (d): an old-path D still running when the path switches is not cancelled by the switch (the new path is another core
 // session), and it can fail after the new path's drain started. Its target differs from the drain's, so the failure must leave the drain.
 test("146 Q18 (d): the old path's D fails late after a path switch: the new path's drain keeps running", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9 });
   let releaseD = () => {}, releaseN = () => {};
   const heldD = new Promise<void>(resolve => { releaseD = resolve; }), heldN = new Promise<void>(resolve => { releaseN = resolve; });
   let dreams = 0, nCalls = 0;

@@ -123,9 +123,9 @@ test("CC validates flat phase controls once and propagates them through the impo
   const f = fixture();
   const config = resolveCcHostConfig({ ...f.input, closedSessionScope: "global",
     "noting.triggerTokens": 11_111,
-    "dreaming.triggerOperations": 3_333, "dreaming.timeoutMs": 44_444 });
+    "dreaming.triggerKnowledge": 3_333, "dreaming.timeoutMs": 44_444 });
   expect(config.coreConfig).toMatchObject({ closedSessionScope: "global", noting: { triggerTokens: 11_111 },
-    dreaming: { triggerOperations: 3_333, timeoutMs: 44_444 } });
+    dreaming: { triggerKnowledge: 3_333, timeoutMs: 44_444 } });
   mkdirSync(dirname(config.dbPath), { recursive: true });
   const importer = new CcImporter(config, { version: 1, nativeSessionId: "config-propagation",
     transcriptPath: join(f.home, "absent.jsonl"), dbPath: config.dbPath, nativeCreatedAt: null,
@@ -133,7 +133,7 @@ test("CC validates flat phase controls once and propagates them through the impo
     branch: "main", selectedLeafUuid: null, executor: null, lastClose: null });
   try {
     expect(importer.memory.config).toMatchObject({ closedSessionScope: "global", noting: { triggerTokens: 11_111 },
-      dreaming: { triggerOperations: 3_333, timeoutMs: 44_444 } });
+      dreaming: { triggerKnowledge: 3_333, timeoutMs: 44_444 } });
   } finally { importer.close(); }
 });
 
@@ -183,9 +183,10 @@ test("145: a cc.config.json that still carries a token cap fails to load and nam
   expect(resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", "writing.bodyWords": 150 }).coreConfig.writing).toEqual({ titleWords: 20, bodyWords: 150 });
 });
 
-test("146: a cc.config.json that still carries dreaming.triggerTokens fails to load and names its replacement", () => {
-  expect(() => resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", "dreaming.triggerTokens": 10_000 } as never))
-    .toThrow(/Removed setting dreaming\.triggerTokens: Dreaming is due by Noter operations: use dreaming\.triggerOperations/);
+test("146, 181: a cc.config.json that still carries dreaming.triggerTokens or dreaming.triggerOperations fails to load and names its replacement", () => {
+  for (const key of ["dreaming.triggerTokens", "dreaming.triggerOperations"])
+    expect(() => resolveCcHostConfig({ dbPath: "/tmp/x.sqlite", stateDir: "/tmp/x-state", [key]: 30 } as never))
+      .toThrow(new RegExp(`Removed setting ${key.replace(".", "\\.")}: .*use dreaming\\.triggerKnowledge`));
 });
 
 test("144: a cc.config.json that still carries dreaming.maxToolRounds fails to load, as in core and Pi", () => {

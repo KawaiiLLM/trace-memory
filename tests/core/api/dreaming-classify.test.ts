@@ -63,7 +63,7 @@ test("failed scoring publishes nothing from its group and a reopened executor re
   expect(f.store.handoff(f.session.id, "dreaming")!.nextTask).toBe("curate");
   f.memory.close();
   const replacement = scriptedDreamer({ curate: { group2: block(`update ${item.ref}`, { reason: "clarify" }, "Updated rule") } });
-  const next = openMemory(file, replacement.agent, { dreaming: { triggerOperations: 1 } }); memories.push(next);
+  const next = openMemory(file, replacement.agent, { dreaming: { triggerKnowledge: 1 } }); memories.push(next);
   expect(await next.dream(f.target)).toMatchObject({ outcome: "success" });
   expect(replacement.inputs.map(input => input.task)).toEqual(["curate"]);
   expect(next.store.currentCommit(item.knowledgeId, f.path)[0]!.text).toBe("Updated rule");

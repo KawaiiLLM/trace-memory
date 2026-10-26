@@ -34,7 +34,7 @@ test("provider failure records the attempt and covers no item", async () => {
   const f = dreamerFixture(memories); f.item("A supported rule");
   f.dreamer.script.instead = { curate: async input => { input.reportRequest(REQUEST); return { outcome: "failure", request: REQUEST, output: "provider unavailable" }; } };
   expect(await f.dream()).toMatchObject({ outcome: "failure" });
-  expect(f.store.noterOperations(f.path)).toBe(1);
+  expect(f.store.noterChangedItems(f.path)).toBe(1);
   expect(f.store.handoff(f.session.id, "dreaming")!.detail!.groups![0]!.run).toBeUndefined();
 });
 

@@ -127,7 +127,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
 // Retired C's rendered-fact trigger has no replacement: N writes knowledge with facts.
 // D's independent due predicate is the Noter-changed knowledge since the last curate, not a count or size of old facts.
 test("D admits a due Noter-written item on an entry without consuming pending Raw", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerKnowledge": 1 });
   try {
     await h.turn();
     const user = h.memory.store.getSourceEntry(h.memory.store.sourcePath(1, "main", 1)[0]!.id)!;
@@ -140,7 +140,7 @@ test("D admits a due Noter-written item on an entry without consuming pending Ra
     h.provider(async c => { curateInput ||= String(c.messages[0]!.content); return dreamerFiles(c) ?? reply("Done."); });
     await h.prompt("new main turn"); await h.answer("new completed entry"); await h.drain();
     expect(curateInput).toContain(`K${trigger.knowledgeId}`);
-    expect(h.memory.store.noterOperations(path)).toBe(0);
+    expect(h.memory.store.noterChangedItems(path)).toBe(0);
     expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
   } finally { await h.dispose(); }
 });

@@ -123,7 +123,7 @@ try {
 }
 
 // A subsequent main-session entry starts a due pool Dreamer. Compaction remains separate from processing.
-const dreamer = host({ "noting.triggerTokens": 1_000_000, "dreaming.triggerOperations": 1 }, { extension });
+const dreamer = host({ "noting.triggerTokens": 1_000_000, "dreaming.triggerKnowledge": 1 }, { extension });
 try {
   await dreamer.emit("session_start"); await dreamer.turn();
   const store = dreamer.memory.store;
@@ -172,7 +172,7 @@ try {
   // A passed verify covers what curate's batch showed and what it wrote, so neither counts toward the next run.
   assert.deepEqual(store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
     .map(row => Number(row.revision_id)), [item.commit, archive.id]);
-  assert.equal(store.noterOperations(store.knowledgePath(1, "main")), 0);
+  assert.equal(store.noterChangedItems(store.knowledgePath(1, "main")), 0);
   // Exact archive reads preserve the inherited direct support and parent provenance.
   assert.ok(memoryFiles(dreamer.memory, { sessionId: 1, branch: "main", headTurnId: store.knowledgePath(1, "main").headTurnId }).read(`trace://K${item.knowledgeId}@v${store.versionOrdinal(item.knowledgeId, archive.id)}`).content.includes(`F${facts.facts[0]!.id}`));
   assert.ok(dreamer.notices.some(n => n.includes("compaction preparing")));

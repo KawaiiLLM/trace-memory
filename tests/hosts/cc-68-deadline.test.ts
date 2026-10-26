@@ -51,7 +51,7 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
   writeFileSync(executable, "#!/bin/sh\necho '2.1.280 (Claude Code)'\n"); chmodSync(executable, 0o700);
   const config = resolveCcHostConfig({ dbPath: join(directory, "database", "memory.sqlite"), stateDir: join(directory, "state"),
     notingModel: "sonnet", notingThinking: "medium",
-    "dreaming.model": "sonnet", "dreaming.thinking": "medium", "dreaming.triggerOperations": 1, "dreaming.timeoutMs": 1_000,
+    "dreaming.model": "sonnet", "dreaming.thinking": "medium", "dreaming.triggerKnowledge": 1, "dreaming.timeoutMs": 1_000,
     worker: { claudeExecutable: executable, contextWindows: { sonnet: 200_000 }, cwd: directory } });
 
   let calls = 0, deadlineRun = true, releaseStarted!: () => void, releaseLate!: () => void, releaseFirst!: () => void;

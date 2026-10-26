@@ -101,7 +101,7 @@ export interface DreamerFixture extends WorkspaceBatch {
 export function dreamerFixture(memories: TraceMemory[], script: DreamerScript = {}, dbPath?: string): DreamerFixture {
   const dreamer = scriptedDreamer(script), runners: RunAgent[] = [];
   const b = workspaceBatch({ agent: raw => (runners.shift() ?? dreamer.agent)(raw), dbPath });
-  memories.push(b.memory); b.memory.config.dreaming.triggerOperations = 1;
+  memories.push(b.memory); b.memory.config.dreaming.triggerKnowledge = 1;
   const target = { sessionId: b.session.id, branch: "main", headTurnId: b.path.headTurnId!, model: "scripted" };
   return { ...b, dreamer, target, dream: () => b.memory.dream(target), next: (agent: RunAgent) => { runners.push(agent); } };
 }
@@ -180,7 +180,7 @@ export function commitDreamerOps(memory: { store: Store }, path: KnowledgePath, 
 }
 
 /** A small Noter-written item over `factId`: only Noter changes make a Dreamer due (stage 4, 2026-10-22). A host test pairs it with
- * `dreaming.triggerOperations: 1`. Replaces the retired budget-crossing fixture `createDreamerTrigger`. */
+ * `dreaming.triggerKnowledge: 1`. Replaces the retired budget-crossing fixture `createDreamerTrigger`. */
 export function noterWrittenItem(memory: TraceMemory, path: { sessionId: number; branch: string; headTurnId: number }, factId: number,
   scope: "global" | "project" | "session" = "project", category: "constraint" | "reference" = "constraint") {
   return seedKnowledge(memory.store, path, scope, category, [factId], `Fixture trigger item ${factId}`, { operation: { title: `Trigger item ${factId}` } });

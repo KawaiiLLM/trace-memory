@@ -1342,7 +1342,7 @@ test("scheduler reserves independent N/D slots and failed worker completion does
     return { outcome: "failure", output: "synthetic failure", audit: { available: false, reason: "test" } };
   };
   const memory = TraceMemory(join(directory, "memory.sqlite"), runner,
-    { noting: { triggerTokens: 1 }, dreaming: { triggerOperations: 1 } });
+    { noting: { triggerTokens: 1 }, dreaming: { triggerKnowledge: 1 } });
   const project = memory.store.createProject({ name: "scheduler", declaredBy: "mark" });
   const session = memory.store.createSession({ host: "cc:scheduler", projectId: project.id,
     startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });

@@ -6,7 +6,7 @@ import type { Store, TaskTarget, ProjectDeclarationContext } from "../../src/cor
  * that the facade passes into Store.declareProject, rather than claiming backlog is never due. */
 export function declarationContext(store: Store, path: TaskTarget): ProjectDeclarationContext {
   return { path, atTrigger: phase => {
-    if (phase === "dreaming") return store.dreamingDue(path, DEFAULT_CONFIG.dreaming.triggerOperations);
+    if (phase === "dreaming") return store.dreamingDue(path, DEFAULT_CONFIG.dreaming.triggerKnowledge);
     const pending = store.pendingEntries(path.sessionId, path.branch, path.headTurnId!);
     return tokens(pending.map(meta => renderEntry(store.getSourceEntry(meta.id)!, DEFAULT_CONFIG.render).content).join("\n\n"))
       >= DEFAULT_CONFIG.noting.triggerTokens;

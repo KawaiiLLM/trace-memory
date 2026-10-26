@@ -288,7 +288,7 @@ test("actual TUI command opens custom panel, reflow never scans, and Escape writ
 });
 
 test("Current session is inert with eligible native Dreamer work; the next turn still executes it", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000, "dreaming.triggerKnowledge": 1 });
   try {
     await h.turn();
     const store = h.memory.store;
@@ -299,7 +299,7 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     const item = knowledge(store, store.knowledgePath(1, "main", 1), "project", "constraint",
       [evidence.id], "Remember the choice", { operation: { title: "Fixture title" } }); // Noter-written: it makes the Dreamer due (2026-10-22)
     const pool = `project:${store.getSession(1)!.projectId}`;
-    const pendingOperations = store.noterOperations(store.knowledgePath(1));
+    const pendingOperations = store.noterChangedItems(store.knowledgePath(1));
     h.provider(async conversation => {
       expect(conversation.systemPrompt).toMatch(/^# (Dreamer|Classifying)/);
       return dreamerFiles(conversation) ?? reply("Done");

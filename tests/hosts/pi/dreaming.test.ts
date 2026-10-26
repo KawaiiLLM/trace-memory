@@ -13,7 +13,7 @@ const call = (id: string, name: string, args: unknown): Reply => ({ ...reply("")
 const isDreamer = (systemPrompt: string | undefined) => !!systemPrompt && (systemPrompt.startsWith("# Dreamer") || systemPrompt.startsWith("# Classifying"));
 /** A session with one Noter-written constraint: only Noter changes make a Dreamer due (stage 4, 2026-10-22). */
 async function seeded(config: Record<string, unknown> = {}, text = "Keep the user constraint") {
-  const h = host({ "noting.triggerTokens": 1000000, "dreaming.triggerOperations": 1, ...config });
+  const h = host({ "noting.triggerTokens": 1000000, "dreaming.triggerKnowledge": 1, ...config });
   await h.emit("session_start"); await h.turn();
   const store = h.memory.store;
   const user = store.sourcePath(1, "main", 1).find(value => store.getSourceEntry(value.id)?.role === "user")!;
@@ -70,7 +70,7 @@ test("Pi notes and grouped curate with scoring use the frozen Dreamer model or f
       expect(runs.every(run => JSON.parse(run.response!).thinking.requested === thinking)).toBe(true);
       expect(seen.some(text => text.includes("Task: scoring"))).toBe(true);
       expect(seen.some(text => text.includes("Task: scoring") && text.includes("Task: curate"))).toBe(true);
-      expect(store.noterOperations(store.knowledgePath(1))).toBe(0);
+      expect(store.noterChangedItems(store.knowledgePath(1))).toBe(0);
     } finally { await h.dispose(); }
   }
 });
@@ -225,15 +225,15 @@ test("provider overflow during scoring leaves the group unpublished, fails the r
 // 144 stage 4 part 4d. Loose ends found in part 4c, each at the boundary where it occurred.
 test("the trigger a host is configured with is the one its Dreamer is due by: a Noter change below it starts no run, the same change at a lower trigger does", async () => {
   // `h.memory` is an observer built with the default core config; it does not carry the host's `dreaming.*` options (reading
-  // `h.memory.config.dreaming.triggerOperations` right after setup gives 10000). The extension's own instance does, so the effect is observed on runs.
-  const quiet = await seeded({ "dreaming.triggerOperations": 10_000 });
+  // `h.memory.config.dreaming.triggerKnowledge` right after setup gives 10000). The extension's own instance does, so the effect is observed on runs.
+  const quiet = await seeded({ "dreaming.triggerKnowledge": 10_000 });
   try {
     quiet.h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
     await quiet.h.turn(); await quiet.h.drain();
     expect(dreamingRuns(quiet.store)).toEqual([]);
     expect(quiet.h.requests).toEqual([]);
   } finally { await quiet.h.dispose(); }
-  const eager = await seeded({ "dreaming.triggerOperations": 1 });
+  const eager = await seeded({ "dreaming.triggerKnowledge": 1 });
   try {
     eager.h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
     await eager.h.turn(); await eager.h.drain();

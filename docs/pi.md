@@ -82,7 +82,7 @@ For example, either settings file can contain:
     "noting.batchTokens": 10000,
     "noting.nearThreshold": 0.4,
     "consolidation.triggerTokens": 5000,
-    "dreaming.triggerOperations": 30,
+    "dreaming.triggerKnowledge": 40,
     "dreaming.timeoutMs": 600000,
     "dreaming.model": "session",
     "dreaming.thinking": "inherit",
@@ -107,9 +107,10 @@ Full facts do not borrow, and none of the bases lends to another.
 
 `render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove those two keys
 from every settings file and `TRACE_MEMORY_CONFIG`; finding a removed key is a named load error.
-`dreaming.triggerOperations` is configurable: its default is 30, compared with the number of Noter knowledge operations
-(creates and updates) since the last covered Dreamer pass (146). `dreaming.triggerTokens` is removed: a settings file that still
-carries it fails to load by name. Foreground publication may use the Knowledge base and what the context's
+`dreaming.triggerKnowledge` is configurable: its default is 40, compared with the number of knowledge items the Noter created or
+updated since the last covered Dreamer pass (181; an item counts once). `dreaming.triggerUnscoredRatio` (default 0.8) is the second
+trigger: unscored knowledge reaching that share of `compaction.temporaryTokens`. `dreaming.triggerTokens` and `dreaming.triggerOperations`
+are removed: a settings file that still carries one fails to load by name. Foreground publication may use the Knowledge base and what the context's
 body and pointer pools have left, independently. Database budget edits accept exact
 decimal nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
 connections to that database. The budgets size injection and compaction only: they trigger no Dreamer run and decide none's success.
@@ -555,8 +556,8 @@ completion. Bars cap at 100%; numbers and percentages do not:
   the effective entry profile and Pi result extractor. Only imported evidence counts.
 - **Consolidation:** applicable unconsolidated facts, including group framing and
   relations, through the same renderer and threshold calculation as eligibility.
-- **Dreaming:** one row (146): the Noter operations since the last covered Dreamer pass against
-  `dreaming.triggerOperations`, as `n / 30 Noter ops` (`≥30` once the count reaches the trigger). There is no next-operation-pair row. The bar does not imply that the database-wide seat is available. The notice area also shows the
+- **Dreaming:** one row (181): the Noter-changed items since the last covered Dreamer pass against
+  `dreaming.triggerKnowledge`, as `n / 40 items` (`≥40` once the count reaches the trigger). There is no next-operation-pair row. The bar does not imply that the database-wide seat is available. The notice area also shows the
   Dreamer's latest failure while no later run has succeeded: `Dreamer failed: <task>: <class> (R<run>, <UTC time>)`.
   Three consecutive Dreamer failures switch memory off like the Noter's; this notice does not depend on the automatic-off state.
 

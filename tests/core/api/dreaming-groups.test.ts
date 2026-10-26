@@ -14,7 +14,7 @@ test("groups commit independently and a retry runs only the uncommitted group wi
   expect(await f.dream()).toMatchObject({ outcome: "failure", failure: { groups: [{ group: 2 }] } });
   const kept = f.store.handoff(f.session.id, "dreaming")!.detail!;
   expect(kept.groups!.map(group => !!group.run)).toEqual([true, false]);
-  expect(f.store.noterOperations(f.path)).toBe(1);
+  expect(f.store.noterChangedItems(f.path)).toBe(1);
   const firstInputs = f.dreamer.inputs.filter(input => input.task === "curate");
   expect(firstInputs.map(input => input.text.split("\n\nGroup ")[0])).toEqual([firstInputs[0]!.text.split("\n\nGroup ")[0], firstInputs[0]!.text.split("\n\nGroup ")[0]]);
   f.item("A change arriving after admission");
@@ -26,7 +26,7 @@ test("groups commit independently and a retry runs only the uncommitted group wi
   expect(resumed.text.split("\n\nGroup ")[0]).toBe(firstInputs[1]!.text.split("\n\nGroup ")[0]);
   expect(f.store.getKnowledge(a.knowledgeId)?.score).toBe(75);
   expect(f.store.getKnowledge(b.knowledgeId)?.score).toBe(75);
-  expect(f.store.noterOperations(f.path)).toBe(1);
+  expect(f.store.noterChangedItems(f.path)).toBe(1);
 });
 
 test("at most five groups run at once and every group has its complete item input", async () => {
@@ -47,7 +47,7 @@ test("at most five groups run at once and every group has its complete item inpu
   expect(peak).toBe(5);
   expect(seen).toHaveLength(7);
   for (const item of items) expect(seen.filter(text => text.includes(`# ${item.ref}\n`))).toHaveLength(1);
-  expect(f.store.noterOperations(f.path)).toBe(0);
+  expect(f.store.noterChangedItems(f.path)).toBe(0);
 });
 
 test("multiple failed groups count once per execution, and a committed sibling cannot reset the failure streak", async () => {
@@ -65,6 +65,6 @@ test("multiple failed groups count once per execution, and a committed sibling c
   expect(await f.dream()).toMatchObject({ outcome: "failure", automaticOff: expect.any(String) });
   expect(f.store.taskFailures(f.session.id).find(row => row.phase === "dreaming")!.count).toBe(3);
   expect(f.store.enabled(f.session.id)).toBe(false);
-  expect(f.store.noterOperations(f.path)).toBe(1);
+  expect(f.store.noterChangedItems(f.path)).toBe(1);
   expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
 });

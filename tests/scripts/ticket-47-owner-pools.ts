@@ -51,7 +51,7 @@ try {
       workingCopy: workingPath,
       path,
       // Stage 4: the Dreamer is due by the Noter operations since the last coverage, not by pool sizes.
-      noterOperations: store.noterOperations(path),
+      noterChangedItems: store.noterChangedItems(path),
       due: store.dreamingDue(path),
       activePath: {
         owners: Object.fromEntries(owners.map(owner => [owner, measured(activePools.get(owner)!.values())])),

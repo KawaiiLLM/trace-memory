@@ -55,7 +55,7 @@ test("a lost-claim executor cannot overwrite a later executor's completed group,
   const old = f.dream(); await ready.promise;
   expect(f.store.releaseClaim(f.store.getClaim(f.session.id, "dreaming")!)).toBe(true);
   const replacement = scriptedDreamer({ curate: { group1: block(`update ${item.ref}`, { reason: "replacement executor" }, "Replacement executor rule") } });
-  const next = openMemory(file, replacement.agent, { dreaming: { triggerOperations: 1 } }); memories.push(next);
+  const next = openMemory(file, replacement.agent, { dreaming: { triggerKnowledge: 1 } }); memories.push(next);
   expect(await next.dream(f.target)).toMatchObject({ outcome: "success" });
   const revision = next.store.currentCommit(item.knowledgeId, f.path)[0]!;
   const streak = next.store.taskFailures(f.session.id);
@@ -86,12 +86,12 @@ test("shutdown preserves a committed group and a reopened executor resumes only 
   const running = f.dream(); await ready.promise;
   expect(f.store.getKnowledge(a.knowledgeId)!.score).toBe(75);
   f.memory.close(); await running;
-  const replacement = scriptedDreamer(), next = openMemory(file, replacement.agent, { dreaming: { triggerOperations: 1 } }); memories.push(next);
+  const replacement = scriptedDreamer(), next = openMemory(file, replacement.agent, { dreaming: { triggerKnowledge: 1 } }); memories.push(next);
   expect(next.store.handoff(f.session.id, "dreaming")!.detail!.groups!.map(group => !!group.run)).toEqual([true, false]);
   expect(await next.dream(f.target)).toMatchObject({ outcome: "success" });
   expect(replacement.inputs.map(input => input.task)).toEqual(["curate"]);
   expect(next.store.getKnowledge(b.knowledgeId)!.score).toBe(75);
-  expect(next.store.noterOperations(f.path)).toBe(0);
+  expect(next.store.noterChangedItems(f.path)).toBe(0);
   release.resolve(); await late.promise;
   expect(next.store.handoff(f.session.id, "dreaming")).toBeNull();
   expect(next.store.taskFailures(f.session.id).every(row => row.count === 0)).toBe(true);

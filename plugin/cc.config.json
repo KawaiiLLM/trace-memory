@@ -7,7 +7,7 @@
   "dreaming.model": "sonnet",
   "dreaming.thinking": "xhigh",
   "noting.triggerTokens": 10000,
-  "dreaming.triggerOperations": 30,
+  "dreaming.triggerKnowledge": 40,
   "dreaming.timeoutMs": 1800000,
   "retry": { "maxRetries": 10 },
   "worker": {

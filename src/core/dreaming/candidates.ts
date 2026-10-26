@@ -92,6 +92,7 @@ export function incrementalCandidates(store: Store, path: KnowledgePath, since =
     background.push(`F${fact.id} ${fact.title ?? "(untitled)"} — ${(fact.objects ?? []).join(", ")}`);
   }
   background.push(...scanChangedFiles(store, path, items));
-  const candidates = items.filter(item => item.value.revision.id !== since.versions[item.value.knowledge.id] || item.value.staleReasons?.length);
+  // 181: unscored items are candidates too (covered or not), so one run scores them all and the unscored-size trigger clears.
+  const candidates = items.filter(item => item.value.revision.id !== since.versions[item.value.knowledge.id] || item.value.staleReasons?.length || item.score === null);
   return { background: background.join("\n\n") || "No new background material.", candidates, boundary: boundaryOf(store, items) };
 }

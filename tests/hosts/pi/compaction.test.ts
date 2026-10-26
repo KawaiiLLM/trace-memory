@@ -44,7 +44,7 @@ test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary unde
 });
 
 test("133 R1: pending Raw overflow delegates without a delivery or an extra Noter; the next Noter observes the native boundary", async () => {
-  const h = host({ ...eager, "noting.batchTokens": 300, "dreaming.triggerOperations": 1,
+  const h = host({ ...eager, "noting.batchTokens": 300, "dreaming.triggerKnowledge": 1,
     "compaction.factsTokens": 50, "compaction.rawTokens": 600, "compaction.temporaryTokens": 1 });
   try {
     h.memory.setKnowledgeBase(0);

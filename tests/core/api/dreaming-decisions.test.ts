@@ -100,6 +100,6 @@ test("oversized repository notes cannot publish a group; retry can replace the n
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
   f.dreamer.script.notes = "No additional repository notes.";
   expect(await f.dream()).toMatchObject({ outcome: "success" });
-  expect(f.store.noterOperations(f.path)).toBe(0);
+  expect(f.store.noterChangedItems(f.path)).toBe(0);
   expect(f.store.getKnowledge(item.knowledgeId)!.score).toBe(75);
 });

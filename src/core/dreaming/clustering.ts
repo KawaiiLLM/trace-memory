@@ -2,7 +2,9 @@ import { knowledgeTitle } from "../render/index.ts";
 import type { CurateItem, KnowledgePath, Store } from "../store/index.ts";
 import { projectItems } from "./candidates.ts";
 
-export interface Suspicion { kind: "duplicate" | "contradiction"; reason: string }
+export const SUSPICION_LEVELS = ["high", "medium", "low"] as const;
+/** `partners`: the items this one duplicates or contradicts (181). */
+export interface Suspicion { kind: "duplicate" | "contradiction"; level: typeof SUSPICION_LEVELS[number]; partners: number[]; reason: string }
 export interface Cluster { label: string; items: number[]; marks?: Record<string, Suspicion> }
 export interface ClusteredGroup { items: number[]; clusters: Cluster[]; run?: number }
 export const clusteringInput = (store: Store, items: readonly CurateItem[]) => items.map(item =>
@@ -32,13 +34,15 @@ export function checkGroups(text: string, items: readonly CurateItem[], size = 5
       if (!label || label === "<label>") problems.push(`${where}: fill the cluster label`);
       cluster = { label, items: [] }; group.clusters.push(cluster);
     } else if (line.startsWith("- ") && group && cluster) {
-      const match = /^- (K[1-9]\d*)(?: ! (duplicate|contradiction): (\S.*))?$/.exec(line);
-      if (!match) { problems.push(`${where}: expected - K<id> with optional ! duplicate|contradiction: <reason>`); continue; }
+      const match = /^- (K[1-9]\d*)(?: ! (duplicate|contradiction) (high|medium|low) (K[1-9]\d*(?:,K[1-9]\d*)*): (\S.*))?$/.exec(line);
+      if (!match) { problems.push(`${where}: expected - K<id> with optional ! duplicate|contradiction high|medium|low K<partner>[,K<partner>...]: <reason>`); continue; }
       const address = match[1]!, id = wanted.get(address);
       if (id === undefined) { problems.push(`${where}: unknown item ${address}`); continue; }
       if (seen.has(id)) problems.push(`${where}: duplicate item ${address}`);
       seen.add(id); group.items.push(id); cluster.items.push(id);
-      if (match[2]) (cluster.marks ??= {})[id] = { kind: match[2] as Suspicion["kind"], reason: match[3]! };
+      if (!match[2]) continue;
+      const partners = match[4]!.split(",").flatMap(partner => { const found = wanted.get(partner); if (found === undefined) problems.push(`${where}: unknown partner ${partner}`); return found ?? []; });
+      (cluster.marks ??= {})[id] = { kind: match[2] as Suspicion["kind"], level: match[3] as Suspicion["level"], partners, reason: match[5]! };
     } else problems.push(`${where}: expected a group, cluster label or item line`);
   }
   for (const [address, id] of wanted) if (!seen.has(id)) problems.push(`groups.md: missing ${address}`);
@@ -51,23 +55,38 @@ export function checkGroups(text: string, items: readonly CurateItem[], size = 5
   return { groups, problems };
 }
 
-/** 2026-10-24: every marked item joins the candidates (「有可疑标记的全部加入作为补充候选」). At most `size` → one group; more → a part per
- * clustering group (each holds at most `size` items), parts merged in clustering order while they fit. */
+/** 181: groups come from the candidates alone (at most `size` per group; more are split by clustering group, parts merged in order
+ * while they fit); marks never create or split a group. Each group's spare capacity is then filled with marked non-candidates,
+ * level high to low, and within a level the same small cluster as one of the group's candidates, then the same clustering group,
+ * then elsewhere (ties keep clustering order). A marked item joins with its partners that are in no group yet, as one unit; a unit
+ * that does not fit is skipped, a later smaller one may still fill. Items that fit nowhere are dropped for this run. */
 export function candidateGroups(clustering: readonly ClusteredGroup[], candidates: ReadonlySet<number>, size = 50): ClusteredGroup[] {
-  const all = new Set([...candidates, ...clustering.flatMap(group => group.clusters.flatMap(cluster => cluster.items.filter(id => cluster.marks?.[id])))]);
-  const groups: number[][] = [];
-  if (all.size <= size) groups.push(clustering.flatMap(group => group.items.filter(id => all.has(id))));
-  else for (const group of clustering) {
-    const part = group.items.filter(id => all.has(id)), current = groups.at(-1);
+  const groups: Set<number>[] = [], placed = new Set<number>();
+  for (const group of clustering) {
+    const part = group.items.filter(id => candidates.has(id)), current = groups.at(-1);
     if (!part.length) continue;
-    if (current && current.length + part.length <= size) current.push(...part);
-    else groups.push(part);
+    if (current && current.size + part.length <= size) part.forEach(id => current.add(id));
+    else groups.push(new Set(part));
   }
-  // No candidates and no marks give no group.
-  return groups.filter(ids => ids.length).map(ids => {
-    const members = new Set(ids);
-    const clusters = clustering.flatMap(group => group.clusters).filter(cluster => cluster.items.some(id => members.has(id)));
-    return { items: clusters.flatMap(cluster => cluster.items.filter(id => members.has(id))), clusters };
+  for (const group of groups) for (const id of group) placed.add(id);
+  const clusters = clustering.flatMap(group => group.clusters), order = new Map<number, number>(), clusterOf = new Map<number, Cluster>(), bigOf = new Map<number, ClusteredGroup>();
+  for (const big of clustering) for (const cluster of big.clusters) for (const id of cluster.items) { order.set(id, order.size); clusterOf.set(id, cluster); bigOf.set(id, big); }
+  const marked = clusters.flatMap(cluster => cluster.items.filter(id => cluster.marks?.[id] && !candidates.has(id)).map(id => ({ id, mark: cluster.marks![id]! })));
+  for (const members of groups) {
+    const near = new Set([...members].map(id => clusterOf.get(id))), wide = new Set([...members].map(id => bigOf.get(id)));
+    const locality = (id: number) => near.has(clusterOf.get(id)) ? 0 : wide.has(bigOf.get(id)) ? 1 : 2;
+    const ranked = [...marked].sort((a, b) => SUSPICION_LEVELS.indexOf(a.mark.level) - SUSPICION_LEVELS.indexOf(b.mark.level)
+      || locality(a.id) - locality(b.id) || order.get(a.id)! - order.get(b.id)!);
+    for (const { id, mark } of ranked) {
+      if (placed.has(id)) continue;
+      const unit = new Set([id, ...mark.partners.filter(partner => !placed.has(partner))]);
+      if (members.size + unit.size > size) continue;
+      for (const joined of unit) { members.add(joined); placed.add(joined); }
+    }
+  }
+  return groups.map(ids => {
+    const used = clusters.filter(cluster => cluster.items.some(id => ids.has(id)));
+    return { items: used.flatMap(cluster => cluster.items.filter(id => ids.has(id))), clusters: used };
   });
 }
 

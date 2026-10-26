@@ -4,7 +4,7 @@ import { knowledge } from "../../support/seed.ts";
 import { block } from "../../support/workspace.ts";
 
 test("68: shared deadline fences a real Pi worker, releases its claim and permits the next run", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1, "dreaming.timeoutMs": 300 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1, "dreaming.timeoutMs": 300 });
   let release!: () => void, signal: AbortSignal | undefined;
   const gate = new Promise<void>(resolve => { release = resolve; });
   try {
@@ -39,7 +39,7 @@ test("68: shared deadline fences a real Pi worker, releases its claim and permit
     // The next run is admitted and completes.
     h.provider(async c => dreamerFiles(c) ?? reply("Done"), { autoStop: false });
     await h.turn(); await h.drain();
-    expect(store.noterOperations(store.knowledgePath(1))).toBe(0);
+    expect(store.noterChangedItems(store.knowledgePath(1))).toBe(0);
     expect(store.getClaim(1, "dreaming")).toBeNull();
     expect(store.enabled(1)).toBe(true);
   } finally { release(); await h.dispose(); }

@@ -8,7 +8,7 @@ const compact = (h: ReturnType<typeof host>, signal?: AbortSignal) =>
 
 async function seeded(options: { rawTokens?: number } = {}) {
   const h = host({ "noting.triggerTokens": 10_000, "consolidation.triggerTokens": 5_000,
-    "dreaming.triggerOperations": 1, "compaction.factsTokens": 10_000, "compaction.rawTokens": options.rawTokens ?? 10_000 });
+    "dreaming.triggerKnowledge": 1, "compaction.factsTokens": 10_000, "compaction.rawTokens": options.rawTokens ?? 10_000 });
   if (options.rawTokens !== undefined) {
     await h.prompt("oversized required raw " + "word ".repeat(12_000));
     await h.answer(); await h.emit("agent_end"); await h.drain();

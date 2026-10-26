@@ -14,8 +14,8 @@ export type { DeliveredState, DeliveryNode, DeliveryPart, DeliveryTarget, Pendin
 import { EXECUTIONS_SQL, migrateTaskPool104, migrateDreamerTask126, beginExecution, linkExecutionRun, settleExecution, type TaskFailure, readHandoff, writeHandoff, dropHandoffCovering, type Handoff, type LogicalTask, type ExecutionOutcome, type DreamerBoundary } from "./executions.ts";
 import { DELIVERIES_SQL, STATE_KEY, GUIDE_VERSION, dropStale, noDelivery, placeDeliveries, withRows, type DeliveredState, type DeliveryCache, type DeliveryNode,
   type DeliveryPart, type DeliveryRow, type DeliveryTarget, type OwnerDeliveries } from "./deliveries.ts";
-import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_OPERATIONS, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
-import { tokens } from "../render/index.ts";
+import { PROCESSING_SQL, DEFAULT_KNOWLEDGE_BUDGETS, DEFAULT_DREAMING_TRIGGER_KNOWLEDGE, ALL_POOLS, deriveKnowledgeBudgets, placementOwner, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
+import { tokens, renderKnowledge } from "../render/index.ts";
 import { factObjects, isKnowledgeCategory, substantiveArchiveStatement, DEFAULT_WRITING_LIMITS, type WritingLimits } from "../model/index.ts";
 import { ratingScore, type RatedTarget } from "../dreaming/classify.ts";
 import { WordSimilarity } from "./word-similarity.ts";
@@ -1841,11 +1841,11 @@ export class Store {
   /** A Dreamer admission is due by `dreamingDue` (144 stage 4 §8.2): a due hand-off with no threshold work still gets the claim.
    * `leaseMs` lets it outlive its execution backstop (§1.3). `manual` (146 §18) passes the pending test only. */
   acquireClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed = false, eligible: () => boolean = () => true,
-    triggerOperations = DEFAULT_DREAMING_TRIGGER_OPERATIONS, leaseMs?: number, manual = false): TaskClaim | null {
+    triggerKnowledge = DEFAULT_DREAMING_TRIGGER_KNOWLEDGE, leaseMs?: number, manual = false, unscoredCap = Infinity): TaskClaim | null {
     if (phase !== "noting" && phase !== "dreaming") throw new Error(`Unsupported live phase: ${phase}`);
     return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => phase === "noting"
       ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId).length > 0
-      : manual || this.dreamingDue(target, triggerOperations), eligible, leaseMs));
+      : manual || this.dreamingDue(target, triggerKnowledge, unscoredCap), eligible, leaseMs));
   }
 
   /** Called only by atomic Store operations. Pending discovery is private and synchronous, so
@@ -4227,15 +4227,18 @@ export class Store {
     return live;
   }
 
-  /** 144 stage 4 §4.1: the live items of the session's three pools (global, its project, itself), oldest change first, each with
+  /** The path's live versions in the session's three pools (global, its project, itself), each with its owner pool. */
+  private poolLive(path: KnowledgePath, input: ReturnType<Store["commitGraphInput"]>) {
+    const pools = new Set(["global", `project:${this.getSession(path.sessionId)!.projectId}`, `session:${path.sessionId}`]);
+    return this.liveKnowledge(path, input).map(revision => ({ revision, pool: placementOwner(this, { revision }, input.metadata) })).filter(item => pools.has(item.pool));
+  }
+
+  /** 144 stage 4 §4.1: the live items of those pools, oldest change first, each with
    * its address, whether its current version is covered (processed in its pool), the UTC dates of its supporting facts
    * and its score (null until classified). */
   curateItems(path: KnowledgePath): CurateItem[] {
     const input = this.commitGraphInput(undefined, path.sessionId);
-    const projectId = this.getSession(path.sessionId)!.projectId;
-    const pools = new Set(["global", `project:${projectId}`, `session:${path.sessionId}`]);
-    const live = this.liveKnowledge(path, input).map(revision => ({ revision, pool: placementOwner(this, { revision }, input.metadata) }))
-      .filter(item => pools.has(item.pool)).sort((a, b) => a.revision.id - b.revision.id);
+    const live = this.poolLive(path, input).sort((a, b) => a.revision.id - b.revision.id);
     const knowledge = new Map(this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify([...new Set(live.map(item => item.revision.knowledgeId))])).map(row => [Number(row.id), toKnowledge(row)]));
     const scores = new Map(this.db.prepare("SELECT id, score, scored_commit FROM knowledge WHERE id IN (SELECT value FROM json_each(?))")
@@ -4257,12 +4260,11 @@ export class Store {
     });
   }
 
-  /** 146 §1.2: how many Noter knowledge operations (a `create` or `update` revision of actor `noting`) are not yet covered
-   * (`knowledge_processed`) on the chains of the path's live items, each revision once whichever item it reaches. A covered
-   * ancestor ends only its own branch; the walk goes on past a Noter revision, so a second update of one item counts again.
+  /** 181: how many knowledge items have a Noter revision (a `create` or `update` of actor `noting`) not yet covered
+   * (`knowledge_processed`) on the chains of the path's live items; an item counts once however many such revisions it has. A covered
+   * ancestor ends only its own branch; the walk goes on past a Noter revision to older uncovered ones.
    * Stops adding once `stopAt` is reached; the walk itself is never cut short, so the count is exact below `stopAt`. */
-  noterOperations(path: KnowledgePath, stopAt = Infinity): number {
-    const input = this.commitGraphInput(undefined, path.sessionId);
+  noterChangedItems(path: KnowledgePath, stopAt = Infinity, input = this.commitGraphInput(undefined, path.sessionId)): number {
     const revisions = input.metadata.revisions!, parents = input.parents;
     const byPool = new Map<string, KnowledgeRevision[]>();
     for (const revision of this.liveKnowledge(path, input)) {
@@ -4289,7 +4291,7 @@ export class Store {
           if (id !== item.id && covered.get(pool, id)) continue; // prunes this branch only
           const revision = revisions.get(id)!;
           if (revision.actorRole === "noting" && (revision.op === "create" || revision.op === "update")) {
-            counted.add(id);
+            counted.add(revision.knowledgeId);
             if (counted.size >= stopAt) return counted.size;
           }
           stack.push(...parents.get(id) ?? []);
@@ -4299,9 +4301,30 @@ export class Store {
     return counted.size;
   }
 
-  /** 146 §1.1: a Dreamer run is due when a hand-off row asks for a retry or resume, or when the uncovered Noter operations reach the trigger. */
-  dreamingDue(path: KnowledgePath, triggerOperations = DEFAULT_DREAMING_TRIGGER_OPERATIONS): boolean {
-    return !!this.handoff(path.sessionId, "dreaming") || this.noterOperations(path, triggerOperations) >= triggerOperations;
+  /** 181: the tokens the injection renderer charges to the temporary pool for the path's unscored live project/global items
+   * (the Dreamer's candidates): each item's rendered line, as `orderedKnowledge` sizes it, summed without rendering the scored
+   * set or the category headers the base shares. Stops once `stopAt` is reached. */
+  unscoredTokens(path: KnowledgePath, stopAt = Infinity, input = this.commitGraphInput(undefined, path.sessionId)): number {
+    const live = this.poolLive(path, input).map(item => item.revision).filter(revision => revision.scope !== "session");
+    const unscored = new Map(this.db.prepare("SELECT * FROM knowledge WHERE score IS NULL AND id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify([...new Set(live.map(revision => revision.knowledgeId))])).map(row => [Number(row.id), toKnowledge(row)]));
+    let total = 0;
+    for (const revision of live) {
+      const knowledge = unscored.get(revision.knowledgeId);
+      if (!knowledge) continue;
+      total += tokens(renderKnowledge({ knowledge, revision, staleReasons: this.knowledgeStaleReasons(revision.id) }, undefined, false, this.writing, true) + "\n");
+      if (total >= stopAt) break;
+    }
+    return total;
+  }
+
+  /** 146 §1.1, 181: a Dreamer run is due when a hand-off row asks for a retry or resume, when the Noter-changed items reach the
+   * trigger, or when the unscored knowledge reaches `unscoredCap` tokens (none by default). Either trigger alone fires. */
+  dreamingDue(path: KnowledgePath, triggerKnowledge = DEFAULT_DREAMING_TRIGGER_KNOWLEDGE, unscoredCap = Infinity): boolean {
+    if (this.handoff(path.sessionId, "dreaming")) return true;
+    const input = this.commitGraphInput(undefined, path.sessionId); // the pool work is shared by both counts
+    return this.noterChangedItems(path, triggerKnowledge, input) >= triggerKnowledge
+      || unscoredCap < Infinity && this.unscoredTokens(path, unscoredCap, input) >= unscoredCap;
   }
 
   listTurns(sessionId: number): Turn[] {

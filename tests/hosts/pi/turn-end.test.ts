@@ -89,7 +89,7 @@ test.each(["session_start", "session_tree"] as const)("%s with fully imported hi
 });
 
 test("a tool-heavy turn admits Noting at its first due entry and Dreaming after a knowledge commit", async () => {
-  const h = host({ "noting.triggerTokens": 300, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 300, "dreaming.triggerKnowledge": 1 });
   h.provider(async c => {
     if (c.systemPrompt?.startsWith("# Dreamer") || c.systemPrompt?.startsWith("# Classifying")) return dreamerFiles(c) ?? reply("Done");
     return notingFact(c, "## create\ntitle: Fixture title\ncategory: constraint\nscope: project\ntopics: \nsupports: f1\nfiles: None\nreason: Package choice\n\nUse pnpm\n");
@@ -104,12 +104,12 @@ test("a tool-heavy turn admits Noting at its first due entry and Dreaming after 
   expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual(Array(4).fill(["noting", "success"]));
   h.persist(reply("next entry"));
   await h.emit("tool_execution_start"); await h.drain();
-  expect(h.memory.store.noterOperations(h.memory.store.knowledgePath(1))).toBe(0);
+  expect(h.memory.store.noterChangedItems(h.memory.store.knowledgePath(1))).toBe(0);
   expect(h.memory.store.currentKnowledge().map(item => item.revision.text)).toEqual(["Use pnpm"]);
 });
 
 test("busy entries queue nothing; the next entry after publication admits the next batch", async () => {
-  const h = host({ "noting.triggerTokens": 30, "dreaming.triggerOperations": 1e9 });
+  const h = host({ "noting.triggerTokens": 30, "dreaming.triggerKnowledge": 1e9 });
   let release!: (value: Reply) => void;
   let first = true;
   let initial!: Parameters<typeof notingFact>[0];
@@ -191,7 +191,7 @@ test("installed Pi SDK settles a cancelled turn once and checks again on the nex
     pi.on("agent_end", () => { events.push("agent_end"); });
     pi.on("agent_settled", () => { events.push("agent_settled"); });
   }], env: { TRACE_MEMORY_CONFIG: JSON.stringify({ dbPath, "noting.triggerTokens": 30,
-    "dreaming.triggerOperations": 1e9 }) },
+    "dreaming.triggerKnowledge": 1e9 }) },
     prepare: ({ agentDir }) => writeFileSync(join(agentDir, "trace-memory-baseline.json"), JSON.stringify("2000-01-01T00:00:00.000Z")) });
   const observer = TraceMemory(dbPath, async () => { throw Error("observer never runs"); });
   try {
@@ -223,7 +223,7 @@ test("installed Pi SDK settles a cancelled turn once and checks again on the nex
 }, 30_000);
 
 test("Raw entry ends reuse a not-due Dreaming result; restore re-arms the next entry", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1 });
   const due = vi.spyOn(Store.prototype, "dreamingDue");
   try {
     await h.turn();
@@ -236,6 +236,6 @@ test("Raw entry ends reuse a not-due Dreaming result; restore re-arms the next e
     h.provider(async c => dreamerFiles(c) ?? reply("Done"));
     expect(h.requests).toHaveLength(0);
     h.persist(reply("next entry")); await h.emit("tool_execution_start"); await h.drain();
-    expect(h.memory.store.noterOperations(h.memory.store.knowledgePath(1))).toBe(0);
+    expect(h.memory.store.noterChangedItems(h.memory.store.knowledgePath(1))).toBe(0);
   } finally { due.mockRestore(); }
 });

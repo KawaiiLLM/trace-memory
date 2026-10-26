@@ -24,7 +24,8 @@ Core phase bounds use optional top-level keys in the same file:
 | Key | Default | Meaning |
 | --- | ---: | --- |
 | `noting.triggerTokens` | 10,000 | Noter trigger checked at every main-session entry end; catchup still drains below it |
-| `dreaming.triggerOperations` | 30 | Dreamer trigger: Noter knowledge operations (creates and updates) not yet covered by a Dreamer pass |
+| `dreaming.triggerKnowledge` | 40 | Dreamer trigger: knowledge items the Noter created or updated that no Dreamer pass has covered yet; an item counts once however often it changed |
+| `dreaming.triggerUnscoredRatio` | 0.8 | Second Dreamer trigger: unscored live project/global knowledge, sized as the injection charges it to the temporary pool, reaches this share of `compaction.temporaryTokens`; either trigger starts a run |
 | `dreaming.timeoutMs` | 1,800,000 | Wall-clock bound per stage interval; curate plus scoring gets two intervals |
 | `dreaming.groupItems` | 50 | Maximum candidate items per conversation; cannot exceed 50 |
 | `dreaming.parallelGroups` | 5 | Concurrent group limit; cannot exceed five |

@@ -59,7 +59,7 @@ test("49: material below N/D thresholds moves without an automatic flush", () =>
     f.memory.config[phase].triggerTokens = measured + 1;
   }
   // The fixture's knowledge is project-scoped; only the project pool carries pending material.
-  const projectPending = () => f.memory.dreamingPending(f.path).pending!.operations;
+  const projectPending = () => f.memory.dreamingPending(f.path).pending!.items;
   const dreaming = projectPending();
   expect(dreaming).toBeGreaterThan(0);
   expect(f.memory.declareProject(f.session.id, "below-target", "mark", f.path)).toContain("below-target");
@@ -93,7 +93,7 @@ test("64c/49: disabled enrollment does not mask the Noting declaration guard or 
 
 test.each(["project", "global"] as const)("86: declaring session's Dreamer blocks its move while processing %s", scope => {
   const f = base(false), item = knowledge(f, scope);
-  f.memory.config.dreaming.triggerOperations = 1;
+  f.memory.config.dreaming.triggerKnowledge = 1;
   expect(f.memory.taskEligibility("dreaming", f.path).due).toBe(true);
   const claim = f.store.acquireClaim(f.path, "dreaming", "worker", false, () => true, 1)!;
   expect(claim).not.toBeNull();
@@ -103,7 +103,7 @@ test.each(["project", "global"] as const)("86: declaring session's Dreamer block
   expect(f.store.getSession(f.session.id)).toEqual(before.session);
   expect(f.store.listKnowledgeRevisions()).toEqual(before.revisions);
   f.store.releaseClaim(claim);
-  f.memory.config.dreaming.triggerOperations = Number.MAX_SAFE_INTEGER;
+  f.memory.config.dreaming.triggerKnowledge = Number.MAX_SAFE_INTEGER;
   expect(f.memory.declareProject(f.session.id, "move-target", "mark", f.path)).toContain("move-target");
   expect(f.store.currentKnowledge(f.path).map(value => value.revision.id)).toContain(item.commit); // the item moves with the session
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
@@ -113,7 +113,7 @@ test.each(["global", "project"] as const)("86: declaring session's %s Dreamer ba
   const f = base(false);
   knowledge(f, scope);
   f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
-  f.memory.config.dreaming.triggerOperations = 1;
+  f.memory.config.dreaming.triggerKnowledge = 1;
   expect(() => f.memory.declareProject(f.session.id, `dreaming-${scope}`, "mark", f.path)).toThrow(/dreaming is due/);
   expect(f.store.findProjectByName(`dreaming-${scope}`)).toBeNull();
 });
@@ -133,7 +133,7 @@ test("86: explicit redeclaration checks backlog even after the session was previ
   f.memory.config.noting.triggerTokens = Number.MAX_SAFE_INTEGER;
   expect(f.memory.declareProject(f.session.id, "first", "mark", f.path)).toContain("first");
   knowledge(f);
-  f.memory.config.dreaming.triggerOperations = 1;
+  f.memory.config.dreaming.triggerKnowledge = 1;
   expect(() => f.memory.declareProject(f.session.id, "second", "mark", f.path)).toThrow(/dreaming is due/);
   expect(f.store.findProjectByName("second")).toBeNull();
 });

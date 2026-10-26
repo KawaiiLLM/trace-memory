@@ -161,7 +161,7 @@ test("borrowed N publishes both layers to its target without a special executor 
 });
 
 test("an owned Dreamer run shows its Noter-written item and keeps its global seat separate from borrowed N", async () => {
-  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1_000_000_000, "dreaming.triggerKnowledge": 1 });
   try {
     await h.turn();
     const due = dueItem(h);
@@ -181,7 +181,7 @@ test("an owned Dreamer run shows its Noter-written item and keeps its global sea
     expect(firstDreamer).toContain(`K${due.knowledgeId}`);
     openGate(); for (const item of pending) item.resolve(reply("Done"));
     await h.drain();
-    await vi.waitFor(() => expect(h.memory.store.noterOperations(h.memory.store.knowledgePath(1))).toBe(0));
+    await vi.waitFor(() => expect(h.memory.store.noterChangedItems(h.memory.store.knowledgePath(1))).toBe(0));
     expect(h.memory.store.getKnowledge(due.knowledgeId)).not.toBeNull();
   } finally { await h.dispose(); }
 });
@@ -232,7 +232,7 @@ test("reopening a closed target replaces borrowed N token and prevents stale pub
 });
 
 test("one shutdown deadline fences borrowed N and owned D even when both providers hang", async () => {
-  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerOperations": 1 });
+  const h = host({ "noting.triggerTokens": 1_000, "dreaming.triggerKnowledge": 1 });
   try {
     await h.turn();
     const due = dueItem(h);

@@ -7,8 +7,8 @@ export interface KnowledgeBudgets extends KnowledgeBudgetValues {
   injection: number;
 }
 export const DEFAULT_KNOWLEDGE_BUDGETS: KnowledgeBudgetValues = { global: 4_000, project: 15_000, session: 1_000 };
-/** 146: Dreaming is due after this many Noter knowledge operations (creates and updates). */
-export const DEFAULT_DREAMING_TRIGGER_OPERATIONS = 30;
+/** 181: Dreaming is due after this many knowledge items changed by the Noter (a create or update) since the Dreamer covered them. */
+export const DEFAULT_DREAMING_TRIGGER_KNOWLEDGE = 40;
 
 /** 126: the fixed pool key of a Dreamer range, execution and failure streak that covers all of a
  * session's pools. Rows written before 126 keep the one pool they named. */

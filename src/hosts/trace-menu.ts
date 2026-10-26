@@ -109,26 +109,26 @@ export function buildContextSection(input: ContextSectionInput): ContextSection 
 // ---- Pending / trigger --------------------------------------------------------------------------
 
 /** `atLeast`: counting stopped at the trigger; `entries` is then the exact pending entry count. `tokens` is the figure in the row's
- * unit: compact tokens, or Noter operations for the Dreaming row (`unit: "operations"`, 146). */
-export interface PendingInput { tokens: number | null; trigger: number | null; atLeast?: boolean; entries?: number; unit?: "operations" }
+ * unit: compact tokens, or Noter-changed knowledge items for the Dreaming row (`unit: "items"`, 181). */
+export interface PendingInput { tokens: number | null; trigger: number | null; atLeast?: boolean; entries?: number; unit?: "items" }
 export interface PendingRow { label: string; tokens: number | null; trigger: number | null; ratio: number | null; percent: string; amount: string }
 const pendingRow = (label: string, value: PendingInput): PendingRow => {
   if (value.tokens === null || value.trigger === null) return { label, tokens: null, trigger: null, ratio: null, percent: "?", amount: "?" };
   const ratio = value.trigger === 0 ? (value.tokens === 0 ? 0 : 1) : Math.min(1, value.tokens / value.trigger);
-  const operations = value.unit === "operations";
-  const trigger = operations ? String(value.trigger) : formatCompactTokens(value.trigger);
-  const amount = operations ? `${value.atLeast ? "≥" : ""}${value.tokens} / ${trigger} Noter ops`
+  const items = value.unit === "items";
+  const trigger = items ? String(value.trigger) : formatCompactTokens(value.trigger);
+  const amount = items ? `${value.atLeast ? "≥" : ""}${value.tokens} / ${trigger} items`
     : value.atLeast ? `≥${trigger} / ${trigger} (${(value.entries ?? 0).toLocaleString("en-US")} ${value.entries === 1 ? "entry" : "entries"})`
     : `${formatCompactTokens(value.tokens)} / ${trigger}`;
   return { label, tokens: value.tokens, trigger: value.trigger, ratio, percent: formatWholePercent(ratio), amount };
 };
 
-/** Dreaming's pending row input from `TraceMemory.dreamingPending` (146 §1.4); `trigger` fills the row when the count is unavailable. */
-export const dreamingPendingInput = (pending: { operations: number; trigger: number; atLeast?: boolean } | null, trigger: number | null): PendingInput =>
-  pending ? { tokens: pending.operations, trigger: pending.trigger, unit: "operations", ...(pending.atLeast ? { atLeast: true } : {}) }
-    : { tokens: null, trigger, unit: "operations" };
+/** Dreaming's pending row input from `TraceMemory.dreamingPending` (181); `trigger` fills the row when the count is unavailable. */
+export const dreamingPendingInput = (pending: { items: number; trigger: number; atLeast?: boolean } | null, trigger: number | null): PendingInput =>
+  pending ? { tokens: pending.items, trigger: pending.trigger, unit: "items", ...(pending.atLeast ? { atLeast: true } : {}) }
+    : { tokens: null, trigger, unit: "items" };
 
-/** Noter knowledge operations not yet covered by a Dreamer run, against the unchanged trigger. */
+/** Noter-changed knowledge items not yet covered by a Dreamer run, against the trigger. */
 export interface PendingSectionInput {
   noting: PendingInput;
   dreaming: { pending: PendingInput };
@@ -313,7 +313,7 @@ export const TRACE_MENU_FIXTURE: TraceMenuInput = {
   },
   pending: {
     noting: { tokens: 3_200, trigger: 10_000 },
-    dreaming: { pending: { tokens: 12, trigger: 30, unit: "operations" } },
+    dreaming: { pending: { tokens: 12, trigger: 30, unit: "items" } },
   },
   spend: {
     session: 1.23,

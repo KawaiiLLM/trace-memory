@@ -136,9 +136,9 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   const retired = retireConsolidationSettings(input);
   input = retired.values;
   // Superseding rulings: the Noter runs fresh only; body/pointer pools replace the Knowledge-only shared allowance;
-  // the length caps are counted in units (ticket 145); Dreaming is due by Noter operations (ticket 146).
+  // the length caps are counted in units (ticket 145); Dreaming is due by changed knowledge items (tickets 146, 181).
   // A leftover key of any of them fails the load with core's removed-setting message.
-  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds", "dreaming.classifyModel", "dreaming.classifyThinking", "writing.titleTokens", "writing.bodyTokens", "dreaming.triggerTokens"])
+  for (const key of ["noting.forkModeDefault", "noting.branchModeDefault", "compaction.sharedAllowanceTokens", "dreaming.maxToolRounds", "dreaming.classifyModel", "dreaming.classifyThinking", "writing.titleTokens", "writing.bodyTokens", "dreaming.triggerTokens", "dreaming.triggerOperations"])
     if (Object.hasOwn(input, key)) canonicalFlatConfig({ [key]: true });
   const dbPath = input.dbPath === undefined ? join(homedir(), ".trace-memory", "trace.db") : input.dbPath;
   if (typeof dbPath !== "string" || !dbPath.trim()) throw new Error("CC dbPath must be a non-empty absolute path when specified");

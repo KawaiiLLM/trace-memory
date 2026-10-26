@@ -55,8 +55,8 @@ import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { rawWindowTokens } from "../../../src/core/render/material.ts";
 import { factsFile, probe, scriptedNoter, submit, submitEmpty, verifyUnchanged, largestTaskPromptTokens } from "../../support/noter.ts";
 import { checkCurate, decisionsTemplate } from "../../../src/core/dreaming/curate.ts";
-import { projectItems } from "../../../src/core/dreaming/candidates.ts";
-import { decisionText } from "../../support/dreamer.ts";
+import { boundaryOf, projectItems } from "../../../src/core/dreaming/candidates.ts";
+import { coverKnowledge, decisionText } from "../../support/dreamer.ts";
 
 // 62 excludes temporary directories, where every fixture lives. As in directory-projects.test.ts, the
 // hosts' `directoryAllocation` receives the exclusions a test sets; unset, it keeps the defaults.
@@ -2164,7 +2164,7 @@ test("28 amendment 3: cancellation is a signal — the signalled task's tools cl
     submissions.push(input.tools.find(tool => tool.name === "check")!.execute({}));
     return ok([]);
   });
-  memory.config.dreaming.triggerOperations = 1;
+  memory.config.dreaming.triggerKnowledge = 1;
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const fact = JSON.parse(memory.tools({ kind: "manual", ...target, currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute({ title: "Independent evidence", sources: `[T${t.id}#E1] D's independent evidence` })).factIds[0] as number;
@@ -2309,7 +2309,7 @@ test("2026-10-22: a Dreamer run of another session in the same project covers th
   const noteA = (scope: "global" | "project" | "session") => noterWrittenItem(f.memory, f.path as never, f.existingFact(`A ${scope} fact`).id, scope);
   const projectA = noteA("project"), globalA = noteA("global"), sessionA = noteA("session");
   noterWrittenItem(f.memory, pathB as never, factB.id); // B's own trigger
-  expect(f.store.noterOperations(f.path)).toBe(3); // Routine Dreamer excludes A's session item (156).
+  expect(f.store.noterChangedItems(f.path)).toBe(3); // Routine Dreamer excludes A's session item (156).
   let late!: { commit: number };
   f.next(async raw => { late = noteA("project"); return f.dreamer.agent(raw); }); // A's Noter writes while B's run is under way
   expect(await f.memory.dream({ ...pathB, model: "scripted" })).toMatchObject({ outcome: "success" });
@@ -2317,7 +2317,7 @@ test("2026-10-22: a Dreamer run of another session in the same project covers th
   expect(covered).toEqual(expect.arrayContaining([projectA.commit, globalA.commit]));
   expect(covered).not.toContain(sessionA.commit);
   expect(covered).not.toContain(late.commit);
-  expect(f.store.noterOperations(f.path)).toBe(1); // Only the project item written mid-run remains due.
+  expect(f.store.noterChangedItems(f.path)).toBe(1); // Only the project item written mid-run remains due.
 });
 
 // Maintainer, 2026-10-22, at the deployment start: 「1. 部署时将未归档的现行知识视为无评分的最高级，因预算被归档的视为0分并取消归档，等下次整理时统一重评分。
@@ -2337,7 +2337,7 @@ test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live item
     old.store.db.prepare("UPDATE knowledge_revisions SET text = '', archive_kind = NULL WHERE id = ?")
       .run(seedArchive(old.store, old.path, plain.knowledgeId, plain.commit, plain.supports));
     seedArchive(old.store, old.path, invalid.knowledgeId, invalid.commit, invalid.supports, "invalid");
-    expect(old.store.noterOperations(old.path)).toBeGreaterThan(100);
+    expect(old.store.noterChangedItems(old.path)).toBeGreaterThan(100);
     old.memory.close();
     const raw = new DatabaseSync(file); // what production has: no score columns, no titles, no coverage, data step not yet run
     for (const column of ["score", "scored_commit", "scored_run"]) raw.exec(`ALTER TABLE knowledge DROP COLUMN ${column}`);
@@ -2346,7 +2346,7 @@ test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live item
 
     const memory = sourceSeededMemory(file, f.dreamer.agent);
     dreamers.push(memory);
-    memory.config.dreaming.triggerOperations = 1;
+    memory.config.dreaming.triggerKnowledge = 1;
     const store = memory.store;
     const state = (id: number) => store.db.prepare("SELECT score, scored_commit, (SELECT op FROM knowledge_revisions WHERE knowledge_id = k.id ORDER BY id DESC LIMIT 1) AS op FROM knowledge k WHERE id = ?").get(id);
     const live = (store.db.prepare("SELECT id FROM knowledge WHERE id NOT IN (?, ?, ?)").all(budget.knowledgeId, plain.knowledgeId, invalid.knowledgeId) as { id: number }[]).map(row => row.id);
@@ -2359,7 +2359,7 @@ test("2026-10-22, 144: the first open of a pre-Stage-1 database scores live item
       archive_kind: null, supports: JSON.stringify(budget.supports) });
     expect(store.db.prepare("SELECT kind FROM runs WHERE id = ?").get(Number(revived.run_id))).toEqual({ kind: "manual" });
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_processed").get()).toEqual(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_revisions WHERE actor_role = 'noting'").get()); // every Noter change, not the revival
-    expect(store.noterOperations(old.path)).toBe(0);
+    expect(store.noterChangedItems(old.path)).toBe(0);
     expect(store.dreamingDue(old.path, 1)).toBe(false);
 
     const snapshot = () => ["knowledge", "knowledge_revisions", "knowledge_processed", "runs"].map(table => store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
@@ -2618,19 +2618,19 @@ const dreamerFixture = (script: DreamerScript = {}) => makeDreamerFixture(dreame
 const taskNames = (f: ReturnType<typeof dreamerFixture>) => f.dreamer.inputs.map(input => input.task);
 const executionReasons = (f: ReturnType<typeof dreamerFixture>) => (f.store.db.prepare("SELECT reason FROM task_executions ORDER BY rowid").all() as { reason: string }[]).map(row => row.reason);
 
-// each Noter update or create counts once, and repeats on one item each count; due at 30 by default (maintainer, translated)
-test("2026-10-22, 146 — Dreaming is due at the 30th Noter operation and not the 29th; a second update of one item counts again; a manual write does not", () => {
-  expect(DEFAULT_CONFIG.dreaming.triggerOperations).toBe(30);
-  // The token trigger is removed by name, not read as a count.
-  expect(() => api.validateConfig({ dreaming: { triggerTokens: 10_000 } } as never)).toThrow("Removed setting dreaming.triggerTokens: Dreaming is due by Noter operations: use dreaming.triggerOperations");
+// Supersedes 146's rule (each Noter create or update counted, repeats on one item counted again, due at 30): the trigger counts items.
+// 「想法：改一下算法，只看被变更过的知识数量而不是改过的次数」 「设置为40」 (maintainer, 2026-10-26)
+test("2026-10-26, 181 — Dreaming is due at the 40th changed item, not the 40th revision: two Noter revisions of one item count once; a manual write does not; the old keys name dreaming.triggerKnowledge", () => {
+  expect(DEFAULT_CONFIG.dreaming.triggerKnowledge).toBe(40);
+  expect(() => api.validateConfig({ dreaming: { triggerOperations: 30 } } as never)).toThrow("Removed setting dreaming.triggerOperations: Dreaming is due by changed knowledge items, not Noter operations: use dreaming.triggerKnowledge");
+  expect(() => api.validateConfig({ dreaming: { triggerTokens: 10_000 } } as never)).toThrow("Removed setting dreaming.triggerTokens: Dreaming is due by changed knowledge items: use dreaming.triggerKnowledge");
   const f = dreamerFixture();
-  f.memory.config.dreaming.triggerOperations = 30;
-  const count = () => f.store.noterOperations(f.path), due = () => f.memory.taskEligibility("dreaming", f.target).due;
+  f.memory.config.dreaming.triggerKnowledge = 3;
+  const count = () => f.store.noterChangedItems(f.path), due = () => f.memory.taskEligibility("dreaming", f.target).due;
   knowledgeBatch(f.store, f.path, [{ scope: "project", category: "constraint", supports: [f.existingFact("Manual support").id], title: "Manual rule", text: "A hand-written rule" }],
     { kind: "manual", createdAt: "now" });
   expect(count()).toBe(0); // a manual write does not count
-  const first = f.item("Use pnpm everywhere", { title: "Use pnpm" });
-  for (let i = 1; i < 28; i++) f.item(`Rule number ${i}`, { title: `Rule ${i}` }); // 28 creates
+  const first = f.item("Use pnpm everywhere", { title: "Use pnpm" }), second = f.item("Second rule", { title: "Rule two" });
   const noterUpdate = (base: { knowledgeId: number; commit: number }, text: string) => {
     const result = commitNoterKnowledge(f.store, { path: f.path, run: { sessionId: f.session.id, branch: "main", createdAt: "now" }, operations: [{ files: null, op: "update",
       knowledgeId: base.knowledgeId, baseCommit: base.commit, text, category: "constraint", scope: "project", supports: first.supports, topics: [], reason: "update", createdAt: "now" }] });
@@ -2638,14 +2638,67 @@ test("2026-10-22, 146 — Dreaming is due at the 30th Noter operation and not th
     return result.committed[0]!;
   };
   const edited = noterUpdate(first, "Use pnpm everywhere, in every repository");
-  expect(count()).toBe(29);
-  expect(due()).toBe(false); // the 29th operation
-  updateKnowledge(f.store, f.path, first.knowledgeId, edited.commit, "Use pnpm everywhere, by hand", first.supports);
-  expect(count()).toBe(29); // the manual update adds none
+  noterUpdate({ knowledgeId: first.knowledgeId, commit: edited.commit }, "Use pnpm everywhere, again");
+  expect(count()).toBe(2); // four Noter revisions, two items
   expect(due()).toBe(false);
-  noterUpdate({ knowledgeId: first.knowledgeId, commit: f.store.currentCommit(first.knowledgeId, f.path)[0]!.id }, "Use pnpm everywhere, again");
-  expect(count()).toBe(30); // the same item, updated a second time by the Noter, counts again
-  expect(due()).toBe(true); // the 30th operation
+  updateKnowledge(f.store, f.path, second.knowledgeId, second.commit, "Second rule, by hand", second.supports);
+  expect(count()).toBe(2); // the manual update adds none
+  f.item("Third rule", { title: "Rule three" });
+  expect(count()).toBe(3);
+  expect(due()).toBe(true); // the 3rd item
+});
+
+// 「或则加一个触发项，即新增知识长度达到 10k 预算的 80% ？」 then 「A」 (maintainer, 2026-10-26)
+test("2026-10-26, 181 — unscored knowledge reaching 0.8 of the temporary pool makes Dreaming due; either trigger alone fires a run", () => {
+  expect(DEFAULT_CONFIG.dreaming.triggerUnscoredRatio).toBe(0.8);
+  for (const invalid of [0, -0.5, Infinity, NaN]) expect(() => api.validateConfig({ dreaming: { triggerUnscoredRatio: invalid } }), String(invalid)).toThrow("Invalid dreaming.triggerUnscoredRatio");
+  expect(api.validateConfig({ dreaming: { triggerUnscoredRatio: 0.5 } }).dreaming.triggerUnscoredRatio).toBe(0.5);
+  const f = dreamerFixture();
+  const due = () => f.memory.taskEligibility("dreaming", f.target).due;
+  f.memory.config.dreaming.triggerKnowledge = 1e9; // the item trigger is out of reach
+  const items = [f.item("Rule one body, long enough to cost some tokens", { title: "One" }), f.item("Rule two body, long enough to cost some tokens", { title: "Two" })];
+  coverKnowledge(f.store, f.path, items.map(item => item.commit));
+  const size = f.store.unscoredTokens(f.path);
+  expect(size).toBeGreaterThan(0);
+  f.memory.config.dreaming.triggerUnscoredRatio = 0.5;
+  f.memory.config.compaction.temporaryTokens = 2 * size; // the cap is exactly the unscored size
+  expect(due()).toBe(true); // the size trigger alone
+  f.memory.config.compaction.temporaryTokens = 2 * size + 2;
+  expect(due()).toBe(false); // one token below the cap
+  f.memory.config.compaction.temporaryTokens = 2 * size;
+  scoreAll(f.store);
+  expect(f.store.unscoredTokens(f.path)).toBe(0);
+  expect(due()).toBe(false); // scored knowledge is the base's, not the temporary pool's
+  f.memory.config.dreaming.triggerKnowledge = 1;
+  f.item("A third rule body, written by the Noter", { title: "Three" });
+  scoreAll(f.store);
+  expect(f.store.unscoredTokens(f.path)).toBe(0);
+  expect(due()).toBe(true); // the item trigger alone
+});
+
+// Same ruling (option A): unscored items are candidates, so one run scores them and the size trigger cannot fire again on them.
+test("2026-10-26, 181 — a covered but unscored item becomes a candidate and is scored by the run; the same items do not fire the size trigger again", async () => {
+  const f = dreamerFixture();
+  const done = f.item("Rule already scored", { title: "Scored" }), covered = [f.item("Rule covered, never scored", { title: "Never scored" }), f.item("Another covered, never scored", { title: "Also unscored" })];
+  scoreAll(f.store, 60);
+  f.store.db.prepare("UPDATE knowledge SET score = NULL WHERE id IN (?, ?)").run(covered[0]!.knowledgeId, covered[1]!.knowledgeId); // covered by an earlier run, never scored
+  const boundary = boundaryOf(f.store, projectItems(f.store, f.path));
+  f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: "main", createdAt: "now", outcome: "success", response: JSON.stringify({ finished: { boundary } }) });
+  coverKnowledge(f.store, f.path, [done, ...covered].map(item => item.commit));
+  f.memory.config.dreaming.triggerKnowledge = 1e9;
+  const size = f.store.unscoredTokens(f.path);
+  f.memory.config.dreaming.triggerUnscoredRatio = 0.5; f.memory.config.compaction.temporaryTokens = 2 * size;
+  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
+  const groups: string[] = [];
+  f.dreamer.script.instead = { curate: async input => { groups.push(readFileSync(`${input.workspace.dir}/group.md`, "utf8")); return scriptedDreamer().agent(input); } };
+  expect(await f.dream()).toMatchObject({ outcome: "success" });
+  const members = groups.join("\n");
+  expect(members).toContain(`K${covered[0]!.knowledgeId}@`);
+  expect(members).toContain(`K${covered[1]!.knowledgeId}@`);
+  expect(members).not.toContain(`K${done.knowledgeId}@`); // the scored, unchanged item is no candidate
+  for (const item of covered) expect(f.store.getKnowledge(item.knowledgeId)!.score).not.toBeNull();
+  expect(f.store.unscoredTokens(f.path)).toBe(0);
+  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(false); // the same items cannot fire the size trigger again
 });
 
 

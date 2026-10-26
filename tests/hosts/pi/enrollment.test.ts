@@ -240,7 +240,7 @@ test.each(["2099-02-30T00:00:00Z", "2099", "2099-01-01", 4070908800000])("18a 20
 test("18a 2026-09-08: all count/token keys and masked layers validate by key", async () => {
   const h = setup();
   for (const section of ["render", "noting", "dreaming"] as const) for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
-    if (typeof value !== "number" || key === "nearThreshold" || key === "maxToolRounds") continue;
+    if (typeof value !== "number" || key === "nearThreshold" || key === "triggerUnscoredRatio" || key === "maxToolRounds") continue; // ratios are not integers
     for (const invalid of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Infinity]) {
       expect(() => TraceMemory(":memory:", async () => reply("") as never, { [section]: { [key]: invalid } })).toThrow(`${section}.${key}`);
     }
@@ -305,7 +305,7 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
 });
 
 test.each([true, false])("92: disable during D rejects late %s mutation and preserves the existing revision", async submit => {
-  const h = setup({ "dreaming.triggerOperations": 1 }); await h.turn();
+  const h = setup({ "dreaming.triggerKnowledge": 1 }); await h.turn();
   expect(seedFact(h, "Pending knowledge").id).toBe(1);
   // A Noter-written item makes the Dreamer due (2026-10-22).
   knowledge(h.memory.store, { sessionId: 1, branch: "main", headTurnId: 1 }, "project", "constraint", [1], "Retain rule", { operation: { title: "Fixture title" } });

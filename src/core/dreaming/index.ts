@@ -262,8 +262,16 @@ export async function runDreaming(store: Store, frozen: DreamingFrozen, runAgent
       stage => loadPrompt(stage === "curate" ? "tasks/curate.md" : "classifying.md", frozen.names, config.writing));
     if (!out.ok) return out;
     const scores = checkScores(workspace.text("scores.md"), targets).scores;
+    // 181: why each item is in this group, so mark precision per level can be measured from the run records. An item can have several
+    // origins; one with none of its own joined as the partner of a marked item.
+    const origins = Object.fromEntries(group.items.map(item => {
+      const id = item.value.knowledge.id, mark = group.clusters?.find(cluster => cluster.items.includes(id))?.marks?.[id];
+      const own = [...(item.value.revision.id !== frozen.baselineVersions[id] ? ["changed"] : []), ...(item.value.staleReasons?.length ? ["stale"] : []),
+        ...(item.score === null ? ["unscored"] : []), ...(mark ? [`mark:${mark.level}`] : [])];
+      return [`K${id}`, own.length ? own : frozen.candidates.includes(id) ? ["full check"] : ["partner"]];
+    }));
     const run: RunInput = { ...out.run!,
-      response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), task: "group", group: group.no, decisions: workspace.text("decisions.md"), changes: workspace.text("changes.md"), scores: workspace.text("scores.md") }) };
+      response: JSON.stringify({ ...JSON.parse(out.run!.response ?? "{}"), task: "group", group: group.no, origins, decisions: workspace.text("decisions.md"), changes: workspace.text("changes.md"), scores: workspace.text("scores.md") }) };
     const previousBoundary = { ...frozen.boundary.versions };
     const completed = new Set<number>();
     try {

@@ -5,7 +5,7 @@ import { fact, knowledge } from "../../support/seed.ts";
 import { fullCheckDryRun } from "../../../src/core/dreaming/clustering.ts";
 
 test.each([false, true])("native Pi run (full check: %s) scores in each curate conversation and resumes only failed groups", async fullCheck => {
-  const f = await fixture({ "noting.triggerTokens": 1e9, "dreaming.triggerOperations": 1e9, "dreaming.groupItems": 1, "dreaming.parallelGroups": 1 });
+  const f = await fixture({ "noting.triggerTokens": 1e9, "dreaming.triggerKnowledge": 1e9, "dreaming.groupItems": 1, "dreaming.parallelGroups": 1 });
   let interrupt = true;
   const firsts: Body[] = [], scoring: Body[] = [];
   try {

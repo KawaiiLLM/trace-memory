@@ -164,7 +164,7 @@ test("64b/47: D head and rewind material follows the owner's foreground and igno
     captured.push(input);
     input.tools.find(tool => tool.name === "check")!.execute({});
     return cancelled;
-  }, { dreaming: { triggerOperations: 1 } });
+  }, { dreaming: { triggerKnowledge: 1 } });
   memories.push(memory);
   const store = memory.store;
   const project = store.createProject({ name: "deferred-d-isolation", declaredBy: "mark" });

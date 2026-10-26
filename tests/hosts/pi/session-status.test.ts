@@ -210,8 +210,8 @@ test("repeated Dreaming status reads show identical pending data without DB writ
   h.memory.setKnowledgeBase(2468);
   const before = changes(h), entries = structuredClone(h.entries);
   const first = await open(h);
-  // 146 §1.4: the Dreaming row is the Noter operations against the trigger; no pool-vs-window row is shown.
-  expect(first).toMatch(/pending\s+.*\d+ \/ 30 Noter ops/); expect(first).not.toMatch(/^\s*knowledge\s+[█░]/m); expect(first).not.toMatch(/^\s*Consolidation\s/m);
+  // 181: the Dreaming row is the Noter-changed items against the trigger; no pool-vs-window row is shown.
+  expect(first).toMatch(/pending\s+.*\d+ \/ 40 items/); expect(first).not.toMatch(/^\s*knowledge\s+[█░]/m); expect(first).not.toMatch(/^\s*Consolidation\s/m);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
   expect(await open(h)).toBe(first);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);

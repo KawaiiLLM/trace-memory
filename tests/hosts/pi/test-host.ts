@@ -300,7 +300,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   const originalCwd = process.cwd();
   try { process.chdir(dir); (options.extension ?? extension)(pi); } finally { process.chdir(originalCwd); if (previous === undefined) delete process.env.TRACE_MEMORY_CONFIG; else process.env.TRACE_MEMORY_CONFIG = previous; }
   // The observer reads what the extension wrote, so it registers the same result-text extractor (23). It runs the default core
-  // config, not the extension's: `memory.config.dreaming.triggerOperations` is 10000 whatever `dreaming.triggerOperations` the host was given.
+  // config, not the extension's: `memory.config.dreaming.triggerKnowledge` is 10000 whatever `dreaming.triggerKnowledge` the host was given.
   const memory = TraceMemory(dbPath, async () => { throw new Error("observer cannot call a model"); }, {}, piResultText);
   const persist = (message: any, id = `e${allEntries.length}`) => {
     // 26c0: Pi persists a `role: "custom"` message — the shape a `before_agent_start` handler's

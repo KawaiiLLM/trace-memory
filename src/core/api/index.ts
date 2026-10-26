@@ -22,7 +22,7 @@ export { deliveredView, knowledgeStateKey, noVisibility } from "./visible.ts";
 export type { KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
-import { DEFAULT_DREAMING_TRIGGER_OPERATIONS } from "../store/processing.ts";
+import { DEFAULT_DREAMING_TRIGGER_KNOWLEDGE } from "../store/processing.ts";
 
 import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
@@ -84,8 +84,10 @@ export interface TraceMemoryConfig {
   };
   /** Bounded fresh-subagent maintenance. */
   dreaming: {
-    /** Noter knowledge operations (creates and updates) not yet covered by a Dreamer pass that make a run due (146). */
-    triggerOperations: number;
+    /** Knowledge items changed by the Noter (created or updated) and not yet covered by a Dreamer pass that make a run due (181). */
+    triggerKnowledge: number;
+    /** The unscored live project/global knowledge, measured as the injection renderer charges it, makes a run due at this share of `compaction.temporaryTokens` (181). */
+    triggerUnscoredRatio: number;
     /** Cooperative wall-clock deadline shared by every host. */
     timeoutMs: number;
     groupItems: number;
@@ -142,7 +144,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     checkKnowledgeSteps: 8,
     checkKnowledgeContextTokens: 15_000,
   },
-  dreaming: { triggerOperations: DEFAULT_DREAMING_TRIGGER_OPERATIONS, timeoutMs: 1_800_000,
+  dreaming: { triggerKnowledge: DEFAULT_DREAMING_TRIGGER_KNOWLEDGE, triggerUnscoredRatio: 0.8, timeoutMs: 1_800_000,
     groupItems: 50, parallelGroups: 5, notesSteps: 10, notesTokens: 10_000, wholeFileLimit: 5,
     clusteringSteps: 30, clusteringContextTokens: 150_000,
     // Dispatcher proposals from the 37-item Sonnet experiment, not maintainer-set limits.
@@ -218,8 +220,9 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   // Ticket 145: the caps are counted in units, so an old token count is not read as a word count.
   "writing.titleTokens": "use writing.titleWords (the title target in units, default 20; the check allows 10% more)",
   "writing.bodyTokens": "use writing.bodyWords (the body target in units, default 200; the check allows 10% more)",
-  // Ticket 146: Dreaming is due by Noter operations; tokens and operations are different units, so no value is translated.
-  "dreaming.triggerTokens": "Dreaming is due by Noter operations: use dreaming.triggerOperations (default 30); remove this key",
+  // Tickets 146, 181: Dreaming is due by changed knowledge items; tokens, operations and items are different units, so no value is translated.
+  "dreaming.triggerTokens": "Dreaming is due by changed knowledge items: use dreaming.triggerKnowledge (default 40); remove this key",
+  "dreaming.triggerOperations": "Dreaming is due by changed knowledge items, not Noter operations: use dreaming.triggerKnowledge (default 40); remove this key",
 };
 const removedSetting = (key: string) => new Error(`Removed setting ${key}: ${REMOVED_SETTINGS[key]}`);
 
@@ -269,7 +272,9 @@ export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
   if (!["off", "project", "global"].includes(cfg.closedSessionScope)) throw new Error("Invalid closedSessionScope: expected off, project or global");
   for (const section of CONFIG_SECTIONS) for (const [key, value] of Object.entries(cfg[section])) {
     const name = `${section}.${key}`;
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "maxToolRounds" ? 0 : 1)) {
+    if (key === "triggerUnscoredRatio") {
+      if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new Error(`Invalid ${name}: expected a positive number`);
+    } else if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "maxToolRounds" ? 0 : 1)) {
       throw new Error(`Invalid ${name}: expected ${key === "maxToolRounds" ? "a nonnegative" : "a positive"} safe integer`);
     }
     if (name === "render.entryTokens" && (value as number) > 2_000) throw new Error(`Invalid ${name}: at most 2000`);
@@ -382,10 +387,10 @@ export interface TraceMemory {
   pendingTokens(phase: "noting", target?: TaskTarget, upToTrigger?: boolean):
     | { tokens: number; trigger: number; state: "known"; atLeast?: true; entries?: number }
     | { tokens: null; trigger: number | null; state: "no session" | "unavailable" };
-  /** Same read-only contract as `pendingTokens`, for the Dreamer's one trigger (146 §1.4): the Noter knowledge operations not yet
-   * covered by a Dreamer run, counting up to the trigger (`atLeast` once it is reached). */
+  /** Same read-only contract as `pendingTokens`, for the Dreamer's one trigger (181): the knowledge items the Noter changed that no
+   * Dreamer run has covered, counting up to the trigger (`atLeast` once it is reached). */
   dreamingPending(target?: TaskTarget):
-    | { state: "known"; pending: { operations: number; trigger: number; atLeast?: true } }
+    | { state: "known"; pending: { items: number; trigger: number; atLeast?: true } }
     | { state: "no session" | "unavailable"; pending: null };
   /** Terminal worker settlement, including Dreamer's future worker: persist first, then abort
    * locally owned target tasks on automatic off. Attempt refusal is not terminal settlement. */
@@ -831,17 +836,18 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         : { tokens: trigger, trigger, state: "known", atLeast: true, entries: pending.length };
     } catch { return { tokens: null, trigger, state: "unavailable" }; }
   };
-  // 146 §1.4: the Noter operations not yet covered by a Dreamer pass, toward the trigger.
+  // 181: the Noter-changed items not yet covered by a Dreamer pass, toward the trigger.
   const dreamingPending: TraceMemory["dreamingPending"] = target => {
     if (!target) return { state: "no session", pending: null };
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { state: "unavailable", pending: null };
-      const trigger = cfg.dreaming.triggerOperations, operations = store.noterOperations(target, trigger);
-      return { state: "known", pending: { operations, trigger, ...(operations >= trigger ? { atLeast: true } : {}) } };
+      const trigger = cfg.dreaming.triggerKnowledge, items = store.noterChangedItems(target, trigger);
+      return { state: "known", pending: { items, trigger, ...(items >= trigger ? { atLeast: true } : {}) } };
     } catch { return { state: "unavailable", pending: null }; }
   };
-  // 146 §1.1: a Dreamer run is due on Noter operations (or a hand-off).
-  const dreamingDue = (target: TaskTarget) => store.dreamingDue(target, cfg.dreaming.triggerOperations);
+  // 146 §1.1, 181: a Dreamer run is due on Noter-changed items, on unscored knowledge filling its share of the temporary pool, or a hand-off.
+  const unscoredTrigger = () => cfg.dreaming.triggerUnscoredRatio * cfg.compaction.temporaryTokens;
+  const dreamingDue = (target: TaskTarget) => store.dreamingDue(target, cfg.dreaming.triggerKnowledge, unscoredTrigger());
   // 29d: eligibility is the trigger threshold and nothing else. Phase slots, enrollment, the host's
   // readiness wait and claim checks are untouched.
   const taskEligibility = (phase: Phase, target: TaskTarget) => {
@@ -882,7 +888,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         const groupCount = handoff?.detail?.groups?.length || Math.ceil((handoff?.detail?.clusteringItems?.length ?? visible.length) / cfg.dreaming.groupItems);
         const setupTasks = 2;
         executionLimit = executionLimitMs(setupTasks + 2 * Math.max(1, Math.ceil(groupCount / cfg.dreaming.parallelGroups)), cfg.dreaming.timeoutMs);
-        claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerOperations, executionLimit + CLAIM_LEASE_MARGIN_MS, input.manual || input.fullCheck);
+        claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => true, cfg.dreaming.triggerKnowledge, executionLimit + CLAIM_LEASE_MARGIN_MS, input.manual || input.fullCheck, unscoredTrigger());
         if (!claim) {
           if (input.manual || input.fullCheck) {
             const holder = store.dreamerSeatHolder(target.sessionId);

@@ -391,7 +391,7 @@ function dreamingScenarios(size: string): Sample[] {
     });
     coverKnowledge(store, target, current.map(item => item.commit));
     for (let i = revisions; i < revisions + 10; i++) knowledgeBatch(store, target, [content(i)]);
-    memory.config.dreaming.triggerOperations = 1;
+    memory.config.dreaming.triggerKnowledge = 1;
     const claim = store.acquireClaim(target, "dreaming", "perf", false, () => true, 1);
     if (!claim) throw new Error("measurement claim unavailable");
     const counter = countGraphResolutions();

@@ -205,7 +205,7 @@ test("branch switches select exact source membership and returned snapshots do n
 }, 30_000);
 
 test("73: an over-budget allocator truncates rather than refusing, and starts no worker or native fallback", async () => {
-  const f = await fixture({ "noting.triggerTokens": 20, "dreaming.triggerOperations": 1,
+  const f = await fixture({ "noting.triggerTokens": 20, "dreaming.triggerKnowledge": 1,
     "compaction.factsTokens": 1, "compaction.rawTokens": 1 });
   try {
     // The scripted worker makes no note commit, so pending Raw remains after ordinary admission.
