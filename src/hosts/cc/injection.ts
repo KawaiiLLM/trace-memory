@@ -500,17 +500,21 @@ export async function ccCompaction(config: ResolvedCcHostConfig,
       pointerTokens: compacted.supplied.pointerTokens ?? 0,
       knowledgeStates: compacted.supplied.knowledgeStates, factIds: compacted.supplied.factIds, entryIds: compacted.supplied.entries.map(entry => entry.id) }) +
       COMPACTION_SUMMARY_SUFFIX + (input.auto ? CC_AUTO_CONTINUE_SUFFIX : "");
-    memory.store.transaction(() => {
+    const published = memory.store.transaction(() => {
       const current = readBinding(config, input.session_id);
       if (memory.store.deliveryWatermark(owner) !== watermark || current?.coreSessionId !== core || current.branch !== branch ||
           current.selectedLeafUuid !== leaf || current.transcriptOffset !== offset || !importedToEnd(current))
         throw new Error("the session or its selected path changed while the compaction was built");
+      // 183: the entry check is stale after the import await and the build; the executor may have settled a third failure since. Native compaction instead.
+      if (!memory.store.tasksEnabled(core)) return false;
       memory.store.recordKnowledgeDelivery({ owner, nodeKey: randomUUID(), follows: leaf }, [{
         knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, knowledgeStates: (compacted.supplied.knowledgeStates ?? []).map(knowledgeStateKey),
         knowledgeTokens: compacted.supplied.knowledgeTokens ?? 0, knowledgeTitleCommitIds: compacted.supplied.knowledgeTitleCommitIds ?? [],
         guideVersions: compacted.supplied.guideVersions,
         temporaryTokens: compacted.supplied.temporaryTokens ?? 0, pointerTokens: compacted.supplied.pointerTokens ?? 0 }]);
+      return true;
     });
+    if (!published) return null;
     const warning = ccTruncationWarning(compacted.truncated);
     return { text, ...(warning ? { warning } : {}) };
   } finally {

@@ -1836,7 +1836,9 @@ export class Store {
       // Reserve the new tokens for this executor without launching either phase.
       for (const phase of ["noting", "dreaming"] as const) {
         const previous = this.getClaim(sessionId, phase);
-        if (!previous || previous.executorId === executorId) continue;
+        // 183: a session that runs no tasks reserves nothing: a dormant one's expired claims stay expired, or its renewed Dreamer lease would hold the database-wide seat.
+        // Checked last, only when a claim exists: a claimless reopen (every bootstrap) adds no enrollment lookup (cc-70's pinned count).
+        if (!previous || previous.executorId === executorId || this.dormant(sessionId)) continue;
         const now = Date.now(), seatUnavailable = phase === "dreaming" && this.otherSessionOwnsDreamerSeat(sessionId, now);
         this.db.prepare("UPDATE task_claims SET executor_id = ?, token = ?, expires_at = ?, borrowed = 0, reserved = 1 WHERE session_id = ? AND phase = ?")
           .run(executorId, randomUUID(), seatUnavailable ? Math.min(previous.expiresAt, now) : now + 30 * 60_000, sessionId, phase);

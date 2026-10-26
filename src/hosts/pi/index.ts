@@ -1081,7 +1081,7 @@ export default function (pi: ExtensionAPI) {
     if (event.customInstructions?.trim()) return;
     const signal = (event as { signal?: AbortSignal }).signal;
     const initial = { sessionId: state.sessionId, branch: state.branch, head: state.head, projectId: state.projectId };
-    const valid = () => !closed && enabled() && state.sessionId === initial.sessionId
+    const valid = () => !closed && tasksEnabled() && state.sessionId === initial.sessionId
       && state.branch === initial.branch && state.head === initial.head && state.projectId === initial.projectId
       && (!initial.sessionId || memory.store.getSession(initial.sessionId)?.projectId === initial.projectId);
     const allocate = (knowledge = true): ReturnType<typeof memory.compact> => {

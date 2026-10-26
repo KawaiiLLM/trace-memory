@@ -181,8 +181,11 @@ export class CcCoordinator {
    * `null` before any successful reconcile — counts render as `?`, never as `0`. */
   private lastReconcile: CcReconcileResult | null = null;
   /** Ticket 75: the last published (path, state) key, so a no-op stat-wake-up reconcile writes
-   * nothing — publishing is a lifecycle event, never a timer. */
+   * nothing — publishing is a lifecycle event, never a timer. Every publication records its own (183), the scheduler's included. */
   private lastStatusKey: string | null = null;
+  private static statusKey(result: CcReconcileResult, dormant: boolean): string {
+    return `${result.coreSessionId}|${result.branch}|${result.headTurnId}|${result.state}|${dormant}`;
+  }
   /** Native live turns only. No historical terminal is replayed on attach or restart. */
   private readonly completedTurns = new Set<string>();
   private readonly completedTerminals = new Set<string>();
@@ -259,6 +262,8 @@ export class CcCoordinator {
         running: { noting: running.has("noting"), dreaming: running.has("dreaming") },
         ...(counts ? { counts } : {}), ...(cost !== undefined ? { cost, ...(costUnknown ? { costUnknown } : {}) } : {}) };
       writeCcStatus(this.config.stateDir, status);
+      // 183: the scheduler publishes dormancy between reconciles; the cache must name what the file now says, or `/trace on` is never republished.
+      if (reconcile) this.lastStatusKey = CcCoordinator.statusKey(reconcile, dormant);
     } catch (error) { this.diagnostic(`status publish failed (${reason}): ${error instanceof Error ? error.message : String(error)}`); }
   }
 
@@ -575,7 +580,7 @@ export class CcCoordinator {
         if (!final && result) {
           this.lastReconcile = result;
           // 183: dormancy joins the key; `/trace on` ends it without any state or path change, and the line must follow.
-          const pathKey = `${result.coreSessionId}|${result.branch}|${result.headTurnId}|${result.state}|${this.dormant(result.coreSessionId)}`;
+          const pathKey = CcCoordinator.statusKey(result, this.dormant(result.coreSessionId));
           if (result.appendedEntryIds.length > 0 || pathKey !== this.lastStatusKey) {
             this.lastStatusKey = pathKey;
             this.publish(reason);

@@ -396,6 +396,24 @@ test("183 a dormant session builds no compaction, so the hook runs the native on
   } finally { f.close(); }
 });
 
+test("183 a session that goes dormant after the entry check still compacts natively: the final fence re-checks, records nothing, and the supplement delivers Knowledge", async () => {
+  const f = await fixture();
+  try {
+    const [rule] = f.versions.map(item => item.commit);
+    await f.append(user("u2", "a1", "p2"));
+    const rows = () => (f.store.db.prepare("SELECT COUNT(*) AS count FROM knowledge_deliveries").get() as { count: number }).count;
+    const before = rows(), snapshot = Store.prototype.readSnapshot;
+    vi.spyOn(Store.prototype, "readSnapshot").mockImplementationOnce(function (this: Store, fn) {
+      const value = snapshot.call(this, fn);
+      makeDormant(f.store, f.sessionId); // the executor settles the third failure while the block is rendered
+      return value;
+    });
+    expect(await f.build("u2")).toBeNull();
+    expect(rows()).toBe(before);
+    expect(f.commits(await f.compact())).toEqual([rule]);
+  } finally { f.close(); }
+});
+
 test("102 requirement 14: an automatic compaction's block ends with Claude Code's own continue sentence after the framing; a manual one never does", async () => {
   const f = await fixture();
   try {

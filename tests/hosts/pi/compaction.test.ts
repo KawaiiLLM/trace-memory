@@ -230,6 +230,17 @@ test("183: a dormant session compacts natively and its Knowledge returns at the 
   } finally { await h.dispose(); }
 });
 
+test("183: a session that goes dormant while the compaction is prepared delegates to Pi at the final reprice", async () => {
+  const h = host({ ...quiet, "compaction.temporaryTokens": 1 });
+  try {
+    await h.prompt("establish support"); await h.answer();
+    expect((await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } })).compaction.summary).toBeTruthy(); // the control: still enabled
+    const notify = h.ctx.ui.notify;
+    h.ctx.ui.notify = (text: string) => { notify(text); if (text.includes("compaction preparing")) makeDormant(h.memory.store, 1); }; // the third failure commits in the notification callback
+    expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } })).toBeUndefined();
+  } finally { await h.dispose(); }
+});
+
 test.each([
   "<task-notification", "<system-reminder", "<command-", "Caveat", "[Request interrupted",
   "Another Claude session", "<local-command", "<skill", "This session is being continued",

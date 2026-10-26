@@ -225,6 +225,25 @@ test("dormancy recorded only in the Store publishes dormant, and `/trace on` pub
   } finally { await coordinator.shutdown("test"); }
 });
 
+test("a dormant status published by the scheduler is cached, so `/trace on` is republished by the next reconcile (183)", async () => {
+  const f = fixture("dormant-notify", { pollIntervalMs: 60_000, "noting.triggerTokens": 10_000 });
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, "2026-01-01T00:00:00.000Z");
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  try {
+    await coordinator.start(); // the reconcile caches the not-dormant key
+    const coreSessionId = readBinding(f.config, f.nativeSessionId)!.coreSessionId!;
+    const store = new Store(f.config.dbPath);
+    try {
+      makeDormant(store, coreSessionId);
+      coordinator["publish"]("settlement"); // the scheduler's settlement notification: no reconcile in between
+      expect(readCcStatus(f.stateDir, f.nativeSessionId)).toMatchObject({ enabled: true, dormant: true });
+      store.setEnrollment(coreSessionId, true);
+      await coordinator.requestReconcile("binding watch");
+      expect(readCcStatus(f.stateDir, f.nativeSessionId)!.dormant).toBeUndefined();
+    } finally { store.close(); }
+  } finally { await coordinator.shutdown("test"); }
+});
+
 test("retarget writes under the new native session id and removes the old file", async () => {
   const f = fixture("retarget", { pollIntervalMs: 60_000 });
   const parentId = f.nativeSessionId, childId = "native-retarget-child", childTranscript = join(f.dir, "child.jsonl");
