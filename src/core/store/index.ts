@@ -667,8 +667,6 @@ export interface ApplicabilityInput {
   currentPaths?: Map<number, PersistedKnowledgePaths>;
   currentSnapshots?: Map<string, PathSnapshot>;
   validatedCurrentPaths?: Set<string>;
-  /** Judge these owners' facts by the facts recorded off their foreground at some earlier moment, not by the foreground now. */
-  recordedDead?: Map<number, Set<number>>;
   facts: Map<number, { fact: Fact; sessionId: number; runId: number; entries: number[] }>;
 }
 
@@ -2479,31 +2477,20 @@ export class Store {
         // The Noter's held path is the branch it wrote for; the session's latest Turn may be on a sibling branch.
         const publicationPath = input.held?.path ?? this.knowledgePath(sessionId);
         const negated = new Set(input.run.kind === "noting" ? facts.flatMap((fact, i) => fact.negate?.length && this.factOnPath(this.getFact(batchIds[i]!)!, publicationPath) ? fact.negate.map(rel => resolve(rel.target, i)) : []) : []);
-        // Knowledge that publishes after this lane is judged against the foreground as of now, so keep which facts are off it.
-        const negationDead = input.intermediate && negated.size ? this.factsOffForeground([sessionId, ...[...negated].map(id => this.getTurn(this.getFact(id)!.turnId)!.sessionId),
-          ...this.db.prepare("SELECT DISTINCT session_id FROM task_handoffs WHERE phase = 'noting' AND lane = 'knowledge'").all().map(row => Number(row.session_id))]) : undefined;
         if (negated.size) for (const { revision } of this.currentKnowledge(publicationPath)) {
           for (const id of revision.supports) if (negated.has(id))
             this.setKnowledgeStale(revision.id, { reason: "negated_fact", detail: `F${id} negated by Noter run R${runId}` });
         }
         // Knowledge that waited for its lane was not yet there when those facts published. Only the revisions committed here are
         // checked: an update that stopped citing the negated fact is a resolution, and older knowledge was flagged (or cleared) already.
-        // Each negation applies where sequential publication would have flagged it: on the path its own batch wrote for, with the
-        // foreground it published under, where the revision is current.
+        // ponytail: any later Noter negation flags, whatever branch it came from (user: A). A sibling-branch negation over-flags,
+        // which only asks the Dreamer to look again; judge by the negator's path only if over-flagging measurably costs.
         if (input.negatedAfter !== undefined) for (const audit of knowledgeAudit) for (const committed of audit.committed) {
           const revision = this.getKnowledgeRevision(committed.knowledgeId, committed.commit)!;
-          for (const row of this.db.prepare(`SELECT r.to_fact, f.run_id, runs.session_id, runs.branch, runs.range_to
-            FROM fact_relations r JOIN facts f ON f.id = r.from_fact JOIN runs ON runs.id = f.run_id
+          for (const row of this.db.prepare(`SELECT r.to_fact, f.run_id FROM fact_relations r JOIN facts f ON f.id = r.from_fact JOIN runs ON runs.id = f.run_id
             WHERE r.kind = 'negate' AND runs.kind = 'noting' AND r.from_fact > ? AND r.to_fact IN (SELECT value FROM json_each(?))`)
-            .all(input.negatedAfter, JSON.stringify(revision.supports)) as { to_fact: number; run_id: number; session_id: number; branch: string; range_to: string }[]) {
-            const dead = JSON.parse(this.getRun(row.run_id)?.response ?? "{}").negationDead as Record<string, number[]> | undefined;
-            if (!dead) continue; // no recorded context: not a lane-published negation on its own path, which sequential publication did not flag either
-            const negatorPath = { sessionId: row.session_id, branch: row.branch, headTurnId: Number(/\/T(\d+)$/.exec(row.range_to)![1]) };
-            const graph = this.commitGraphInput([revision]);
-            graph.metadata.recordedDead = new Map(Object.entries(dead).map(([owner, ids]) => [Number(owner), new Set(ids)]));
-            if (this.commitGraph(negatorPath, undefined, undefined, graph).current.some(item => item.id === revision.id))
-              this.setKnowledgeStale(revision.id, { reason: "negated_fact", detail: `F${row.to_fact} negated by Noter run R${row.run_id}` });
-          }
+            .all(input.negatedAfter, JSON.stringify(revision.supports)) as { to_fact: number; run_id: number }[])
+            this.setKnowledgeStale(revision.id, { reason: "negated_fact", detail: `F${row.to_fact} negated by Noter run R${row.run_id}` });
         }
         for (const audit of knowledgeAudit) for (const committed of audit.committed) {
           const revision = this.getKnowledgeRevision(committed.knowledgeId, committed.commit)!;
@@ -2514,7 +2501,7 @@ export class Store {
         let response: Record<string, unknown>;
         try { const parsed = JSON.parse(input.responseForFacts?.(batchIds) ?? input.run.response ?? "{}"); response = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : { output: parsed }; }
         catch { response = { output: input.run.response }; }
-        const finalResponse = JSON.stringify({ ...response, ...(input.held ? { knowledgeOperations: knowledgeAudit } : {}), ...(input.run.entryAudit ? { entryAudit: input.run.entryAudit } : {}), ...(negationDead ? { negationDead } : {}), factIds: batchIds });
+        const finalResponse = JSON.stringify({ ...response, ...(input.held ? { knowledgeOperations: knowledgeAudit } : {}), ...(input.run.entryAudit ? { entryAudit: input.run.entryAudit } : {}), factIds: batchIds });
         this.db.prepare("UPDATE run_bodies SET response = ? WHERE run_id = ?").run(finalResponse, runId);
         this.db.prepare(`UPDATE runs SET usage_input = ?, usage_output = ?, usage_cache_read = ?, usage_cache_write = ?, usage_cost = ? WHERE id = ?`)
           .run(...this.usageColumns(finalResponse), runId);
@@ -2533,17 +2520,6 @@ export class Store {
         problems: [err instanceof Error ? err.message : String(err)] }) } : input.run;
       return { ok: false, ...this.recordFailure(run, err) };
     }
-  }
-
-  /** The facts of these sessions that are off their session's foreground now. */
-  private factsOffForeground(sessions: Iterable<number>): Record<number, number[]> {
-    const off: Record<number, number[]> = {};
-    for (const owner of new Set(sessions)) {
-      const ids = this.db.prepare("SELECT f.id FROM facts f JOIN turns t ON t.id = f.turn_id WHERE t.session_id = ?").all(owner).map(row => Number(row.id));
-      const input = this.buildGraphInput([], { owner, ids: new Set(ids) }).metadata;
-      off[owner] = ids.filter(id => !this.factOnCurrentPath(input.facts.get(id)!.fact, owner, input));
-    }
-    return off;
   }
 
   /** A passed Noter stage records only its files and the next stage, atomically fenced by the claim. */
@@ -3801,8 +3777,6 @@ export class Store {
   /** Knowledge support always follows the fact owner's foreground, including for an unbound project
    * or global collection read. The cache belongs to one commitGraph input and is never shared by Store instances. */
   private factOnCurrentPath(fact: Fact, owner: number, input: ApplicabilityInput): boolean {
-    const dead = input.recordedDead?.get(owner);
-    if (dead) return !dead.has(fact.id);
     if (!input.currentPaths?.has(owner)) throw new Error(`knowledge applicability is missing foreground metadata for session S${owner}`);
     const paths = input.currentPaths.get(owner)!;
     if (paths === null) return true;
